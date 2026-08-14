@@ -97,6 +97,22 @@ func (in *Inbox) Identity() identity.Quadruple { return in.identity }
 // EnqueuedAt is rejected with ErrPayloadInvalid — the Inbox owns the
 // timeline.
 func (in *Inbox) Enqueue(ev ControlEvent) error {
+	if err := in.validateEvent(ev); err != nil {
+		return err
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.enqueueLocked(ev)
+}
+
+// validateEvent runs the per-event validation Enqueue applies before
+// the queue append: identity (the per-run isolation gate — an event
+// for run A enqueued on run B's inbox would be cross-run bleed),
+// EnqueuedAt ownership, control-type membership, scope, and payload.
+// The checks are identical to the ones Enqueue ran before this split;
+// the split lets a caller batch-validate N events before appending
+// them under ONE lock hold (see enqueueLocked).
+func (in *Inbox) validateEvent(ev ControlEvent) error {
 	// Identity must be the inbox's own run quadruple. This is the
 	// per-run isolation gate: an event for run A enqueued on run B's
 	// inbox would be cross-run bleed.
@@ -119,9 +135,16 @@ func (in *Inbox) Enqueue(ev ControlEvent) error {
 	if err := ValidatePayload(ev.Payload); err != nil {
 		return err
 	}
+	return nil
+}
 
-	in.mu.Lock()
-	defer in.mu.Unlock()
+// enqueueLocked appends a validated event to the queue and wakes a
+// waiter. The caller MUST hold in.mu. Enqueue uses it after
+// validateEvent; the tranche batch tests use it to append a WHOLE
+// batch under one lock hold so the run loop can never drain between
+// the events (the batch-arbitration semantics under test require one
+// drain).
+func (in *Inbox) enqueueLocked(ev ControlEvent) error {
 	if in.closed {
 		return fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
 	}

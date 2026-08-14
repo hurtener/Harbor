@@ -42,7 +42,8 @@ import type {
 	AgentConfigMCPConnectionDescriptor,
 	AgentConfigOAuthProviderDescriptor,
 	AgentConfigLLMParams,
-	AgentConfigPayload
+	AgentConfigPayload,
+	AgentConfigCompositionPreviewResponse
 } from '$lib/protocol/agentconfig.js';
 
 /** The default agent the panel targets when no `?agent=` is supplied — the
@@ -62,7 +63,7 @@ export const MCP_CONNECTION_EVENT_TYPES = [
 ] as const;
 
 /**
- * The six control-plane areas the panel exposes, in display order. The
+ * The seven control-plane areas the panel exposes, in display order. The
  * panel renders a left sub-nav rail of these (the Settings page's
  * single-section vocabulary — CONVENTIONS.md §3): exactly ONE area is in
  * view at a time. The ids match the per-section `data-testid`s the e2e
@@ -73,11 +74,12 @@ export const AGENT_CONFIG_AREAS = [
 	{ id: 'prompt', label: 'Layered prompt' },
 	{ id: 'llm', label: 'Model & sampling' },
 	{ id: 'skills', label: 'Skills' },
+	{ id: 'preview', label: 'Composition preview' },
 	{ id: 'mcp', label: 'MCP policy' },
 	{ id: 'add-connection', label: 'Add connection' }
 ] as const;
 
-/** The id of one of the six control-plane areas (drives the rail + pane). */
+/** The id of one of the seven control-plane areas (drives the rail + pane). */
 export type AgentConfigAreaId = (typeof AGENT_CONFIG_AREAS)[number]['id'];
 
 /** A page-friendly error projection (mirrors the Settings page's shape). */
@@ -120,6 +122,18 @@ export function describeError(e: unknown): PageError {
 /** shortRevision renders a copy-friendly short revision id (first 12 chars). */
 export function shortRevision(id: string): string {
 	return id.length > 12 ? `${id.slice(0, 12)}…` : id;
+}
+
+/**
+ * previewSourceIsBootOnly reports whether a composition-preview item is
+ * boot-declared WITHOUT a durable revision shadow (source === "boot").
+ * Boot-only entries render read-only in the preview — the remove
+ * affordance is only for an ACTUAL durable revision shadow (source
+ * revision | both), whose removal leaves the boot baseline untouched
+ * (config removal is next-deployment-only). Pure; exported for tests.
+ */
+export function previewSourceIsBootOnly(source: string | undefined): boolean {
+	return source === 'boot';
 }
 
 /** The display label for each config section, used by the derived
@@ -214,6 +228,23 @@ export class AgentConfigPanelState {
 	skillTrigger = $state<string>('');
 	skillSteps = $state<string>('');
 	skillBusy = $state<boolean>(false);
+
+	/* ---- read-only composition preview (D-414/D-415, HA-66) -------- */
+	/** The immutable `agent_config.composition.preview` response: what
+	 * the strict run-start composer WOULD compose for the selected
+	 * agent, WITHOUT materialising anything. The typed outcome
+	 * (available | unavailable | conflict | retired) and the
+	 * deterministic set hashes ride verbatim — never a blank state
+	 * (D-311). */
+	preview = $state<AgentConfigCompositionPreviewResponse | null>(null);
+	previewPhase = $state<AreaPhase>('idle');
+	previewError = $state<PageError | null>(null);
+	/** The pack name whose durable-revision-shadow removal is in flight
+	 * ('' = none). Removal is ONLY offered for a real durable revision
+	 * shadow (source revision | both); boot-only entries are read-only
+	 * in the preview. */
+	previewRemoveBusy = $state<string>('');
+	previewRemoveError = $state<PageError | null>(null);
 
 	/* ---- MCP pause/resume + per-tool disable (92d) ----------------- */
 	/** The desired-state tool-exposure (paused servers + disabled tools),
@@ -446,6 +477,22 @@ export class AgentConfigPanelState {
 				this.skillsError = describeError(e);
 				this.skillsPhase = 'error';
 			}
+			try {
+				// The read-only composition preview (D-414/D-415): the
+				// effective operator-tier composition for the selected
+				// agent, WITHOUT materialising anything. A verified
+				// caller previews its OWN exact triple (no invented
+				// user/session), so the call carries only the agent id.
+				// Degrades independently like skills — a runtime without
+				// the HA-66 wiring (501 unknown_method) must not sink the
+				// revisions / prompt / model-&-sampling / MCP areas.
+				this.preview = await this.#client.agentConfig.compositionPreview(this.agentId);
+				this.previewPhase = 'ready';
+			} catch (e) {
+				this.preview = null;
+				this.previewError = describeError(e);
+				this.previewPhase = 'error';
+			}
 			// Default the diff selection to the two newest revisions.
 			if (this.revisions.length >= 2) {
 				this.toRevision = this.revisions[0].revision_id;
@@ -646,6 +693,61 @@ export class AgentConfigPanelState {
 			await this.reloadRevisions();
 		} catch (e) {
 			this.skillsError = describeError(e);
+		}
+	}
+
+	/* ================================================================ */
+	/* Read-only composition preview (D-414/D-415, HA-66)               */
+	/* ================================================================ */
+
+	/**
+	 * loadCompositionPreview re-issues the read-only
+	 * `agent_config.composition.preview` call for the selected agent —
+	 * used after a durable-shadow removal so the rendered composition
+	 * reflects the new active revision. The preview is a claim-free read
+	 * of the caller's OWN verified triple: the call carries only the
+	 * agent id and never invents a user/session identity.
+	 */
+	async loadCompositionPreview(): Promise<void> {
+		if (this.#client === null) return;
+		this.previewPhase = 'loading';
+		this.previewError = null;
+		try {
+			this.preview = await this.#client.agentConfig.compositionPreview(this.agentId);
+			this.previewPhase = 'ready';
+		} catch (e) {
+			this.preview = null;
+			this.previewError = describeError(e);
+			this.previewPhase = 'error';
+		}
+	}
+
+	/**
+	 * removePreviewShadow removes the DURABLE revision shadow of a
+	 * composition-preview item via the durable-revision-authoring verb
+	 * `agent_config.agent_packs.remove` (agent_packs.list stays the
+	 * authoring surface — the preview never writes). It is ONLY offered
+	 * for a real durable revision shadow (source revision | both):
+	 * removing the shadow leaves a boot-declared baseline untouched
+	 * (config removal is next-deployment-only), while a boot-only name
+	 * has nothing durable to remove and renders read-only. A typed
+	 * boot-owned refusal from the runtime stays visible (never
+	 * swallowed — §13). Admin-gated. After the remove the preview is
+	 * re-read so the rendered composition reflects the new revision.
+	 */
+	async removePreviewShadow(name: string): Promise<void> {
+		if (this.#client === null || !this.hasAdminScope) return;
+		if (this.previewRemoveBusy !== '') return;
+		this.previewRemoveBusy = name;
+		this.previewRemoveError = null;
+		try {
+			await this.#client.agentConfig.agentPacksRemove(this.agentId, name);
+			await this.reloadRevisions();
+			await this.loadCompositionPreview();
+		} catch (e) {
+			this.previewRemoveError = describeError(e);
+		} finally {
+			this.previewRemoveBusy = '';
 		}
 	}
 

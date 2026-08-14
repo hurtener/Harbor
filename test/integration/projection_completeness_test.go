@@ -57,7 +57,7 @@ import (
 // projCompRig is the real-assembly rig: the BuildMux-mounted mux plus the
 // registries/coordinator the test seeds real state into.
 type projCompRig struct {
-	mux   *http.ServeMux
+	mux   http.Handler
 	tasks tasks.TaskRegistry
 	coord pauseresume.Coordinator
 }
@@ -131,7 +131,7 @@ func buildProjCompRig(t *testing.T) projCompRig {
 	return projCompRig{mux: built.Mux, tasks: taskReg, coord: coord}
 }
 
-func projCompPost(t *testing.T, m *http.ServeMux, id identity.Identity, body string) prototypes.TaskListResponse {
+func projCompPost(t *testing.T, m http.Handler, id identity.Identity, body string) prototypes.TaskListResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/list", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

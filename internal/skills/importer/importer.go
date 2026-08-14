@@ -125,6 +125,47 @@ type Importer interface {
 	// (the round-trip invariant).
 	Export(ctx context.Context, skill skills.Skill, attachments ImportArtifacts) ([]byte, error)
 
+	// ImportPackage validates a complete skill package archive (zip)
+	// and parses its root SKILL.md into the canonical package DTO
+	// plus the stored-skill form, computing the versioned
+	// PackageHash. Support files are referenced through the immutable
+	// `skillpkg://<PackageHash>/<encoded-canonical-support-path>`
+	// URI (PackageIngest.SupportURI — one URI per support file).
+	// PURE: no storage writes, no artifact uploads — the archive and
+	// SKILL.md validation primitives (traversal, collisions,
+	// links/devices, nested archives, MIME, decompression and
+	// count/size/ratio bounds, one-root-case-exact-SKILL.md) live in
+	// the canonical semantic core.
+	ImportPackage(ctx context.Context, src PackageSource) (PackageIngest, error)
+
+	// ImportPackageMarkdown ingests ONE bounded UTF-8 SKILL.md
+	// document as a resource-free complete skill package (no support
+	// files) via the same parser / canonical DTO / hash as
+	// ImportPackage. Any relative support-file reference in the body
+	// is rejected because no support manifest exists. PURE: no
+	// storage writes, no artifact uploads.
+	ImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (PackageIngest, error)
+
+	// MaterializePackageBody rewrites the logical body of an ingested
+	// package (description + sections) to its materialized form:
+	// every validated relative support reference becomes the exact
+	// `skillpkg://<PackageHash>/<encoded-canonical-support-path>` URI.
+	// PURE: no store, authority, lifecycle, or filesystem side
+	// effects.
+	MaterializePackageBody(ctx context.Context, ingest PackageIngest) (string, error)
+
+	// ExportPackage reverses the package ingest for a materialized
+	// body: it dematerializes the package's support URIs back to
+	// their relative canonical paths — refusing foreign, malformed,
+	// and dangling URIs — and produces the logical single-document
+	// form plus the ordered normalized manifest. PURE.
+	ExportPackage(ctx context.Context, ingest PackageIngest, materializedBody string) (PackageExport, error)
+
+	// ReimportPackage rebuilds the canonical package from an exported
+	// logical document + manifest (the inverse of ExportPackage),
+	// recomputing and verifying the versioned package hash. PURE.
+	ReimportPackage(ctx context.Context, ex PackageExport) (PackageIngest, error)
+
 	// Close releases resources. Idempotent. Currently a no-op
 	// (the importer holds no long-lived resources), but included
 	// for symmetry with SkillStore / ArtifactStore.

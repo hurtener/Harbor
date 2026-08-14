@@ -1,0 +1,581 @@
+package importer_test
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/importer"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
+)
+
+// pngBytes returns a structurally valid minimal PNG (signature +
+// 13-byte IHDR + IEND). The content-truth MIME gate requires the real
+// signature AND the IHDR chunk, so fixtures must be real containers.
+func pngBytes() []byte {
+	var b bytes.Buffer
+	b.Write([]byte("\x89PNG\r\n\x1a\n"))
+	writeChunk := func(typ string, data []byte) {
+		var l [4]byte
+		binary.BigEndian.PutUint32(l[:], uint32(len(data)))
+		b.Write(l[:])
+		b.WriteString(typ)
+		b.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(typ))
+		crc.Write(data)
+		var c [4]byte
+		binary.BigEndian.PutUint32(c[:], crc.Sum32())
+		b.Write(c[:])
+	}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 1) // width
+	binary.BigEndian.PutUint32(ihdr[4:8], 1) // height
+	ihdr[8] = 8                              // bit depth
+	ihdr[9] = 6                              // color type: RGBA
+	writeChunk("IHDR", ihdr)
+	writeChunk("IEND", nil)
+	return b.Bytes()
+}
+
+// packageZip builds a complete-skill-package archive in memory.
+func packageZip(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	// Deterministic order.
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("Create(%q): %v", name, err)
+		}
+		if _, err := w.Write([]byte(entries[name])); err != nil {
+			t.Fatalf("Write(%q): %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+const packageSkillMD = "---\nname: packaged-demo\ntrigger: when asked for a package demo\n---\nA packaged demo skill.\n\n![diagram](assets/logo.png)\n\n## Steps\n- do the thing\n\n## Preconditions\n- have the thing\n"
+
+func TestImportPackage_Valid(t *testing.T) {
+	imp, _ := newImporter(t)
+	z := packageZip(t, map[string]string{
+		"SKILL.md":           packageSkillMD,
+		"assets/logo.png":    string(pngBytes()),
+		"examples/demo.json": `{"demo": true}`,
+		"docs/usage.txt":     "usage notes",
+	})
+
+	ingest, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z, PathHint: "packaged-demo.zip"})
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+
+	// Stored-skill form.
+	if ingest.Skill.Name != "packaged-demo" || ingest.Skill.Origin != skills.OriginPack || ingest.Skill.Scope != skills.ScopeProject {
+		t.Fatalf("Skill = %+v", ingest.Skill)
+	}
+	if ingest.Skill.Trigger != "when asked for a package demo" || len(ingest.Skill.Steps) != 1 {
+		t.Fatalf("Skill content = %+v", ingest.Skill)
+	}
+	// The body keeps its relative path (no artifact:// substitution
+	// in the pure semantic ingest).
+	if !strings.Contains(ingest.Skill.Description, "assets/logo.png") {
+		t.Fatalf("description lost the relative ref: %q", ingest.Skill.Description)
+	}
+
+	// Canonical DTO: logical content + ordered normalized manifest
+	// (SKILL.md excluded).
+	if ingest.Package.Name != "packaged-demo" {
+		t.Fatalf("package name = %q", ingest.Package.Name)
+	}
+	if len(ingest.Package.Supports) != 3 {
+		t.Fatalf("supports = %+v", ingest.Package.Supports)
+	}
+	for _, f := range ingest.Package.Supports {
+		if f.Path == skills.RootSkillFileName {
+			t.Fatalf("SKILL.md leaked into the support manifest: %+v", f)
+		}
+	}
+	if err := ingest.Package.Validate(); err != nil {
+		t.Fatalf("Package.Validate: %v", err)
+	}
+
+	// Hash + support URI: versioned, distinct from the stored
+	// ContentHash, and the URI round-trips. The URI references ONE
+	// support file — never the package name.
+	if !strings.HasPrefix(ingest.Hash, "v1:") || ingest.Hash == ingest.Skill.ContentHash {
+		t.Fatalf("hash %q (content %q)", ingest.Hash, ingest.Skill.ContentHash)
+	}
+	u, err := ingest.SupportURI("assets/logo.png")
+	if err != nil {
+		t.Fatalf("SupportURI: %v", err)
+	}
+	if u.String() != "skillpkg://"+ingest.Hash+"/assets/logo.png" {
+		t.Fatalf("URI = %q", u.String())
+	}
+	parsed, err := skills.ParsePackageURI(u.String())
+	if err != nil || parsed.Hash != ingest.Hash || parsed.Path != "assets/logo.png" {
+		t.Fatalf("URI round-trip: %+v err=%v", parsed, err)
+	}
+	// Every manifest entry yields its own immutable support URI.
+	seen := map[string]bool{}
+	for _, f := range ingest.Package.Supports {
+		su, err := ingest.SupportURI(f.Path)
+		if err != nil {
+			t.Fatalf("SupportURI(%q): %v", f.Path, err)
+		}
+		if seen[su.String()] {
+			t.Fatalf("duplicate support URI %q", su.String())
+		}
+		seen[su.String()] = true
+	}
+	// A path outside the manifest fails loudly.
+	if _, err := ingest.SupportURI("assets/nope.png"); !errors.Is(err, importer.ErrPackageSupportRefMissing) {
+		t.Fatalf("SupportURI(missing): err=%v, want ErrPackageSupportRefMissing", err)
+	}
+	if err := skills.VerifyPackageHash(ingest.Package, ingest.Hash); err != nil {
+		t.Fatalf("VerifyPackageHash: %v", err)
+	}
+}
+
+func TestImportPackage_DeterministicHash(t *testing.T) {
+	imp, _ := newImporter(t)
+	entries := map[string]string{
+		"SKILL.md":           packageSkillMD,
+		"assets/logo.png":    string(pngBytes()),
+		"examples/demo.json": `{"demo": true}`,
+	}
+	z1 := packageZip(t, entries)
+	z2 := packageZip(t, entries)
+	a, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z1})
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+	b, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z2})
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+	ua, err := a.SupportURI("assets/logo.png")
+	if err != nil {
+		t.Fatalf("SupportURI(a): %v", err)
+	}
+	ub, err := b.SupportURI("assets/logo.png")
+	if err != nil {
+		t.Fatalf("SupportURI(b): %v", err)
+	}
+	if a.Hash != b.Hash || ua.String() != ub.String() {
+		t.Fatalf("hash not deterministic: %q vs %q", a.Hash, b.Hash)
+	}
+}
+
+func TestImportPackage_Rejects(t *testing.T) {
+	imp, _ := newImporter(t)
+	validMD := "---\ntrigger: t\n---\n## Steps\n- s\n"
+	cases := []struct {
+		name    string
+		archive []byte
+		wantErr error
+	}{
+		{"not a zip", []byte("not a zip"), skills.ErrArchiveNotZip},
+		{"traversal", packageZip(t, map[string]string{"../escape": "x"}), skills.ErrArchiveTraversal},
+		{"case collision", packageZip(t, map[string]string{"SKILL.md": validMD, "skill.md": validMD}), skills.ErrArchivePathCollision},
+		{"nested archive", packageZip(t, map[string]string{"SKILL.md": validMD, "payload.txt": "PK\x03\x04nested"}), skills.ErrArchiveNested},
+		{"unsupported mime", packageZip(t, map[string]string{"SKILL.md": validMD, "tool.exe": "MZ"}), skills.ErrArchiveMimeUnsupported},
+		{"missing skillmd", packageZip(t, map[string]string{"README.md": "hi"}), skills.ErrSkillMDMissing},
+		{"non-root skillmd", packageZip(t, map[string]string{"docs/SKILL.md": validMD}), skills.ErrSkillMDNotRoot},
+		{"case-mismatch skillmd", packageZip(t, map[string]string{"skill.md": validMD}), skills.ErrSkillMDCaseMismatch},
+		{"skillmd no frontmatter", packageZip(t, map[string]string{"SKILL.md": "plain"}), skills.ErrSkillMDFrontmatterMissing},
+		{"skillmd missing trigger", packageZip(t, map[string]string{"SKILL.md": "---\nname: x\n---\n## Steps\n- s\n"}), skills.ErrSkillMDMissingTrigger},
+		{"skillmd empty steps", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\nno steps\n"}), skills.ErrSkillMDEmptySteps},
+		// An empty `- ` item is rejected at the SKILL.md gate first
+		// (bodyHasSteps requires a non-empty item); the DTO-level empty
+		// item check (PackageSkill.Validate) is defense-in-depth for
+		// the canonical-bytes / direct-construction paths.
+		{"empty step item", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n## Steps\n- \n",
+		}), skills.ErrSkillMDEmptySteps},
+		{"unknown section", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"}), importer.ErrUnknownSection},
+		{"missing support ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![missing](assets/nope.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"missing link ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\nSee [the guide](docs/guide.md).\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"traversal support ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![bad](../escape.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"remote image ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](https://example.com/x.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefRemote},
+		{"absolute image ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](/etc/x.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefRemote},
+		{"absolute link ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\nSee [x](/etc/passwd).\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefRemote},
+		{"fragment-only image ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](#fig)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"query link ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\nSee [x](docs/guide.md?v=1).\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"percent-encoded ref", packageZip(t, map[string]string{
+			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![x](assets%2Flogo.png)\n\n## Steps\n- s\n",
+		}), importer.ErrPackageSupportRefMissing},
+		{"mime content mismatch", packageZip(t, map[string]string{
+			"SKILL.md":        "---\nname: x\ntrigger: t\n---\n![x](assets/logo.png)\n\n## Steps\n- s\n",
+			"assets/logo.png": `{"not": "a png"}`,
+		}), skillpkg.ErrArchiveMimeContentMismatch},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: c.archive})
+			if err == nil {
+				t.Fatalf("ImportPackage: expected %v, got nil", c.wantErr)
+			}
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("ImportPackage: err=%v, want %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+// TestImportPackage_FencedExamplesNotDemanded pins the P1 fence-skip
+// closure on the ingest path: refs AND definitions inside fenced code
+// blocks are example text. The importer does not demand fenced example
+// assets, a fenced same-label definition never overrides the real
+// definition (whether it precedes or follows it), and materialization
+// rewrites only the real outside-fence definition span — the export
+// round-trip reproduces the exact logical document.
+func TestImportPackage_FencedExamplesNotDemanded(t *testing.T) {
+	imp, _ := newImporter(t)
+	md := "---\nname: fenced-demo\ntrigger: when asked about fences\n---\n" +
+		"Real ![logo](assets/logo.png).\n\n" +
+		"```\n![fake](assets/fake.png)\n[fake]: assets/fake.png\n```\n" +
+		"[logo]: assets/logo.png\n\n" +
+		"~~~\n[logo]: assets/fake.png\n~~~\n\n" +
+		"Ref usage [logo][logo].\n\n" +
+		"## Steps\n" +
+		"\n" +
+		"- do the thing\n"
+	z := packageZip(t, map[string]string{
+		"SKILL.md":        md,
+		"assets/logo.png": string(pngBytes()),
+	})
+	ingest, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z, PathHint: "fenced-demo.zip"})
+	if err != nil {
+		t.Fatalf("ImportPackage with fenced example refs: %v", err)
+	}
+	// The only demanded support is the real image; the fenced example
+	// assets are not part of the package contract.
+	if len(ingest.Package.Supports) != 1 || ingest.Package.Supports[0].Path != "assets/logo.png" {
+		t.Fatalf("supports = %+v", ingest.Package.Supports)
+	}
+
+	// Materialization rewrites only the real refs (inline image + the
+	// real definition span); the fenced example content stays
+	// byte-for-byte relative.
+	mat, err := imp.MaterializePackageBody(context.Background(), ingest)
+	if err != nil {
+		t.Fatalf("MaterializePackageBody: %v", err)
+	}
+	if !strings.Contains(mat, "![logo](skillpkg://"+ingest.Hash+"/assets/logo.png)") {
+		t.Fatalf("real inline image not materialized:\n%s", mat)
+	}
+	if !strings.Contains(mat, "[logo]: skillpkg://"+ingest.Hash+"/assets/logo.png") {
+		t.Fatalf("real definition span not materialized:\n%s", mat)
+	}
+	if !strings.Contains(mat, "```\n![fake](assets/fake.png)\n[fake]: assets/fake.png\n```\n") {
+		t.Fatalf("backtick-fenced example mutated:\n%s", mat)
+	}
+	if !strings.Contains(mat, "~~~\n[logo]: assets/fake.png\n~~~\n") {
+		t.Fatalf("tilde-fenced example mutated:\n%s", mat)
+	}
+
+	// The export round-trip still reproduces the exact logical
+	// document (frontmatter synthesized from the canonical fields).
+	ex, err := imp.ExportPackage(context.Background(), ingest, mat)
+	if err != nil {
+		t.Fatalf("ExportPackage: %v", err)
+	}
+	if string(ex.Document) != md {
+		t.Fatalf("exported document drifted:\n--- got ---\n%s\n--- want ---\n%s", ex.Document, md)
+	}
+}
+
+func TestImportPackage_AfterClose(t *testing.T) {
+	imp, _ := newImporter(t)
+	_ = imp.Close(context.Background())
+	if _, err := imp.ImportPackage(context.Background(), importer.PackageSource{}); !errors.Is(err, importer.ErrImporterClosed) {
+		t.Fatalf("ImportPackage after Close: err=%v, want ErrImporterClosed", err)
+	}
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{}); !errors.Is(err, importer.ErrImporterClosed) {
+		t.Fatalf("ImportPackageMarkdown after Close: err=%v, want ErrImporterClosed", err)
+	}
+}
+
+// TestImportPackage_RejectsAuthorityAndUnknownFrontmatter pins the
+// P1 closure: the pure package ingest accepts ONLY the closed
+// frontmatter key set. Authority-bearing fields (scope, origin,
+// tenant, user, agent, authority, audience) and any other unknown key
+// are rejected — caller YAML can never set the storage/authority
+// envelope, so the same reviewed PackageHash cannot present a
+// different export-visible envelope.
+func TestImportPackage_RejectsAuthorityAndUnknownFrontmatter(t *testing.T) {
+	imp, _ := newImporter(t)
+	mdWith := func(keyValue string) string {
+		return "---\nname: x\ntrigger: t\n" + keyValue + "\n---\n## Steps\n- do the thing\n"
+	}
+	for _, keyValue := range []string{
+		"scope: user",
+		"origin: remote",
+		"tenant: acme",
+		"user: alice",
+		"agent: a-1",
+		"authority: admin",
+		"audience: public",
+		"x-custom: v",
+	} {
+		md := mdWith(keyValue)
+		// ZIP path.
+		if _, err := imp.ImportPackage(context.Background(), importer.PackageSource{
+			Archive: packageZip(t, map[string]string{"SKILL.md": md}),
+		}); !errors.Is(err, importer.ErrPackageFrontmatterDisallowed) {
+			t.Fatalf("ImportPackage(frontmatter %q): err=%v, want ErrPackageFrontmatterDisallowed", keyValue, err)
+		}
+		// Single-document path shares the same closed parse.
+		if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+			Markdown: []byte(md),
+		}); !errors.Is(err, importer.ErrPackageFrontmatterDisallowed) {
+			t.Fatalf("ImportPackageMarkdown(frontmatter %q): err=%v, want ErrPackageFrontmatterDisallowed", keyValue, err)
+		}
+	}
+	// Duplicate frontmatter keys are rejected too — by the canonical
+	// document gate (goccy rejects duplicate mapping keys by default,
+	// surfacing as ErrSkillMDMalformedYAML) before the closed package
+	// parse even runs; the pure parser's own rejection is
+	// defense-in-depth behind it.
+	dup := "---\nname: x\nname: y\ntrigger: t\n---\n## Steps\n- s\n"
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte(dup),
+	}); !errors.Is(err, skills.ErrSkillMDMalformedYAML) {
+		t.Fatalf("duplicate frontmatter key: err=%v, want ErrSkillMDMalformedYAML", err)
+	}
+	// The full closed key set is accepted.
+	ok := "---\nname: x\ntitle: T\ntrigger: t\ntask_type: code\ntags: [a]\nrequired_tools: [tool-a]\nrequired_namespaces: [ns-a]\nrequired_tags: [tag-a]\n---\n## Steps\n- s\n"
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte(ok),
+	}); err != nil {
+		t.Fatalf("closed key set rejected: %v", err)
+	}
+}
+
+// TestPackageIngest_StoredSkillHashBound pins the P7 closure: the
+// returned stored Skill is a deterministic function of the canonical
+// Package. Two byte-different SKILL.md documents with the same logical
+// content (frontmatter key order, whitespace) produce the same
+// Package, the same PackageHash, the same stored Skill — including
+// ContentHash and an EMPTY Extra (no stashed raw YAML, no source
+// hash) — so the stored envelope cannot vary outside the Package/hash
+// for caller-controlled content.
+func TestPackageIngest_StoredSkillHashBound(t *testing.T) {
+	imp, _ := newImporter(t)
+	docA := "---\nname: bound-skill\ntrigger: when asked for the bound skill\n---\nA bound body.\n\n## Steps\n- do the thing\n"
+	docB := "---\ntrigger: when asked for the bound skill\nname: bound-skill\n---\nA bound body.\n\n## Steps\n- do the thing\n"
+
+	a, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: []byte(docA), PathHint: "a.md"})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown(A): %v", err)
+	}
+	b, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: []byte(docB), PathHint: "b.md"})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown(B): %v", err)
+	}
+	if a.Hash != b.Hash {
+		t.Fatalf("hash varies for identical logical content: %q vs %q", a.Hash, b.Hash)
+	}
+	cbA, err := skillpkg.CanonicalBytes(a.Package)
+	if err != nil {
+		t.Fatalf("CanonicalBytes(A): %v", err)
+	}
+	cbB, err := skillpkg.CanonicalBytes(b.Package)
+	if err != nil {
+		t.Fatalf("CanonicalBytes(B): %v", err)
+	}
+	if !bytes.Equal(cbA, cbB) {
+		t.Fatalf("canonical package varies for identical logical content")
+	}
+	if a.Skill.ContentHash != b.Skill.ContentHash {
+		t.Fatalf("stored ContentHash varies for identical logical content: %q vs %q", a.Skill.ContentHash, b.Skill.ContentHash)
+	}
+	// The stored envelope is fixed: Origin/Scope are parser constants
+	// and Extra is EMPTY — no caller-controlled bytes are preserved.
+	if a.Skill.Origin != skills.OriginPack || b.Skill.Origin != skills.OriginPack {
+		t.Fatalf("Origin must be OriginPack for both, got %q / %q", a.Skill.Origin, b.Skill.Origin)
+	}
+	if a.Skill.Scope != skills.ScopeProject || b.Skill.Scope != skills.ScopeProject {
+		t.Fatalf("Scope must be ScopeProject for both, got %q / %q", a.Skill.Scope, b.Skill.Scope)
+	}
+	if len(a.Skill.Extra) != 0 || len(b.Skill.Extra) != 0 {
+		t.Fatalf("stored Extra must be empty (no caller bytes preserved), got %v / %v", a.Skill.Extra, b.Skill.Extra)
+	}
+	if a.Skill.Name != b.Skill.Name || a.Skill.Description != b.Skill.Description ||
+		a.Skill.Trigger != b.Skill.Trigger || strings.Join(a.Skill.Steps, "\n") != strings.Join(b.Skill.Steps, "\n") {
+		t.Fatalf("stored semantic fields vary for identical logical content: %+v vs %+v", a.Skill, b.Skill)
+	}
+}
+
+// TestImportPackage_ZipSkillMDNotUTF8 pins the P6.1 closure on the
+// ZIP path: a package archive whose root SKILL.md is not valid UTF-8
+// is rejected at ingest. The archive-level MIME content gate (the
+// root document is a text/markdown entry) rejects the non-UTF-8 bytes
+// first, with the canonical document gate's own UTF-8 check
+// (ErrSkillMDNotUTF8, covered in skillmd_test.go) enforcing the same
+// rule for direct ValidateSkillMarkdown callers.
+func TestImportPackage_ZipSkillMDNotUTF8(t *testing.T) {
+	imp, _ := newImporter(t)
+	z := packageZip(t, map[string]string{
+		"SKILL.md": "---\ntrigger: t\n---\n\xff\xfe not utf-8\n## Steps\n- s\n",
+	})
+	if _, err := imp.ImportPackage(context.Background(), importer.PackageSource{Archive: z}); !errors.Is(err, skillpkg.ErrArchiveMimeContentMismatch) {
+		t.Fatalf("ZIP SKILL.md non-UTF-8: err=%v, want ErrArchiveMimeContentMismatch", err)
+	}
+}
+
+const packageMarkdownMD = "---\nname: markdown-skill\ntrigger: when asked for a markdown skill\n---\nA pure single-document skill.\n\n## Steps\n- do the thing\n\n## Preconditions\n- have the thing\n"
+
+func TestImportPackageMarkdown_Valid(t *testing.T) {
+	imp, _ := newImporter(t)
+	ingest, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte(packageMarkdownMD),
+		PathHint: "markdown-skill.md",
+	})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+
+	// Stored-skill form, identical shape to the ZIP path.
+	if ingest.Skill.Name != "markdown-skill" || ingest.Skill.Origin != skills.OriginPack || ingest.Skill.Scope != skills.ScopeProject {
+		t.Fatalf("Skill = %+v", ingest.Skill)
+	}
+	if ingest.Skill.Trigger != "when asked for a markdown skill" || len(ingest.Skill.Steps) != 1 {
+		t.Fatalf("Skill content = %+v", ingest.Skill)
+	}
+
+	// Resource-free package: same parser / canonical DTO / hash, but
+	// NO support manifest.
+	if ingest.Package.Name != "markdown-skill" {
+		t.Fatalf("package name = %q", ingest.Package.Name)
+	}
+	if len(ingest.Package.Supports) != 0 {
+		t.Fatalf("resource-free package carried supports: %+v", ingest.Package.Supports)
+	}
+	if err := ingest.Package.Validate(); err != nil {
+		t.Fatalf("Package.Validate: %v", err)
+	}
+
+	// Versioned hash, distinct from the stored ContentHash, and
+	// verifiable against the DTO.
+	if !strings.HasPrefix(ingest.Hash, "v1:") || ingest.Hash == ingest.Skill.ContentHash {
+		t.Fatalf("hash %q (content %q)", ingest.Hash, ingest.Skill.ContentHash)
+	}
+	if err := skills.VerifyPackageHash(ingest.Package, ingest.Hash); err != nil {
+		t.Fatalf("VerifyPackageHash: %v", err)
+	}
+
+	// A resource-free package has no support files, so it has no
+	// support URI — SupportURI always fails loudly.
+	if _, err := ingest.SupportURI("assets/logo.png"); !errors.Is(err, importer.ErrPackageSupportRefMissing) {
+		t.Fatalf("SupportURI on resource-free package: err=%v, want ErrPackageSupportRefMissing", err)
+	}
+}
+
+func TestImportPackageMarkdown_DeterministicHash(t *testing.T) {
+	imp, _ := newImporter(t)
+	src := importer.PackageMarkdownSource{Markdown: []byte(packageMarkdownMD), PathHint: "markdown-skill.md"}
+	a, err := imp.ImportPackageMarkdown(context.Background(), src)
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+	b, err := imp.ImportPackageMarkdown(context.Background(), src)
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+	if a.Hash != b.Hash || a.Package.Name != b.Package.Name {
+		t.Fatalf("markdown ingest not deterministic: %q vs %q", a.Hash, b.Hash)
+	}
+}
+
+func TestImportPackageMarkdown_Rejects(t *testing.T) {
+	imp, _ := newImporter(t)
+	cases := []struct {
+		name    string
+		md      []byte
+		wantErr error
+	}{
+		{"invalid utf8", []byte("---\ntrigger: t\n---\n\xff\xfe\n## Steps\n- s\n"), importer.ErrPackageMarkdownNotUTF8},
+		{"over bound", bytes.Repeat([]byte("a"), skillpkg.MaxPackageSkillMDBytes+1), skills.ErrSkillMDTooLarge},
+		{"no frontmatter", []byte("plain text"), skills.ErrSkillMDFrontmatterMissing},
+		{"missing trigger", []byte("---\nname: x\n---\n## Steps\n- s\n"), skills.ErrSkillMDMissingTrigger},
+		{"empty steps", []byte("---\ntrigger: t\n---\nno steps\n"), skills.ErrSkillMDEmptySteps},
+		// Rejected at the SKILL.md gate (empty `- ` item); the DTO
+		// check is defense-in-depth.
+		{"empty step item", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- \n"), skills.ErrSkillMDEmptySteps},
+		{"unknown section", []byte("---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"), importer.ErrUnknownSection},
+		{"support ref in description", []byte("---\nname: x\ntrigger: t\n---\n![diagram](assets/logo.png)\n\n## Steps\n- s\n"), importer.ErrPackageSupportRefMissing},
+		{"support ref in step", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- see ![diagram](assets/logo.png)\n"), importer.ErrPackageSupportRefMissing},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: c.md})
+			if err == nil {
+				t.Fatalf("ImportPackageMarkdown: expected %v, got nil", c.wantErr)
+			}
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("ImportPackageMarkdown: err=%v, want %v", err, c.wantErr)
+			}
+		})
+	}
+	// A remote IMAGE reference is a resource the resource-free
+	// package does not carry — the self-contained-package contract
+	// rejects it loudly.
+	imp2, _ := newImporter(t)
+	withRemoteImage := []byte("---\nname: ext\ntrigger: t\n---\n![remote](https://example.com/x.png)\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withRemoteImage}); !errors.Is(err, importer.ErrPackageSupportRefRemote) {
+		t.Fatalf("remote image: err=%v, want ErrPackageSupportRefRemote", err)
+	}
+	// Ordinary remote navigation links and `#fragment` document
+	// anchors are NOT resource references — they stay verbatim.
+	withRemoteLink := []byte("---\nname: ext-link\ntrigger: t\n---\nSee [the docs](https://example.com) and [top](#overview).\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withRemoteLink}); err != nil {
+		t.Fatalf("remote link / anchor rejected: %v", err)
+	}
+	// An absolute resource reference is rejected for links too.
+	withAbsolute := []byte("---\nname: abs\ntrigger: t\n---\nSee [x](/etc/passwd).\n\n## Steps\n- s\n")
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: withAbsolute}); !errors.Is(err, importer.ErrPackageSupportRefRemote) {
+		t.Fatalf("absolute link: err=%v, want ErrPackageSupportRefRemote", err)
+	}
+	// Explicitly blank (no name) with no hint also fails validation.
+	if _, err := imp2.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{
+		Markdown: []byte("---\ntrigger: t\n---\n## Steps\n- s\n"),
+	}); !errors.Is(err, skills.ErrInvalidSkill) {
+		t.Fatalf("nameless markdown: err=%v, want ErrInvalidSkill", err)
+	}
+}

@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net/http"
 	goruntime "runtime"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -38,6 +39,8 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
+	observabilityprotocol "github.com/hurtener/Harbor/internal/observability/protocol"
+	"github.com/hurtener/Harbor/internal/observability/rollups"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -62,6 +65,8 @@ import (
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
+	"github.com/hurtener/Harbor/internal/sessions/turns"
+	turnsprotocol "github.com/hurtener/Harbor/internal/sessions/turns/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -196,16 +201,75 @@ type MuxInput struct {
 	// TopologyAvailable advertises the topology.snapshot capability (true
 	// only when the caller wired a topology accessor onto the surface).
 	TopologyAvailable bool
+
+	// v1.28 composition handles (all optional — nil leaves the
+	// corresponding surface unwired at 501 / the compatible disabled
+	// posture).
+
+	// RenderAdmissionAuthority / RenderAdmissionGate are the HA-56
+	// fresh render-admission pair the AppsSurface mounts. Both must be
+	// wired together (the surface rejects a half-wired pair); neither
+	// wired keeps the compatible disabled surface.
+	RenderAdmissionAuthority protocol.RenderAdmissionAuthority
+	RenderAdmissionGate      protocol.RenderAdmissionGate
+
+	// TurnsProjection is the HA-64 conversation-turn read seam
+	// (turns/protocol.Projector) plus its store (the erasure-cascade
+	// fencer). TurnsStore is nil when the projection is unwired.
+	TurnsProjector *turns.Projector
+	TurnsStore     turns.Store
+
+	// RollupsStore / RollupsQuality are the HA-65 observability rollup
+	// read seams (the Querier + the freshness QualitySource).
+	RollupsStore   rollups.Store
+	RollupsQuality observabilityprotocol.QualitySource
+
+	// UserSkillImportService is the HA-61 two-phase import service;
+	// CompositionPreviewService is the HA-66 read-only composition
+	// preview. BootOwnership is the immutable boot-pack index the serve
+	// band binds into every `/v1/agent_config/*` request context at the
+	// mux boundary, so the agent-pack mutation guards fire on every
+	// write path (nil = no boot baseline, guards inert).
+	UserSkillImportService    *agentcfgprotocol.UserSkillImportService
+	CompositionPreviewService *agentcfgprotocol.CompositionPreviewService
+	BootOwnership             agentcfgprotocol.BootOwnership
 }
 
 // BuiltMux is the result of BuildMux: the mounted Protocol mux plus the flow
 // registry the flows surface serves (the caller seeds the same registry).
 type BuiltMux struct {
-	// Mux is the transports mux the caller mounts under /v1/.
-	Mux *http.ServeMux
+	// Mux is the mounted Protocol handler the caller mounts under /v1/.
+	// It is an http.Handler (not a concrete *http.ServeMux) because the
+	// HA-66 boot-ownership reader may wrap the transports mux in a thin
+	// request-context middleware; callers only ever route /v1/ to it.
+	Mux http.Handler
 	// FlowRegistry is the empty registry the flows surface serves. Nil when
 	// the flows surface was not mounted (no artifact store / task registry).
 	FlowRegistry *flow.Registry
+}
+
+// sessionWindowFunc resolves a session's lifetime window from the
+// sessions Registry snapshot (OpenedAt / LastSeen) — the coverage proof
+// the projection-backed counter enricher requires before serving exact
+// projection values.
+func sessionWindowFunc(reg *sessions.Registry) sessionsprotocol.SessionWindowFunc {
+	return func(ctx context.Context, id identity.Identity, sessionID string) (time.Time, time.Time, bool, error) {
+		if reg == nil {
+			return time.Time{}, time.Time{}, false, nil
+		}
+		snap, err := reg.Inspect(ctx, sessionID)
+		if err != nil {
+			return time.Time{}, time.Time{}, false, err
+		}
+		if snap == nil || snap.OpenedAt.IsZero() {
+			return time.Time{}, time.Time{}, false, nil
+		}
+		last := snap.LastSeen
+		if last.IsZero() {
+			last = snap.OpenedAt
+		}
+		return snap.OpenedAt, last, true, nil
+	}
 }
 
 // BuildMux constructs every Protocol surface the non-nil handles in MuxInput
@@ -331,11 +395,13 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("mcp apps accessor", aaErr)
 		}
 		appsSurface, asErr := protocol.NewAppsSurface(protocol.AppsDeps{
-			Resource:      appsAccessor,
-			Invoker:       appsAccessor,
-			ToolContext:   appsAccessor,
-			AgentResolver: in.AgentResolver,
-			AgentReach:    in.AgentReach,
+			Resource:                 appsAccessor,
+			Invoker:                  appsAccessor,
+			ToolContext:              appsAccessor,
+			AgentResolver:            in.AgentResolver,
+			AgentReach:               in.AgentReach,
+			RenderAdmissionAuthority: in.RenderAdmissionAuthority,
+			RenderAdmissionGate:      in.RenderAdmissionGate,
 		})
 		if asErr != nil {
 			return nil, wrapErr("mcp apps surface", asErr)
@@ -527,6 +593,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		// data. A build missing any dep leaves the enricher unwired, and the
 		// Service loud-rejects a counter facet/sort rather than lying.
 		if bus != nil && in.Tasks != nil && in.Coordinator != nil {
+			var sessionEnricher sessionsprotocol.Enricher
 			sessionEnricher, eErr := sessionsprotocol.NewCounterEnricher(sessionsprotocol.CounterEnricherDeps{
 				Bus:    bus,
 				Tasks:  in.Tasks,
@@ -535,6 +602,28 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			})
 			if eErr != nil {
 				return nil, wrapErr("sessions/protocol counter enricher", eErr)
+			}
+			// HA-65: when the observability rollup projection is wired, the
+			// session counters ride the projection-backed enricher — the
+			// authoritative durable rollup rows for cost / tokens /
+			// failed-task outcomes, with the raw bounded scan as the honest
+			// partial fallback (a catching-up / unavailable projection, an
+			// unresolvable session window, or a retention gap delegates
+			// verbatim to the raw scan; the projection owns exactly the
+			// dimensions it is authoritative for, never a subset mapped
+			// onto a broader public counter).
+			if in.RollupsStore != nil && in.RollupsQuality != nil && in.Sessions != nil {
+				projectionEnricher, pErr := sessionsprotocol.NewProjectionEnricher(sessionsprotocol.ProjectionEnricherDeps{
+					Store:    in.RollupsStore,
+					Quality:  in.RollupsQuality,
+					Fallback: sessionEnricher,
+					Window:   sessionWindowFunc(in.Sessions),
+					Logger:   logger,
+				})
+				if pErr != nil {
+					return nil, wrapErr("sessions/protocol projection enricher", pErr)
+				}
+				sessionEnricher = projectionEnricher
 			}
 			sessionProjectorOpts = append(sessionProjectorOpts, sessionsprotocol.WithEnricher(sessionEnricher))
 		}
@@ -558,6 +647,13 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 				Bus:       bus,
 				Redactor:  red,
 				Logger:    logger,
+				// The HA-64 / HA-65 durable projection fences: the
+				// cascade erases + permanently fences their rows BEFORE
+				// any destructive step, so no late event can resurrect an
+				// erased session's projection rows (no replay
+				// resurrection; the fences stay durable).
+				TurnsProjection:   in.TurnsStore,
+				RollupsProjection: in.RollupsStore,
 			})
 			if eErr != nil {
 				return nil, wrapErr("sessions/protocol eraser", eErr)
@@ -740,16 +836,92 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("agent-config/protocol service", acErr)
 		}
 		muxOpts = append(muxOpts, transports.WithAgentConfigService(agentConfigService))
+		if in.UserSkillImportService != nil {
+			muxOpts = append(muxOpts, transports.WithUserSkillImportService(in.UserSkillImportService))
+		}
+		if in.CompositionPreviewService != nil {
+			muxOpts = append(muxOpts, transports.WithCompositionPreviewService(in.CompositionPreviewService))
+		}
 	}
 	if in.AgentResolver != nil {
 		muxOpts = append(muxOpts, transports.WithAgentResolver(in.AgentResolver))
+	}
+
+	// The HA-64 conversation-turn read service: served ENTIRELY from the
+	// durable projection (never a raw history / task fallback), with the
+	// canonical signed agent-reach gate wired (an unwired gate would fail
+	// closed on named-agent turns).
+	if in.TurnsProjector != nil {
+		turnsService, tErr := turnsprotocol.NewService(in.TurnsProjector,
+			turnsprotocol.WithAgentReachAuthorizer(in.AgentReach),
+			turnsprotocol.WithSessionReachAuthorizer(auth.NewSessionReachAuthorizer()),
+			turnsprotocol.WithBus(bus),
+			turnsprotocol.WithRedactor(red),
+			turnsprotocol.WithLogger(logger),
+		)
+		if tErr != nil {
+			return nil, wrapErr("sessions/turns/protocol service", tErr)
+		}
+		muxOpts = append(muxOpts, transports.WithSessionTurnsService(turnsService))
+	}
+
+	// The HA-65 observability rollup service: the closed administrative
+	// query over the durable rollup rows. The Querier and the freshness
+	// QualitySource point at the SAME underlying store (the wiring's
+	// invariant), and the production scope checker admits the admin /
+	// console:fleet widening (the closed two-scope set).
+	if in.RollupsStore != nil && in.RollupsQuality != nil {
+		obsService, oErr := observabilityprotocol.NewService(
+			in.RollupsStore,
+			in.RollupsQuality,
+			server.SearchAdminScopeFromAuth,
+			bus.Publish,
+			red,
+			observabilityprotocol.WithLogger(logger),
+		)
+		if oErr != nil {
+			return nil, wrapErr("observability/protocol service", oErr)
+		}
+		muxOpts = append(muxOpts, transports.WithObservabilityService(obsService))
 	}
 
 	mux, muxErr := transports.NewMux(in.Surface, bus, muxOpts...)
 	if muxErr != nil {
 		return nil, wrapErr("transports", muxErr)
 	}
-	return &BuiltMux{Mux: mux, FlowRegistry: flowRegistry}, nil
+	// HA-66: the boot-ownership reader is bound into the request context
+	// at the mux boundary (the integration-owner wiring the
+	// agentcfg/protocol boot-pack guards document — bootpack_guards.go:
+	// "The integration owner wires the concrete reader at the handler
+	// boundary"). The transports mux has no boot-ownership option, so the
+	// serve band composes it HERE: every `/v1/agent_config/*` request
+	// carries the immutable boot index, and the mutation guards
+	// (upsert / remove / proposal-commit / rollback / activation) fire on
+	// every write path. A nil owner keeps the guards inert (no boot
+	// baseline bound). The wrapper is a frozen compiled artifact — safe
+	// for N concurrent requests.
+	var mounted http.Handler = mux
+	if in.BootOwnership != nil {
+		mounted = bootOwnershipMux(in.BootOwnership, mounted)
+	}
+	return &BuiltMux{Mux: mounted, FlowRegistry: flowRegistry}, nil
+}
+
+// bootOwnershipMux wraps the Protocol mux so every `/v1/agent_config/*`
+// request context carries the HA-66 immutable boot-pack ownership
+// reader. The reader is the frozen eager boot index (safe for
+// concurrent reuse); a request outside the agent_config prefix is
+// passed through untouched.
+func bootOwnershipMux(owner agentcfgprotocol.BootOwnership, next http.Handler) http.Handler {
+	if owner == nil || next == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/agent_config") {
+			r = r.WithContext(agentcfgprotocol.WithBootOwnership(r.Context(), owner))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // wrapErr is the local error-context wrapper. Kept package-local so the two

@@ -105,3 +105,79 @@ func TestAllowlistReader_EnforcesNonNilEmptyDenyAll(t *testing.T) {
 		t.Fatalf("Search = %#v, err=%v, want non-nil empty result", searched, err)
 	}
 }
+
+func TestRunSkillReaderSnapshot_OperatorTierProvenanceBinding(t *testing.T) {
+	q := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"},
+		RunID:    "run",
+	}
+	snapshot, err := skills.NewRunSkillReaderSnapshot(q, "agent", snapshotTestReader{})
+	if err != nil {
+		t.Fatalf("NewRunSkillReaderSnapshot: %v", err)
+	}
+	if snapshot.HasOperatorTier() {
+		t.Fatal("a bare snapshot must not claim operator-tier provenance")
+	}
+	if snapshot.BootPackSetHash() != "" || snapshot.OperatorTierHash() != "" {
+		t.Fatalf("bare snapshot hashes = (%q, %q), want absent", snapshot.BootPackSetHash(), snapshot.OperatorTierHash())
+	}
+	if _, ok := snapshot.OperatorTierSource("alpha"); ok {
+		t.Fatal("bare snapshot OperatorTierSource = present")
+	}
+
+	bootHash := "boot-set-hash-1"
+	combinedHash := "operator-tier-hash-1"
+	sources := map[string]skills.OperatorTierSource{
+		"alpha": skills.OperatorTierSourceBoth,
+		"beta":  skills.OperatorTierSourceBoot,
+		"gamma": skills.OperatorTierSourceRevision,
+	}
+	bound := snapshot.WithOperatorTier(bootHash, combinedHash, sources)
+	if !bound.HasOperatorTier() {
+		t.Fatal("bound snapshot must report operator-tier provenance")
+	}
+	if bound.BootPackSetHash() != bootHash || bound.OperatorTierHash() != combinedHash {
+		t.Fatalf("bound hashes = (%q, %q), want (%q, %q)", bound.BootPackSetHash(), bound.OperatorTierHash(), bootHash, combinedHash)
+	}
+	for name, want := range sources {
+		got, ok := bound.OperatorTierSource(name)
+		if !ok || got != want {
+			t.Fatalf("OperatorTierSource(%q) = (%q, %v), want %q", name, got, ok, want)
+		}
+	}
+	if got, ok := bound.OperatorTierSource("gamma "); !ok || got != skills.OperatorTierSourceRevision {
+		t.Fatalf("canonical lookup = (%q, %v), want revision", got, ok)
+	}
+	if _, ok := bound.OperatorTierSource("missing"); ok {
+		t.Fatal("OperatorTierSource(missing) = present")
+	}
+
+	// The identity gate is untouched: a mismatched quadruple still fails closed
+	// even when operator-tier provenance is bound.
+	ctx := skills.WithRunSkillReaderSnapshot(context.Background(), bound)
+	if _, err := skills.ResolveSkillReader(ctx, q, nil); err != nil {
+		t.Fatalf("ResolveSkillReader matching q with bound provenance: %v", err)
+	}
+	mismatch := q
+	mismatch.RunID = "other-run"
+	if _, err := skills.ResolveSkillReader(ctx, mismatch, snapshotTestReader{}); !errors.Is(err, skills.ErrInvalidRunSkillReaderSnapshot) {
+		t.Fatalf("ResolveSkillReader mismatched q with bound provenance error = %v, want ErrInvalidRunSkillReaderSnapshot", err)
+	}
+
+	// The sources map is deep-copied: later caller mutation cannot alter the
+	// snapshot.
+	sources["alpha"] = skills.OperatorTierSourceBoot
+	delete(sources, "beta")
+	if got, ok := bound.OperatorTierSource("alpha"); !ok || got != skills.OperatorTierSourceBoth {
+		t.Fatalf("input mutation reached the snapshot: alpha = (%q, %v)", got, ok)
+	}
+	if got, ok := bound.OperatorTierSource("beta"); !ok || got != skills.OperatorTierSourceBoot {
+		t.Fatalf("deleted input key vanished from the snapshot: beta = (%q, %v)", got, ok)
+	}
+
+	// Binding is additive and value-safe: the original snapshot is untouched
+	// and the original quadruple binding is preserved.
+	if snapshot.HasOperatorTier() || bound.Quadruple() != q || bound.EffectiveAgentID() != "agent" {
+		t.Fatal("WithOperatorTier mutated the receiver or dropped the binding")
+	}
+}

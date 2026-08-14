@@ -4,6 +4,8 @@
 
 Define Harbor's transport-neutral typed MCP error contract. Permanent errors stop the unchanged call after one invocation; retryable service errors retain the configured retry budget.
 
+Governance amendment (HA-54 planner-replay gap; Shipped (v1.28)): the classified outcome must survive the runloop's step recording and appear in the actual next ReAct prompt; a generic step error never masks the classified observation.
+
 ## RFC anchor
 
 - RFC §6.4
@@ -45,6 +47,10 @@ Define Harbor's transport-neutral typed MCP error contract. Permanent errors sto
 - [ ] Original bounded content and structured content reach planner/model and App paths.
 - [ ] Real SDK/spec-derived fixtures cover stdio, streamable HTTP, and SSE; the legacy transient regression remains.
 - [ ] Identity `(tenant,user,session)`, redaction, cancellation, and no raw result/argument logging are proven.
+- [ ] The typed class, retry-policy outcome, bounded provider message, and retained bounded MCP result content survive runloop step recording and appear in the actual next ReAct prompt; raw arguments, secrets, and unbounded output never do.
+- [ ] The generic `Step.Error` never masks the richer classified `LLMObservation`; legacy unstructured errors may render a generic safe fallback.
+- [ ] The full-path test proves `IsError` → typed classification → retry policy → runloop → the actual next ReAct prompt end to end: a permanent class invokes exactly once; a typed deterministic failure in the `revision_conflict` shape carries the current revision in its bounded message for reread/retry; a retryable provider failure uses the configured policy.
+- [ ] Canonical task/tool events and the planner observation agree on the terminal error.
 
 ## Files added or changed
 
@@ -53,6 +59,15 @@ Define Harbor's transport-neutral typed MCP error contract. Permanent errors sto
 - `test/integration/mcp_error_classification_test.go`
 - `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`
 - `scripts/smoke/phase-236.sh`
+
+Governance amendment (HA-54 planner-replay gap; Shipped (v1.28)) — file/test ownership:
+
+- `internal/runtime/steering/runloop.go` — step recording MUST preserve the
+  classified observation; a generic `Step.Error` must never mask it.
+- `internal/planner/react/prompt.go` — the ReAct renderer MUST surface the
+  classified `LLMObservation` in the next prompt; legacy unstructured errors
+  render a generic safe fallback.
+- `test/integration/mcp_failure_replay_test.go` — the full-path replay test.
 
 ## Public API surface
 
@@ -63,12 +78,21 @@ Define Harbor's transport-neutral typed MCP error contract. Permanent errors sto
 
 - **Unit:** envelope validation, lowering, fallback, policy mapping, wrapping, bounded-content preservation.
 - **Integration:** real SDK-derived MCP fixtures over stdio/streamable HTTP/SSE through the retry shell; identity and a forced failure.
+- **Full path (replay):** `test/integration/mcp_failure_replay_test.go` drives
+  `IsError` → typed classification → retry policy → runloop step recording →
+  the actual next ReAct prompt; the typed class, bounded provider message,
+  retryability/final-attempt outcome, and retained bounded result content
+  appear in the next prompt, the generic `Step.Error` never masks them, a
+  permanent class invokes exactly once, a typed deterministic failure in the
+  `revision_conflict` shape carries the current revision for reread/retry, a
+  retryable provider uses the configured policy, and the canonical
+  task/tool events agree with the planner observation on the terminal error.
 - **Conformance:** the same fixture matrix and call-count assertions for all supported MCP transports.
 - **Concurrency / leak:** one shared driver, 128 mixed identities, cancellation and joined goroutines under `-race`.
 
 ## Smoke script additions
 
-- Static assertions for the phase plan, D-410, all three transport names, permanent classes, fallback, and the no-text-parser rule; Protocol probe is reserved only if an additive wire surface lands.
+- Static assertions for the phase plan, D-410, all three transport names, permanent classes, fallback, and the no-text-parser rule; hard contract-sentence assertions for the runloop-survival replay requirement, the no-generic-mask condition, the full-path replay test, the `revision_conflict` reread/retry acceptance, and the corrected D-410 plan cross-reference; Protocol probe is reserved only if an additive wire surface lands.
 
 ## Coverage target
 
@@ -90,7 +114,7 @@ Define Harbor's transport-neutral typed MCP error contract. Permanent errors sto
 
 ## Glossary additions
 
-- **MCP error classification** — typed control metadata on an `IsError` result that distinguishes permanent unchanged-call failures from retryable service failures without parsing prose.
+- **MCP error classification** — typed control metadata on an `IsError` result that distinguishes permanent unchanged-call failures from retryable service failures without parsing prose; the typed class, retry-policy outcome, bounded provider message, and retained bounded result content survive the runloop's step recording and appear in the next ReAct prompt, and a generic step error never masks them.
 
 ## Pre-merge checklist
 

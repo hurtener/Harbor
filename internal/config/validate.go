@@ -99,6 +99,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateMemory,
 		c.validateSkills,
 		c.validateTools,
+		c.validateObservability,
 		c.validatePlanner,
 		c.validateMultimodal,
 		c.validateCLI,
@@ -745,6 +746,51 @@ func (c *Config) validateSessions() error {
 			fmt.Sprintf("must be <= sessions.idle_ttl (%s) so sessions can't live past TTL by more than one sweep; got %s",
 				c.Sessions.IdleTTL, c.Sessions.SweepInterval))
 	}
+	// The HA-64 conversation-turn projection store block. Optional: an
+	// empty driver leaves the projection unwired. A non-empty driver
+	// must be one of the shipped triad and carries the same DSN
+	// contract as the other driver-selecting blocks.
+	if t := c.Sessions.Turns; t.Driver != "" {
+		if _, ok := allowedProjectionDrivers[t.Driver]; !ok {
+			return fieldError("sessions.turns.driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedProjectionDrivers), t.Driver))
+		}
+		if t.Driver != "inmem" && t.DSN == "" {
+			return fieldError("sessions.turns.dsn",
+				fmt.Sprintf("must be set when driver=%q", t.Driver))
+		}
+	}
+	return nil
+}
+
+// allowedProjectionDrivers is the closed driver triad every
+// runtime-owned durable projection store (the HA-64 turns projection
+// and the HA-65 observability rollups) ships with — in-memory
+// (dev/embedded), SQLite (modernc.org/sqlite, CGo-free) and Postgres
+// (pgx) with conformance parity.
+var allowedProjectionDrivers = map[string]struct{}{
+	"inmem":    {},
+	"sqlite":   {},
+	"postgres": {},
+}
+
+// validateObservability validates the HA-65 observability-rollup
+// block. Optional: an empty rollups.driver leaves the projection
+// unwired and the surface at 501. A non-empty driver must be one of
+// the shipped triad and carries the DSN contract.
+func (c *Config) validateObservability() error {
+	if r := c.Observability.Rollups; r.Driver != "" {
+		if _, ok := allowedProjectionDrivers[r.Driver]; !ok {
+			return fieldError("observability.rollups.driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedProjectionDrivers), r.Driver))
+		}
+		if r.Driver != "inmem" && r.DSN == "" {
+			return fieldError("observability.rollups.dsn",
+				fmt.Sprintf("must be set when driver=%q", r.Driver))
+		}
+	}
 	return nil
 }
 
@@ -1097,6 +1143,12 @@ func (c *Config) validateSkills() error {
 	if err := c.validateSkillsDirectory(); err != nil {
 		return err
 	}
+	// boot_agent_packs shape-validation runs unconditionally too (same
+	// posture — a malformed pack declaration must fail at load time even
+	// before the store fields are consulted).
+	if err := c.validateBootAgentPacks(); err != nil {
+		return err
+	}
 	// Retrieval-mode shape-validation runs unconditionally so a
 	// typo'd `skills.retrieval` fails at load time too.
 	if _, ok := allowedRetrievalModes[c.Skills.Retrieval]; !ok {
@@ -1117,6 +1169,10 @@ func (c *Config) validateSkills() error {
 		if len(c.Skills.SessionPersonalCutover.Tenants) > 0 {
 			return fieldError("skills.driver",
 				"must not be empty when skills.session_personal_cutover is set (the declared migration requires the configured skill store)")
+		}
+		if len(c.Skills.BootAgentPacks) > 0 {
+			return fieldError("skills.driver",
+				"must not be empty when skills.boot_agent_packs is set (the boot agent pack composite resolver reads the configured skill store)")
 		}
 		return nil
 	}
@@ -1182,6 +1238,206 @@ func validSessionPersonalCutoverToken(value string, maximum int) bool {
 		}
 	}
 	return true
+}
+
+// validateBootAgentPackDirectoryShape is the shared, normalization-free
+// directory shape check for `skills.boot_agent_packs[].directory`. BOTH
+// the validator (validateBootAgentPacks) and the loader's resolve pass
+// (resolveBootAgentPackDirectories) run this SAME predicate so the
+// raw-value contract cannot drift between the two.
+//
+// It rejects an empty or whitespace-surrounded value outright and
+// enforces the rune ceiling on the RAW/stored value — never on a
+// trimmed or filepath.Clean-ed copy. The loader MUST run it BEFORE any
+// Clean/Join normalization: filepath.Clean collapses an over-bound
+// `a/../` path below the ceiling, and filepath.Join resolves a relative
+// value against the config directory, either of which would otherwise
+// let a raw value validation must refuse slip through shortened.
+func validateBootAgentPackDirectoryShape(directory string) error {
+	if directory == "" || directory != strings.TrimSpace(directory) {
+		return fmt.Errorf("must not be empty or have surrounding whitespace (an absolute path, or a relative path the loader resolves against the config file's directory)")
+	}
+	if r := len([]rune(directory)); r > MaxBootAgentPackDirectoryRunes {
+		return fmt.Errorf("must be at most %d runes, got %d", MaxBootAgentPackDirectoryRunes, r)
+	}
+	return nil
+}
+
+// validateBootAgentPacks validates the closed shape of the
+// `skills.boot_agent_packs` declarations (see BootAgentPackConfig): the
+// deterministic bounds, the required per-declaration fields, the unique
+// (tenant_id, agent_id) pairs, and the exact one-relative-package-
+// directory-name include shape. It runs unconditionally from
+// validateSkills so a malformed declaration fails at load time even
+// before the parent store fields are consulted. It performs NO
+// filesystem reads, lifecycle calls, or state writes — the loader's
+// directory resolution (resolveBootAgentPackDirectories) is a separate,
+// also I/O-free, lexical pass.
+//
+// The boot-agent MATCH check (each entry's agent_id must equal the
+// runtime-resolved boot/default agent id) is deliberately NOT here: the
+// config package does not know that value. Runtime calls
+// [Config.ValidateBootAgentPacksForAgent] with the authoritative
+// resolved id.
+func (c *Config) validateBootAgentPacks() error {
+	packs := c.Skills.BootAgentPacks
+	if len(packs) == 0 {
+		return nil
+	}
+	if len(packs) > MaxBootAgentPacks {
+		return fieldError("skills.boot_agent_packs",
+			fmt.Sprintf("must contain at most %d declarations, got %d", MaxBootAgentPacks, len(packs)))
+	}
+	seenPair := make(map[string]struct{}, len(packs))
+	aggregateIncludes := 0
+	for i, p := range packs {
+		prefix := fmt.Sprintf("skills.boot_agent_packs[%d]", i)
+		// tenant_id / agent_id reuse the same trimmed-bounded-token
+		// predicate the session-personal-cutover tenant declarations use:
+		// no surrounding whitespace, printable ASCII, bounded length.
+		if !validSessionPersonalCutoverToken(p.TenantID, MaxBootAgentPackFieldRunes) {
+			return fieldError(prefix+".tenant_id",
+				fmt.Sprintf("must be a trimmed, bounded token (no surrounding whitespace, printable ASCII, at most %d runes)", MaxBootAgentPackFieldRunes))
+		}
+		if !validSessionPersonalCutoverToken(p.AgentID, MaxBootAgentPackFieldRunes) {
+			return fieldError(prefix+".agent_id",
+				fmt.Sprintf("must be a trimmed, bounded token (no surrounding whitespace, printable ASCII, at most %d runes)", MaxBootAgentPackFieldRunes))
+		}
+		// directory: absolute (the authoritative deployment shape) or
+		// relative (resolved by the loader against the config file's
+		// directory, never CWD). The RAW value's shape — no surrounding
+		// whitespace, within the rune ceiling — is enforced by the shared
+		// validateBootAgentPackDirectoryShape helper, the SAME predicate
+		// the loader's resolve pass applies BEFORE any Clean/Join
+		// normalization. Bounding the stored/raw value (never a trimmed
+		// or normalized copy) means an arbitrary run of spaces or an
+		// over-bound `a/../` path cannot be shortened past the ceiling.
+		// Shape-only, no I/O.
+		if err := validateBootAgentPackDirectoryShape(p.Directory); err != nil {
+			return fieldError(prefix+".directory", err.Error())
+		}
+		if len(p.Include) == 0 {
+			return fieldError(prefix+".include",
+				"must list at least one package-directory name")
+		}
+		if len(p.Include) > MaxBootAgentPackIncludes {
+			return fieldError(prefix+".include",
+				fmt.Sprintf("must contain at most %d entries, got %d", MaxBootAgentPackIncludes, len(p.Include)))
+		}
+		aggregateIncludes += len(p.Include)
+		if aggregateIncludes > MaxBootAgentPackAggregateIncludes {
+			return fieldError("skills.boot_agent_packs",
+				fmt.Sprintf("aggregate include count %d exceeds the cap of %d across all declarations (the boot resolver enumerates every include into one composed view)", aggregateIncludes, MaxBootAgentPackAggregateIncludes))
+		}
+		// Duplicate (tenant_id, agent_id) pairs. The pair key is
+		// NUL-joined; a NUL cannot appear in either validated token
+		// (printable ASCII), so the separator is collision-free.
+		pair := p.TenantID + "\x00" + p.AgentID
+		if _, dup := seenPair[pair]; dup {
+			return fieldError(prefix,
+				fmt.Sprintf("duplicates (tenant_id=%q, agent_id=%q) already declared earlier in the list — each (tenant, agent) pair may declare at most one boot pack", p.TenantID, p.AgentID))
+		}
+		seenPair[pair] = struct{}{}
+		// Include duplicates: raw (as written) AND normalized
+		// (case-insensitive — the resolver matches package-directory
+		// names case-insensitively, mirroring skills.CanonicalPackName).
+		seenRaw := make(map[string]struct{}, len(p.Include))
+		seenNorm := make(map[string]struct{}, len(p.Include))
+		for j, inc := range p.Include {
+			incPrefix := fmt.Sprintf("%s.include[%d]", prefix, j)
+			norm, err := validateBootAgentPackInclude(inc)
+			if err != nil {
+				return fieldError(incPrefix, err.Error())
+			}
+			if _, dup := seenRaw[inc]; dup {
+				return fieldError(incPrefix,
+					fmt.Sprintf("duplicate include %q (must be unique)", inc))
+			}
+			if _, dup := seenNorm[norm]; dup {
+				return fieldError(incPrefix,
+					fmt.Sprintf("duplicate include %q — a case-variant of an earlier entry (the resolver matches package-directory names case-insensitively)", inc))
+			}
+			seenRaw[inc] = struct{}{}
+			seenNorm[norm] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// validateBootAgentPackInclude checks that ONE `include` entry is EXACTLY
+// one relative package-directory name: non-empty with no surrounding
+// whitespace, not `.` / `..`, single-segment (no `/` or `\` path
+// separator), and no drive/volume/URI form — the absolute and
+// multi-segment shapes all reduce to a separator or prefix, so the
+// single-segment rule rejects them together. On success it returns the
+// normalized comparison form ([normalizeBootAgentPackInclude]) the
+// duplicate pass keys on.
+func validateBootAgentPackInclude(name string) (string, error) {
+	if name == "" || name != strings.TrimSpace(name) {
+		return "", errors.New(`must be a non-empty relative package-directory name with no surrounding whitespace`)
+	}
+	if name == "." || name == ".." {
+		return "", errors.New(`must be a single relative package-directory name — "." / ".." are not package directories`)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "", errors.New(`must be exactly ONE relative package-directory name — no path separators ("/" or "\"), no absolute path, and no multi-segment path`)
+	}
+	if strings.Contains(name, ":") {
+		return "", errors.New(`must be a single relative package-directory name — no drive/volume prefix or URI form`)
+	}
+	if r := len([]rune(name)); r > MaxBootAgentPackFieldRunes {
+		return "", fmt.Errorf("must be at most %d runes, got %d", MaxBootAgentPackFieldRunes, r)
+	}
+	return normalizeBootAgentPackInclude(name), nil
+}
+
+// normalizeBootAgentPackInclude returns the canonical comparison form of
+// an include entry: trimmed + lowercased, the same canonicalisation the
+// skills pack resolver applies to pack names (skills.CanonicalPackName),
+// so a case-variant duplicate cannot declare the same package twice.
+func normalizeBootAgentPackInclude(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// ValidateBootAgentPacksForAgent is the runtime-facing, pure validation
+// helper for `skills.boot_agent_packs`. The runtime passes the
+// AUTHORITATIVE resolved boot/default agent id — the value comes from
+// runtime assembly, never a hard-coded default in this package — and
+// every declared entry whose agent_id differs is rejected. An EMPTY
+// resolved id fails when entries exist (fail loud, never a silent skip).
+// An empty declaration list passes for any resolved id (field absent =
+// today's behaviour).
+//
+// The helper is pure: no filesystem reads, no lifecycle calls, no state
+// writes, and no mutation of the receiver — safe to call concurrently on
+// a shared immutable *Config.
+func (c *Config) ValidateBootAgentPacksForAgent(resolvedAgentID string) error {
+	return ValidateBootAgentPacks(c.Skills.BootAgentPacks, resolvedAgentID)
+}
+
+// ValidateBootAgentPacks is the standalone form of
+// [Config.ValidateBootAgentPacksForAgent] over an explicit pack slice —
+// the pure predicate the runtime can call without holding a *Config. It
+// performs only the boot-agent match: an entry whose agent_id differs
+// from the resolved id is rejected, and an empty resolved id fails when
+// entries exist. The closed SHAPE of the declarations (bounds,
+// duplicates, include form) is validated separately by
+// [Config.Validate] — this helper assumes the slice already passed it.
+func ValidateBootAgentPacks(packs []BootAgentPackConfig, resolvedAgentID string) error {
+	if len(packs) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(resolvedAgentID) == "" {
+		return fieldError("skills.boot_agent_packs",
+			"entries are declared but no resolved boot/default agent id was provided — the runtime must pass the authoritative resolved agent id (never resolve to a hard-coded default here)")
+	}
+	for i, p := range packs {
+		if p.AgentID != resolvedAgentID {
+			return fieldError(fmt.Sprintf("skills.boot_agent_packs[%d].agent_id", i),
+				fmt.Sprintf("entry targets agent %q but the runtime-resolved boot/default agent is %q — every boot_agent_packs entry must target the resolved boot agent", p.AgentID, resolvedAgentID))
+		}
+	}
+	return nil
 }
 
 // allowedSkillsDirectorySelections mirrors the `skills.Selection`
@@ -2204,6 +2460,12 @@ var allowedBuiltInTools = map[string]struct{}{
 	// recommended default.
 	"skill_list":    {},
 	"skill_propose": {},
+	// `skill_create_draft` (HA-62) — the draft-only personal-skill
+	// proposer: a deliberate operator opt-in absent from every
+	// recommended default, like skill_propose. It additionally requires
+	// the composed LLM client at registration (the assembly threads it),
+	// so a catalog listing it on an LLM-less runtime fails the boot loud.
+	"skill_create_draft": {},
 }
 
 // KnownBuiltInTools returns the sorted built-in allowlist as a slice.

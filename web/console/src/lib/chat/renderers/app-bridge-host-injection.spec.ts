@@ -97,6 +97,9 @@ function fakeClient(): MCPAppHostClient {
     async readResource(_s, uri) {
       return { resourceUri: uri, mimeType: 'text/html', content: '' };
     },
+    async readRenderDocument(_s, uri) {
+      return { resourceUri: uri, mimeType: 'text/html', content: '' };
+    },
     async callTool(_serverID, tool) {
       return { tool, content: {}, isError: false };
     },

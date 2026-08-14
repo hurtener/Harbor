@@ -71,6 +71,13 @@ type Config struct {
 	// feature. Optional; validated at boot.
 	VirtualAgents VirtualAgentsConfig `yaml:"virtual_agents,omitempty"`
 
+	// Observability is the observability-rollup block (HA-65): the
+	// durable, indexed rollup projection backing
+	// `observability.query` and the projection-backed session
+	// counters. Optional; an absent block leaves the rollup surface
+	// unwired and the route at 501 (the partial-build convention).
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
+
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
 	// it never appears in YAML / logging output.
@@ -733,7 +740,100 @@ type SkillsConfig struct {
 	// declaration that controls durable session-personal-skill migration.
 	// An omitted declaration leaves a tenant in read-only dual-read mode.
 	SessionPersonalCutover SessionPersonalCutoverConfig `yaml:"session_personal_cutover,omitempty"`
+
+	// BootAgentPacks is the boot YAML declaration of the operator-managed
+	// per-agent skill pack FILE sources the runtime's boot resolver
+	// composes for the boot/default agent (see BootAgentPackConfig for the
+	// entry shape + bounds). Absent (the zero value) means no boot pack
+	// source — omission is byte-compatible with a runtime that predates
+	// the feature. Optional; when non-empty it REQUIRES the skills driver
+	// + DSN contract (validated — the composite resolver needs the
+	// configured skill store to compose against). Restart-required.
+	BootAgentPacks []BootAgentPackConfig `yaml:"boot_agent_packs,omitempty"`
 }
+
+// BootAgentPackConfig declares ONE boot-time, operator-managed per-agent
+// skill pack source: a filesystem directory of package-directory skills
+// the runtime's boot resolver composes into the boot agent's run view.
+// It is the config-side, file-source declaration of the per-agent skill
+// pack surface; the durable revision-versioned packs remain the
+// protocol-managed mechanism — this block is the boot-time file source
+// the resolver consumes, addressed by (tenant_id, agent_id) at
+// configuration-selection time. agent_id never becomes an isolation
+// principal: the run still starts from the caller's verified identity
+// triple and its signed reach to the effective agent.
+//
+// Layout in YAML:
+//
+//	skills:
+//	  boot_agent_packs:
+//	    - tenant_id: acme
+//	      agent_id: harbor-dev-agent
+//	      directory: /etc/harbor/skills
+//	      include: [workbench-foundation]
+//
+// Fields:
+//   - `tenant_id` / `agent_id` — the (tenant, agent) pair the pack is
+//     declared for. Required; each pair must be unique across the list.
+//     `agent_id` MUST equal the runtime-resolved boot/default agent id —
+//     enforced by [Config.ValidateBootAgentPacksForAgent], which the
+//     runtime calls with the authoritative resolved value. The config
+//     package does not know that value and never hard-codes it.
+//   - `directory` — the skills directory on disk. May be ABSOLUTE (the
+//     authoritative `/etc/harbor/skills` deployment shape) or RELATIVE; a
+//     relative directory resolves against the loaded config file's
+//     directory at Load time (the `tools.http_manifests` provenance
+//     pattern), NEVER the process CWD. A config loaded without a file
+//     source (LoadFromBytes / a hand-built *Config) keeps the relative
+//     value unresolved so the later boot loader can fail loud rather
+//     than silently falling back to CWD. Surrounding whitespace is
+//     rejected outright, and the rune bound applies to the stored/raw
+//     value — never a trimmed copy.
+//   - `include` — the exact list of package-directory names under
+//     `directory` to compose. Each entry is EXACTLY ONE relative
+//     package-directory name: non-empty, single-segment, no `.` / `..`,
+//     no `/` or `\` separator, no absolute / drive / URI form. Required
+//     (≥ 1); unique within the entry both raw and after case-normalised
+//     comparison (the resolver matches package-directory names
+//     case-insensitively, mirroring skills.CanonicalPackName).
+//
+// Bounds (deterministic, exported for the loader + the boot resolver):
+// at most [MaxBootAgentPacks] declarations; at most
+// [MaxBootAgentPackIncludes] includes per declaration; at most
+// [MaxBootAgentPackAggregateIncludes] includes in aggregate; each
+// identity-ish per-field string bounded by [MaxBootAgentPackFieldRunes]
+// and the directory by [MaxBootAgentPackDirectoryRunes]. Restart-required.
+type BootAgentPackConfig struct {
+	TenantID  string   `yaml:"tenant_id"`
+	AgentID   string   `yaml:"agent_id"`
+	Directory string   `yaml:"directory"`
+	Include   []string `yaml:"include"`
+}
+
+// Boot agent pack bounds. Exported so the loader (this package) and the
+// future boot resolver (the skills subsystem) share ONE deterministic,
+// closed contract — a declaration cannot be accepted at config load and
+// refused at boot because the two sides disagree on a ceiling.
+const (
+	// MaxBootAgentPacks bounds the number of declarations in
+	// `skills.boot_agent_packs`.
+	MaxBootAgentPacks = 64
+	// MaxBootAgentPackIncludes bounds the `include` entries on ONE
+	// declaration.
+	MaxBootAgentPackIncludes = 64
+	// MaxBootAgentPackFieldRunes bounds each identity-ish per-declaration
+	// string field (tenant_id, agent_id, one include name) in runes.
+	MaxBootAgentPackFieldRunes = 256
+	// MaxBootAgentPackDirectoryRunes bounds the `directory` field in
+	// runes. Larger than the identity fields because a real filesystem
+	// path legitimately runs longer than a token.
+	MaxBootAgentPackDirectoryRunes = 4096
+	// MaxBootAgentPackAggregateIncludes bounds the TOTAL include count
+	// across every declaration — the boot resolver enumerates all of
+	// them into one composed view, so the aggregate is what bounds the
+	// composed snapshot.
+	MaxBootAgentPackAggregateIncludes = 256
+)
 
 // SessionPersonalCutoverConfig contains the finite tenant declarations the
 // runtime may migrate. It is intentionally static configuration, not a
@@ -828,6 +928,43 @@ type SessionsConfig struct {
 	IdleTTL       time.Duration `yaml:"idle_ttl"`
 	HardCap       time.Duration `yaml:"hard_cap"`
 	SweepInterval time.Duration `yaml:"sweep_interval"`
+
+	// Turns configures the durable conversation-turn projection store
+	// (HA-64) — the indexed read model backing
+	// `sessions.turns.list` / `sessions.turns.get`. Optional; an
+	// absent block (Driver empty) leaves the projection unwired and
+	// the turn routes at 501 (the partial-build convention). Drivers:
+	// `inmem` (dev/embedded, per-process), `sqlite`
+	// (`modernc.org/sqlite`, CGo-free, durable), `postgres`
+	// (pgx-backed, durable, multi-replica). Restart-required.
+	Turns TurnsConfig `yaml:"turns,omitempty"`
+}
+
+// TurnsConfig configures the HA-64 durable conversation-turn projection
+// store. The shape mirrors the other driver-selecting blocks
+// (state/memory/artifacts): a `driver` name plus the connection
+// `dsn`. `Retention` bounds the newest turn rows retained per session
+// (<= 0 applies the projection's documented default).
+type TurnsConfig struct {
+	Driver    string `yaml:"driver,omitempty"`
+	DSN       string `yaml:"dsn,omitempty" secret:"true"`
+	Retention int    `yaml:"retention,omitempty"`
+}
+
+// ObservabilityConfig owns the observability-rollup projection block
+// (HA-65). Optional; the zero value leaves the rollup surface unwired.
+type ObservabilityConfig struct {
+	// Rollups configures the durable rollup store. Drivers:
+	// `inmem` (dev/embedded reference), `sqlite`, `postgres`.
+	// Optional; an empty Driver leaves the projection unwired.
+	Rollups RollupsConfig `yaml:"rollups,omitempty"`
+}
+
+// RollupsConfig configures the HA-65 observability rollup store — the
+// same driver + dsn shape as the other driver-selecting blocks.
+type RollupsConfig struct {
+	Driver string `yaml:"driver,omitempty"`
+	DSN    string `yaml:"dsn,omitempty" secret:"true"`
 }
 
 // PauseResumeConfig configures the pause lifecycle (RFC §3.3 + §6.3).
@@ -1194,6 +1331,32 @@ type ToolsConfig struct {
 	// MiB) through [ToolsConfig.ResolvedMCPArtifactEgressMaxBytes].
 	// Optional. Restart-required.
 	MCPArtifactEgressMaxBytes int `yaml:"mcp_artifact_egress_max_bytes,omitempty"`
+
+	// MCPAppRenderAdmission is the narrow operator-facing switch for the
+	// HA-56 fresh render-admission surface (the opt-in
+	// `request_render_admission` `ui://` read authority that lets a
+	// sandboxed MCP App re-invoke an app-only callback through the
+	// admission-aware AppsAccessor seam). Default FALSE — the compatible
+	// disabled surface: ordinary reads and the legacy live-binding path
+	// work byte-for-byte, and the opt-in mint / admission-backed call
+	// fail loud at the seam. When ENABLED the runtime resolves its
+	// restart-stable AES-256-GCM sealing authority from the SAME
+	// deployment-shared `tools.oauth_token_kek_env` the OAuth token store
+	// uses — there is deliberately no second secret field and no
+	// process-local seeded key. An empty env name, an unset / invalid
+	// KEK, or a failure to construct the shared sealer fails readiness
+	// LOUD even when no OAuth provider or credential broker is declared.
+	// Restart-required.
+	MCPAppRenderAdmission MCPAppRenderAdmissionConfig `yaml:"mcp_app_render_admission,omitempty"`
+}
+
+// MCPAppRenderAdmissionConfig is the operator-facing block that enables
+// the fresh render-admission surface. The zero value (the block absent)
+// is the compatible disabled surface.
+type MCPAppRenderAdmissionConfig struct {
+	// Enabled turns the HA-56 render-admission surface on. Default
+	// false (backward-compatible deployments). Restart-required.
+	Enabled bool `yaml:"enabled,omitempty"`
 }
 
 // MCPAddConnectionConfig declares the operator allowlist for the

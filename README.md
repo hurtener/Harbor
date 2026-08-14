@@ -182,7 +182,7 @@ Harbor is four layers, each with a hard boundary:
 | **Runtime** | The orchestration kernel — tasks, planner runtime, tools, memory, sessions, events, skills, artifacts, the unified pause/resume primitive. Headless. |
 | **Protocol** | The canonical, versioned event/state contract. Streaming events, the task-control surface, state snapshots, topology, traces, metrics. |
 | **Console** | The observability + control-plane UI (SvelteKit). Architecturally just a Protocol client — it never reads a Runtime object directly. |
-| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `skill`, `version`, and the `inspect-*` family. |
+| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `skill`, `composition-preview`, `version`, and the `inspect-*` family. |
 
 Because the Console only ever speaks Protocol, the same surface powers a
 remote attach, a third-party dashboard, or an IDE/TUI client. Nothing about
@@ -238,6 +238,10 @@ there:
   or remove one by name.
 - `harbor inspect-events` / `inspect-runs` — tail the live event stream or
   reconstruct a run's trajectory from event replay.
+- `harbor composition-preview` — preview the effective skill composition a
+  Runtime would compose for an agent (the read-only
+  `agent_config.composition.preview` Protocol method): the typed outcome, the
+  deterministic set hashes, and per-item `boot|revision|both` provenance.
 
 The full operator-facing configuration reference for every knob in
 `harbor.yaml` lives at [`docs/CONFIG.md`](docs/CONFIG.md); a CI test fails the

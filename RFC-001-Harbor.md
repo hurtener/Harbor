@@ -717,7 +717,15 @@ available to planner/model and App consumers. The same classification is
 projected as optional, non-secret metadata on `tool.failed` and
 `tool.policy_exhausted`: class, reason, attempt, and configured budget. An
 absent class is represented as `unclassified`; raw arguments and results never
-enter the event.
+enter the event. The classified outcome survives the runloop's step recording
+and appears in the actual next ReAct prompt: the typed class, the retry-policy
+outcome, the bounded provider message, and the retained bounded result content
+are preserved, and a generic step error never masks the richer classified
+observation. Legacy unstructured errors may render a generic safe fallback.
+Canonical task/tool events and the planner observation agree on the terminal
+error. A typed deterministic failure in the `revision_conflict` shape is
+permanent for the unchanged invocation and carries the current revision in its
+bounded message so the next prompt can re-read and retry.
 
 ### 6.5 LLM client layer
 
@@ -964,6 +972,112 @@ The preview returns names and bounded verdicts, bodies only for the addressed
 caller, and typed `not_found`, `denied`, or `unavailable` states. It never
 writes a run, revision, skill row, or audit record.
 
+**Boot-declared resource-free operator skill baseline (settled — D-427).**
+A runtime serving its resolved boot/default agent may declare a resource-free
+operator skill baseline directly in boot configuration, so the boot agent's
+skill composition is complete before any durable pack or personal-skill
+membership exists. The baseline loads through a **config-file-relative,
+strict, eager, immutable loader** that runs before readiness: the include
+root is the config file's own directory (never the process CWD), every entry
+must import through the ONE existing importer/validator or the boot fails
+loud, and the loaded set is eagerly copied and frozen for the process
+lifetime (restart-only, never hot-reloaded). Each declared include is one
+relative directory holding one case-sensitive top-level regular UTF-8
+`SKILL.md`; the baseline is resource-free (no support-file references).
+Traversal, recursive discovery, symlink/hardlink/special entries, duplicate
+paths, and canonical-name collisions are rejected, under declaration, item,
+per-file, and aggregate bounds. The loader itself has **no persistence, no
+admin verbs, no config revisions, and no lifecycle materialization**: it
+writes no skill store row, exposes no Protocol mutation surface, advances no
+agent-config revision, and creates no lifecycle record — the baseline is
+boot-declared read-only state, node-local and reconstructed at every boot,
+while the durable Postgres `${SKILLS_DSN}` `boot_agent_packs` schema
+persists agent revisions and personal state; no convergence between the two
+is claimed. Required-tool metadata is validated only after the static
+catalog and policy wrapping apply and against the granted-scope ceiling,
+with no invented identity. It binds **exactly to the resolved boot/default
+agent for the boot tenant**: the resolved `(tenant, boot_agent_id)` pair,
+never a placeholder or wildcard, and never an invented boot identity — if
+the deployment's default agent cannot be resolved, the runtime fails loud at
+boot rather than synthesizing one. The loader merges the baseline with the
+agent's active durable operator-pack revision into ONE combined operator
+tier FIRST under strict merge rules: the same canonical name with the same
+semantic hash dedupes as `source=both`; the same name with a differing hash
+fails loud; and the combined tier holds exactly 256 unique items. Every
+declared tenant-agent active revision is pre-read before readiness, and the
+run-start conflict defense is retained. The combined operator tier is then
+applied LAST over the caller's base, user, and session skills — so
+operator-authored content deterministically wins over caller content; a
+name collision with a caller-owned skill is resolved by the
+operator-tier-last rule, and a boot/active-revision collision is a typed
+conflict (never last-write-wins). Boot-declared baseline entries are
+**boot-owned**: `upsert` and every proposal commit (replay/prepared/
+publish) and rollback/activation reject a boot-owned canonical name — even
+at equal hash — with a typed conflict; removal may delete an actual legacy
+durable revision shadow while leaving the boot baseline, and a boot-only
+remove is a typed read-only refusal, never false success;
+`agent_packs.list` remains durable-revision authoring only. Config removal
+removes the boot baseline only on the next deployment; a legacy durable
+revision remains, and in-flight snapshots retain their captured bytes and
+hash. The baseline contributes a **deterministic set hash** over its
+normalized entries to the run snapshot and to the composition preview, so
+an operator can verify exactly what the boot agent composes. The shipped
+run path is: the eager immutable index opened before readiness is handed to
+the run-loop driver, an exact `(tenant, effective-boot-agent)` run-start
+membership lookup binds the frozen boot entries into the run snapshot, and
+the concrete resolver's strict combined operator tier is frozen into the
+snapshot with the boot set hash, the combined hash, and per-item
+`boot|revision|both` provenance. Production and
+devstack use the **single loader path** — the devstack's synthetic boot
+agent resolves the same loader, never a second implementation. Headless
+`RunOnce` is explicitly **unsupported** and fails loud when
+`boot_agent_packs` is configured. D-414's preview is **absent/incomplete on
+this base** — it resolves durable pack membership and personal skills, but
+nothing declares or previews the config-file baseline — so this phase
+delivers ONE shared **strict effective-composition resolver + preview**
+used by boot preflight, run, and preview alike, reusing the D-411/D-414
+composition path rather than inventing a parallel one, plus the exact
+read-only Protocol path (clients, manifest, generated docs), minimal
+Console and CLI consumers (D-415), config docs and example, operator skill,
+and smoke. The preview shows `boot|revision|both` and the
+`boot_pack_set_hash` under authority/reach gating, with no lifecycle
+materialization. `EnsureBootAgentLifecycle` is **separate and unchanged**:
+it still materializes the first empty agent-level revision when the
+lifecycle slot is absent, and it MAY write a revision; the baseline loader
+and composer themselves perform zero persistence, zero admin pack verbs,
+zero lifecycle writes, and zero config revisions — this phase never claims
+startup performs no revision writes whatsoever.
+
+**Verified-caller personal-skill package import and draft authoring
+(settled).** A Protocol caller may install a complete reviewed `SKILL.md`
+package as a durable personal user skill through a two-phase,
+identity-mandatory import family — `agent_config.user.skills.import_validate`
+and `agent_config.user.skills.import_commit` (D-422). A caller-owned
+`artifacts.put` output is bounded staging input; validation invokes the ONE
+existing importer/validator, performs ZERO writes of any kind — no SkillStore
+body/package write, no agent-config membership write, and no StateStore
+proposal-ledger write — and returns a bounded opaque versioned sealed
+proposal token plus a bounded normalized review
+and hashes; commit re-authenticates and strictly decodes the token,
+re-derives identity and signed effective-agent reach,
+rechecks policy and ceilings, forces `ScopeUser`/owner and the effective
+`AgentID` server-side, and atomically materializes the approved package plus
+membership (durable idempotency state begins only in the commit phase, via a
+token-derived commit ledger and one conditional package write). The installed form is a **durable personal skill package** whose
+supporting files are copied into the package representation and addressed by
+immutable `skillpkg://<PackageHash>/<encoded-canonical-path>` references
+behind one mandatory authorized resolver — later sessions never dereference
+the staging artifact, which remains provenance only. Draft authoring is an
+ordinary, disabled-by-default runtime tool (`skill_create_draft`, D-423) that
+reuses the governed authoring path's safety-wrapped LLM adapter and shares
+the canonical semantic skill DTO, validator, deterministic serializer, and
+versioned `PackageHash` with import; it has zero mutation authority and
+installs nothing — installation is exclusively the import commit. Existing
+`skill_propose(persist=true)` and `agent_config.user.skills.upsert`,
+including caller-selected `ScopeUser`, remain unchanged and are not
+deprecated. Required-tool metadata is applicability information on every
+path; it never grants or exposes a tool.
+
 Skills are a Runtime subsystem distinct from any external skill-distribution role. They are token-savvy, DB-backed, identity-scoped, and bring two Harbor-defining features:
 
 1. **Skills.md importer** — first-class. Drop a Skills.md file/pack, get an indexed Harbor skill out the other side. The predecessor's per-skill-manual-adaptation gap is closed.
@@ -1129,6 +1243,83 @@ erasure event remains content-free and reports only safe aggregate telemetry.
 
 **Session auto-naming — Settled (D-289).** Opt-in and default OFF: with no `naming` configuration the runtime's behavior is unchanged — no counters, no LLM calls, no events. When enabled (a versioned `naming` agent-config section riding `set_revision`, over a yaml `runtime.naming` fleet default, resolved once at run start with next-turn projection), the runtime titles the session itself: an additive sibling of the run-completion hook (§6.17's reserved additive-hook-point clause) fires at the run loop's terminal boundary and makes ONE governed `Complete` call on the run's wrapped LLM client — identity-carried, budget-enforced, input bounded far below the context-safety threshold — then writes through an internal auto-path that refuses manual titles. Policy knobs: `after_turns`, `repeat_every`, `max_repetitions` (required at the config/wire edges whenever repeating, default 5 for programmatically built policies — no unlimited value exists on any path), `model` (empty = the run's effective model), `max_title_len` (auto output is deterministically clamped; the manual verb, by contrast, rejects — the trusted-internal vs untrusted-boundary asymmetry is intentional). A naming failure never alters the settled run outcome and is never silent: `session.naming_failed` carries a stable error class, never content; a failure does not burn the cap (a still-due title retries until one succeeds), and a manual clear re-arms naming by zeroing the counters, so `max_repetitions` is a per-cycle cap — each clear opens a fresh arming cycle.
 
+**Session lifecycle projection (settled).** `sessions.list` and
+`sessions.inspect` accept an additive `projection` selector (D-424):
+`"full"` — the counter-enriched shape, the DEFAULT, unchanged — or
+`"lifecycle"`, which returns session lifecycle metadata only (session id,
+lifecycle status, title and title source, start/update/completion/last-
+activity timestamps where authoritative, duration where derivable without
+enrichment, and the effective/default agent id only where honestly
+representable). The lifecycle path MUST NOT invoke event-history, task,
+pause, artifact, App, or counter enrichment of any kind; its work is bounded
+by the page size before and after restart, independent of total event/turn
+cardinality, and a page of N rows never runs N counter scans. Counter fields
+use the closed availability state `current | partial | not_requested |
+unavailable`: the lifecycle shape marks them `not_requested` (never merely
+absent, and never zero-as-not-computed); `unavailable` means enrichment or
+projection unavailable; `partial` remains a lower bound; full projection
+counters are exact at `current`; an omitted selector defaults to `"full"`. A
+counter-dependent filter or sort
+(`cost_above_cents`, `has_failed_task`, `has_intervention`, `cost_desc`)
+paired with the lifecycle projection fails as a typed invalid request rather
+than silently switching to the expensive projection. The selector changes
+cost and shape, never authority: each method preserves its own widening
+claims and audit behavior exactly, and cross-identity denial stays
+non-oracular.
+
+**Durable tail-paged conversation turns (settled).** A dedicated,
+runtime-owned conversation read model — `sessions.turns.list` (stable tail
+pages) and `sessions.turns.get` (one `(session, task)` bounded terminal
+reconciliation read) — the two named public methods — lets a Protocol
+consumer render the current chat from one durable projection instead of
+joining task/result/event/App authority itself (D-425). Bounded Activity
+rides inline covering at least Harbor's configured per-turn tool-call budget;
+a separate named activity method is NOT a v1.28 method or acceptance — if the
+Protocol response ceiling ever forces the exact attachment contract, a future
+named fallback is recorded as a deferred follow-up, not added to this phase.
+The
+projection is derived from Harbor's task, result, event, and App-context
+authority; it is incrementally materialized with idempotent sequence
+checkpoints, survives restart on durable drivers, and is erased/fenced with
+its session (in-memory restart loss remains explicit). Paging uses an opaque
+snapshot/keyset cursor anchored with an immutable task/turn tie-breaker:
+work is proportional to page size, independent of total event/turn
+cardinality, with no full task enumeration, no request-path raw event scan,
+and no per-row reads; appending a turn while paging older history produces
+neither duplicates nor omissions. One row is one root foreground user turn;
+background/child tasks fold into the root turn's Activity or are omitted by
+an explicit relationship rule, never surfaced as invented user messages.
+Each turn carries renderable content with explicit per-component
+exact/partial/unavailable state: the query, an answer union (bounded inline
+result OR artifact reference, or `empty`/`evicted`/`unavailable` — a failed
+read never fabricates an empty answer), ordered consumer-safe reasoning
+steps, ordered tool activity with a shared monotonic Activity sequence and
+compact cardinality-capped totals plus overflow bucket, model and token/cost
+usage, consumer-safe intervention metadata (the opaque action token only
+when the verified caller satisfies the pause's resume/approval/control
+tier), and durable ordered MCP App references whose replacement identity is
+exactly `(effective_agent_id, server_id, resource_uri)`. The list response's
+exclusive live resume cursor composes with `events.subscribe` for a
+gap-free page-to-live transition under the settled page-before-subscribe
+handoff: the consumer folds the durable page and establishes bounded
+running/paused membership FIRST, then opens the stream with
+`live_resume_seq` as the initial `resume_seq`; the server replays events
+strictly newer than that snapshot through the existing bounded replay source,
+and a browser reconnect `Last-Event-ID` takes precedence (one terminal event
+causes one `sessions.turns.get` terminal reconciliation; a page retry clears
+stale live membership and rebuilds it from freshly read authoritative
+running/pending/paused rows without duplicating bubbles or re-admitting a
+terminal row, and a freshly read terminal durable row converges the existing
+bubble from that row). Chat open is
+two reads: one lifecycle read plus one turn-page read. The consumer
+`conversation` surface returns query, answer/ref, consumer-safe reasoning/
+activity, own pause state, App refs, and compact totals; it must never return
+raw args/results/events, credentials, the system prompt, or a provider stack.
+An operator `operations` projection is not part of this surface, and no
+content-read/impersonation authority exists: admin/fleet observation implies
+no transcript access. `events.list` / `state.history` / `tasks.get` remain
+the raw drill-down and explicit task-detail surfaces.
+
 ### 6.10 Artifacts
 
 **MCP App callback and tool-context contracts (settled).** MCP discovery
@@ -1139,6 +1330,66 @@ dispatch only through its host-derived server identity and remains subject
 to identity, agent reach, capability, approval, OAuth, state, redaction, and
 audit gates. Refresh, reconnect, replacement, and detach rebuild both views
 from one server snapshot.
+
+**Fresh render-admission contract (Settled — D-412 amendment; HA-56 stays
+phase 238 / D-412, Shipped v1.28).** A rendered MCP App has exactly two
+render paths. The LIVE path — the App mounted while the originating
+tool-result App is in-process — may use a bounded, short-lived,
+provider-local binding as a compatibility convenience; that binding is never
+durable and is never restored. Embedded/durable reopen — the App remounted
+from a reopened session's durable turns — instead uses a FRESH stateless,
+integrity-protected, shared-KEK admission minted by the Runtime only after
+ALL of: verified identity, signed effective-agent reach, agent retirement,
+session/agent erasure, current session/agent exposure, exact server
+identity, exact current `ui://` resource availability, paused/disabled
+state, and the exact CURRENT provider/catalog generation — a deterministic,
+replica-stable generation of the server's current discovered catalog that
+changes on detach, replacement, and ANY successful discovery/catalog/
+resource change even when deployment descriptor configuration did not
+change (the existing exact registration descriptor fingerprint remains a
+retained input but is never alone sufficient authority; a process-local
+discovery counter is not acceptable, and a replica holding a different
+current catalog fails closed as a generation mismatch). The exact reopen
+order is: the durable App reference from the reopened session's turn rows, a
+successful `mcp.apps.tool_context` replay (a failed / unavailable / evicted /
+foreign replay mints no authority), the current `ui://` read explicitly
+requesting one fresh admission (`request_render_admission: true` — the only
+minting read; ordinary and AppBridge-secondary resource reads never mint),
+the iframe/AppBridge mount, and then same-server app-only callback dispatch
+through the existing wrapped invocation echoing the fresh admission as the
+distinct `render_admission` authority. The fresh admission is distinct from,
+never aliases, and never coexists with the legacy live binding; neither is
+persisted or restored. The admission claim
+binds claim schema, mint time, the `(tenant, user, session)` triple,
+effective agent, server, resource, and current provider/catalog generation —
+and carries no raw tool arguments, secrets, provider output, callback name,
+or general capability. Ordinary resource reads never mint an admission; only
+the explicit admission-requesting read path does. The surface is STRICTLY
+opt-in — sealer availability alone never enables render admission, even when
+an OAuth broker already supplies the shared KEK — and every mint/verify reads
+the reach-admitted effective agent stamped in the request context, never a
+fixed boot/default fallback. The app-only callback
+stays absent from planner context, `tools.list`, search, and generic
+resolution, and dispatches only via the same-server `ResolveAppTool` path
+followed by the existing approval/OAuth/policy/redaction/retry/audit gates.
+Durable turn rows (the HA-64 / D-425 projection) retain metadata and
+component availability only — never an admission token; `mcp.apps.tool_context`
+replay is unchanged and never reruns the originating tool. Unavailable and
+expired admissions answer typed unavailable/expired, and refresh re-runs
+every fresh check — nothing is silently extended. Production and devstack
+share ONE implementation and one immutable shared sealer instance; the
+surface is enabled by `tools.mcp_app_render_admission.enabled` (default
+`false`) and seals with the existing `tools.oauth_token_kek_env` KEK-backed
+AES-256-GCM sealer — no second authority field and no literal key; an
+enabled surface with an empty env name, a missing/unset/invalid KEK, or a
+sealer construction failure fails readiness loud even when no OAuth provider
+or credential broker is configured, and restart/multi-replica deployments
+verify against the shared KEK and succeed only when the same current
+provider/catalog generation is present — a replica holding a different
+current catalog fails closed as a generation mismatch. Pinned non-goals: no
+generic capability framework, no persisted callback authority, no arbitrary
+origins, no provider exceptions, no hot registry, and no transcript
+impersonation.
 
 MCP App tool-context records have an explicit session-lifetime contract by
 default: they survive session reopen and are removed by session erasure.
@@ -1477,6 +1728,57 @@ type EventBus interface {
 **Schema versioning — Settled.** Best-effort additive: new `EventType`s and new optional fields are non-breaking. Strict semver for the bus-wire schema once third-party Consoles exist (V1.5+). (Resolves brief 06 Q-4.)
 
 **Earlier sketch (superseded by D-028 — kept for history):** an earlier draft of §6.13 carried flat identity fields (`TenantID, UserID, SessionID, RunID`) plus `EmittedAt`, plus optional metric-shaped fields (`LatencyMs *float64`, `TokensIn *uint32`, `TokensOut *uint32`, `CostUSD *float64`, `QueueDepth *QueueDepthSnapshot`), and called the bus interface `Bus`. The shipped surface uses `identity.Quadruple` (re-using Phase 01's type), `OccurredAt`, no inline metric fields (Phase 56 derives labels from `Extra`), and renamed `Bus` → `EventBus`. The earlier draft also ranged the bus interface over `Replay` directly; replay is now a Phase 06 capability layer. D-028 captures the reconciliation.
+
+**Durable observability rollups (settled — D-426, a narrow D-296 amendment).**
+A first-class durable observability rollup projection — a rebuildable,
+indexed materialization of aggregate measures over successfully persisted
+canonical Harbor events, behind its own typed interface and §4.4 driver seam
+with in-memory, SQLite, and Postgres drivers — answers administrative
+cost/token/outcome questions without scanning the raw event log at read
+time. Rollups are BEST-EFFORT aggregates over successfully persisted
+canonical events, never a billing-exact ledger; the durable event log and
+governance's cost accumulator remain the exact per-call authority. The
+projection consumes the EXISTING local durable event sequence incrementally,
+with a durable applied-through watermark: there is no outbox, no new canonical
+event ID, and no active-active exactly-once claim — the fail-loud LLM
+publication contract is unchanged and projection application failures are
+best-effort; replay of the same source event is idempotent, restart
+catch-up and a crash between source persistence and projection application
+converge, and concurrent replica application is at-least-once idempotent on
+the local sequence with the absent exactly-once property stated, not claimed.
+The storage base grain is exactly the fixed UTC MINUTE bucket plus the
+authoritative dimensions `(tenant_id, user_id, session_id, model)`; `agent_id`
+is not a rollup dimension (not even conditionally), no other entity dimension
+is added, and a query MAY coarsen the bucket. Measures are EXISTING
+source-backed payloads only: the `llm.cost.recorded` successful-completion
+count; exact cost as an integer or decimal; prompt/completion/reasoning/
+cache-read/cache-write/total tokens; latency count/sum/min/max; and task
+completed/failed/cancelled counts. Attempts, failed LLM calls, retry/
+downgrade, task-spawned, and user-message counts are unsupported and reported
+unavailable — never mandated, never inferred, and never backed by new
+canonical events. Unsupported measures are omitted or marked unavailable,
+never synthesized. Every query response carries an observed watermark and an
+explicit completeness state — `current`, `catching_up`, `unavailable` (plus
+`rebuilding` and retention-quality signals) — and never returns zero as a
+substitute for unavailable. The session enricher (§6.9 counters, D-309)
+becomes projection-backed with the honest raw partial-scan fallback
+(`CountersPartial`). Session erasure removes or tombstones every aggregate
+attributable to that session and reconciles parent user/tenant totals; a
+rebuild never resurrects erased aggregates, and a rebuild over a pruned log
+exposes that historical incompleteness. ONE bounded Protocol-owned
+administrative query surface (`observability.query`)
+carries a mandatory time window, server-authorized filters, a closed
+`group_by` set, bounded buckets, pagination with deterministic sorting,
+exact-or-explicitly-partial results, and a maximum result/bucket budget that
+fails loudly; ordinary callers query only their verified identity scope, and
+widened queries require verified admin or `console:fleet` claims from the
+request context (never the body) with the established widened-read audit
+evidence. The Console remains a pure Protocol client. This AMENDS D-296
+narrowly and only as recorded there: the projection is derived, rebuildable
+state whose source of truth stays the canonical event log — it is not a
+general-purpose Harbor TSDB, does not hold the only copy of derived history,
+and does not relax the cardinality firewall; identity-labelled OTel metrics
+remain forbidden.
 
 ### 6.14 Telemetry
 

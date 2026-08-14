@@ -346,7 +346,7 @@ func TestBuildMux_OptionalSubsystemMatrix(t *testing.T) {
 		BuildCommit:  "test",
 	}
 
-	probeMux := func(m *http.ServeMux, path string) int {
+	probeMux := func(m http.Handler, path string) int {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -363,11 +363,16 @@ func TestBuildMux_OptionalSubsystemMatrix(t *testing.T) {
 			t.Error("FlowRegistry should be nil without an artifact store")
 		}
 		for _, path := range []string{
-			"/v1/sessions/list",         // nil Sessions
-			"/v1/agents/list",           // nil Agents
-			"/v1/auth/rotate_token",     // nil AuthSurface
-			"/v1/governance/rotate_key", // nil KeyRotator
-			"/v1/runs/set_overrides",    // nil RunsStore
+			"/v1/sessions/list",                            // nil Sessions
+			"/v1/agents/list",                              // nil Agents
+			"/v1/auth/rotate_token",                        // nil AuthSurface
+			"/v1/governance/rotate_key",                    // nil KeyRotator
+			"/v1/runs/set_overrides",                       // nil RunsStore
+			"/v1/sessions/turns/list",                      // nil TurnsProjector (HA-64 unwired)
+			"/v1/sessions/turns/get",                       // nil TurnsProjector (HA-64 unwired)
+			"/v1/observability/query",                      // nil RollupsStore/Quality (HA-65 unwired)
+			"/v1/agent_config/user/skills/import_validate", // nil UserSkillImportService (HA-61 unwired)
+			"/v1/agent_config/composition/preview",         // nil CompositionPreviewService (HA-66 unwired)
 		} {
 			if code := probeMux(built.Mux, path); code != http.StatusNotFound {
 				t.Errorf("%s with its handle nil = %d, want 404", path, code)

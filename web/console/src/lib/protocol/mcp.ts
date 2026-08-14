@@ -320,6 +320,44 @@ export interface MCPResourceArtifactRef {
 }
 
 /**
+ * The bounded render-admission object a successful OPT-IN `ui://` read may
+ * return — mirrors `types.RenderAdmission` (HA-56). Carries ONLY the
+ * opaque sealed token, its expiry metadata, and the closed availability
+ * status — never the sealed claims, never key material, never a
+ * provider-local live binding. The token is opaque by construction; the
+ * client echoes it back on `mcp.apps.call_tool` (the request's DISTINCT
+ * `render_admission` field — NOT the legacy `binding`), and the Runtime
+ * re-verifies it against the CURRENT render tuple before invocation.
+ *
+ * An explicit successful opt-in read may return the `unavailable` object
+ * with NO token when the admission could not be minted (empty/unknown
+ * current provider/catalog generation, or a current-conditions refusal) —
+ * the caller must re-read. An omitted/false `request_render_admission`
+ * never produces this object.
+ */
+export interface RenderAdmission {
+  /**
+   * The opaque sealed render-admission token (bounded base64url). Empty
+   * when `availability` is "unavailable" — a closed "no admission minted"
+   * answer carries no token.
+   */
+  token?: string;
+  /** The mint instant, RFC 3339 UTC. Empty when unavailable. */
+  issued_at?: string;
+  /** The admission expiry, RFC 3339 UTC — a past expiry is refused with
+   * the typed `render_admission_expired` code at call time. Empty when
+   * unavailable. */
+  expires_at: string;
+  /**
+   * The CLOSED availability status at mint: "available" (the render
+   * tuple was fully verified and the token is usable) or "unavailable"
+   * (the admission could not be minted — re-read the resource). An
+   * omitted/false `request_render_admission` never produces this object.
+   */
+  availability: string;
+}
+
+/**
  * `mcp.servers.read_resource` reply — mirrors `types.ReadMCPResourceResponse`.
  * EXACTLY ONE of `content` / `artifact_ref` is set: `content` carries the
  * inline bytes below the heavy threshold; `artifact_ref` carries the
@@ -334,6 +372,17 @@ export interface ReadMCPResourceResponse {
   content?: string;
   /** By-reference stub — set only at or above the heavy threshold. */
   artifact_ref?: MCPResourceArtifactRef;
+  /**
+   * The bounded render admission for this read — present ONLY when the
+   * request carried `request_render_admission: true` AND the read
+   * succeeded. An explicit successful opt-in read returns either the
+   * available admission (token + bounded expiry metadata) or the explicit
+   * `unavailable` object with NO token when the admission could not be
+   * minted (empty/unknown current generation, or a current-conditions
+   * refusal) — never a silent omission. An omitted/false flag never mints
+   * authority; a failed read never returns an admission.
+   */
+  render_admission?: RenderAdmission;
   /** The Protocol version the Runtime answered under. */
   protocol_version: string;
 }

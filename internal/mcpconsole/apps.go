@@ -205,11 +205,13 @@ const defaultHeavyThreshold = config.DefaultConsoleInlinePayloadBytes
 // inlined unbounded and never silently truncated.
 const appDocumentInlineCap = 2 * 1024 * 1024 // 2 MiB
 
-// compile-time assertions: AppsAccessor satisfies the three Apps seams.
+// compile-time assertions: AppsAccessor satisfies the three Apps seams
+// plus the distinct admission-aware invoker seam (HA-56).
 var (
-	_ protocol.MCPResourceReader    = (*AppsAccessor)(nil)
-	_ protocol.AppToolInvoker       = (*AppsAccessor)(nil)
-	_ protocol.AppToolContextReader = (*AppsAccessor)(nil)
+	_ protocol.MCPResourceReader       = (*AppsAccessor)(nil)
+	_ protocol.AppToolInvoker          = (*AppsAccessor)(nil)
+	_ protocol.AppToolContextReader    = (*AppsAccessor)(nil)
+	_ protocol.AppToolAdmissionInvoker = (*AppsAccessor)(nil)
 )
 
 // ReadResource implements protocol.MCPResourceReader. It fetches the
@@ -288,8 +290,126 @@ func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args
 
 // CallToolWithBinding dispatches an app callback using its opaque render
 // capability while preserving the ordinary invoker compatibility seam.
+// It is the LEGACY live-binding path (HA-56): the binding is passed to
+// the provider-local ValidateAppBinding for app-only resolution. A
+// render-admission-backed call NEVER rides here — it rides the distinct
+// admission-aware seam (CallToolAdmitted).
 func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	return a.callTool(ctx, serverID, binding, resourceURI, tool, args)
+}
+
+// CallToolAdmitted implements protocol.AppToolAdmissionInvoker — the
+// distinct, narrow admission-verified invocation seam (HA-56). The
+// AppsSurface calls it ONLY after verifying a fresh render admission for
+// the exact (identity, agent, server, resource) tuple and minting the
+// unforgeable call-local proof.
+//
+// # The call-local proof is the authority — never method selection
+//
+// This exported method must not reach ResolveAppTool merely because an
+// internal caller invoked it with a fully verified identity /
+// effective-agent context. The accessor therefore verifies the call-local
+// proof (protocol.CheckRenderAdmissionProof) against the EXACT tuple this
+// call names — identity from ctx, the effective agent, serverID, the
+// resourceURI, AND the exact CURRENT provider/catalog generation read from
+// the registry — BEFORE any resolution, before the paused/disabled
+// exposure gate, and before any invocation. A direct call with no proof,
+// or a proof that does not bind the exact tuple, is refused here with
+// zero callbacks. The proof can only be minted by the Protocol surface
+// after it opened the sealed admission AND re-verified the current render
+// tuple, so a call that did not ride the surface's verified path can
+// never resolve an app-only callback.
+//
+// # The generation closes the TOCTOU window
+//
+// The proof binds the generation the surface verified. The accessor
+// re-reads the CURRENT generation before resolving, so a
+// refresh/replacement that landed after the surface's verification
+// changes the generation and the proof no longer matches — the call is
+// refused with zero callbacks. Even the window between this generation
+// read and the descriptor lookup is closed: resolution goes through the
+// registry's atomic ResolveAppToolAtGeneration, which compares the exact
+// generation and resolves the app-only descriptor under ONE read lock, so
+// a race that changes the generation mid-call fails typed and never
+// returns (never executes) a newer-generation row.
+//
+// Unlike CallTool / CallToolWithBinding, this path resolves the named
+// tool EXCLUSIVELY through its own server's App dispatch catalog — never
+// the ordinary planner/model catalog, never a provider-local
+// ValidateAppBinding. The sealed admission token is never handed to a
+// provider-local validator. The current paused/disabled exposure gate
+// re-runs, and the SAME wrapped descriptor the ordinary path invokes
+// fires, so approval / OAuth / policy / redaction / retry / audit still
+// work exactly as they do on a planner call.
+//
+// A host-derived server identity is MANDATORY: an empty server never
+// falls through to ordinary/global resolution.
+func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	if serverID == "" {
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
+			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
+	}
+	// Identity is mandatory (AGENTS.md §6 rule 9): the proof binds the
+	// exact verified triple, and a call with no identity has nothing to
+	// bind a proof against — fail closed before any resolution.
+	id, ok := identity.From(ctx)
+	if !ok {
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: admission-verified app call: %w", mcp.ErrIdentityMissing)
+	}
+	agentID, ok := tools.EffectiveAgentConfigFrom(ctx)
+	if !ok {
+		// Compatibility for direct pre-v1.26.11 embedders, mirroring
+		// gateToolExposure: production Protocol dispatch always seats the
+		// reach-admitted effective agent.
+		agentID = a.agentID
+	}
+	// Read the exact CURRENT generation BEFORE the proof check: the proof
+	// binds the generation the surface verified, and a refresh/replacement
+	// since that verification must refuse here — a stale admission never
+	// resolves (and never executes) a newer-generation descriptor.
+	currentGen, ok := a.reg.CurrentGeneration(serverID)
+	if !ok || currentGen == "" {
+		// Missing/empty current generation (absent server, detach, or a
+		// server whose discovery has never established its descriptor set)
+		// is a scope-level refusal — never a fallback to legacy binding or
+		// ordinary resolution, never a collapse into not-found.
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof cannot be verified: server %q has no current provider/catalog generation",
+			protocol.ErrAccessorScopeDenied, serverID)
+	}
+	if !protocol.CheckRenderAdmissionProof(ctx, id, agentID, serverID, resourceURI, currentGen) {
+		// The proof is missing, binds a different tuple, or binds a
+		// generation that is no longer current. A scope-level refusal
+		// (ErrAccessorScopeDenied → CodeScopeMismatch at the wire edge),
+		// never a not-found: the target may exist, but this call is not
+		// authorized to reach it under the current generation. The refusal
+		// text deliberately does not echo the generation digest — the wire
+		// edge carries this message verbatim, and a digest in it would
+		// leak catalog state to whoever probes the refusal.
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof is missing or does not bind the exact (identity, agent, server %q, resource %q) tuple under the current generation",
+			protocol.ErrAccessorScopeDenied, serverID, resourceURI)
+	}
+	// The atomic compare+resolve: ONE registry read lock re-verifies the
+	// exact current generation and resolves the app-only descriptor in the
+	// same critical section. A refresh/replacement between the generation
+	// read above and this call fails typed (ErrGenerationMismatch) — the
+	// new row is never returned and never invoked.
+	desc, ok, err := a.reg.ResolveAppToolAtGeneration(serverID, tool, currentGen)
+	if err != nil {
+		// The registry's exact-generation compare refused (absent /
+		// unknown generation, or a generation change raced the call). The
+		// admission is stale — a scope-level refusal, never a resolution
+		// of the new row, never a fallback.
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: %w", protocol.ErrAccessorScopeDenied, err)
+	}
+	if !ok {
+		// The server is absent, or does not hold an app-only callback
+		// under this name at the exact verified generation. Same typed
+		// not-found — the App renders it as a permanent "there is no such
+		// action on this server".
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q (server %q)",
+			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool, serverID)
+	}
+	return a.invokeAppTool(ctx, tool, desc, args)
 }
 
 func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
@@ -326,6 +446,16 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: app call to tool %q names server %q, but the tool belongs to server %q",
 			protocol.ErrAccessorScopeDenied, tool, serverID, desc.Tool.Source)
 	}
+	return a.invokeAppTool(ctx, tool, desc, args)
+}
+
+// invokeAppTool runs the shared invocation tail every app-tool-call path
+// converges on: the current paused/disabled exposure gate, the SAME
+// wrapped descriptor the planner resolves (approval / OAuth / policy /
+// redaction / retry / audit), and the heavy-content-disciplined result
+// projection. It is the one place the proxy's wrapped invocation lives —
+// no path may bypass it.
+func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tools.ToolDescriptor, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	if desc.Invoke == nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: tool %q registered without an Invoke function", tool)
 	}
@@ -433,6 +563,23 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 		}
 	}
 	return nil
+}
+
+// CurrentGeneration returns the deterministic current provider/catalog
+// generation fingerprint for the named server, delegating to the MCP
+// registry. The value is content-derived from the canonical CURRENT
+// descriptor set (resources + app-only callbacks + ordinary catalog), so
+// it changes on detach, replacement, and every successful discovery
+// change, and is stable across replicas with the same canonical current
+// descriptor set. Unknown/empty fails closed (false) — a render
+// admission never binds an empty generation.
+//
+// This is the "current provider/catalog generation" a fresh
+// render-admission gate binds into the sealed tuple. It is NOT itself a
+// proof of erasure / session+agent exposure / paused+disabled state —
+// the gate composes those checks (G4).
+func (a *AppsAccessor) CurrentGeneration(serverID string) (string, bool) {
+	return a.reg.CurrentGeneration(serverID)
 }
 
 // ToolContext implements protocol.AppToolContextReader. It resolves the

@@ -127,9 +127,12 @@ assert_grep_present 'classify\(fmt\.Errorf\("tool %q invoke: %w"' "${DISPATCH_SR
 assert_grep_present 'ErrorClass: observationClassOf\(r\.Err\)' "${DISPATCH_SRC}" \
     "phase 212: the parallel path stamps the same class onto the failing branch"
 
-# The run loop renders it onto the step's observation.
-assert_grep_present 'errPayload\[planner\.ObservationClassKey\] = string\(class\)' "${RUNLOOP_SRC}" \
-    "phase 212: the run loop writes the class onto the step's error observation"
+# The run loop's shared error-payload builder renders the class onto the
+# step's observation. Keep this pinned to the authoritative assignment, not
+# the pre-HA-54 local `errPayload` name that the planner-observation amendment
+# intentionally removed.
+assert_grep_present 'payload\[planner\.ObservationClassKey\] = string\(class\)' "${RUNLOOP_SRC}" \
+    "phase 212: the shared run-loop error payload writes the class onto the step's observation"
 
 # ----------------------------------------------------------------------------
 # 3. The two model-facing descriptions of one tool agree.

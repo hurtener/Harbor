@@ -146,6 +146,12 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigUserSkillsList,
 	methods.MethodAgentConfigUserSkillsUpsert,
 	methods.MethodAgentConfigUserSkillsDelete,
+	methods.MethodAgentConfigUserSkillsImportValidate,
+	methods.MethodAgentConfigUserSkillsImportCommit,
+	methods.MethodAgentConfigCompositionPreview,
+	methods.MethodSessionTurnsList,
+	methods.MethodSessionTurnsGet,
+	methods.MethodObservabilityQuery,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -195,9 +201,14 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// (agent_config.set_extra_system_blocks, D-367) = 123, plus signed
 	// OAuth MCP capability registration and paired removal = 125, plus
 	// terminal agent-config retirement = 126, plus agent-config agent-packs
-	// five = 131.
-	if len(got) != 131 {
-		t.Fatalf("Methods() returned %d methods, want 131", len(got))
+	// five = 131, plus the two-phase user skill-package import pair
+	// (agent_config.user.skills.import_validate + import_commit) = 133,
+	// plus the read-only composition preview
+	// (agent_config.composition.preview) = 134, plus the session-turns
+	// read pair (sessions.turns.list + sessions.turns.get) = 136, plus the
+	// observability administrative read (observability.query) = 137.
+	if len(got) != 137 {
+		t.Fatalf("Methods() returned %d methods, want 137", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -296,6 +307,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodSessionsInspect:  "sessions.inspect",
 		methods.MethodSessionsDelete:   "sessions.delete",
 		methods.MethodSessionsSetTitle: "sessions.set_title",
+
+		methods.MethodSessionTurnsList: "sessions.turns.list",
+		methods.MethodSessionTurnsGet:  "sessions.turns.get",
+
+		methods.MethodObservabilityQuery: "observability.query",
 
 		methods.MethodRunsSetOverrides: "runs.set_overrides",
 		methods.MethodStateHistory:     "state.history",
@@ -492,7 +508,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
 			methods.IsGovernanceAdminMethod(m) || methods.IsAgentConfigMethod(m) ||
 			methods.IsAuthMethod(m) || methods.IsStateMethod(m) ||
-			methods.IsEventsListMethod(m) {
+			methods.IsEventsListMethod(m) || methods.IsSessionTurnsMethod(m) ||
+			methods.IsObservabilityMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

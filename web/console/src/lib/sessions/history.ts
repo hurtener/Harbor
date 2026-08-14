@@ -1,10 +1,19 @@
 // Harbor Console — session-reopen windowed hydration helper (D-254).
 //
-// This is the FIRST consumer of the `state.history` Protocol surface
+// Since HA-64 / D-425, this module is the EXPLICIT, user-invoked
+// DEGRADED/FORENSIC FALLBACK for the Playground reopen, retained verbatim
+// for runtimes that predate the `sessions.turns.*` surface. The NORMAL open
+// is the two-read path (`$lib/sessions/turns.ts`: one lifecycle inspect +
+// one `sessions.turns.list` tail page); this module's forensic
+// `state.history` event-replay reducer is reached ONLY when the operator
+// explicitly invokes the "reopen via forensic event replay" control — it is
+// never the default open path (CLAUDE.md §13, D-425).
+//
+// It is the FIRST consumer of the `state.history` Protocol surface
 // (CLAUDE.md §13 primitive-with-consumer rule): a tail-first, windowed,
 // scroll-up-by-cursor reader of a session's durable event stream, plus a
 // pure client-side reduction of the loaded events into reopen turns. The
-// Playground session-reopen hydration drives this instead of its former
+// Playground legacy-reopen path drives this instead of its former
 // full-load `tasks.list` + N×`tasks.get` reconstruction.
 //
 // The reduction stays client-side (the surface returns flat events, never

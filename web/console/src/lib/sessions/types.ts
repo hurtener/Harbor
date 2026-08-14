@@ -24,6 +24,32 @@ export type SessionSort =
   | 'last_activity_desc'
   | 'cost_desc';
 
+/**
+ * The closed `sessions.list` / `sessions.inspect` projection set (D-424).
+ * Mirrors `internal/protocol/types/sessions.go` exactly:
+ *
+ *   - `full`      — the default projection: the lifecycle catalog fields
+ *                   plus, when the runtime wires a counter Enricher, the
+ *                   read-time counter rollup.
+ *   - `lifecycle` — the lifecycle-only projection: the session catalog
+ *                   fields with NO counter / history / task / pause
+ *                   enrichment. The row's counters stay zero and its
+ *                   `counter_status` reads `not_requested`, so a zero
+ *                   never reads as a measured zero. A counter-dependent
+ *                   filter or sort (`cost_above_cents` / `has_failed_task`
+ *                   / `has_intervention` / `cost_desc`) is rejected
+ *                   `invalid_request` on a lifecycle request — a lifecycle
+ *                   row has no counters to narrow or order by.
+ *
+ * Omitted (absent from the request body) resolves to `full` — the
+ * pre-D-424 behavior, byte-for-byte; the field stays optional so existing
+ * callers keep the default.
+ */
+export type SessionProjection = 'full' | 'lifecycle';
+
+/** The closed projection set, as a runtime value for mirror tests. */
+export const SESSION_PROJECTIONS: readonly SessionProjection[] = ['full', 'lifecycle'];
+
 /** The flat wire identity scope a Protocol request carries. */
 export interface SessionIdentityScope {
   tenant: string;
@@ -65,9 +91,33 @@ export interface SessionFilter {
 export interface SessionsListRequest {
   filter?: SessionFilter;
   sort?: SessionSort;
+  /**
+   * The row projection (D-424). Omitted → `full` (the original behavior,
+   * byte-for-byte); `lifecycle` skips ALL counter / history / task / pause
+   * enrichment and rejects counter-dependent filters/sorts.
+   */
+  projection?: SessionProjection;
   cursor?: string;
   limit?: number;
 }
+
+/**
+ * The explicit wire marker for the availability of a `SessionRow`'s
+ * counter fields (D-424). Mirrors `CounterStatus` in
+ * `internal/protocol/types/sessions.go` exactly — the four-state superset
+ * of the legacy `counters_partial` flag. It makes every zero counter
+ * SELF-DESCRIBING: a consumer can tell "these are exact zeros" from
+ * "these were never computed" without guessing.
+ */
+export type CounterStatus = 'current' | 'partial' | 'not_requested' | 'unavailable';
+
+/** The closed counter-availability set, as a runtime value for mirror tests. */
+export const COUNTER_STATUSES: readonly CounterStatus[] = [
+  'current',
+  'partial',
+  'not_requested',
+  'unavailable'
+];
 
 /** One catalog-row projection of a session. No Priority field — D-065. */
 export interface SessionRow {
@@ -116,6 +166,51 @@ export interface SessionRow {
    * Omitted (false) in the common case.
    */
   counters_partial?: boolean;
+  /**
+   * The explicit availability of this row's counter fields (D-424) — the
+   * four-state superset of `counters_partial`: `current` (computed in full
+   * and exact), `partial` (computed but an honest lower bound — the same
+   * state `counters_partial` marks), `not_requested` (a lifecycle-only
+   * projection skipped the counters), or `unavailable` (no Enricher is
+   * wired on this runtime). A consumer reading zero counters consults this
+   * before concluding "genuinely zero". Additive field — omitted on the
+   * wire when the row carries no marker (an older runtime, or a row whose
+   * counters are exact and whose partial flag is false).
+   */
+  counter_status?: CounterStatus;
+}
+
+/**
+ * The effective counter availability for a row (D-424). An explicit wire
+ * `counter_status` wins; a row without the marker falls back to the
+ * legacy `counters_partial` flag (`partial`) or the default `current` —
+ * the pre-D-424 behavior, byte-for-byte (the omitted-marker default is
+ * compatible with older runtimes).
+ */
+export function counterAvailability(
+  row: Pick<SessionRow, 'counter_status' | 'counters_partial'>
+): CounterStatus {
+  if (row.counter_status !== undefined) return row.counter_status;
+  return row.counters_partial === true ? 'partial' : 'current';
+}
+
+/**
+ * True when the row's counters are ABSENT — its zeros mean "not
+ * computed" (`not_requested` — a lifecycle projection) or "this build
+ * cannot provide them" (`unavailable` — no Enricher wired), never
+ * "measured as zero". Render the dash rather than a believable zero.
+ */
+export function countersAreAbsent(availability: CounterStatus): boolean {
+  return availability === 'not_requested' || availability === 'unavailable';
+}
+
+/**
+ * True when the row's counters are an HONEST LOWER BOUND (the
+ * `counters_partial` state) — render the counts with a "≥" affordance and
+ * the booleans as unknown rather than false.
+ */
+export function countersArePartial(availability: CounterStatus): boolean {
+  return availability === 'partial';
 }
 
 /** The `sessions.list` reply — a page of rows plus the opaque next cursor. */
@@ -124,6 +219,24 @@ export interface SessionsListResponse {
   next_cursor: string;
   /** D-026 fail-loudly: true when the candidate set hit limit+1 rows. */
   truncated: boolean;
+}
+
+/**
+ * The `sessions.inspect` request body (sans `identity` — folded by the
+ * shared transport). Mirrors `SessionsInspectRequest` in
+ * `internal/protocol/types/sessions.go` exactly (D-424).
+ */
+export interface SessionsInspectRequest {
+  /** The session to inspect. */
+  session_id: string;
+  /**
+   * The row projection (D-424). Omitted → `full` (the original behavior,
+   * byte-for-byte — the runtime resolves an empty value to full);
+   * `lifecycle` returns the lifecycle catalog fields with NO counter /
+   * history / task / pause enrichment — the row's counters stay zero and
+   * its `counter_status` reads `not_requested`.
+   */
+  projection?: SessionProjection;
 }
 
 /** One Recent-Interventions card entry on the Sessions detail view. */

@@ -169,6 +169,23 @@ describe('HarborClient events namespace (Phase 73g / D-125)', () => {
 		const url = new URL(client.events.subscribeURL());
 		expect(url.searchParams.has('admin')).toBe(false);
 	});
+
+	// HA-64 / D-425 — the snapshot-to-live handoff cursor. The durable
+	// fold's live_resume_seq rides as the narrowly named `?resume_seq=`
+	// query param (the stream server replays strictly-newer events on
+	// first connect, and a reconnect Last-Event-ID header overrides it).
+	it('seeds the subscribe URL with the supplied resume sequence', () => {
+		const client = new HarborClient({ connection: CONNECTION });
+		const url = new URL(client.events.subscribeURL({ resumeSeq: 42 }));
+		expect(url.pathname).toBe('/v1/events');
+		expect(url.searchParams.get('resume_seq')).toBe('42');
+	});
+
+	it('omits the resume sequence param when not supplied', () => {
+		const client = new HarborClient({ connection: CONNECTION });
+		const url = new URL(client.events.subscribeURL());
+		expect(url.searchParams.has('resume_seq')).toBe(false);
+	});
 });
 
 describe('HarborClient error mapping', () => {

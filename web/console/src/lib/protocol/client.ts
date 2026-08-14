@@ -56,6 +56,7 @@ import type {
 	GovernanceSetPostureRequest,
 	GovernanceSetPostureResponse,
 } from './governance.js';
+import type { SessionsInspectRequest } from '../sessions/types.js';
 import type {
 	AgentConfigPayload,
 	AgentConfigToolExposure,
@@ -101,6 +102,9 @@ import type {
 	AgentConfigUserSkillsListResponse,
 	AgentConfigUserSkillsUpsertResponse,
 	AgentConfigUserSkillsDeleteResponse,
+	AgentConfigUserSkillsImportValidateResponse,
+	AgentConfigUserSkillsImportCommitResponse,
+	AgentConfigCompositionPreviewResponse,
 	AgentConfigAgentPackItem,
 	AgentConfigAgentPacksListResponse,
 	AgentConfigAgentPacksUpsertResponse,
@@ -108,6 +112,17 @@ import type {
 	AgentConfigAgentPacksProposeResponse,
 	AgentConfigAgentPacksCommitResponse,
 } from './agentconfig.js';
+import type {
+	SessionTurnsListRequest,
+	SessionTurnsListResponse,
+	SessionTurnsGetRequest,
+	SessionTurnsGetResponse,
+} from './session-turns.js';
+import type {
+	ObservabilityQueryRequest,
+	ObservabilityQueryResponse,
+} from './observability.js';
+import type { ReadMCPResourceResponse } from './mcp.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -512,13 +527,31 @@ export class MCPServersNamespace {
 	 * host's `onreadresource` handler routes here, never to a direct MCP
 	 * transport — D-173). The Runtime mounts it on the control surface at
 	 * `POST /v1/control/mcp.servers.read_resource`.
+	 *
+	 * HA-56: pass `requestRenderAdmission: true` to ask the Runtime to mint
+	 * the bounded render admission for THIS successful `ui://` read. Omitted
+	 * or false preserves the ordinary read byte-for-byte and mints NO
+	 * callback authority — only a successful read carrying true may return
+	 * the `render_admission` object on the response. A successful opt-in
+	 * read may return the explicit `unavailable` admission object with no
+	 * token when the current provider/catalog generation is empty/unknown;
+	 * an omitted/false flag never returns one.
 	 */
-	readResource<R = unknown>(serverID: string, resourceURI: string, agentID?: string): Promise<R> {
-		return this.#t.request<R>('/v1/control/mcp.servers.read_resource', {
-			server_id: serverID,
-			resource_uri: resourceURI,
-      ...(agentID ? { agent_id: agentID } : {}),
-		});
+	readResource<R = ReadMCPResourceResponse>(
+		serverID: string,
+		resourceURI: string,
+		agentID?: string,
+		requestRenderAdmission = false
+	): Promise<R> {
+		return this.#t.request<R>(
+			'/v1/control/mcp.servers.read_resource',
+			{
+				server_id: serverID,
+				resource_uri: resourceURI,
+				...(agentID ? { agent_id: agentID } : {}),
+				...(requestRenderAdmission ? { request_render_admission: true } : {})
+			}
+		);
 	}
 }
 
@@ -539,15 +572,22 @@ export class MCPAppsNamespace {
 	 * `mcp.apps.call_tool` — proxy an app-initiated tool invocation. `tool` is
 	 * the Harbor catalog tool name (`<source>_<tool>`); `args` is the raw JSON
 	 * argument object the tool's schema validates on the wire.
+	 *
+	 * HA-56: `renderAdmission` is the DISTINCT opaque render-admission
+	 * authority minted by a successful opt-in `ui://` read and echoed back
+	 * verbatim — it is NOT the legacy `binding`. Supply EXACTLY ONE of
+	 * `binding` or `renderAdmission`; a call that supplies both is refused by
+	 * the Runtime as ambiguous (`render_authority_ambiguous`).
 	 */
-  callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string): Promise<R> {
+  callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string, renderAdmission?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
 			server_id: serverID,
 			tool,
 			arguments: args,
 			...(agentID ? { agent_id: agentID } : {}),
           ...(binding ? { binding } : {}),
-          ...(resourceURI ? { resource_uri: resourceURI } : {})
+          ...(resourceURI ? { resource_uri: resourceURI } : {}),
+          ...(renderAdmission ? { render_admission: renderAdmission } : {})
 		});
 	}
 	/**
@@ -623,14 +663,31 @@ export class EventsNamespace {
 	 * `auth.ScopeAdmin` / `auth.ScopeConsoleFleet`, D-079). The bearer
 	 * token rides as `access_token` — `EventSource` cannot carry an
 	 * `Authorization` header.
+	 *
+	 * `resumeSeq` is the snapshot-to-live handoff cursor (HA-64 / D-425):
+	 * the durable turn page's `live_resume_seq`, seeded as the narrowly
+	 * named `?resume_seq=` query param so the stream replays events
+	 * strictly newer than the durable fold before live-tailing. The
+	 * stream server uses it ONLY when the reconnect `Last-Event-ID`
+	 * header is absent — a browser reconnect replays from its own
+	 * cursor, never from this initial snapshot. Omitted/undefined keeps
+	 * the URL byte-identical (no param).
 	 */
-	subscribeURL(opts: { eventTypes?: string[]; admin?: boolean; session?: string } = {}): string {
+	subscribeURL(opts: {
+		eventTypes?: string[];
+		admin?: boolean;
+		session?: string;
+		resumeSeq?: number;
+	} = {}): string {
 		const url = new URL(`${this.#t.baseURL}/v1/events`);
 		for (const t of opts.eventTypes ?? []) {
 			url.searchParams.append('type', t);
 		}
 		if (opts.admin) {
 			url.searchParams.set('admin', '1');
+		}
+		if (opts.resumeSeq !== undefined) {
+			url.searchParams.set('resume_seq', String(opts.resumeSeq));
 		}
 		url.searchParams.set('access_token', this.#t.token);
 		// D-171 — EventSource cannot set the `X-Harbor-Session` header, so
@@ -973,9 +1030,19 @@ export class SessionsNamespace {
 	list<R = unknown>(req: Record<string, unknown> = {}): Promise<R> {
 		return this.#t.request<R>('/v1/sessions/list', req);
 	}
-	/** `sessions.inspect` — a single session's full snapshot. */
-	inspect<R = unknown>(sessionID: string): Promise<R> {
-		return this.#t.request<R>('/v1/sessions/inspect', { session_id: sessionID });
+	/**
+	 * `sessions.inspect` — a single session's snapshot. `req` is the typed
+	 * request shape (D-424): `projection` is additive and OPTIONAL — an
+	 * omitted `projection` sends the pre-D-424 wire body (`session_id`
+	 * only; the runtime resolves empty to `full`), so older-runtime bodies
+	 * stay byte-unchanged; `projection: 'lifecycle'` selects the
+	 * counter-free catalog fields.
+	 */
+	inspect<R = unknown>(req: SessionsInspectRequest): Promise<R> {
+		return this.#t.request<R>('/v1/sessions/inspect', {
+			session_id: req.session_id,
+			...(req.projection !== undefined ? { projection: req.projection } : {})
+		});
 	}
 	/**
 	 * `sessions.set_title` — sets (non-empty `title`) or clears (empty
@@ -1673,6 +1740,68 @@ export class AgentConfigNamespace {
 			{ agent_id: agentId, name },
 		);
 	}
+	/** `agent_config.user.skills.import_validate` — the ZERO-WRITE first
+	 * phase of the two-phase verified-caller skill-package import (HA-61):
+	 * the caller names a caller-owned immutable artifact ref + the effective
+	 * agent; the runtime parses/validates the package and seals the bounded
+	 * review into an opaque `proposal_token` (never a durable proposal id,
+	 * never a ledger key). Claim-free. */
+	userSkillsImportValidate(
+		agentId: string,
+		artifactId: string,
+	): Promise<AgentConfigUserSkillsImportValidateResponse> {
+		return this.#t.request<AgentConfigUserSkillsImportValidateResponse>(
+			'/v1/agent_config/user/skills/import_validate',
+			{ agent_id: agentId, artifact_id: artifactId },
+		);
+	}
+	/** `agent_config.user.skills.import_commit` — the explicit second phase
+	 * of the two-phase import (HA-61): the caller echoes the opaque proposal
+	 * token + the reviewed hashes + the expected config content hash + the
+	 * explicit replacement consent; the runtime freshly revalidates
+	 * everything and performs THE ONE atomic package+membership write,
+	 * replay-safe. Claim-free. */
+	userSkillsImportCommit(
+		agentId: string,
+		proposalToken: string,
+		name: string,
+		reviewedPackageHash: string,
+		expectedContentHash: string,
+		replace = false,
+	): Promise<AgentConfigUserSkillsImportCommitResponse> {
+		return this.#t.request<AgentConfigUserSkillsImportCommitResponse>(
+			'/v1/agent_config/user/skills/import_commit',
+			{
+				agent_id: agentId,
+				proposal_token: proposalToken,
+				name,
+				reviewed_package_hash: reviewedPackageHash,
+				expected_content_hash: expectedContentHash,
+				...(replace ? { replace: true } : {}),
+			},
+		);
+	}
+	/** `agent_config.composition.preview` — the read-only effective-
+	 * composition preview (HA-66): what the strict run-start composer WOULD
+	 * compose for the target triple + effective boot-agent, WITHOUT
+	 * materialising anything. A verified caller previews its own exact
+	 * triple; an admin / console:fleet caller may address a SAME-TENANT user
+	 * only with signed effective-agent reach (the widening is audited before
+	 * the composition read). Claim-free read. */
+	compositionPreview(
+		agentId: string,
+		options: { tenant_id?: string; user_id?: string; session_id?: string } = {},
+	): Promise<AgentConfigCompositionPreviewResponse> {
+		return this.#t.request<AgentConfigCompositionPreviewResponse>(
+			'/v1/agent_config/composition/preview',
+			{
+				agent_id: agentId,
+				...(options.tenant_id ? { tenant_id: options.tenant_id } : {}),
+				...(options.user_id ? { user_id: options.user_id } : {}),
+				...(options.session_id ? { session_id: options.session_id } : {}),
+			},
+		);
+	}
 }
 
 /**
@@ -1739,6 +1868,62 @@ export class StateNamespace {
 	}
 }
 
+/**
+ * The `sessions.turns.*` namespace — the turn-projection read surface
+ * (HA-63/64). The Runtime mounts the two routes at
+ * `POST /v1/sessions/turns/{list,get}` (pinned explicitly — nested
+ * session routes are never derived generically). Both methods are
+ * identity-mandatory; the consumer lane is exact-session (a
+ * foreign-session read answers typed not-found, non-oracular); the
+ * operations lane (`get` with `projection: 'operations'`) is the
+ * elevated admin/fleet observation surface — it gates on the verified
+ * `admin` OR `console:fleet` claim and audits widened reads server-side.
+ */
+export class SessionTurnsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `sessions.turns.list` — one newest-first page of the caller's exact
+	 * session's conversation projection. */
+	list(req: SessionTurnsListRequest): Promise<SessionTurnsListResponse> {
+		return this.#t.request<SessionTurnsListResponse>(
+			'/v1/sessions/turns/list',
+			req as unknown as Record<string, unknown>
+		);
+	}
+	/** `sessions.turns.get` — one (session, task) read on either the
+	 * consumer conversation lane or the elevated operations DTO lane. */
+	get(req: SessionTurnsGetRequest): Promise<SessionTurnsGetResponse> {
+		return this.#t.request<SessionTurnsGetResponse>(
+			'/v1/sessions/turns/get',
+			req as unknown as Record<string, unknown>
+		);
+	}
+}
+
+/**
+ * The `observability.*` namespace — the ONE bounded administrative rollup
+ * query (HA-65). The Runtime mounts `observability.query` at
+ * `POST /v1/observability/query`. An ordinary caller's query is forced to
+ * its own verified triple; a widened (admin OR console:fleet) fan-in is
+ * gated + audited server-side and never comes from the request body.
+ */
+export class ObservabilityNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `observability.query` — exact integer/decimal measure values over a
+	 * mandatory aligned bucket window with the mandatory freshness block. */
+	query(req: ObservabilityQueryRequest): Promise<ObservabilityQueryResponse> {
+		return this.#t.request<ObservabilityQueryResponse>(
+			'/v1/observability/query',
+			req as unknown as Record<string, unknown>
+		);
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -1771,6 +1956,8 @@ export interface ProtocolClient {
 	readonly events: EventsNamespace;
 	readonly agents: AgentsNamespace;
 	readonly sessions: SessionsNamespace;
+	readonly sessionTurns: SessionTurnsNamespace;
+	readonly observability: ObservabilityNamespace;
 	readonly topology: TopologyNamespace;
 	readonly runs: RunsNamespace;
 	readonly runtime: RuntimeNamespace;
@@ -1812,6 +1999,8 @@ export class HarborClient implements ProtocolClient {
 	readonly events: EventsNamespace;
 	readonly agents: AgentsNamespace;
 	readonly sessions: SessionsNamespace;
+	readonly sessionTurns: SessionTurnsNamespace;
+	readonly observability: ObservabilityNamespace;
 	readonly topology: TopologyNamespace;
 	readonly runs: RunsNamespace;
 	readonly runtime: RuntimeNamespace;
@@ -1846,6 +2035,8 @@ export class HarborClient implements ProtocolClient {
 		this.events = new EventsNamespace(transport);
 		this.agents = new AgentsNamespace(transport);
 		this.sessions = new SessionsNamespace(transport);
+		this.sessionTurns = new SessionTurnsNamespace(transport);
+		this.observability = new ObservabilityNamespace(transport);
 		this.topology = new TopologyNamespace(transport);
 		this.runs = new RunsNamespace(transport);
 		this.runtime = new RuntimeNamespace(transport);

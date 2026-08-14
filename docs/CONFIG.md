@@ -170,6 +170,24 @@ Validation: non-empty.
 
 ---
 
+## Observability
+
+### observability.rollups.driver
+
+Driver for the durable observability rollup projection. Default:
+empty — the `observability.rollups.*` block is left unwired (the
+rollup query/projector is not built). Validation: when set, `inmem` /
+`sqlite` / `postgres`. Restart-required.
+
+### observability.rollups.dsn
+
+Driver connection string for the rollup projection. Default: empty.
+Validation: required when `driver` is `sqlite` or `postgres`; unused
+for `inmem`. SQLite: file path. Postgres: libpq URL. Secret: redacted
+in audit logs. Restart-required.
+
+---
+
 ## State
 
 ### state.driver
@@ -698,6 +716,108 @@ skills:
         legacy_writers_drained: false
 ```
 
+### skills.boot_agent_packs
+
+Restart-required operator declarations that load **node-local boot agent
+packs** at boot (Phase 248 — D-427): a bounded list of per-agent skill
+packages read from the filesystem. Default: empty — no packs are loaded.
+Validation: requires a configured `skills.driver` and `skills.dsn`; a
+declaration on an unconfigured skills block fails boot loud.
+
+Each entry names exactly ONE `(tenant_id, agent_id)` pair — an exact,
+case-sensitive opaque tenant key and the resolved boot agent it belongs
+to. There are no wildcards, no tenant-wide application, and no runtime
+discovery: a declaration is honored only for that exact tenant + resolved
+boot agent, and only when the effective agent actually resolves to the
+declared `agent_id`.
+
+The driver/DSN pair provisions the store that persists **revision** and
+**personal** skill state — the boot packs themselves are never stored
+there. With `driver: postgres` that state is durable and shared across
+replicas, but the boot packs remain node-local: each node reloads them
+from its own files at boot, so a file change on one node never converges
+the others. Treat pack files as per-node configuration, not a shared
+catalog.
+
+Each entry carries `tenant_id`, `agent_id`, `directory`, and `include`:
+
+- `tenant_id` — the exact, case-sensitive opaque tenant key (above).
+- `agent_id` — the exact resolved boot agent the pack belongs to.
+- `directory` — the pack root, resolved **relative to the directory
+  containing this config file, never the process working directory**.
+- `include` — one or more package directories, each RELATIVE to
+  `directory`. One `include` entry is exactly one package directory
+  containing exactly one case-sensitive top-level regular UTF-8
+  `SKILL.md`. The v1.28 contract is resource-free: no auxiliary resource
+  payloads ride alongside the skill body.
+
+Loading is strict and fails loud. The loader rejects symlinks, hardlinks,
+special files (FIFO / socket / device), path traversal outside the pack
+root, duplicate declarations (the same tenant + agent, or the same package
+included twice), and any out-of-bounds shape. Packs load eagerly and
+immutably BEFORE the runtime is ready; the loaded set is fixed for the
+process lifetime, and file changes take effect only on restart — never
+hot-reloaded.
+
+The loader is read-only by construction: it performs no writes, exposes
+no admin verbs, has no lifecycle, and never creates agents or widens
+reach. It is separate from the existing `EnsureBootAgentLifecycle` boot
+maintenance, which MAY still write revisions; the two coexist.
+
+Boot-pack items and revision (`agent_packs`) items form ONE operator tier,
+resolved last in the run-visible composition. A skill present in both a
+boot pack and the revision with the same content hash is accepted
+(deduplicated); the same skill at DIFFERENT hashes is a conflict that
+fails loud. The combined item count (boot + revision) is capped at 256.
+
+Boot-owned items are read-only at every mutation surface, and the
+refusal is precise. A new write / upsert / proposal commit / rollback /
+activation that targets a boot-owned canonical name fails with a typed
+boot-owned conflict even when the payload carries the same content hash
+— the NAME is boot-owned, not the bytes. Removal may delete a real
+legacy active-revision shadow (a revision `agent_packs` record at that
+name), but a boot-only removal — a name whose only contributor is the
+boot pack — returns a typed read-only refusal and never removes the boot
+contribution.
+
+Preview surfaces report the effective-composition provenance of each
+item as the exact closed set `boot` / `revision` / `both`, alongside the
+per-package semantic content hash of each loaded package. The loaded
+boot pack set as a whole carries the deterministic `boot_pack_set_hash`
+— a node-local digest over the set, distinct from any per-package hash,
+and never shared through the store: boot packs stay per-node, so
+Postgres never converges them. Config removal on the next runtime
+removes only the node-local boot contribution: an independently
+persisted active revision remains visible in the shared preview as
+`revision`-only provenance — no tombstone and no erasure of the durable
+revision — while a name with BOTH contributions absent stays
+non-oracularly unavailable (typed not-found/denied), never a fabricated
+empty or a cross-principal row.
+
+Headless `RunOnce` against a boot-pack agent is unsupported and fails
+loud — it never silently runs without the packs. Production `harbor serve`
+and the devstack resolve the SAME loader/composer path: the devstack's
+synthetic boot agent opens the same eager index before its run-loop driver
+and composes the baseline exactly like a production boot agent, and the
+run-start skill snapshot binds the frozen entries through the exact
+`(tenant, effective-boot-agent)` membership lookup with the boot set hash,
+the combined hash, and per-item `boot|revision|both` provenance.
+
+```yaml
+skills:
+  driver: postgres
+  dsn: ${SKILLS_DSN}
+  boot_agent_packs:
+    - tenant_id: acme
+      agent_id: harbor-dev-agent
+      directory: /etc/harbor/skills
+      include:
+        - workbench-foundation
+        - workbench-prototype-authoring
+        - workbench-brand-identity
+        - workbench-deck-authoring
+```
+
 ---
 
 ## Tasks
@@ -750,6 +870,26 @@ Validation: > 0.
 
 Background sweeper period. Default: `15m`. Validation: > 0 AND <=
 `idle_ttl`.
+
+### sessions.turns.driver
+
+Driver for the durable conversation-turn projection. Default: empty —
+the `sessions.turns.*` block is left unwired (the projection is not
+built). Validation: when set, `inmem` / `sqlite` / `postgres`.
+Restart-required.
+
+### sessions.turns.dsn
+
+Driver connection string for the conversation-turn projection.
+Default: empty. Validation: required when `driver` is `sqlite` or
+`postgres`; unused for `inmem`. SQLite: file path. Postgres: libpq
+URL. Secret: redacted in audit logs. Restart-required.
+
+### sessions.turns.retention
+
+Number of newest-turn rows the projection retains per session.
+Default: `0` — zero or negative selects the projection's documented
+default. Restart-required.
 
 ---
 
@@ -1511,13 +1651,63 @@ fullscreen-tab and side-by-side (pip) layouts.
 
 Default: nil (resolves to `[inline]`). Restart-required.
 
+**Fresh render-admission consequence (D-412 amendment, Shipped v1.28).** The
+durable-reopen MCP App admission surface mints stateless,
+integrity-protected render admissions sealed with the deployment's existing
+shared KEK authority — the `tools.oauth_token_kek_env`-backed AES-256-GCM
+sealer the OAuth token path already uses (D-095). Production and devstack
+use ONE constructor/composition path and ONE immutable shared sealer
+instance. The surface is enabled by `tools.mcp_app_render_admission.enabled`
+(default `false`; omitted stays compatible with existing deployments — there
+is no second authority field and no literal key). When the surface is
+enabled, an empty `tools.oauth_token_kek_env` name, a missing/unset/invalid
+KEK, or a sealer construction failure fails readiness **loud**, naming the
+problem, even when no OAuth provider or credential broker is configured.
+Restart and multi-replica deployments verify admissions against the shared
+KEK AND the same current provider/catalog generation — a per-process
+ephemeral key or a process-local discovery counter would make one replica's
+admission unverifiable on another, and a replica holding a different current
+catalog fails closed as a generation mismatch. The admission claim binds
+schema/time/`(tenant,user,session)`/effective-agent/server/resource/current
+provider/catalog generation and never carries raw arguments, secrets,
+provider output, callback names, or general capabilities; ordinary resource
+reads never mint an admission, and unavailable/expired admissions answer
+typed unavailable/expired with fresh checks on refresh. There is no persisted
+callback authority, no hot registry, and no transcript impersonation.
+
 Example:
 
 ```yaml
 tools:
   mcp_app_host:
     display_modes: [inline, fullscreen, pip]
+  mcp_app_render_admission:
+    enabled: true   # default false; when enabled, tools.oauth_token_kek_env
+                    # must name a valid 32-byte hex KEK or readiness fails loud
 ```
+
+### tools.mcp_app_render_admission.enabled
+
+Opt-in toggle for the MCP App render-admission surface. Default:
+`false` (the surface is off; existing deployments are unaffected).
+Restart-required.
+
+When `true`, the runtime mints stateless, integrity-protected render
+admissions sealed with the deployment's EXISTING shared
+`tools.oauth_token_kek_env` AES-256-GCM key-encryption authority — the
+same sealer the OAuth token path already uses. There is no second
+secret or config key.
+
+Enabling the surface makes readiness fail LOUD — naming the problem —
+when `tools.oauth_token_kek_env` names an empty env var, when the KEK
+is missing, unset, or invalid, or when the sealer cannot be
+constructed, even when no OAuth provider or credential broker is
+configured.
+
+Only the explicit current `ui://` admission-requesting read, after a
+successful identity-scoped tool-context replay, mints an admission.
+Ordinary resource reads never mint; AppBridge secondary reads and
+failed / unavailable / foreign replays mint no authority.
 
 ### tools.mcp_artifact_egress_max_bytes
 
@@ -1677,8 +1867,24 @@ Planner driver. Default: `react` (V1 reference). Validation: `react`
 
 ### planner.max_steps
 
-Step circuit-breaker cap. Default: `0` → driver default
-(`react.DefaultMaxSteps` = 12). Validation: >= 0.
+The planner step **tranche** and the runtime's continuation authority
+(HA-57, D-417/D-418): the number of planner steps a run may consume in
+one cycle before it is parked for continuation. When a tranche of
+planner steps is consumed without a terminal Finish, the run is
+**parked** through the unified pause primitive — a typed
+`constraints_conflict` pause carrying `{cause: max_steps_exceeded,
+max_steps, steps_observed}` — instead of terminating; it is never
+forced to finalise. An authorised RESUME continues the SAME run with a
+fresh tranche (the tranche counter resets; the cumulative trajectory is
+untouched), so long-running work spans repeated cycles as ONE run. A
+fresh process cannot resume a parked run — it answers the typed
+`pauseresume.ErrRestartUnavailable` (D-417). The planner-side per-tranche
+breaker (`react.DefaultMaxSteps` = 12) ends the cycle with the typed
+`NoPath` Finish carrying `max_steps_exceeded`; the runtime's outer
+`ErrMaxStepsExceeded` guard (default 64) remains the runaway backstop
+when tranche pausing is unavailable. Default: `0` → the driver default
+(12); it never means unbounded and never selects the legacy
+terminal-only loop. Validation: >= 0 (a negative value is rejected).
 
 ### planner.extra_guidance
 

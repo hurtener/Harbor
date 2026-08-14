@@ -45,6 +45,10 @@
   import TraceToggle, { type TraceNode } from '$lib/components/playground/TraceToggle.svelte';
   import { ChatPanel, type ChatMessage, type ChatProtocolClient } from '$lib/chat/index.js';
   import { MAX_SESSION_TITLE_LEN } from '$lib/sessions/types.js';
+  import {
+    chatCatalogListRequest,
+    SessionsProtocol
+  } from '$lib/protocol/sessions.js';
   import AppPanel from '$lib/components/playground/AppPanel.svelte';
   import AppTabStrip from '$lib/components/playground/AppTabStrip.svelte';
   import SplitPane from '$lib/components/playground/SplitPane.svelte';
@@ -73,14 +77,21 @@
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
-  import { parseAnswerFromDetail, parseReasoningSteps } from './answer-envelope.js';
   import {
     loadSessionHistory,
     reduceHistoryTurns,
     type HistoryTurn
   } from '$lib/sessions/history.js';
-  import type { ReasoningStep } from '$lib/chat/types.js';
+  import {
+    loadTurnPage,
+    mergeTurnPages,
+    reconcileTurnRow,
+    TurnPageError,
+    TURN_PAGE_DEFAULT_LIMIT,
+    type TurnPage
+  } from '$lib/sessions/turns.js';
   import { applyChunk, applyReasoningChunk, finalizeStream } from './chunk-stream.js';
+  import type { ChatToolCall } from '$lib/chat/types.js';
   import {
     decodeChunk,
     decodeCost,
@@ -97,8 +108,12 @@
     type ToolLifecycleEvent,
     type AppAvailableEvent
   } from './wire-events.js';
-  import { appViewFromDiscovery, hydratedAgentMessage } from './turn-projection.js';
-  import type { ChatToolCall } from '$lib/chat/types.js';
+  import {
+    appViewFromDiscovery,
+    hydratedAgentMessage,
+    turnRowMessages,
+    type TurnRowMessages
+  } from './turn-projection.js';
   import {
     PlaygroundSavedFilters,
     type PlaygroundViewSpec
@@ -128,12 +143,31 @@
   // to `ready` with messages flowing — the trace toggle becomes the
   // surface that surfaces the info banner instead.
   let pageInfo = $state<{ headline: string; detail: string } | null>(null);
-  // A non-fatal note about the reopen hydration: set when older history was
-  // trimmed by retention (Truncated), or when loading earlier messages
+  // A non-fatal note about the reopen hydration: set when the durable turn
+  // page was partial (retention eviction), when an older page's cursor was
+  // refused (typed expiry/gap — never a silent reset), or when hydration
   // failed for an UNEXPECTED reason (a real transport error — never a silent
   // swallow, CLAUDE.md §13). Null when hydration loaded cleanly (or the
-  // runtime simply has no `state.history` surface / no prior history).
+  // runtime simply has no `sessions.turns.*` surface / no prior history).
   let historyNotice = $state<string | null>(null);
+  // True when the runtime predates the `sessions.turns.*` surface
+  // (`unknown_method` on the two-read open). The normal open NEVER silently
+  // degrades to forensic event replay — the operator must explicitly invoke
+  // it (CLAUDE.md §13, D-425: the legacy path is a user-invoked
+  // degraded/forensic action, never the default).
+  let turnProjectionUnavailable = $state(false);
+  // True once the operator explicitly requested the degraded/forensic
+  // `state.history` event-replay reopen.
+  let legacyReopenRequested = $state(false);
+
+  /* ---- durable turn-page paging (HA-64 / D-425) -------------------- */
+  // The loaded newest-first turn pages (page[0] is the newest). Older pages
+  // load through the opaque `next_older_cursor`, merged with stable ordering
+  // under append (`mergeTurnPages` dedupes by turn_id — no skip/duplicate
+  // while a new turn starts).
+  let turnPages = $state<TurnPage[]>([]);
+  let olderLoading = $state(false);
+  let olderError = $state<string | null>(null);
 
   /* ---- chat stream ------------------------------------------------ */
   let messages = $state<ChatMessage[]>([]);
@@ -540,6 +574,45 @@
   // sendMessage adapter consults it to route the message correctly.
   let activeTaskID = $state<string | null>(null);
 
+  // HA-64 / D-425 (P1) — the task ids of durable turn rows the fold
+  // rendered while still in flight (`pending` / `running` / `paused`).
+  // This page did NOT start these tasks (activeTaskID stays null for
+  // them), so without this admission `handleChunk` / `handleTerminal`
+  // would reject every live chunk and the terminal event, and the
+  // reopened bubble would freeze at the fold snapshot forever. The set
+  // is populated ONLY from authoritative `sessions.turns.list` rows in
+  // `foldTurnRows` and pruned on terminal convergence — never widened
+  // to arbitrary session events. Plain (non-reactive) because it is read
+  // only from event handlers, never rendered. The fold — and therefore
+  // this membership — completes BEFORE the EventSource opens (`load`
+  // awaits `hydratePastTurns` first), so a replayed terminal frame
+  // (the snapshot-to-live resume cursor) always finds its task already
+  // admitted here.
+  let reopenedLiveTaskIDs = new Set<string>();
+
+  // The durable row statuses that keep a fold-rendered turn eligible for
+  // the live lane (the closed in-flight set).
+  const LIVE_TURN_STATUSES = new Set(['pending', 'running', 'paused']);
+
+  // The durable row statuses that are terminal on the durable lane (the
+  // closed sealed set, mirroring the projection's own terminal set). A
+  // freshly read terminal row for an already-rendered task never regains
+  // live-lane membership, but its rendered bubbles converge in place from
+  // the fresh projection (HA-64 / D-425 P1 — local durable convergence).
+  const TERMINAL_TURN_STATUSES = new Set(['complete', 'failed', 'cancelled']);
+
+  // HA-64 / D-425 (P1) — the snapshot-to-live handoff: the durable page's
+  // `live_resume_seq` — the exclusive subscribe-from cursor — is bound as
+  // the narrowly named `?resume_seq=` SSE query param when the fold
+  // produced a non-zero cursor (captured from the `sessions.turns.list`
+  // response in `hydratePastTurns`). `load` folds the durable rows and
+  // establishes `reopenedLiveTaskIDs` BEFORE opening the EventSource, so a
+  // terminal event that landed between the snapshot and the physical
+  // subscription is replayed by the stream server (strictly-newer-than-
+  // cursor, and only when no reconnect Last-Event-ID header is present)
+  // and converges exactly like any other terminal frame — the frozen-bubble
+  // race is closed without polling or a generic live-cursor API.
+
   // FIFO queue of "send when current run terminates" messages. The
   // lifecycle watcher below drains the queue with `start` calls as
   // soon as activeTaskID becomes null.
@@ -635,14 +708,25 @@
   // pending agent bubble. Only the `content` channel grows the answer
   // body; `reasoning` deltas land in the accordion at completion, not
   // inline. Done flips the bubble's streaming flag off.
+  //
+  // HA-64 / D-425 (P1) — a chunk is admitted for the locally-started
+  // task (activeTaskID) OR for a reopened in-flight turn the fold
+  // rendered from `sessions.turns.list` (reopenedLiveTaskIDs); any other
+  // task id is ignored, so the live lane never widens to arbitrary
+  // session events. For a reopened turn only the `content` channel is
+  // projected: its durable bubble already carries the row's DERIVED
+  // reasoning summary, and appending raw thinking would corrupt it — the
+  // sealed row's derived summary converges at terminal instead.
   function handleChunk(ev: ChunkEvent): void {
-    if (ev.taskID !== activeTaskID) return;
+    if (ev.taskID !== activeTaskID && !reopenedLiveTaskIDs.has(ev.taskID)) return;
     if (ev.delta !== '') {
       // The content channel grows the answer body; the reasoning channel
       // grows the live "Reasoning" disclosure (108a — runtime reasoning
       // emit fixed in the corrections layer). Neither pollutes the other.
       if (ev.kind === 'reasoning') {
-        messages = applyReasoningChunk(messages, ev.taskID, ev.delta);
+        if (ev.taskID === activeTaskID) {
+          messages = applyReasoningChunk(messages, ev.taskID, ev.delta);
+        }
       } else {
         messages = applyChunk(messages, ev.taskID, ev.delta);
         // 108a-D — live tokens/sec from the content-chunk rate.
@@ -657,50 +741,96 @@
     }
   }
 
+  // Converges one task's agent bubble to a post-terminal message, or
+  // inserts the message right after the turn's user bubble when the fold
+  // rendered no agent bubble for it (a reopened turn that was running
+  // with nothing renderable at reopen). `fallback === null` inserts
+  // nothing. The insert only runs when no agent message for the task
+  // matched, so it can never duplicate the bubble; it keeps timeline
+  // order by sitting directly under the turn's user bubble.
+  function convergeOrInsertAgent(
+    msgs: ChatMessage[],
+    taskID: string,
+    update: (m: ChatMessage) => ChatMessage,
+    fallback: ChatMessage | null
+  ): ChatMessage[] {
+    let matched = false;
+    const mapped = msgs.map((m) => {
+      if (m.taskID !== taskID || m.role !== 'agent') return m;
+      matched = true;
+      return update(m);
+    });
+    if (matched || fallback === null) return mapped;
+    const idx = mapped.findIndex((m) => m.taskID === taskID && m.role === 'user');
+    if (idx === -1) return [...mapped, fallback];
+    return [...mapped.slice(0, idx + 1), fallback, ...mapped.slice(idx + 1)];
+  }
+
   // handleTerminal reconciles a completed/failed/cancelled turn. On
-  // completion it fetches the authoritative answer + reasoning trace via
-  // `tasks.get` (Phase 106) and records the turn latency; on
-  // failure/cancellation it converts the bubble to a system error.
+  // completion it fetches the authoritative sealed turn via ONE
+  // `sessions.turns.get` (HA-64 / D-425 — the bounded terminal reconciliation
+  // read; it does NOT refetch the raw transcript) and records the turn
+  // latency; on failure/cancellation it converts the bubble to a system
+  // error. The reconcile projects the sealed durable row (answer union,
+  // derived reasoning summary, usage availability, bounded activity, App
+  // refs) so the completed bubble renders from the SAME consumer-safe read
+  // model the reopen path renders — identical skeletons before/after restart.
+  //
+  // HA-64 / D-425 (P1) — the reconcile ALSO admits a reopened in-flight
+  // turn (a task the fold rendered from `sessions.turns.list` while it was
+  // still running/paused, tracked in `reopenedLiveTaskIDs`): its terminal
+  // event converges its durable bubble to the sealed row exactly like the
+  // locally-started path, with exactly one `sessions.turns.get`. The task
+  // is pruned from the eligible set BEFORE the read, so a redelivered
+  // terminal frame is a no-op rather than a second reconcile.
   async function handleTerminal(ev: LifecycleEvent): Promise<void> {
     // Drop any pending intervention parked on this run — a terminal
     // task can never still be awaiting an operator decision.
     interventions = interventions.filter((i) => i.runID !== ev.taskID);
-    if (ev.taskID !== activeTaskID) return;
     const taskID = ev.taskID;
+    const isActive = taskID === activeTaskID;
+    const isReopened = reopenedLiveTaskIDs.has(taskID);
+    if (!isActive && !isReopened) return;
+    if (isReopened) reopenedLiveTaskIDs.delete(taskID);
     if (ev.kind === 'completed' && client !== null) {
       try {
-        const detail = await client.tasks.get<{
-          result_inline?: string;
-          trajectory?: { steps?: ReasoningStep[] };
-          task?: { duration_ms?: number };
-        }>(taskID);
-        const answer = parseAnswerFromDetail(detail);
-        const reasoningSteps = parseReasoningSteps(detail);
-        const durationMs = detail.task?.duration_ms ?? 0;
+        // ONE sessions.turns.get on the consumer lane. The sealed row is the
+        // authoritative terminal snapshot — never a tasks.get / state.history /
+        // events.list transcript join.
+        const row = await reconcileTurnRow(client, sessionID, taskID);
+        const rendered = turnRowMessages(row);
+        const durationMs = rendered.agent?.meta?.elapsedMs ?? 0;
         recordTurn(durationMs);
         const tc = turnCost[taskID];
-        messages = messages.map((m) =>
-          m.taskID === taskID && m.role === 'agent'
-            ? {
-                ...m,
-                text: answer,
-                reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
-                // Preserve the per-tool statuses the tool.* lifecycle
-                // events set — do NOT blanket-mark succeeded (that hid a
-                // timed-out / failed tool as a success). A row still
-                // 'invoked' here never saw a terminal tool event; leave it
-                // honest rather than fabricate success.
-                toolCalls:
-                  (turnTools[taskID] ?? []).length > 0 ? [...turnTools[taskID]] : undefined,
-                meta: {
-                  elapsedMs: durationMs > 0 ? durationMs : undefined,
-                  tokens: tc?.tokens,
-                  costUSD: tc?.cost
-                },
-                pending: false,
-                streaming: false
-              }
-            : m
+        const meta = {
+          elapsedMs: durationMs > 0 ? durationMs : undefined,
+          tokens: rendered.usage.tokens ?? tc?.tokens,
+          costUSD: rendered.usage.costUSD ?? tc?.cost
+        };
+        const sealed: ChatMessage | null =
+          rendered.agent !== null
+            ? { ...rendered.agent, meta, pending: false, streaming: false }
+            : null;
+        messages = convergeOrInsertAgent(
+          messages,
+          taskID,
+          (m) => ({
+            ...m,
+            text: rendered.agent?.text ?? '(no answer recorded)',
+            // The durable row carries only DERIVED reasoning (structurally
+            // no raw thinking) — the live bubble's streamed reasoning is
+            // preserved unless the sealed row has a summary to show.
+            reasoningText: rendered.agent?.reasoningText ?? m.reasoningText,
+            reasoningSteps: m.reasoningSteps,
+            toolCalls: rendered.agent?.toolCalls ?? m.toolCalls,
+            artifacts: rendered.agent?.artifacts ?? m.artifacts,
+            app: rendered.agent?.app ?? m.app,
+            serverID: rendered.agent?.serverID ?? m.serverID,
+            meta,
+            pending: false,
+            streaming: false
+          }),
+          sealed
         );
       } catch {
         messages = messages.map((m) =>
@@ -711,19 +841,33 @@
       }
     } else if (ev.kind !== 'completed') {
       const errorText = `Task ${ev.kind} — see Tasks page for details.`;
-      messages = messages.map((m) =>
-        m.taskID === taskID && m.role === 'agent'
-          ? { ...m, text: errorText, role: 'system', pending: false, streaming: false }
-          : m
+      messages = convergeOrInsertAgent(
+        messages,
+        taskID,
+        (m) => ({ ...m, text: errorText, role: 'system', pending: false, streaming: false }),
+        {
+          id: `m-${Date.now()}-sys`,
+          role: 'system',
+          text: errorText,
+          taskID,
+          at: new Date().toISOString(),
+          pending: false
+        }
       );
     }
-    running = false;
-    paused = false;
-    activeTaskID = null;
-    // Stop the live Duration tick; the turn's real duration_ms was added to
-    // activeWorkMs by recordTurn above.
-    activeTurnStartMs = 0;
-    void drainQueue();
+    if (isActive) {
+      running = false;
+      paused = false;
+      activeTaskID = null;
+      // Stop the live Duration tick; the turn's real duration_ms was added to
+      // activeWorkMs by recordTurn above.
+      activeTurnStartMs = 0;
+      void drainQueue();
+    } else if (reopenedLiveTaskIDs.size === 0 && activeTaskID === null) {
+      // The last reopened in-flight turn converged — the session has no
+      // live work left, so the pause indicator the fold set no longer holds.
+      paused = false;
+    }
     // 108a-F — a completed turn may have produced artifacts (e.g. tool
     // results); refresh the Recent Artifacts card.
     void refreshArtifacts();
@@ -737,8 +881,23 @@
   // dropped every chunk). The subscription is optional — a runtime
   // without the SSE surface leaves the stream Off and the page still
   // works (the operator sends manually; answers arrive via tasks.get).
-  function subscribeEvents(c: ProtocolClient): void {
+  //
+  // HA-64 / D-425 (P1) — `resumeSeq` is the durable fold's
+  // `live_resume_seq` (from `hydratePastTurns`), seeded as the stream's
+  // narrowly named initial-resume query param so a terminal event that
+  // landed between the snapshot and this physical subscription is
+  // replayed by the server and converges the rendered bubble instead of
+  // freezing it. The page opens the stream ONLY after the fold completes
+  // (`load` awaits `hydratePastTurns` first); a re-open (retry) closes
+  // any previous EventSource first so no second stream leaks.
+  function subscribeEvents(c: ProtocolClient, resumeSeq?: number): void {
     try {
+      // A re-run of load() (the PageState retry) must not leak a second
+      // EventSource alongside the first.
+      if (taskEvents !== null) {
+        taskEvents.close();
+        taskEvents = null;
+      }
       const url = c.events.subscribeURL({
         eventTypes: [
           'task.completed',
@@ -760,7 +919,8 @@
           'tool.rejected',
           'tool.auth_completed',
           'session.title_changed'
-        ]
+        ],
+        resumeSeq
       });
       const es = new EventSource(url);
       es.onopen = () => {
@@ -893,27 +1053,319 @@
   }
 
   /* ================================================================ */
-  /* Session reload (D-171)                                            */
+  /* Session reload — the TWO-READ chat open (HA-64 / D-425)           */
   /* ================================================================ */
 
-  // hydratePastTurns reloads the conversation's prior turns when opening
-  // an existing session. It drives off the `state.history` windowed
-  // event-replay surface (D-254): a TAIL-FIRST, scroll-up-by-cursor read of
-  // the session's durable event stream, reduced CLIENT-SIDE into turns (the
-  // agent answer + reasoning are reconstructed from the run's
-  // `llm.completion.chunk` deltas — the same channel the live stream
-  // reduces). This replaces the former full-load `tasks.list` + N×`tasks.get`
-  // reconstruction. The user query text is NOT carried in the durable event
-  // payloads (the task lifecycle payloads omit it), so it is folded in from
-  // a SINGLE `tasks.list` catalog lookup keyed by run id. No-op when the
-  // session has no events.
-  async function hydratePastTurns(): Promise<void> {
+  // hydratePastTurns reloads the conversation's prior turns when opening an
+  // existing session. The NORMAL open is exactly two reads (Phase 245 +
+  // Phase 246 / D-425):
+  //
+  //   1. ONE lifecycle-only session read — `sessions.inspect` with
+  //      `projection: 'lifecycle'` (HA-63 / D-424). The lifecycle row drives
+  //      the header's paused flag, the KPI Started column, and the honest
+  //      brand-new-session detection (`not_found` → empty start). It asks for
+  //      NO counter enrichment — a lifecycle row's zeros mean "not computed",
+  //      never "measured as zero".
+  //   2. ONE durable tail page — `sessions.turns.list` (HA-64). The Runtime's
+  //      consumer-safe conversation projection: query, answer/reference,
+  //      attachments metadata, lifecycle, derived reasoning summaries, agent
+  //      binding, per-measure usage availability, MCP App references with
+  //      availability, pause state, and the bounded inline activity window.
+  //      No `state.history`, no `tasks.list`, no `tasks.get`, no `events.list`.
+  //
+  // Older pages load through the page's opaque `next_older_cursor`
+  // (`loadOlderTurns` below) — a snapshot/keyset cursor anchored on an
+  // immutable task/turn tie-breaker, so a new turn starting while the
+  // operator pages older history produces neither duplicates nor omissions.
+  //
+  // A runtime that predates the `sessions.turns.*` surface answers
+  // `unknown_method`: the page sets `turnProjectionUnavailable` and OFFERS
+  // the degraded/forensic legacy reopen (`hydratePastTurnsLegacy`, the
+  // `state.history` event-replay path) — the operator must explicitly invoke
+  // it. It is never the default open path (D-425).
+  //
+  // Returns the durable fold's `live_resume_seq` when it is non-zero (the
+  // exclusive subscribe-from cursor the page binds to the EventSource's
+  // initial resume query — the snapshot-to-live handoff), or `undefined`
+  // when the fold produced no cursor (brand-new session, `unknown_method`,
+  // `not_found`, a transport failure, or a page whose cursor is 0).
+  async function hydratePastTurns(): Promise<number | undefined> {
+    if (client === null || sessionID === '') return undefined;
+    const c = client;
+    historyNotice = null;
+    olderError = null;
+    turnProjectionUnavailable = false;
+    turnPages = [];
+    // HA-64 / D-425 (P1) — a re-hydration (retry) rebuilds the eligible
+    // in-flight set from the fresh fold; stale admissions from a previous
+    // hydration must not survive.
+    reopenedLiveTaskIDs.clear();
+
+    // ---- read 1 of 2: the lifecycle-only session snapshot (HA-63) ----
+    try {
+      const lifecycle = await new SessionsProtocol(c).inspect({
+        session_id: sessionID,
+        projection: 'lifecycle'
+      });
+      const row = lifecycle.row;
+      if (row?.started_at && sessionStartedAt === null) {
+        sessionStartedAt = row.started_at;
+      }
+      if (row?.status === 'paused') paused = true;
+    } catch (err) {
+      // `not_found` on inspect = the session has no catalog row yet (brand-new
+      // session id, materialised create-on-first-use) — honest empty start.
+      if (err instanceof ProtocolError && err.code === 'not_found') {
+        return undefined;
+      }
+      if (isUnknownMethod(err)) {
+        // Runtime predates the lifecycle projection — the turns read below
+        // still decides whether the projection open is possible.
+      } else {
+        // A real lifecycle-read failure is non-fatal (the turn page is the
+        // content source); the page proceeds to the turns read.
+        console.warn('hydratePastTurns: lifecycle inspect failed:', String(err));
+      }
+    }
+
+    // ---- read 2 of 2: ONE durable turn tail page (HA-64) ----
+    try {
+      const page = await loadTurnPage(c, { sessionID, limit: TURN_PAGE_DEFAULT_LIMIT });
+      turnPages = [page];
+      if (page.pageCompleteness === 'partial') {
+        historyNotice =
+          page.partialReason === 'retention_eviction'
+            ? 'Older messages were trimmed by retention — showing the most recent history.'
+            : 'The turn projection is partial — some older messages may be missing.';
+      }
+      // The resume cursor rides even an empty newest page: a non-zero
+      // `live_resume_seq` means events exist beyond the fold (all-gated or
+      // pre-turn activity), and seeding the stream cursor keeps the
+      // snapshot-to-live handoff gap-free.
+      const resumeSeq = page.liveResumeSeq > 0 ? page.liveResumeSeq : undefined;
+      if (page.turns.length === 0) return resumeSeq;
+
+      const rendered = page.turns.map((r) => turnRowMessages(r));
+      foldTurnRows(rendered, page.turns);
+      return resumeSeq;
+    } catch (err) {
+      if (err instanceof TurnPageError && err.kind === 'unknown_method') {
+        // The Runtime predates the `sessions.turns.*` surface. The normal
+        // open does NOT silently degrade to forensic replay — offer it.
+        turnProjectionUnavailable = true;
+        historyNotice =
+          'This Runtime does not expose the conversation turn projection. You can load earlier messages with the degraded forensic event-replay path.';
+        return undefined;
+      }
+      if (err instanceof TurnPageError && err.kind === 'not_found') {
+        // Foreign/erased session — non-oracular empty start.
+        return undefined;
+      }
+      const detail =
+        err instanceof ProtocolError ? `${err.code}: ${err.message}` : String(err);
+      console.warn('hydratePastTurns: turn projection read failed:', detail);
+      historyNotice = `Could not load the conversation projection (${detail}). The conversation continues from here.`;
+      return undefined;
+    }
+  }
+
+  // convergeTerminalRowInPlace is the retry-side terminal convergence: when
+  // hydration's freshly read authoritative row for an already-rendered task is
+  // terminal (HA-64 / D-425 P1), replace that task's user/agent bubbles in
+  // place from the freshly projected durable row. The terminal row is
+  // authoritative — the first fold's snapshot (e.g. a `partial` answer from
+  // when the turn was still running) is stale, and since a terminal row is
+  // never re-admitted to the live lane no later event can converge it.
+  //
+  // Contract: transcript ordering is preserved (the fresh pair sits where the
+  // task's first bubble was); no other task's messages are removed; a
+  // terminal agent bubble newly available in the projection is inserted
+  // directly under the task's user bubble; each role appears at most once in
+  // the result (every pre-existing bubble for the task is dropped before the
+  // fresh user/agent pair is spliced in, so nothing can duplicate). It is a
+  // LOCAL render: zero `sessions.turns.get` / tasks / history / events
+  // reads, and no KPI / notice folding (the retry must not double-count).
+  function convergeTerminalRowInPlace(taskID: string, rendered: TurnRowMessages): void {
+    const fresh: ChatMessage[] = [];
+    if (rendered.user !== null) fresh.push(rendered.user);
+    if (rendered.agent !== null) fresh.push(rendered.agent);
+    // Drop every pre-existing user/agent bubble for the task, remembering
+    // where its first bubble sat so the fresh pair splices back in place.
+    let anchor = -1;
+    const rest: ChatMessage[] = [];
+    for (const m of messages) {
+      if (m.taskID !== taskID || (m.role !== 'user' && m.role !== 'agent')) {
+        rest.push(m);
+        continue;
+      }
+      if (anchor === -1) anchor = rest.length;
+    }
+    if (anchor === -1) {
+      // Defensive — the present-set branch above guarantees at least one
+      // rendered message for the task; nothing to replace otherwise.
+      if (fresh.length > 0) messages = [...messages, ...fresh];
+      return;
+    }
+    messages = [...rest.slice(0, anchor), ...fresh, ...rest.slice(anchor)];
+  }
+
+  // foldTurnRows projects a page's durable rows into chat messages, dedupes
+  // against the live stream, folds the honest per-component state into the
+  // header/KPI accumulators, and prepends the rendered bubbles. The rows are
+  // newest-first (the projection contract); the chat stream renders
+  // oldest-at-top (newest at the bottom, matching the live view), so the
+  // page's rows are iterated from the oldest to the newest before prepending.
+  // The KPI fold is availability-gated: tokens/cost/latency are folded ONLY
+  // when the wire reports them exact/estimated — an unavailable measure never
+  // becomes a fabricated zero (D-425, CLAUDE.md §13).
+  function foldTurnRows(renderedRows: TurnRowMessages[], rows: Array<{ task_id?: string; turn_id: string }>): void {
+    const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
+    const hydrated: ChatMessage[] = [];
+    let activityOverflow = 0;
+    let attachmentsUnavailable = 0;
+    let reasoningPartial = 0;
+    for (let i = renderedRows.length - 1; i >= 0; i--) {
+      const rendered = renderedRows[i];
+      const row = rows[i];
+      const taskID = row.task_id || row.turn_id;
+      if (present.has(taskID)) {
+        // HA-64 / D-425 (P1) — a page retry re-runs hydration with the
+        // previous fold's bubbles STILL rendered. The row already has a
+        // rendered message, so message/KPI insertion is skipped (no duplicate
+        // bubble, no double-folded KPI) — but the live-lane admission must be
+        // REBUILT: `reopenedLiveTaskIDs` was cleared at the top of hydration,
+        // and without re-adding the freshly-read running/pending/paused row
+        // the retried page loses the live admission and later chunks/terminal
+        // events freeze. ONLY the closed live status set is re-admitted — a
+        // terminal row never regains membership.
+        if (LIVE_TURN_STATUSES.has(rendered.status)) {
+          reopenedLiveTaskIDs.add(taskID);
+          continue;
+        }
+        // HA-64 / D-425 (P1) — local durable convergence: the retry's freshly
+        // read authoritative row for the already-rendered task is TERMINAL (it
+        // finished between the two reads). It must not be re-admitted, but the
+        // first fold's snapshot (a `partial` answer while the turn was running)
+        // is now stale — replace the task's user/agent bubbles in place from
+        // this fresh projection so the sealed answer renders without waiting
+        // for an event that can never re-admit the row. This performs ZERO
+        // `sessions.turns.get` / task / history / event reads, folds no
+        // KPI/notice, and touches no other task's messages.
+        if (TERMINAL_TURN_STATUSES.has(rendered.status)) {
+          convergeTerminalRowInPlace(taskID, rendered);
+        }
+        continue;
+      }
+      const m = rendered;
+      // HA-64 / D-425 (P1) — admit the fold-rendered in-flight rows to the
+      // live lane: this page did not start them (activeTaskID stays null),
+      // so without this admission handleChunk/handleTerminal would reject
+      // every live chunk + the terminal event and the reopened bubble would
+      // freeze at the fold snapshot forever. ONLY rows the fold actually
+      // rendered count — a task already in the stream (`present`) was
+      // skipped above and is never admitted.
+      if (LIVE_TURN_STATUSES.has(rendered.status)) {
+        reopenedLiveTaskIDs.add(taskID);
+      }
+      // Usage availability-gated KPI fold.
+      const tokens = m.usage.tokens;
+      const cost = m.usage.costUSD;
+      if (tokens !== undefined || cost !== undefined) {
+        hasCostReading = true;
+        const prev = turnCost[taskID] ?? { tokens: 0, cost: 0 };
+        turnCost[taskID] = {
+          tokens: prev.tokens + (tokens ?? 0),
+          cost: prev.cost + (cost ?? 0)
+        };
+      }
+      if (tokens !== undefined) tokenCount += tokens;
+      if (m.usage.promptTokens !== undefined) promptTokens += m.usage.promptTokens;
+      if (m.usage.outputTokens !== undefined) outputTokens += m.usage.outputTokens;
+      if (cost !== undefined) costUSD += cost;
+      if (m.usage.model !== undefined && m.usage.model !== '') modelName = m.usage.model;
+      if (m.usage.latencyMs !== undefined && m.usage.latencyMs > 0) recordTurn(m.usage.latencyMs);
+      if (m.activityOverflow.more) activityOverflow += m.activityOverflow.dropped;
+      attachmentsUnavailable += m.attachmentsUnavailable;
+      if (m.reasoningPartial) reasoningPartial += m.reasoningDropped;
+      if (m.paused && !paused) paused = true;
+
+      if (m.user !== null) hydrated.push(m.user);
+      if (m.agent !== null) hydrated.push(m.agent);
+    }
+    if (hydrated.length > 0) {
+      // Prepend — the reloaded turns predate any live message sent after
+      // reload, so history sits above the live tail.
+      messages = [...hydrated, ...messages];
+      if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
+    }
+    // Honest notices for bounded windows / unavailable components.
+    const notes: string[] = [];
+    if (activityOverflow > 0) {
+      notes.push(`Some turns had tool activity beyond the inline window (${activityOverflow} older row(s) not shown).`);
+    }
+    if (attachmentsUnavailable > 0) {
+      notes.push(`${attachmentsUnavailable} attachment(s) are unavailable.`);
+    }
+    if (reasoningPartial > 0) {
+      notes.push(`${reasoningPartial} older reasoning step(s) not retained in some turns.`);
+    }
+    if (notes.length > 0) {
+      historyNotice = historyNotice !== null ? `${historyNotice} ${notes.join(' ')}` : notes.join(' ');
+    }
+  }
+
+  // loadOlderTurns pages one older page through the opaque
+  // `next_older_cursor` and prepends it. A refused cursor (expired snapshot,
+  // retention-evicted, foreign, forged) surfaces as a typed, honest notice —
+  // never a silent reset to page one, never a fabricated empty page.
+  async function loadOlderTurns(): Promise<void> {
+    if (client === null || olderLoading) return;
+    const last = turnPages[turnPages.length - 1];
+    if (last === undefined || !last.hasMore || last.nextOlderCursor === undefined) return;
+    olderLoading = true;
+    olderError = null;
+    try {
+      const page = await loadTurnPage(client, {
+        sessionID,
+        olderCursor: last.nextOlderCursor,
+        limit: TURN_PAGE_DEFAULT_LIMIT
+      });
+      const merged = mergeTurnPages([...turnPages, page]);
+      turnPages = merged.pages;
+      if (page.turns.length > 0) {
+        foldTurnRows(page.turns.map((r) => turnRowMessages(r)), page.turns);
+      }
+    } catch (err) {
+      if (err instanceof TurnPageError) {
+        olderError =
+          err.kind === 'invalid_cursor'
+            ? 'The older-page cursor was refused (expired or stale snapshot). Reload the conversation to re-anchor.'
+            : err.kind === 'not_found'
+              ? 'The conversation was not found — older pages are unavailable.'
+              : err.kind === 'unknown_method'
+                ? 'This Runtime does not expose the turn projection.'
+                : `Older turns could not be loaded (${err.message}).`;
+      } else {
+        olderError = `Older turns could not be loaded (${String(err)}).`;
+      }
+    } finally {
+      olderLoading = false;
+    }
+  }
+
+  // hydratePastTurnsLegacy is the EXPLICIT, user-invoked degraded/forensic
+  // fallback (D-425): the pre-HA-64 reopen that reconstructs turns CLIENT-SIDE
+  // from the `state.history` windowed event-replay surface (D-254), folding
+  // the user query text in from a single `tasks.list` catalog lookup. It is
+  // ONLY reachable via the "reopen via forensic event replay" control shown
+  // when the turn projection is unavailable — never the default open path.
+  async function hydratePastTurnsLegacy(): Promise<void> {
     if (client === null || sessionID === '') return;
     const c = client;
     historyNotice = null;
     try {
       // 1. Window the durable event stream tail-first, scrolling up by
-      //    next_cursor (the new `state.history` consumer), and reduce the
+      //    next_cursor (the `state.history` consumer), and reduce the
       //    loaded events into per-run turns client-side.
       const loaded = await loadSessionHistory(c, sessionID, { pageLimit: 50 });
       // Honest retention signal: when the durable substrate (or a wrapped
@@ -1013,7 +1465,7 @@
         return;
       }
       const detail = err instanceof ProtocolError ? `${err.code}: ${err.message}` : String(err);
-      console.warn('hydratePastTurns: could not load earlier messages:', detail);
+      console.warn('hydratePastTurnsLegacy: could not load earlier messages:', detail);
       historyNotice = `Could not load earlier messages (${detail}). The conversation continues from here.`;
     }
   }
@@ -1065,13 +1517,18 @@
   // Re-invoked on `session.title_changed` (subscribeEvents) so a rename
   // of the ACTIVE session — the only session whose events the page's
   // triple-scoped SSE subscription carries — refreshes the labels.
+  //
+  // D-424 — the chat catalog explicitly requests the `lifecycle`
+  // projection: the switcher needs only id / title / last activity, and
+  // the lifecycle row skips ALL counter enrichment (its counters read
+  // `not_requested`; a counter-dependent filter or sort is rejected
+  // `invalid_request` on a lifecycle request, so this request never asks
+  // for one).
   async function refreshSessionList(): Promise<void> {
     if (client === null) return;
     try {
-      const resp = await client.sessions.list<{
-        rows?: Array<{ session_id: string; last_activity_at?: string; title?: string }>;
-      }>({ filter: {}, limit: 50 });
-      sessionList = resp.rows ?? [];
+      const resp = await new SessionsProtocol(client).list(chatCatalogListRequest());
+      sessionList = resp.rows;
     } catch {
       sessionList = [];
     }
@@ -1136,12 +1593,20 @@
     status = 'loading';
     pageError = null;
     pageInfo = null;
-    // D-171 — reload this conversation's prior turns (sessions persist via
-    // the catalog; tasks.list is scoped to the URL session by the
-    // per-session client). Best-effort: empty for a brand-new session id,
-    // and empty for a pre-restart session (task history is in-memory — see
-    // docs/notes/session-model-contract.md).
-    await hydratePastTurns();
+    // HA-64 / D-425 — reload this conversation's prior turns with the
+    // two-read open (one lifecycle inspect + one `sessions.turns.list` tail
+    // page). Best-effort: empty for a brand-new session id (the inspect
+    // answers not_found) and empty for a pre-restart session (the projection
+    // has no rows — see docs/notes/session-model-contract.md).
+    //
+    // HA-64 / D-425 (P1) — the SSE subscription is the LIVE stream, not a
+    // third projection read: the durable page is folded (and its rendered
+    // running/paused task membership established) BEFORE the EventSource
+    // opens, and the fold's `live_resume_seq` seeds the stream's initial
+    // replay cursor so a terminal event that landed between the snapshot
+    // and the physical subscription is replayed, never lost.
+    const resumeSeq = await hydratePastTurns();
+    subscribeEvents(client, resumeSeq);
     try {
       // Round-8 F1 / phase 84a — gate the topology probe behind the
       // runtime's advertised capabilities. A planner/RunLoop runtime
@@ -1523,7 +1988,6 @@
     // hosted App panels so a fullscreen / pip app stays inside the identity
     // boundary and the unified approval / OAuth gates.
     appHostClient = makeMCPAppHostClient(client);
-    subscribeEvents(client);
     void refreshSessionList();
     void refreshArtifacts();
     void refreshTools();
@@ -1766,6 +2230,50 @@
             {historyNotice}
           </p>
         {/if}
+        {#if turnProjectionUnavailable}
+          <!-- The explicit, user-invoked degraded/forensic fallback (D-425).
+               The runtime predates the `sessions.turns.*` surface; the normal
+               open does NOT silently fall back to forensic event replay. The
+               operator opts in, and the control names the degradation. -->
+          <div class="forensic-fallback" data-testid="forensic-fallback">
+            <p class="history-notice" role="status">
+              Conversation turn projection unavailable on this Runtime.
+            </p>
+            <button
+              type="button"
+              class="session-new small"
+              data-testid="forensic-reopen-button"
+              onclick={() => {
+                legacyReopenRequested = true;
+                void hydratePastTurnsLegacy();
+              }}
+            >
+              {legacyReopenRequested ? 'Reopening via forensic event replay…' : 'Reopen via forensic event replay (degraded)'}
+            </button>
+          </div>
+        {:else if turnPages.length > 0}
+          <!-- Older-page paging rides the opaque snapshot/keyset cursor
+               (`next_older_cursor`) — stable ordering under append, typed
+               refusal surfaced honestly (never a silent reset). -->
+          {#if turnPages[turnPages.length - 1]?.hasMore}
+            <div class="older-turns-row">
+              <button
+                type="button"
+                class="session-new small"
+                data-testid="load-older-turns"
+                disabled={olderLoading}
+                onclick={() => void loadOlderTurns()}
+              >
+                {olderLoading ? 'Loading older turns…' : 'Load older turns'}
+              </button>
+            </div>
+          {/if}
+          {#if olderError !== null}
+            <p class="history-notice older-error" data-testid="older-turns-error" role="status">
+              {olderError}
+            </p>
+          {/if}
+        {/if}
         {#if chatClient !== null}
           <ChatPanel
             messages={pagedMessages}
@@ -1992,6 +2500,30 @@
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
+  }
+
+  /* The explicit degraded/forensic fallback control (HA-64 / D-425) —
+     shown only when the turn projection is unavailable. */
+  .forensic-fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+    margin: 0 var(--space-3) var(--space-2);
+  }
+
+  .forensic-fallback .history-notice {
+    margin: 0;
+  }
+
+  .older-turns-row {
+    display: flex;
+    justify-content: center;
+    margin: 0 var(--space-3) var(--space-2);
+  }
+
+  .older-error {
+    color: var(--color-warning);
   }
 
   .rail-toggle {

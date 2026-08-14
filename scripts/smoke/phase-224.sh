@@ -243,13 +243,27 @@ FIXTURE_EOF
     cat > "${d}/CHANGELOG.md" <<'FIXTURE_EOF'
 # Changelog
 
-## [2.0.0]
+## [1.28]
 
-- The newest published fixture release.
+- An artifact-release tag (two-component) — a release identity, never a
+  module tag; the ledger must not count it.
 
-## [1.9.0]
+## [1.27]
 
-- An older fixture release.
+- An artifact-release tag (two-component) — same, never a module tag.
+
+## [1.26.12]
+
+- The newest published fixture MODULE release — the three-component
+  grammar the ledger accepts (v1.26.12, v1.26.11, ...).
+
+## [1.26.11]
+
+- An older fixture module release.
+
+## [1.26.10]
+
+- The oldest fixture module release.
 FIXTURE_EOF
 
     # `drift-audit:` must be a real target: the audit greps for it, and the
@@ -389,7 +403,7 @@ FIXTURE_EOF
 package scaffold
 
 // FallbackModuleVersion names the release a source build cannot name itself.
-const FallbackModuleVersion = "v2.0.0"
+const FallbackModuleVersion = "v1.26.12"
 FIXTURE_EOF
 
     cat > "${d}/web/console/src/routes/(console)/playground/+page.svelte" <<'FIXTURE_EOF'
@@ -398,15 +412,45 @@ FIXTURE_EOF
 
     # Local release tags are the ledger the scaffold-pin guard reads once
     # HARBOR_DRIFT_AUDIT_OFFLINE=1 removes the remote rung. Newest first:
-    # v2.0.0 (the pin), v1.9.0 (one back), v1.8.0 (two back).
+    # v1.26.12 (the three-component MODULE pin — the grammar the ledger
+    # accepts), v1.26.11 (one back), v1.26.10 (two back). The ledger ALSO
+    # carries tags the guard must REFUSE: v1.27 (a two-component ARTIFACT
+    # tag — a release identity, not a module version), v9.9.9-rc1 (a
+    # prerelease) and v1.27.0.1 (a four-component malformed dotted
+    # string). The pristine corpus alone does NOT pin every refusal;
+    # where each junk tag is held out differs, and the difference is
+    # load-bearing:
+    #
+    #   - v9.9.9-rc1 and v1.27.0.1 are pinned by the PRISTINE RUN below.
+    #     Admit either into the ledger and `newest` shifts to a version
+    #     the fixture CHANGELOG carries no section for, so the release-
+    #     ledger check FAILs the baseline (BASE_RC != 0) before any
+    #     mutation runs.
+    #   - v1.27 is pinned only INDIRECTLY, by the release-ledger mutation
+    #     case (mut_release_ledger). A two-component `newest` leaves the
+    #     v1.26.12 pin at a one-release trail — which the guard
+    #     deliberately allows — and the fixture CHANGELOG's own
+    #     `## [1.27]` section would satisfy the ledger check, so the
+    #     pristine run stays green under a two-component-accepting
+    #     grammar. The trip-wire is the mutation case: it deletes
+    #     `## [1.26.12]`, and only while `newest` is STILL v1.26.12 does
+    #     the ledger guard FAIL and the case go green. A grammar that
+    #     admitted v1.27 would shift `newest` onto the surviving
+    #     `## [1.27]` section, the mutation would go uncaught, and the
+    #     case would turn red — which is how the artifact-vs-module
+    #     split (a two-component tag must not shift `newest`) is held
+    #     in place here.
     (
         cd "${d}"
         git init -q .
         git -c user.email='fixture@harbor.invalid' -c user.name='fixture' \
             commit -q --allow-empty -m 'fixture'
-        git tag v1.8.0
-        git tag v1.9.0
-        git tag v2.0.0
+        git tag v1.26.10
+        git tag v1.26.11
+        git tag v1.26.12
+        git tag v1.27
+        git tag v9.9.9-rc1
+        git tag v1.27.0.1
     ) >/dev/null 2>&1
 }
 
@@ -714,19 +758,23 @@ mut_skill_frontmatter() {
 
 mut_pin_phantom() {
     local v="$1/cmd/harbor/scaffold/version.go"
-    sed 's/"v2.0.0"/"v0.0.1"/' "${v}" > "${v}.tmp"
+    sed 's/"v1.26.12"/"v0.0.1"/' "${v}" > "${v}.tmp"
     mv "${v}.tmp" "${v}"
 }
 
 mut_pin_trails() {
     local v="$1/cmd/harbor/scaffold/version.go"
-    sed 's/"v2.0.0"/"v1.8.0"/' "${v}" > "${v}.tmp"
+    # v1.26.10 sits TWO releases back from v1.26.12 (index 2 in the ledger),
+    # so this is a genuine two-release trail — the numeric ordering across
+    # the three-component grammar (v1.26.12 > v1.26.11 > v1.26.10) is what
+    # makes it one.
+    sed 's/"v1.26.12"/"v1.26.10"/' "${v}" > "${v}.tmp"
     mv "${v}.tmp" "${v}"
 }
 
 mut_release_ledger() {
     local c="$1/CHANGELOG.md"
-    grep -v '^## .2.0.0.$' "${c}" > "${c}.tmp"
+    grep -v '^## .1.26.12.$' "${c}" > "${c}.tmp"
     mv "${c}.tmp" "${c}"
 }
 
@@ -896,7 +944,7 @@ expect_caught 'scaffold pin trails by two releases' FAIL \
 
 expect_caught 'release ledger vs CHANGELOG' FAIL \
     'release ledger: CHANGELOG.md carries a section' \
-    'release ledger: v2.0.0 is published' \
+    'release ledger: v1.26.12 is published' \
     mut_release_ledger
 
 expect_caught 'smoke regex portability (scripts/smoke/ root)' FAIL \

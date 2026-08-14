@@ -1878,7 +1878,10 @@ walkthroughs, and PTY tests; functional-but-unpolished is not shippable. Phase
 **Inert baseline** — `scripts/smoke/inert-baseline.txt`, the declared-debt list of inert SHIPPED-phase smokes that predate the inert gate. It is not an exemption list: an unlisted inert script FAILs preflight, and a listed script that starts asserting is reported as a stale line to delete in the same PR. Its steady state is EMPTY — it was drained from 24 entries to 0 (thirteen classifier false positives, eleven real repairs), and `scripts/smoke/phase-223.sh` asserts the drained state plus two properties the preflight sweep cannot see: every remaining line names a file that exists, and names a phase that is actually `Shipped`. Phase 223, D-368.
 **MCP error classification** — typed control metadata on an `IsError` result
 that distinguishes a permanent unchanged-call failure from a retryable service
-failure without parsing prose. D-410.
+failure without parsing prose; the typed class, retry-policy outcome, bounded
+provider message, and retained bounded result content survive the runloop's
+step recording and appear in the next ReAct prompt, and a generic step error
+never masks them. D-410.
 
 **Operator skill pack** — a durable, revisioned, per-agent skill source
 selected by agent configuration and composed with caller-owned skills at run
@@ -1886,7 +1889,32 @@ start. The agent is not an isolation principal. D-411.
 
 **App dispatch catalog** — a per-MCP-server callback lookup retained beside,
 but not merged into, the planner's tool projection. App visibility is not a
-grant. D-412.
+grant: the callback stays absent from planner context, `tools.list`, search,
+and generic resolution, and dispatches only through the same-server
+`ResolveAppTool` path under the existing approval/OAuth/policy/redaction/
+retry/audit gates. D-412.
+
+**Fresh render admission** — the stateless, integrity-protected, shared-KEK
+admission the Runtime mints for an MCP App on embedded/durable reopen; it is
+never a restored live binding (the live path's provider-local binding is
+bounded, short-lived, and for a live tool-result App only) and never a
+persisted token (durable turn rows carry metadata/component availability
+only). It is minted only after verified identity, signed effective-agent
+reach, retirement, erasure, current session/agent exposure, exact server,
+exact current `ui://` resource availability, paused/disabled state, and the
+exact CURRENT provider/catalog generation — the deterministic, replica-stable
+generation of the server's current discovered catalog, which changes on
+detach, replacement, and ANY successful discovery/catalog/resource change
+even when deployment descriptor configuration did not change; the existing
+exact registration descriptor fingerprint is a retained input but is never
+alone sufficient authority, a process-local discovery counter is not
+acceptable, and a replica holding a different current catalog fails closed
+as a generation mismatch. The claim binds
+schema/time/triple/effective-agent/server/resource/current
+provider/catalog generation and carries no raw args, secrets, provider
+output, callback name, or general capability; ordinary resource reads never
+mint, and unavailable/expired admissions answer typed `unavailable`/`expired`
+with fresh checks on refresh. D-412.
 
 **Reliability classification metadata** — server-derived, non-secret event
 fields describing a tool failure's resolved class and retry accounting.
@@ -1903,3 +1931,166 @@ D-415.
 **Session-lifetime tool context** — an MCP App tool-context record retained
 until the owning session is erased, rather than governed by an implicit TTL.
 D-416.
+
+**Skill package staging artifact** — a caller-owned `artifacts.put` output
+used as bounded input to `agent_config.user.skills.import_validate`. It is
+owned by the originating session, never grants skill membership by existing,
+and is only provenance after a commit: the installed package does not
+dereference it. D-422.
+
+**Reviewed skill-package proposal** — the bounded opaque versioned
+sealed proposal token returned by `import_validate` and consumed exactly
+once by `import_commit`: a base64url shared-KEK-sealed claims payload
+carrying source
+reference and hash, versioned `PackageHash`, ordered supporting-file
+manifest, effective agent, expected config hash, ceiling and policy
+snapshots + hashes, actor, issued/expiry, and schema/version. Validation
+performs ZERO writes of any kind — the proposal is sealed into the token,
+never persisted; durable idempotency state (a token-derived commit ledger)
+begins only in the commit phase. Raw package bytes never enter it. D-422.
+
+**Durable personal skill package** — the installed form of a reviewed
+`SKILL.md` package: the complete semantic body plus every supporting-file
+path/content/hash, committed under the caller's session-zeroed `ScopeUser`
+identity and effective agent, surviving staging cleanup and restart. It is
+addressed by immutable `skillpkg://` references, never by the staging
+session's artifact identity. D-422.
+
+**`PackageHash`** — a new versioned canonical digest over the normalized
+logical semantic body (support-file references as package-relative logical
+paths or digest placeholders) plus, per support file in canonical path order,
+normalized relative path, normalized MIME, exact size, and full content
+digest. Distinct from legacy `Skill.ContentHash`, which remains unchanged;
+never hashes the `skillpkg://` URI that contains the hash itself. Review
+binding, replacement preconditions, target CAS, receipts, and idempotency use
+it. D-422.
+
+**`skillpkg://` reference** — the immutable package-asset addressing scheme
+`skillpkg://<PackageHash>/<encoded-canonical-path>` behind one mandatory
+authorized, bounded resolver that verifies selected user/effective agent,
+normalizes the path, checks package/file hashes, and applies MIME/per-read
+byte ceilings; every package consumer (`skill_get`, injection, export)
+resolves through it. D-422.
+
+**Personal skill draft** — a validated, serialized `SKILL.md` artifact
+produced by `skill_create_draft`, stored as one immutable caller-scoped
+artifact reference with bounded review metadata and an explicit
+`installed: false` state. It carries no skill membership and installs only
+through explicit Phase 243 validate/commit. D-423.
+
+**`skill_create_draft`** — the ordinary, disabled-by-default runtime tool
+that turns bounded intent and optional feedback into a personal skill draft
+via the governed authoring path's safety-wrapped LLM adapter. It has
+zero mutation authority; authority comes only from the verified run context
+and effective agent. D-423.
+
+**Session lifecycle projection** — the `projection: "lifecycle"` selector on
+`sessions.list` / `sessions.inspect` returning session lifecycle metadata
+only (id, status, title/source, authoritative timestamps, derivable duration,
+honestly representable agent id) with ZERO enrichment — no history-replayer,
+task, pause, artifact, App, or counter reads, work bounded by the page size.
+Counter fields use the closed availability state `current | partial |
+not_requested | unavailable`: the lifecycle shape marks them `not_requested`
+(never merely absent, never zero-as-not-computed); `unavailable` means
+enrichment/projection unavailable; `partial` remains a lower bound; full
+counters are exact at `current`; an omitted selector defaults to full.
+Counter filters/sorts paired with the lifecycle selector fail typed. D-424.
+
+**Conversation turn projection** — the dedicated, runtime-owned durable read
+model behind the two named public methods `sessions.turns.list` and
+`sessions.turns.get`: incrementally materialized from task/result/
+event/App authority with idempotent sequence checkpoints, restart-survivable
+on durable drivers, erased/fenced with its session, and paged by an indexed
+snapshot/keyset cursor with work proportional to page size. One row is one
+root foreground user turn. Bounded Activity rides inline covering at least
+the configured per-turn tool-call budget; a separate named activity method is
+NOT a v1.28 method or acceptance — if the Protocol response ceiling ever
+forces the exact attachment contract, a future named fallback is recorded as
+a deferred follow-up. D-425.
+
+**Turn-page cursor** — the opaque exclusive older-page cursor on
+`sessions.turns.list`, snapshot/keyset anchored with an immutable task/turn
+tie-breaker so appending a turn while paging older history produces neither
+duplicates nor omissions; invalid, foreign, retention-expired, and
+snapshot-expired cursors have distinct typed outcomes. D-425.
+
+**Live resume cursor** — the exclusive `live_resume_seq` in a
+`sessions.turns.list`
+response that seeds the page-before-subscribe snapshot-to-live handoff: the
+consumer folds the durable page and establishes bounded running/paused
+membership first, then opens the EventSource with `live_resume_seq` as the
+initial `resume_seq`; the server replays events strictly newer than that
+snapshot through the existing bounded replay source, and a browser reconnect
+`Last-Event-ID` takes precedence (one terminal event causes one
+`sessions.turns.get` terminal reconciliation), tied to the same turn version
+and `last_applied_event_sequence` as in-flight content snapshots. D-425.
+
+**Activity subpage** — the deferred-follow-up named read for ordered tool
+activity that cannot ride inline: inline Activity is bounded to at least
+Harbor's configured per-turn tool-call budget, and if the Protocol response
+ceiling ever forces the exact attachment contract, a future named,
+opaque-cursor read with the same identity, snapshot, and ordering contract
+as the parent turn (no arguments/results) is recorded as a deferred
+follow-up, not a v1.28 method or acceptance. No anonymous subresource and no
+silent truncation. D-425.
+
+**Observability rollup projection** — a durable, rebuildable, indexed
+materialization of aggregate measures over successfully persisted canonical
+Harbor events (the indexed in-memory/SQLite/Postgres triad), consumed
+incrementally from the existing local durable event sequence with a durable
+applied-through watermark. Best-effort, never a billing-exact ledger; the
+event log stays the source of truth. The storage base grain is exactly the
+fixed UTC minute bucket plus the authoritative `(tenant_id, user_id,
+session_id, model)` dimensions — `agent_id` is never a rollup dimension, and
+a query may coarsen the bucket. Measures are existing source-backed payloads
+only (`llm.cost.recorded` successful-completion count, exact integer/decimal
+cost, prompt/completion/reasoning/cache-read/cache-write/total tokens,
+latency count/sum/min/max, task completed/failed/cancelled counts); attempts,
+failed LLM calls, retry/downgrade, task-spawned, and user-message counts are
+unsupported/unavailable. The narrow, recorded
+amendment to D-296's TSDB rejection; a general-purpose Harbor TSDB and
+identity-labelled OTel metrics remain rejected. D-426.
+
+**Rollup watermark** — the durable applied-through sequence stamp a rollup
+query observes; every response carries it as the freshness/freshness-verifier
+alongside the completeness state, so a consumer can see exactly how current
+the aggregates are. D-426.
+
+**Rollup completeness state** — the explicit per-query freshness signal
+(`current`, `catching_up`, `unavailable`, plus `rebuilding` and
+retention-quality markers). A query never returns zero as a substitute for
+"projection unavailable," and a rebuild that lost source events exposes that
+historical incompleteness rather than plausible totals. D-426.
+
+**Boot-declared operator skill baseline** — the resource-free, operator-owned
+skill set declared in boot configuration for the resolved boot/default agent.
+It loads through a config-file-relative strict eager immutable loader before
+readiness, writes nothing durable, exposes no admin verbs, and merges with
+the agent's active durable operator-pack revision into ONE combined operator
+tier (same canonical name + same semantic hash dedupes as `source=both`;
+differing hash fails; exactly 256 unique combined items) applied last over
+base/user/session skills. D-427.
+
+**Boot baseline loader** — the single production/devstack loader that reads a
+boot-declared operator skill baseline relative to the config file (the
+config file's own directory, never the CWD; one relative include directory
+with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free),
+validates every entry through the one importer, rejects traversal, recursive
+discovery, symlink/hardlink/special entries, duplicates, and canonical-name
+collisions under declaration/item/file/aggregate bounds, and eagerly copies
+and freezes the set before readiness (restart-only). No persistence, no
+admin verbs, no config revisions, no lifecycle materialization; boot-owned
+mutation/remove guards apply. D-427.
+
+**Boot baseline set hash** — the deterministic hash over the normalized
+boot-declared baseline entries carried in the run snapshot and the
+composition preview (as `boot_pack_set_hash`, alongside the
+`boot|revision|both` source marker), so an operator can verify exactly what
+the resolved boot/default agent composes. D-427.
+
+**Effective-composition resolver** — the ONE shared strict resolver +
+preview that composes base/user/session skills and the combined operator tier
+(the agent's active durable pack revision merged with the boot-declared
+baseline) into the run snapshot and the operator-verifiable composition
+preview for the resolved boot/default agent; boot preflight, run, and preview
+all use it. D-427.

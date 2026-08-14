@@ -6,14 +6,19 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { MCPAppToolNotFoundError } from './chat/renderers/app-bridge-host.js';
+import {
+  MCPAppRenderAdmissionError,
+  MCPAppToolNotFoundError,
+} from './chat/renderers/app-bridge-host.js';
 import { makeMCPAppHostClient } from './mcp-app-host-client.js';
 import type { ProtocolClient } from './protocol/client.js';
 import { ProtocolError } from './protocol/errors.js';
 
 function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn>; resources: ReturnType<typeof vi.fn>; toolsList: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn>; getRef: ReturnType<typeof vi.fn>; toolContext: ReturnType<typeof vi.fn> } {
-  const readResource = vi.fn(async () => ({
-    resource_uri: 'ui://srv/app.html',
+  // The 4th argument is the HA-56 opt-in flag; recorded so tests can assert
+  // the ordinary read never mints while the renderer-internal read does.
+  const readResource = vi.fn(async (serverID: string, resourceURI: string, _agentID?: string, _requestRenderAdmission?: boolean) => ({
+    resource_uri: resourceURI,
     mime_type: 'text/html',
     content: '<p>app</p>',
     protocol_version: '1',
@@ -67,13 +72,75 @@ function fakeProtocolClient(): { client: ProtocolClient; readResource: ReturnTyp
 }
 
 describe('makeMCPAppHostClient', () => {
-  it('readResource routes to mcp.servers.read_resource and maps the response', async () => {
+  it('readResource routes to mcp.servers.read_resource WITHOUT the opt-in flag (ordinary, non-minting)', async () => {
     const { client, readResource } = fakeProtocolClient();
     const host = makeMCPAppHostClient(client);
     const res = await host.readResource('srv', 'ui://srv/app.html', 'agent-weather');
     expect(readResource).toHaveBeenCalledWith('srv', 'ui://srv/app.html', 'agent-weather');
+    // The ordinary read never asks the Runtime to mint callback authority —
+    // the AppBridge's app-initiated `resources/read` handler routes here.
+    const flag = readResource.mock.calls[0][3];
+    expect(flag).toBeUndefined();
     expect(res.content).toBe('<p>app</p>');
     expect(res.mimeType).toBe('text/html');
+  });
+
+  it('readRenderDocument routes to mcp.servers.read_resource WITH the opt-in flag and maps the admission', async () => {
+    const { client, readResource } = fakeProtocolClient();
+    readResource.mockResolvedValueOnce({
+      resource_uri: 'ui://srv/app.html',
+      mime_type: 'text/html',
+      content: '<p>app</p>',
+      render_admission: {
+        token: 'opaque-sealed-render-token-1',
+        issued_at: '2026-08-14T00:00:00Z',
+        expires_at: '2026-08-14T01:00:00Z',
+        availability: 'available',
+      },
+      protocol_version: '1',
+    });
+    const host = makeMCPAppHostClient(client);
+    const res = await host.readRenderDocument('srv', 'ui://srv/app.html', 'agent-weather');
+
+    // The DISTINCT renderer-internal read carries `request_render_admission: true`.
+    expect(readResource).toHaveBeenCalledWith('srv', 'ui://srv/app.html', 'agent-weather', true);
+    expect(res.content).toBe('<p>app</p>');
+    expect(res.renderAdmission).toEqual({
+      token: 'opaque-sealed-render-token-1',
+      issuedAt: '2026-08-14T00:00:00Z',
+      expiresAt: '2026-08-14T01:00:00Z',
+      availability: 'available',
+    });
+  });
+
+  it('readRenderDocument maps a typed UNAVAILABLE admission (no token) without fabricating one', async () => {
+    const { client, readResource } = fakeProtocolClient();
+    readResource.mockResolvedValueOnce({
+      resource_uri: 'ui://srv/app.html',
+      mime_type: 'text/html',
+      content: '<p>app</p>',
+      render_admission: { token: '', issued_at: '', expires_at: '', availability: 'unavailable' },
+      protocol_version: '1',
+    });
+    const host = makeMCPAppHostClient(client);
+    const res = await host.readRenderDocument('srv', 'ui://srv/app.html');
+    expect(res.renderAdmission?.availability).toBe('unavailable');
+    expect(res.renderAdmission?.token).toBe('');
+  });
+
+  it('readRenderDocument maps an absent admission object to undefined (the old surface)', async () => {
+    const { client, readResource } = fakeProtocolClient();
+    // The read succeeded but carried no `render_admission` field — the
+    // runtime answered the old (non-admission) surface.
+    readResource.mockResolvedValueOnce({
+      resource_uri: 'ui://srv/app.html',
+      mime_type: 'text/html',
+      content: '<p>app</p>',
+      protocol_version: '1',
+    });
+    const host = makeMCPAppHostClient(client);
+    const res = await host.readRenderDocument('srv', 'ui://srv/app.html');
+    expect(res.renderAdmission).toBeUndefined();
   });
 
   it('callTool forwards host binding and resource authority, not sandbox-authored values', async () => {
@@ -83,9 +150,45 @@ describe('makeMCPAppHostClient', () => {
     const hostResourceURI = 'ui://app/main.html';
     const sandboxArgs = { q: 1, binding: 'forged', resource_uri: 'ui://forged.html' };
     const res = await host.callTool('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI);
-    expect(callTool).toHaveBeenCalledWith('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI);
+    expect(callTool).toHaveBeenCalledWith('srv', 'srv_echo', sandboxArgs, 'agent-weather', hostBinding, hostResourceURI, undefined);
     expect(res.isError).toBe(false);
     expect(res.content).toEqual({ ok: true });
+  });
+
+  it('callTool forwards the FRESH render admission as the DISTINCT 7th argument', async () => {
+    // HA-56: the admission is a separate authority from the legacy binding —
+    // it rides the `render_admission` wire field, and the adapter forwards it
+    // verbatim so the Runtime can re-verify it against the CURRENT tuple.
+    const { client, callTool } = fakeProtocolClient();
+    const host = makeMCPAppHostClient(client);
+    const freshAdmission = 'opaque-sealed-render-token-1';
+    const res = await host.callTool('srv', 'srv_echo', { q: 1 }, 'agent-weather', undefined, 'ui://app/main.html', freshAdmission);
+    expect(callTool).toHaveBeenCalledWith('srv', 'srv_echo', { q: 1 }, 'agent-weather', undefined, 'ui://app/main.html', freshAdmission);
+    expect(res.content).toEqual({ ok: true });
+  });
+
+  it('callTool maps a typed render-admission refusal onto MCPAppRenderAdmissionError', async () => {
+    // The verdict is a distinct, actionable fact the host branches on (the
+    // single bounded refresh vs explicit failure) — it must never collapse
+    // into the not-found shape or an undifferentiated runtime failure.
+    for (const code of [
+      'render_admission_expired',
+      'render_admission_unavailable',
+      'render_admission_invalid',
+      'render_admission_mismatch',
+      'render_admission_missing',
+      'render_authority_ambiguous',
+    ]) {
+      const { client, callTool } = fakeProtocolClient();
+      callTool.mockRejectedValueOnce(new ProtocolError(code, `${code}: nope`, 400));
+      const host = makeMCPAppHostClient(client);
+      const err = await host
+        .callTool('srv', 'srv_echo', {}, undefined, undefined, 'ui://app/main.html', 'tok')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(MCPAppRenderAdmissionError);
+      expect((err as MCPAppRenderAdmissionError).code).toBe(code);
+      expect(err).not.toBeInstanceOf(MCPAppToolNotFoundError);
+    }
   });
 
   it('listResources routes to mcp.servers.resources', async () => {

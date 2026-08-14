@@ -38,6 +38,8 @@ export {
 	EventsNamespace,
 	AgentsNamespace,
 	SessionsNamespace,
+	SessionTurnsNamespace,
+	ObservabilityNamespace,
 	TopologyNamespace,
 	RunsNamespace,
 	RuntimeNamespace,

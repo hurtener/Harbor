@@ -79,6 +79,15 @@ type AgentConfigHandler struct {
 	service *agentcfgprotocol.Service
 	logger  *slog.Logger
 	reach   auth.AgentReachAuthorizer
+	// importService is the OPTIONAL two-phase verified-caller
+	// skill-package import service (HA-61). When nil, the
+	// `user/skills/import_*` routes answer CodeUnknownMethod (501) — the
+	// partial-build convention.
+	importService *agentcfgprotocol.UserSkillImportService
+	// previewService is the OPTIONAL read-only composition-preview
+	// service (HA-66). When nil, the `composition/preview` route answers
+	// CodeUnknownMethod (501) — the partial-build convention.
+	previewService *agentcfgprotocol.CompositionPreviewService
 }
 
 // AgentConfigOption configures NewAgentConfigHandler.
@@ -100,6 +109,31 @@ func WithAgentConfigReachAuthorizer(a auth.AgentReachAuthorizer) AgentConfigOpti
 	return func(h *AgentConfigHandler) {
 		if a != nil {
 			h.reach = a
+		}
+	}
+}
+
+// WithUserSkillImportService wires the two-phase verified-caller
+// skill-package import service (HA-61) so the
+// `user/skills/import_validate` / `user/skills/import_commit` routes are
+// live. OPTIONAL — when unsupplied the routes answer CodeUnknownMethod
+// (501), the partial-build convention.
+func WithUserSkillImportService(s *agentcfgprotocol.UserSkillImportService) AgentConfigOption {
+	return func(h *AgentConfigHandler) {
+		if s != nil {
+			h.importService = s
+		}
+	}
+}
+
+// WithCompositionPreviewService wires the read-only composition-preview
+// service (HA-66) so the `composition/preview` route is live. OPTIONAL —
+// when unsupplied the route answers CodeUnknownMethod (501), the
+// partial-build convention.
+func WithCompositionPreviewService(s *agentcfgprotocol.CompositionPreviewService) AgentConfigOption {
+	return func(h *AgentConfigHandler) {
+		if s != nil {
+			h.previewService = s
 		}
 	}
 }
@@ -254,6 +288,12 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserSkillsUpsert(w, r, body, wireID)
 	case "user/skills/delete":
 		h.serveUserSkillsDelete(w, r, body, wireID)
+	case "user/skills/import_validate":
+		h.serveUserSkillsImportValidate(w, r, body, wireID)
+	case "user/skills/import_commit":
+		h.serveUserSkillsImportCommit(w, r, body, wireID)
+	case "composition/preview":
+		h.serveCompositionPreview(w, r, body, wireID)
 	default:
 		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown agent_config method route")
@@ -281,6 +321,14 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 	"user/skills/list":   true,
 	"user/skills/upsert": true,
 	"user/skills/delete": true,
+	// The two-phase skill-package import verbs are CLAIM-FREE on the same
+	// ground (a caller-owned personal package cannot widen capability);
+	// the read-only composition preview is a CLAIM-FREE read of the
+	// caller's own exact triple (the widening is the preview service's
+	// audited ctx-scope decision, never a route-level gate).
+	"user/skills/import_validate": true,
+	"user/skills/import_commit":   true,
+	"composition/preview":         true,
 }
 
 // agentConfigUserRoutes is the closed set of trailing path segments that are
@@ -1032,6 +1080,239 @@ func (h *AgentConfigHandler) decode(w http.ResponseWriter, body []byte, req any,
 	return true
 }
 
+// --- verified-caller skill-package import (HA-61) ---
+
+// serveUserSkillsImportValidate serves the ZERO-WRITE first phase of the
+// two-phase import: the caller names a caller-owned immutable artifact
+// ref + the effective agent; the runtime parses/validates the package
+// and seals the bounded review into an opaque proposal token.
+func (h *AgentConfigHandler) serveUserSkillsImportValidate(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsImportValidateRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsImportValidate) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if h.importService == nil {
+		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			"agent_config.user.skills.import_validate: user skill import is not wired on this runtime")
+		return
+	}
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsImportValidate) {
+		return
+	}
+	resp, err := h.importService.Validate(r.Context(), agentcfgprotocol.UserSkillImportValidateRequest{
+		ArtifactID: req.ArtifactID,
+		AgentID:    req.AgentID,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsImportValidate, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, projectUserSkillImportValidate(resp), h.logger)
+}
+
+// serveUserSkillsImportCommit serves the explicit second phase: the
+// caller echoes the opaque proposal token + the reviewed hashes + the
+// expected config content hash + the replacement consent; the runtime
+// freshly revalidates everything and performs THE ONE atomic
+// package+membership write, replay-safe.
+func (h *AgentConfigHandler) serveUserSkillsImportCommit(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsImportCommitRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsImportCommit) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if h.importService == nil {
+		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			"agent_config.user.skills.import_commit: user skill import is not wired on this runtime")
+		return
+	}
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsImportCommit) {
+		return
+	}
+	resp, err := h.importService.Commit(r.Context(), agentcfgprotocol.UserSkillImportCommitRequest{
+		ProposalToken:       req.ProposalToken,
+		AgentID:             req.AgentID,
+		Name:                req.Name,
+		ReviewedPackageHash: req.ReviewedPackageHash,
+		ExpectedContentHash: req.ExpectedContentHash,
+		Replace:             req.Replace,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsImportCommit, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, projectUserSkillImportCommit(resp), h.logger)
+}
+
+// projectUserSkillImportValidate maps the import service's validate
+// outcome onto the wire response. The opaque proposal token rides
+// verbatim; the review is projected field-by-field (no sealed claim, no
+// ledger key, no raw artifact content ever crosses).
+func projectUserSkillImportValidate(resp agentcfgprotocol.UserSkillImportValidateResponse) prototypes.AgentConfigUserSkillsImportValidateResponse {
+	return prototypes.AgentConfigUserSkillsImportValidateResponse{
+		ProposalToken: resp.ProposalToken,
+		Review: prototypes.AgentConfigUserSkillImportReview{
+			Name:          resp.Review.Name,
+			Title:         resp.Review.Title,
+			Trigger:       resp.Review.Trigger,
+			TaskType:      resp.Review.TaskType,
+			Tags:          append([]string(nil), resp.Review.Tags...),
+			StepCount:     resp.Review.StepCount,
+			RequiredTools: append([]string(nil), resp.Review.RequiredTools...),
+			RequiredNS:    append([]string(nil), resp.Review.RequiredNS...),
+			RequiredTags:  append([]string(nil), resp.Review.RequiredTags...),
+			SupportFiles:  projectSupportSummaries(resp.Review.SupportFiles),
+			ContentHash:   resp.Review.ContentHash,
+			PackageHash:   resp.Review.PackageHash,
+		},
+		Warnings:            append([]string(nil), resp.Warnings...),
+		PackageHash:         resp.PackageHash,
+		ExpectedContentHash: resp.ExpectedContentHash,
+		ExpiresAt:           resp.ExpiresAt,
+		ProtocolVersion:     prototypes.ProtocolVersion,
+	}
+}
+
+func projectSupportSummaries(in []agentcfgprotocol.UserSkillImportSupportSummary) []prototypes.AgentConfigUserSkillImportSupportSummary {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]prototypes.AgentConfigUserSkillImportSupportSummary, 0, len(in))
+	for _, s := range in {
+		out = append(out, prototypes.AgentConfigUserSkillImportSupportSummary{
+			Path: s.Path, Mime: s.Mime, Size: s.Size, Digest: s.Digest,
+		})
+	}
+	return out
+}
+
+// projectUserSkillImportCommit maps the import service's commit outcome
+// onto the wire response: the exact versioned receipt, the stored skill
+// summary, and the Replayed flag.
+func projectUserSkillImportCommit(resp agentcfgprotocol.UserSkillImportCommitResponse) prototypes.AgentConfigUserSkillsImportCommitResponse {
+	return prototypes.AgentConfigUserSkillsImportCommitResponse{
+		Receipt: prototypes.AgentConfigUserSkillImportReceipt{
+			TenantID:       resp.Receipt.TenantID,
+			UserID:         resp.Receipt.UserID,
+			AgentID:        resp.Receipt.AgentID,
+			Name:           resp.Receipt.Name,
+			WrittenHash:    resp.Receipt.WrittenHash,
+			WrittenVersion: resp.Receipt.WrittenVersion,
+			PriorHash:      resp.Receipt.PriorHash,
+			PriorVersion:   resp.Receipt.PriorVersion,
+		},
+		Skill: prototypes.AgentConfigUserSkillInstalledSummary{
+			Name:        resp.Skill.Name,
+			Title:       resp.Skill.Title,
+			Trigger:     resp.Skill.Trigger,
+			TaskType:    resp.Skill.TaskType,
+			Tags:        append([]string(nil), resp.Skill.Tags...),
+			Origin:      string(resp.Skill.Origin),
+			Scope:       string(resp.Skill.Scope),
+			ContentHash: resp.Skill.ContentHash,
+		},
+		PackageHash:     resp.PackageHash,
+		Replayed:        resp.Replayed,
+		ProtocolVersion: prototypes.ProtocolVersion,
+	}
+}
+
+// --- read-only composition preview (HA-66) ---
+
+// serveCompositionPreview serves the read-only effective-composition
+// preview: what the strict run-start composer WOULD compose for the
+// target triple + effective boot-agent, WITHOUT materialising anything.
+// The verified caller's identity comes from ctx; the preview service
+// applies the exact-triple boundary + the signed reach gates + the
+// audited admin/fleet widening internally (the read-only authorization
+// path — never lifecycle materialization).
+func (h *AgentConfigHandler) serveCompositionPreview(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigCompositionPreviewRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigCompositionPreview) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	// The target triple is OPTIONAL on the wire: omitting ALL of
+	// tenant_id / user_id / session_id (the CLI and Console send only
+	// agent_id) resolves the preview to the VERIFIED caller's own
+	// triple. The resolution copies from the transport identity
+	// (wireID), never from the body, so a forged body identity cannot
+	// steer the default. A PARTIAL tuple is never completed: it stays
+	// as-is and fails loud in the service (identity.Validate rejects an
+	// incomplete triple), so missing fields of a partial tuple are
+	// never filled.
+	if req.TenantID == "" && req.UserID == "" && req.SessionID == "" {
+		req.TenantID, req.UserID, req.SessionID = wireID.Tenant, wireID.User, wireID.Session
+	}
+	if h.previewService == nil {
+		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			"agent_config.composition.preview: composition preview is not wired on this runtime")
+		return
+	}
+	if !h.authorizeAgent(w, r, req.AgentID) {
+		return
+	}
+	resp, err := h.previewService.CompositionPreview(r.Context(), agentcfgprotocol.CompositionPreviewRequest{
+		TenantID:  req.TenantID,
+		UserID:    req.UserID,
+		SessionID: req.SessionID,
+		AgentID:   req.AgentID,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigCompositionPreview, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, projectCompositionPreview(resp), h.logger)
+}
+
+// projectCompositionPreview maps the preview service's deterministic
+// result onto the wire response. The typed outcome (available |
+// unavailable | conflict | retired), the deterministic set hashes, the
+// boot/revision/both provenance markers, and the Widened flag all ride
+// verbatim.
+func projectCompositionPreview(resp agentcfgprotocol.CompositionPreviewResponse) prototypes.AgentConfigCompositionPreviewResponse {
+	items := make([]prototypes.AgentConfigCompositionPreviewItem, 0, len(resp.Items))
+	for _, it := range resp.Items {
+		items = append(items, prototypes.AgentConfigCompositionPreviewItem{
+			Name:         it.Name,
+			SemanticHash: it.SemanticHash,
+			Source:       string(it.Source),
+			Skill: prototypes.AgentConfigSkillSummary{
+				Name:        it.Skill.Name,
+				Title:       it.Skill.Title,
+				Trigger:     it.Skill.Trigger,
+				TaskType:    it.Skill.TaskType,
+				Origin:      string(it.Skill.Origin),
+				Scope:       string(it.Skill.Scope),
+				ContentHash: it.Skill.ContentHash,
+				UpdatedAt:   it.Skill.UpdatedAt,
+			},
+		})
+	}
+	return prototypes.AgentConfigCompositionPreviewResponse{
+		Outcome:         string(resp.Outcome),
+		ConflictName:    resp.ConflictName,
+		BootPackSetHash: resp.BootPackSetHash,
+		CombinedHash:    resp.CombinedHash,
+		RevisionHash:    resp.RevisionHash,
+		RevisionID:      resp.RevisionID,
+		ContentHash:     resp.ContentHash,
+		Items:           items,
+		Widened:         resp.Widened,
+		ProtocolVersion: prototypes.ProtocolVersion,
+	}
+}
+
 // assertIdentity routes the request body's identity scope through the
 // shared body-identity gate under the agent-config surface's registered
 // policy. Returns false (and writes the error) when the body disagrees
@@ -1181,6 +1462,16 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// state only.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrBootPackOwned):
+		// A canonical pack name the boot baseline owns for the exact (tenant,
+		// agent) pair is read-only to the control plane — the SAME typed
+		// client-visible 400/read-only family as the boot-declared connection
+		// precedent above: the pack verbs govern revisioned durable state only,
+		// and boot is edited in the boot config + restart. A typed refusal,
+		// never a collapsed generic 500, never a leaked arbitrary internal
+		// failure.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrConnectionOwnerMismatch):
 		// A live connection write applies to the caller's OWN registration; a
 		// name attached under a different (tenant, agent) owner is an
@@ -1276,6 +1567,61 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfg.ErrStateUnavailable), errors.Is(err, sessionoverlay.ErrStateUnavailable):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": state store unavailable"
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportIdentityRequired):
+		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
+			m + ": identity scope incomplete"
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportSessionReachDenied),
+		errors.Is(err, agentcfgprotocol.ErrUserSkillImportAgentReachDenied):
+		// The import's signed reach gates fail closed; a denial is an
+		// authorization failure (403), never a not-found oracle.
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			m + ": caller is not authorized for the effective agent / session"
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound):
+		// Non-oracular typed not-found: a foreign / erased /
+		// cross-session reference and a never-uploaded id answer the
+		// same way.
+		return protoerrors.CodeNotFound, http.StatusNotFound,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactChanged),
+		errors.Is(err, agentcfgprotocol.ErrUserSkillImportHashMismatch),
+		errors.Is(err, agentcfgprotocol.ErrUserSkillImportPolicyRevoked),
+		errors.Is(err, agentcfgprotocol.ErrUserSkillImportCeilingChanged):
+		// The commit's freshly-revalidated inputs moved / no longer match
+		// the reviewed claims — a stale or re-echoed review is a bad
+		// request input: re-run import_validate.
+		return protoerrors.CodeSkillImportProposalInvalid, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportPackageInvalid):
+		return protoerrors.CodeSkillImportPackageInvalid, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid):
+		return protoerrors.CodeSkillImportProposalInvalid, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportExpired):
+		return protoerrors.CodeSkillImportProposalExpired, http.StatusBadRequest,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportReplaceRequired):
+		return protoerrors.CodeSkillImportReplaceRequired, http.StatusConflict,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner):
+		// The target key is held by a different package winner — the
+		// caller's base moved; re-read and re-validate (409, the same
+		// state-forbids posture as CodeRevisionConflict).
+		return protoerrors.CodeRevisionConflict, http.StatusConflict,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrUserSkillImportConfigMoved):
+		return protoerrors.CodeRevisionConflict, http.StatusConflict,
+			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrPreviewIdentityRequired):
+		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
+			m + ": identity scope incomplete"
+	case errors.Is(err, agentcfgprotocol.ErrPreviewSessionReachDenied),
+		errors.Is(err, agentcfgprotocol.ErrPreviewAgentReachDenied):
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			m + ": caller is not authorized for the target session / effective agent"
+	case errors.Is(err, agentcfgprotocol.ErrPreviewMisconfigured):
+		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			m + ": composition preview is not wired on this runtime"
 	default:
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": request failed"

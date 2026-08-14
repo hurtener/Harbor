@@ -127,6 +127,64 @@ func HTTPStatus(code protoerrors.Code) int {
 		return http.StatusConflict // 409
 	case protoerrors.CodeAgentRetired, protoerrors.CodeAgentRetirementConflict:
 		return http.StatusConflict // 409
+	case protoerrors.CodeRenderAdmissionMissing:
+		// MCP Apps: an app-tool-call request referenced a render
+		// admission but supplied none. The request is malformed — the
+		// App must re-read the resource with the opt-in flag.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeRenderAdmissionUnavailable:
+		// MCP Apps: the render-admission token could not be opened
+		// (bad base64url / oversize / envelope tamper / wrong
+		// key-replica). The presented authority is unusable — 400, never
+		// a misleading 404 (the App exists; its admission is bad).
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeRenderAdmissionInvalid:
+		// MCP Apps: the render-admission token opened but its sealed
+		// claims are structurally invalid.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeRenderAdmissionExpired:
+		// MCP Apps: the render-admission token is well-formed but past
+		// its expiry. The App re-reads the resource for a fresh one —
+		// typed, never collapsed into a generic not-found.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeRenderAdmissionMismatch:
+		// MCP Apps: the render-admission token does not match the
+		// requested render tuple (identity / agent / server / resource /
+		// generation).
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeRenderAuthorityAmbiguous:
+		// MCP Apps: the request supplied BOTH the legacy binding and the
+		// fresh render admission. Refused as ambiguous — 400.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeSkillImportProposalInvalid:
+		// agent-config import: the echoed proposal token is unknown /
+		// consumed / foreign / stale. The caller re-runs
+		// import_validate. 400 — a bad token is a bad request input,
+		// never an ambiguous not-found.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeSkillImportProposalExpired:
+		// agent-config import: the proposal's review window elapsed.
+		// 400 — the caller re-validates for a fresh proposal.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeSkillImportPackageInvalid:
+		// agent-config import: the artifact is not a valid complete
+		// skill package. 400 — the request was well formed, the package
+		// was not.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeSkillImportReplaceRequired:
+		// agent-config import: a different package already wins the
+		// target key and no replacement consent was given. 409 — the
+		// target's current state forbids the write.
+		return http.StatusConflict // 409
+	case protoerrors.CodeQueryBudgetExceeded:
+		// observability: the query exceeds a result budget (too many
+		// buckets, page limit too high). 400 — the caller narrows the
+		// window or coarsens the bucket; never a truncated response.
+		return http.StatusBadRequest // 400
+	case protoerrors.CodeInvalidCursor:
+		// observability: the page cursor is malformed or foreign to the
+		// query shape. 400 — the caller restarts from the first page.
+		return http.StatusBadRequest // 400
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

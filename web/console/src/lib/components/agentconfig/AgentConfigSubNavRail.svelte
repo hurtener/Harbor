@@ -2,7 +2,7 @@
   // Agent Config — the left section-nav rail.
   //
   // Mirrors the Settings page's sub-nav rail vocabulary (CONVENTIONS.md §3,
-  // the single-section model): a persistent left rail listing the five
+  // the single-section model): a persistent left rail listing the seven
   // control-plane areas. Clicking an area selects it; the right pane renders
   // ONLY that area. An optional `header` snippet slot carries the agent
   // selector at the top of the rail. Svelte 5 runes (D-092); design tokens

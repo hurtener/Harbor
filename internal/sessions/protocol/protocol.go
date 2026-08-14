@@ -34,6 +34,19 @@
 // admin-scope query the Service emits an `audit.admin_scope_used`
 // event.
 //
+// # Projection selector
+//
+// Both read methods carry an additive `Projection` selector (omitted ⇒
+// the original "full" projection). `projection=lifecycle` asks for the
+// session catalog fields with NO counter / history / task / pause
+// enrichment: the request is served from the catalog projection / page
+// path before any Enricher call, the rows carry
+// `CounterStatus=not_requested`, and a counter-dependent filter or sort
+// is rejected `invalid_request` regardless of enricher wiring (there are
+// no counters to narrow or order by). Identity scoping, session reach,
+// admin widening + audit, not-found posture, and ordering / cursor
+// semantics are identical to the full projection.
+//
 // # Concurrent reuse
 //
 // A constructed *Service is immutable after NewService and safe to
@@ -177,6 +190,35 @@ type preEnrichmentPager interface {
 		cursor *pageCursor,
 		limit int,
 	) (prototypes.SessionsListResponse, error)
+}
+
+// lifecycleProjector is the private seam for lifecycle-only projection —
+// the request shape where the caller explicitly asks for the session
+// catalog fields WITHOUT any counter / history / task / pause enrichment.
+// It is deliberately private, like preEnrichmentPager: Projector remains
+// the complete read seam, and a projector that cannot serve a
+// lifecycle-only request is honestly rejected (ErrInvalidRequest) rather
+// than silently enriched (a contract break) or silently stripped (a
+// believable-but-false page).
+type lifecycleProjector interface {
+	// pageLifecycleOnly pages the lifecycle-only catalog projection —
+	// identity-scoped, facet-filtered, sorted, cursor-paginated — with NO
+	// Enricher reads. Rows carry CounterStatus=not_requested. The filter /
+	// sort / cursor / truncation semantics are exactly the full
+	// projection's; only the counter payload is absent.
+	pageLifecycleOnly(
+		ctx context.Context,
+		id identity.Identity,
+		f prototypes.SessionFilter,
+		adminScoped bool,
+		srt prototypes.SessionSort,
+		cursor *pageCursor,
+		limit int,
+	) (prototypes.SessionsListResponse, error)
+	// inspectLifecycleOnly returns the lifecycle-only snapshot for one
+	// session — the same lookup and not-found semantics as InspectSession,
+	// but with NO Enricher read and CounterStatus=not_requested on the row.
+	inspectLifecycleOnly(ctx context.Context, id identity.Identity, sessionID string, adminScoped bool) (prototypes.SessionsInspectResponse, error)
 }
 
 // requiresCounters reports whether the request's filter or sort operates
@@ -358,6 +400,52 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 			fmt.Errorf("%w: unknown sort %q", ErrInvalidRequest, srt)
 	}
 
+	// Resolve the projection selector. Omitted (the zero value) and
+	// explicit "full" both reproduce the original behavior exactly; an
+	// unknown value fails loud with the same invalid-argument posture as an
+	// unknown sort.
+	proj := req.Projection
+	if proj == "" {
+		proj = prototypes.SessionProjectionFull
+	}
+	if !prototypes.IsValidSessionProjection(proj) {
+		return prototypes.SessionsListResponse{},
+			fmt.Errorf("%w: unknown projection %q", ErrInvalidRequest, proj)
+	}
+
+	// Lifecycle-only projection: the rows carry NO counters, so a
+	// counter-dependent facet / sort would operate on not-requested values
+	// — a false-empty / mis-ordered page, the same false-absence class the
+	// WARN-3 gate below closes for the full path. Reject REGARDLESS of
+	// whether an Enricher is wired (the full path rejects only when the
+	// counters are unavailable): a lifecycle request asks for rows without
+	// counters, and a counter predicate over such rows is unanswerable.
+	if proj == prototypes.SessionProjectionLifecycle {
+		if requiresCounters(req.Filter, srt) {
+			return prototypes.SessionsListResponse{},
+				fmt.Errorf("%w: cost_above_cents / has_failed_task / has_intervention facets and the "+
+					"cost_desc sort operate over session counters, which a lifecycle-only projection "+
+					"does not populate — omit projection or use projection=full for counter facets/sorts", ErrInvalidRequest)
+		}
+		lc, ok := s.projector.(lifecycleProjector)
+		if !ok {
+			return prototypes.SessionsListResponse{},
+				fmt.Errorf("%w: lifecycle-only projection is not supported by this runtime's projector", ErrInvalidRequest)
+		}
+		cursor, err := decodeCursor(req.Cursor)
+		if err != nil {
+			return prototypes.SessionsListResponse{}, err
+		}
+		resp, pageErr := lc.pageLifecycleOnly(ctx, id, req.Filter, adminScoped, srt, cursor, limit)
+		if pageErr != nil {
+			return prototypes.SessionsListResponse{}, fmt.Errorf("sessions/protocol: list: %w", pageErr)
+		}
+		if crossTenant && adminScoped {
+			s.emitAdminAudit(ctx, id, "sessions.list")
+		}
+		return resp, nil
+	}
+
 	// WARN-3: sessions runs SERVER-SIDE facets / sort over the counters
 	// (unlike tasks, which does not). On a projector with no Enricher wired
 	// the counters are permanently zero, so a numeric-counter facet /
@@ -434,13 +522,40 @@ func (s *Service) Inspect(ctx context.Context, req prototypes.SessionsInspectReq
 		return prototypes.SessionsInspectResponse{},
 			fmt.Errorf("%w: session_id is empty", ErrInvalidRequest)
 	}
-	resp, err := s.projector.InspectSession(ctx, id, sessionID, adminScoped)
+	proj := req.Projection
+	if proj == "" {
+		proj = prototypes.SessionProjectionFull
+	}
+	if !prototypes.IsValidSessionProjection(proj) {
+		return prototypes.SessionsInspectResponse{},
+			fmt.Errorf("%w: unknown projection %q", ErrInvalidRequest, proj)
+	}
+	var resp prototypes.SessionsInspectResponse
+	if proj == prototypes.SessionProjectionLifecycle {
+		lc, ok := s.projector.(lifecycleProjector)
+		if !ok {
+			return prototypes.SessionsInspectResponse{},
+				fmt.Errorf("%w: lifecycle-only projection is not supported by this runtime's projector", ErrInvalidRequest)
+		}
+		resp, err = lc.inspectLifecycleOnly(ctx, id, sessionID, adminScoped)
+	} else {
+		resp, err = s.projector.InspectSession(ctx, id, sessionID, adminScoped)
+	}
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
 			return prototypes.SessionsInspectResponse{}, err
 		}
 		return prototypes.SessionsInspectResponse{}, fmt.Errorf("sessions/protocol: inspect: %w", err)
 	}
+	return s.finishInspect(ctx, resp, id, adminScoped)
+}
+
+// finishInspect applies the post-lookup work shared by the full and the
+// lifecycle-only inspect projections: the cross-tenant audit gate (a
+// resolved row in another tenant is an admin action) and the defensive
+// caps on the capped slices. Sharing the code pins both projections to
+// identical authority / audit / cap semantics.
+func (s *Service) finishInspect(ctx context.Context, resp prototypes.SessionsInspectResponse, id identity.Identity, adminScoped bool) (prototypes.SessionsInspectResponse, error) {
 	// Cross-tenant inspect (the resolved row's tenant differs from the
 	// caller's verified tenant) is an admin action — audit it.
 	if resp.Row.TenantID != "" && resp.Row.TenantID != id.TenantID {

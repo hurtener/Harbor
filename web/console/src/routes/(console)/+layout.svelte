@@ -2,7 +2,7 @@
   // Harbor Console — the app shell (D-121, CONVENTIONS.md §2, Phase 108 / 108b).
   //
   // Every Console page renders inside this shell. It provides the
-  // persistent sidebar (the 14-page IA in four clusters, each item with a
+  // persistent sidebar (the 15-page IA in four clusters, each item with a
   // lucide icon — Phase 108b), the top bar (hamburger collapse, breadcrumb,
   // ⌘K search, help, identity avatar — `TopBar.svelte`), the single global
   // status bar (`AppStatusBar`), and the content region. The `(console)`
@@ -12,6 +12,7 @@
   import type { Component } from 'svelte';
   import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
   import Activity from '@lucide/svelte/icons/activity';
+  import BarChart3 from '@lucide/svelte/icons/bar-chart-3';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import ListChecks from '@lucide/svelte/icons/list-checks';
   import Bot from '@lucide/svelte/icons/bot';
@@ -38,16 +39,20 @@
     items: NavItem[];
   }
 
-  // The 14-page information architecture in four clusters (CONVENTIONS.md
+  // The 15-page information architecture in four clusters (CONVENTIONS.md
   // §2). Playground rides in the Execution cluster (D-159, supersedes the
   // original D-121 stance). NO Evaluations entry — Evaluations is post-V1
-  // (D-064); the canonical mock predates that decision.
+  // (D-064); the canonical mock predates that decision. Observability
+  // (HA-65) is the bounded rollup-query surface; its route ships with the
+  // HA-65 Console consumer lane, this entry is the G4 composition's nav
+  // contract (a dead-until-then link is the accepted wave-merge shape).
   const NAV: NavCluster[] = [
     {
       label: 'Runtime',
       items: [
         { label: 'Overview', href: '/overview', icon: LayoutDashboard },
-        { label: 'Live Runtime', href: '/live-runtime', icon: Activity }
+        { label: 'Live Runtime', href: '/live-runtime', icon: Activity },
+        { label: 'Observability', href: '/observability', icon: BarChart3 }
       ]
     },
     {

@@ -24,6 +24,10 @@ import "github.com/hurtener/Harbor/internal/config"
 // `SessionPersonalCutover` is also excluded: it is restart-required runtime
 // boot-maintenance authority consumed by session-overlay assembly, not a
 // SkillStore driver setting or Directory constructor input.
+// `BootAgentPacks` is excluded the same way: boot packs are node-local
+// deployment config consumed eagerly by the runtime's boot-pack loader
+// during composition before readiness. They are never SkillStore driver
+// state — the snapshot does not project, clone, or persist them.
 func SnapshotFromConfig(cfg config.SkillsConfig) ConfigSnapshot {
 	return ConfigSnapshot{
 		Driver:    cfg.Driver,

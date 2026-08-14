@@ -371,6 +371,21 @@ func routeFor(method methods.Method) string {
 		return "/v1/tasks/" + suffix
 	case methods.IsSessionsMethod(method):
 		return "/v1/sessions/" + suffix
+	// The session-turns routes are PINNED EXPLICITLY — nested session
+	// routes are never derived generically (a generic derivation would
+	// map `sessions.turns.get` onto the non-existent `sessions.get`).
+	case method == methods.MethodSessionTurnsList:
+		return "/v1/sessions/turns/list"
+	case method == methods.MethodSessionTurnsGet:
+		return "/v1/sessions/turns/get"
+	case method == methods.MethodObservabilityQuery:
+		return "/v1/observability/query"
+	case method == methods.MethodAgentConfigUserSkillsImportValidate:
+		return "/v1/agent_config/user/skills/import_validate"
+	case method == methods.MethodAgentConfigUserSkillsImportCommit:
+		return "/v1/agent_config/user/skills/import_commit"
+	case method == methods.MethodAgentConfigCompositionPreview:
+		return "/v1/agent_config/composition/preview"
 	case methods.IsStateMethod(method):
 		return "/v1/state/" + suffix
 	case methods.IsPauseMethod(method):
@@ -455,6 +470,102 @@ func (c *client) SessionsSetTitle(ctx context.Context, request types.SessionsSet
 func (c *client) SessionsDelete(ctx context.Context) (types.SessionsDeleteResponse, error) {
 	var out types.SessionsDeleteResponse
 	err := c.callMethod(ctx, methods.MethodSessionsDelete, types.SessionsDeleteRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// SessionTurnsList reads one newest-first page of this client's exact
+// session's conversation projection (`sessions.turns.list`).
+func (c *client) SessionTurnsList(ctx context.Context, request types.SessionTurnsListRequest) (types.SessionTurnsListResponse, error) {
+	request.Identity = c.scope()
+	if request.SessionID == "" {
+		request.SessionID = c.identity.Session
+	}
+	var out types.SessionTurnsListResponse
+	err := c.callMethod(ctx, methods.MethodSessionTurnsList, request, &out)
+	return out, err
+}
+
+// SessionTurnsGet reads one (session, task) turn on either the consumer
+// conversation lane or the elevated operations DTO lane
+// (`sessions.turns.get`).
+func (c *client) SessionTurnsGet(ctx context.Context, request types.SessionTurnsGetRequest) (types.SessionTurnsGetResponse, error) {
+	request.Identity = c.scope()
+	var out types.SessionTurnsGetResponse
+	err := c.callMethod(ctx, methods.MethodSessionTurnsGet, request, &out)
+	return out, err
+}
+
+// ObservabilityQuery runs the one bounded administrative rollup query
+// (`observability.query`). An ordinary client's query is forced to its
+// own verified triple; widening requires a scope-bearing token and is
+// audited by the runtime.
+func (c *client) ObservabilityQuery(ctx context.Context, request types.ObservabilityQueryRequest) (types.ObservabilityQueryResponse, error) {
+	request.Identity = c.scope()
+	var out types.ObservabilityQueryResponse
+	err := c.callMethod(ctx, methods.MethodObservabilityQuery, request, &out)
+	return out, err
+}
+
+// AgentConfigUserSkillsImportValidate runs the ZERO-WRITE first phase of
+// the two-phase verified-caller skill-package import — the caller names
+// a caller-owned immutable artifact ref + the effective agent and
+// receives the opaque proposal token + the closed review.
+func (c *client) AgentConfigUserSkillsImportValidate(ctx context.Context, request types.AgentConfigUserSkillsImportValidateRequest) (types.AgentConfigUserSkillsImportValidateResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigUserSkillsImportValidateResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigUserSkillsImportValidate, request, &out)
+	return out, err
+}
+
+// AgentConfigUserSkillsImportCommit runs the explicit second phase of
+// the two-phase import — the caller echoes the proposal token + the
+// reviewed hashes + the replacement consent; the runtime freshly
+// revalidates and performs the ONE atomic write, replay-safe.
+func (c *client) AgentConfigUserSkillsImportCommit(ctx context.Context, request types.AgentConfigUserSkillsImportCommitRequest) (types.AgentConfigUserSkillsImportCommitResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigUserSkillsImportCommitResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigUserSkillsImportCommit, request, &out)
+	return out, err
+}
+
+// AgentConfigCompositionPreview reads the read-only effective-composition
+// preview for the target triple + effective boot-agent without
+// materialising anything.
+func (c *client) AgentConfigCompositionPreview(ctx context.Context, request types.AgentConfigCompositionPreviewRequest) (types.AgentConfigCompositionPreviewResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigCompositionPreviewResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigCompositionPreview, request, &out)
+	return out, err
+}
+
+// MCPReadResource fetches a `ui://` resource's document scoped to this
+// client's identity triple. When RequestRenderAdmission is true AND the
+// read succeeds, the response carries the bounded render admission the
+// client echoes back on MCPAppsCallTool.
+func (c *client) MCPReadResource(ctx context.Context, request types.ReadMCPResourceRequest) (types.ReadMCPResourceResponse, error) {
+	request.Identity = c.scope()
+	var out types.ReadMCPResourceResponse
+	err := c.callMethod(ctx, methods.MethodMCPReadResource, request, &out)
+	return out, err
+}
+
+// MCPAppsCallTool proxies an MCP App's tool call through this client's
+// identity + the existing approval / OAuth / identity path. Supply
+// EXACTLY ONE of RenderAdmission (the fresh admission from
+// MCPReadResource) or the legacy Binding — both is refused as ambiguous.
+func (c *client) MCPAppsCallTool(ctx context.Context, request types.MCPAppCallToolRequest) (types.MCPAppCallToolResponse, error) {
+	request.Identity = c.scope()
+	var out types.MCPAppCallToolResponse
+	err := c.callMethod(ctx, methods.MethodMCPAppsCallTool, request, &out)
+	return out, err
+}
+
+// MCPAppsToolContext reads the identity-scoped captured tool context
+// (input + lowered result) that produced a rendered MCP App.
+func (c *client) MCPAppsToolContext(ctx context.Context, request types.ToolContextRequest) (types.ToolContextResponse, error) {
+	request.Identity = c.scope()
+	var out types.ToolContextResponse
+	err := c.callMethod(ctx, methods.MethodMCPAppsToolContext, request, &out)
 	return out, err
 }
 

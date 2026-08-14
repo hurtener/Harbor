@@ -41,7 +41,8 @@ import (
 // Concurrent-safe.
 type fakeSkillStore struct {
 	mu    sync.RWMutex
-	rows  map[string]skills.Skill // key: tenant + "/" + user + "/" + storage-session + "/" + name
+	rows  map[string]skills.Skill            // key: tenant + "/" + user + "/" + storage-session + "/" + name
+	pkgs  map[string]skills.InstalledPackage // key: tenant + "/" + user + "/" + agent + "/" + name
 	bus   events.EventBus
 	limit int
 }
@@ -57,7 +58,12 @@ func (f *fakeSkillStore) DeleteAgent(ctx context.Context, q identity.Quadruple, 
 }
 
 func newFakeSkillStore(bus events.EventBus) *fakeSkillStore {
-	return &fakeSkillStore{rows: map[string]skills.Skill{}, bus: bus, limit: 20}
+	return &fakeSkillStore{
+		rows:  map[string]skills.Skill{},
+		pkgs:  map[string]skills.InstalledPackage{},
+		bus:   bus,
+		limit: 20,
+	}
 }
 
 func (f *fakeSkillStore) key(q identity.Quadruple, scope skills.Scope, name string) string {
@@ -194,6 +200,285 @@ func (f *fakeSkillStore) DeleteSessionScope(ctx context.Context, q identity.Quad
 
 func (f *fakeSkillStore) Close(context.Context) error { return nil }
 
+// ---- Mandatory installed-package surface (interface parity) ----
+//
+// The five methods below complete the fake's coverage of the full
+// skills.SkillStore surface so the delegation tests can pass it
+// wherever a mandatory SkillStore is required. They mirror the exact
+// contract semantics of the real drivers (and the conformancetest
+// reference store): the atomic installed unit lives at the
+// session-zeroed (tenant, user, effective-agent, name) key; every
+// value is deep-copied at the boundary; conditional puts compare the
+// exact prior absence / hash / version and require explicit replace
+// (with the pack origin-precedence gate); and Delete / Restore bind
+// to the receipt's WrittenHash so a receipt never touches another
+// proposal's winner. The generator never exercises this surface
+// (Propose / Promote use only Get / Upsert / Delete), so the fake
+// keeps the installed unit in its own key space and leaves the
+// legacy rows untouched.
+
+// installedKey is the session-zeroed installed-package target key:
+// tenant + "/" + user + "/" + effective-agent + "/" + name.
+func (f *fakeSkillStore) installedKey(q identity.Quadruple, agentID, name string) string {
+	return q.TenantID + "/" + q.UserID + "/" + agentID + "/" + name
+}
+
+// fakeDeepCopySkill returns a fresh copy of s whose slice and map
+// fields share no memory with the source (the concurrent-reuse
+// contract: mutating the copy never mutates store state).
+func fakeDeepCopySkill(s skills.Skill) skills.Skill {
+	out := s
+	out.Tags = append([]string(nil), s.Tags...)
+	out.Steps = append([]string(nil), s.Steps...)
+	out.Preconditions = append([]string(nil), s.Preconditions...)
+	out.FailureModes = append([]string(nil), s.FailureModes...)
+	out.RequiredTools = append([]string(nil), s.RequiredTools...)
+	out.RequiredNS = append([]string(nil), s.RequiredNS...)
+	out.RequiredTags = append([]string(nil), s.RequiredTags...)
+	if len(s.Extra) > 0 {
+		out.Extra = make(map[string]any, len(s.Extra))
+		for k, v := range s.Extra {
+			out.Extra[k] = v
+		}
+	}
+	return out
+}
+
+// fakeDeepCopyPackage returns a fresh copy of p, deep-copying the
+// logical skill slices and every support file's immutable bytes.
+func fakeDeepCopyPackage(p skills.Package) skills.Package {
+	out := p
+	out.Skill = skills.PackageSkill{
+		Name:          p.Skill.Name,
+		Title:         p.Skill.Title,
+		Description:   p.Skill.Description,
+		Trigger:       p.Skill.Trigger,
+		TaskType:      p.Skill.TaskType,
+		Tags:          append([]string(nil), p.Skill.Tags...),
+		Steps:         append([]string(nil), p.Skill.Steps...),
+		Preconditions: append([]string(nil), p.Skill.Preconditions...),
+		FailureModes:  append([]string(nil), p.Skill.FailureModes...),
+		RequiredTools: append([]string(nil), p.Skill.RequiredTools...),
+		RequiredNS:    append([]string(nil), p.Skill.RequiredNS...),
+		RequiredTags:  append([]string(nil), p.Skill.RequiredTags...),
+	}
+	if len(p.Supports) > 0 {
+		out.Supports = make([]skills.SupportFile, len(p.Supports))
+		for i, sf := range p.Supports {
+			out.Supports[i] = sf
+			if sf.Data != nil {
+				out.Supports[i].Data = append([]byte(nil), sf.Data...)
+			}
+		}
+	}
+	return out
+}
+
+// fakeDeepCopyUnit returns a fresh copy of the atomic installed unit.
+func fakeDeepCopyUnit(u skills.InstalledPackage) skills.InstalledPackage {
+	out := u
+	out.Skill = fakeDeepCopySkill(u.Skill)
+	out.Package = fakeDeepCopyPackage(u.Package)
+	return out
+}
+
+// GetInstalledPackage implements skills.SkillStore: the atomic
+// installed unit at the session-zeroed (tenant, user, effective-agent,
+// name) key. Missing → ErrInstalledPackageNotFound. The returned unit
+// is a deep copy.
+func (f *fakeSkillStore) GetInstalledPackage(ctx context.Context, q identity.Quadruple, agentID, name string) (skills.InstalledPackage, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	unit, ok := f.pkgs[f.installedKey(q, agentID, name)]
+	if !ok {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: name=%q agent_id=%q", skills.ErrInstalledPackageNotFound, name, agentID)
+	}
+	return fakeDeepCopyUnit(unit), nil
+}
+
+// ResolveSupport implements skills.SkillStore: only the exact
+// immutable `skillpkg://<PackageHash>/<encoded-canonical-path>`
+// reference resolves. A foreign-hash or dangling-path URI refuses with
+// ErrSupportNotFound (never resolved against a different package,
+// never guessed); an absent package names ErrInstalledPackageNotFound.
+func (f *fakeSkillStore) ResolveSupport(ctx context.Context, q identity.Quadruple, agentID, name string, uri skills.PackageURI) (skills.SupportFile, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return skills.SupportFile{}, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	unit, ok := f.pkgs[f.installedKey(q, agentID, name)]
+	if !ok {
+		return skills.SupportFile{}, fmt.Errorf("%w: name=%q agent_id=%q", skills.ErrInstalledPackageNotFound, name, agentID)
+	}
+	if uri.Hash != unit.PackageHash {
+		return skills.SupportFile{}, fmt.Errorf("%w: uri hash %q is foreign to installed package %q",
+			skills.ErrSupportNotFound, uri.Hash, unit.PackageHash)
+	}
+	for _, sf := range unit.Package.Supports {
+		if sf.Path == uri.Path {
+			out := sf
+			out.Data = append([]byte(nil), sf.Data...)
+			return out, nil
+		}
+	}
+	return skills.SupportFile{}, fmt.Errorf("%w: %q is not in the installed package manifest",
+		skills.ErrSupportNotFound, uri.Path)
+}
+
+// PutInstalledPackage implements skills.SkillStore: the conditional
+// compare-and-swap write of the atomic unit at the session-zeroed
+// (tenant, user, effective-agent, name) key. The condition, the
+// explicit-replace requirement, and the pack origin-precedence gate
+// are all evaluated under the lock, and a refused put leaves the exact
+// prior winner untouched. An exact same-hash replay is a no-op
+// success; the returned receipt binds compensation to the written
+// version.
+func (f *fakeSkillStore) PutInstalledPackage(ctx context.Context, q identity.Quadruple, agentID string, pkg skills.InstalledPackage, cond skills.InstalledPackageCondition, replace bool) (skills.InstalledPackageReceipt, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if err := skills.ValidateInstalledPackageCondition(cond); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: agentID (effective agent) must be non-empty", skills.ErrInstalledPackageInvalid)
+	}
+	if err := skills.ValidateInstalledPackage(pkg); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if pkg.Skill.AgentID != agentID {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: Skill.AgentID %q != effective agent %q",
+			skills.ErrInstalledPackageInvalid, pkg.Skill.AgentID, agentID)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	key := f.installedKey(q, agentID, pkg.Package.Name)
+	winner, present := f.pkgs[key]
+	priorHash, priorVersion := "", ""
+	if present {
+		priorHash, priorVersion = winner.PackageHash, winner.Package.Version
+	}
+
+	// Idempotent exact replay: the winner is already the incoming
+	// package. No mutation; the receipt names the installed version.
+	if present && winner.PackageHash == pkg.PackageHash {
+		return skills.InstalledPackageReceipt{
+			TenantID: q.TenantID, UserID: q.UserID, AgentID: agentID, Name: pkg.Package.Name,
+			WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
+			PriorHash: "", PriorVersion: "",
+		}, nil
+	}
+
+	switch {
+	case !present:
+		if !cond.ExpectedAbsent {
+			return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected prior hash %q but the key is absent",
+				skills.ErrInstalledPackageConditionFailed, cond.ExpectedHash)
+		}
+	case cond.ExpectedAbsent:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q", skills.ErrInstalledPackageExists, pkg.Package.Name)
+	case winner.PackageHash != cond.ExpectedHash:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected hash %q, winner has %q",
+			skills.ErrInstalledPackageConditionFailed, cond.ExpectedHash, winner.PackageHash)
+	case cond.ExpectedVersion != "" && winner.Package.Version != cond.ExpectedVersion:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected version %q, winner has %q",
+			skills.ErrInstalledPackageConditionFailed, cond.ExpectedVersion, winner.Package.Version)
+	case !replace:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q", skills.ErrInstalledPackageReplaceRequired, pkg.Package.Name)
+	case winner.Skill.Origin == skills.OriginPack && pkg.Skill.Origin != skills.OriginPack:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q existing_origin=pack incoming=%s",
+			skills.ErrPackOverwriteRefused, pkg.Package.Name, pkg.Skill.Origin)
+	}
+
+	f.pkgs[key] = fakeDeepCopyUnit(pkg)
+	return skills.InstalledPackageReceipt{
+		TenantID: q.TenantID, UserID: q.UserID, AgentID: agentID, Name: pkg.Package.Name,
+		WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
+		PriorHash: priorHash, PriorVersion: priorVersion,
+	}, nil
+}
+
+// DeleteInstalledPackage implements skills.SkillStore: exact-receipt
+// conditional erasure. The receipt's written version must still be the
+// winner; a different winner or an absent key is a normal concurrent
+// outcome ((false, nil)) — a receipt NEVER deletes another proposal's
+// winner. Receipt/key/identity mismatches fail loudly.
+func (f *fakeSkillStore) DeleteInstalledPackage(ctx context.Context, q identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt) (bool, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackageReceipt(receipt, q, agentID, name); err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := f.installedKey(q, agentID, name)
+	winner, present := f.pkgs[key]
+	if !present || winner.PackageHash != receipt.WrittenHash {
+		return false, nil
+	}
+	delete(f.pkgs, key)
+	return true, nil
+}
+
+// RestoreInstalledPackage implements skills.SkillStore: exact-receipt
+// conditional restore. `prior` (the exact package the receipt's write
+// displaced) is restored ONLY when the receipt's written version is
+// still the winner; a different winner or an absent key is a no-op.
+// The restore does not re-apply the origin-precedence gate: it can
+// only ever replace the version the receipt itself wrote. Receipt /
+// key / identity mismatches and an invalid or mis-bound `prior` fail
+// loudly.
+func (f *fakeSkillStore) RestoreInstalledPackage(ctx context.Context, q identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt, prior skills.InstalledPackage) (bool, error) {
+	if err := skills.ValidateIdentity(q); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackageReceipt(receipt, q, agentID, name); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackage(prior); err != nil {
+		return false, err
+	}
+	if prior.Skill.AgentID != agentID {
+		return false, fmt.Errorf("%w: prior Skill.AgentID %q != effective agent %q",
+			skills.ErrInstalledPackageInvalid, prior.Skill.AgentID, agentID)
+	}
+	if prior.Package.Name != name {
+		return false, fmt.Errorf("%w: prior package name %q does not bind to the receipt/target key %q (a restore writes only the exact key its receipt names)",
+			skills.ErrInstalledPackageInvalid, prior.Package.Name, name)
+	}
+	if receipt.PriorHash == "" {
+		return false, fmt.Errorf("%w: the receipt records an absent prior; compensate with DeleteInstalledPackage",
+			skills.ErrInstalledPackageInvalid)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := f.installedKey(q, agentID, name)
+	winner, present := f.pkgs[key]
+	if !present || winner.PackageHash != receipt.WrittenHash {
+		return false, nil
+	}
+	if prior.PackageHash != receipt.PriorHash {
+		return false, fmt.Errorf("%w: prior hash %q does not match the receipt's recorded prior %q",
+			skills.ErrInstalledPackageConditionFailed, prior.PackageHash, receipt.PriorHash)
+	}
+	f.pkgs[key] = fakeDeepCopyUnit(prior)
+	return true, nil
+}
+
+// fakeSkillStore must satisfy the full mandatory SkillStore surface —
+// the delegation tests pass it as both the SkillReader and the
+// mutation-capable SkillStore of the RegistryContext. The assertion is
+// test-local (the fake lives in _test.go) and turns any future
+// interface growth into a compile error in this package.
+var _ skills.SkillStore = (*fakeSkillStore)(nil)
+
 func TestFakeSkillStore_UserScopeCrossSessionAndSessionSweep(t *testing.T) {
 	t.Parallel()
 	store := newFakeSkillStore(skillTestBus(t))
@@ -258,6 +543,10 @@ func skillTestRegistryContext(t *testing.T) RegistryContext {
 		SkillStore: newFakeSkillStore(bus),
 		Bus:        bus,
 		Redactor:   auditpatterns.New(),
+		// The composed-client slot the HA-62 draft carrier requires at
+		// registration (the full-set register test names every
+		// KnownNames entry, including skill_create_draft).
+		LLMClient: scriptedClient{content: "draft"},
 	}
 }
 

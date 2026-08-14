@@ -18,7 +18,11 @@ import { flushSync, mount, unmount } from 'svelte';
 
 import MessageBubble from '$lib/chat/MessageBubble.svelte';
 import type { ChatMessage, ChatProtocolClient } from '$lib/chat/types.js';
-import type { MCPAppHostClient, MCPAppToolContext } from '$lib/chat/renderers/app-bridge-host.js';
+import type {
+  MCPAppHostClient,
+  MCPAppRenderDocument,
+  MCPAppToolContext,
+} from '$lib/chat/renderers/app-bridge-host.js';
 import { reduceHistoryTurns, type HistoryTurn } from '$lib/sessions/history.js';
 import type { StateEvent } from '$lib/protocol/state.js';
 
@@ -99,18 +103,46 @@ function replayedMessage(turn: HistoryTurn): ChatMessage {
 
 /** A fake injected Protocol surface (D-173) recording what it was asked for. */
 function fakeHostClient(
-  toolContext: () => Promise<MCPAppToolContext | null> = async () => CONTEXT
-): MCPAppHostClient & { reads: Array<[string, string, string | undefined]>; contexts: Array<[string, string]> } {
+  toolContext: () => Promise<MCPAppToolContext | null> = async () => CONTEXT,
+): MCPAppHostClient & {
+  reads: Array<[string, string, string | undefined]>;
+  contexts: Array<[string, string]>;
+  callTools: Array<[string, string, unknown]>;
+} {
   const reads: Array<[string, string, string | undefined]> = [];
   const contexts: Array<[string, string]> = [];
+  const callTools: Array<[string, string, unknown]> = [];
   return {
     reads,
     contexts,
+    callTools,
     async readResource(serverID, resourceURI, agentID) {
+      // The ORDINARY non-minting read — the AppBridge's app-initiated
+      // `resources/read` handler routes here; it never mints an admission.
       reads.push([serverID, resourceURI, agentID]);
       return { resourceUri: resourceURI, mimeType: 'text/html', content: '<p>dashboard</p>' };
     },
-    async callTool(_serverID, tool) {
+    async readRenderDocument(serverID, resourceURI, agentID): Promise<MCPAppRenderDocument> {
+      // The renderer's pre-mount OPT-IN read — it returns the FRESH render
+      // admission alongside the document, exactly as the Runtime's
+      // `request_render_admission: true` read does (HA-56).
+      reads.push([serverID, resourceURI, agentID]);
+      return {
+        resourceUri: resourceURI,
+        mimeType: 'text/html',
+        content: '<p>dashboard</p>',
+        renderAdmission: {
+          token: 'opaque-sealed-render-token-1',
+          issuedAt: '2026-08-14T00:00:00Z',
+          expiresAt: '2026-08-14T01:00:00Z',
+          availability: 'available',
+        },
+      };
+    },
+    async callTool(serverID, tool, args) {
+      // Only an APP-INITIATED bridge `tools/call` reaches here — the replay
+      // path itself must never rerun the originating MCP tool.
+      callTools.push([serverID, tool, args]);
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources() {
@@ -190,7 +222,9 @@ describe('session-reopen MCP App replay (D-348)', () => {
       expect(root.querySelector("[data-testid='mcp-app-unavailable']")).toBeNull();
     }
 
-    // Same document, resolved from the same server, through the injected client.
+    // Same document, resolved from the same server, through the injected
+    // client's RENDERER-INTERNAL opt-in read (HA-56 — the pre-mount read that
+    // mints the render admission).
     expect(replayClient.reads).toEqual(liveClient.reads);
     expect(replayClient.reads).toEqual([['reports', 'ui://reports/dashboard.html', 'agent-reports']]);
 
@@ -198,6 +232,25 @@ describe('session-reopen MCP App replay (D-348)', () => {
     // storage and no caller-controlled identifier on the replay path.
     expect(replayClient.contexts).toEqual(liveClient.contexts);
     expect(replayClient.contexts).toEqual([['reports', 'tc_9f2c1a']]);
+
+    // The REPLAY path never reruns the originating MCP tool: `callTool` is
+    // reached ONLY by an app-initiated bridge `tools/call`, and no app is
+    // driving one here. Zero generic invocation, zero originating-tool rerun.
+    expect(liveClient.callTools).toEqual([]);
+    expect(replayClient.callTools).toEqual([]);
+
+    // The fresh render admission is HOST-PRIVATE: the opaque token appears in
+    // NO replay fixture (the durable event carries `Binding: 'must-not-replay'`
+    // and the replay projection drops it), nowhere in the DOM, and nowhere in
+    // storage — it lives only on the live renderer/host instances.
+    const token = 'opaque-sealed-render-token-1';
+    expect(JSON.stringify(APP_PAYLOAD)).not.toContain(token);
+    for (const root of [liveRoot, replayRoot]) {
+      expect(root.innerHTML).not.toContain(token);
+      expect(root.querySelector('iframe')?.getAttribute('srcdoc') ?? '').not.toContain(token);
+    }
+    expect(sessionStorage.getItem(token)).toBeNull();
+    expect(localStorage.getItem(token)).toBeNull();
 
     // Same iframe posture (sandbox tokens + trust flag) — a replayed App is
     // never granted more than a live one.

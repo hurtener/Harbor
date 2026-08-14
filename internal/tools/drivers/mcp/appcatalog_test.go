@@ -447,3 +447,208 @@ func TestRegistry_ResolveAppTool_ConcurrentIsolation(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// --- deterministic current provider/catalog generation (HA-56) ---------
+
+// TestRegistry_CurrentGeneration_DeterministicAcrossReplicas proves the
+// current generation is a CONTENT digest of the canonical descriptor
+// set: two independent registries staged with the SAME canonical
+// descriptor set produce the SAME generation (stable across replicas),
+// and a different set produces a different one. It is never a
+// process-local counter.
+func TestRegistry_CurrentGeneration_DeterministicAcrossReplicas(t *testing.T) {
+	descs := []tools.ToolDescriptor{
+		appDesc("srv-a_plain", "srv-a", false),
+		appDesc("srv-a_cb", "srv-a", true),
+		{Tool: tools.Tool{Name: "srv-a__resource.ui://srv-a/app.html", Source: "srv-a"}},
+	}
+	reg1 := NewRegistry()
+	stageAppServer(t, reg1, "srv-a", descs)
+	reg2 := NewRegistry()
+	stageAppServer(t, reg2, "srv-a", descs)
+
+	gen1, ok1 := reg1.CurrentGeneration("srv-a")
+	gen2, ok2 := reg2.CurrentGeneration("srv-a")
+	if !ok1 || !ok2 {
+		t.Fatalf("replicas did not establish a current generation (ok1=%v ok2=%v)", ok1, ok2)
+	}
+	if gen1 == "" || gen1 != gen2 {
+		t.Fatalf("identical canonical sets must yield identical generations (gen1=%q gen2=%q)", gen1, gen2)
+	}
+
+	// A DIFFERENT canonical set (an added callback) yields a different
+	// generation on a fresh replica.
+	descs2 := append(append([]tools.ToolDescriptor(nil), descs...), appDesc("srv-a_cb2", "srv-a", true))
+	reg3 := NewRegistry()
+	stageAppServer(t, reg3, "srv-a", descs2)
+	gen3, _ := reg3.CurrentGeneration("srv-a")
+	if gen3 == "" || gen3 == gen1 {
+		t.Fatalf("changed descriptor set must change the generation (gen1=%q gen3=%q)", gen1, gen3)
+	}
+}
+
+// TestRegistry_CurrentGeneration_ChangesOnRefresh proves a successful
+// discovery change bumps the generation EVEN WHEN the deployment
+// registration descriptor (DescriptorFingerprint) did not change — the
+// generation tracks the CURRENT descriptor set, not the registration.
+func TestRegistry_CurrentGeneration_ChangesOnRefresh(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	provider := &mutableAppProvider{id: "srv-a"}
+	initial := []tools.ToolDescriptor{appDesc("srv-a_cb", "srv-a", true)}
+	provider.set(initial)
+	swap, err := reg.StageRegistration(ServerRegistration{
+		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
+	}, initial)
+	if err != nil {
+		t.Fatalf("StageRegistration: %v", err)
+	}
+	if _, err := swap.Publish(ctx, nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	gen1, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen1 == "" {
+		t.Fatalf("no generation after initial stage (ok=%v)", ok)
+	}
+	// Refresh with a CHANGED descriptor set (same registration descriptor
+	// fingerprint — not supplied at all).
+	provider.set([]tools.ToolDescriptor{
+		appDesc("srv-a_cb", "srv-a", true),
+		appDesc("srv-a_cb2", "srv-a", true),
+	})
+	if _, err := reg.RefreshDiscovery(ctx, "srv-a"); err != nil {
+		t.Fatalf("RefreshDiscovery: %v", err)
+	}
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("refresh change must bump the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+}
+
+// TestRegistry_CurrentGeneration_StableAcrossIdenticalRefreshes proves
+// the generation is NOT a process-local counter: two identical refreshes
+// (same canonical current descriptor set) keep the SAME generation.
+func TestRegistry_CurrentGeneration_StableAcrossIdenticalRefreshes(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	provider := &mutableAppProvider{id: "srv-a"}
+	initial := []tools.ToolDescriptor{appDesc("srv-a_cb", "srv-a", true)}
+	provider.set(initial)
+	swap, err := reg.StageRegistration(ServerRegistration{
+		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
+	}, initial)
+	if err != nil {
+		t.Fatalf("StageRegistration: %v", err)
+	}
+	if _, err := swap.Publish(ctx, nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	gen1, _ := reg.CurrentGeneration("srv-a")
+	if _, err := reg.RefreshDiscovery(ctx, "srv-a"); err != nil {
+		t.Fatalf("refresh 1: %v", err)
+	}
+	if _, err := reg.RefreshDiscovery(ctx, "srv-a"); err != nil {
+		t.Fatalf("refresh 2: %v", err)
+	}
+	gen3, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen3 != gen1 {
+		t.Fatalf("identical refreshes must keep the generation (gen1=%q gen3=%q ok=%v)", gen1, gen3, ok)
+	}
+}
+
+// TestRegistry_CurrentGeneration_UnknownFailsClosed proves unknown/empty
+// generation fails closed: an absent server and a registered server
+// whose descriptor set has not been established answer (false).
+func TestRegistry_CurrentGeneration_UnknownFailsClosed(t *testing.T) {
+	reg := NewRegistry()
+	if _, ok := reg.CurrentGeneration("absent"); ok {
+		t.Fatal("absent server reported a current generation")
+	}
+	// Register WITHOUT a descriptor set: the generation is unknown until
+	// a successful discovery establishes it.
+	if err := reg.Register(context.Background(), ServerRegistration{
+		Provider:     &stubProvider{id: "no-descs"},
+		Transport:    "inmemory",
+		InitialState: ServerStateOnline,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, ok := reg.CurrentGeneration("no-descs"); ok {
+		t.Fatal("registered-but-not-discovered server reported a current generation")
+	}
+}
+
+// TestRegistry_CurrentGeneration_UnknownAfterDetach proves detach makes
+// the generation unknown (fail closed): a server that was discoverable
+// answers (false) after Deregister.
+func TestRegistry_CurrentGeneration_UnknownAfterDetach(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{appDesc("srv-a_cb", "srv-a", true)})
+	if _, ok := reg.CurrentGeneration("srv-a"); !ok {
+		t.Fatal("generation not established before detach")
+	}
+	if err := reg.Deregister(ctx, "srv-a", auth.Owner{}); err != nil {
+		t.Fatalf("Deregister: %v", err)
+	}
+	if _, ok := reg.CurrentGeneration("srv-a"); ok {
+		t.Fatal("detached server still reported a current generation")
+	}
+}
+
+// TestRegistry_CurrentGeneration_ChangesOnReplacement proves a same-name
+// replacement with a different canonical descriptor set changes the
+// generation — the sealed admission binds the exact current set.
+func TestRegistry_CurrentGeneration_ChangesOnReplacement(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{appDesc("srv-a_cb-v1", "srv-a", true)})
+	gen1, _ := reg.CurrentGeneration("srv-a")
+
+	provider := &mutableAppProvider{id: "srv-a"}
+	provider.set([]tools.ToolDescriptor{appDesc("srv-a_cb-v2", "srv-a", true)})
+	swap, err := reg.StageRegistration(ServerRegistration{
+		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
+	}, []tools.ToolDescriptor{appDesc("srv-a_cb-v2", "srv-a", true)})
+	if err != nil {
+		t.Fatalf("StageRegistration(replacement): %v", err)
+	}
+	if _, err := swap.Publish(ctx, nil); err != nil {
+		t.Fatalf("Publish(replacement): %v", err)
+	}
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("replacement must change the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+}
+
+// TestRegistry_CurrentGeneration_ChangesOnAppOnlyVisibilityTransition
+// proves an app-only ↔ ordinary visibility change (a discovery change to
+// the app-only/ordinary catalog) bumps the generation even though the
+// descriptor NAME is unchanged.
+func TestRegistry_CurrentGeneration_ChangesOnAppOnlyVisibilityTransition(t *testing.T) {
+	ctx := idCtx(t)
+	reg := NewRegistry()
+	provider := &mutableAppProvider{id: "srv-a"}
+	ordinary := appDesc("srv-a_tool", "srv-a", false)
+	provider.set([]tools.ToolDescriptor{ordinary})
+	swap, err := reg.StageRegistration(ServerRegistration{
+		Provider: provider, Transport: "inmemory", InitialState: ServerStateOnline,
+	}, []tools.ToolDescriptor{ordinary})
+	if err != nil {
+		t.Fatalf("StageRegistration: %v", err)
+	}
+	if _, err := swap.Publish(ctx, nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	gen1, _ := reg.CurrentGeneration("srv-a")
+	// Same name, but the provider now declares it app-only.
+	provider.set([]tools.ToolDescriptor{appDesc("srv-a_tool", "srv-a", true)})
+	if _, err := reg.RefreshDiscovery(ctx, "srv-a"); err != nil {
+		t.Fatalf("RefreshDiscovery: %v", err)
+	}
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("visibility transition must bump the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+}

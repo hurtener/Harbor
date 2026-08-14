@@ -118,7 +118,7 @@ func buildProjWiringMux(t *testing.T) projWiringDeps {
 }
 
 // postMux issues an identity-headered POST through the mounted mux.
-func postMux(t *testing.T, m *http.ServeMux, path string, id identity.Identity, body string) (int, []byte) {
+func postMux(t *testing.T, m http.Handler, path string, id identity.Identity, body string) (int, []byte) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -303,5 +303,102 @@ func TestProdWiring_SessionsListCounterFacetThroughBuildMux(t *testing.T) {
 	code, body := postMux(t, built.Mux, "/v1/sessions/list", id, `{"filter":{"cost_above_cents":0}}`)
 	if code != http.StatusOK {
 		t.Fatalf("sessions.list cost_above_cents facet through BuildMux: status %d (want 200 — the counter enricher must be wired), body %s", code, body)
+	}
+}
+
+// TestProdWiring_V128ProjectionSurfacesThroughBuildMux is the serve-band
+// HA-64/65 wiring proof: opening the turns + rollups projections over
+// the REAL bus and threading them into MuxInput makes the
+// `sessions.turns.list` and `observability.query` routes LIVE through
+// the real BuildMux assembly (never 404), the projection-backed
+// sessions counter facet is accepted, and the projection stores feed
+// the erasure-cascade fencers. A refactor that drops the
+// WithSessionTurnsService / WithObservabilityService / projection-
+// enricher / eraser-fencer blocks from BuildMux turns this test red.
+func TestProdWiring_V128ProjectionSurfacesThroughBuildMux(t *testing.T) {
+	deps := buildProjWiringMux(t)
+	ctx := context.Background()
+	cfg := config.Defaults()
+	cfg.Sessions.Turns = config.TurnsConfig{Driver: "inmem"}
+	cfg.Observability = config.ObservabilityConfig{Rollups: config.RollupsConfig{Driver: "inmem"}}
+
+	turnsProj, turnsSvc, turnsCloser, tErr := OpenTurnsProjection(ctx, cfg, TurnsProjectionDeps{
+		Bus: deps.in.Bus, Sessions: deps.sess, Tasks: deps.tasks,
+		Artifacts: deps.in.Artifacts, Logger: deps.in.Logger,
+	})
+	if tErr != nil {
+		t.Fatalf("OpenTurnsProjection: %v", tErr)
+	}
+	t.Cleanup(func() {
+		if turnsCloser != nil {
+			_ = turnsCloser(ctx)
+		}
+	})
+	if turnsProj == nil || turnsSvc == nil {
+		t.Fatal("inmem turns projection must wire a projector + service")
+	}
+
+	rollupsStore, rollupsWorker, rollupsCloser, rErr := OpenRollupsProjection(ctx, cfg, RollupsProjectionDeps{
+		Bus: deps.in.Bus, Logger: deps.in.Logger,
+	})
+	if rErr != nil {
+		t.Fatalf("OpenRollupsProjection: %v", rErr)
+	}
+	t.Cleanup(func() {
+		if rollupsCloser != nil {
+			_ = rollupsCloser(ctx)
+		}
+	})
+	if rollupsStore == nil || rollupsWorker == nil {
+		t.Fatal("inmem rollups projection must wire a store + quality source")
+	}
+
+	in := deps.in
+	in.TurnsProjector = turnsProj
+	in.TurnsStore = turnsSvc.Store()
+	in.RollupsStore = rollupsStore
+	in.RollupsQuality = rollupsWorker
+	built, err := BuildMux(in)
+	if err != nil {
+		t.Fatalf("BuildMux (projections wired): %v", err)
+	}
+
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s-proj"}
+
+	// (a) sessions.turns.list is LIVE (the WithSessionTurnsService block
+	//     is wired): a real request dispatches into the projection
+	//     service — an empty inmem projection answers an empty page, never
+	//     a 404.
+	code, body := postMux(t, built.Mux, "/v1/sessions/turns/list", id,
+		`{"identity":{"tenant":"t","user":"u","session":"s-proj"},"session_id":"s-proj","limit":10}`)
+	if code == http.StatusNotFound {
+		t.Fatalf("sessions.turns.list = 404 — the HA-64 turns service is not mounted (the WithSessionTurnsService block is missing)")
+	}
+	if code != http.StatusOK {
+		t.Fatalf("sessions.turns.list status = %d (want 200 — the turns projection must serve an empty page), body %s", code, body)
+	}
+
+	// (b) observability.query is LIVE (the WithObservabilityService block
+	//     is wired): a real bounded query dispatches into the rollup
+	//     service — an empty inmem projection answers empty rows + the
+	//     mandatory freshness block, never a 404.
+	code, body = postMux(t, built.Mux, "/v1/observability/query", id,
+		`{"from":"2026-05-19T09:00:00Z","to":"2026-05-19T10:00:00Z","bucket":"hour","measures":["llm_completions"],"limit":100}`)
+	if code == http.StatusNotFound {
+		t.Fatalf("observability.query = 404 — the HA-65 rollup service is not mounted (the WithObservabilityService block is missing)")
+	}
+	if code != http.StatusOK {
+		t.Fatalf("observability.query status = %d (want 200 — the rollup projection must answer empty rows), body %s", code, body)
+	}
+
+	// (c) The projection-backed sessions counter enricher is wired: a
+	//     numeric-counter facet is ACCEPTED (200), never the loud-reject
+	//     of an unwired enricher.
+	if _, err := deps.sess.Open(ctx, id.SessionID, id); err != nil {
+		t.Fatalf("sessions.Open: %v", err)
+	}
+	code, body = postMux(t, built.Mux, "/v1/sessions/list", id, `{"filter":{"cost_above_cents":0}}`)
+	if code != http.StatusOK {
+		t.Fatalf("sessions.list cost_above_cents facet with the projection enricher wired: status %d (want 200), body %s", code, body)
 	}
 }

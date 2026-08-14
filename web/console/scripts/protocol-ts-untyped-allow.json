@@ -39,7 +39,6 @@
     "RunSetOverridesRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "RunSetOverridesResponse": "response narrowed inline at the call site; not declared as a named TS interface",
     "RuntimeInfoRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
-    "SessionsInspectRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "StartRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "TaskGetRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ToolContentStatsRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",

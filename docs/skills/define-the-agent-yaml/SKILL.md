@@ -57,7 +57,10 @@ V1.1 ships one planner: `react`. The block tunes its budget and gives the planne
 
 ```yaml
 planner:
-  max_steps: 12                                # how many reasoning turns before forced finalisation
+  max_steps: 12                                # planner step tranche: steps per cycle before the run is
+                                               # parked for continuation — a typed constraints_conflict pause
+                                               # (cause max_steps_exceeded), never forced finalisation;
+                                               # 0 (default) = driver default (12)
   extra_guidance: |
     Voice/tone rules. Hard negatives. Safety notes.
     Operator-supplied; injected into the planner's system prompt.
@@ -67,6 +70,8 @@ planner:
                                                # compacts step history into a summary (one compression
                                                # per run; needs the llm block)
 ```
+
+`max_steps` is a **continuable tranche**, not a termination knob. When a tranche of planner steps is consumed without a terminal Finish, the run is **parked** through the unified pause primitive — a typed `constraints_conflict` pause carrying `{cause: max_steps_exceeded, max_steps, steps_observed}` — instead of being forced to finalise. An authorised RESUME continues the SAME run with a fresh tranche (the tranche counter resets; the cumulative trajectory is untouched), so long-running work spans repeated cycles as ONE run (D-418); a fresh process cannot resume a parked run and answers the typed `ErrRestartUnavailable` (D-417). Zero (the default) resolves to the driver default (12) and never means unbounded; the planner-side per-tranche breaker ends the cycle with the typed `NoPath` Finish (`max_steps_exceeded`), and the runtime's outer `ErrMaxStepsExceeded` guard (default 64) remains the runaway backstop when tranche pausing is unavailable. See `docs/CONFIG.md` › `planner.max_steps`.
 
 ### `memory`
 
@@ -158,6 +163,30 @@ skills:
 
 Ingest skills with `harbor skill import <path>` and remove them with `harbor skill rm <name>` — both operate on this block's store.
 
+> **Boot-declared agent skill packs (HA-66, v1.28).** `skills.boot_agent_packs`
+> loads node-local operator skills for the resolved boot/default agent at
+> boot. It REQUIRES a configured `skills.driver` + `skills.dsn` — a
+> declaration on an unconfigured skills block fails boot loud. Each entry
+> binds EXACTLY ONE `(tenant_id, agent_id)`: an exact tenant key and the
+> runtime-resolved boot agent (no wildcards, no tenant-wide application;
+> honored only when the effective agent resolves to the declared
+> `agent_id`). `directory` is the pack root, resolved **relative to the
+> config file's directory — never the process CWD**; each `include` entry is
+> one package directory containing exactly one case-sensitive top-level
+> regular UTF-8 `SKILL.md`, and the v1.28 contract is resource-free (no
+> auxiliary resource payloads ride alongside the skill body). Loading is
+> strict, eager, and immutable **before readiness**: symlinks / hardlinks /
+> special files / traversal / duplicates are rejected, the loaded set is
+> fixed for the process lifetime, and file changes take effect only on a
+> restart / new runtime — never hot-reloaded. Boot packs stay node-local:
+> each node reloads them from its own files at boot, so a change on one node
+> never converges the others even over a shared Postgres skill store.
+> Boot-pack items compose with the agent's durable revision into ONE
+> operator tier (same canonical name + same content hash dedupes; differing
+> hashes fail loud; combined count capped at 256). Headless `RunOnce`
+> against a boot-pack agent is unsupported and fails loud. Full contract:
+> `docs/CONFIG.md` › `skills.boot_agent_packs`.
+
 ### `governance`
 
 Per-identity cost ceilings + rate limits + max-token caps, keyed by tier.
@@ -191,9 +220,10 @@ The scaffold drops a commented summary of advanced defaults. The full reference 
 
 - **`server`**: `bind_addr` (default `127.0.0.1:8080` for `harbor serve`; `harbor dev` always binds `:18080`), `allowed_origins` (CORS allowlist for multi-process Console), `shutdown_grace_period` (drain timeout for hot reload).
 - **`telemetry`**: `log_format` (`json` / `text`), `log_level` (`debug` / `info` / `warn` / `error`), `service_name` (OTel resource).
+- **`observability`**: `rollups.{driver,dsn}` (HA-65) wires the durable observability rollup projection — empty block = unwired; `driver` `inmem` / `sqlite` / `postgres`, `dsn` required for `sqlite` / `postgres`; restart-required.
 - **`artifacts`**: `driver` (`inmem` / `fs` / `sqlite` / `postgres`), `heavy_output_threshold_bytes` (the LLM-edge context-leak guard, default 131072 / 128 KiB — see RFC §6.5). It bounds what may enter a model's context window only; Console-facing Protocol replies (`pause.list`, `memory.get`/`list`, the flow catalog, the `mcp.apps.*` reads) select inline-versus-reference at a pinned 32 KiB bound that does not track this key (D-358).
 - **`events`**: `driver` (`inmem` / `durable`); events power the Console's live streaming. Durable persistence is NOT selected on `driver` — set `driver: durable` and then pick the backing store with `state_driver` (`sqlite` / `postgres`) + `state_dsn`. With `driver: durable` and an empty `state_driver` the bus loudly degrades to best-effort in-memory (not durable across restart).
-- **`sessions`**: `idle_ttl` (default 24h), `hard_cap` (default 720h / 30d), `sweep_interval`.
+- **`sessions`**: `idle_ttl` (default 24h), `hard_cap` (default 720h / 30d), `sweep_interval`; `turns.{driver,dsn,retention}` (HA-64) wires the durable conversation-turn projection behind `sessions.turns.list` / `.get` — empty block = unwired (the routes answer 501); `driver` `inmem` / `sqlite` / `postgres`, `dsn` required for `sqlite` / `postgres`, `retention` 0 → the projection's documented default; restart-required.
 - **`pauseresume`**: `max_park_duration` (ceiling on how long a pause — HITL approval, tool OAuth — may stay parked before the runtime resumes it with the typed `timeout` decision and the run ends as a constraints-conflict; default `0` = never expire), `sweep_interval` (sweeper cadence, default 1m).
 - **`tasks`**: `driver` (`inprocess` or `durable`). `inprocess` (default) keeps task/group/patch state in memory — a restart starts empty. `durable` persists those records through the `StateStore` so they survive a restart; on open it replays them and recovers any task left `running` by a crash to `failed` (code `runtime_restarted`). It reuses the runtime `StateStore`, so pair it with a durable `state.driver` (`sqlite` / `postgres`) for cross-process survival; selecting `durable` with no store wired fails loudly at boot.
 - **`distributed`**: `bus_driver` (`loopback` or `durable`) + `remote_driver` (`loopback` only in V1.1; A2A wire is post-V1). `loopback` is in-process; `durable` persists every `BusEnvelope` through the `StateStore` and projects it onto the local event bus, with a poller for cross-instance fan-out + restart-replay (StateStore-backed — Postgres-as-queue on a shared Postgres store; tune with `bus_poll_interval`). NATS / Redis Streams remain future drivers.

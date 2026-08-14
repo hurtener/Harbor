@@ -4,7 +4,7 @@
 # Phase 106 — Playground displays the real assistant response.
 #
 # Smoke assertions: send a query via the Protocol, poll until complete,
-# and verify result_inline contains the answer envelope.
+# then read the sealed consumer turn that the Playground renders.
 
 set -euo pipefail
 
@@ -75,9 +75,9 @@ elif [ "${STATUS}" = "failed" ]; then
   # Under the preflight harness the LLM seam may not have a real
   # provider key (no OPENROUTER_API_KEY in env) or the mock driver may
   # produce a no_path finish on real-react prompts. Either way the
-  # answer-envelope plumbing isn't exercised end-to-end — SKIP the
-  # remaining assertions but log the failure shape.
-  skip "task failed (likely missing LLM provider key in preflight env; envelope smoke requires a working LLM)"
+  # durable-answer plumbing isn't exercised end-to-end — SKIP the remaining
+  # assertions but log the failure shape.
+  skip "task failed (likely missing LLM provider key in preflight env; durable-answer smoke requires a working LLM)"
   smoke_summary
   exit 0
 else
@@ -86,29 +86,34 @@ else
   exit 1
 fi
 
-# 3. Read result_inline + parse the envelope
-INLINE="$(echo "${DETAIL}" | jq -r '.result_inline // empty')"
-if [ -n "${INLINE}" ]; then
-  ok "result_inline non-empty (phase 106 plumbed the answer)"
+# 3. Read the sealed consumer turn. HA-64 made sessions.turns.get the
+# authoritative terminal transcript snapshot used by the Playground; tasks.get
+# result_inline remains a task API compatibility surface, not the UI read path.
+TURN_DETAIL="$(curl -sS -X POST "$(api_url /v1/sessions/turns/get)" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  "${ID_HEADERS[@]}" \
+  -H "Content-Type: application/json" \
+  -d "{\"session_id\":\"dev\",\"task_id\":\"${TASK_ID}\"}")"
+
+TURN_TASK_ID="$(echo "${TURN_DETAIL}" | jq -r '.turn.task_id // empty')"
+if [ "${TURN_TASK_ID}" = "${TASK_ID}" ]; then
+  ok "sessions.turns.get returned the completed task's consumer turn"
 else
-  fail "result_inline is empty (phase 106 should have populated it)"
+  fail "sessions.turns.get did not return the completed task's consumer turn"
 fi
 
-ANSWER="$(echo "${INLINE}" | jq -r '.answer // empty')"
+ANSWER_STATE="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.state // empty')"
+if [ "${ANSWER_STATE}" = "inline" ]; then
+  ok "sealed consumer turn records an inline assistant answer"
+else
+  fail "sealed consumer turn answer.state is ${ANSWER_STATE:-empty}, want inline"
+fi
+
+ANSWER="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.inline // empty')"
 if [ -n "${ANSWER}" ]; then
-  ok "answer field in envelope non-empty"
+  ok "sealed consumer turn's inline answer is non-empty"
 else
-  fail "answer field in envelope empty"
-fi
-
-FINISH="$(echo "${INLINE}" | jq -r '.finish_reason // empty')"
-if [ "${FINISH}" = "goal" ]; then
-  ok "finish_reason is goal for a normal completion"
-else
-  # Soft notice — the mock LLM driver may finish via a different reason.
-  # We don't fail the smoke on non-goal finish; the envelope shape is the
-  # load-bearing assertion above.
-  ok "finish_reason is ${FINISH} (non-goal completion is acceptable)"
+  fail "sealed consumer turn's inline answer is empty"
 fi
 
 # ----------------------------------------------------------------------------
@@ -122,11 +127,14 @@ else
   ok "static: playground does not contain the placeholder text"
 fi
 
-# 5. The Playground reads result_inline
-if grep -q "result_inline" web/console/src/routes/"(console)"/playground/"[session_id]"/+page.svelte 2>/dev/null; then
-  ok "static: playground reads result_inline"
+# 5. The Playground reads the HA-64 durable projection on open and on a
+# terminal event. These are the two authoritative transcript paths.
+PLAYGROUND_SRC="web/console/src/routes/(console)/playground/[session_id]/+page.svelte"
+if grep -q 'loadTurnPage(c, { sessionID, limit: TURN_PAGE_DEFAULT_LIMIT })' "${PLAYGROUND_SRC}" && \
+   grep -q 'reconcileTurnRow(client, sessionID, taskID)' "${PLAYGROUND_SRC}"; then
+  ok "static: playground reads durable session turns on open and terminal completion"
 else
-  fail "static: playground does not reference result_inline"
+  fail "static: playground does not use the durable session-turn projection on both transcript paths"
 fi
 
 smoke_summary

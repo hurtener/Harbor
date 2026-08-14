@@ -33,6 +33,24 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeSessionSkillReadUnstable,
 	protoerrors.CodeAgentRetired,
 	protoerrors.CodeAgentRetirementConflict,
+	// MCP Apps render-admission surface (HA-56): the five typed admission
+	// outcomes + the ambiguous-authority refusal.
+	protoerrors.CodeRenderAdmissionMissing,
+	protoerrors.CodeRenderAdmissionUnavailable,
+	protoerrors.CodeRenderAdmissionInvalid,
+	protoerrors.CodeRenderAdmissionExpired,
+	protoerrors.CodeRenderAdmissionMismatch,
+	protoerrors.CodeRenderAuthorityAmbiguous,
+	// agent-config user-skill-import surface (HA-61): the typed
+	// two-phase proposal outcomes + the invalid-package refusal.
+	protoerrors.CodeSkillImportProposalInvalid,
+	protoerrors.CodeSkillImportProposalExpired,
+	protoerrors.CodeSkillImportPackageInvalid,
+	protoerrors.CodeSkillImportReplaceRequired,
+	// observability surface (HA-65): the query-budget and cursor
+	// refusals.
+	protoerrors.CodeQueryBudgetExceeded,
+	protoerrors.CodeInvalidCursor,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -59,6 +77,18 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodeSessionSkillReadUnstable:   "session_skill_read_unstable",
 		protoerrors.CodeAgentRetired:               "agent_retired",
 		protoerrors.CodeAgentRetirementConflict:    "agent_retirement_conflict",
+		protoerrors.CodeRenderAdmissionMissing:     "render_admission_missing",
+		protoerrors.CodeRenderAdmissionUnavailable: "render_admission_unavailable",
+		protoerrors.CodeRenderAdmissionInvalid:     "render_admission_invalid",
+		protoerrors.CodeRenderAdmissionExpired:     "render_admission_expired",
+		protoerrors.CodeRenderAdmissionMismatch:    "render_admission_mismatch",
+		protoerrors.CodeRenderAuthorityAmbiguous:   "render_authority_ambiguous",
+		protoerrors.CodeSkillImportProposalInvalid: "skill_import_proposal_invalid",
+		protoerrors.CodeSkillImportProposalExpired: "skill_import_proposal_expired",
+		protoerrors.CodeSkillImportPackageInvalid:  "skill_import_package_invalid",
+		protoerrors.CodeSkillImportReplaceRequired: "skill_import_replace_required",
+		protoerrors.CodeQueryBudgetExceeded:        "query_budget_exceeded",
+		protoerrors.CodeInvalidCursor:              "invalid_cursor",
 	}
 	for code, want := range wire {
 		if string(code) != want {

@@ -202,6 +202,30 @@ func bodyParse(ctx context.Context, store artifacts.ArtifactStore, src ImportSou
 	imports ImportArtifacts,
 	err error,
 ) {
+	description, sections, err = parseBodyLines(ctx, body)
+	if err != nil {
+		return "", nil, ImportArtifacts{}, err
+	}
+	// Resolve attachments in the description (and section items).
+	resolved, imports, resolveErr := resolveAttachments(ctx, store, src, description, sections)
+	if resolveErr != nil {
+		return "", nil, ImportArtifacts{}, resolveErr
+	}
+	return resolved.description, resolved.sections, imports, nil
+}
+
+// parseBodyLines walks the body line-by-line WITHOUT attachment
+// resolution. It is the canonical body state machine shared by the
+// file path (bodyParse) and the complete-package path
+// (doImportPackage): both must agree on description extraction,
+// section classification, duplicate-section rejection, and
+// non-list-item rejection. Attachment substitution happens only in
+// bodyParse, after this state machine returns.
+func parseBodyLines(ctx context.Context, body []byte) (
+	description string,
+	sections map[canonicalSection][]string,
+	err error,
+) {
 	lines := splitLinesKeepEmpty(body)
 	sections = make(map[canonicalSection][]string, 3)
 	// Track section ordering for clean section-occurrence checks.
@@ -220,16 +244,16 @@ func bodyParse(ctx context.Context, store artifacts.ArtifactStore, src ImportSou
 
 	for _, line := range lines {
 		if err := ctx.Err(); err != nil {
-			return "", nil, ImportArtifacts{}, err
+			return "", nil, err
 		}
 		if strings.HasPrefix(line, "## ") {
 			sec := classifySection(line)
 			if sec == sectionUnknown {
-				return "", nil, ImportArtifacts{}, fmt.Errorf("%w: %q",
+				return "", nil, fmt.Errorf("%w: %q",
 					ErrUnknownSection, strings.TrimSpace(line))
 			}
 			if seen[sec] {
-				return "", nil, ImportArtifacts{}, fmt.Errorf("%w: duplicate section %q",
+				return "", nil, fmt.Errorf("%w: duplicate section %q",
 					ErrUnknownSection, strings.TrimSpace(line))
 			}
 			seen[sec] = true
@@ -258,23 +282,14 @@ func bodyParse(ctx context.Context, store artifacts.ArtifactStore, src ImportSou
 			continue
 		}
 		// Anything else inside a section is rejected.
-		return "", nil, ImportArtifacts{}, fmt.Errorf("%w: non-list-item line in section (%q)",
+		return "", nil, fmt.Errorf("%w: non-list-item line in section (%q)",
 			ErrUnknownSection, trimmedRight)
 	}
 
 	// Normalise description: strip trailing blank lines and the
 	// final newline. The Export side re-adds exactly one trailing
 	// newline before the first section heading (or end-of-file).
-	description = stripTrailingBlankLines(descBuilder.String())
-
-	// Resolve attachments in the description (and section items).
-	resolved, imports, resolveErr := resolveAttachments(ctx, store, src, description, sections)
-	if resolveErr != nil {
-		return "", nil, ImportArtifacts{}, resolveErr
-	}
-	description = resolved.description
-	sections = resolved.sections
-	return description, sections, imports, nil
+	return stripTrailingBlankLines(descBuilder.String()), sections, nil
 }
 
 // resolvedBody is the intermediate after attachment-substitution.

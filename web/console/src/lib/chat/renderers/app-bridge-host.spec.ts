@@ -18,10 +18,12 @@ import {
   containerDimensionsFromBox,
   createAppHandlers,
   isTrustedAppMessage,
+  MCPAppRenderAdmissionError,
   MCPAppToolNotFoundError,
   qualifyAppToolName,
   wrapAppDocument,
   type MCPAppHostClient,
+  type MCPAppRenderAdmission,
   type MCPAppResource,
   type MCPAppToolResult,
 } from './app-bridge-host.js';
@@ -33,7 +35,16 @@ import {
 
 interface FakeCalls {
   readResource: Array<[string, string, string | undefined]>;
-  callTool: Array<[string, string, unknown, string | undefined]>;
+  /** The renderer-internal opt-in document read (mints the admission). */
+  readRenderDocument: Array<[string, string, string | undefined]>;
+  /**
+   * Full dispatch record — `[serverID, tool, args, agentID, binding,
+   * resourceURI, renderAdmission]` — so tests can assert EXACTLY ONE
+   * authority rides the wire.
+   */
+  callTool: Array<
+    [string, string, unknown, string | undefined, string | undefined, string | undefined, string | undefined]
+  >;
   listResources: Array<[string, string | undefined]>;
   listTools: string[];
 }
@@ -42,14 +53,24 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
   client: MCPAppHostClient;
   calls: FakeCalls;
 } {
-  const calls: FakeCalls = { readResource: [], callTool: [], listResources: [], listTools: [] };
+  const calls: FakeCalls = {
+    readResource: [],
+    readRenderDocument: [],
+    callTool: [],
+    listResources: [],
+    listTools: [],
+  };
   const client: MCPAppHostClient = {
     async readResource(serverID, uri, agentID): Promise<MCPAppResource> {
       calls.readResource.push([serverID, uri, agentID]);
       return { resourceUri: uri, mimeType: 'text/html', content: '<p>hi</p>' };
     },
-    async callTool(serverID, tool, args, agentID): Promise<MCPAppToolResult> {
-      calls.callTool.push([serverID, tool, args, agentID]);
+    async readRenderDocument(serverID, uri, agentID) {
+      calls.readRenderDocument.push([serverID, uri, agentID]);
+      return { resourceUri: uri, mimeType: 'text/html', content: '<p>hi</p>' };
+    },
+    async callTool(serverID, tool, args, agentID, binding, resourceURI, renderAdmission): Promise<MCPAppToolResult> {
+      calls.callTool.push([serverID, tool, args, agentID, binding, resourceURI, renderAdmission]);
       return { tool, content: { ok: true }, isError: false };
     },
     async listResources(serverID, agentID) {
@@ -76,6 +97,14 @@ function makeFakeClient(overrides: Partial<MCPAppHostClient> = {}): {
   };
   return { client, calls };
 }
+
+/** An AVAILABLE render admission fixture — the HA-56 minted authority. */
+const ADMISSION: MCPAppRenderAdmission = {
+  token: 'opaque-sealed-render-token-1',
+  issuedAt: '2026-08-14T00:00:00Z',
+  expiresAt: '2026-08-14T01:00:00Z',
+  availability: 'available',
+};
 
 describe('sandbox + CSP constants', () => {
   it('untrusted sandbox is allow-scripts only — never allow-same-origin', () => {
@@ -167,7 +196,8 @@ describe('manual handlers dispatch to the injected client', () => {
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv', agentID: 'agent-app' });
     const result = await handlers.oncalltool({ name: 'echo', arguments: { q: 1 } });
-    expect(calls.callTool).toEqual([['srv', 'srv_echo', { q: 1 }, 'agent-app']]);
+    // No fresh admission in play → no binding/resourceURI/admission either.
+    expect(calls.callTool).toEqual([['srv', 'srv_echo', { q: 1 }, 'agent-app', undefined, undefined, undefined]]);
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ ok: true });
   });
@@ -202,7 +232,7 @@ describe('manual handlers dispatch to the injected client', () => {
     const { client, calls } = makeFakeClient();
     const handlers = createAppHandlers({ client, serverID: 'srv' });
     await handlers.oncalltool({ name: 'srv_echo' });
-    expect(calls.callTool).toEqual([['srv', 'srv_srv_echo', undefined, undefined]]);
+    expect(calls.callTool).toEqual([['srv', 'srv_srv_echo', undefined, undefined, undefined, undefined, undefined]]);
   });
 
   it('qualifyAppToolName is unconditional — every name lands inside the server namespace', () => {
@@ -371,6 +401,252 @@ describe('manual handlers dispatch to the injected client', () => {
     });
     expect((await handlers2.onrequestdisplaymode({ mode: 'pip' })).mode).toBe('inline');
     expect(seen).toEqual(['fullscreen->fullscreen', 'pip->pip']);
+  });
+});
+
+describe('HA-56 — the fresh render admission rides app callbacks (never both authorities)', () => {
+  it('oncalltool sends the FRESH admission and NOT the legacy binding when both are present', async () => {
+    const { client, calls } = makeFakeClient();
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      binding: 'legacy-binding',
+      resourceURI: 'ui://srv/app.html',
+      renderAdmission: ADMISSION,
+    });
+    const result = await handlers.oncalltool({ name: 'echo', arguments: { q: 1 } });
+    // The fresh admission token rides the DISTINCT `render_admission` slot;
+    // the legacy binding is deliberately NOT sent (both would be refused as
+    // `render_authority_ambiguous`).
+    expect(calls.callTool).toEqual([
+      ['srv', 'srv_echo', { q: 1 }, undefined, undefined, 'ui://srv/app.html', 'opaque-sealed-render-token-1'],
+    ]);
+    expect(result.structuredContent).toEqual({ ok: true });
+  });
+
+  it('oncalltool sends the preserved legacy binding when no fresh admission exists', async () => {
+    // The legacy live-result path, unchanged: no fresh admission in play, so
+    // the host dispatches through the binding (and never mints one).
+    const { client, calls } = makeFakeClient();
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      binding: 'legacy-binding',
+      resourceURI: 'ui://srv/app.html',
+    });
+    await handlers.oncalltool({ name: 'echo' });
+    expect(calls.callTool).toEqual([
+      ['srv', 'srv_echo', undefined, undefined, 'legacy-binding', 'ui://srv/app.html', undefined],
+    ]);
+  });
+
+  it('oncalltool sends NO authority when neither a fresh admission nor a binding exists', async () => {
+    // The replay/legacy shape: a reopened app that never carried a binding and
+    // whose runtime answered the old surface — the Runtime decides (an
+    // app-only callback is refused there); the host never fabricates one.
+    const { client, calls } = makeFakeClient();
+    const handlers = createAppHandlers({ client, serverID: 'srv' });
+    await handlers.oncalltool({ name: 'echo' });
+    expect(calls.callTool).toEqual([['srv', 'srv_echo', undefined, undefined, undefined, undefined, undefined]]);
+  });
+
+  it('a typed EXPIRED admission refreshes ONCE (fresh opt-in read) then retries with the new token', async () => {
+    let call = 0;
+    const readRenderDocument = vi.fn(async (_s: string, uri: string) => ({
+      resourceUri: uri,
+      mimeType: 'text/html',
+      content: '<p>app</p>',
+      renderAdmission: {
+        ...ADMISSION,
+        token: 'freshly-minted-token-2',
+        issuedAt: '2026-08-14T01:00:00Z',
+        expiresAt: '2026-08-14T02:00:00Z',
+      },
+    }));
+    const callTool = vi.fn(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, _admission?: string) => {
+      call += 1;
+      if (call === 1) {
+        throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
+      }
+      return { tool, content: { ok: true }, isError: false };
+    });
+    const { client } = makeFakeClient({ readRenderDocument, callTool });
+    const invalid = vi.fn();
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      resourceURI: 'ui://srv/app.html',
+      renderAdmission: ADMISSION,
+      onAdmissionInvalid: invalid,
+    });
+
+    const result = await handlers.oncalltool({ name: 'echo', arguments: {} });
+
+    // One bounded refresh, exactly one retry, the callback executed ONCE.
+    expect(readRenderDocument).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    // The retry rode the FRESH token, not the expired one.
+    expect(callTool).toHaveBeenLastCalledWith('srv', 'srv_echo', {}, undefined, undefined, 'ui://srv/app.html', 'freshly-minted-token-2');
+    expect(result.structuredContent).toEqual({ ok: true });
+    // A recovered expiry is not a failure — no safe state.
+    expect(invalid).not.toHaveBeenCalled();
+  });
+
+  it('a SECOND call after a successful refresh rides the REFRESHED token (the live admission is replaced)', async () => {
+    let call = 0;
+    const readRenderDocument = vi.fn(async (_s: string, uri: string) => ({
+      resourceUri: uri,
+      mimeType: 'text/html',
+      content: '<p>app</p>',
+      renderAdmission: { ...ADMISSION, token: 'freshly-minted-token-2' },
+    }));
+    const callTool = vi.fn(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, _admission?: string) => {
+      call += 1;
+      if (call === 1) {
+        throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
+      }
+      return { tool, content: { ok: true }, isError: false };
+    });
+    const { client } = makeFakeClient({ readRenderDocument, callTool });
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      resourceURI: 'ui://srv/app.html',
+      renderAdmission: ADMISSION,
+    });
+
+    await handlers.oncalltool({ name: 'echo' });
+    await handlers.oncalltool({ name: 'echo' });
+
+    // The refresh happened once; the SECOND call needed no new read and rode
+    // the replaced (fresh) admission.
+    expect(readRenderDocument).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(3);
+    expect(callTool).toHaveBeenLastCalledWith('srv', 'srv_echo', undefined, undefined, undefined, 'ui://srv/app.html', 'freshly-minted-token-2');
+  });
+
+  it('an EXPIRED admission whose refresh cannot mint fails explicitly — no retry, no callback, no loop', async () => {
+    const readRenderDocument = vi.fn(async (_s: string, uri: string) => ({
+      resourceUri: uri,
+      mimeType: 'text/html',
+      content: '<p>app</p>',
+      renderAdmission: { token: '', expiresAt: '', availability: 'unavailable' },
+    }));
+    const callTool = vi.fn(async (_s: string, _tool: string) => {
+      throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
+    });
+    const { client } = makeFakeClient({ readRenderDocument, callTool });
+    const invalid = vi.fn();
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      resourceURI: 'ui://srv/app.html',
+      renderAdmission: ADMISSION,
+      onAdmissionInvalid: invalid,
+    });
+
+    const err = await handlers.oncalltool({ name: 'echo' }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MCPAppRenderAdmissionError);
+    expect((err as MCPAppRenderAdmissionError).code).toBe('render_admission_expired');
+    // Exactly ONE bounded refresh was spent, and the callback NEVER executed.
+    expect(readRenderDocument).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(invalid).toHaveBeenCalledWith('render_admission_expired');
+  });
+
+  it('unavailable / invalid / mismatched / missing refusals fail explicitly — NO refresh, NO callback execution', async () => {
+    for (const code of [
+      'render_admission_unavailable',
+      'render_admission_invalid',
+      'render_admission_mismatch',
+      'render_admission_missing',
+      'render_authority_ambiguous',
+    ] as const) {
+      const readRenderDocument = vi.fn(async (_s: string, uri: string) => ({
+        resourceUri: uri,
+        mimeType: 'text/html',
+        content: '<p>app</p>',
+        renderAdmission: { ...ADMISSION, token: 'would-be-fresh' },
+      }));
+      const callTool = vi.fn(async () => {
+        throw new MCPAppRenderAdmissionError(code, code);
+      });
+      const { client } = makeFakeClient({ readRenderDocument, callTool });
+      const invalid = vi.fn();
+      const handlers = createAppHandlers({
+        client,
+        serverID: 'srv',
+        resourceURI: 'ui://srv/app.html',
+        renderAdmission: ADMISSION,
+        onAdmissionInvalid: invalid,
+      });
+
+      const err = await handlers.oncalltool({ name: 'echo' }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(MCPAppRenderAdmissionError);
+      expect((err as MCPAppRenderAdmissionError).code).toBe(code);
+      // No refresh, no retry, no callback — a tamper/mismatch/foreign verdict
+      // must never be papered over by re-reading.
+      expect(readRenderDocument, code).not.toHaveBeenCalled();
+      expect(callTool, code).toHaveBeenCalledTimes(1);
+      expect(invalid, code).toHaveBeenCalledWith(code);
+    }
+  });
+
+  it('an EXPIRED retry that fails again surfaces the RETRY verdict — never a second refresh', async () => {
+    let call = 0;
+    const readRenderDocument = vi.fn(async (_s: string, uri: string) => ({
+      resourceUri: uri,
+      mimeType: 'text/html',
+      content: '<p>app</p>',
+      renderAdmission: { ...ADMISSION, token: 'freshly-minted-token-2' },
+    }));
+    const callTool = vi.fn(async () => {
+      call += 1;
+      if (call === 1) {
+        throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
+      }
+      // The FRESH token is refused as a mismatch (e.g. the tuple changed
+      // between refresh and retry) — a foreign/tamper verdict, terminal.
+      throw new MCPAppRenderAdmissionError('render_admission_mismatch', 'mismatch');
+    });
+    const { client } = makeFakeClient({ readRenderDocument, callTool });
+    const invalid = vi.fn();
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      resourceURI: 'ui://srv/app.html',
+      renderAdmission: ADMISSION,
+      onAdmissionInvalid: invalid,
+    });
+
+    const err = await handlers.oncalltool({ name: 'echo' }).catch((e: unknown) => e);
+
+    expect((err as MCPAppRenderAdmissionError).code).toBe('render_admission_mismatch');
+    // The single budget was already spent — the retry verdict surfaces and no
+    // second refresh is attempted.
+    expect(readRenderDocument).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(invalid).toHaveBeenCalledWith('render_admission_mismatch');
+  });
+
+  it('the app-initiated resources/read stays on the ORDINARY non-minting read — never mints an admission', async () => {
+    // An App requesting another resource must NEVER mint callback authority:
+    // the bridge's `onreadresource` routes to `readResource` (no opt-in flag),
+    // and the renderer's admission-requesting read is not reachable from the
+    // app at all.
+    const { client, calls } = makeFakeClient();
+    const handlers = createAppHandlers({
+      client,
+      serverID: 'srv',
+      resourceURI: 'ui://srv/app.html',
+      renderAdmission: ADMISSION,
+    });
+    const res = await handlers.onreadresource({ uri: 'ui://srv/other.html' });
+    expect(calls.readResource).toEqual([['srv', 'ui://srv/other.html', undefined]]);
+    expect(calls.readRenderDocument).toEqual([]);
+    expect((res.contents[0] as { text: string }).text).toContain('hi');
   });
 });
 

@@ -13,34 +13,48 @@ import (
 //
 // It MUST name a version published to the module proxy, so the
 // generated project builds out of the box (`go mod tidy && go build`)
-// with no manual edit. BUMP IT WHEN A NEW HARBOR RELEASE IS TAGGED —
-// a stale value only costs the scaffolded project an older Harbor, but
-// a value that was never tagged breaks the generated project's build.
+// with no manual edit. BUMP IT WHEN A NEW THREE-COMPONENT MODULE TAG IS
+// PUBLISHED — a stale value only costs the scaffolded project an older
+// Harbor, but a value that was never tagged breaks the generated
+// project's build.
 //
 // The value is not only what a scaffolded `go.mod` requires: the CLI
-// reports it as `harbor --version` on any un-stamped source build, so a
+// reports it as `harbor version` on any un-stamped source build, so a
 // stale pin misreports the running binary as well. `scripts/drift-audit.sh`
-// checks it against the PUBLISHED release tags — read from the remote, not
+// checks it against the PUBLISHED module tags — read from the remote, not
 // from the working branch's own CHANGELOG, which a release-heal merge can
 // leave behind without the pin noticing.
+//
+// MODULE TAGS, NOT ARTIFACT RELEASE TAGS: Harbor's GitHub artifact
+// releases are tagged two-component (`v1.27`, `v1.28`), and the runtime
+// display layers accept those stamps. The Go module proxy does NOT —
+// it resolves only canonical three-component module tags, the newest of
+// which is `v1.26.12` until a canonical three-component module tag for
+// a newer release exists. A two-component release string is therefore
+// never a valid scaffold module pin; only a proxy-resolvable
+// three-component version is. `cmd/harbor/root.go` documents the other
+// half of the split (artifact tags ARE accepted for runtime display).
 //
 // The scaffold golden fixtures pin this value (an un-stamped `go test`
 // binary always resolves to it), so a bump regenerates them:
 //
 //	go test ./cmd/harbor -run TestScaffold_Golden -update
-const FallbackModuleVersion = "v1.26.11"
+const FallbackModuleVersion = "v1.26.12"
 
 // releaseVersionRE matches the version strings that name a real,
-// proxy-resolvable Harbor release tag: `vX.Y.Z`, optionally with a
-// conventional pre-release suffix (`-rc.1`, `-beta.2`).
+// proxy-resolvable Harbor MODULE version: the canonical three-component
+// semver tags (`v1.28.0`, `v1.26.12`), optionally with a conventional
+// pre-release suffix (`-rc.1`, `-beta.2`).
 //
-// It deliberately REJECTS the shapes that are not fetchable module
-// versions even though they are syntactically semver-ish: the
-// "v0.0.0-dev" un-stamped sentinel, and the `git describe` derivatives
-// the release script produces off an untagged/dirty tree
-// (`v1.13.0-4-gdeadbee`, `...-dirty`). Those fall back to
-// FallbackModuleVersion rather than emitting a `require` line no
-// proxy can resolve.
+// It deliberately REJECTS every shape that is not a fetchable module
+// version even when it is syntactically semver-ish: the two-component
+// GA artifact tags (`v1.27`, `v1.28` — GitHub release tags that the
+// module proxy does not resolve and that this module must therefore
+// never require), the "v0.0.0-dev" un-stamped sentinel, and the
+// `git describe` derivatives the release script produces off an
+// untagged/dirty tree (`v1.13.0-4-gdeadbee`, `...-dirty`). Those fall
+// back to FallbackModuleVersion rather than emitting a `require` line
+// no proxy can resolve.
 //
 // CAVEAT for a future major: this accepts `v2.0.0` and above, but Go's
 // semantic-import-versioning rule requires the module PATH to carry a

@@ -2150,3 +2150,266 @@ type AgentConfigUserRollbackResponse struct {
 	Revision        AgentConfigRevisionView `json:"revision"`
 	ProtocolVersion string                  `json:"protocol_version"`
 }
+
+// --- Verified-caller skill-package import (HA-61) ---
+
+// AgentConfigUserSkillsImportValidateRequest is the
+// `agent_config.user.skills.import_validate` request — the ZERO-WRITE
+// first phase of the two-phase verified-caller import. The caller names
+// a caller-owned immutable artifact ref (the `artifacts.put` output under
+// their exact triple) + the effective agent; no tenant / user / session /
+// scope / origin is selectable. Identity-mandatory; CLAIM-FREE like the
+// sibling durable-per-user skills verbs.
+type AgentConfigUserSkillsImportValidateRequest struct {
+	Identity IdentityScope `json:"identity"`
+	// AgentID is the effective agent the reviewed package would be bound
+	// to. Agent reach must be signed.
+	AgentID string `json:"agent_id"`
+	// ArtifactID is the content-addressed ref of the caller-owned package
+	// artifact (zip archive or single SKILL.md document).
+	ArtifactID string `json:"artifact_id"`
+}
+
+// AgentConfigUserSkillImportSupportSummary is ONE bounded entry of the
+// normalized support-manifest review: canonical path, MIME, exact size,
+// digest.
+type AgentConfigUserSkillImportSupportSummary struct {
+	Path   string `json:"path"`
+	Mime   string `json:"mime"`
+	Size   int64  `json:"size"`
+	Digest string `json:"digest"`
+}
+
+// AgentConfigUserSkillImportReview is the closed, bounded, normalized
+// review of one parsed package. Every field is server-derived from the
+// canonical package; none of them can be submitted back to Commit as
+// authority (Commit carries only the opaque proposal token, the reviewed
+// hash, the expected config hash, the reviewed canonical name, and the
+// replace consent).
+type AgentConfigUserSkillImportReview struct {
+	// Name is the CANONICAL package/skill name (the stored target-key
+	// identity).
+	Name string `json:"name"`
+	// Title is the human-readable title (may be empty).
+	Title string `json:"title,omitempty"`
+	// Trigger is the planner-visible match cue.
+	Trigger string `json:"trigger"`
+	// TaskType is the planner-facing task class (may be empty).
+	TaskType string `json:"task_type,omitempty"`
+	// Tags are the search/classification tags.
+	Tags []string `json:"tags,omitempty"`
+	// StepCount is the ordered procedural step count.
+	StepCount int `json:"step_count"`
+	// RequiredTools / RequiredNS / RequiredTags are the applicability
+	// metadata (never grants).
+	RequiredTools []string `json:"required_tools,omitempty"`
+	RequiredNS    []string `json:"required_ns,omitempty"`
+	RequiredTags  []string `json:"required_tags,omitempty"`
+	// SupportFiles is the ordered normalized support manifest. A
+	// resource-free package carries an empty manifest.
+	SupportFiles []AgentConfigUserSkillImportSupportSummary `json:"support_files"`
+	// ContentHash is the canonical stored-row content hash of the skill
+	// AS STORED (user scope, effective agent, canonical name).
+	ContentHash string `json:"content_hash"`
+	// PackageHash is the versioned reviewed package hash ("v1:<64-hex>")
+	// — the hash the caller reviews and Commit echoes.
+	PackageHash string `json:"package_hash"`
+}
+
+// AgentConfigUserSkillsImportValidateResponse is the
+// `agent_config.user.skills.import_validate` response — the first-phase
+// outcome. It carries the opaque sealed proposal token (never a durable
+// proposal id, never a ledger key), the closed review, the reviewed
+// hashes, the expected user-scope config content hash the caller must
+// echo on commit, the expiry, and the non-fatal warnings. Zero durable
+// skill / package / membership / proposal-ledger mutation happened — the
+// review state rides entirely inside the token.
+type AgentConfigUserSkillsImportValidateResponse struct {
+	// ProposalToken is the opaque sealed token the commit echoes. It is
+	// base64url of the sealer envelope over the versioned claims; no
+	// sealed claim, commit-ledger key, or raw artifact content is
+	// recoverable from it.
+	ProposalToken string `json:"proposal_token"`
+	// Review is the closed normalized review.
+	Review AgentConfigUserSkillImportReview `json:"review"`
+	// Warnings are non-fatal review notes (applicability metadata only).
+	Warnings []string `json:"warnings,omitempty"`
+	// PackageHash is the reviewed versioned package hash
+	// (== Review.PackageHash).
+	PackageHash string `json:"package_hash"`
+	// ExpectedContentHash is the caller's user-scope config content hash
+	// at validate time ("-" when the caller has no active user revision).
+	// Commit requires the echo to match the claims.
+	ExpectedContentHash string `json:"expected_content_hash"`
+	// ExpiresAt bounds the review window; a commit after this time is
+	// refused with `skill_import_proposal_expired`.
+	ExpiresAt time.Time `json:"expires_at"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigUserSkillsImportCommitRequest is the
+// `agent_config.user.skills.import_commit` request — the explicit
+// second phase. The caller echoes the opaque proposal token + the
+// reviewed package hash + the reviewed canonical name + the expected
+// config content hash + the explicit replacement consent. The Runtime
+// freshly revalidates everything and performs THE ONE atomic
+// package+membership write, replay-safe.
+type AgentConfigUserSkillsImportCommitRequest struct {
+	Identity IdentityScope `json:"identity"`
+	// ProposalToken echoes the opaque proposal token from validate.
+	ProposalToken string `json:"proposal_token"`
+	// AgentID is the effective agent (must equal the claims').
+	AgentID string `json:"agent_id"`
+	// Name is the reviewed canonical package/skill name (must equal the
+	// claims'; used to address the target key).
+	Name string `json:"name"`
+	// ReviewedPackageHash is the versioned package hash the caller
+	// reviewed (must equal the claims').
+	ReviewedPackageHash string `json:"reviewed_package_hash"`
+	// ExpectedContentHash echoes the expected config content hash from
+	// validate (must equal the claims').
+	ExpectedContentHash string `json:"expected_content_hash"`
+	// Replace is the explicit replacement consent. A different package
+	// already at the target key is refused without it
+	// (`skill_import_replace_required`).
+	Replace bool `json:"replace,omitempty"`
+}
+
+// AgentConfigUserSkillImportReceipt is the wire form of the exact
+// versioned receipt of the atomic package+membership write — the
+// conditional-compensation handle for THIS unit/version only.
+type AgentConfigUserSkillImportReceipt struct {
+	TenantID string `json:"tenant_id"`
+	UserID   string `json:"user_id"`
+	// AgentID is the effective agent of the target key.
+	AgentID string `json:"agent_id"`
+	// Name is the canonical package / skill name of the target key.
+	Name string `json:"name"`
+	// WrittenHash is the versioned PackageHash this receipt wrote.
+	WrittenHash string `json:"written_hash"`
+	// WrittenVersion is the package version this receipt wrote.
+	WrittenVersion string `json:"written_version"`
+	// PriorHash / PriorVersion are the prior winner's package hash /
+	// version ("" when absent before the write).
+	PriorHash    string `json:"prior_hash,omitempty"`
+	PriorVersion string `json:"prior_version,omitempty"`
+}
+
+// AgentConfigUserSkillInstalledSummary is the bounded installed-skill
+// summary a commit receipt carries (a flat projection of the stored
+// skill — never the raw package body).
+type AgentConfigUserSkillInstalledSummary struct {
+	Name        string   `json:"name"`
+	Title       string   `json:"title,omitempty"`
+	Trigger     string   `json:"trigger"`
+	TaskType    string   `json:"task_type,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Origin      string   `json:"origin"`
+	Scope       string   `json:"scope"`
+	ContentHash string   `json:"content_hash"`
+}
+
+// AgentConfigUserSkillsImportCommitResponse is the
+// `agent_config.user.skills.import_commit` response — the terminal
+// commit result: the exact versioned receipt of the ONE atomic
+// package+membership write, the stored skill summary, and the Replayed
+// flag (true when the result was recognized from a prior landed commit
+// rather than written by this call).
+type AgentConfigUserSkillsImportCommitResponse struct {
+	// Receipt is the exact versioned receipt of the atomic write — the
+	// conditional-compensation handle for THIS unit/version only.
+	Receipt AgentConfigUserSkillImportReceipt `json:"receipt"`
+	// Skill is the stored skill (user scope, effective agent, canonical
+	// name) as installed.
+	Skill AgentConfigUserSkillInstalledSummary `json:"skill"`
+	// PackageHash is the written versioned package hash.
+	PackageHash string `json:"package_hash"`
+	// Replayed is true when the terminal result was recognized from an
+	// already-landed commit (response-loss replay) and no second package
+	// write happened.
+	Replayed bool `json:"replayed"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// --- Read-only effective-composition preview (HA-66) ---
+
+// AgentConfigCompositionPreviewRequest is the
+// `agent_config.composition.preview` request — the read-only preview of
+// what the strict run-start composer WOULD compose for the target triple
+// + effective boot-agent, WITHOUT materialising anything. The caller's
+// VERIFIED identity comes from ctx; the target triple may differ from
+// the caller's only for an elevated (admin / console:fleet) caller, and
+// only within the caller's tenant (signed effective-agent reach
+// required; the widening is audited BEFORE the composition read).
+type AgentConfigCompositionPreviewRequest struct {
+	Identity IdentityScope `json:"identity"`
+	// TenantID / UserID / SessionID name the TARGET triple. Omitted (or
+	// the caller's own) values resolve to the caller's own verified
+	// triple on the ordinary path.
+	TenantID  string `json:"tenant_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// AgentID is the effective boot-agent whose composition is previewed.
+	AgentID string `json:"agent_id"`
+}
+
+// AgentConfigCompositionPreviewItem is ONE composed effective
+// operator-tier item: the canonical name, the canonical attachment-free
+// semantic content hash, the strict-merge provenance marker
+// (boot | revision | both), and the composed skill summary.
+type AgentConfigCompositionPreviewItem struct {
+	// Name is the canonical (lowercase, trimmed) operator-tier name.
+	Name string `json:"name"`
+	// SemanticHash is the canonical attachment-free content hash — the
+	// semantic identity the strict merge and every set hash use.
+	SemanticHash string `json:"semantic_hash"`
+	// Source is the strict-merge provenance marker: exactly
+	// "boot" | "revision" | "both".
+	Source string `json:"source"`
+	// Skill is the composed skill summary (the boot body is retained
+	// when the item is both).
+	Skill AgentConfigSkillSummary `json:"skill"`
+}
+
+// AgentConfigCompositionPreviewResponse is the
+// `agent_config.composition.preview` response — the immutable,
+// deterministic preview result. Outcome is one of available |
+// unavailable | conflict | retired (typed, never a fabricated error);
+// the set hashes are deterministic and never optional when the tier is
+// non-empty.
+type AgentConfigCompositionPreviewResponse struct {
+	// Outcome is one of available | unavailable | conflict | retired.
+	Outcome string `json:"outcome"`
+	// ConflictName is the first (canonical-sorted) offending canonical
+	// name when Outcome is conflict, "" otherwise.
+	ConflictName string `json:"conflict_name,omitempty"`
+	// BootPackSetHash is the deterministic set hash over the boot
+	// baseline entries only ("" when the boot baseline is empty).
+	BootPackSetHash string `json:"boot_pack_set_hash,omitempty"`
+	// CombinedHash is the deterministic set hash over the unique
+	// combined operator-tier items ("" when the tier is empty).
+	CombinedHash string `json:"combined_hash,omitempty"`
+	// RevisionHash is the deterministic set hash over the active
+	// revision pack items only ("" when no revision pack is bound).
+	RevisionHash string `json:"revision_hash,omitempty"`
+	// RevisionID is the fresh active revision read for this preview (""
+	// when no active revision exists).
+	RevisionID string `json:"revision_id,omitempty"`
+	// ContentHash is the fresh active revision's content hash ("" when
+	// no active revision exists).
+	ContentHash string `json:"content_hash,omitempty"`
+	// Items are the effective items in deterministic canonical-name
+	// order.
+	Items []AgentConfigCompositionPreviewItem `json:"items,omitempty"`
+	// Widened is true when this preview was an elevated (admin or
+	// console:fleet) same-tenant widened read, which was audited before
+	// the composition read.
+	Widened bool `json:"widened"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under.
+	ProtocolVersion string `json:"protocol_version"`
+}

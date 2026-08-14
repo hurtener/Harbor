@@ -128,7 +128,10 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/bootpacks"
+	"github.com/hurtener/Harbor/internal/skills/importer"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
@@ -747,6 +750,39 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	var attacher agentcfgprotocol.ConnectionAttacher
 	var agentResolver protocol.AgentResolver
 
+	// The HA-66 boot baseline — the SAME eager loader/composer production
+	// serve.Boot runs (CLAUDE.md §17.6 parity). The immutable index is
+	// opened, validated and collision-pre-read HERE — before the run-loop
+	// driver is constructed — so the SAME frozen pointer feeds the driver's
+	// run-start boot baseline, the composition preview, and the boot-ownership
+	// wiring. Loading is guarded ONLY by the declarations, never by
+	// SkipTransports / SkipSteering: a component-skipped stack may fail
+	// loud if a mandatory catalog / registry collaborator is absent, but it
+	// may never silently start a driver with no baseline just because the
+	// transport/mux leg was skipped.
+	var bootIndex *bootpacks.Index
+	if len(cfg.Skills.BootAgentPacks) > 0 {
+		var bErr error
+		// Assign the OUTER variable (plain `=`, mirroring serve.Boot) — a
+		// short-declaration `:=` here would shadow it with a block-local copy
+		// and leave every later consumer (driver, preview, ownership) holding
+		// a typed-nil index.
+		bootIndex, bErr = serve.OpenBootPackIndex(ctx, cfg, stack.Catalog, stack.Artifacts)
+		if bErr != nil {
+			return stack, bErr
+		}
+		if vErr := serve.ValidateBootAgentPacksForAgent(cfg, stack.AgentConfigID); vErr != nil {
+			return stack, vErr
+		}
+		retReg, ok := stack.AgentConfig.(agentcfg.RetirementRegistry)
+		if !ok {
+			return stack, fmt.Errorf("devstack boot_agent_packs: agent-config registry does not implement the retirement/read seam")
+		}
+		if pErr := serve.PreReadBootPackCollisions(ctx, bootIndex, retReg); pErr != nil {
+			return stack, pErr
+		}
+	}
+
 	// Steering surface + run-loop driver. Skip-aware: the Mux phase
 	// below depends on the surface, so SkipSteering implies
 	// SkipTransports even if the caller did not set both flags.
@@ -880,6 +916,15 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 					devProviderReconciler = concrete
 				}
 			}
+			// The HA-66 P0 composition at the run-loop seam — the same
+			// serve.Boot fix: the frozen index reaches the reader interface
+			// ONLY when a baseline is bound, so a no-boot stack hands the
+			// driver an ACTUAL nil (never a typed-nil pointer inside a
+			// non-nil interface whose Lookup panics at run start).
+			var devBootReader agentcfgprotocol.BootPackReader
+			if bootIndex != nil {
+				devBootReader = bootIndex
+			}
 			driver, drvErr := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
 				Bus:                      bus,
 				RunLoop:                  stack.RunLoop,
@@ -910,6 +955,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				RunSnapshots:             runSnapshots,
 				AgentReachAdmissions:     agentReachAdmissions,
 				SessionOverlay:           stack.SessionOverlay,
+				BootPackReader:           devBootReader,
 				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 				ConnectionDetacher:       devDetacher,
 				ConnectionReattacher:     devReattacher,
@@ -1054,6 +1100,111 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		if authorityErr != nil {
 			return stack, authorityErr
 		}
+		// The HA-66 boot baseline + HA-64/65 projections + HA-56 render
+		// admission — the SAME serve-band wiring production serve.Boot
+		// composes, so devstack exercises the exact loader/composer path
+		// (CLAUDE.md §17.6). The shared sealer / boot index / projection
+		// loops close through the stack's closer chain.
+		sharedSealer, sealerErr := serve.ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
+		if sealerErr != nil {
+			return stack, sealerErr
+		}
+		turnsProj, turnsSvc, turnsCloser, tErr := serve.OpenTurnsProjection(ctx, cfg, serve.TurnsProjectionDeps{
+			Bus: bus, Sessions: stack.Sessions, Tasks: stack.Tasks, Artifacts: stack.Artifacts, Logger: lg,
+		})
+		if tErr != nil {
+			return stack, tErr
+		}
+		if turnsCloser != nil {
+			stack.closeFns = append(stack.closeFns, turnsCloser)
+		}
+		var turnsStore turns.Store
+		if turnsSvc != nil {
+			turnsStore = turnsSvc.Store()
+		}
+		rollupsStore, rollupsWorker, rollupsCloser, rErr := serve.OpenRollupsProjection(ctx, cfg, serve.RollupsProjectionDeps{Bus: bus, Logger: lg})
+		if rErr != nil {
+			return stack, rErr
+		}
+		if rollupsCloser != nil {
+			stack.closeFns = append(stack.closeFns, rollupsCloser)
+		}
+		retReg, retirementOK := stack.AgentConfig.(agentcfg.RetirementRegistry)
+		if !retirementOK && (cfg.Tools.MCPAppRenderAdmission.Enabled || len(cfg.Skills.BootAgentPacks) > 0) {
+			return stack, fmt.Errorf("devstack agent-config registry does not implement the retirement/read seam required by the enabled v1.28 surface")
+		}
+		// The HA-56 render-admission authority + gate pair — wired ONLY
+		// when the operator explicitly opted in (sealer availability is
+		// NOT feature enablement: an OAuth broker sealer alone never
+		// enables the surface). Mirrors serve.Boot's wiring so the kit
+		// exercises the exact composition (CLAUDE.md §17.6).
+		admissionAuthority, admissionGate, admErr := serve.WireRenderAdmission(serve.RenderAdmissionAuthorityDeps{
+			Enabled:        cfg.Tools.MCPAppRenderAdmission.Enabled,
+			Sessions:       stack.Sessions,
+			AgentConfig:    retReg,
+			SessionOverlay: stack.SessionOverlay,
+			Registry:       stack.MCPRegistry,
+			Sealer:         sharedSealer,
+		})
+		if admErr != nil {
+			return stack, admErr
+		}
+		// The HA-61 two-phase import service — the SAME composition
+		// serve.Boot builds (production ↔ devstack parity by
+		// construction): the production importer over the caller-owned
+		// artifact store, the ONE shared sealer, the runtime StateStore
+		// ledger, the configured SkillStore, the registry's
+		// retirement/read seam, and the capability-policy adapter over
+		// the wrapped catalog. Nil (routes stay 501) only when a
+		// mandatory seam is genuinely absent.
+		var importService *agentcfgprotocol.UserSkillImportService
+		if stack.Skills != nil && sharedSealer != nil && retirementOK {
+			imp, impErr := importer.New(importer.Deps{Store: stack.Artifacts})
+			if impErr != nil {
+				return stack, fmt.Errorf("devstack user skill import service: %w", impErr)
+			}
+			importService, err = agentcfgprotocol.NewUserSkillImportService(
+				imp, stack.Artifacts, sharedSealer, core.State, stack.Skills,
+				retReg,
+				agentcfgprotocol.NewUserSkillImportCapabilityPolicy(stack.AgentConfig,
+					stack.SessionOverlay, stack.Catalog, cfg.Tools.GrantedScopes),
+				agentcfgprotocol.WithImportAgentReach(stack.AgentReach),
+				agentcfgprotocol.WithImportSessionReach(auth.NewSessionReachAuthorizer()),
+				agentcfgprotocol.WithImportLogger(lg),
+			)
+			if err != nil {
+				return stack, fmt.Errorf("devstack user skill import service: %w", err)
+			}
+		}
+		var previewService *agentcfgprotocol.CompositionPreviewService
+		if retirementOK {
+			var pErr error
+			// The SAME preview path serve.Boot builds: the frozen boot
+			// index as the BootPackReader, or the EMPTY immutable reader
+			// when no baseline is declared — boot config removal never
+			// 501s the preview and an independently persisted active
+			// revision appears as provenance "revision".
+			previewService, pErr = agentcfgprotocol.NewCompositionPreviewService(
+				retReg, serve.PreviewBootReader(bootIndex),
+				agentcfgprotocol.WithPreviewAgentReach(stack.AgentReach),
+				agentcfgprotocol.WithPreviewSessionReach(auth.NewSessionReachAuthorizer()),
+				agentcfgprotocol.WithPreviewBus(bus),
+				agentcfgprotocol.WithPreviewRedactor(stack.Audit),
+				agentcfgprotocol.WithPreviewLogger(lg),
+			)
+			if pErr != nil {
+				return stack, fmt.Errorf("devstack composition preview service: %w", pErr)
+			}
+		}
+
+		// The HA-66 P0 composition at the mux seam — the same serve.Boot
+		// fix: a SEPARATE actual-nil BootOwnership interface, populated only
+		// when the index is non-nil, so a no-boot stack keeps every pack
+		// mutation guard inert instead of panicking on the first OwnsName.
+		var devBootOwnership agentcfgprotocol.BootOwnership
+		if bootIndex != nil {
+			devBootOwnership = bootIndex
+		}
 		muxInput := serve.MuxInput{
 			Cfg:                            cfg,
 			Surface:                        stack.Surface,
@@ -1105,6 +1256,15 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			BuildVersion:                   "devstack",
 			BuildCommit:                    "devstack",
 			TopologyAvailable:              false,
+			RenderAdmissionAuthority:       admissionAuthority,
+			RenderAdmissionGate:            admissionGate,
+			TurnsProjector:                 turnsProj,
+			TurnsStore:                     turnsStore,
+			RollupsStore:                   rollupsStore,
+			RollupsQuality:                 rollupsWorker,
+			UserSkillImportService:         importService,
+			CompositionPreviewService:      previewService,
+			BootOwnership:                  devBootOwnership,
 		}
 		muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
 		built, bErr := serve.BuildMux(muxInput)

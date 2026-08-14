@@ -1200,6 +1200,20 @@ func (s *Service) Diff(ctx context.Context, req prototypes.AgentConfigDiffReques
 }
 
 // Rollback repoints the active pointer to an existing revision.
+//
+// A rollback is the GENERIC activation door: it makes an existing revision
+// active again, so a target revision whose agent_packs section contains a
+// boot-declared canonical name must never pass through it. Boot wins over
+// any durable state — including when the target's pack content hashes
+// identically to the boot entry (an equal hash proves nothing; the baseline
+// is edited in the boot config and applied on the next deployment, never
+// through the control plane). The pure [GuardBootOwnedRevision] helper is
+// consulted on the TARGET revision, using the same exact (tenant, effective
+// agent) boot-ownership source the pack verbs consume, immediately BEFORE
+// the registry repoint: a refused rollback activates nothing and mutates no
+// revision. With no reader bound on the request (no boot baseline on this
+// runtime) the guard is inert and the door keeps its exact pre-baseline
+// behavior.
 func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollbackRequest) (prototypes.AgentConfigRollbackResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
@@ -1209,6 +1223,15 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
+	if owner := bootOwnershipFromContext(ctx); owner != nil {
+		target, getErr := s.registry.Get(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent)
+		if getErr != nil {
+			return prototypes.AgentConfigRollbackResponse{}, getErr
+		}
+		if err := GuardBootOwnedRevision(owner, id.TenantID, req.AgentID, target.Payload.AgentPacks); err != nil {
+			return prototypes.AgentConfigRollbackResponse{}, err
+		}
+	}
 	rev, err := s.registry.Rollback(ctx, identity.Quadruple{Identity: id}, req.AgentID, req.RevisionID, agentcfg.ConfigScopeAgent,
 		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {

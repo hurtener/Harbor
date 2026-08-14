@@ -59,6 +59,9 @@ var requestSurfaces = map[string]Surface{
 	"AgentConfigUserSkillsDeleteRequest":           SurfaceAgentConfig,
 	"AgentConfigUserSkillsListRequest":             SurfaceAgentConfig,
 	"AgentConfigUserSkillsUpsertRequest":           SurfaceAgentConfig,
+	"AgentConfigUserSkillsImportValidateRequest":   SurfaceAgentConfig,
+	"AgentConfigUserSkillsImportCommitRequest":     SurfaceAgentConfig,
+	"AgentConfigCompositionPreviewRequest":         SurfaceAgentConfig,
 
 	// agents — the registry page.
 	"AgentControlRequest":     SurfaceAgents,
@@ -148,6 +151,13 @@ var requestSurfaces = map[string]Surface{
 	"SessionsInspectRequest":  SurfaceSessions,
 	"SessionsListRequest":     SurfaceSessions,
 	"SessionsSetTitleRequest": SurfaceSessions,
+	// session-turns — the turn-projection read pair (routes pinned
+	// explicitly; the body triple stays the caller's own).
+	"SessionTurnsListRequest": SurfaceSessions,
+	"SessionTurnsGetRequest":  SurfaceSessions,
+
+	// observability — the one bounded administrative rollup query.
+	"ObservabilityQueryRequest": SurfaceObservability,
 
 	// state.history.
 	"StateHistoryRequest": SurfaceStateHistory,

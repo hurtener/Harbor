@@ -48,6 +48,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
@@ -110,6 +111,17 @@ var registry = map[string]registrar{
 	// operator decision.
 	"skill_propose":      registerSkillPropose,
 	"declarative_action": registerDeclarativeAction,
+	// `skill_create_draft` (HA-62) — the draft-only personal-skill
+	// proposer. Like `skill_propose` it is a deliberate operator opt-in,
+	// absent from every recommended default. Unlike the discovery set it
+	// additionally REQUIRES the assembly's composed LLM client: the
+	// registrar delegates to the carrier (RegisterSkillCreateDraft),
+	// which fails the registration LOUD when RegistryContext.LLMClient
+	// is nil — a catalog listing the tool on an LLM-less runtime is a
+	// boot error, never a silent skip.
+	"skill_create_draft": func(rc RegistryContext) error {
+		return RegisterSkillCreateDraft(rc, rc.LLMClient)
+	},
 	// The escape hatch the LLM uses to pull the full bytes of a
 	// heavy-content artifact ref the prompt builder inlined as a
 	// truncated preview. Always-loaded so the LLM has the recovery
@@ -163,6 +175,12 @@ type RegistryContext struct {
 	Bus           events.EventBus
 	Redactor      audit.Redactor
 	GrantedScopes []string
+	// LLMClient is the assembly's COMPOSED LLM client (safety net,
+	// corrections, retry, governance already wrapped) threaded by the
+	// composition owner for `skill_create_draft` (HA-62). Nil on an
+	// LLM-less runtime: registering `skill_create_draft` without it
+	// fails the registration loud (the carrier's wiring-shaped check).
+	LLMClient llm.LLMClient
 	// ArtifactFetchDefaultMaxBytes and ArtifactFetchHardMaxBytes are the
 	// operator's artifact read-back bound: the window `artifact_fetch`
 	// serves when the model names none, and the ceiling the model's own

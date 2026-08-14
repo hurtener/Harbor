@@ -68,7 +68,11 @@
     status = 'loading';
     loadError = null;
     try {
-      snapshot = await sessionsClient.inspect(sessionID);
+      // D-424 — projection omitted ⇒ the pre-D-424 wire body (`session_id`
+      // only; the runtime resolves empty to `full`). The detail view's
+      // summary card + enrichment depend on the read-time counters, so the
+      // FULL (default) projection is what it needs — never `lifecycle`.
+      snapshot = await sessionsClient.inspect({ session_id: sessionID });
       // D-122: `sessions.inspect` returns zero aggregates by design (the
       // registry doesn't model counts). Enrich tasks_count + events_count
       // from the shipped `tasks.list` + `events.aggregate` wires. A

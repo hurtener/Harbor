@@ -475,8 +475,19 @@ fi
 # can resolve.
 #
 # The pin is not only what a scaffolded `go.mod` requires: `cmd/harbor/root.go`
-# reports `FallbackModuleVersion + "-dev"` as `harbor --version` on the same
+# reports `FallbackModuleVersion + "-dev"` as `harbor version` on the same
 # un-stamped builds, so a stale pin also misreports the running binary.
+#
+# MODULE TAGS, NOT ARTIFACT RELEASE TAGS. Harbor's GitHub artifact releases
+# are tagged two-component (`v1.27`, `v1.28`) and the runtime display layers
+# accept those stamps, but the Go module proxy resolves only canonical
+# three-component module tags — the newest of which is v1.26.12 until a
+# canonical three-component module tag exists for a newer release. This guard
+# therefore builds its ledger from MODULE tags only. A two-component artifact
+# tag must not enter the ledger: counted as `newest`, it would demand a
+# two-component pin the proxy cannot resolve and the bump could never land.
+# (This is the exact conflation the 2026-08-14 release gate caught: a v1.28
+# artifact tag is a release identity, not a module version.)
 #
 # Nothing prompts the bump on its own: godoc prose is not a gate and the golden
 # fixtures only fire AFTER someone edits the constant. This check is the prompt.
@@ -489,7 +500,7 @@ fi
 # newest section and whose pin were BOTH five releases stale, so the pin sat at
 # index 0 and the guard printed OK. Self-consistently satisfied, globally wrong.
 #
-# The release ledger is therefore the PUBLISHED TAGS, read in this order:
+# The release ledger is therefore the PUBLISHED MODULE TAGS, read in this order:
 #   1. `git ls-remote --tags origin` — works in a shallow checkout precisely
 #      because it asks the remote rather than the local object store. This is
 #      the CI path.
@@ -503,15 +514,16 @@ fi
 # passing one.
 #
 # The rule, once the published list is in hand:
-#   - FAIL when the pin names no published release at all (a phantom version —
-#     the catastrophic case: generated projects do not build).
-#   - The pin may TRAIL the newest published tag by exactly one release. That
-#     window is deliberate: the post-tag bump lands as its own commit, so
-#     between cutting vX and merging that bump the pin legitimately names vX-1.
+#   - FAIL when the pin names no published module release at all (a phantom
+#     version — the catastrophic case: generated projects do not build).
+#   - The pin may TRAIL the newest published module tag by exactly one release.
+#     That window is deliberate: the post-tag bump lands as its own commit, so
+#     between cutting a module tag and merging that bump the pin legitimately
+#     names the previous one.
 #   - FAIL when it trails by TWO OR MORE releases — the bump was forgotten.
-#   - FAIL when the newest published release has no `## [X.Y.Z]` section in this
-#     branch's CHANGELOG. That is the release-heal divergence itself, caught
-#     directly instead of via its effect on the pin.
+#   - FAIL when the newest published module release has no `## [X.Y.Z]` section
+#     in this branch's CHANGELOG. That is the release-heal divergence itself,
+#     caught directly instead of via its effect on the pin.
 # -----------------------------------------------------------------------------
 pin_line=$(grep -E '^const FallbackModuleVersion = ' cmd/harbor/scaffold/version.go 2>/dev/null || true)
 if [ -z "${pin_line}" ]; then
@@ -522,6 +534,22 @@ else
     # bash 3.2 (macOS default) has no `mapfile`; read every list portably.
     # `--sort=-v:refname` gives newest-first without relying on `sort -V`,
     # which BSD sort does not provide.
+    #
+    # THE MODULE-TAG GRAMMAR, SHARED BY ALL THREE RUNGS BELOW. The ledger is
+    # built from MODULE tags — the set the Go module proxy can resolve — so it
+    # accepts exactly the canonical three-component form (`v1.26.12`,
+    # `v1.28.0`). Everything else is deliberately not a module release and must
+    # not enter the ledger: the two-component ARTIFACT tags (`v1.27`, `v1.28`
+    # — GitHub release identities that the proxy does not resolve; counted as
+    # `newest` they would demand a two-component pin the bump could never
+    # land), suffixed/prerelease tags (`v1.27-rc1`), four-plus-component
+    # dotted strings (`v1.27.0.1`), and bare one-component names (`v1`). One
+    # pattern feeds all three rungs so origin tags, local tags and the
+    # CHANGELOG fallback cannot drift apart. Double quotes are deliberate: the
+    # shared grammar is interpolated into each extraction, `\$` passes the
+    # end-anchor through to sed, and `\1` is sed's backreference.
+    release_num='[0-9]+\.[0-9]+\.[0-9]+'
+
     released_versions=()
     release_source=''
 
@@ -529,7 +557,7 @@ else
         while IFS= read -r v; do
             [ -n "${v}" ] && released_versions+=("${v}")
         done < <(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs --sort=-v:refname origin 2>/dev/null \
-            | sed -nE 's#.*refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p')
+            | sed -nE "s#.*refs/tags/v(${release_num})\$#\1#p")
         [ "${#released_versions[@]}" -gt 0 ] && release_source='published tags (origin)'
     fi
 
@@ -537,7 +565,7 @@ else
         while IFS= read -r v; do
             [ -n "${v}" ] && released_versions+=("${v}")
         done < <(git tag --list --sort=-v:refname 'v[0-9]*' 2>/dev/null \
-            | sed -nE 's#^v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p')
+            | sed -nE "s#^v(${release_num})\$#\1#p")
         [ "${#released_versions[@]}" -gt 0 ] && release_source='local tags'
     fi
 
@@ -545,7 +573,7 @@ else
         while IFS= read -r v; do
             [ -n "${v}" ] && released_versions+=("${v}")
         done < <(git show origin/main:CHANGELOG.md 2>/dev/null \
-            | grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' | sed -E 's/^## \[(.*)\]/\1/')
+            | grep -oE "^## \[${release_num}\]" | sed -E 's/^## \[(.*)\]/\1/')
         [ "${#released_versions[@]}" -gt 0 ] && release_source="origin/main's CHANGELOG"
     fi
 
@@ -561,7 +589,7 @@ else
         done
         newest="${released_versions[0]}"
         if [ "${pin_index}" -lt 0 ]; then
-            fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no published release (checked against ${release_source}; newest is v${newest}) — a scaffolded go.mod would require a version the module proxy cannot resolve, and 'harbor --version' would report it"
+            fail "scaffold module pin: FallbackModuleVersion=v${pin_version} names no published release (checked against ${release_source}; newest is v${newest}) — a scaffolded go.mod would require a version the module proxy cannot resolve, and 'harbor version' would report it"
         elif [ "${pin_index}" -ge 2 ]; then
             fail "scaffold module pin: FallbackModuleVersion=v${pin_version} trails the newest published release (v${newest}, per ${release_source}) by ${pin_index} releases — bump it in cmd/harbor/scaffold/version.go and regenerate the goldens (go test ./cmd/harbor -run TestScaffold_Golden -update)"
         else

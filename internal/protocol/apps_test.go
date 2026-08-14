@@ -62,9 +62,60 @@ type stubInvoker struct {
 	gotTool  string
 	gotAgent string
 	gotSrv   string
+	gotAuth  string
+	// admittedCalls counts render-admission-backed invocations (the
+	// distinct AppToolAdmissionInvoker seam) so tests can assert exactly
+	// which seam a render-admission-backed call rode.
+	admittedCalls int
+	// admittedCtx is the ctx the admission-aware seam received, captured
+	// so tests can assert the surface minted the call-local proof for the
+	// exact tuple (protocol.CheckRenderAdmissionProof).
+	admittedCtx context.Context
+	// callCtx is the ctx the ORDINARY seam received, captured so tests
+	// can assert an ordinary (no-admission) call carries NO proof.
+	callCtx context.Context
+	// bindingCtx is the ctx the LEGACY binding seam received — a
+	// no-admission call rides either the ordinary or the legacy-binding
+	// seam depending on which the invoker implements, and NEITHER may
+	// carry the admission proof.
+	bindingCtx context.Context
 }
 
 func (s *stubInvoker) CallTool(ctx context.Context, serverID, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	s.callCtx = ctx
+	s.gotSrv = serverID
+	s.gotTool = tool
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
+	if s.err != nil {
+		return protocol.MCPAppToolResultRow{}, s.err
+	}
+	return s.res, nil
+}
+
+// CallToolWithBinding implements the legacy appBindingInvoker seam
+// (HA-56): the legacy live-binding path. A render-admission-backed call
+// NEVER rides here — it rides CallToolAdmitted.
+func (s *stubInvoker) CallToolWithBinding(ctx context.Context, serverID, authority, _ string, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	s.bindingCtx = ctx
+	s.gotSrv = serverID
+	s.gotTool = tool
+	s.gotAuth = authority
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
+	if s.err != nil {
+		return protocol.MCPAppToolResultRow{}, s.err
+	}
+	return s.res, nil
+}
+
+// CallToolAdmitted implements the distinct admission-aware invoker seam
+// (HA-56). It records the admission-backed invocation so tests can assert
+// a render-admission-backed call rode the admission seam exactly once and
+// never the legacy binding path, and captures the ctx so the surface's
+// call-local proof can be checked (the proof is the ONLY authority the
+// seam accepts — the surface must mint it for the exact tuple).
+func (s *stubInvoker) CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	s.admittedCalls++
+	s.admittedCtx = ctx
 	s.gotSrv = serverID
 	s.gotTool = tool
 	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)

@@ -594,6 +594,39 @@ const (
 	// `POST /v1/agent_config/user/skills/delete`.
 	MethodAgentConfigUserSkillsDelete Method = "agent_config.user.skills.delete"
 
+	// MethodAgentConfigUserSkillsImportValidate — the ZERO-WRITE first
+	// phase of the two-phase verified-caller skill-package import: the
+	// caller names a caller-owned immutable artifact ref + the effective
+	// agent, and the runtime parses/validates the package, reviews the
+	// capability applicability, snapshots the user-scope config base, and
+	// seals the bounded versioned review into an opaque `proposal_token`
+	// (never a durable proposal id, never a ledger row). CLAIM-FREE like
+	// the sibling durable-per-user skills verbs — a personal skill cannot
+	// widen capability. The wire-transport route is
+	// `POST /v1/agent_config/user/skills/import_validate`.
+	MethodAgentConfigUserSkillsImportValidate Method = "agent_config.user.skills.import_validate"
+	// MethodAgentConfigUserSkillsImportCommit — the explicit second phase:
+	// the caller echoes the opaque proposal token + the reviewed hashes +
+	// the expected config content hash + the replacement consent; the
+	// runtime freshly revalidates everything and performs THE ONE atomic
+	// package+membership write, replay-safe (a response-loss retry
+	// returns the same terminal result without a second write). The
+	// wire-transport route is
+	// `POST /v1/agent_config/user/skills/import_commit`.
+	MethodAgentConfigUserSkillsImportCommit Method = "agent_config.user.skills.import_commit"
+
+	// MethodAgentConfigCompositionPreview — the read-only effective-
+	// composition preview: reports what the strict run-start composer
+	// WOULD compose for a target (tenant, user, session) + effective
+	// boot-agent WITHOUT materialising anything — no lifecycle creation,
+	// no pack verb, no revision write. A verified caller previews its own
+	// exact triple; an admin / console:fleet caller may address a
+	// SAME-TENANT user only with signed effective-agent reach (the
+	// widening is audited on the canonical `audit.admin_scope_used`
+	// event BEFORE the composition read). The wire-transport route is
+	// `POST /v1/agent_config/composition/preview`.
+	MethodAgentConfigCompositionPreview Method = "agent_config.composition.preview"
+
 	// MethodPauseList — the paginated,
 	// identity-scope-filtered snapshot of currently-paused runs from
 	// the unified pause/resume Coordinator. Read-only: it
@@ -1053,6 +1086,41 @@ const (
 	// wire-transport route is `POST /v1/sessions/set_title`.
 	MethodSessionsSetTitle Method = "sessions.set_title"
 
+	// MethodSessionTurnsList — the `sessions.turns.list` consumer
+	// conversation-page read: one newest-first keyset page of the
+	// caller's exact session, served entirely from the turn projection
+	// (never a raw history / task fallback). The consumer lane is
+	// exact-session; a foreign-session list answers typed not-found
+	// (non-oracular). The operations projection is GET-ONLY and rejected
+	// here. Identity-mandatory; the wire-transport route is
+	// `POST /v1/sessions/turns/list` (pinned explicitly — nested session
+	// routes are never derived generically).
+	MethodSessionTurnsList Method = "sessions.turns.list"
+	// MethodSessionTurnsGet — the `sessions.turns.get` single-turn read:
+	// one (session, task) read on either the consumer conversation lane
+	// (exact-session, effective-agent-gated) or — under a verified admin
+	// OR console:fleet claim — the structurally distinct operations DTO
+	// lane (no query / answer / reasoning / App URI / tool_call_id /
+	// App context / pause tokens; a widened read emits one
+	// `audit.admin_scope_used` event). Identity-mandatory; the
+	// wire-transport route is `POST /v1/sessions/turns/get` (pinned
+	// explicitly — never derived).
+	MethodSessionTurnsGet Method = "sessions.turns.get"
+
+	// MethodObservabilityQuery — the ONE bounded administrative query
+	// surface over the observability rollup projection: exact integer /
+	// decimal measure values (cost is integer micro-units of USD) over a
+	// mandatory aligned bucket window, closed group/measure/sort sets, a
+	// full-query-bound deterministic cursor, and a MANDATORY freshness
+	// block (state current | catching_up | unavailable, the rollup
+	// watermark, and the retention / window-coverage quality). An
+	// ordinary caller's query is forced to its own verified triple; a
+	// widened (admin OR console:fleet) fan-in emits exactly one
+	// `audit.admin_scope_used` event BEFORE the read reaches storage.
+	// Identity-mandatory; the wire-transport route is
+	// `POST /v1/observability/query`.
+	MethodObservabilityQuery Method = "observability.query"
+
 	// MethodRunsSetOverrides — Records the
 	// reasoning-effort / temperature / max-tokens / system-prompt
 	// override the Console Playground page applies to the NEXT message
@@ -1182,6 +1250,9 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigUserSkillsList:             {},
 	MethodAgentConfigUserSkillsUpsert:           {},
 	MethodAgentConfigUserSkillsDelete:           {},
+	MethodAgentConfigUserSkillsImportValidate:   {},
+	MethodAgentConfigUserSkillsImportCommit:     {},
+	MethodAgentConfigCompositionPreview:         {},
 	MethodPauseList:                             {},
 	MethodTopologySnapshot:                      {},
 	MethodArtifactsList:                         {},
@@ -1219,6 +1290,11 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSessionsInspect:  {},
 	MethodSessionsDelete:   {},
 	MethodSessionsSetTitle: {},
+
+	MethodSessionTurnsList: {},
+	MethodSessionTurnsGet:  {},
+
+	MethodObservabilityQuery: {},
 
 	MethodRunsSetOverrides: {},
 
@@ -1419,7 +1495,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the thirty-one
+// canonicalAgentConfigMethods is the closed set of the thirty-four
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1431,8 +1507,11 @@ func IsGovernanceAdminMethod(m Method) bool {
 // install / uninstall verbs (set_oauth_provider / remove_oauth_provider),
 // the five session safe-subset verbs, the five user-tier registry verbs
 // (user.get / user.set_revision / user.list_revisions / user.diff /
-// user.rollback), and the three CLAIM-FREE durable-per-user skills verbs
-// (user.skills.list / user.skills.upsert / user.skills.delete).
+// user.rollback), the three CLAIM-FREE durable-per-user skills verbs
+// (user.skills.list / user.skills.upsert / user.skills.delete), the two
+// CLAIM-FREE two-phase import verbs (user.skills.import_validate /
+// user.skills.import_commit), and the CLAIM-FREE read-only composition
+// preview (composition.preview).
 // IsAgentConfigMethod is O(1); the agent-config wire handler branches on the
 // trailing path segment to dispatch.
 var canonicalAgentConfigMethods = map[Method]struct{}{
@@ -1479,6 +1558,14 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigUserSkillsList:   {},
 	MethodAgentConfigUserSkillsUpsert: {},
 	MethodAgentConfigUserSkillsDelete: {},
+	// Two-phase verified-caller skill-package import (CLAIM-FREE, same
+	// tier — a caller-owned personal package cannot widen capability).
+	MethodAgentConfigUserSkillsImportValidate: {},
+	MethodAgentConfigUserSkillsImportCommit:   {},
+	// Read-only effective-composition preview (CLAIM-FREE — a verified
+	// caller previews its own exact triple; the widening is a ctx-scope
+	// decision the service audits, never a route-level gate).
+	MethodAgentConfigCompositionPreview: {},
 }
 
 // canonicalAgentConfigUserMethods is the closed sub-set of the five
@@ -1522,6 +1609,14 @@ var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 	MethodAgentConfigUserSkillsList:   {},
 	MethodAgentConfigUserSkillsUpsert: {},
 	MethodAgentConfigUserSkillsDelete: {},
+	// The two-phase skill-package import verbs are CLAIM-FREE on the same
+	// ground (a caller-owned personal package cannot widen capability);
+	// the composition preview is a CLAIM-FREE read of the caller's own
+	// exact triple (the widening is the service's audited ctx-scope
+	// decision).
+	MethodAgentConfigUserSkillsImportValidate: {},
+	MethodAgentConfigUserSkillsImportCommit:   {},
+	MethodAgentConfigCompositionPreview:       {},
 }
 
 // canonicalAgentConfigAdminMethods is the closed sub-set of the
@@ -1554,7 +1649,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMProvider:             {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the thirty-one
+// IsAgentConfigMethod reports whether m is one of the thirty-four
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new
@@ -1740,6 +1835,52 @@ var canonicalSessionsMethods = map[Method]struct{}{
 // steering inbox.
 func IsSessionsMethod(m Method) bool {
 	_, ok := canonicalSessionsMethods[m]
+	return ok
+}
+
+// canonicalSessionTurnsMethods is the closed sub-set of the two
+// `sessions.turns.*` read methods — the consumer conversation-page read
+// (`sessions.turns.list`) and the single-turn read with the elevated
+// operations DTO lane (`sessions.turns.get`). The set is deliberately
+// SEPARATE from canonicalSessionsMethods (the Console Sessions-page
+// cluster): the turns surface pages the turn projection, not the session
+// catalog, and its routes are pinned explicitly
+// (`POST /v1/sessions/turns/{list,get}` — nested session routes are never
+// derived generically). IsSessionTurnsMethod is O(1); the stream
+// transport branches on it to route the request through the session-turns
+// handler instead of the task-control / Sessions-page surfaces.
+var canonicalSessionTurnsMethods = map[Method]struct{}{
+	MethodSessionTurnsList: {},
+	MethodSessionTurnsGet:  {},
+}
+
+// IsSessionTurnsMethod reports whether m is one of the two canonical
+// `sessions.turns.*` read methods (`sessions.turns.list` /
+// `sessions.turns.get`). The stream transport branches on this to route
+// the request through the session-turns handler. NOT a control method —
+// a new non-control turns method extends THIS predicate, never the
+// steering inbox.
+func IsSessionTurnsMethod(m Method) bool {
+	_, ok := canonicalSessionTurnsMethods[m]
+	return ok
+}
+
+// canonicalObservabilityMethods is the closed sub-set of the
+// `observability.*` methods. Today it holds the single
+// `observability.query` administrative rollup read. IsObservabilityMethod
+// is O(1); the stream transport branches on it to route the request
+// through the observability handler instead of the task-control surface.
+var canonicalObservabilityMethods = map[Method]struct{}{
+	MethodObservabilityQuery: {},
+}
+
+// IsObservabilityMethod reports whether m is one of the canonical
+// `observability.*` methods (today just `observability.query`). The
+// stream transport branches on this to route the request through the
+// observability handler. NOT a control method — a new non-control
+// observability method extends THIS predicate, never the steering inbox.
+func IsObservabilityMethod(m Method) bool {
+	_, ok := canonicalObservabilityMethods[m]
 	return ok
 }
 
@@ -1974,7 +2115,9 @@ var pauseMethods = map[Method]struct{}{
 // `search.*` cluster AND the `runtime.*` / `metrics.*`
 // posture cluster AND the pause-snapshot method AND the
 // `topology.snapshot` method AND the `memory.*`
-// read cluster (each a separate surface from the steering inbox).
+// read cluster AND the `sessions.turns.*` read pair AND the
+// `observability.query` read (each a separate surface from the
+// steering inbox).
 // The protocol.ControlSurface uses this to branch: a control method
 // maps onto a steering.ControlEvent; MethodStart maps onto the task
 // registry; a streaming-events method routes through the SSE /
@@ -2032,6 +2175,12 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsSessionsMethod(m) {
+		return false
+	}
+	if IsSessionTurnsMethod(m) {
+		return false
+	}
+	if IsObservabilityMethod(m) {
 		return false
 	}
 	if IsRunsMethod(m) {

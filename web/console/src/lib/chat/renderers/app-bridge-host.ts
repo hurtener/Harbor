@@ -118,6 +118,64 @@ export interface MCPAppResource {
   artifactRef?: { id: string; mimeType?: string; sizeBytes?: number };
 }
 
+/**
+ * The bounded render-admission object a successful OPT-IN `ui://` read may
+ * return — mirrors `types.RenderAdmission` (HA-56). Carries ONLY the opaque
+ * sealed token, its expiry metadata, and the closed availability status —
+ * never the sealed claims, never key material, never a provider-local live
+ * binding. The token is opaque by construction; the host echoes it back on
+ * `mcp.apps.call_tool` (the request's DISTINCT `render_admission` field —
+ * NOT the legacy `binding`), and the Runtime re-verifies it against the
+ * CURRENT render tuple before invocation.
+ *
+ * An explicit successful opt-in read may return the `unavailable` object
+ * with NO token when the admission could not be minted (empty/unknown
+ * current provider/catalog generation, or a current-conditions refusal) —
+ * the caller must re-read. An omitted/false `request_render_admission`
+ * never produces this object.
+ */
+export interface MCPAppRenderAdmission {
+  /**
+   * The opaque sealed render-admission token (bounded base64url). Empty when
+   * `availability` is "unavailable" — a closed "no admission minted" answer
+   * carries no token.
+   */
+  token: string;
+  /** The mint instant, RFC 3339 UTC. Empty when unavailable. */
+  issuedAt?: string;
+  /**
+   * The admission expiry, RFC 3339 UTC — a past expiry is refused with the
+   * typed `render_admission_expired` code at call time. Empty when
+   * unavailable.
+   */
+  expiresAt: string;
+  /**
+   * The CLOSED availability status at mint: "available" (the render tuple
+   * was fully verified and the token is usable) or "unavailable" (the
+   * admission could not be minted — re-read the resource).
+   */
+  availability: string;
+}
+
+/**
+ * The result of the RENDERER-INTERNAL initial-document read — a `ui://`
+ * resource AND, on the admission-requesting opt-in, its fresh render
+ * admission. The admission is minted ONLY by this distinct read; the
+ * AppBridge's app-initiated `resources/read` handler stays on the ordinary
+ * non-minting {@link MCPAppHostClient.readResource} path, so an App can
+ * never mint callback authority merely by requesting another resource.
+ */
+export interface MCPAppRenderDocument extends MCPAppResource {
+  /**
+   * The fresh render admission minted for THIS successful opt-in read.
+   * Present only when the read carried the opt-in flag AND succeeded; an
+   * `available` object carries the token, an `unavailable` object carries
+   * none. Absent on the ordinary (non-minting) read path and on a read that
+   * never requested an admission.
+   */
+  renderAdmission?: MCPAppRenderAdmission;
+}
+
 /** An app-proxied tool result (mirrors `MCPAppCallToolResponse`). */
 export interface MCPAppToolResult {
   /** The invoked tool name. */
@@ -218,6 +276,61 @@ export class MCPAppArtifactUnavailableError extends Error {
   }
 }
 
+/**
+ * The closed set of typed render-admission failure codes the Runtime answers
+ * `mcp.apps.call_tool` with (mirrors `protoerrors.CodeRenderAdmission*` +
+ * `CodeRenderAuthorityAmbiguous`). The Console adapter maps a Protocol error
+ * carrying one of these onto {@link MCPAppRenderAdmissionError}; the host
+ * branches on the code to decide the single bounded recovery, never the raw
+ * message.
+ */
+export type MCPAppRenderAdmissionErrorCode =
+  | 'render_admission_expired'
+  | 'render_admission_invalid'
+  | 'render_admission_mismatch'
+  | 'render_admission_missing'
+  | 'render_admission_unavailable'
+  | 'render_authority_ambiguous';
+
+/**
+ * The typed failure an admission-backed `tools/call` raises when the Runtime
+ * refuses the supplied render admission.
+ *
+ * It exists for the same reason {@link MCPAppToolNotFoundError} does: a caller
+ * must be able to tell WHICH thing went wrong. The Runtime's verdicts are
+ * distinct and the recovery differs by verdict:
+ *
+ *   - `render_admission_expired` — the token was well-formed and bound the
+ *     right tuple but its time ran out. The host may perform ONE bounded
+ *     refresh (a fresh opt-in resource read → new admission → a single
+ *     retry) and then stop.
+ *   - `render_admission_unavailable` / `render_admission_invalid` —
+ *     the token bytes could not be verified / the token opened to invalid
+ *     claims. A retry cannot help (the bytes are what they are); fail
+ *     explicitly, never loop.
+ *   - `render_admission_mismatch` — the token binds a DIFFERENT server /
+ *     resource / session / generation. A retry with the same token is
+ *     meaningless and could be an attack echo; fail explicitly.
+ *   - `render_admission_missing` — no authority reached the Runtime. Fail
+ *     explicitly (the host never fabricates one).
+ *   - `render_authority_ambiguous` — a Console bug (both authorities sent);
+ *     fail explicitly.
+ *
+ * The chat module declares the type; the Console-side adapter (which owns the
+ * Protocol import, D-091) raises it when the Runtime answers with one of the
+ * typed codes, and {@link createAppHandlers} decides the bounded recovery.
+ */
+export class MCPAppRenderAdmissionError extends Error {
+  /** The typed Runtime verdict — the ONLY branch input the host uses. */
+  readonly code: MCPAppRenderAdmissionErrorCode;
+
+  constructor(code: MCPAppRenderAdmissionErrorCode, message?: string) {
+    super(message ?? `render admission ${code}`);
+    this.name = 'MCPAppRenderAdmissionError';
+    this.code = code;
+  }
+}
+
 /** One advertised tool (mirrors a row of the tool catalog). */
 export interface MCPAppToolListing {
   name: string;
@@ -267,8 +380,37 @@ export interface MCPAppToolContext {
  * scoped.
  */
 export interface MCPAppHostClient {
-  /** Route `resources/read` → `mcp.servers.read_resource`. */
+  /** Route `resources/read` → `mcp.servers.read_resource`. Ordinary, non-minting. */
   readResource(serverID: string, resourceURI: string, agentID?: string): Promise<MCPAppResource>;
+  /**
+   * The RENDERER-INTERNAL initial-document read: fetch the app's `ui://`
+   * document AND mint the fresh render admission for THIS read in one
+   * request (`mcp.servers.read_resource` with `request_render_admission:
+   * true`). The renderer calls this BEFORE mounting the iframe; the
+   * returned admission is kept host-private and echoed back on
+   * `mcp.apps.call_tool` (the DISTINCT `render_admission` field, never the
+   * legacy `binding`).
+   *
+   * This is a DISTINCT method on purpose — it is NOT `readResource`
+   * acquiring an optional flag. The AppBridge's app-initiated
+   * `resources/read` handler stays on the ordinary non-minting
+   * {@link readResource}, so an App can never mint callback authority
+   * merely by requesting another resource: only the renderer's pre-mount
+   * document read may ask the Runtime to mint.
+   *
+   * A successful opt-in read may return an `unavailable` admission object
+   * with NO token when the Runtime could not mint (empty/unknown current
+   * provider/catalog generation, or a current-conditions refusal) — the
+   * renderer performs at most ONE bounded re-read and then shows the
+   * explicit safe state. An absent `renderAdmission` means the runtime
+   * answered the old (non-admission) surface — the renderer mounts with the
+   * preserved legacy path (no fresh authority).
+   */
+  readRenderDocument(
+    serverID: string,
+    resourceURI: string,
+    agentID?: string,
+  ): Promise<MCPAppRenderDocument>;
   /**
    * Route `tools/call` → `mcp.apps.call_tool` (re-enters the tool-safety gates).
    *
@@ -279,9 +421,26 @@ export interface MCPAppHostClient {
    * {@link MCPAppToolNotFoundError} when the Runtime reports the name as
    * not-found, so the confinement rejection is distinguishable from a transport
    * failure.
+   *
+   * HA-56: `renderAdmission` is the DISTINCT opaque render-admission token
+   * minted by a successful opt-in {@link readRenderDocument} read and echoed
+   * back verbatim — it is NOT the legacy `binding`. The caller supplies
+   * EXACTLY ONE of `binding` / `renderAdmission`; a call that supplies both
+   * is refused by the Runtime as ambiguous (`render_authority_ambiguous`).
+   * Implementations MUST map the Runtime's typed `render_admission_*` /
+   * `render_authority_ambiguous` refusals onto
+   * {@link MCPAppRenderAdmissionError} so the host can branch on the code.
    */
   /** Route an app callback with the host-derived server identity. */
-  callTool(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string): Promise<MCPAppToolResult>;
+  callTool(
+    serverID: string,
+    tool: string,
+    args?: unknown,
+    agentID?: string,
+    binding?: string,
+    resourceURI?: string,
+    renderAdmission?: string,
+  ): Promise<MCPAppToolResult>;
   /** Route `resources/list` → `mcp.servers.resources`. */
   listResources(serverID: string, agentID?: string): Promise<MCPAppResourceListing[]>;
   /**
@@ -396,10 +555,45 @@ export interface AppBridgeHostOptions {
    * configured default and still applies signed reach.
    */
   agentID?: string;
-  /** Runtime-issued opaque callback binding for this render. */
+  /**
+   * Runtime-issued opaque callback binding for this render.
+   */
 	binding?: string;
   /** Trusted resource URI paired with the render binding. */
   resourceURI?: string;
+  /**
+   * The FRESH render admission minted by the renderer's pre-mount OPT-IN
+   * document read ({@link MCPAppHostClient.readRenderDocument}) — a
+   * HOST-PRIVATE value kept ONLY on the live host/renderer instance. It is
+   * the DISTINCT HA-56 authority: {@link createAppHandlers} sends EXACTLY
+   * ONE of this admission / the legacy {@link binding} on
+   * `mcp.apps.call_tool` (both would be refused as
+   * `render_authority_ambiguous`), and never aliases one into the other.
+   *
+   * The admission is NEVER serialized: not into replay/session history,
+   * not into local/session storage, not into URL/query state, not into DOM
+   * attributes, not into logs, not into control events, not into tool
+   * context, not into replay data. It lives in this constructor argument +
+   * the handler closure for the life of the bridge and nowhere else.
+   *
+   * Absent when the read returned no admission (old surface / absent
+   * object) — the host then falls back to the preserved legacy
+   * {@link binding} path. An `unavailable` admission (no token) never
+   * reaches a constructed bridge: the renderer shows the explicit safe
+   * state instead of mounting an app whose callbacks cannot be authorized.
+   */
+  renderAdmission?: MCPAppRenderAdmission;
+  /**
+   * Called when an app-initiated `tools/call` fails on a typed
+   * {@link MCPAppRenderAdmissionError} that the single bounded refresh did
+   * not recover — i.e. the app's callback authority is genuinely gone
+   * (expired with a failed refresh, or unavailable / invalid / mismatched /
+   * missing / ambiguous). The renderer uses this to replace the mounted app
+   * with the explicit safe state. NEVER called for a recovered expiry (the
+   * single refresh succeeded) and NEVER with a token — only the typed code.
+   * Optional; when absent the error still propagates to the app unchanged.
+   */
+  onAdmissionInvalid?: (code: MCPAppRenderAdmissionErrorCode) => void;
   /**
    * Called when the app requests a display mode. The request is recorded and
    * acked with the GRANTED mode (see {@link availableDisplayModes}). The
@@ -581,6 +775,136 @@ export function containerDimensionsFromBox(box: {
  */
 export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
   const { client, serverID, agentID } = opts;
+  // The LIVE render admission, mutable ONLY by the single bounded expiry
+  // refresh below. Host-private: this closure is the only place it lives
+  // besides the renderer's pre-mount snapshot, and it is never serialized.
+  let admission: MCPAppRenderAdmission | undefined = opts.renderAdmission;
+  // The bounded refresh budget: at most ONE fresh opt-in read + one retry
+  // per bridge, ever. A second typed refusal is terminal.
+  let admissionRefreshUsed = false;
+
+  /** The token to echo on `call_tool` — present only for an AVAILABLE admission. */
+  function currentAdmissionToken(): string | undefined {
+    if (admission && admission.availability === 'available' && admission.token !== '') {
+      return admission.token;
+    }
+    return undefined;
+  }
+
+  /**
+   * Dispatch one app-initiated tool call. EXACTLY ONE authority rides the
+   * wire: the fresh render-admission token when the live admission is
+   * available, otherwise the preserved legacy binding (never both — the
+   * Runtime refuses `render_authority_ambiguous`). The app still supplies
+   * only its requested BARE tool name + arguments; the namespace prefix is
+   * host-derived and applied by {@link qualifyAppToolName} before this
+   * runs.
+   */
+  async function dispatchCallTool(
+    qualified: string,
+    args: unknown,
+  ): Promise<MCPAppToolResult> {
+    const token = currentAdmissionToken();
+    // When a fresh admission is in play the legacy binding is NOT sent —
+    // never both authorities. The legacy path is reached only when no
+    // fresh admission exists (old surface / absent object).
+    return client.callTool(
+      serverID,
+      qualified,
+      args,
+      agentID,
+      token !== undefined ? undefined : opts.binding,
+      opts.resourceURI,
+      token,
+    );
+  }
+
+  /**
+   * The single bounded recovery for a typed EXPIRED admission: one fresh
+   * OPT-IN document read (→ a new admission) then at most ONE retry. Any
+   * other verdict, a refresh that fails to mint, or a second refusal
+   * returns `null` — the caller fails explicitly and never loops.
+   *
+   * Returns the retried result when recovery succeeded, `null` when the
+   * original error stands.
+   */
+  async function recoverExpiredAdmission(
+    qualified: string,
+    args: unknown,
+  ): Promise<MCPAppToolResult | null> {
+    if (admissionRefreshUsed) return null;
+    if (currentAdmissionToken() === undefined) return null; // not an admission-backed call
+    admissionRefreshUsed = true;
+    let fresh: MCPAppRenderDocument;
+    try {
+      fresh = await client.readRenderDocument(serverID, opts.resourceURI ?? '', agentID);
+    } catch {
+      // The refresh read itself failed — the original expiry stands.
+      return null;
+    }
+    const next = fresh.renderAdmission;
+    if (!next || next.availability !== 'available' || next.token === '') {
+      // The refresh could not mint a fresh admission — the expired one is
+      // not recoverable. Fail explicitly with the original verdict.
+      return null;
+    }
+    admission = next;
+    // The RETRIED call's error propagates (the outer catch re-enters this
+    // helper, which is now budget-exhausted and returns null — so the
+    // retry verdict surfaces, never a second retry).
+    return dispatchCallTool(qualified, args);
+  }
+
+  /**
+   * Wrap one dispatch with the typed-failure handling the app can act on:
+   * the confinement miss is re-raised naming the bare name the app asked
+   * for, and a typed render-admission refusal is either recovered by the
+   * single bounded refresh or surfaced as the explicit safe state.
+   */
+  async function callWithAdmissionRecovery(
+    qualified: string,
+    bareName: string,
+    args: unknown,
+  ): Promise<MCPAppToolResult> {
+    try {
+      return await dispatchCallTool(qualified, args);
+    } catch (err) {
+      if (err instanceof MCPAppToolNotFoundError) {
+        // Re-raise naming what the APP asked for (the bare name) and the
+        // server it is confined to, so the app can branch on a typed,
+        // actionable rejection rather than a generic transport error.
+        throw new MCPAppToolNotFoundError(bareName, serverID);
+      }
+      if (err instanceof MCPAppRenderAdmissionError) {
+        // ONLY an EXPIRED admission is recoverable — a tampered / mismatched
+        // / foreign verdict must never be papered over by re-reading.
+        if (err.code === 'render_admission_expired') {
+          try {
+            const recovered = await recoverExpiredAdmission(qualified, args);
+            if (recovered !== null) return recovered;
+          } catch (retryErr) {
+            // The RETRIED call failed on the FRESH admission: surface ITS
+            // verdict (more informative than the original expiry), notify the
+            // safe state, and NEVER loop — the single budget is spent.
+            if (retryErr instanceof MCPAppRenderAdmissionError) {
+              opts.onAdmissionInvalid?.(retryErr.code);
+              throw retryErr;
+            }
+            if (retryErr instanceof MCPAppToolNotFoundError) {
+              throw new MCPAppToolNotFoundError(bareName, serverID);
+            }
+            throw retryErr;
+          }
+        }
+        // Unrecovered typed refusal: the callback MUST NOT execute and the
+        // host must not loop. Explicit safe state + propagate the verdict.
+        opts.onAdmissionInvalid?.(err.code);
+        throw err;
+      }
+      throw err;
+    }
+  }
+
   return {
     async oncalltool({ name, arguments: args }) {
       // → mcp.apps.call_tool: re-enters the SAME identity + approval-gate +
@@ -591,18 +915,7 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       // first (see `qualifyAppToolName`) — the confinement control. An app can
       // only ever reach `<serverID>_*`.
       const qualified = qualifyAppToolName(serverID, name);
-      let result: MCPAppToolResult;
-      try {
-        result = await client.callTool(serverID, qualified, args, agentID, opts.binding, opts.resourceURI);
-      } catch (err) {
-        if (err instanceof MCPAppToolNotFoundError) {
-          // Re-raise naming what the APP asked for (the bare name) and the
-          // server it is confined to, so the app can branch on a typed,
-          // actionable rejection rather than a generic transport error.
-          throw new MCPAppToolNotFoundError(name, serverID);
-        }
-        throw err;
-      }
+      const result = await callWithAdmissionRecovery(qualified, name, args);
       if (result.artifactRef) {
         // A heavy result rides by reference (D-026). READ IT: this used to push
         // a bare `[artifact <id> · <n> bytes]` block and return, so an app that

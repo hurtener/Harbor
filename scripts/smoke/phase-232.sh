@@ -11,17 +11,59 @@ source "scripts/smoke/common.sh"
 assert_file docs/plans/phase-232-signed-agent-reach.md 'phase 232: plan exists'
 assert_grep_present '^## D-397 ' docs/decisions.md 'phase 232: signed-reach decision is recorded'
 assert_grep_present 'const AgentReachClaim = "agent_reach"' internal/protocol/auth/agent_reach.go 'phase 232: strict signed claim exists'
-# The closed thirteen-door census remains load-bearing after Phase 233a.
-# Historical user ListRevisions/Diff are reach-only so they preserve immutable
-# history without bootstrapping lifecycle state. The other eleven current,
-# mutating, and skill doors MUST perform signed reach before lifecycle lookup
-# through the helper; TestAgentConfigHandler_AgentReachClosedCensus executes
-# the method matrix as the semantic backstop.
+# The closed agent-config reach matrix remains load-bearing after HA-61.
+# Historical user ListRevisions/Diff and HA-66 composition preview are
+# reach-only: all preserve/read state without bootstrapping lifecycle. The
+# other thirteen current, mutating, and skill doors MUST perform signed reach
+# before lifecycle lookup through the helper. Named entries reject an added,
+# removed, or reclassified route rather than accepting a numeric bump.
 AGENTCONFIG_HANDLER='internal/protocol/transports/stream/agentconfig_handler.go'
-assert_grep_count 'h\.authorizeAgent\(w, r, req\.AgentID\)' "${AGENTCONFIG_HANDLER}" 2 \
-    'phase 232: exactly two historical agent-config reads use direct signed reach only'
-assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" 11 \
-    'phase 232: exactly eleven active/current/mutating/skill doors enforce signed reach before lifecycle'
+declare -a P232_DIRECT_REACH_METHODS=(
+    MethodAgentConfigUserListRevisions
+    MethodAgentConfigUserDiff
+    MethodAgentConfigCompositionPreview
+)
+declare -a P232_LIFECYCLE_REACH_METHODS=(
+    MethodAgentConfigSessionSetUserPrompt
+    MethodAgentConfigSessionSetSourceDisables
+    MethodAgentConfigSessionSkillsList
+    MethodAgentConfigSessionSkillsUpsert
+    MethodAgentConfigSessionSkillsDelete
+    MethodAgentConfigUserGet
+    MethodAgentConfigUserSetRevision
+    MethodAgentConfigUserRollback
+    MethodAgentConfigUserSkillsList
+    MethodAgentConfigUserSkillsUpsert
+    MethodAgentConfigUserSkillsDelete
+    MethodAgentConfigUserSkillsImportValidate
+    MethodAgentConfigUserSkillsImportCommit
+)
+for method in "${P232_DIRECT_REACH_METHODS[@]}"; do
+    # The decode method and authorization call are intentionally separate
+    # lines. Scope the search to one handler method so a direct gate in a
+    # different route cannot satisfy this member of the closed matrix.
+    if awk -v method="${method}" '
+        /^func \(h \*AgentConfigHandler\)/ {
+            if (candidate) exit
+            candidate = 0
+        }
+        /methods\./ && index($0, "methods." method) { candidate = 1; decoded = 1 }
+        candidate && /h\.authorizeAgent\(w, r, req\.AgentID\)/ { found = 1 }
+        END { exit !(decoded && found) }
+    ' "${AGENTCONFIG_HANDLER}"; then
+        ok "phase 232: ${method} is exactly one direct signed-reach-only read"
+    else
+        fail "phase 232: ${method} must decode and use direct signed reach in one handler route"
+    fi
+done
+for method in "${P232_LIFECYCLE_REACH_METHODS[@]}"; do
+    assert_grep_count "h\\.authorizeAndEnsureBootAgent\\(w, r, req\\.Identity, req\\.AgentID, methods\\.${method}" "${AGENTCONFIG_HANDLER}" 1 \
+        "phase 232: ${method} is exactly one signed-reach-before-lifecycle door"
+done
+assert_grep_count 'h\.authorizeAgent\(w, r, req\.AgentID\)' "${AGENTCONFIG_HANDLER}" 3 \
+    'phase 232: no unclassified direct signed-reach-only agent-config route exists'
+assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" 13 \
+    'phase 232: no unclassified signed-reach-before-lifecycle agent-config route exists'
 assert_grep_present 'func \(h \*AgentConfigHandler\) authorizeAndEnsureBootAgent' "${AGENTCONFIG_HANDLER}" \
     'phase 232: lifecycle helper remains the single signed-reach-before-lifecycle ordering seam'
 assert_grep_present 'WithAgentReachAuthorizer\(agentReach\)' internal/runtime/serve/serve.go 'phase 232: production assembly shares one gate'

@@ -186,6 +186,13 @@ type bus struct {
 	// the triple (the ring has no DeleteScope to lean on, unlike the durable
 	// driver).
 	fenced map[string]struct{}
+
+	// wake is the bounded best-effort watermark notification hub backing
+	// the events.ProjectionSource seam (see projection.go). Publish
+	// notifies it after each successful persistence of a canonical event;
+	// the hub's non-blocking sends never couple the publish path to a
+	// projector. Zero value is ready to use.
+	wake events.ProjectionWakeHub
 }
 
 // fenceKey renders a session triple as the fenced-set key. The NUL
@@ -408,6 +415,11 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 		ev.OccurredAt = b.clock.Now()
 	}
 	b.assignSeqAndStore(&ev)
+
+	// Wake projection watchers (best-effort, non-blocking — a projector
+	// can never delay or fail the publish path). Only after the event was
+	// accepted and retained; a redaction failure never reaches here.
+	b.notifyProjectionWatermark(ev)
 
 	b.fanOut(ev)
 	return nil
@@ -1178,10 +1190,11 @@ func (s *subscription) resetDropWindow(now time.Time) {
 // Compile-time assertion that bus implements events.EventBus,
 // events.Replayer AND events.HistoryReplayer.
 var (
-	_ events.EventBus        = (*bus)(nil)
-	_ events.Replayer        = (*bus)(nil)
-	_ events.HistoryReplayer = (*bus)(nil)
-	_ events.Fencer          = (*bus)(nil)
+	_ events.EventBus         = (*bus)(nil)
+	_ events.Replayer         = (*bus)(nil)
+	_ events.HistoryReplayer  = (*bus)(nil)
+	_ events.Fencer           = (*bus)(nil)
+	_ events.ProjectionSource = (*bus)(nil)
 )
 
 // Compile-time assertion: subscription.Cancel is exported via the

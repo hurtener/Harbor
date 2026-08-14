@@ -59,6 +59,44 @@ const erasureLedgerKindPrefix = "session.erasure.pending."
 // retained information about deleted data (RFC §7 right-to-erasure).
 const erasureTombstoneKindPrefix = "session.erasure.tombstone."
 
+// ProjectionFencer is the fence-only erasure seam the HA-65
+// observability rollup projection store implements: FenceSession erases
+// the triple's rows AND permanently fences it in one transaction, so a
+// late event for the erased triple is refused forever (the fence
+// outlives replay and restart; no replay resurrection). The HA-64
+// conversation-turn store does NOT satisfy this seam alone — its
+// FenceSession persists the permanent fence without erasing existing
+// rows — so the cascade drives it through TurnsProjectionEraser
+// instead (fence, then row/checkpoint DeleteScope). The interface keeps
+// the cascade decoupled from the projection packages (CLAUDE.md §4.4).
+type ProjectionFencer interface {
+	// FenceSession erases every row for the session triple and fences
+	// the triple PERMANENTLY (idempotent).
+	FenceSession(ctx context.Context, id identity.Identity) error
+}
+
+// TurnsProjectionEraser is the HA-64 conversation-turn projection's
+// erasure seam: the permanent FenceSession PLUS the row/checkpoint
+// DeleteScope. The HA-64 turn-store drivers deliberately do NOT erase
+// existing rows inside FenceSession — FenceSession only persists the
+// permanent store-local fence, and reads (GetTurn / ListTurns /
+// LoadCheckpoint) are NOT fenced, so fenced-but-not-deleted rows stay
+// readable through sessions.turns.list/get by an otherwise still-valid
+// exact-session identity. The cascade therefore calls FenceSession then
+// DeleteScope in that strict order: fence first (every subsequent write
+// is refused from that instant), delete second (the retained rows and
+// checkpoint go while the permanent fence survives — no resurrection
+// after replay or restart). A concrete *turns.Store satisfies this
+// interface; the cascade stays decoupled from the turns package
+// (CLAUDE.md §4.4).
+type TurnsProjectionEraser interface {
+	ProjectionFencer
+	// DeleteScope removes every retained turn row and the session
+	// checkpoint under id while PRESERVING the permanent fence set by
+	// FenceSession. Idempotent: an absent scope returns (0, nil).
+	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
+}
+
 // CascadeEraser performs the ordered, fail-loud, idempotent session
 // erasure cascade behind `sessions.delete`: it refuses fail-loud on a
 // running task, then deletes the session's scoped Artifacts, Memory, and
@@ -209,6 +247,18 @@ type CascadeEraser struct {
 	clock    Clock
 	logger   *slog.Logger
 
+	// turnsProjection / rollupsProjection are the OPTIONAL runtime-owned
+	// durable projection erasure seams (HA-64 turns, HA-65 rollups).
+	// When wired, the cascade fences BEFORE any destructive step so no
+	// late event can resurrect the erased session's projection rows.
+	// The HA-64 turns seam additionally runs the row/checkpoint
+	// DeleteScope immediately after its FenceSession (the HA-64 fence
+	// persists without erasing rows; DeleteScope erases them while the
+	// permanent fence survives). The HA-65 rollup seam erases rows AND
+	// fences in FenceSession alone.
+	turnsProjection   TurnsProjectionEraser
+	rollupsProjection ProjectionFencer
+
 	// eraseLocks stripes a fixed-size array of mutexes over the
 	// (tenant, user, session) key so concurrent Erase calls for the SAME
 	// session serialize (see lockSession); distinct sessions run fully
@@ -240,6 +290,18 @@ type CascadeEraserDeps struct {
 	Redactor  audit.Redactor
 	Clock     Clock
 	Logger    *slog.Logger
+
+	// TurnsProjection / RollupsProjection are the OPTIONAL HA-64 / HA-65
+	// durable projection erasure seams. When wired the cascade fences
+	// them immediately after the event-bus fence and before any
+	// destructive step, so the projection rows are erased + permanently
+	// fenced and a late event for the erased triple is refused forever.
+	// TurnsProjection requires the row/checkpoint erasure seam
+	// (FenceSession then DeleteScope — the HA-64 turn-store fence does
+	// not erase existing rows); RollupsProjection's FenceSession alone
+	// erases rows and fences in one transaction.
+	TurnsProjection   TurnsProjectionEraser
+	RollupsProjection ProjectionFencer
 }
 
 // ErrEraserMisconfigured — NewCascadeEraser was called with a missing
@@ -296,6 +358,9 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 		redactor: deps.Redactor,
 		clock:    clock,
 		logger:   logger,
+
+		turnsProjection:   deps.TurnsProjection,
+		rollupsProjection: deps.RollupsProjection,
 	}, nil
 }
 
@@ -475,6 +540,39 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 	//     contract converges once the transient fault clears.
 	if err := e.fenceSession(ctx, id); err != nil {
 		return zero, fmt.Errorf("sessions: erase fence: %w", err)
+	}
+
+	// 2a. Fence + erase the runtime-owned durable projections (HA-64
+	//     turns / HA-65 rollups) when they are wired. It runs after the
+	//     bus fence and BEFORE any destructive step; a present-but-failing
+	//     fence/erase capability fails the whole cascade loud right here —
+	//     nothing has been deleted yet, so this is retry-safe. The fences
+	//     are never removed by the erasure itself: an erased session stays
+	//     fenced across replay and restart (no replay resurrection).
+	//
+	//     The HA-64 turns seam is FENCE-FIRST, DELETE-SECOND: its
+	//     FenceSession persists the PERMANENT store-local fence but — by
+	//     design — does not erase existing turn rows (reads are not
+	//     fenced), so the row/checkpoint DeleteScope runs immediately
+	//     after it. Fencing first means every subsequent write is refused
+	//     from that instant; deleting second erases the retained rows and
+	//     checkpoint while the permanent fence survives. A DeleteScope
+	//     failure fails the WHOLE cascade loud and does NOT undo the
+	//     already-permanent fence; a re-invoke re-runs the pair to
+	//     convergence (both idempotent). The HA-65 rollup seam erases
+	//     rows AND fences in FenceSession alone.
+	if e.turnsProjection != nil {
+		if err := e.turnsProjection.FenceSession(ctx, id); err != nil {
+			return zero, fmt.Errorf("sessions: erase turns projection fence: %w", err)
+		}
+		if _, err := e.turnsProjection.DeleteScope(ctx, id); err != nil {
+			return zero, fmt.Errorf("sessions: erase turns projection scope: %w", err)
+		}
+	}
+	if e.rollupsProjection != nil {
+		if err := e.rollupsProjection.FenceSession(ctx, id); err != nil {
+			return zero, fmt.Errorf("sessions: erase rollups projection fence: %w", err)
+		}
 	}
 
 	// 3. Artifacts — checkpoint immediately so an interruption before the
@@ -952,6 +1050,35 @@ func (e *CascadeEraser) saveTombstone(ctx context.Context, id identity.Identity,
 		Kind:     tombstoneKind(id.SessionID),
 		Bytes:    bytes,
 	})
+}
+
+// Erased is the narrow exported READ-ONLY seam over the registry's
+// durable pending-ledger-or-terminal-tombstone erasure check. It reports
+// whether the session named by ident is (being) erased, exactly as
+// isErased decides for Open / EnsureOpen: the O(1) point-Load of the
+// pending erasure LEDGER (an in-flight / interrupted erasure) OR the
+// terminal TOMBSTONE (a converged erasure) under the actor's
+// observability scope — never a bounded history scan.
+//
+// It FAILS CLOSED: it returns (false, nil) ONLY when both Loads return
+// state.ErrNotFound; any other (non-NotFound) Load error propagates, and
+// the caller then mints / authorizes NOTHING. A fail-open collapse to
+// "not erased" on a transient StateStore fault would permit
+// resurrection, which is exactly the direction the erasure contract
+// forbids. Record absence therefore never authorizes or recreates a
+// session: it is only ever "this session is not currently erased".
+//
+// Unlike Open/EnsureOpen, this seam does NOT hold the registry's r.mu —
+// it is a pure read of the durable observability-scope StateStore slots
+// (both already concurrency-safe) intended for fail-closed
+// authorization probes (the HA-56 render-admission gate, the turns
+// materializer's ErasureProbe, the rollup projector's fence probe).
+// Safe for concurrent use by N goroutines against a single Registry.
+func (r *Registry) Erased(ctx context.Context, ident identity.Identity) (bool, error) {
+	if err := identity.Validate(ident); err != nil {
+		return false, err
+	}
+	return r.isErased(ctx, ident)
 }
 
 // isErased is the reopen-facing terminality guard: it reports whether

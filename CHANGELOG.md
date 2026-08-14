@@ -17,6 +17,92 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28] — 2026-08-14
+
+### Fixed
+
+- Typed MCP error classification now survives the runloop's step recording and
+  appears in the actual next ReAct prompt: the classified outcome, retry-policy
+  result, bounded provider message, and retained bounded MCP result content are
+  preserved, a generic `Step.Error` never masks the classified observation, raw
+  arguments are redacted on every failed-replay shape, and canonical task/tool
+  events agree with the planner observation on the terminal error (D-410,
+  HA-54 planner-replay amendment).
+- MCP Apps embedded/durable reopen now uses a fresh stateless, integrity-
+  protected render admission sealed with the deployment-shared
+  `tools.oauth_token_kek_env` KEK, minted only after the current
+  authorization, generation, and resource checks (verified identity, signed
+  effective-agent reach, retirement, erasure, current session/agent exposure,
+  exact server, exact current `ui://` resource, paused/disabled state, and the
+  deterministic replica-stable current provider/catalog generation). The
+  reopen order is durable App reference → successful `mcp.apps.tool_context`
+  replay → the explicit admission-requesting `ui://` read → iframe/AppBridge
+  mount → same-server app-only callback through the existing wrapped
+  invocation; a failed/unavailable/evicted/foreign replay mints no authority,
+  ordinary and AppBridge-secondary resource reads never mint, and the fresh
+  admission is distinct from, never aliases, and never coexists with the
+  legacy live binding. The surface is strictly opt-in via
+  `tools.mcp_app_render_admission.enabled` (default `false`) — sealer
+  availability alone never enables it — and an enabled surface without a
+  valid shared KEK fails readiness loud (D-412, HA-56 fresh render-admission
+  amendment).
+
+### Added
+
+- Verified-caller two-phase `SKILL.md` package import:
+  `agent_config.user.skills.import_validate` runs the one production
+  importer/validator and performs ZERO writes of any kind — no proposal-ledger
+  write — returning a bounded opaque versioned sealed proposal token;
+  `import_commit` reauthenticates, re-resolves, and revalidates the token,
+  forces `ScopeUser` + the effective agent, and durably installs the reviewed
+  package plus membership in one conditional write, with durable idempotency
+  state (a token-derived commit ledger) beginning only in the commit phase.
+  Supporting files are copied into the durable package addressed by immutable
+  `skillpkg://<PackageHash>/<path>` references behind one mandatory authorized
+  resolver (D-422).
+- `skill_create_draft`, an ordinary disabled-by-default tool that turns
+  bounded intent plus optional feedback into a caller-scoped `SKILL.md` draft
+  artifact through the governed authoring path's safety-wrapped LLM adapter.
+  It has zero mutation authority; installation of a draft is exclusively the
+  import validate/commit workflow (D-423).
+- `sessions.list` / `sessions.inspect` gain an additive
+  `projection: "lifecycle"` selector returning lifecycle metadata only with
+  ZERO enrichment, using the closed counter-availability state
+  `current | partial | not_requested | unavailable` (lifecycle counters are
+  `not_requested`, never zero-as-not-computed); counter filters/sorts paired
+  with it fail as a typed invalid request, and the full projection remains the
+  default (D-424).
+- `sessions.turns.list` / `sessions.turns.get`, a dedicated runtime-owned
+  durable tail-paged conversation-turn projection with indexed keyset paging,
+  per-component availability, inline Activity, and restart/erasure fences.
+  Chat open is two reads (one lifecycle read + one turn page), then a
+  page-before-subscribe snapshot-to-live handoff: the Console folds the
+  durable page and establishes bounded running/paused membership before
+  opening the EventSource with `live_resume_seq` as the initial `resume_seq`;
+  the server replays events strictly newer than that snapshot, a browser
+  reconnect `Last-Event-ID` takes precedence, one terminal event causes one
+  `sessions.turns.get`, and a page retry rebuilds stale live membership from
+  freshly read authoritative rows without duplicating bubbles or re-admitting
+  a terminal row (D-425).
+- Durable observability rollups behind `observability.query`: an indexed,
+  rebuildable projection of best-effort aggregates over successfully
+  persisted canonical events (never billing-exact), fixed UTC minute storage
+  buckets with exactly the tenant/user/session/model dimensions, existing
+  source-backed measures only, explicit freshness/completeness on every
+  response, projection-backed session counters with an honest fallback, and
+  the narrow D-296 amendment — a general-purpose TSDB and identity-labelled
+  OTel metrics remain rejected (D-426).
+- A boot-declared, resource-free operator skill baseline
+  (`skills.boot_agent_packs`): a config-file-relative strict eager immutable
+  loader running before readiness, exact `(tenant, boot_agent_id)` binding,
+  strict merge with the active durable revision into one combined operator
+  tier (`boot|revision|both` dedupe, 256-item cap), boot-owned mutation/remove
+  guards, and a deterministic set hash in the run snapshot and the read-only
+  composition preview. `harbor composition-preview` renders the preview from
+  the CLI; production and devstack share the single loader path; headless
+  `RunOnce` is explicitly unsupported and fails loud when the baseline is
+  configured (D-427).
+
 ## [1.27] — 2026-08-13
 
 ### Added
@@ -4454,7 +4540,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.27...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28...HEAD
+[1.28]: https://github.com/hurtener/Harbor/compare/v1.27...v1.28
 [1.27]: https://github.com/hurtener/Harbor/compare/v1.26.12...v1.27
 [1.26.12]: https://github.com/hurtener/Harbor/compare/v1.26.11...v1.26.12
 [1.26.11]: https://github.com/hurtener/Harbor/compare/v1.26.10...v1.26.11

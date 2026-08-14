@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/bootpacks"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -25,8 +28,13 @@ func (r resolverModeReader) Mode(context.Context, string) (sessionoverlay.Cutove
 type resolverReader struct {
 	mu        sync.RWMutex
 	rows      map[string]skills.Skill
+	pkgs      map[string]skills.InstalledPackage
 	searchErr error
 }
+
+// resolverReader implements the complete mandatory skills.SkillStore
+// surface (AGENTS.md §4.4 — no optional installed-package capability).
+var _ skills.SkillStore = (*resolverReader)(nil)
 
 func resolverKey(id identity.Quadruple, name string, scope skills.Scope) string {
 	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + string(scope) + "\x00" + name
@@ -150,6 +158,251 @@ func (*resolverReader) DeleteAgent(context.Context, identity.Quadruple, string, 
 }
 func (*resolverReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
 func (*resolverReader) Close(context.Context) error                                  { return nil }
+
+// ---- Mandatory installed-package surface ----
+//
+// `resolverReader` is a standalone in-memory fake (no wrapped driver to
+// delegate to), so the five mandatory installed-package methods are a
+// faithful minimal in-memory implementation of the accepted contract,
+// mirroring the canonical `conformancetest.referenceStore` semantics:
+// the atomic unit lives at the session-zeroed (tenant, user, effective-
+// agent, name) key in its own map (never coupled to the legacy `rows`
+// key space, which the resolver tests keep deliberately small), values
+// are deep-copied at the boundary, `PutInstalledPackage` is a
+// conditional compare-and-swap with explicit replace + origin
+// precedence + idempotent exact replay, and `DeleteInstalledPackage` /
+// `RestoreInstalledPackage` bind to the receipt's `WrittenHash` so a
+// receipt never touches another proposal's winner. The session
+// resolver never exercises this surface (it composes read-only views
+// over the legacy tiers); the methods exist so the fake remains a
+// valid `skills.SkillStore`.
+func installedPackageKey(id identity.Quadruple, agentID, name string) string {
+	return id.TenantID + "\x00" + id.UserID + "\x00" + agentID + "\x00" + name
+}
+
+func deepCopyResolverSkill(s skills.Skill) skills.Skill {
+	out := s
+	out.Tags = append([]string(nil), s.Tags...)
+	out.Steps = append([]string(nil), s.Steps...)
+	out.Preconditions = append([]string(nil), s.Preconditions...)
+	out.FailureModes = append([]string(nil), s.FailureModes...)
+	out.RequiredTools = append([]string(nil), s.RequiredTools...)
+	out.RequiredNS = append([]string(nil), s.RequiredNS...)
+	out.RequiredTags = append([]string(nil), s.RequiredTags...)
+	if len(s.Extra) > 0 {
+		out.Extra = make(map[string]any, len(s.Extra))
+		for k, v := range s.Extra {
+			out.Extra[k] = v
+		}
+	}
+	return out
+}
+
+func deepCopyResolverPackage(p skills.Package) skills.Package {
+	out := p
+	out.Skill = skills.PackageSkill{
+		Name:          p.Skill.Name,
+		Title:         p.Skill.Title,
+		Description:   p.Skill.Description,
+		Trigger:       p.Skill.Trigger,
+		TaskType:      p.Skill.TaskType,
+		Tags:          append([]string(nil), p.Skill.Tags...),
+		Steps:         append([]string(nil), p.Skill.Steps...),
+		Preconditions: append([]string(nil), p.Skill.Preconditions...),
+		FailureModes:  append([]string(nil), p.Skill.FailureModes...),
+		RequiredTools: append([]string(nil), p.Skill.RequiredTools...),
+		RequiredNS:    append([]string(nil), p.Skill.RequiredNS...),
+		RequiredTags:  append([]string(nil), p.Skill.RequiredTags...),
+	}
+	if len(p.Supports) > 0 {
+		out.Supports = make([]skills.SupportFile, len(p.Supports))
+		for i, f := range p.Supports {
+			out.Supports[i] = f
+			if f.Data != nil {
+				out.Supports[i].Data = append([]byte(nil), f.Data...)
+			}
+		}
+	}
+	return out
+}
+
+func deepCopyResolverUnit(u skills.InstalledPackage) skills.InstalledPackage {
+	out := u
+	out.Skill = deepCopyResolverSkill(u.Skill)
+	out.Package = deepCopyResolverPackage(u.Package)
+	return out
+}
+
+// currentInstalledWinner returns a deep copy of the installed winner at
+// the target key, or nil. Callers hold the read lock.
+func (r *resolverReader) currentInstalledWinner(id identity.Quadruple, agentID, name string) *skills.InstalledPackage {
+	unit, ok := r.pkgs[installedPackageKey(id, agentID, name)]
+	if !ok {
+		return nil
+	}
+	cp := deepCopyResolverUnit(unit)
+	return &cp
+}
+
+func (r *resolverReader) GetInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string) (skills.InstalledPackage, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if winner := r.currentInstalledWinner(id, agentID, name); winner != nil {
+		return *winner, nil
+	}
+	return skills.InstalledPackage{}, fmt.Errorf("%w: name=%q agent_id=%q", skills.ErrInstalledPackageNotFound, name, agentID)
+}
+
+func (r *resolverReader) ResolveSupport(ctx context.Context, id identity.Quadruple, agentID, name string, uri skills.PackageURI) (skills.SupportFile, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.SupportFile{}, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.SupportFile{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	winner := r.currentInstalledWinner(id, agentID, name)
+	if winner == nil {
+		return skills.SupportFile{}, fmt.Errorf("%w: name=%q agent_id=%q", skills.ErrInstalledPackageNotFound, name, agentID)
+	}
+	// A foreign hash or a dangling path never resolves — the exact
+	// immutable `skillpkg://` reference is the only address.
+	if uri.Hash != winner.PackageHash {
+		return skills.SupportFile{}, fmt.Errorf("%w: uri hash %q is foreign to installed package %q", skills.ErrSupportNotFound, uri.Hash, winner.PackageHash)
+	}
+	for _, f := range winner.Package.Supports {
+		if f.Path == uri.Path {
+			out := f
+			out.Data = append([]byte(nil), f.Data...)
+			return out, nil
+		}
+	}
+	return skills.SupportFile{}, fmt.Errorf("%w: %q is not in the installed package manifest", skills.ErrSupportNotFound, uri.Path)
+}
+
+func (r *resolverReader) PutInstalledPackage(ctx context.Context, id identity.Quadruple, agentID string, pkg skills.InstalledPackage, cond skills.InstalledPackageCondition, replace bool) (skills.InstalledPackageReceipt, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if err := skills.ValidateInstalledPackageCondition(cond); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: agentID (effective agent) must be non-empty", skills.ErrInstalledPackageInvalid)
+	}
+	if err := skills.ValidateInstalledPackage(pkg); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if pkg.Skill.AgentID != agentID {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: Skill.AgentID %q != effective agent %q", skills.ErrInstalledPackageInvalid, pkg.Skill.AgentID, agentID)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := pkg.Package.Name
+	winner, present := r.pkgs[installedPackageKey(id, agentID, name)]
+	priorHash, priorVersion := "", ""
+	if present {
+		priorHash, priorVersion = winner.PackageHash, winner.Package.Version
+	}
+
+	if present && winner.PackageHash == pkg.PackageHash {
+		// Idempotent exact replay: the winner is already the incoming
+		// package. No mutation; the receipt names the installed version.
+		return skills.InstalledPackageReceipt{
+			TenantID: id.TenantID, UserID: id.UserID, AgentID: agentID, Name: name,
+			WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
+			PriorHash: "", PriorVersion: "",
+		}, nil
+	}
+
+	switch {
+	case !present:
+		if !cond.ExpectedAbsent {
+			return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected prior hash %q but the key is absent", skills.ErrInstalledPackageConditionFailed, cond.ExpectedHash)
+		}
+	case cond.ExpectedAbsent:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q", skills.ErrInstalledPackageExists, name)
+	case winner.PackageHash != cond.ExpectedHash:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected hash %q, winner has %q", skills.ErrInstalledPackageConditionFailed, cond.ExpectedHash, winner.PackageHash)
+	case cond.ExpectedVersion != "" && winner.Package.Version != cond.ExpectedVersion:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected version %q, winner has %q", skills.ErrInstalledPackageConditionFailed, cond.ExpectedVersion, winner.Package.Version)
+	case !replace:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q", skills.ErrInstalledPackageReplaceRequired, name)
+	case winner.Skill.Origin == skills.OriginPack && pkg.Skill.Origin != skills.OriginPack:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q existing_origin=pack incoming=%s", skills.ErrPackOverwriteRefused, name, pkg.Skill.Origin)
+	}
+
+	if r.pkgs == nil {
+		r.pkgs = make(map[string]skills.InstalledPackage)
+	}
+	r.pkgs[installedPackageKey(id, agentID, name)] = deepCopyResolverUnit(pkg)
+	return skills.InstalledPackageReceipt{
+		TenantID: id.TenantID, UserID: id.UserID, AgentID: agentID, Name: name,
+		WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
+		PriorHash: priorHash, PriorVersion: priorVersion,
+	}, nil
+}
+
+func (r *resolverReader) DeleteInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackageReceipt(receipt, id, agentID, name); err != nil {
+		return false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	winner, present := r.pkgs[installedPackageKey(id, agentID, name)]
+	if !present || winner.PackageHash != receipt.WrittenHash {
+		// A different proposal's winner or an already-erased key is a
+		// normal concurrent outcome — never deleted.
+		return false, nil
+	}
+	delete(r.pkgs, installedPackageKey(id, agentID, name))
+	return true, nil
+}
+
+func (r *resolverReader) RestoreInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt, prior skills.InstalledPackage) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackageReceipt(receipt, id, agentID, name); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackage(prior); err != nil {
+		return false, err
+	}
+	if prior.Skill.AgentID != agentID {
+		return false, fmt.Errorf("%w: prior Skill.AgentID %q != effective agent %q", skills.ErrInstalledPackageInvalid, prior.Skill.AgentID, agentID)
+	}
+	if receipt.PriorHash == "" {
+		return false, fmt.Errorf("%w: the receipt records an absent prior; compensate with DeleteInstalledPackage", skills.ErrInstalledPackageInvalid)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	winner, present := r.pkgs[installedPackageKey(id, agentID, name)]
+	if !present || winner.PackageHash != receipt.WrittenHash {
+		// The receipt's write is no longer the winner — another
+		// proposal's winner or an erased key; never replaced.
+		return false, nil
+	}
+	if prior.PackageHash != receipt.PriorHash {
+		return false, fmt.Errorf("%w: prior hash %q does not match the receipt's recorded prior %q", skills.ErrInstalledPackageConditionFailed, prior.PackageHash, receipt.PriorHash)
+	}
+	r.pkgs[installedPackageKey(id, agentID, name)] = deepCopyResolverUnit(prior)
+	return true, nil
+}
 
 func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skills.Skill {
 	skill := durableSkill(name)
@@ -532,4 +785,321 @@ func skillNames(in []skills.Skill) []string {
 		result[i] = skill.Name
 	}
 	return result
+}
+
+func TestSessionSkillResolver_OperatorTierComposesLastWithProvenance(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-op-tier")
+	id.RunID = "run-op-tier"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "shared" exists on EVERY caller rung (base global, durable user, owned
+	// session) AND in both operator sources, so the strict merge must dedupe
+	// the operator tier to one source=both item and it must win all three
+	// caller rungs.
+	if _, err := personal.SavePersonal(context.Background(), id, "agent-a", durableSkill("shared"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "shared", skills.ScopeGlobal))
+	base.add(id, resolverSkill(id, "shared", skills.ScopeUser))
+	base.add(id, resolverSkill(id, "unrelated", skills.ScopeGlobal))
+	boot := []bootpacks.Entry{testBootEntry("shared"), testBootEntry("boot-only")}
+	packs := []skills.Skill{testRevisionPack("shared"), testRevisionPack("rev-only")}
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverStateOnly, sessionoverlay.SessionSkillMembership{
+		UserPersonalNames: []string{"shared"},
+		Boot:              boot,
+		Packs:             packs,
+	}))
+	if err != nil {
+		t.Fatalf("NewSessionSkillResolver: %v", err)
+	}
+
+	// The operator tier wins every caller rung for "shared": the composed Get
+	// body is the operator body (Origin=pack, the retained boot body), not the
+	// base / user / session row.
+	got, err := resolver.Get(context.Background(), id, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Origin != skills.OriginPack || got.Description != "operator body for shared" {
+		t.Fatalf("operator tier did not win caller rungs: %+v", got)
+	}
+	// The session-only API keeps returning the session tier (unchanged
+	// semantic: SessionSkills never widens into the operator tier).
+	session, err := resolver.SessionSkills(context.Background(), id)
+	if err != nil || fmt.Sprint(skillNames(session)) != "[shared]" {
+		t.Fatalf("SessionSkills = (%v, %v), want the owned session row", skillNames(session), err)
+	}
+
+	// Deterministic composed view: the deduped shared (both), boot-only,
+	// rev-only, and the unrelated base row.
+	listed, err := resolver.List(context.Background(), id, skills.ListFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(skillNames(listed)) != "[boot-only rev-only shared unrelated]" {
+		t.Fatalf("composed list = %v", skillNames(listed))
+	}
+
+	// Provenance: the gated accessor reports source markers + set hashes.
+	tier, err := resolver.OperatorTier(context.Background(), id)
+	if err != nil {
+		t.Fatalf("OperatorTier: %v", err)
+	}
+	if source, ok := tier.Source("shared"); !ok || source != skills.OperatorTierSourceBoth {
+		t.Fatalf("Source(shared) = (%q, %v), want both", source, ok)
+	}
+	if source, ok := tier.Source("boot-only"); !ok || source != skills.OperatorTierSourceBoot {
+		t.Fatalf("Source(boot-only) = (%q, %v), want boot", source, ok)
+	}
+	if source, ok := tier.Source("rev-only"); !ok || source != skills.OperatorTierSourceRevision {
+		t.Fatalf("Source(rev-only) = (%q, %v), want revision", source, ok)
+	}
+	if tier.BootPackSetHash() != referenceBootPackSetHash(t, boot) {
+		t.Fatalf("boot set hash = %q, want %q", tier.BootPackSetHash(), referenceBootPackSetHash(t, boot))
+	}
+	if tier.CombinedHash() == "" || tier.RevisionHash() == "" {
+		t.Fatal("combined/revision hashes must be present")
+	}
+	// Identity-gated: a foreign quadruple cannot read the provenance.
+	if _, err := resolver.OperatorTier(context.Background(), durableID("other")); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+		t.Fatalf("cross-identity OperatorTier = %v, want identity error", err)
+	}
+}
+
+func TestSessionSkillResolver_OperatorTierConflictAndBoundFailRunStart(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-op-conflict")
+	id.RunID = "run-op-conflict"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("differing hash conflict", func(t *testing.T) {
+		conflict := testRevisionPack("shared")
+		conflict.Steps = []string{"different"}
+		membership := sessionoverlay.SessionSkillMembership{
+			Boot:  []bootpacks.Entry{testBootEntry("shared")},
+			Packs: []skills.Skill{conflict},
+		}
+		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, &resolverReader{}, sessionoverlay.CutoverDualRead, membership)); !errors.Is(err, sessionoverlay.ErrOperatorTierConflict) {
+			t.Fatalf("conflict run start = %v, want ErrOperatorTierConflict", err)
+		}
+	})
+	t.Run("257 items bound", func(t *testing.T) {
+		membership := sessionoverlay.SessionSkillMembership{
+			Boot:  testBootEntries("boot", 256),
+			Packs: testRevisionPacks("extra", 1),
+		}
+		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, &resolverReader{}, sessionoverlay.CutoverDualRead, membership)); !errors.Is(err, sessionoverlay.ErrOperatorTierBound) {
+			t.Fatalf("bound run start = %v, want ErrOperatorTierBound", err)
+		}
+	})
+}
+
+func TestSessionSkillResolver_OperatorTierTwoAgentsUsersNoBleed(t *testing.T) {
+	st := newDurableState(t)
+	seed := durableID("seed")
+	activateAgent(t, st, seed, "agent-a")
+	activateAgent(t, st, seed, "agent-b")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idA := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user-a", SessionID: "session-a"}, RunID: "run-a"}
+	idB := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user-b", SessionID: "session-b"}, RunID: "run-b"}
+	build := func(id identity.Quadruple, agentID, bootName, revName string) *sessionoverlay.SessionSkillResolver {
+		t.Helper()
+		resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), sessionoverlay.SessionSkillResolverConfig{
+			Run: id, AgentID: agentID, Base: &resolverReader{}, Personal: personal,
+			Cutover: resolverModeReader{mode: sessionoverlay.CutoverDualRead},
+			Membership: sessionoverlay.SessionSkillMembership{
+				Boot:  []bootpacks.Entry{testBootEntry(bootName)},
+				Packs: []skills.Skill{testRevisionPack(revName)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("resolver(%s/%s): %v", agentID, id.UserID, err)
+		}
+		return resolver
+	}
+	resolverA := build(idA, "agent-a", "a-boot", "a-rev")
+	resolverB := build(idB, "agent-b", "b-boot", "b-rev")
+
+	// Each agent's composed view contains ONLY its own operator tier.
+	for _, name := range []string{"a-rev", "a-boot"} {
+		if _, err := resolverA.Get(context.Background(), idA, name); err != nil {
+			t.Fatalf("agent-a own %q: %v", name, err)
+		}
+		if _, err := resolverB.Get(context.Background(), idB, name); !errors.Is(err, skills.ErrSkillNotFound) {
+			t.Fatalf("agent-b saw agent-a %q: %v", name, err)
+		}
+	}
+	if _, err := resolverB.Get(context.Background(), idB, "b-boot"); err != nil {
+		t.Fatalf("agent-b own boot entry: %v", err)
+	}
+
+	// Cross-identity calls (different user/session/run) fail closed on the
+	// identity gate for both the composed view and the tier provenance.
+	for _, call := range []struct {
+		resolver *sessionoverlay.SessionSkillResolver
+		id       identity.Quadruple
+	}{
+		{resolverA, idB},
+		{resolverB, idA},
+	} {
+		if _, err := call.resolver.Get(context.Background(), call.id, "anything"); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			t.Fatalf("cross identity Get = %v, want identity error", err)
+		}
+		if _, err := call.resolver.OperatorTier(context.Background(), call.id); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			t.Fatalf("cross identity OperatorTier = %v, want identity error", err)
+		}
+	}
+
+	// A foreign tenant never composes the boot baseline: the resolver was
+	// built for the exact (tenant, user, session, run) quadruple.
+	foreign := idA
+	foreign.TenantID = "other-tenant"
+	if _, err := resolverA.Get(context.Background(), foreign, "a-rev"); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+		t.Fatalf("foreign tenant Get = %v, want identity error", err)
+	}
+}
+
+func TestSessionSkillResolver_OperatorTierInFlightImmutability(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-op-immutable")
+	id.RunID = "run-op-immutable"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "shared", skills.ScopeGlobal))
+	first, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{
+		Boot:  []bootpacks.Entry{testBootEntry("shared")},
+		Packs: []skills.Skill{testRevisionPack("shared")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A LATER snapshot with a different membership (the boot body changed) is
+	// an independent immutable value; concurrent changes affect only later
+	// snapshots.
+	changed := testBootEntry("shared")
+	changed.Skill.Steps = []string{"new body"}
+	changed.SemanticHash = skills.CanonicalContentHash(changed.Skill)
+	second, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, sessionoverlay.SessionSkillMembership{
+		Boot: []bootpacks.Entry{changed},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutating the first snapshot's returned copy must never reach the first
+	// snapshot again, nor the second snapshot, nor the shared tier.
+	mutated, err := first.Get(context.Background(), id, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated.Steps[0] = "mutated"
+
+	again, err := first.Get(context.Background(), id, "shared")
+	if err != nil || again.Steps[0] != "do it" {
+		t.Fatalf("first snapshot drifted: (%q, %v)", again.Steps[0], err)
+	}
+	secondGot, err := second.Get(context.Background(), id, "shared")
+	if err != nil || secondGot.Steps[0] != "new body" {
+		t.Fatalf("second snapshot affected by first snapshot mutation: (%q, %v)", secondGot.Steps[0], err)
+	}
+	tier, err := first.OperatorTier(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := tier.Get("shared"); got.Skill.Steps[0] != "do it" {
+		t.Fatalf("shared tier drifted: %v", got.Skill.Steps)
+	}
+	// The tier accessor is stable across reads.
+	if againTier, err := first.OperatorTier(context.Background(), id); err != nil || !reflect.DeepEqual(againTier.Items(), tier.Items()) {
+		t.Fatalf("tier accessor not stable: (%v, %v)", err, againTier.Items())
+	}
+}
+
+func TestSessionSkillResolver_OperatorTierConcurrentReuse(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	st := newDurableState(t)
+	id := durableID("resolver-op-shared")
+	id.RunID = "run-op-shared"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "shared-skill", skills.ScopeGlobal))
+	membership := sessionoverlay.SessionSkillMembership{
+		Boot:  append(testBootEntries("shared", 32), testBootEntry("shared-skill")),
+		Packs: append(testRevisionPacks("shared", 32), testRevisionPack("shared-skill")),
+	}
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, membership))
+	if err != nil {
+		t.Fatalf("NewSessionSkillResolver: %v", err)
+	}
+	tier, err := resolver.OperatorTier(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantItems := tier.Items()
+	wantHash := tier.CombinedHash()
+	wantSource, _ := tier.Source("shared-skill")
+
+	const n = 128
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx := context.Background()
+			if i%2 == 0 {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			if i%2 == 0 {
+				if _, err := resolver.Get(ctx, id, "shared-skill"); !errors.Is(err, context.Canceled) {
+					errs <- fmt.Errorf("%d canceled Get = %w", i, err)
+				}
+				return
+			}
+			got, err := resolver.Get(ctx, id, "shared-skill")
+			if err != nil || got.Origin != skills.OriginPack {
+				errs <- fmt.Errorf("%d operator Get = (%q, %w)", i, got.Name, err)
+				return
+			}
+			view, err := resolver.OperatorTier(ctx, id)
+			if err != nil {
+				errs <- fmt.Errorf("%d OperatorTier: %w", i, err)
+				return
+			}
+			if view.CombinedHash() != wantHash || !reflect.DeepEqual(view.Items(), wantItems) {
+				errs <- fmt.Errorf("%d tier drifted", i)
+				return
+			}
+			if source, ok := view.Source("shared-skill"); !ok || source != wantSource {
+				errs <- fmt.Errorf("%d source marker drifted", i)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	assertGoroutinesRestored(t, baseline)
 }

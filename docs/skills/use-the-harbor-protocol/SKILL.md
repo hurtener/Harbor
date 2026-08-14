@@ -310,7 +310,7 @@ event: task.completed
 data: {"task_id":"tsk_01HXYZ","status":"completed"}
 ```
 
-Governance emits its own canonical events on the same stream — subscribe with `X-Harbor-Event-Type: governance.failover` to observe LLM-provider failover. When a runtime is configured with a broker-pulled failover chain, each HOP the Harbor-orchestrated walk takes on a retryable provider error emits a `governance.failover` event carrying the run identity, the `from_provider` / `to_provider`, the 1-based `hop_index`, the accumulated per-identity cost the re-run budget check gates against, and a bounded retryable-error class (never the raw provider error). Every hop is a Harbor event through audit + bus + cost — the provider SDK's native fallback array is deliberately unused (D-018) — and a hop whose re-run budget/rate check trips fails the run loud rather than silently walking further down the chain. The full event catalogue (137+ types) is the generated [events reference](https://hurtener.github.io/Harbor/protocol/events).
+Governance emits its own canonical events on the same stream — subscribe with `X-Harbor-Event-Type: governance.failover` to observe LLM-provider failover. When a runtime is configured with a broker-pulled failover chain, each HOP the Harbor-orchestrated walk takes on a retryable provider error emits a `governance.failover` event carrying the run identity, the `from_provider` / `to_provider`, the 1-based `hop_index`, the accumulated per-identity cost the re-run budget check gates against, and a bounded retryable-error class (never the raw provider error). Every hop is a Harbor event through audit + bus + cost — the provider SDK's native fallback array is deliberately unused (D-018) — and a hop whose re-run budget/rate check trips fails the run loud rather than silently walking further down the chain. The full event catalogue (147 types) is the generated [events reference](https://hurtener.github.io/Harbor/protocol/events).
 
 **A gotcha**: the event payload's task ID field is `payload.TaskID` (capital T) — match exactly when parsing in JS/TS. Documented in the Console's chat panel handler; easy to miss when hand-rolling.
 
@@ -439,6 +439,92 @@ The verb **always** writes `title_source: "manual"` — `auto` provenance is not
 - **`flows.list` / `flows.get`** — `budget_consumption.tokens_used` is summed per run (symmetric with `cost_usd_used`), truthful wherever a run is recorded.
 - **`memory.list` / `memory.health`** — the always-empty `has_ttl_expiring` facet and the two `expiring_in_1h` aggregate fields are **removed** from the wire (V1 memory has no TTL); `filter.agent_ids` loud-rejects with `invalid_request`/400 (a V1 record carries no producer identity), never a false-empty page.
 - **`tools.list` / `tools.metrics` / `tools.content_stats`** — a runtime that advertises the `tool_annotations` capability (negotiate via `Accepts(tool_annotations)`) serves REAL per-tool annotations: `filter.oauth_statuses` / `filter.approval_policies` narrow to real rows, the annotator-backed aggregates (`active` / `pending_approval` / `awaiting_oauth`) carry real counts (no `aggregates_partial`), `tools.metrics` returns real error-rate gauges + invocation/failure counts over the window, and `tools.content_stats` returns a real result-size histogram (D-314). The admin `tools.set_approval_policy` / `tools.revoke_oauth` methods persist through `tools/approval` / `tools/auth` with audit (they no longer return `admin_unsupported`). A runtime that does NOT advertise `tool_annotations` (a headless catalog stack) loud-rejects `filter.oauth_statuses` / `filter.approval_policies` with `invalid_request` and returns `aggregates_partial: true` with those counters zeroed — render them "unavailable," never a real-looking 0; only `aggregates.total` is authoritative in that state.
+
+## 4d. Reopening a chat — durable turns and the two-read open (v1.28)
+
+`state.history` (above) is still the raw-event drill-down. To **reopen a
+chat** — render the current conversation from durable data — the v1.28
+surface gives you a dedicated projection instead of reconstructing turns
+from forensic events:
+
+- **Lifecycle-only session read (HA-63 / D-424).** `sessions.list` /
+  `sessions.inspect` accept an additive `projection: "lifecycle"` selector:
+  session id, status, title/source, authoritative timestamps, duration where
+  derivable, and the honestly representable agent id — with ZERO counter
+  enrichment (work bounded by page size before and after restart). Counter
+  fields use the closed availability state `current | partial |
+  not_requested | unavailable`; the lifecycle shape marks them
+  `not_requested` (never merely absent, never zero-as-not-computed). A
+  counter filter/sort (`cost_above_cents`, `cost_desc`, …) paired with the
+  lifecycle selector fails `invalid_request` — it never silently switches to
+  the expensive projection. The full projection remains the default when the
+  selector is omitted.
+- **Durable turn pages (HA-64 / D-425).** `sessions.turns.list` returns one
+  newest-first keyset page of the caller's exact session's root foreground
+  turns (opaque `older_cursor`, `limit` default 20 / max 50) with
+  renderable answer (inline or by artifact reference, or
+  `empty`/`evicted`/`unavailable`), consumer-safe reasoning, ordered tool
+  Activity (never arguments/results), usage, intervention metadata
+  (bounded durable pause class / reason / lifecycle / availability — never
+  a pause/resume/approval action token; actionability is computed from the
+  verified caller's tier, and callers act through `pause.list` plus the
+  control/steering verbs), and ordered durable MCP App references.
+  `sessions.turns.get` is the one
+  `(session, task)` terminal reconciliation read. Both are exact-session:
+  a foreign session answers typed `not_found` (non-oracular).
+- **Page-before-subscribe live handoff.** Chat open is two reads — one
+  `projection: "lifecycle"` inspect plus one `sessions.turns.list` page —
+  then the SSE subscription: open the EventSource with the page's
+  `live_resume_seq` as the initial `resume_seq` (`GET /v1/events?resume_seq=…`),
+  so the server replays events strictly newer than the snapshot through the
+  existing bounded replay path; a browser reconnect's `Last-Event-ID` header
+  takes precedence. One terminal event for a rendered running/paused turn
+  triggers exactly one `sessions.turns.get`, which replaces the bubble with
+  the sealed row. On page retry, rebuild the live membership from a freshly
+  read `sessions.turns.list` (never duplicate bubbles or re-admit a terminal
+  row).
+- **Administrative observability (HA-65 / D-426).** The one bounded
+  administrative query is `observability.query` (`POST /v1/observability/
+  query`): mandatory time window, a closed `group_by` set (tenant / user /
+  session / model), existing source-backed measures only (successful
+  completions, exact cost, tokens, latency count/sum/min/max, task
+  completed/failed/cancelled), fixed UTC minute buckets (may coarsen), and a
+  mandatory freshness block (`current` / `catching_up` / `unavailable` +
+  watermark) on every response — never zero as a substitute for
+  unavailable. Widening to other tenants/users requires the verified
+  `admin`/`console:fleet` scope and emits one `audit.admin_scope_used`.
+- **User-skill package import (HA-61 / D-422).** A caller may install a
+  reviewed `SKILL.md` package as a durable personal skill through
+  `agent_config.user.skills.import_validate` (returns a bounded opaque
+  sealed `proposal_token` plus the normalized review/hashes/expiry — it
+  performs ZERO writes) and `agent_config.user.skills.import_commit` (echo
+  the token and reviewed hashes; the runtime reauthenticates and
+  revalidates, forces your scope + the effective agent, and installs the
+  package in one conditional write). A stale/foreign/expired token answers
+  the typed `skill_import_proposal_*` refusal; `replace: true` is required
+  to replace an existing package.
+- **Draft-only skill authoring (HA-62 / D-423).** `skill_create_draft` is an
+  ordinary runtime tool (absent from the model-visible catalog until an
+  operator enables it per agent through the ordinary tool policy) that turns a
+  bounded `{intent, feedback?}` into ONE caller-scoped immutable `SKILL.md`
+  draft artifact — an artifact ref plus its versioned `package_hash`, a
+  bounded summary/warnings, and an explicit `state: "draft"` /
+  `installed: false`. It persists exactly that one immutable caller-scoped
+  ArtifactStore draft and has zero skill-install/config/pack/membership/
+  authority mutation: no approval path, no skill-store upsert,
+  membership/revision write, or operator-pack proposal/publication; identity
+  comes exclusively from the run context (`persist`/`publish`-shaped input is
+  rejected), and declared required tools are metadata only. Installing a draft
+  is the LATER explicit HA-61 path: `agent_config.user.skills.import_validate`
+  the artifact ref, review, then `import_commit` — the runtime reauthenticates
+  and revalidates before the one conditional install.
+- **Composition preview (HA-66 / D-427).** `agent_config.composition.preview`
+  (`POST /v1/agent_config/composition/preview`, claim-free for your own
+  triple) reports the effective skill composition a run would compose for
+  the named agent: per-item `boot|revision|both` provenance, the
+  per-package semantic hash, and the deterministic `boot_pack_set_hash`.
+  The same strict resolver feeds boot preflight, run, and preview — the
+  preview never mutates.
 
 ## 5. Pause + steer + resume
 
@@ -579,6 +665,29 @@ When an MCP-backed tool call is refused downstream with a `403` + `WWW-Authentic
 - **On the MCP connection view** — `mcp.servers.get` returns `MCPServerView.last_scope_shortfall` (`MCPScopeShortfallView`) recording the last observed shortfall on that connection — visible even to a reader who never made the offending call. It rides the DETAIL read only (like `oauth_requirement`), not the hot list row.
 
 Both are **report-only**: the runtime never auto-escalates, re-consents, or widens a binding on a shortfall. The operator acts on it via the boot-declared `oauth_provider` / `tool_oauth_providers` bindings (which bind a distinct provider per MCP-side entry — a tool call by tool name, a resource read / subscribe by resource URI, and a prompt get by prompt name — for a server fronting several downstream audiences).
+
+**Typed MCP failure classification survives replay (HA-54 / D-410).** When an
+MCP server marks a `CallToolResult` `IsError: true` with the namespaced
+`harbor.error` classification (`{error: {class, message}}` on `_meta` or in
+`structuredContent`), the runtime lowers it to a typed failure — one of
+`invalid_argument` / `validation` / `authorization` / `not_found` / `conflict`
+/ `tool_domain` / `transient` / `provider_unavailable`, with a bounded
+message — and projects it onto permanent-vs-retryable policy: the
+deterministic classes invoke exactly once (a `conflict` such as a
+`revision_conflict` is permanent for the unchanged invocation and carries the
+current revision in its bounded message for reread/retry), while a retryable
+provider/transport failure uses the configured budget. The classified
+observation SURVIVES the runloop's step recording into the actual next ReAct
+prompt: the typed class, retry-policy outcome, bounded message, and retained
+bounded result content render as fields, and a generic `Step.Error` never
+masks them. Raw tool arguments are redacted on every failed-replay shape — no
+raw args, secrets, or unbounded provider output reach the observation or the
+prompt. A legacy unclassified `IsError` keeps the generic safe fallback: its
+lowered text is preserved, policy treats it as transient, and the generic
+render remains. The terminal projection is observable on the stream as
+`tool.failed` (`ErrorClass` / `ErrorMessage` / `Attempts`) and
+`tool.policy_exhausted` (`LastClass` / `LastError`), which agree with what the
+planner observed.
 
 ### 8b. What an MCP connection admin write can reach
 

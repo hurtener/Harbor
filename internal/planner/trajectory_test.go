@@ -185,6 +185,65 @@ func TestCountSuccessfulToolInvocationsSince_ExcludesControlsAndFailures(t *test
 	}
 }
 
+// TestCountSuccessfulToolInvocationsSince_ClassifiedObservationFailure_NotSuccess
+// pins the HA-54 accounting rule: a step whose structured observation is the
+// run loop's classified error-observation map (the canonical "error" key, here
+// with the artifact_ref_not_found class) is a FAILED dispatch and must not
+// consume the successful-tool budget — even though the run loop suppresses the
+// generic Step.Error stamp on that path (Step.Error == "").
+func TestCountSuccessfulToolInvocationsSince_ClassifiedObservationFailure_NotSuccess(t *testing.T) {
+	t.Parallel()
+	classified := map[string]any{
+		"error":       "artifact.stats: artifact reference does not resolve",
+		"error_class": string(ObservationClassArtifactRefNotFound),
+	}
+	for label, step := range map[string]Step{
+		"error key on Observation":    {Action: CallTool{Tool: "artifact.stats"}, Observation: classified},
+		"error key on LLMObservation": {Action: CallTool{Tool: "artifact.stats"}, LLMObservation: classified},
+		"error key on both slots": {Action: CallTool{Tool: "artifact.stats"},
+			Observation: classified, LLMObservation: classified},
+	} {
+		tr := &Trajectory{Steps: []Step{step}}
+		if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 0 {
+			t.Errorf("CountSuccessfulToolInvocationsSince (%s) = %d, want 0 (classified failure consumes no successful-tool budget)", label, got)
+		}
+	}
+}
+
+// TestCountSuccessfulToolInvocationsSince_UnrelatedObservationMetadata_NotFailure
+// pins the closed-predicate boundary: only the canonical "error" key is a
+// failure signal. A successful tool observation carrying unrelated metadata
+// (a map without the error key, or a non-map scalar) still counts.
+func TestCountSuccessfulToolInvocationsSince_UnrelatedObservationMetadata_NotFailure(t *testing.T) {
+	t.Parallel()
+	tr := &Trajectory{Steps: []Step{
+		{Action: CallTool{Tool: "search"}, Observation: map[string]any{"summary": "3 hits", "hits": []string{"a", "b"}}},
+		{Action: CallTool{Tool: "clock.now"}, LLMObservation: map[string]any{"iso": "2026-08-14T00:00:00Z"}},
+		{Action: CallTool{Tool: "text.echo"}, Observation: "plain string result"},
+	}}
+	if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 3 {
+		t.Errorf("CountSuccessfulToolInvocationsSince = %d, want 3 (unrelated metadata is not a failure)", got)
+	}
+}
+
+// TestCountSuccessfulToolInvocationsSince_MixedTrajectory_CountsSuccessesOnly
+// folds every failure surface into one trajectory: a classified observation
+// failure (Observation slot), a classified LLMObservation failure, a legacy
+// Step.Error failure, and two genuine successes — only the successes count.
+func TestCountSuccessfulToolInvocationsSince_MixedTrajectory_CountsSuccessesOnly(t *testing.T) {
+	t.Parallel()
+	tr := &Trajectory{Steps: []Step{
+		{Action: CallTool{Tool: "ok-1"}},
+		{Action: CallTool{Tool: "classified-obs"}, Observation: map[string]any{"error": "bounded failure"}},
+		{Action: CallTool{Tool: "classified-llm"}, LLMObservation: map[string]any{"error": "bounded failure"}},
+		{Action: CallTool{Tool: "legacy"}, Error: "tool execution failed"},
+		{Action: CallTool{Tool: "ok-2"}, Observation: map[string]any{"summary": "fine"}},
+	}}
+	if got := CountSuccessfulToolInvocationsSince(tr, 0); got != 2 {
+		t.Errorf("CountSuccessfulToolInvocationsSince = %d, want 2 (ok-1, ok-2)", got)
+	}
+}
+
 // TestSerialize_Batch_RoundTripsByteStable — a Batch-carrying step
 // serialises without error and its canonical (rehydrated) form
 // round-trips byte-stable (the D-049 contract). Batch is a plain struct

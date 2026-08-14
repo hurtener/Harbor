@@ -1,14 +1,23 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"math/big"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -249,6 +258,14 @@ var (
 	// ErrDiscoveryStale means a refresh completed for a server generation that
 	// is no longer current. Callers may retry against the replacement.
 	ErrDiscoveryStale = errors.New("mcp: discovery result is stale")
+	// ErrGenerationMismatch is the typed outcome of
+	// ResolveAppToolAtGeneration when the server's CURRENT
+	// provider/catalog generation cannot be established as the exact
+	// expected one — the server is absent, has no established current
+	// generation, or was refreshed/replaced between an earlier generation
+	// read and the atomic compare+resolve. It is a refusal (the render
+	// admission is stale), never a resolution of a newer-generation row.
+	ErrGenerationMismatch = errors.New("mcp: app-only resolution raced a catalog generation change")
 )
 
 // DiscoveryStaleError is the bounded, retryable outcome for a refresh whose
@@ -313,6 +330,21 @@ type serverEntry struct {
 	catalog       tools.ToolCatalog
 	toolAllowlist []string
 	toolDenylist  []string
+	// currentGeneration is the DETERMINISTIC current provider/catalog
+	// generation fingerprint for this server: a content digest of the
+	// canonical CURRENT descriptor set (resources + app-only callbacks +
+	// ordinary catalog), recomputed whenever a successful discovery
+	// snapshot rebuilds either view. It changes on detach (entry removed
+	// → unknown → fail closed), replacement (new descriptor set), and
+	// every successful discovery change to resources / app-only /
+	// ordinary catalog — even when the deployment registration
+	// descriptor (`descriptorFingerprint`) did not change. It is stable
+	// across replicas with the same canonical current descriptor set
+	// (content-derived, NEVER a process-local counter), and empty means
+	// "unknown" (fail closed: a render admission never binds an empty
+	// generation). Guarded by the Registry's mu like every other
+	// per-server field.
+	currentGeneration string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -618,6 +650,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 	// replacement swaps the appOnly set exactly when it swaps the catalog
 	// publication, so no stale callback can survive either direction.
 	entry.appOnly = partitionAppOnly(descs)
+	entry.currentGeneration = currentGenerationFor(descs)
 	if descs != nil {
 		entry.stats.lastDiscoveryAt = now
 	}
@@ -650,6 +683,479 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 	return out
 }
 
+// currentGenerationFor computes the deterministic current
+// provider/catalog generation fingerprint for a canonical descriptor
+// set: a SHA-256 digest over the canonical encoding of every STABLE
+// semantic field of every current tools.Tool descriptor.
+//
+// # Covered fields — every stable semantic field that can affect
+// ordinary / app-only / resource / prompt catalog meaning
+//
+// name, description, ArgsSchema and OutSchema, SideEffects, Tags,
+// AuthScopes, CostHint, LatencyHint, SafetyNotes, Loading, Examples (in
+// order, each with its canonical JSON Args, Description, and Tags),
+// Source, Transport, Policy (TimeoutMS, MaxRetries, BackoffBase,
+// BackoffMult, BackoffMax, RetryOn, Validate), HandlesMIME, Form, and
+// AppOnly.
+//
+// # Excluded
+//
+// The descriptor's Invoke and Validate function values (process code,
+// not catalog meaning), secrets, timestamps, process-local counters,
+// and mutable runtime stats — none of which live on Tool or are hashed.
+//
+// # Honest canonicalization
+//
+// Set-like fields (Tags, AuthScopes, HandlesMIME, Policy.RetryOn,
+// example Tags) are sorted before encoding, so element ORDER never
+// changes the generation. Order-bearing fields (the Examples list) keep
+// their order. ArgsSchema and OutSchema are canonicalized by SEMANTIC
+// JSON VALUE before the length-prefixed write: each valid document is
+// re-encoded compactly, with deterministic object-key order and an exact
+// canonical number form, so a replica whose discovery serialization
+// differs only in whitespace or object-key order hashes identically,
+// while a meaningful schema change — and array-order changes — still
+// moves the generation. A schema that is not a single canonical JSON
+// document (invalid JSON, non-UTF-8 bytes, trailing data, duplicate
+// object members at any nesting depth, a non-finite literal, or a number
+// with no exact canonical decimal form) fails the row, so the whole
+// generation becomes unknown: raw invalid bytes are never hashed as
+// authoritative state.
+// Empty schema bytes — the MCP driver's encoding of "no schema
+// declared" — are preserved as the fixed empty marker instead of being
+// rejected. Example Args maps are marshalled with encoding/json's
+// deterministic key-sorted form (a nil map encodes as the empty map:
+// both mean "no args"). Descriptors are sorted by their canonical row
+// bytes, so discovery ORDER never changes the generation.
+//
+// Identical semantic catalogs across replicas hash identically; changing
+// any covered semantic field changes the generation. The digest is NEVER
+// a process-local counter. An empty/nil set, or a set containing a
+// descriptor whose stable fields cannot be canonically encoded (a
+// non-serializable example args value, or a non-canonical schema),
+// yields "" — unknown, fail closed: a render admission never binds an
+// empty generation, and a non-canonically determinable catalog is
+// refused rather than guessed.
+func currentGenerationFor(descs []tools.ToolDescriptor) string {
+	if len(descs) == 0 {
+		return ""
+	}
+	rows := make([][]byte, 0, len(descs))
+	for _, d := range descs {
+		row, err := canonicalDescriptorRow(d)
+		if err != nil {
+			// A descriptor whose stable fields cannot be canonically
+			// encoded is not deterministically classifiable: unknown,
+			// fail closed (the admission gate refuses the tuple).
+			return ""
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i], rows[j]) < 0 })
+	h := sha256.New()
+	for _, row := range rows {
+		var lenBuf [8]byte
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(row)))
+		h.Write(lenBuf[:])
+		h.Write(row)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// canonicalDescriptorRow encodes the stable semantic fields of ONE
+// tools.ToolDescriptor into a self-delimiting byte row. Every field is
+// length-prefixed (big-endian), so no value bytes — including NULs and
+// JSON — can fuse with a neighbour or alias a different field. The
+// descriptor's Invoke / Validate function values are deliberately not
+// encoded: they are process code, not catalog meaning.
+//
+// The row is a pure function of the Tool's stable fields: two replicas
+// with identical semantic content produce identical bytes, and changing
+// any covered field changes the bytes. An error means the descriptor's
+// stable fields cannot be canonically encoded (a non-serializable
+// example args map, or an ArgsSchema / OutSchema that is not a single
+// canonical JSON document) — the caller treats the catalog as
+// non-determinable and the generation as unknown.
+func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
+	t := d.Tool
+	var buf bytes.Buffer
+	// Every write below targets *bytes.Buffer (or the sha256 in
+	// currentGenerationFor), which never fails; the bare calls match the
+	// registry's established digest pattern.
+	writeField := func(s string) {
+		var lenBuf [8]byte
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))
+		buf.Write(lenBuf[:])
+		buf.WriteString(s)
+	}
+	writeInt := func(v int64) error {
+		if v < 0 {
+			// Every caller passes a length, count, or duration — all
+			// non-negative by construction; a negative value would be a
+			// corrupt field and must fail the row closed, never wrap
+			// into a garbage prefix byte.
+			return fmt.Errorf("mcp: canonical row field is negative: %d", v)
+		}
+		var fieldBuf [8]byte
+		binary.BigEndian.PutUint64(fieldBuf[:], uint64(v))
+		buf.Write(fieldBuf[:])
+		return nil
+	}
+	writeFloat := func(f float64) {
+		var fieldBuf [8]byte
+		binary.BigEndian.PutUint64(fieldBuf[:], math.Float64bits(f))
+		buf.Write(fieldBuf[:])
+	}
+	writeSorted := func(values []string) error {
+		if err := writeInt(int64(len(values))); err != nil {
+			return err
+		}
+		sorted := append([]string(nil), values...)
+		sort.Strings(sorted)
+		for _, v := range sorted {
+			writeField(v)
+		}
+		return nil
+	}
+
+	writeField(t.Name)
+	writeField(t.Description)
+	argsSchema, err := canonicalJSONSchema(t.ArgsSchema)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: args schema: %w", err)
+	}
+	writeField(argsSchema)
+	outSchema, err := canonicalJSONSchema(t.OutSchema)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: out schema: %w", err)
+	}
+	writeField(outSchema)
+	writeField(string(t.SideEffects))
+	if err := writeSorted(t.Tags); err != nil {
+		return nil, err
+	}
+	if err := writeSorted(t.AuthScopes); err != nil {
+		return nil, err
+	}
+	writeField(t.CostHint)
+	if err := writeInt(int64(t.LatencyHint)); err != nil {
+		return nil, err
+	}
+	writeField(t.SafetyNotes)
+	writeField(string(t.Loading))
+	// Examples are order-bearing (the planner sees them in order), so
+	// they keep their order.
+	if err := writeInt(int64(len(t.Examples))); err != nil {
+		return nil, err
+	}
+	for _, ex := range t.Examples {
+		writeField(ex.Description)
+		if err := writeSorted(ex.Tags); err != nil {
+			return nil, err
+		}
+		args := ex.Args
+		if args == nil {
+			// nil and the empty map are semantically the same "no args".
+			args = map[string]any{}
+		}
+		argsJSON, err := json.Marshal(args) // deterministic: encoding/json sorts map keys
+		if err != nil {
+			return nil, err
+		}
+		writeField(string(argsJSON))
+	}
+	writeField(string(t.Source))
+	writeField(string(t.Transport))
+	// Policy — the reliability shell, a stable semantic field family.
+	if err := writeInt(int64(t.Policy.TimeoutMS)); err != nil {
+		return nil, err
+	}
+	if err := writeInt(int64(t.Policy.MaxRetries)); err != nil {
+		return nil, err
+	}
+	if err := writeInt(int64(t.Policy.BackoffBase)); err != nil {
+		return nil, err
+	}
+	writeFloat(t.Policy.BackoffMult)
+	if err := writeInt(int64(t.Policy.BackoffMax)); err != nil {
+		return nil, err
+	}
+	// RetryOn has a behaviorally meaningful nil-versus-explicit-empty
+	// distinction that the digest MUST preserve: a nil RetryOn (zero
+	// value) inherits the default retry allowlist ([transient, timeout,
+	// 5xx]) at dispatch, while a non-nil empty slice means "retry on
+	// nothing" (one attempt only). Encoding only the sorted members would
+	// collapse the two policies into one generation, so a presence marker
+	// rides ahead of the sorted member list. Sorting the members of a
+	// non-empty set stays order-independent — the marker is what keeps the
+	// two policies distinct.
+	if t.Policy.RetryOn == nil {
+		writeField("nil")
+	} else {
+		writeField("explicit")
+	}
+	retryOn := make([]string, len(t.Policy.RetryOn))
+	for i, class := range t.Policy.RetryOn {
+		retryOn[i] = string(class)
+	}
+	if err := writeSorted(retryOn); err != nil {
+		return nil, err
+	}
+	writeField(string(t.Policy.Validate))
+	if err := writeSorted(t.HandlesMIME); err != nil {
+		return nil, err
+	}
+	writeField(string(t.Form))
+	if t.AppOnly {
+		writeField("1")
+	} else {
+		writeField("0")
+	}
+	return buf.Bytes(), nil
+}
+
+// canonicalJSONSchema canonicalizes ONE JSON document by SEMANTIC value:
+// compact output, deterministic object-key order, an exact canonical
+// number form, exactly one document, and no ambiguous duplicate object
+// members. It returns the canonical re-encoding, or an error when the
+// raw bytes are not a single canonical JSON document. Empty bytes — the
+// MCP driver's encoding of "no schema declared" (marshalSchema(nil) →
+// nil) — canonicalize to the empty string: a legitimate semantic state,
+// not a JSON document, so schema-free tools keep a deterministic
+// replica-stable row without failing closed.
+//
+// Non-empty bytes that are not valid UTF-8 are rejected BEFORE any JSON
+// token decoding: encoding/json replacement-normalizes invalid bytes to
+// U+FFFD instead of failing, so without the UTF-8 gate two distinct
+// corrupt documents would collapse into one authoritative generation.
+// The gate makes each corrupt document fail the row closed instead.
+func canonicalJSONSchema(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	if !utf8.Valid(raw) {
+		return "", errors.New("schema bytes are not valid UTF-8")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// Preserve number literals verbatim so canonicalJSONNumber can reduce
+	// them exactly; without UseNumber the decoder would parse to float64
+	// and silently lose precision on large integers.
+	dec.UseNumber()
+	first, err := dec.Token()
+	if err != nil {
+		return "", fmt.Errorf("invalid JSON: %w", err)
+	}
+	var out strings.Builder
+	if err := canonicalJSONValue(dec, first, &out); err != nil {
+		return "", err
+	}
+	// Exactly one document: the walker consumed the first value, so any
+	// remaining bytes form a trailing document (or invalid trailing data).
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return "", errors.New("trailing JSON document")
+		}
+		return "", fmt.Errorf("trailing JSON document: %w", err)
+	}
+	return out.String(), nil
+}
+
+// canonicalJSONValue walks one JSON value starting at the token the
+// caller already read, appending its canonical re-encoding to out.
+// Objects re-emit members in sorted key order; arrays keep their element
+// order (array order is order-bearing in JSON Schema). The walk rejects
+// duplicate object members at any nesting depth, so last-key-wins
+// coercion can never hide an ambiguous document.
+func canonicalJSONValue(dec *json.Decoder, first json.Token, out *strings.Builder) error {
+	if delim, composite := first.(json.Delim); composite {
+		switch delim {
+		case '{':
+			return canonicalJSONObject(dec, out)
+		case '[':
+			return canonicalJSONArray(dec, out)
+		default:
+			return errors.New("unexpected JSON delimiter")
+		}
+	}
+	switch v := first.(type) {
+	case nil:
+		out.WriteString("null")
+	case bool:
+		if v {
+			out.WriteString("true")
+		} else {
+			out.WriteString("false")
+		}
+	case string:
+		return writeJSONString(out, v)
+	case json.Number:
+		canon, err := canonicalJSONNumber(v)
+		if err != nil {
+			return err
+		}
+		out.WriteString(canon)
+	default:
+		return fmt.Errorf("unexpected JSON token of type %T", first)
+	}
+	return nil
+}
+
+// canonicalMember is one object member's canonical re-encoding, sorted
+// by name before emission.
+type canonicalMember struct {
+	name  string
+	value string
+}
+
+func canonicalJSONObject(dec *json.Decoder, out *strings.Builder) error {
+	seen := make(map[string]struct{})
+	var members []canonicalMember
+	for dec.More() {
+		nameToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := nameToken.(string)
+		if !ok {
+			return errors.New("expected JSON object member name")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("duplicate JSON object member %q", name)
+		}
+		seen[name] = struct{}{}
+		valueToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		var value strings.Builder
+		if err := canonicalJSONValue(dec, valueToken, &value); err != nil {
+			return err
+		}
+		members = append(members, canonicalMember{name: name, value: value.String()})
+	}
+	end, err := dec.Token()
+	if err != nil || end != json.Delim('}') {
+		return errors.New("unterminated JSON object")
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].name < members[j].name })
+	out.WriteByte('{')
+	for i, m := range members {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		if err := writeJSONString(out, m.name); err != nil {
+			return err
+		}
+		out.WriteByte(':')
+		out.WriteString(m.value)
+	}
+	out.WriteByte('}')
+	return nil
+}
+
+func canonicalJSONArray(dec *json.Decoder, out *strings.Builder) error {
+	var elements []string
+	for dec.More() {
+		valueToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		var value strings.Builder
+		if err := canonicalJSONValue(dec, valueToken, &value); err != nil {
+			return err
+		}
+		elements = append(elements, value.String())
+	}
+	end, err := dec.Token()
+	if err != nil || end != json.Delim(']') {
+		return errors.New("unterminated JSON array")
+	}
+	out.WriteByte('[')
+	for i, e := range elements {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		out.WriteString(e)
+	}
+	out.WriteByte(']')
+	return nil
+}
+
+// writeJSONString appends s as a JSON string literal. encoding/json
+// cannot fail on a plain string; the error is returned for shape
+// uniformity with the other canonical encoders.
+func writeJSONString(out *strings.Builder, s string) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	out.Write(b)
+	return nil
+}
+
+// canonicalJSONNumber reduces a JSON number literal to its exact
+// canonical decimal form: no exponent, no leading or trailing zeros, no
+// sign on zero. Semantically equal literals (1, 1.0, 1e0) converge, so
+// a replica whose discovery serialization renders the same number
+// differently hashes identically; a literal with no exact canonical
+// decimal form (SetString failure — e.g. an astronomically large
+// exponent) is rejected so the document fails closed instead of hashing
+// a lossy rendering.
+func canonicalJSONNumber(n json.Number) (string, error) {
+	rat, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		return "", fmt.Errorf("JSON number %q has no exact canonical decimal form", n.String())
+	}
+	// A JSON number literal is a finite decimal, so its reduced
+	// denominator is always of the form 2^a · 5^b. Anything else would
+	// mean SetString accepted a form the JSON grammar cannot produce.
+	a, b, ok := finiteDecimalFactors(rat.Denom())
+	if !ok {
+		return "", fmt.Errorf("JSON number %q has no exact canonical decimal form", n.String())
+	}
+	// FloatString is exact when the value terminates at or before prec
+	// digits; a terminating decimal with denominator 2^a · 5^b terminates
+	// at max(a, b) digits.
+	prec := a
+	if b > a {
+		prec = b
+	}
+	s := rat.FloatString(prec)
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimSuffix(s, ".")
+	}
+	return s, nil
+}
+
+// finiteDecimalFactors reports whether d has no prime factors other than
+// 2 and 5, returning their exponents. Every terminating decimal's
+// reduced denominator satisfies this; any other denominator means the
+// value is not a finite decimal.
+func finiteDecimalFactors(d *big.Int) (twos, fives int, ok bool) {
+	div := new(big.Int).Set(d)
+	quot := new(big.Int)
+	rem := new(big.Int)
+	factors := []struct {
+		prime *big.Int
+		exp   *int
+	}{
+		{big.NewInt(2), &twos},
+		{big.NewInt(5), &fives},
+	}
+	for _, f := range factors {
+		for {
+			quot.QuoRem(div, f.prime, rem)
+			if rem.Sign() != 0 {
+				break
+			}
+			div.Set(quot)
+			*f.exp++
+		}
+	}
+	return twos, fives, div.Cmp(big.NewInt(1)) == 0
+}
+
 // ResolveAppTool resolves an app-only callback from the named server's App
 // dispatch catalog — the ONLY authority a rendered App may invoke an
 // app-only callback through. The server identity is the host-derived key:
@@ -673,6 +1179,78 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 	}
 	d, ok := e.appOnly[toolName]
 	return d, ok
+}
+
+// ResolveAppToolAtGeneration resolves an app-only callback from the named
+// server's App dispatch catalog ONLY when the server's CURRENT generation
+// exactly equals expectedGeneration. The generation compare and the
+// descriptor lookup happen under ONE registry read lock, so a
+// refresh/replacement between an earlier CurrentGeneration read and this
+// call cannot splice a descriptor from a newer generation — the exact
+// compare+resolve the admission-aware AppsAccessor performs after
+// verifying the call-local render-admission proof (HA-56 TOCTOU
+// correction).
+//
+// Outcomes are typed:
+//
+//   - (descriptor, true, nil): the server's current generation equals
+//     expectedGeneration and it holds an app-only callback under
+//     toolName — resolved under the exact expected generation.
+//   - ("", false, error wrapping ErrGenerationMismatch): the server is
+//     absent, has no established current generation, or its current
+//     generation differs from expectedGeneration. A refusal — the
+//     admission is stale — never a resolution of the new row. The
+//     refusal's error text deliberately carries neither generation
+//     digest: the accessor surfaces it verbatim on the wire (a scope
+//     refusal), and a digest in the message would leak catalog state to
+//     whoever probes the refusal (CLAUDE.md §7).
+//   - ("", false, nil): the server's current generation equals
+//     expectedGeneration, but the server does not hold an app-only
+//     callback under toolName (a plain not-found within the exact
+//     generation).
+func (r *Registry) ResolveAppToolAtGeneration(serverID, toolName, expectedGeneration string) (tools.ToolDescriptor, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[serverID]
+	if !ok || e.currentGeneration == "" {
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q has no current provider/catalog generation to compare",
+			ErrGenerationMismatch, serverID)
+	}
+	if e.currentGeneration != expectedGeneration {
+		// The typed mismatch (ErrGenerationMismatch) is the whole verdict.
+		// Neither the current nor the expected generation digest is echoed
+		// into the text — the accessor wraps this error verbatim into the
+		// wire-facing CodeScopeMismatch message.
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q current generation changed while resolving",
+			ErrGenerationMismatch, serverID)
+	}
+	d, ok := e.appOnly[toolName]
+	return d, ok, nil
+}
+
+// CurrentGeneration returns the deterministic current provider/catalog
+// generation fingerprint for the named server: a content digest of the
+// canonical CURRENT descriptor set (resources + app-only callbacks +
+// ordinary catalog). It changes on detach (server absent → unknown),
+// replacement, and every successful discovery change — even when the
+// deployment registration descriptor did not change. It is stable across
+// replicas with the same canonical current descriptor set (content-
+// derived, never a process-local counter).
+//
+// Unknown/empty fails closed: the second result is false when the server
+// is absent or no successful discovery has established its current
+// descriptor set yet, and a render admission never binds an empty
+// generation. This is the value a render-admission gate binds into the
+// sealed tuple; a stale generation after refresh or replacement must
+// execute zero callbacks.
+func (r *Registry) CurrentGeneration(serverID string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[serverID]
+	if !ok || e.currentGeneration == "" {
+		return "", false
+	}
+	return e.currentGeneration, true
 }
 
 // RegistrationSwap is a reversible live-registry publication. Commit makes
@@ -1797,8 +2375,13 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		catalogSwap.Commit()
 	}
 	// Rebuild the App dispatch view from the SAME fresh snapshot that just
-	// re-derived the counts — one discovered set, two views.
+	// re-derived the counts — one discovered set, two views. The
+	// deterministic current provider/catalog generation recomputes with
+	// the snapshot, so a refresh that changes resources / app-only /
+	// ordinary catalog rows bumps the generation even when the deployment
+	// registration descriptor did not change.
 	e.appOnly = partitionAppOnly(descs)
+	e.currentGeneration = currentGenerationFor(descs)
 	r.mu.Unlock()
 
 	return &DiscoveryResult{
@@ -2094,6 +2677,17 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	e.stats.promptCount = pc
 	e.stats.lastDiscoveryAt = r.clock()
 	e.stats.state = ServerStateOnline
+	// The boot-time descriptor snapshot also establishes BOTH projections
+	// from the SAME set: the App dispatch catalog (entry.appOnly) and the
+	// deterministic current provider/catalog generation. RecordDiscovery is
+	// the no-network counterpart to RefreshDiscovery, so it must seed the
+	// same two views the refresh path maintains together, under one write
+	// lock — a subsequent generation-bound app-only resolution
+	// (ResolveAppToolAtGeneration) must see the refreshed partition under
+	// the refreshed generation, never stale descriptors from the
+	// pre-discovery stage.
+	e.appOnly = partitionAppOnly(descs)
+	e.currentGeneration = currentGenerationFor(descs)
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/mcpconsole/admission"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -56,7 +57,84 @@ type AppsSurface struct {
 	toolContext AppToolContextReader
 	agents      AgentResolver
 	reach       auth.AgentReachAuthorizer
+	// admissionAuthority is the OPTIONAL sealed render-admission seam
+	// (HA-56). When nil, the opt-in `request_render_admission` mint
+	// fails loud with CodeRuntimeError and a render-admission-backed
+	// app-tool-call fails loud — the ordinary resource read and the
+	// legacy binding path are untouched.
+	admissionAuthority RenderAdmissionAuthority
+	// admissionGate is the fail-closed fresh render-admission
+	// authorization seam (HA-56). It is invoked BEFORE every mint and
+	// BEFORE every callback verification, and returns the exact current
+	// provider/catalog generation every admission binds. Mandatory
+	// alongside admissionAuthority; a nil/empty generation or a refusal
+	// is a typed refusal (generation is never optional). G4 supplies the
+	// production implementation; a plain resource read or a registration
+	// fingerprint does NOT prove the gate's checks.
+	admissionGate RenderAdmissionGate
 }
+
+// RenderAdmissionAuthority is the narrow, stateless, sealed
+// render-admission seam the AppsSurface calls into (HA-56). The Runtime
+// wires the production implementation — the sealed authority in
+// internal/mcpconsole/admission over the shared auth.Sealer — and tests
+// wire a deterministic fake. The seam performs NO viewer authorization
+// and NO resource lookup: the AppsSurface runs the full verified
+// identity / reach / retirement / erasure / current-exposure / exact
+// server+resource checks BEFORE any mint, and the authority seals only
+// the already-authorized render tuple. The sealed token never exposes
+// its claims, key material, or a provider-local live binding.
+type RenderAdmissionAuthority interface {
+	// Mint seals a fresh render admission for the exact tuple. Two mints
+	// for the identical tuple produce distinct tokens (a fresh claim
+	// nonce per call).
+	Mint(ctx context.Context, rt admission.RenderTuple) (admission.Token, error)
+	// Verify opens token, strictly validates its claims, and requires
+	// the exact expected tuple — identity, agent, server, resource URI,
+	// and the CURRENT descriptor fingerprint. Outcomes are typed via
+	// errors.Is against admission.ErrTokenMissing / ErrTokenUnavailable /
+	// ErrTokenInvalid / ErrTokenExpired / ErrTokenMismatch.
+	Verify(ctx context.Context, expected admission.RenderTuple, token string) (admission.Claims, error)
+}
+
+// RenderAdmissionGate is the fail-closed fresh render-admission
+// authorization seam (HA-56). The AppsSurface invokes it BEFORE every
+// mint and BEFORE every callback verification to establish that the
+// render tuple is CURRENTLY admissible and to read the exact CURRENT
+// provider/catalog generation to bind.
+//
+// The gate's contract is deliberately narrower than the surface's own
+// per-request checks: it must be capable of proving current
+// erasure / session+agent exposure, the exact server + current `ui://`
+// resource, and paused/disabled state, and return the exact current
+// provider/catalog generation. A plain resource read or a registration
+// fingerprint does NOT prove those checks. G4 supplies the production
+// implementation composing the runtime session-erasure /
+// current-exposure dependencies; G3 defines the mandatory seam.
+//
+// The gate is fail-closed: a non-nil error refuses the admission (the
+// opt-in mint answers the closed `unavailable` object and a
+// render-admission-backed callback fails with the typed refusal), and
+// an empty generation is likewise a typed refusal — an admission never
+// binds an empty generation.
+type RenderAdmissionGate interface {
+	// AuthorizeRender evaluates the CURRENT render-admission conditions
+	// for the exact (server, resource) tuple under the ctx identity and
+	// returns the exact current provider/catalog generation to bind.
+	// An error refusing the tuple wraps ErrRenderAdmissionRefused; any
+	// other error is a seam failure. An empty generation is a typed
+	// refusal — never bind an empty generation.
+	AuthorizeRender(ctx context.Context, serverID, resourceURI string) (string, error)
+}
+
+// ErrRenderAdmissionRefused is the sentinel a RenderAdmissionGate wraps
+// when the CURRENT render-admission conditions refuse the tuple —
+// erasure, missing session+agent exposure, a server that is not the
+// exact host of the current `ui://` resource, or paused/disabled state.
+// The surface maps it to the closed `unavailable` admission object at
+// mint and to CodeScopeMismatch at callback verification — a refusal,
+// never a collapse into not-found.
+var ErrRenderAdmissionRefused = stderrors.New("protocol: render admission refused by current conditions")
 
 // MCPResourceArtifactRow is the runtime-side projection of a by-reference
 // heavy-content stub. The accessor returns it when fetched content meets
@@ -171,8 +249,128 @@ type AppToolInvoker interface {
 	CallTool(ctx context.Context, serverID, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
 }
 
+// AppToolAdmissionInvoker is the distinct, narrow admission-verified
+// invocation seam (HA-56) a render-admission-backed app-tool-call rides.
+//
+// It is deliberately SEPARATE from AppToolInvoker and the legacy
+// appBindingInvoker: the admission path must resolve ONLY through its
+// own server's App dispatch catalog (ResolveAppTool — never the
+// ordinary planner/model catalog, never a provider-local
+// ValidateAppBinding), re-run the current paused/disabled tool exposure,
+// and invoke the SAME wrapped descriptor so approval / OAuth / policy /
+// redaction / retry / audit still fire. The sealed admission token is
+// never passed to a provider-local binding validator.
+//
+// The AppsSurface verifies the admission against the CURRENT render
+// tuple (identity / agent / server / resource URI / current
+// provider/catalog generation) BEFORE this seam is invoked. When the
+// surface's invoker does not implement this seam, a render-admission-
+// backed call fails loud — it never falls back to the ordinary or the
+// legacy-binding invocation path.
+type AppToolAdmissionInvoker interface {
+	// CallToolAdmitted invokes an app-only tool after the surface
+	// verified a fresh render admission for the exact tuple AND minted
+	// the unforgeable call-local proof (CheckRenderAdmissionProof). The
+	// implementation MUST verify the proof against the exact tuple this
+	// call names — identity from ctx, the effective agent, serverID, the
+	// resourceURI, AND the exact CURRENT provider/catalog generation (the
+	// proof binds the generation the surface verified; the accessor
+	// re-reads the current generation and refuses when it changed) —
+	// BEFORE any resolution, exposure gate, or invocation; a direct call
+	// without the proof, or with a proof for a different tuple or a stale
+	// generation, is refused with zero callbacks. serverID is the
+	// HOST-DERIVED server identity (authoritative runtime context, never
+	// parsed from the tool name); resourceURI is the EXACT resource URI
+	// the admission binds. The implementation resolves only through that
+	// server's App dispatch catalog, atomically under the exact verified
+	// generation.
+	CallToolAdmitted(ctx context.Context, serverID, resourceURI, tool string, args json.RawMessage) (MCPAppToolResultRow, error)
+}
+
 type appBindingInvoker interface {
 	CallToolWithBinding(context.Context, string, string, string, string, json.RawMessage) (MCPAppToolResultRow, error)
+}
+
+// renderAdmissionProof is the unforgeable CALL-LOCAL proof that a sealed
+// render admission was opened AND the exact fresh authorization /
+// current-generation verification succeeded. It binds the exact verified
+// identity triple, the effective agent, the host server id, the exact
+// resource URI, and the EXACT current provider/catalog generation the
+// sealed token was verified against.
+//
+// # Method selection is not an authority
+//
+// An exported admission-aware accessor must not reach ResolveAppTool
+// merely because it was called with a fully verified identity /
+// effective-agent context — the call-local proof is the authority, not
+// the method being named. Only the AppsSurface mints this proof (the
+// setter is private to package protocol), and it mints it exactly once,
+// immediately after verifyRenderAdmission succeeded. The proof rides
+// ctx — never the wire, never persisted, never a generic capability
+// framework, never a provider-local binding fallback.
+//
+// # The generation is part of the proof (TOCTOU correction)
+//
+// The proof binds the generation verifyRenderAdmission actually verified,
+// and the admission-aware accessor re-reads the CURRENT generation before
+// resolving and refuses when the two disagree. A refresh/replacement
+// between verification and resolution therefore cannot verify an old
+// generation and execute a descriptor from the new one: the stale proof
+// fails the accessor's re-check with zero callbacks.
+type renderAdmissionProof struct {
+	tenantID    string
+	userID      string
+	sessionID   string
+	agentID     string
+	serverID    string
+	resourceURI string
+	generation  string
+}
+
+// renderAdmissionProofKey is the unexported context key the call-local
+// proof rides under. Only package protocol can seat a proof (and only
+// handleCallTool does, after verification); every other package can only
+// CHECK it via CheckRenderAdmissionProof.
+type renderAdmissionProofKey int
+
+const renderAdmissionProofCtxKey renderAdmissionProofKey = iota
+
+// withRenderAdmissionProof seats the proof on ctx. PRIVATE to package
+// protocol: it is minted ONLY in handleCallTool, and ONLY after the
+// sealed admission was opened and the fresh authorization / current
+// generation verification succeeded.
+func withRenderAdmissionProof(ctx context.Context, p renderAdmissionProof) context.Context {
+	return context.WithValue(ctx, renderAdmissionProofCtxKey, p)
+}
+
+// CheckRenderAdmissionProof reports whether ctx carries a call-local
+// render-admission proof binding EXACTLY the supplied tuple — the
+// verified tenant/user/session identity, the effective agent, the host
+// server id, the exact resource URI, and the exact current
+// provider/catalog generation.
+//
+// This is the NARROW exported checker the admission-aware invocation
+// seam (mcpconsole.AppsAccessor.CallToolAdmitted) verifies BEFORE any
+// resolution, paused/disabled exposure check, or invocation. Because the
+// proof can only be minted by this package after a full verification, a
+// direct call that did not ride the surface's verified path — no proof,
+// or a proof for a different server / resource / identity / agent /
+// generation — is refused here and executes zero callbacks. The
+// generation component closes the HA-56 TOCTOU window: the accessor
+// passes the CURRENT generation it just read, so a proof minted against
+// an older generation (a refresh/replacement raced the call) fails here.
+func CheckRenderAdmissionProof(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI, generation string) bool {
+	p, ok := ctx.Value(renderAdmissionProofCtxKey).(renderAdmissionProof)
+	if !ok {
+		return false
+	}
+	return p.tenantID == id.TenantID &&
+		p.userID == id.UserID &&
+		p.sessionID == id.SessionID &&
+		p.agentID == agentID &&
+		p.serverID == serverID &&
+		p.resourceURI == resourceURI &&
+		p.generation == generation
 }
 
 // AppsDeps bundles the runtime-side seams an AppsSurface reads through.
@@ -193,6 +391,16 @@ type AppsDeps struct {
 	// AgentReach is the shared signed-agent-reach gate. Nil installs the
 	// canonical fail-closed implementation, matching ControlSurface.
 	AgentReach auth.AgentReachAuthorizer
+	// RenderAdmissionAuthority is the OPTIONAL sealed render-admission
+	// seam (HA-56). When nil, the opt-in `request_render_admission`
+	// mint and a render-admission-backed app-tool-call fail loud; the
+	// ordinary resource read and the legacy binding path are untouched.
+	RenderAdmissionAuthority RenderAdmissionAuthority
+	// RenderAdmissionGate is the fail-closed fresh render-admission
+	// authorization seam (HA-56). Required alongside
+	// RenderAdmissionAuthority — the surface rejects a half-wired pair
+	// at construction. Both nil remains the compatible disabled surface.
+	RenderAdmissionGate RenderAdmissionGate
 }
 
 // ErrAppsMisconfigured — NewAppsSurface was called with a missing
@@ -236,6 +444,14 @@ var ErrAccessorScopeDenied = stderrors.New("protocol: accessor refused the reque
 // ErrAppsMisconfigured. A nil reach authorizer installs the canonical
 // fail-closed signed-reach gate.
 //
+// The render-admission authority and the fresh admission gate are a
+// WIRED PAIR: supplying exactly one of the two is a half-wired
+// construction error (ErrAppsMisconfigured), never silently degraded to
+// the disabled surface. Supplying NEITHER leaves the compatible disabled
+// surface — ordinary reads and the legacy binding path work, and the
+// opt-in `request_render_admission` mint / render-admission-backed
+// app-tool-call fail loud at the seam use site.
+//
 // The returned AppsSurface is immutable after construction and safe for
 // concurrent use by N goroutines.
 func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
@@ -255,9 +471,20 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 	if reach == nil {
 		reach = auth.NewAgentReachAuthorizer()
 	}
+	admissionAuthority := deps.RenderAdmissionAuthority
+	admissionGate := deps.RenderAdmissionGate
+	if (admissionAuthority == nil) != (admissionGate == nil) {
+		// A half-wired admission seam is a wiring error, not a feature:
+		// the surface must never mint (or verify) with only one half of
+		// the pair present. Rejected at construction so a production
+		// wiring mistake fails at boot, not on the first opt-in request.
+		return nil, fmt.Errorf("%w: render-admission authority and gate must be wired together (half-wired admission seam)", ErrAppsMisconfigured)
+	}
 	return &AppsSurface{
 		resource: deps.Resource, invoker: deps.Invoker, toolContext: deps.ToolContext,
 		agents: deps.AgentResolver, reach: reach,
+		admissionAuthority: admissionAuthority,
+		admissionGate:      admissionGate,
 	}, nil
 }
 
@@ -340,8 +567,83 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	} else {
 		resp.Content = string(content.Inline)
 	}
+	// HA-56 amendment: the OPT-IN render admission. Omitted/false
+	// preserves the ordinary read byte-for-byte and mints NO callback
+	// authority. Only a SUCCESSFUL read carrying true may mint, and the
+	// mint binds the exact CURRENT registry descriptor generation — a
+	// nil reader, an error, or an empty fingerprint is a typed refusal,
+	// never an admission over an empty generation.
+	if r.RequestRenderAdmission {
+		adm, perr := s.mintRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI)
+		if perr != nil {
+			return nil, perr
+		}
+		if adm != nil {
+			resp.RenderAdmission = adm
+		}
+	}
 	return resp, nil
 }
+
+// mintRenderAdmission mints the bounded render admission for a
+// successful opt-in `ui://` read. It runs AFTER the full verified
+// identity / reach / retirement / erasure / current-exposure / exact
+// server+resource checks (the accessor read above already passed), and
+// the fresh admission gate re-authorizes the CURRENT render-admission
+// conditions immediately before the mint. The admission binds the exact
+// CURRENT provider/catalog generation the gate returns.
+//
+// Returns the explicit `unavailable` admission object (no token, no
+// timestamps) when the tuple is currently refused or the current
+// generation is empty/unknown — the closed availability answer, never an
+// admission over an empty generation. Returns a typed Protocol error
+// when the surface is misconfigured (the seam is unwired) or the gate
+// failed as a seam.
+func (s *AppsSurface) mintRenderAdmission(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) (*types.RenderAdmission, *protoerrors.Error) {
+	method := methods.MethodMCPReadResource
+	if s.admissionAuthority == nil || s.admissionGate == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: render-admission authority is not wired on this runtime", string(method))
+	}
+	generation, err := s.admissionGate.AuthorizeRender(ctx, serverID, resourceURI)
+	if err != nil {
+		if stderrors.Is(err, ErrRenderAdmissionRefused) {
+			// The CURRENT render-admission conditions refuse the tuple —
+			// the closed availability answer: no admission, no token. The
+			// read itself succeeded; the caller must re-read.
+			return &types.RenderAdmission{Availability: types.RenderAdmissionUnavailable}, nil
+		}
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: render-admission authorization failed: %v", string(method), err)
+	}
+	if generation == "" {
+		// The tuple has no current generation — an admission cannot
+		// bind an empty generation. The closed availability answer is
+		// "unavailable": the caller must re-read, and no admission is
+		// minted.
+		return &types.RenderAdmission{Availability: types.RenderAdmissionUnavailable}, nil
+	}
+	tok, err := s.admissionAuthority.Mint(ctx, admission.RenderTuple{
+		Identity:              id,
+		AgentID:               agentID,
+		ServerID:              serverID,
+		ResourceURI:           resourceURI,
+		DescriptorFingerprint: generation,
+	})
+	if err != nil {
+		return nil, mapRenderAdmissionError(string(method), err)
+	}
+	return &types.RenderAdmission{
+		Token:        tok.Value,
+		IssuedAt:     tok.IssuedAt.UTC().Format(admissionTokenTimeLayout),
+		ExpiresAt:    tok.ExpiresAt.UTC().Format(admissionTokenTimeLayout),
+		Availability: types.RenderAdmissionAvailable,
+	}, nil
+}
+
+// admissionTokenTimeLayout is the RFC 3339 UTC layout the render
+// admission expiry metadata uses on the wire.
+const admissionTokenTimeLayout = "2006-01-02T15:04:05Z07:00"
 
 // handleCallTool serves mcp.apps.call_tool — the app-tool-call proxy.
 func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) {
@@ -359,6 +661,13 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: tool is required", string(method))
 	}
+	// HA-56: the fresh render admission and the legacy binding are
+	// DISTINCT authorities. A request that supplies BOTH is refused as
+	// ambiguous — the Runtime never guesses which the App meant.
+	if r.RenderAdmission != "" && r.Binding != "" {
+		return nil, protoerrors.Newf(protoerrors.CodeRenderAuthorityAmbiguous,
+			"method %q: request supplies both `render_admission` and the legacy `binding` — these are distinct authorities; supply exactly one", string(method))
+	}
 	idCtx, perr := withIdentity(ctx, id)
 	if perr != nil {
 		return nil, perr
@@ -375,8 +684,72 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	// source (an app-only callback resolves ONLY through that server's App
 	// dispatch catalog; a disagreeing serverID on an ordinary tool is
 	// refused before invocation).
+	//
+	// HA-56: a fresh render admission is verified against the CURRENT
+	// render tuple (identity / agent / server / resource URI / current
+	// provider/catalog generation, re-authorized by the fresh admission
+	// gate) BEFORE invocation. A verified admission then rides the
+	// DISTINCT admission-aware invocation seam — same-server
+	// ResolveAppTool + the same wrapped invocation — so approval / OAuth
+	// / policy / redaction / retry / audit fire exactly as on the
+	// ordinary path, and an unavailable / invalid / expired / mismatched
+	// admission fails with its exact typed code — never a collapse into
+	// ambiguous not-found.
+	//
+	// The render-admission authority and the legacy live binding are
+	// SEPARATE paths: a render-admission-backed call NEVER falls back to
+	// the legacy binding invocation (the sealed token is never handed to
+	// a provider-local binding validator).
+	if r.RenderAdmission != "" {
+		// The host-derived server identity and the exact resource URI are
+		// MANDATORY before any lookup: an empty server must never fall
+		// through to ordinary/global resolution, and the admission binds
+		// the exact tuple.
+		if r.ServerID == "" {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: server_id is required for a render-admission-backed call", string(method))
+		}
+		if r.ResourceURI == "" {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: resource_uri is required for a render-admission-backed call", string(method))
+		}
+		// The sealed admission has been opened and the exact fresh
+		// authorization / current-generation verification succeeded —
+		// ONLY now is the unforgeable call-local proof minted. It binds
+		// the exact verified identity / effective agent / server /
+		// resource URI AND the exact current generation the token was
+		// verified against, and is the ONLY authority the admission-aware
+		// invoker seam accepts (method selection is not an authority). The
+		// accessor re-reads the CURRENT generation before resolving and
+		// refuses when it no longer equals the proof's — a refresh /
+		// replacement between verification and resolution can never
+		// execute a descriptor from a newer generation.
+		generation, perr := s.verifyRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI, r.RenderAdmission)
+		if perr != nil {
+			return nil, perr
+		}
+		idCtx = withRenderAdmissionProof(idCtx, renderAdmissionProof{
+			tenantID:    id.TenantID,
+			userID:      id.UserID,
+			sessionID:   id.SessionID,
+			agentID:     effectiveID,
+			serverID:    r.ServerID,
+			resourceURI: r.ResourceURI,
+			generation:  generation,
+		})
+	}
 	var res MCPAppToolResultRow
-	if bound, ok := s.invoker.(appBindingInvoker); ok {
+	if r.RenderAdmission != "" {
+		// The distinct admission-aware invoker seam. Absent → fail loud;
+		// never fall back to the ordinary or the legacy-binding path.
+		adm, ok := s.invoker.(AppToolAdmissionInvoker)
+		if !ok {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: render-admission authority is wired but the admission-aware invoker seam is not — refusing rather than falling back to the legacy binding path", string(method))
+		}
+		res, err = adm.CallToolAdmitted(idCtx, r.ServerID, r.ResourceURI, r.Tool, r.Arguments)
+	} else if bound, ok := s.invoker.(appBindingInvoker); ok {
+		// Legacy live binding path — unchanged and separate.
 		res, err = bound.CallToolWithBinding(idCtx, r.ServerID, r.Binding, r.ResourceURI, r.Tool, r.Arguments)
 	} else {
 		res, err = s.invoker.CallTool(idCtx, r.ServerID, r.Tool, r.Arguments)
@@ -500,5 +873,92 @@ func projectArtifactRow(row *MCPResourceArtifactRow) *types.MCPResourceArtifactR
 		SizeBytes: row.SizeBytes,
 		Filename:  row.Filename,
 		SHA256:    row.SHA256,
+	}
+}
+
+// verifyRenderAdmission verifies a render-admission-backed app-tool-call
+// against the CURRENT render tuple BEFORE invocation. It re-runs the
+// fresh admission gate (proving current erasure / session+agent
+// exposure / exact server+resource / paused+disabled state and binding
+// the exact current provider/catalog generation — never an empty one)
+// and maps every admission outcome onto its exact typed Protocol code —
+// an otherwise-current App with a refused / unavailable / invalid /
+// expired / mismatched admission fails here, never as an ambiguous
+// not-found.
+//
+// On success it returns the EXACT current generation the sealed token was
+// verified against. The caller binds that generation into the call-local
+// proof (renderAdmissionProof.generation), so the admission-aware
+// accessor can re-read the current generation before resolving and refuse
+// a proof whose generation went stale — the HA-56 TOCTOU correction.
+func (s *AppsSurface) verifyRenderAdmission(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI, token string) (string, *protoerrors.Error) {
+	method := methods.MethodMCPAppsCallTool
+	if s.admissionAuthority == nil || s.admissionGate == nil {
+		return "", protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: render-admission authority is not wired on this runtime", string(method))
+	}
+	if token == "" {
+		// Defensive-only branch: the surface only verifies a
+		// render-admission-backed call when a NON-EMPTY token was
+		// supplied, so this answers a direct seam misuse, never an
+		// ordinary request.
+		return "", protoerrors.Newf(protoerrors.CodeRenderAdmissionMissing,
+			"method %q: no render-admission token supplied", string(method))
+	}
+	generation, err := s.admissionGate.AuthorizeRender(ctx, serverID, resourceURI)
+	if err != nil {
+		if stderrors.Is(err, ErrRenderAdmissionRefused) {
+			// The CURRENT render-admission conditions refuse the tuple
+			// (erasure / exposure / exact server+resource / paused /
+			// disabled). A scope-level refusal, never a not-found.
+			return "", protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: the current render-admission conditions refuse this render tuple", string(method))
+		}
+		return "", protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: render-admission authorization failed: %v", string(method), err)
+	}
+	if generation == "" {
+		// An otherwise-current App whose current generation cannot be
+		// established is refused typed (the admission binds a generation,
+		// and there is none to bind) — never a collapse into not-found.
+		return "", protoerrors.Newf(protoerrors.CodeRenderAdmissionUnavailable,
+			"method %q: the current provider/catalog generation for the render tuple is not resolvable", string(method))
+	}
+	if _, err := s.admissionAuthority.Verify(ctx, admission.RenderTuple{
+		Identity:              id,
+		AgentID:               agentID,
+		ServerID:              serverID,
+		ResourceURI:           resourceURI,
+		DescriptorFingerprint: generation,
+	}, token); err != nil {
+		return "", mapRenderAdmissionError(string(method), err)
+	}
+	return generation, nil
+}
+
+// mapRenderAdmissionError maps an admission-authority error onto its
+// exact typed Protocol code. The five outcome sentinels map 1:1; a
+// non-outcome error (a seam failure, a ctx error) maps to
+// CodeRuntimeError — never a silent success.
+func mapRenderAdmissionError(method string, err error) *protoerrors.Error {
+	switch {
+	case stderrors.Is(err, admission.ErrTokenMissing):
+		return protoerrors.Newf(protoerrors.CodeRenderAdmissionMissing,
+			"method %q: render admission is missing", method)
+	case stderrors.Is(err, admission.ErrTokenUnavailable):
+		return protoerrors.Newf(protoerrors.CodeRenderAdmissionUnavailable,
+			"method %q: render admission could not be opened", method)
+	case stderrors.Is(err, admission.ErrTokenInvalid):
+		return protoerrors.Newf(protoerrors.CodeRenderAdmissionInvalid,
+			"method %q: render admission is structurally invalid", method)
+	case stderrors.Is(err, admission.ErrTokenExpired):
+		return protoerrors.Newf(protoerrors.CodeRenderAdmissionExpired,
+			"method %q: render admission is expired", method)
+	case stderrors.Is(err, admission.ErrTokenMismatch):
+		return protoerrors.Newf(protoerrors.CodeRenderAdmissionMismatch,
+			"method %q: render admission does not match the current render tuple", method)
+	default:
+		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: render admission verification failed: %v", method, err)
 	}
 }

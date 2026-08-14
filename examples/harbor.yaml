@@ -665,6 +665,45 @@ planner:
 #   # Capability filtering, redaction, and the budgeter apply
 #   # unchanged on top.
 #   retrieval: semantic
+#   # Phase 248 (D-427) — node-local boot agent packs (the v1.28
+#   # contract). Each entry names exactly ONE (tenant_id, agent_id)
+#   # pair; the skills block must be configured (driver + dsn).
+#   # Packs are node-local: Postgres persists revision/personal
+#   # state, but each node reloads its own pack files at boot and
+#   # never converges replicas. `directory` is relative to THIS
+#   # FILE's directory, never the CWD; one `include` entry = one
+#   # package directory with exactly one case-sensitive top-level
+#   # regular UTF-8 `SKILL.md` (resource-free in v1.28). Strict
+#   # loader — symlinks, hardlinks, special files, traversal,
+#   # duplicates, and out-of-bounds all fail boot loud. Eager
+#   # immutable load before readiness; restart-only changes. Read-
+#   # only: no writes, no admin verbs, no lifecycle, no new agents /
+#   # reach; separate from EnsureBootAgentLifecycle (which may still
+#   # write revisions). Boot + revision items are ONE operator tier,
+#   # resolved last; same hash in both = dedup, different hash =
+#   # conflict; combined 256 cap. Boot-owned names are read-only at
+#   # every mutation surface: new writes / upserts / proposal commit /
+#   # rollback / activation targeting a boot-owned canonical name fail
+#   # with a typed boot-owned conflict even for the same hash; removal
+#   # may delete a real legacy active-revision shadow, but a boot-only
+#   # removal returns a typed read-only refusal and never removes the
+#   # boot contribution. Preview provenance is the exact closed set
+#   # boot / revision / both, with the per-package semantic content
+#   # hash plus the deterministic boot_pack_set_hash of the loaded
+#   # pack set (node-local — never converged via Postgres). Headless
+#   # RunOnce is unsupported — fails loud, never silently runs without
+#   # packs.
+#   driver: postgres
+#   dsn: ${SKILLS_DSN}
+#   boot_agent_packs:
+#     - tenant_id: acme
+#       agent_id: harbor-dev-agent
+#       directory: /etc/harbor/skills
+#       include:
+#         - workbench-foundation
+#         - workbench-prototype-authoring
+#         - workbench-brand-identity
+#         - workbench-deck-authoring
 
 tools:
   # Phase 27 HTTP tool driver manifests — loaded at boot by the
@@ -960,6 +999,31 @@ tools:
   #
   # mcp_app_host:
   #   display_modes: [inline, fullscreen, pip]
+
+  # mcp_app_render_admission — (D-412 fresh render-admission amendment,
+  # Shipped v1.28) the durable-reopen MCP App render-admission surface.
+  #
+  #   enabled — default `false`; opt in to the fresh stateless,
+  #   integrity-protected render admissions minted on embedded/durable reopen
+  #   after the full verified identity / signed agent reach / retirement /
+  #   erasure / exposure / server / current `ui://` resource / paused-disabled
+  #   / descriptor generation checks. Claims bind schema/time/triple/
+  #   effective-agent/server/resource/generation and carry no raw args,
+  #   secrets, provider output, callback name, or general capability; ordinary
+  #   resource reads never mint; the live tool-result path keeps only a
+  #   bounded short-lived provider-local binding that is never durable or
+  #   restored. Sealing REUSES the existing deployment-shared KEK authority —
+  #   `tools.oauth_token_kek_env` (the same AES-256-GCM sealer the OAuth token
+  #   path uses); there is no second authority field and no literal key. An
+  #   ENABLED surface with an empty env name, a missing/unset/invalid KEK, or
+  #   a sealer construction failure fails readiness LOUD, naming the problem,
+  #   even when no OAuth provider or credential broker is configured. Restart
+  #   and multi-replica deployments verify against the shared KEK (a
+  #   per-process ephemeral key breaks cross-replica verification). No
+  #   persisted callback authority, hot registry, or transcript impersonation.
+  #
+  # mcp_app_render_admission:
+  #   enabled: true
 
   # mcp_artifact_egress_max_bytes — the ceiling for ONE substituted artifact
   # value on one outbound MCP tool call (see mcp_servers[].artifact_params

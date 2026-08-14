@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 364 canonical Harbor Protocol wire types, generated from the single-source
+The 404 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -222,6 +222,46 @@ Declared in `internal/protocol/types`.
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `hash` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigCompositionPreviewItem
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `semantic_hash` | `string` |  |
+| `source` | `string` |  |
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+
+## AgentConfigCompositionPreviewRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `tenant_id` | `string` | optional (`omitempty`) |
+| `user_id` | `string` | optional (`omitempty`) |
+| `session_id` | `string` | optional (`omitempty`) |
+| `agent_id` | `string` |  |
+
+## AgentConfigCompositionPreviewResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `outcome` | `string` |  |
+| `conflict_name` | `string` | optional (`omitempty`) |
+| `boot_pack_set_hash` | `string` | optional (`omitempty`) |
+| `combined_hash` | `string` | optional (`omitempty`) |
+| `revision_hash` | `string` | optional (`omitempty`) |
+| `revision_id` | `string` | optional (`omitempty`) |
+| `content_hash` | `string` | optional (`omitempty`) |
+| `items` | `[]types.AgentConfigCompositionPreviewItem` — see [`AgentConfigCompositionPreviewItem`](./types.md#agentconfigcompositionpreviewitem) | optional (`omitempty`) |
+| `widened` | `bool` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigConnections
@@ -1272,6 +1312,66 @@ Declared in `internal/protocol/types`.
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `protocol_version` | `string` |  |
 
+## AgentConfigUserSkillImportReceipt
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tenant_id` | `string` |  |
+| `user_id` | `string` |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+| `written_hash` | `string` |  |
+| `written_version` | `string` |  |
+| `prior_hash` | `string` | optional (`omitempty`) |
+| `prior_version` | `string` | optional (`omitempty`) |
+
+## AgentConfigUserSkillImportReview
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `title` | `string` | optional (`omitempty`) |
+| `trigger` | `string` |  |
+| `task_type` | `string` | optional (`omitempty`) |
+| `tags` | `[]string` | optional (`omitempty`) |
+| `step_count` | `int` |  |
+| `required_tools` | `[]string` | optional (`omitempty`) |
+| `required_ns` | `[]string` | optional (`omitempty`) |
+| `required_tags` | `[]string` | optional (`omitempty`) |
+| `support_files` | `[]types.AgentConfigUserSkillImportSupportSummary` — see [`AgentConfigUserSkillImportSupportSummary`](./types.md#agentconfiguserskillimportsupportsummary) |  |
+| `content_hash` | `string` |  |
+| `package_hash` | `string` |  |
+
+## AgentConfigUserSkillImportSupportSummary
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `path` | `string` |  |
+| `mime` | `string` |  |
+| `size` | `int64` |  |
+| `digest` | `string` |  |
+
+## AgentConfigUserSkillInstalledSummary
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `title` | `string` | optional (`omitempty`) |
+| `trigger` | `string` |  |
+| `task_type` | `string` | optional (`omitempty`) |
+| `tags` | `[]string` | optional (`omitempty`) |
+| `origin` | `string` |  |
+| `scope` | `string` |  |
+| `content_hash` | `string` |  |
+
 ## AgentConfigUserSkillsDeleteRequest
 
 Declared in `internal/protocol/types`.
@@ -1290,6 +1390,56 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserSkillsImportCommitRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `proposal_token` | `string` |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+| `reviewed_package_hash` | `string` |  |
+| `expected_content_hash` | `string` |  |
+| `replace` | `bool` | optional (`omitempty`) |
+
+## AgentConfigUserSkillsImportCommitResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `receipt` | `types.AgentConfigUserSkillImportReceipt` — see [`AgentConfigUserSkillImportReceipt`](./types.md#agentconfiguserskillimportreceipt) |  |
+| `skill` | `types.AgentConfigUserSkillInstalledSummary` — see [`AgentConfigUserSkillInstalledSummary`](./types.md#agentconfiguserskillinstalledsummary) |  |
+| `package_hash` | `string` |  |
+| `replayed` | `bool` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserSkillsImportValidateRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `artifact_id` | `string` |  |
+
+## AgentConfigUserSkillsImportValidateResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `proposal_token` | `string` |  |
+| `review` | `types.AgentConfigUserSkillImportReview` — see [`AgentConfigUserSkillImportReview`](./types.md#agentconfiguserskillimportreview) |  |
+| `warnings` | `[]string` | optional (`omitempty`) |
+| `package_hash` | `string` |  |
+| `expected_content_hash` | `string` |  |
+| `expires_at` | `time.Time` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigUserSkillsListRequest
@@ -2321,6 +2471,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` | optional (`omitempty`) |
 | `binding` | `string` | optional (`omitempty`) |
+| `render_admission` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` | optional (`omitempty`) |
 | `tool` | `string` |  |
 | `arguments` | `json.RawMessage` | optional (`omitempty`) |
@@ -3025,6 +3176,78 @@ Declared in `internal/protocol/types`.
 | `buckets` | `[]types.HistogramBucket` — see [`HistogramBucket`](./types.md#histogrambucket) | optional (`omitempty`) |
 | `labels` | `map[string]string` | optional (`omitempty`) |
 
+## ObservabilityMeasureValue
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `n` | `int64` |  |
+| `scale` | `uint32` |  |
+
+## ObservabilityQualityBlock
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `watermark` | `uint64` |  |
+| `watermark_at` | `time.Time` | optional (`omitempty`) |
+| `retention_start` | `time.Time` | optional (`omitempty`) |
+| `retention_end` | `time.Time` | optional (`omitempty`) |
+| `coverage` | `string` |  |
+
+## ObservabilityQueryFilter
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tenant_ids` | `[]string` | optional (`omitempty`) |
+| `user_ids` | `[]string` | optional (`omitempty`) |
+| `session_ids` | `[]string` | optional (`omitempty`) |
+| `models` | `[]string` | optional (`omitempty`) |
+
+## ObservabilityQueryRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `from` | `time.Time` |  |
+| `to` | `time.Time` |  |
+| `bucket` | `string` |  |
+| `group_by` | `[]string` | optional (`omitempty`) |
+| `filters` | `types.ObservabilityQueryFilter` — see [`ObservabilityQueryFilter`](./types.md#observabilityqueryfilter) | optional (`omitempty`) |
+| `measures` | `[]string` |  |
+| `sort` | `string` | optional (`omitempty`) |
+| `sort_measure` | `string` | optional (`omitempty`) |
+| `limit` | `int` |  |
+| `cursor` | `string` | optional (`omitempty`) |
+
+## ObservabilityQueryResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `rows` | `[]types.ObservabilityQueryRow` — see [`ObservabilityQueryRow`](./types.md#observabilityqueryrow) |  |
+| `next_cursor` | `string` | optional (`omitempty`) |
+| `quality` | `types.ObservabilityQualityBlock` — see [`ObservabilityQualityBlock`](./types.md#observabilityqualityblock) |  |
+| `protocol_version` | `string` |  |
+
+## ObservabilityQueryRow
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `bucket_start` | `time.Time` |  |
+| `dimensions` | `map[string]string` | optional (`omitempty`) |
+| `measures` | `map[string]types.ObservabilityMeasureValue` — see [`ObservabilityMeasureValue`](./types.md#observabilitymeasurevalue) |  |
+
 ## PauseArtifactRef
 
 Declared in `internal/protocol/types`.
@@ -3112,6 +3335,7 @@ Declared in `internal/protocol/types`.
 | `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` |  |
 | `resource_uri` | `string` |  |
+| `request_render_admission` | `bool` | optional (`omitempty`) |
 
 ## ReadMCPResourceResponse
 
@@ -3123,7 +3347,19 @@ Declared in `internal/protocol/types`.
 | `mime_type` | `string` | optional (`omitempty`) |
 | `content` | `string` | optional (`omitempty`) |
 | `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
+| `render_admission` | `*types.RenderAdmission` — see [`RenderAdmission`](./types.md#renderadmission) | optional (`omitempty`) |
 | `protocol_version` | `string` |  |
+
+## RenderAdmission
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `token` | `string` | optional (`omitempty`) |
+| `issued_at` | `string` | optional (`omitempty`) |
+| `expires_at` | `string` |  |
+| `availability` | `string` |  |
 
 ## RetentionHorizon
 
@@ -3316,6 +3552,51 @@ Declared in `internal/protocol/types`.
 | `cost_above_cents` | `*int64` | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
 
+## SessionOpsAppRef
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `effective_agent_id` | `string` | optional (`omitempty`) |
+| `server_id` | `string` |  |
+| `tool_name` | `string` | optional (`omitempty`) |
+| `availability` | `string` | optional (`omitempty`) |
+
+## SessionOpsTurnRow
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `turn_id` | `string` |  |
+| `task_id` | `string` |  |
+| `run_id` | `string` | optional (`omitempty`) |
+| `session_id` | `string` |  |
+| `sequence` | `int64` |  |
+| `tie_breaker` | `string` |  |
+| `status` | `string` |  |
+| `sealed` | `bool` |  |
+| `version` | `int` |  |
+| `started_at` | `time.Time` |  |
+| `updated_at` | `time.Time` |  |
+| `finished_at` | `time.Time` | optional (`omitempty`) |
+| `finish_reason` | `string` | optional (`omitempty`) |
+| `error_class` | `string` | optional (`omitempty`) |
+| `finish_message` | `string` | optional (`omitempty`) |
+| `error_message` | `string` | optional (`omitempty`) |
+| `agent_id` | `string` | optional (`omitempty`) |
+| `agent_name` | `string` | optional (`omitempty`) |
+| `agent_binding_source` | `string` | optional (`omitempty`) |
+| `usage` | `types.SessionTurnUsage` — see [`SessionTurnUsage`](./types.md#sessionturnusage) |  |
+| `activity` | `types.SessionTurnActivity` — see [`SessionTurnActivity`](./types.md#sessionturnactivity) |  |
+| `reasoning_steps` | `int` |  |
+| `inputs` | `int` |  |
+| `outputs` | `int` |  |
+| `apps` | `[]types.SessionOpsAppRef` — see [`SessionOpsAppRef`](./types.md#sessionopsappref) | optional (`omitempty`) |
+| `pause` | `types.SessionTurnPause` — see [`SessionTurnPause`](./types.md#sessionturnpause) |  |
+| `last_applied_event_seq` | `uint64` |  |
+
 ## SessionRow
 
 Declared in `internal/protocol/types`.
@@ -3341,6 +3622,280 @@ Declared in `internal/protocol/types`.
 | `title` | `string` | optional (`omitempty`) |
 | `title_source` | `string` | optional (`omitempty`) |
 | `counters_partial` | `bool` | optional (`omitempty`) |
+| `counter_status` | `types.CounterStatus` | optional (`omitempty`) |
+
+## SessionTurnActivity
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `rows` | `[]types.SessionTurnActivityRow` — see [`SessionTurnActivityRow`](./types.md#sessionturnactivityrow) | optional (`omitempty`) |
+| `complete` | `string` | optional (`omitempty`) |
+| `more` | `bool` |  |
+| `dropped` | `int` | optional (`omitempty`) |
+| `totals` | `types.SessionTurnActivityTotals` — see [`SessionTurnActivityTotals`](./types.md#sessionturnactivitytotals) |  |
+
+## SessionTurnActivityRow
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `position` | `int` |  |
+| `invocation_id` | `string` | optional (`omitempty`) |
+| `tool` | `string` |  |
+| `step_sequence` | `uint64` |  |
+| `batch_id` | `string` | optional (`omitempty`) |
+| `status` | `string` |  |
+| `terminal_class` | `string` | optional (`omitempty`) |
+| `started_at` | `time.Time` | optional (`omitempty`) |
+| `finished_at` | `time.Time` | optional (`omitempty`) |
+| `duration` | `time.Duration` | optional (`omitempty`) |
+| `attempt_count` | `int` | optional (`omitempty`) |
+| `retryable` | `bool` |  |
+| `policy_exhausted` | `bool` |  |
+| `summary` | `string` | optional (`omitempty`) |
+
+## SessionTurnActivityTotals
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `invoked` | `int64` |  |
+| `succeeded` | `int64` |  |
+| `failed` | `int64` |  |
+| `cancelled` | `int64` |  |
+| `retried` | `int64` |  |
+| `policy_exhausted` | `int64` |  |
+
+## SessionTurnAgent
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` | optional (`omitempty`) |
+| `name` | `string` | optional (`omitempty`) |
+| `binding_source` | `string` | optional (`omitempty`) |
+| `complete` | `string` | optional (`omitempty`) |
+
+## SessionTurnAnswer
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` | optional (`omitempty`) |
+| `inline` | `string` | optional (`omitempty`) |
+| `ref` | `*types.SessionTurnAnswerRef` — see [`SessionTurnAnswerRef`](./types.md#sessionturnanswerref) | optional (`omitempty`) |
+| `seq` | `uint64` |  |
+| `complete` | `string` | optional (`omitempty`) |
+
+## SessionTurnAnswerRef
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `mime_type` | `string` | optional (`omitempty`) |
+| `size_bytes` | `int64` | optional (`omitempty`) |
+| `filename` | `string` | optional (`omitempty`) |
+| `sha256` | `string` | optional (`omitempty`) |
+
+## SessionTurnAppRef
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `effective_agent_id` | `string` | optional (`omitempty`) |
+| `server_id` | `string` |  |
+| `resource_uri` | `string` |  |
+| `display_mode` | `string` | optional (`omitempty`) |
+| `raw_html_trusted` | `bool` |  |
+| `tool_call_id` | `string` | optional (`omitempty`) |
+| `tool_name` | `string` | optional (`omitempty`) |
+| `availability` | `string` | optional (`omitempty`) |
+| `complete` | `string` | optional (`omitempty`) |
+
+## SessionTurnAttachment
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `filename` | `string` | optional (`omitempty`) |
+| `mime_type` | `string` | optional (`omitempty`) |
+| `size_bytes` | `int64` | optional (`omitempty`) |
+| `sha256` | `string` | optional (`omitempty`) |
+| `disposition` | `string` | optional (`omitempty`) |
+| `availability` | `string` | optional (`omitempty`) |
+
+## SessionTurnHeader
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `session_id` | `string` |  |
+| `snapshot_id` | `uint64` |  |
+| `as_of` | `time.Time` |  |
+
+## SessionTurnPause
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `class` | `string` | optional (`omitempty`) |
+| `reason` | `string` | optional (`omitempty`) |
+| `lifecycle` | `string` | optional (`omitempty`) |
+| `availability` | `string` | optional (`omitempty`) |
+
+## SessionTurnQuery
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `text` | `string` | optional (`omitempty`) |
+| `at` | `time.Time` | optional (`omitempty`) |
+| `complete` | `string` | optional (`omitempty`) |
+
+## SessionTurnReasoning
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `steps` | `[]types.SessionTurnReasoningStep` — see [`SessionTurnReasoningStep`](./types.md#sessionturnreasoningstep) | optional (`omitempty`) |
+| `complete` | `string` | optional (`omitempty`) |
+| `dropped` | `int` | optional (`omitempty`) |
+| `seq` | `uint64` |  |
+
+## SessionTurnReasoningStep
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `index` | `int` |  |
+| `kind` | `string` | optional (`omitempty`) |
+
+## SessionTurnRow
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `turn_id` | `string` |  |
+| `task_id` | `string` |  |
+| `run_id` | `string` | optional (`omitempty`) |
+| `session_id` | `string` |  |
+| `sequence` | `int64` |  |
+| `tie_breaker` | `string` |  |
+| `status` | `string` |  |
+| `sealed` | `bool` |  |
+| `version` | `int` |  |
+| `last_applied_event_seq` | `uint64` |  |
+| `started_at` | `time.Time` |  |
+| `updated_at` | `time.Time` |  |
+| `finished_at` | `time.Time` | optional (`omitempty`) |
+| `finish_reason` | `string` | optional (`omitempty`) |
+| `error_class` | `string` | optional (`omitempty`) |
+| `finish_message` | `string` | optional (`omitempty`) |
+| `error_message` | `string` | optional (`omitempty`) |
+| `agent` | `types.SessionTurnAgent` — see [`SessionTurnAgent`](./types.md#sessionturnagent) |  |
+| `query` | `types.SessionTurnQuery` — see [`SessionTurnQuery`](./types.md#sessionturnquery) |  |
+| `answer` | `types.SessionTurnAnswer` — see [`SessionTurnAnswer`](./types.md#sessionturnanswer) |  |
+| `pause` | `types.SessionTurnPause` — see [`SessionTurnPause`](./types.md#sessionturnpause) |  |
+| `inputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |
+| `outputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |
+| `usage` | `types.SessionTurnUsage` — see [`SessionTurnUsage`](./types.md#sessionturnusage) |  |
+| `reasoning` | `types.SessionTurnReasoning` — see [`SessionTurnReasoning`](./types.md#sessionturnreasoning) |  |
+| `activity` | `types.SessionTurnActivity` — see [`SessionTurnActivity`](./types.md#sessionturnactivity) |  |
+| `apps` | `[]types.SessionTurnAppRef` — see [`SessionTurnAppRef`](./types.md#sessionturnappref) | optional (`omitempty`) |
+
+## SessionTurnUsage
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `prompt_tokens` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `completion_tokens` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `reasoning_tokens` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `cache_read_tokens` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `cache_write_tokens` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `total_tokens` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `cost_micro_usd` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `latency_ns` | `types.SessionTurnUsageMeasure` — see [`SessionTurnUsageMeasure`](./types.md#sessionturnusagemeasure) |  |
+| `model` | `string` | optional (`omitempty`) |
+
+## SessionTurnUsageMeasure
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` | optional (`omitempty`) |
+| `value` | `*int64` | optional (`omitempty`) |
+
+## SessionTurnsGetRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `session_id` | `string` |  |
+| `task_id` | `string` |  |
+| `projection` | `string` | optional (`omitempty`) |
+
+## SessionTurnsGetResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `session_id` | `string` |  |
+| `turn` | `*types.SessionTurnRow` — see [`SessionTurnRow`](./types.md#sessionturnrow) | optional (`omitempty`) |
+| `ops_turn` | `*types.SessionOpsTurnRow` — see [`SessionOpsTurnRow`](./types.md#sessionopsturnrow) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## SessionTurnsListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `session_id` | `string` |  |
+| `older_cursor` | `string` | optional (`omitempty`) |
+| `limit` | `int` | optional (`omitempty`) |
+| `projection` | `string` | optional (`omitempty`) |
+
+## SessionTurnsListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `header` | `types.SessionTurnHeader` — see [`SessionTurnHeader`](./types.md#sessionturnheader) |  |
+| `turns` | `[]types.SessionTurnRow` — see [`SessionTurnRow`](./types.md#sessionturnrow) |  |
+| `order` | `string` |  |
+| `next_older_cursor` | `string` | optional (`omitempty`) |
+| `has_more` | `bool` |  |
+| `remaining_older_count` | `*int` | optional (`omitempty`) |
+| `count_exact` | `bool` |  |
+| `live_resume_seq` | `uint64` |  |
+| `page_completeness` | `string` |  |
+| `partial_reason` | `string` | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
 
 ## SessionsDeleteRequest
 
@@ -3370,6 +3925,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `session_id` | `string` |  |
+| `projection` | `types.SessionProjection` | optional (`omitempty`) |
 
 ## SessionsInspectResponse
 
@@ -3390,6 +3946,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `filter` | `types.SessionFilter` — see [`SessionFilter`](./types.md#sessionfilter) |  |
 | `sort` | `types.SessionSort` | optional (`omitempty`) |
+| `projection` | `types.SessionProjection` | optional (`omitempty`) |
 | `cursor` | `string` | optional (`omitempty`) |
 | `limit` | `int` | optional (`omitempty`) |
 
