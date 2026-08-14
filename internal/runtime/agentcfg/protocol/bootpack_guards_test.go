@@ -157,16 +157,16 @@ func packItem(name string) skills.AgentPackItem {
 	return skills.AgentPackItem{Name: name, Trigger: "trigger", Steps: []string{"do it"}}
 }
 
-func packItemWire(name string) prototypes.AgentConfigAgentPackItem {
+func bootPackItemWire(name string) prototypes.AgentConfigAgentPackItem {
 	return prototypes.AgentConfigAgentPackItem{Name: name, Trigger: "trigger", Steps: []string{"do it"}}
 }
 
 func upsertPackRequest(name string) prototypes.AgentConfigAgentPacksUpsertRequest {
-	return prototypes.AgentConfigAgentPacksUpsertRequest{Identity: scope(), AgentID: testAgentID, Skill: packItemWire(name)}
+	return prototypes.AgentConfigAgentPacksUpsertRequest{Identity: scope(), AgentID: testAgentID, Skill: bootPackItemWire(name)}
 }
 
 func upsertPackRequestFor(id prototypes.IdentityScope, agentID, name string) prototypes.AgentConfigAgentPacksUpsertRequest {
-	return prototypes.AgentConfigAgentPacksUpsertRequest{Identity: id, AgentID: agentID, Skill: packItemWire(name)}
+	return prototypes.AgentConfigAgentPacksUpsertRequest{Identity: id, AgentID: agentID, Skill: bootPackItemWire(name)}
 }
 
 func removePackRequest(name string) prototypes.AgentConfigAgentPacksRemoveRequest {
