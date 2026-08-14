@@ -363,3 +363,54 @@ func TestPreviewBootReader_EmptySeam(t *testing.T) {
 		t.Fatal("PreviewBootReader(index) must return the index itself")
 	}
 }
+
+// artifactStoreSpy is the narrowest failing spy for the HA-66 resource-free
+// loader: it EMBEDS the full artifacts.ArtifactStore interface with no
+// concrete implementation, so ANY accidental method call panics with a nil
+// pointer dereference on the embedded interface. A loader that touched the
+// store even once fails the test loudly instead of silently passing against
+// a permissive fake.
+type artifactStoreSpy struct {
+	artifacts.ArtifactStore
+}
+
+// TestOpenBootPackIndex_ResourceFreeLoader_ZeroArtifactStoreCalls is the
+// P1 regression for the HA-66 resource-free loader: OpenBootPackIndex
+// drives a valid resource-free SKILL.md through the REAL importer over the
+// failing spy and must succeed — proving the eager boot baseline makes ZERO
+// ArtifactStore calls even though `importer.New` mechanically requires the
+// dependency (the loader is a pure eager filesystem read + parse +
+// validate, never a store writer).
+func TestOpenBootPackIndex_ResourceFreeLoader_ZeroArtifactStoreCalls(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dir := filepath.Join(root, "pkg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	skillMD := `---
+name: runbook
+title: Runbook
+trigger: when asked about the runbook
+task_type: domain
+---
+Runbook body.
+
+## Steps
+- do the thing
+- verify the thing
+`
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("WriteFile SKILL.md: %v", err)
+	}
+	cfg := &config.Config{Skills: config.SkillsConfig{BootAgentPacks: []config.BootAgentPackConfig{
+		{TenantID: "t1", AgentID: "agent-x", Directory: root, Include: []string{"pkg"}},
+	}}}
+	idx, err := OpenBootPackIndex(ctx, cfg, tools.NewCatalog(), artifactStoreSpy{})
+	if err != nil {
+		t.Fatalf("OpenBootPackIndex over the failing spy: %v", err)
+	}
+	if idx == nil {
+		t.Fatal("OpenBootPackIndex over the failing spy returned a nil index")
+	}
+}

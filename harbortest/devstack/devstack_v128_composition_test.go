@@ -336,3 +336,31 @@ func TestTryAssemble_NoBootPacks_PreviewAvailable(t *testing.T) {
 		t.Fatalf("composition/preview items do not include the persisted runbook pack: %s", respBody)
 	}
 }
+
+// TestTryAssemble_NoBootPacks_MutationPathDoesNotPanic is the P0
+// regression for the no-boot ownership/mutation path: with NO boot
+// declarations the mux must carry an ACTUAL-nil BootOwnership — never a
+// typed-nil `*bootpacks.Index` inside a non-nil interface — so a pack
+// mutation through the real wire stays fully mutable and completes with
+// 200 instead of panicking on the guard's first OwnsName call.
+func TestTryAssemble_NoBootPacks_MutationPathDoesNotPanic(t *testing.T) {
+	cfg := devstackV128Config(t, nil)
+	stack, err := TryAssemble(cfg, AssembleOpts{})
+	if err != nil {
+		if stack != nil {
+			stack.Close()
+		}
+		t.Fatalf("TryAssemble (no boot packs): %v", err)
+	}
+	defer stack.Close()
+
+	body := `{"identity":{"tenant":"dev","user":"dev","session":"dev"},"agent_id":"harbor-dev-agent","skill":{"name":"free-pack","trigger":"trigger","steps":["step"]}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent_config/agent_packs/upsert", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+stack.Token)
+	rec := httptest.NewRecorder()
+	stack.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no-boot pack upsert status = %d body=%s, want 200 (guards inert — no panic on a nil boot owner)", rec.Code, rec.Body.String())
+	}
+}

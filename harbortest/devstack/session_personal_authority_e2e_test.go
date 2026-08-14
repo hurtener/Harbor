@@ -285,3 +285,24 @@ func TestDevStack_RunSkillSnapshotAuthority_SelectedAgentEmptyMembershipAndResta
 	runDevstackSkillSnapshot(t, restarted, restartProbe, id, selectedAgent,
 		"session-personal", "user-personal")
 }
+
+// TestDevStack_RunSkillSnapshot_NoBootPacks_DoesNotPanic is the P0
+// regression for the default-config run-start snapshot path: a stack with
+// skills but NO boot declarations drives the REAL run-loop driver's
+// run-start skill snapshot end-to-end. The pre-fix composition handed the
+// driver a typed-nil `*bootpacks.Index` inside a non-nil BootPackReader
+// interface, bypassing the driver's nil guard and panicking on the first
+// run-start Lookup. The actual-nil reader keeps the guard live: the run
+// captures a valid no-baseline snapshot and completes.
+func TestDevStack_RunSkillSnapshot_NoBootPacks_DoesNotPanic(t *testing.T) {
+	cfg := devstackSessionCfg()
+	cfg.Skills = config.SkillsConfig{
+		Driver: "localdb",
+		DSN:    filepath.Join(t.TempDir(), "skills.sqlite"),
+	}
+	probe := newDevstackSkillSnapshotProbe()
+	stack := Assemble(t, cfg, AssembleOpts{PlannerOverride: probe})
+	defer stack.Close()
+	id := identity.Identity{TenantID: DefaultDevTenant, UserID: DefaultDevUser, SessionID: DefaultDevSession}
+	runDevstackSkillSnapshot(t, stack, probe, id, stack.AgentConfigID)
+}

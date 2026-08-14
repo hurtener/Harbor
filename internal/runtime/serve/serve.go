@@ -851,6 +851,17 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("virtual profiles: %w", virtualProfilesErr)
 	}
+	// The HA-66 P0 composition at the run-loop seam: the frozen index
+	// reaches the reader interface ONLY when a baseline is bound. A nil
+	// `*bootpacks.Index` assigned directly into the interface field would
+	// produce a NON-NIL interface holding a nil pointer, whose Lookup
+	// panics at the first default-config run start. The run loop is
+	// deliberately NOT PreviewBootReader — absence must preserve the
+	// compatible no-baseline (nil) shape.
+	var runLoopBootReader agentcfgprotocol.BootPackReader
+	if bootIndex != nil {
+		runLoopBootReader = bootIndex
+	}
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
 		Logger:                   opts.Logger,
 		Bus:                      bus,
@@ -884,7 +895,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,
 		SessionOverlay:           sessionOverlayStore,
-		BootPackReader:           bootIndex,
+		BootPackReader:           runLoopBootReader,
 		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 		ConnectionDetacher:       mcpDetacher,
 		ConnectionReattacher:     mcpReattacher,
@@ -931,6 +942,16 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		}
 	}
 
+	// The HA-66 P0 composition at the mux seam: a SEPARATE actual-nil
+	// BootOwnership interface, populated only when the index is non-nil.
+	// The pre-fix typed-nil assignment made the first pack mutation call
+	// OwnsName on a nil receiver. The read-only composition preview keeps
+	// using PreviewBootReader(bootIndex) so no-config revision-only
+	// preview stays available.
+	var bootOwnership agentcfgprotocol.BootOwnership
+	if bootIndex != nil {
+		bootOwnership = bootIndex
+	}
 	muxInput := MuxInput{
 		Cfg:                            cfg,
 		Surface:                        surface,
@@ -990,7 +1011,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		RollupsQuality:                 rollupsWorker,
 		UserSkillImportService:         userSkillImportService,
 		CompositionPreviewService:      compositionPreviewService,
-		BootOwnership:                  bootIndex,
+		BootOwnership:                  bootOwnership,
 	}
 	muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
 	built, err := BuildMux(muxInput)

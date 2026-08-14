@@ -755,12 +755,13 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	// opened, validated and collision-pre-read HERE — before the run-loop
 	// driver is constructed — so the SAME frozen pointer feeds the driver's
 	// run-start boot baseline, the composition preview, and the boot-ownership
-	// wiring. The block previously sat in the transport/mux section AFTER the
-	// driver; the guard below is the transport section's original condition,
-	// so a transports-skipped stack keeps the no-baseline (nil) shape and
-	// task processing never starts before the index is open.
+	// wiring. Loading is guarded ONLY by the declarations, never by
+	// SkipTransports / SkipSteering: a component-skipped stack may fail
+	// loud if a mandatory catalog / registry collaborator is absent, but it
+	// may never silently start a driver with no baseline just because the
+	// transport/mux leg was skipped.
 	var bootIndex *bootpacks.Index
-	if !opts.SkipTransports && !opts.SkipSteering && len(cfg.Skills.BootAgentPacks) > 0 {
+	if len(cfg.Skills.BootAgentPacks) > 0 {
 		var bErr error
 		// Assign the OUTER variable (plain `=`, mirroring serve.Boot) — a
 		// short-declaration `:=` here would shadow it with a block-local copy
@@ -915,6 +916,15 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 					devProviderReconciler = concrete
 				}
 			}
+			// The HA-66 P0 composition at the run-loop seam — the same
+			// serve.Boot fix: the frozen index reaches the reader interface
+			// ONLY when a baseline is bound, so a no-boot stack hands the
+			// driver an ACTUAL nil (never a typed-nil pointer inside a
+			// non-nil interface whose Lookup panics at run start).
+			var devBootReader agentcfgprotocol.BootPackReader
+			if bootIndex != nil {
+				devBootReader = bootIndex
+			}
 			driver, drvErr := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
 				Bus:                      bus,
 				RunLoop:                  stack.RunLoop,
@@ -945,7 +955,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				RunSnapshots:             runSnapshots,
 				AgentReachAdmissions:     agentReachAdmissions,
 				SessionOverlay:           stack.SessionOverlay,
-				BootPackReader:           bootIndex,
+				BootPackReader:           devBootReader,
 				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
 				ConnectionDetacher:       devDetacher,
 				ConnectionReattacher:     devReattacher,
@@ -1187,6 +1197,14 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			}
 		}
 
+		// The HA-66 P0 composition at the mux seam — the same serve.Boot
+		// fix: a SEPARATE actual-nil BootOwnership interface, populated only
+		// when the index is non-nil, so a no-boot stack keeps every pack
+		// mutation guard inert instead of panicking on the first OwnsName.
+		var devBootOwnership agentcfgprotocol.BootOwnership
+		if bootIndex != nil {
+			devBootOwnership = bootIndex
+		}
 		muxInput := serve.MuxInput{
 			Cfg:                            cfg,
 			Surface:                        stack.Surface,
@@ -1246,7 +1264,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			RollupsQuality:                 rollupsWorker,
 			UserSkillImportService:         importService,
 			CompositionPreviewService:      previewService,
-			BootOwnership:                  bootIndex,
+			BootOwnership:                  devBootOwnership,
 		}
 		muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
 		built, bErr := serve.BuildMux(muxInput)
