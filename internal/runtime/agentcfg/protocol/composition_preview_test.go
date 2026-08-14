@@ -662,8 +662,8 @@ func TestCompositionPreview_ElevatedSameTenantWidened_AuditedBeforeRead(t *testi
 	if payload.AgentID != testAgentID {
 		t.Errorf("audit agent_id=%q want %q", payload.AgentID, testAgentID)
 	}
-	if payload.Method != "agent_config.composition_preview" {
-		t.Errorf("audit method=%q want agent_config.composition_preview", payload.Method)
+	if payload.Method != "agent_config.composition.preview" {
+		t.Errorf("audit method=%q want agent_config.composition.preview", payload.Method)
 	}
 	if audits[0].Identity.Identity != previewAdmin {
 		t.Errorf("audit event identity=%+v want the actor %+v", audits[0].Identity.Identity, previewAdmin)

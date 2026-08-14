@@ -64,7 +64,7 @@ import (
 
 // compositionPreviewMethod is the Protocol method this service backs. The
 // wire handler maps the widened-audit event's Method to this name.
-const compositionPreviewMethod = "agent_config.composition_preview"
+const compositionPreviewMethod = "agent_config.composition.preview"
 
 // Composition-preview sentinel errors. In-process callers compare with
 // errors.Is; the wire handler maps each onto a canonical Protocol code.
