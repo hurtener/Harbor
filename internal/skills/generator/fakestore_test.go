@@ -1,9 +1,13 @@
 package generator_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -83,6 +87,43 @@ func (f *failingUpsertStore) DeleteSessionScope(ctx context.Context, id identity
 
 func (f *failingUpsertStore) Close(ctx context.Context) error {
 	return f.inner.Close(ctx)
+}
+
+// ---- Mandatory installed-package surface (interface parity) ----
+//
+// failingUpsertStore is a fault-injection WRAPPER: it exists to make
+// the legacy mutation surface (`Upsert` / `Delete`) fail on demand
+// while every other method delegates to the wrapped store. The atomic
+// installed-package surface (`GetInstalledPackage` / `ResolveSupport`
+// / `PutInstalledPackage` / `DeleteInstalledPackage` /
+// `RestoreInstalledPackage`) is a distinct self-contained contract
+// this wrapper never overrides, so the truthful parity move is exact
+// pass-through: the wrapped store's conditional puts, exact-receipt
+// compensation, deep copies, and canonical typed errors are preserved
+// unchanged. An in-memory look-alike inside the wrapper would silently
+// diverge from the wrapped store's legacy key space, and a fail-loud
+// stub would lie about a surface a real driver provides — delegation
+// is the only coherent answer. The generator itself never exercises
+// these methods (`Propose` / `Promote` use only Get / Upsert / Delete);
+// they exist so the wrapper remains a valid skills.SkillStore.
+func (f *failingUpsertStore) GetInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string) (skills.InstalledPackage, error) {
+	return f.inner.GetInstalledPackage(ctx, id, agentID, name)
+}
+
+func (f *failingUpsertStore) ResolveSupport(ctx context.Context, id identity.Quadruple, agentID, name string, uri skills.PackageURI) (skills.SupportFile, error) {
+	return f.inner.ResolveSupport(ctx, id, agentID, name, uri)
+}
+
+func (f *failingUpsertStore) PutInstalledPackage(ctx context.Context, id identity.Quadruple, agentID string, pkg skills.InstalledPackage, cond skills.InstalledPackageCondition, replace bool) (skills.InstalledPackageReceipt, error) {
+	return f.inner.PutInstalledPackage(ctx, id, agentID, pkg, cond, replace)
+}
+
+func (f *failingUpsertStore) DeleteInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt) (bool, error) {
+	return f.inner.DeleteInstalledPackage(ctx, id, agentID, name, receipt)
+}
+
+func (f *failingUpsertStore) RestoreInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt, prior skills.InstalledPackage) (bool, error) {
+	return f.inner.RestoreInstalledPackage(ctx, id, agentID, name, receipt, prior)
 }
 
 func TestFailingUpsertStore_DeleteSessionScopeDelegates(t *testing.T) {
@@ -238,3 +279,190 @@ func TestPromote_EmitFailureAndDeleteFailure(t *testing.T) {
 		t.Fatalf("err=%q, want substring naming both failures", err.Error())
 	}
 }
+
+// TestFailingUpsertStore_InstalledPackageMethodsDelegate pins the
+// mandatory installed-package surface on the wrapper: every method is
+// an exact pass-through to the wrapped store, so the driver's
+// conditional puts, exact-receipt compensation, and canonical typed
+// errors reach the caller unchanged. The full create → replace → read
+// → resolve → restore → stale-delete no-op → exact-delete loop runs
+// through the wrapper.
+func TestFailingUpsertStore_InstalledPackageMethodsDelegate(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus(t)
+	inner := newTestStore(t, bus)
+	wrapper := &failingUpsertStore{inner: inner}
+	ctx := context.Background()
+	id := testIdentity()
+	const agent = "a-installed"
+	const name = "installed-delegate"
+
+	// Create v1 against an absent key.
+	v1 := installedPackageFixture(t, name, agent, "1.0.0")
+	r1, err := wrapper.PutInstalledPackage(ctx, id, agent, v1,
+		skills.InstalledPackageCondition{ExpectedAbsent: true}, false)
+	if err != nil {
+		t.Fatalf("PutInstalledPackage(create) via wrapper: %v", err)
+	}
+	if r1.WrittenHash != v1.PackageHash || r1.PriorHash != "" {
+		t.Fatalf("create receipt = %+v, want WrittenHash=%q PriorHash=\"\"", r1, v1.PackageHash)
+	}
+
+	// Replace v1 with v2 under an exact hash+version condition.
+	v2 := installedPackageFixture(t, name, agent, "2.0.0")
+	r2, err := wrapper.PutInstalledPackage(ctx, id, agent, v2,
+		skills.InstalledPackageCondition{ExpectedHash: v1.PackageHash, ExpectedVersion: v1.Package.Version}, true)
+	if err != nil {
+		t.Fatalf("PutInstalledPackage(replace) via wrapper: %v", err)
+	}
+	if r2.PriorHash != v1.PackageHash || r2.PriorVersion != v1.Package.Version {
+		t.Fatalf("replace receipt prior = %q/%q, want %q/%q",
+			r2.PriorHash, r2.PriorVersion, v1.PackageHash, v1.Package.Version)
+	}
+
+	got, err := wrapper.GetInstalledPackage(ctx, id, agent, name)
+	if err != nil {
+		t.Fatalf("GetInstalledPackage via wrapper: %v", err)
+	}
+	assertInstalledPackageEqual(t, got, v2, "round trip through wrapper")
+
+	support, err := wrapper.ResolveSupport(ctx, id, agent, name, supportURI(t, v2))
+	if err != nil {
+		t.Fatalf("ResolveSupport via wrapper: %v", err)
+	}
+	if support.Path != v2.Package.Supports[0].Path || !bytes.Equal(support.Data, v2.Package.Supports[0].Data) {
+		t.Fatalf("resolved support = %+v, want the exact manifest entry", support)
+	}
+
+	// Restore the exact prior (v1) over the version r2 wrote.
+	restored, err := wrapper.RestoreInstalledPackage(ctx, id, agent, name, r2, v1)
+	if err != nil || !restored {
+		t.Fatalf("RestoreInstalledPackage via wrapper = (%v, %v), want (true, nil)", restored, err)
+	}
+	got, err = wrapper.GetInstalledPackage(ctx, id, agent, name)
+	if err != nil {
+		t.Fatalf("GetInstalledPackage after restore: %v", err)
+	}
+	assertInstalledPackageEqual(t, got, v1, "restore through wrapper")
+
+	// r2 wrote v2; the winner is now v1 → stale receipt is a no-op.
+	staleDeleted, err := wrapper.DeleteInstalledPackage(ctx, id, agent, name, r2)
+	if err != nil || staleDeleted {
+		t.Fatalf("stale DeleteInstalledPackage via wrapper = (%v, %v), want (false, nil)", staleDeleted, err)
+	}
+	got, err = wrapper.GetInstalledPackage(ctx, id, agent, name)
+	if err != nil {
+		t.Fatalf("GetInstalledPackage after stale delete: %v", err)
+	}
+	assertInstalledPackageEqual(t, got, v1, "stale receipt must not touch the winner")
+
+	// r1 wrote the current winner v1 → exact delete succeeds.
+	deleted, err := wrapper.DeleteInstalledPackage(ctx, id, agent, name, r1)
+	if err != nil || !deleted {
+		t.Fatalf("exact DeleteInstalledPackage via wrapper = (%v, %v), want (true, nil)", deleted, err)
+	}
+	if _, err := wrapper.GetInstalledPackage(ctx, id, agent, name); !errors.Is(err, skills.ErrInstalledPackageNotFound) {
+		t.Fatalf("GetInstalledPackage after exact delete err=%v, want ErrInstalledPackageNotFound", err)
+	}
+}
+
+// installedPackageFixture returns a valid atomic installed-package
+// unit (canonical complete package + versioned PackageHash +
+// self-consistent stored semantic skill) mirroring the canonical
+// conformance fixture shape.
+func installedPackageFixture(t *testing.T, name, agentID, version string) skills.InstalledPackage {
+	t.Helper()
+	const data = `{"example": true}`
+	supports := []skills.SupportFile{{
+		Path:   "examples/example.json",
+		Mime:   "application/json",
+		Size:   int64(len(data)),
+		Digest: hexDigest([]byte(data)),
+		Data:   []byte(data),
+	}}
+	pkg := skills.Package{
+		Name:    name,
+		Version: version,
+		Skill: skills.PackageSkill{
+			Name:    name,
+			Title:   "Title " + name,
+			Trigger: "trigger:" + name,
+			Steps:   []string{"step one", "step two"},
+		},
+		Supports: supports,
+	}
+	hash, err := skills.PackageHash(pkg)
+	if err != nil {
+		t.Fatalf("installedPackageFixture(%q): PackageHash: %v", name, err)
+	}
+	skill := skills.Skill{
+		Name:      name,
+		AgentID:   agentID,
+		Title:     pkg.Skill.Title,
+		Trigger:   pkg.Skill.Trigger,
+		Steps:     append([]string(nil), pkg.Skill.Steps...),
+		Origin:    skills.OriginGenerated,
+		OriginRef: "test:" + name,
+		Scope:     skills.ScopeUser,
+		CreatedAt: fixedFixtureTime,
+		UpdatedAt: fixedFixtureTime,
+	}
+	skill.ContentHash = skills.CanonicalContentHash(skill)
+	return skills.InstalledPackage{Skill: skill, Package: pkg, PackageHash: hash}
+}
+
+// supportURI returns the immutable skillpkg URI of the fixture's first
+// support file.
+func supportURI(t *testing.T, unit skills.InstalledPackage) skills.PackageURI {
+	t.Helper()
+	uri, err := skills.NewPackageURI(unit.PackageHash, unit.Package.Supports[0].Path)
+	if err != nil {
+		t.Fatalf("NewPackageURI: %v", err)
+	}
+	return uri
+}
+
+// assertInstalledPackageEqual compares the identity-bearing fields of
+// two atomic units: the versioned PackageHash, the semantic skill
+// envelope + body, the package envelope, and the ordered support
+// manifest (path, MIME, size, digest, bytes).
+func assertInstalledPackageEqual(t *testing.T, got, want skills.InstalledPackage, msg string) {
+	t.Helper()
+	if err := skills.ValidateInstalledPackage(got); err != nil {
+		t.Fatalf("%s: got is not internally consistent: %v", msg, err)
+	}
+	if got.PackageHash != want.PackageHash {
+		t.Fatalf("%s: PackageHash got %q want %q", msg, got.PackageHash, want.PackageHash)
+	}
+	if got.Skill.Name != want.Skill.Name || got.Skill.AgentID != want.Skill.AgentID ||
+		got.Skill.Origin != want.Skill.Origin || got.Skill.Scope != want.Skill.Scope ||
+		got.Skill.ContentHash != want.Skill.ContentHash {
+		t.Fatalf("%s: skill envelope mismatch:\n  got  %+v\n  want %+v", msg, got.Skill, want.Skill)
+	}
+	if got.Package.Name != want.Package.Name || got.Package.Version != want.Package.Version {
+		t.Fatalf("%s: package envelope got %s@%s want %s@%s",
+			msg, got.Package.Name, got.Package.Version, want.Package.Name, want.Package.Version)
+	}
+	if len(got.Package.Supports) != len(want.Package.Supports) {
+		t.Fatalf("%s: support manifest length got %d want %d", msg, len(got.Package.Supports), len(want.Package.Supports))
+	}
+	for i := range want.Package.Supports {
+		w, g := want.Package.Supports[i], got.Package.Supports[i]
+		if g.Path != w.Path || g.Mime != w.Mime || g.Size != w.Size || g.Digest != w.Digest {
+			t.Fatalf("%s: support[%d] metadata got %+v want %+v", msg, i, g, w)
+		}
+		if !bytes.Equal(g.Data, w.Data) {
+			t.Fatalf("%s: support[%d] bytes differ", msg, i)
+		}
+	}
+}
+
+// hexDigest returns the lowercase hex sha256 of `b`.
+func hexDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// fixedFixtureTime is a deterministic timestamp for installed-package
+// fixtures so round trips are stable.
+var fixedFixtureTime = time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
