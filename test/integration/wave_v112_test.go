@@ -583,6 +583,21 @@ func TestE2E_WaveV112_PrecedenceMatrix_LiveRevisions(t *testing.T) {
 	}
 }
 
+// stressRunWait bounds ONE concurrent stress run's spawn→terminal wait.
+// Full-suite -race CPU contention can stretch the fixture's scripted bifrost
+// calls (a run makes up to a planner + a naming call) far past the sequential
+// legs' 10s bound; 3m retains a finite deadline while covering two calls at
+// the 60s fixture timeout plus scheduling headroom. A task that is genuinely
+// stuck still fails loudly at this bound.
+const stressRunWait = 3 * time.Minute
+
+// stressLLMTimeout raises the stress fixture's scripted-bifrost request
+// timeout (driver-level and custom-provider yaml blocks) — the same
+// contention that stretches a run can push a single local HTTP round-trip
+// past the 10s the sequential legs boot with. Test-only: the runtime and
+// production timeout defaults are untouched.
+const stressLLMTimeout = "60s"
+
 // TestE2E_WaveV112_ConcurrencyStress fires N sessions across two tenants with
 // naming on, interleaving runs, wire sibling renames, one `sessions.delete`
 // PER TENANT (two total), and list polls — and, crucially for the catalog
@@ -612,7 +627,10 @@ func TestE2E_WaveV112_ConcurrencyStress(t *testing.T) {
 		responses = append(responses, scriptedFinishResponse(fmt.Sprintf("resp-%d", i)))
 	}
 	server := newScriptedLLMServer(t, responses...)
-	cfg := phase158Config(t, server.URL(), "runtime:\n  naming:\n    auto: true\n    after_turns: 1\n")
+	cfg := phase158ConfigWith(t, server.URL(), phase158ConfigOpts{
+		namingBlock: "runtime:\n  naming:\n    auto: true\n    after_turns: 1\n",
+		llmTimeout:  stressLLMTimeout,
+	})
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{})
 	defer stack.Close()
 	sessSvc := waveV112SessionsService(t, stack)
@@ -665,9 +683,20 @@ func TestE2E_WaveV112_ConcurrencyStress(t *testing.T) {
 					return
 				}
 			}
-			if st := phase158RunOnce(t, stack, s.idCtx, s.id, "stress run"); st != tasks.StatusComplete {
+			// Worker-safe run: phase158RunOnceResult never calls t.Fatal
+			// from this goroutine — a genuinely nonterminal timeout or a
+			// terminal-but-not-Complete status is aggregated into errCount
+			// and reported by the parent, while the caller still asserts
+			// the expected Complete.
+			st, err := phase158RunOnceResult(stack, s.idCtx, s.id, "stress run", stressRunWait)
+			if err != nil {
 				errCount.Add(1)
-				t.Errorf("run %s = %s", s.id.SessionID, st)
+				t.Errorf("run %s: %v", s.id.SessionID, err)
+				return
+			}
+			if st != tasks.StatusComplete {
+				errCount.Add(1)
+				t.Errorf("run %s = %s (terminal, want Complete)", s.id.SessionID, st)
 				return
 			}
 			if s.erased {

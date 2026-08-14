@@ -31,10 +31,16 @@ import (
 
 // phase158ConfigOpts parametrizes the devstack yaml the naming E2Es boot:
 // governanceBlock (the identity-tier enforcement the governance leg composes)
-// and namingBlock are appended top-level yaml blocks.
+// and namingBlock are appended top-level yaml blocks; llmTimeout, when
+// non-empty, overrides the fixture's scripted-bifrost request timeout
+// (driver-level AND custom-provider yaml blocks) — test-only headroom for the
+// concurrent stress under full-suite -race CPU contention. The runtime and
+// production timeout defaults are untouched; empty keeps the 10s baseline the
+// sequential legs boot.
 type phase158ConfigOpts struct {
 	governanceBlock string
 	namingBlock     string
+	llmTimeout      string
 }
 
 // phase158Config writes a devstack yaml with the scripted LLM provider and the
@@ -49,6 +55,10 @@ func phase158ConfigWith(t *testing.T, serverURL string, opts phase158ConfigOpts)
 	t.Helper()
 	const envKey = "HARBOR_TEST_158_FAKE_KEY"
 	t.Setenv(envKey, "test-key-value")
+	llmTimeout := opts.llmTimeout
+	if llmTimeout == "" {
+		llmTimeout = "10s"
+	}
 	yaml := fmt.Sprintf(`
 server:
   bind_addr: 127.0.0.1:0
@@ -68,7 +78,7 @@ llm:
   driver: bifrost
   provider: 158-fake
   model: %s
-  timeout: 10s
+  timeout: %s
   context_window_reserve: 0.05
   corrections:
     enabled: false
@@ -77,7 +87,7 @@ llm:
       base_url: %s
       api_key_env_var: %s
       models: [%s]
-      timeout: 10s
+      timeout: %s
       max_retries: 0
   model_profiles:
     %s:
@@ -112,7 +122,8 @@ planner:
   max_steps: 4
 %s
 %s
-`, scriptedModel, serverURL, envKey, scriptedModel, scriptedModel,
+`, scriptedModel, llmTimeout, serverURL, envKey, scriptedModel, llmTimeout,
+		scriptedModel,
 		opts.governanceBlock, opts.namingBlock)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "harbor.yaml")
@@ -134,19 +145,78 @@ func phase158DevID() identity.Identity {
 	}
 }
 
-// runOneAndWait spawns a foreground task and waits for it to reach a terminal
-// status, returning the status.
+// phase158RunOnceDefaultWait bounds ONE sequential-leg foreground run (a
+// planner + optional naming call against the local scripted server). The
+// concurrent stress passes its own longer, test-only bound (stressRunWait).
+const phase158RunOnceDefaultWait = 10 * time.Second
+
+// phase158RunOnce spawns a foreground task and waits for it to reach a
+// terminal status, returning the status. MAIN-GOROUTINE ONLY: it calls
+// t.Fatalf on any failure — concurrent callers must use phase158RunOnceResult
+// (worker-safe) instead.
 func phase158RunOnce(t *testing.T, stack *devstack.DevStack, idCtx context.Context, id identity.Identity, query string) tasks.TaskStatus {
 	t.Helper()
+	st, err := phase158RunOnceResult(stack, idCtx, id, query, phase158RunOnceDefaultWait)
+	if err != nil {
+		t.Fatalf("run %q: %v", query, err)
+	}
+	return st
+}
+
+// phase158RunOnceResult is the worker-safe sibling of phase158RunOnce: it
+// spawns a foreground task and waits for a terminal status WITHOUT touching
+// the testing.T fail surface, returning the status and any error so the
+// concurrency stress can aggregate failures in the parent goroutine. The
+// caller asserts the expected terminal status (StatusComplete) against the
+// returned value.
+func phase158RunOnceResult(stack *devstack.DevStack, idCtx context.Context, id identity.Identity, query string, maxWait time.Duration) (tasks.TaskStatus, error) {
 	h, err := stack.Tasks.Spawn(idCtx, tasks.SpawnRequest{
 		Identity: identity.Quadruple{Identity: id},
 		Kind:     tasks.KindForeground,
 		Query:    query,
 	})
 	if err != nil {
-		t.Fatalf("Tasks.Spawn: %v", err)
+		return tasks.TaskStatus(""), fmt.Errorf("Tasks.Spawn: %w", err)
 	}
-	return waitForTaskTerminal(t, stack, idCtx, h.ID, 10*time.Second)
+	return phase158WaitTaskTerminal(stack, idCtx, h.ID, maxWait)
+}
+
+// phase158TaskTerminal reports whether s is one of the runtime's terminal
+// task statuses — complete, failed, cancelled.
+func phase158TaskTerminal(s tasks.TaskStatus) bool {
+	return s == tasks.StatusComplete || s == tasks.StatusFailed || s == tasks.StatusCancelled
+}
+
+// phase158WaitTaskTerminal polls stack.Tasks.Get until the task reaches ANY
+// terminal status (complete, failed, cancelled) or the deadline elapses, then
+// takes ONE final authoritative read. A terminal status observed on that
+// final read is a SUCCESS — the deadline-edge race: under full-suite -race
+// load a task can terminalize during the last poll, and discarding that read
+// is exactly the false failure the wave-v1.12 stress exposed (its final reads
+// showed status=complete while the old helper Fatalf'd anyway). Only a
+// genuinely non-terminal final read fails. Worker-safe: never calls
+// t.Fatal/t.Fatalf/FailNow, so the concurrency stress drives it from
+// goroutines and aggregates the error in the parent.
+func phase158WaitTaskTerminal(stack *devstack.DevStack, idCtx context.Context, taskID tasks.TaskID, maxWait time.Duration) (tasks.TaskStatus, error) {
+	deadline := time.Now().Add(maxWait)
+	for {
+		task, gErr := stack.Tasks.Get(idCtx, taskID)
+		if gErr == nil && phase158TaskTerminal(task.Status) {
+			return task.Status, nil
+		}
+		if !time.Now().Before(deadline) {
+			// Past the deadline — the final read is authoritative.
+			task, gErr = stack.Tasks.Get(idCtx, taskID)
+			if gErr == nil && phase158TaskTerminal(task.Status) {
+				return task.Status, nil
+			}
+			if gErr != nil {
+				return tasks.TaskStatus(""), fmt.Errorf("task %s did not reach a terminal status within %s: final read failed: %w", taskID, maxWait, gErr)
+			}
+			return task.Status, fmt.Errorf("task %s did not reach a terminal status within %s; last seen status=%s", taskID, maxWait, task.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // TestE2E_SessionAutoNaming_YamlDefault_TitleLandsAuto proves the opt-in fleet
