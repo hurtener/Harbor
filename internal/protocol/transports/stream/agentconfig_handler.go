@@ -1242,6 +1242,18 @@ func (h *AgentConfigHandler) serveCompositionPreview(w http.ResponseWriter, r *h
 		return
 	}
 	req.Identity = wireID
+	// The target triple is OPTIONAL on the wire: omitting ALL of
+	// tenant_id / user_id / session_id (the CLI and Console send only
+	// agent_id) resolves the preview to the VERIFIED caller's own
+	// triple. The resolution copies from the transport identity
+	// (wireID), never from the body, so a forged body identity cannot
+	// steer the default. A PARTIAL tuple is never completed: it stays
+	// as-is and fails loud in the service (identity.Validate rejects an
+	// incomplete triple), so missing fields of a partial tuple are
+	// never filled.
+	if req.TenantID == "" && req.UserID == "" && req.SessionID == "" {
+		req.TenantID, req.UserID, req.SessionID = wireID.Tenant, wireID.User, wireID.Session
+	}
 	if h.previewService == nil {
 		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			"agent_config.composition.preview: composition preview is not wired on this runtime")
