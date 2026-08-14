@@ -24,11 +24,13 @@
 //     (never `tasks.get` / the raw transcript), even though this page
 //     never started it; a foreign/unrendered task's events are ignored;
 //   - HA-64 P1 — a real page retry over STILL-RENDERED bubbles re-runs the
-//     two-read open (one inspect + one turns.list per load, no wider set):
-//     the running row is re-admitted to the live lane (no duplicate bubble,
-//     no re-folded KPI) and its terminal frame still converges via exactly
-//     ONE `sessions.turns.get`, while a terminal row served on retry never
-//     regains membership;
+//     SAME two-read open (one inspect + one turns.list per load — there is
+//     no extra third read on retry): the running row is re-admitted to the
+//     live lane (no duplicate bubble, no re-folded KPI) and its terminal
+//     frame still converges via exactly ONE `sessions.turns.get`, while a
+//     terminal row served on retry never regains membership — instead its
+//     rendered bubbles converge IN PLACE from the retry's own freshly
+//     projected sealed row (local durable convergence, zero turns.get);
 //   - a runtime predating the projection answers `unknown_method` on the open:
 //     the page shows the explicit degraded/forensic control and does NOT run
 //     the legacy `state.history` event-replay path until the operator clicks.
@@ -788,12 +790,17 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(bubbleIds().filter((id) => id === 't-task-retry-a')).toHaveLength(1);
   });
 
-  it('a terminal row on retry never regains live-lane membership (HA-64 P1)', async () => {
+  it('a terminal row on retry converges the rendered bubbles in place — no live membership, zero turns.get (HA-64 P1)', async () => {
     // The retry's authoritative read returns the SAME turn already SEALED —
     // it finished between the two reads. A terminal row must not be re-admitted
     // to reopenedLiveTaskIDs (the fix re-admits ONLY the closed live status
-    // set), so its terminal frame stays a no-op — no reconcile read, no
-    // duplicate bubble.
+    // set), so its later terminal frame stays a no-op — no reconcile read, no
+    // duplicate bubble. But the first fold's snapshot (the `partial` answer
+    // from when the turn was still running) is stale, and since membership was
+    // never regained no event can ever converge it — so the retry replaces the
+    // task's user/agent bubbles IN PLACE from the freshly projected sealed row
+    // (local durable convergence, rendered from the retry's OWN second
+    // authoritative turns.list read — zero additional reads).
     harness.lifecycleRow = { session_id: 's-reopen', status: 'running', started_at: '2026-07-10T11:59:00Z' };
     harness.turnPages = [
       newestPage([
@@ -818,7 +825,8 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(harness.turnsListCalls).toHaveLength(1);
 
     // Retry — the second fold sees the terminal row already present: message
-    // insertion is skipped (no duplicate) AND membership is not regained.
+    // insertion is skipped (no duplicate) AND membership is not regained, but
+    // the task's bubbles are replaced in place from the sealed projection.
     harness.capabilitiesError = undefined;
     const retry = target?.querySelector('[data-testid="page-state-retry"]');
     expect(retry).not.toBeNull();
@@ -834,11 +842,20 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
       Array.from(
         (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
       ).map((n) => n.getAttribute('data-message-id') ?? '');
-    // No duplicate bubble; the fold snapshot is untouched (the sealed row is
-    // never fetched — the page was not tracking this turn after the retry).
+    // The sealed durable answer rendered locally from the retry's own
+    // authoritative read — the stale `partial` snapshot is gone, and each
+    // role appears exactly once (the in-place replacement never duplicates).
+    expect(bubbleIds().filter((id) => id === 't-task-retry-term-u')).toHaveLength(1);
     expect(bubbleIds().filter((id) => id === 't-task-retry-term-a')).toHaveLength(1);
-    expect(bubbleTexts().join('\n')).toContain('partial');
-    expect(bubbleTexts().join('\n')).not.toContain('sealed term');
+    expect(bubbleTexts().join('\n')).toContain('sealed term');
+    expect(bubbleTexts().join('\n')).not.toContain('partial');
+
+    // The local convergence performed ZERO reads — no sessions.turns.get, no
+    // tasks / history / events.
+    expect(harness.turnsGetCalls).toHaveLength(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
 
     // The terminal frame for the sealed row is a no-op — no reconcile read
     // fires, proving membership was not regained.
@@ -857,7 +874,95 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(harness.tasksGetCalls).toBe(0);
     expect(harness.stateHistoryCalls).toBe(0);
     expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleIds().filter((id) => id === 't-task-retry-term-u')).toHaveLength(1);
     expect(bubbleIds().filter((id) => id === 't-task-retry-term-a')).toHaveLength(1);
+    expect(bubbleTexts().join('\n')).toContain('sealed term');
+  });
+
+  it('a terminal row on retry inserts the newly available agent bubble under the rendered user bubble (HA-64 P1)', async () => {
+    // The first load folds the running row with NO renderable agent snapshot
+    // (an empty answer, no apps) — the turn renders as a USER bubble only.
+    // The retry's authoritative read returns the same turn SEALED: the fresh
+    // projection now renders a terminal agent bubble, so the local durable
+    // convergence inserts it directly under the task's user bubble — never a
+    // duplicate of either role, zero reads, and the later terminal frame stays
+    // a no-op (the terminal row never regained live-lane membership).
+    harness.lifecycleRow = { session_id: 's-reopen', status: 'running', started_at: '2026-07-10T11:59:00Z' };
+    harness.turnPages = [
+      newestPage([
+        turnRow('task-retry-late', {
+          status: 'running',
+          sealed: false,
+          finished_at: undefined,
+          answer: { state: 'inline', inline: '', seq: 0, complete: 'complete' },
+          apps: []
+        })
+      ]),
+      newestPage([
+        turnRow('task-retry-late', {
+          status: 'complete',
+          sealed: true,
+          finished_at: '2026-07-10T12:00:05Z',
+          answer: { state: 'inline', inline: 'sealed late answer', seq: 2, complete: 'complete' }
+        })
+      ])
+    ];
+    harness.capabilitiesError = new Error('probe failed');
+    await render();
+
+    // The page lands in the Error state (the REAL PageState retry button);
+    // the first fold's user-only bubble lives in the internal messages
+    // stream while PageState suppresses the chat view — so the "prior row
+    // had only a user bubble" premise is carried by the setup (the running
+    // row has an empty answer and no apps → no renderable agent snapshot).
+    const retry = target?.querySelector('[data-testid="page-state-retry"]');
+    expect(retry).not.toBeNull();
+
+    // Retry — the sealed projection inserts the agent bubble directly under
+    // its user bubble; each role appears exactly once.
+    const bubbleIds = (): string[] =>
+      Array.from(
+        (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
+      ).map((n) => n.getAttribute('data-message-id') ?? '');
+    harness.capabilitiesError = undefined;
+    (retry as HTMLButtonElement | null)?.click();
+    for (let i = 0; i < 16; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsListCalls).toHaveLength(2);
+    const ids = bubbleIds();
+    expect(ids.filter((id) => id === 't-task-retry-late-u')).toHaveLength(1);
+    expect(ids.filter((id) => id === 't-task-retry-late-a')).toHaveLength(1);
+    expect(ids.indexOf('t-task-retry-late-u')).toBe(ids.indexOf('t-task-retry-late-a') - 1);
+    expect(bubbleTexts().join('\n')).toContain('sealed late answer');
+
+    // The local convergence performed ZERO reads — no sessions.turns.get, no
+    // tasks / history / events — and the redelivered terminal frame is a
+    // no-op (membership was never regained).
+    expect(harness.turnsGetCalls).toHaveLength(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    const onTerminal = harness.eventListeners.get('task.completed');
+    expect(onTerminal).toBeDefined();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-retry-late', payload: { TaskID: 'task-retry-late' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsGetCalls).toHaveLength(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleTexts().join('\n')).toContain('sealed late answer');
+    expect(bubbleIds().filter((id) => id === 't-task-retry-late-a')).toHaveLength(1);
   });
 
   it('a brand-new session opens the stream with NO resume cursor and zero fallback reads (HA-64 P1)', async () => {

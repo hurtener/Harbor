@@ -594,6 +594,13 @@
   // the live lane (the closed in-flight set).
   const LIVE_TURN_STATUSES = new Set(['pending', 'running', 'paused']);
 
+  // The durable row statuses that are terminal on the durable lane (the
+  // closed sealed set, mirroring the projection's own terminal set). A
+  // freshly read terminal row for an already-rendered task never regains
+  // live-lane membership, but its rendered bubbles converge in place from
+  // the fresh projection (HA-64 / D-425 P1 — local durable convergence).
+  const TERMINAL_TURN_STATUSES = new Set(['complete', 'failed', 'cancelled']);
+
   // HA-64 / D-425 (P1) — the snapshot-to-live handoff: the durable page's
   // `live_resume_seq` — the exclusive subscribe-from cursor — is bound as
   // the narrowly named `?resume_seq=` SSE query param when the fold
@@ -1162,6 +1169,46 @@
     }
   }
 
+  // convergeTerminalRowInPlace is the retry-side terminal convergence: when
+  // hydration's freshly read authoritative row for an already-rendered task is
+  // terminal (HA-64 / D-425 P1), replace that task's user/agent bubbles in
+  // place from the freshly projected durable row. The terminal row is
+  // authoritative — the first fold's snapshot (e.g. a `partial` answer from
+  // when the turn was still running) is stale, and since a terminal row is
+  // never re-admitted to the live lane no later event can converge it.
+  //
+  // Contract: transcript ordering is preserved (the fresh pair sits where the
+  // task's first bubble was); no other task's messages are removed; a
+  // terminal agent bubble newly available in the projection is inserted
+  // directly under the task's user bubble; each role appears at most once in
+  // the result (every pre-existing bubble for the task is dropped before the
+  // fresh user/agent pair is spliced in, so nothing can duplicate). It is a
+  // LOCAL render: zero `sessions.turns.get` / tasks / history / events
+  // reads, and no KPI / notice folding (the retry must not double-count).
+  function convergeTerminalRowInPlace(taskID: string, rendered: TurnRowMessages): void {
+    const fresh: ChatMessage[] = [];
+    if (rendered.user !== null) fresh.push(rendered.user);
+    if (rendered.agent !== null) fresh.push(rendered.agent);
+    // Drop every pre-existing user/agent bubble for the task, remembering
+    // where its first bubble sat so the fresh pair splices back in place.
+    let anchor = -1;
+    const rest: ChatMessage[] = [];
+    for (const m of messages) {
+      if (m.taskID !== taskID || (m.role !== 'user' && m.role !== 'agent')) {
+        rest.push(m);
+        continue;
+      }
+      if (anchor === -1) anchor = rest.length;
+    }
+    if (anchor === -1) {
+      // Defensive — the present-set branch above guarantees at least one
+      // rendered message for the task; nothing to replace otherwise.
+      if (fresh.length > 0) messages = [...messages, ...fresh];
+      return;
+    }
+    messages = [...rest.slice(0, anchor), ...fresh, ...rest.slice(anchor)];
+  }
+
   // foldTurnRows projects a page's durable rows into chat messages, dedupes
   // against the live stream, folds the honest per-component state into the
   // header/KPI accumulators, and prepends the rendered bubbles. The rows are
@@ -1193,6 +1240,19 @@
         // terminal row never regains membership.
         if (LIVE_TURN_STATUSES.has(rendered.status)) {
           reopenedLiveTaskIDs.add(taskID);
+          continue;
+        }
+        // HA-64 / D-425 (P1) — local durable convergence: the retry's freshly
+        // read authoritative row for the already-rendered task is TERMINAL (it
+        // finished between the two reads). It must not be re-admitted, but the
+        // first fold's snapshot (a `partial` answer while the turn was running)
+        // is now stale — replace the task's user/agent bubbles in place from
+        // this fresh projection so the sealed answer renders without waiting
+        // for an event that can never re-admit the row. This performs ZERO
+        // `sessions.turns.get` / task / history / event reads, folds no
+        // KPI/notice, and touches no other task's messages.
+        if (TERMINAL_TURN_STATUSES.has(rendered.status)) {
+          convergeTerminalRowInPlace(taskID, rendered);
         }
         continue;
       }
