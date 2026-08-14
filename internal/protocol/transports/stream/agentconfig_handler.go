@@ -1181,6 +1181,16 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// state only.
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()
+	case errors.Is(err, agentcfgprotocol.ErrBootPackOwned):
+		// A canonical pack name the boot baseline owns for the exact (tenant,
+		// agent) pair is read-only to the control plane — the SAME typed
+		// client-visible 400/read-only family as the boot-declared connection
+		// precedent above: the pack verbs govern revisioned durable state only,
+		// and boot is edited in the boot config + restart. A typed refusal,
+		// never a collapsed generic 500, never a leaked arbitrary internal
+		// failure.
+		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrConnectionOwnerMismatch):
 		// A live connection write applies to the caller's OWN registration; a
 		// name attached under a different (tenant, agent) owner is an

@@ -557,6 +557,110 @@ func TestAgentPacksBootGuards_RollbackHelperRefusesBootOwnedTarget(t *testing.T)
 	}
 }
 
+func TestAgentPacksRollback_BootOwnedTargetRefusedNoMutation(t *testing.T) {
+	ctx := context.Background()
+	reg := &countingRegistry{Registry: newRegistry(t)}
+	s, err := agentcfgprotocol.NewService(reg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, agentQuad(), testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("seed base revision: %v", err)
+	}
+	// Seed a legacy durable revision SHADOW of the now-boot-owned name — the
+	// rollback target. Its pack content is byte-identical to the boot entry
+	// (the same-hash state): an equal hash proves nothing, boot wins.
+	shadow, err := s.AgentPacksUpsert(ctx, upsertPackRequest("playbook"))
+	if err != nil {
+		t.Fatalf("seed durable shadow: %v", err)
+	}
+	// Move the active pointer OFF the shadow revision (a free-name upsert),
+	// so a rollback back to the shadow revision is a REAL repoint.
+	if _, err := s.AgentPacksUpsert(ctx, upsertPackRequest("other")); err != nil {
+		t.Fatalf("seed head revision: %v", err)
+	}
+	active, activeSet, err := reg.Active(ctx, agentQuad(), testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !activeSet {
+		t.Fatalf("load active revision: set=%t err=%v", activeSet, err)
+	}
+	rollbackCallsBefore := reg.rollbackCalls()
+
+	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	rollback := func(revisionID string) error {
+		_, err := s.Rollback(guarded, prototypes.AgentConfigRollbackRequest{
+			Identity: scope(), AgentID: testAgentID, RevisionID: revisionID,
+		})
+		return err
+	}
+	// The shadow revision contains a boot-owned canonical name → typed
+	// refusal BEFORE any repoint, even at equal hash.
+	if err := rollback(shadow.Revision.RevisionID); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
+		t.Fatalf("rollback to boot-owned shadow error = %v, want ErrBootPackOwned", err)
+	}
+	// The ACTIVE revision still carries the same boot-owned shadow (the head
+	// upsert preserved it) — the same-hash state where the target's pack
+	// section equals the boot entry bytes. Refused identically.
+	if err := rollback(active.RevisionID); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
+		t.Fatalf("rollback to same-hash boot-owned target error = %v, want ErrBootPackOwned", err)
+	}
+	// No registry repoint ever ran and the active pointer never moved.
+	if got := reg.rollbackCalls(); got != rollbackCallsBefore {
+		t.Fatalf("refused rollbacks mutated the pointer: registry Rollback calls = %d, want %d", got, rollbackCallsBefore)
+	}
+	after, afterSet, err := reg.Active(ctx, agentQuad(), testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !afterSet || after.RevisionID != active.RevisionID {
+		t.Fatalf("active after refused rollbacks = %+v (set=%t) err=%v, want unchanged %s", after, afterSet, err, active.RevisionID)
+	}
+}
+
+func TestAgentPacksRollback_BootFreeTargetPermitted(t *testing.T) {
+	ctx := context.Background()
+	reg := &countingRegistry{Registry: newRegistry(t)}
+	s, err := agentcfgprotocol.NewService(reg)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	base, err := reg.SetRevision(ctx, agentQuad(), testAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatalf("seed base revision: %v", err)
+	}
+	// Seed a durable shadow so the SAME guarded context faces a boot-owned
+	// active revision; the rollback target (base) carries no boot-owned name.
+	if _, err := s.AgentPacksUpsert(ctx, upsertPackRequest("playbook")); err != nil {
+		t.Fatalf("seed durable shadow: %v", err)
+	}
+	rollbackCallsBefore := reg.rollbackCalls()
+
+	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	// A revision without boot-owned names is fully rollback-able under the
+	// SAME boot-owned reader — the guard only refuses boot-owned targets.
+	got, err := s.Rollback(guarded, prototypes.AgentConfigRollbackRequest{
+		Identity: scope(), AgentID: testAgentID, RevisionID: base.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("rollback to boot-free target failed: %v", err)
+	}
+	if got.Revision.RevisionID != base.RevisionID {
+		t.Fatalf("rolled back revision = %q, want %q", got.Revision.RevisionID, base.RevisionID)
+	}
+	if got := reg.rollbackCalls(); got != rollbackCallsBefore+1 {
+		t.Fatalf("permitted rollback must record exactly one repoint: got %d, want %d", got, rollbackCallsBefore+1)
+	}
+	// No reader bound (a pre-baseline runtime): rolling back to a revision
+	// carrying the boot-owned shadow stays fully permitted — the guard is
+	// inert without a baseline, so the door keeps its exact pre-baseline
+	// behavior.
+	shadow, err := s.AgentPacksUpsert(ctx, upsertPackRequest("playbook"))
+	if err != nil {
+		t.Fatalf("re-seed durable shadow: %v", err)
+	}
+	if _, err := s.Rollback(ctx, prototypes.AgentConfigRollbackRequest{
+		Identity: scope(), AgentID: testAgentID, RevisionID: shadow.Revision.RevisionID,
+	}); err != nil {
+		t.Fatalf("nil-reader rollback to boot-owned target must retain pre-baseline behavior, got %v", err)
+	}
+}
+
 func TestAgentPacksBootGuards_KeyedExactTenantAgent(t *testing.T) {
 	reg := &countingRegistry{Registry: newRegistry(t)}
 	s, err := agentcfgprotocol.NewService(reg)

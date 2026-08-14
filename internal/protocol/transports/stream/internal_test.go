@@ -3,13 +3,13 @@ package stream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
-
-	"fmt"
 
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/events"
@@ -408,6 +408,26 @@ func TestClassifyAgentConfigError_InvalidNaming400(t *testing.T) {
 	}
 	if code != protoerrors.CodeInvalidRequest {
 		t.Errorf("code = %q, want %q", code, protoerrors.CodeInvalidRequest)
+	}
+}
+
+// TestClassifyAgentConfigError_BootPackOwned400 pins the typed wire mapping
+// for the boot-owned pack refusal: the SAME 400/read-only family as the
+// boot-declared connection precedent (CodeInvalidRequest / 400) — a typed
+// client-visible refusal naming the owned pack, never a generic 500.
+func TestClassifyAgentConfigError_BootPackOwned400(t *testing.T) {
+	code, status, msg := classifyAgentConfigError(
+		methods.MethodAgentConfigRollback,
+		fmt.Errorf("wrapped: %w", agentcfgprotocol.ErrBootPackOwned),
+	)
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+	if code != protoerrors.CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", code, protoerrors.CodeInvalidRequest)
+	}
+	if !strings.Contains(msg, string(methods.MethodAgentConfigRollback)) {
+		t.Errorf("message %q does not name the method", msg)
 	}
 }
 
