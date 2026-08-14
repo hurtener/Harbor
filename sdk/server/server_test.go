@@ -18,6 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+
 	// Production driver aggregator — the same blank import a served
 	// binary adds. It resolves the real stores/bus the boot opens.
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
