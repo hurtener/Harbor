@@ -47,7 +47,11 @@ const harness = vi.hoisted(() => ({
   lifecycleRow: {} as Record<string, unknown>,
   lifecycleError: undefined as unknown,
   // The lifecycle/terminal frames the fake EventSource can dispatch.
-  eventListeners: new Map<string, (msg: { data: string }) => void>()
+  eventListeners: new Map<string, (msg: { data: string }) => void>(),
+  // Every SSE URL the page opened an EventSource against, in order.
+  eventSourceUrls: [] as string[],
+  // Order markers proving the durable page folds BEFORE the stream opens.
+  orderLog: [] as string[]
 }));
 
 vi.mock('$app/state', () => ({
@@ -79,6 +83,8 @@ class FakeEventSource {
   readyState = FakeEventSource.CONNECTING;
   constructor(url: string) {
     this.url = url;
+    harness.eventSourceUrls.push(url);
+    harness.orderLog.push(`eventsource:${url}`);
   }
   addEventListener(type: string, fn: (msg: { data: string }) => void): void {
     harness.eventListeners.set(type, fn);
@@ -111,6 +117,7 @@ vi.mock('$lib/protocol/harbor.js', () => ({
     sessionTurns = {
       list: async (req: Record<string, unknown>) => {
         harness.turnsListCalls.push(req);
+        harness.orderLog.push('turns.list');
         if (harness.listError !== undefined) throw harness.listError;
         const page = harness.turnPages.shift();
         if (page === undefined) {
@@ -150,7 +157,13 @@ vi.mock('$lib/protocol/harbor.js', () => ({
       }
     };
     events = {
-      subscribeURL: () => 'http://127.0.0.1:18080/v1/events?access_token=x',
+      subscribeURL: (opts: { eventTypes?: string[]; resumeSeq?: number } = {}) => {
+        const params = new URLSearchParams({ access_token: 'x' });
+        if (opts.resumeSeq !== undefined) {
+          params.set('resume_seq', String(opts.resumeSeq));
+        }
+        return `http://127.0.0.1:18080/v1/events?${params.toString()}`;
+      },
       list: async () => {
         harness.eventsListCalls++;
         return { rows: [] };
@@ -200,6 +213,7 @@ vi.mock('$lib/db/saved_filters_playground.js', () => ({
 
 import PlaygroundPage from './+page.svelte';
 import type { SessionTurnRow } from '$lib/protocol/session-turns.js';
+import { ProtocolError } from '$lib/protocol/errors.js';
 
 let mounted: ReturnType<typeof mount> | undefined;
 let target: HTMLElement | undefined;
@@ -315,6 +329,8 @@ afterEach(() => {
   harness.lifecycleRow = {};
   harness.lifecycleError = undefined;
   harness.eventListeners.clear();
+  harness.eventSourceUrls.length = 0;
+  harness.orderLog.length = 0;
 });
 
 describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
@@ -344,6 +360,13 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(text).toContain('answer-t2');
     expect(text).toContain('query-t1');
     expect(text).toContain('answer-t1');
+
+    // The live stream opened AFTER the durable page was folded, carrying
+    // the fold's live_resume_seq (2 — the page's newest observation) as
+    // the initial resume cursor.
+    expect(harness.eventSourceUrls).toHaveLength(1);
+    expect(new URL(harness.eventSourceUrls[0]).searchParams.get('resume_seq')).toBe('2');
+    expect(harness.orderLog).toEqual([`turns.list`, `eventsource:${harness.eventSourceUrls[0]}`]);
   });
 
   it('older-page loading passes the opaque cursor back and prepends without duplicates', async () => {
@@ -568,6 +591,100 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(harness.tasksGetCalls).toBe(0);
     expect(harness.stateHistoryCalls).toBe(0);
     expect(harness.eventsListCalls).toBe(0);
+  });
+
+  it('a terminal event replayed after the snapshot seals the rendered running turn via exactly one sessions.turns.get (HA-64 P1 race closure)', async () => {
+    // The durable fold (snapshot at live_resume_seq=9) still shows the
+    // turn running. The terminal event landed AFTER that snapshot but
+    // BEFORE the physical subscription — the stream server replays it
+    // (strictly newer than the seeded cursor). The page must fold first,
+    // admit the rendered running task, and then converge the replayed
+    // frame with exactly one sessions.turns.get — the frozen-bubble race
+    // is closed.
+    harness.lifecycleRow = { session_id: 's-reopen', status: 'running', started_at: '2026-07-10T11:59:00Z' };
+    harness.turnPages = [
+      newestPage(
+        [
+          turnRow('task-race', {
+            status: 'running',
+            sealed: false,
+            finished_at: undefined,
+            answer: { state: 'inline', inline: 'partial ', seq: 1, complete: 'complete' }
+          })
+        ],
+        { live_resume_seq: 9 }
+      )
+    ];
+    harness.turnsGetResult = {
+      session_id: 's-reopen',
+      turn: turnRow('task-race', {
+        turn_id: 'task-race',
+        task_id: 'task-race',
+        status: 'complete',
+        sealed: true,
+        finished_at: '2026-07-10T12:00:05Z',
+        answer: { state: 'inline', inline: 'sealed race answer', seq: 2, complete: 'complete' }
+      }),
+      protocol_version: '0.1.0'
+    };
+    await render();
+
+    // Two-read open; the stream opened ONLY after the turns.list fold,
+    // seeded with the fold's live_resume_seq.
+    expect(harness.inspectCalls).toEqual([{ session_id: 's-reopen', projection: 'lifecycle' }]);
+    expect(harness.turnsListCalls).toHaveLength(1);
+    expect(harness.eventSourceUrls).toHaveLength(1);
+    expect(new URL(harness.eventSourceUrls[0]).searchParams.get('resume_seq')).toBe('9');
+    expect(harness.orderLog).toEqual([`turns.list`, `eventsource:${harness.eventSourceUrls[0]}`]);
+
+    // The running durable turn rendered its fold snapshot as one pending
+    // agent bubble — not yet the sealed row.
+    expect(bubbleTexts().join('\n')).toContain('partial');
+    expect(bubbleTexts().join('\n')).not.toContain('sealed race answer');
+
+    // The replayed terminal frame converges it — exactly one turns.get,
+    // never tasks.get / state.history / events.list.
+    const onTerminal = harness.eventListeners.get('task.completed');
+    expect(onTerminal).toBeDefined();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-race', payload: { TaskID: 'task-race' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsGetCalls).toEqual([{ session_id: 's-reopen', task_id: 'task-race' }]);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleTexts().join('\n')).toContain('sealed race answer');
+    const ids = Array.from(
+      (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
+    ).map((n) => n.getAttribute('data-message-id') ?? '');
+    expect(ids.filter((id) => id === 't-task-race-a')).toHaveLength(1);
+  });
+
+  it('a brand-new session opens the stream with NO resume cursor and zero fallback reads (HA-64 P1)', async () => {
+    // `not_found` on the lifecycle inspect = brand-new session — honest
+    // empty start: no turns read, no resume cursor in the stream URL, no
+    // forensic/raw fallback. Modeled as the REAL typed client throws it
+    // (a ProtocolError from the transport, not a plain object).
+    harness.lifecycleError = new ProtocolError('not_found', 'no such session yet', 404);
+    await render();
+
+    expect(harness.inspectCalls).toEqual([{ session_id: 's-reopen', projection: 'lifecycle' }]);
+    expect(harness.turnsListCalls).toHaveLength(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.tasksListCalls).toBe(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+
+    // The stream still opens (the live lane is independent of the fold)
+    // but carries NO resume_seq — the cursor is omitted when absent.
+    expect(harness.eventSourceUrls).toHaveLength(1);
+    expect(new URL(harness.eventSourceUrls[0]).searchParams.has('resume_seq')).toBe(false);
   });
 
   it('a reopened running turn with no fold-rendered agent bubble still converges to the sealed row (HA-64 P1)', async () => {

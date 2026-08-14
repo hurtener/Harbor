@@ -39,6 +39,23 @@
 // explicit `stream.replay_unavailable` comment frame so the gap is
 // SURFACED, never silently masked (CLAUDE.md §5).
 //
+// # Initial-resume cursor (snapshot-to-live handoff)
+//
+// The `?resume_seq=` query parameter carries the durable fold's
+// live_resume_seq (the newest observation reflected in a
+// `sessions.turns.list` page) as the INITIAL replay cursor on first
+// connect. It is a snapshot-to-live handoff: the Console folds the
+// durable page BEFORE opening the stream, then seeds the cursor so events
+// that landed after the snapshot but before the physical subscription are
+// replayed through the SAME bounded Replay path a reconnect uses — no
+// polling, no generic live-cursor API. The value is parsed strictly as a
+// bounded unsigned 64-bit sequence and a malformed value fails the request
+// closed (400 `invalid_request`) before any subscription opens. The
+// browser's reconnect Last-Event-ID header takes precedence: the query
+// cursor is consulted only when that header is absent, so a reconnect
+// replays from the browser's own cursor, never from the original snapshot
+// forever.
+//
 // # Concurrent reuse
 //
 // Handler is a compiled artifact: the bus, the logger, the keepalive
@@ -96,6 +113,16 @@ const (
 	HeaderRun       = "X-Harbor-Run"
 	HeaderEventType = "X-Harbor-Event-Type"
 )
+
+// InitialResumeQuery is the narrowly named query parameter that carries
+// the durable turn page's live_resume_seq as the INITIAL replay cursor on
+// first connect — the snapshot-to-live handoff cursor (HA-64 / D-425).
+// The Console seeds it from `sessions.turns.list` BEFORE opening the
+// EventSource so events strictly newer than the fold snapshot are
+// replayed; the server consults it ONLY when the reconnect Last-Event-ID
+// header is absent, so a browser reconnect replays from its own cursor,
+// never from the original snapshot forever.
+const InitialResumeQuery = "resume_seq"
 
 // defaultKeepalive is the interval between SSE keepalive comment frames
 // when WithKeepalive is not supplied. 15s is comfortably under the
@@ -223,6 +250,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The initial-resume cursor is parsed BEFORE the SSE response commits:
+	// a malformed cursor must fail the request closed with a typed Protocol
+	// error (400 `invalid_request`), never surface after a 200 has been
+	// written. The reconnect Last-Event-ID header (browser) takes precedence
+	// over this query cursor — it is consulted only when that header is
+	// absent (first connect), so a reconnect does not replay from the
+	// original snapshot forever.
+	initialResume, hasInitialResume, err := parseInitialResume(r, id.SessionID)
+	if err != nil {
+		writeProtocolError(w, http.StatusBadRequest,
+			protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"malformed initial resume cursor: %v", err))
+		return
+	}
+
 	filter := events.Filter{
 		Tenant:  id.TenantID,
 		User:    id.UserID,
@@ -292,10 +334,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("session_id", id.SessionID),
 	)
 
-	// Reconnect: if the client echoed a Last-Event-ID, replay everything
-	// strictly newer than that cursor before live-tailing.
-	if cursor, ok := parseLastEventID(r, id.SessionID); ok {
-		h.replayFromCursor(r.Context(), w, flusher, filter, cursor, logger)
+	// Reconnect vs initial-resume: the browser's reconnect Last-Event-ID
+	// header takes precedence — once a client has a stream of its own,
+	// replay anchors on ITS cursor, never on the fold snapshot (which
+	// would re-deliver frames the client already consumed). The
+	// ?resume_seq= query cursor (the durable fold's live_resume_seq)
+	// seeds the FIRST connect only: replay everything strictly newer than
+	// the snapshot before live-tailing.
+	if lastEventID := r.Header.Get("Last-Event-ID"); lastEventID != "" {
+		if cursor, ok := parseLastEventID(r, id.SessionID); ok {
+			h.replayFromCursor(r.Context(), w, flusher, filter, cursor, logger)
+		}
+	} else if hasInitialResume {
+		h.replayFromCursor(r.Context(), w, flusher, filter, initialResume, logger)
 	}
 
 	h.streamLoop(r.Context(), w, flusher, sub, logger)
@@ -499,6 +550,39 @@ func parseLastEventID(r *http.Request, sessionID string) (events.Cursor, bool) {
 		return events.Cursor{}, false
 	}
 	return events.Cursor{SessionID: sessionID, Sequence: seq}, true
+}
+
+// parseInitialResume maps the narrowly named initial-resume query
+// parameter (?resume_seq=) onto an events.Cursor scoped to the request's
+// session. It is the SNAPSHOT-TO-LIVE handoff cursor: the Console seeds it
+// from `sessions.turns.list`'s live_resume_seq (the newest observation
+// reflected in the durable fold) so events strictly newer than the
+// snapshot are replayed through the SAME bounded Replay path a reconnect
+// uses before the live tail begins.
+//
+// The value is parsed STRICTLY as a bounded unsigned 64-bit sequence: a
+// missing parameter means "no initial cursor" (ok=false), while a
+// present-but-malformed value (empty, non-decimal, negative, overflowing
+// uint64, or duplicated) fails closed with a typed error — never a silent
+// fresh start that would drop the snapshot-to-connect gap
+// (CLAUDE.md §5, §13).
+func parseInitialResume(r *http.Request, sessionID string) (events.Cursor, bool, error) {
+	values, present := r.URL.Query()[InitialResumeQuery]
+	if !present || len(values) == 0 {
+		return events.Cursor{}, false, nil
+	}
+	if len(values) > 1 {
+		return events.Cursor{}, false, fmt.Errorf("%s supplied more than once", InitialResumeQuery)
+	}
+	raw := values[0]
+	if raw == "" {
+		return events.Cursor{}, false, fmt.Errorf("%s is empty", InitialResumeQuery)
+	}
+	seq, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return events.Cursor{}, false, fmt.Errorf("%s %q: %w", InitialResumeQuery, raw, err)
+	}
+	return events.Cursor{SessionID: sessionID, Sequence: seq}, true, nil
 }
 
 // writePlainError writes a pre-stream error as a plain-text body with

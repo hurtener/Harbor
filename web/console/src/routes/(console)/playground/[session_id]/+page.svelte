@@ -583,21 +583,28 @@
   // is populated ONLY from authoritative `sessions.turns.list` rows in
   // `foldTurnRows` and pruned on terminal convergence — never widened
   // to arbitrary session events. Plain (non-reactive) because it is read
-  // only from event handlers, never rendered.
+  // only from event handlers, never rendered. The fold — and therefore
+  // this membership — completes BEFORE the EventSource opens (`load`
+  // awaits `hydratePastTurns` first), so a replayed terminal frame
+  // (the snapshot-to-live resume cursor) always finds its task already
+  // admitted here.
   let reopenedLiveTaskIDs = new Set<string>();
 
   // The durable row statuses that keep a fold-rendered turn eligible for
   // the live lane (the closed in-flight set).
   const LIVE_TURN_STATUSES = new Set(['pending', 'running', 'paused']);
 
-  // Explicit follow-up, not fabricated proof: the turn page's
-  // `live_resume_seq` — the exclusive subscribe-from cursor (HA-64) —
-  // cannot be bound on this page today, because the accepted client seam
-  // `events.subscribeURL` accepts no resume sequence. The open subscribes
-  // BEFORE the turns.list read and terminal convergence re-reads the
-  // sealed row, so a sub-second snapshot-to-connect window does not corrupt
-  // the final bubble; closing it with a resume cursor is a deliberate
-  // follow-up (a client-seam extension), not part of this fix.
+  // HA-64 / D-425 (P1) — the snapshot-to-live handoff: the durable page's
+  // `live_resume_seq` — the exclusive subscribe-from cursor — is bound as
+  // the narrowly named `?resume_seq=` SSE query param when the fold
+  // produced a non-zero cursor (captured from the `sessions.turns.list`
+  // response in `hydratePastTurns`). `load` folds the durable rows and
+  // establishes `reopenedLiveTaskIDs` BEFORE opening the EventSource, so a
+  // terminal event that landed between the snapshot and the physical
+  // subscription is replayed by the stream server (strictly-newer-than-
+  // cursor, and only when no reconnect Last-Event-ID header is present)
+  // and converges exactly like any other terminal frame — the frozen-bubble
+  // race is closed without polling or a generic live-cursor API.
 
   // FIFO queue of "send when current run terminates" messages. The
   // lifecycle watcher below drains the queue with `start` calls as
@@ -867,8 +874,23 @@
   // dropped every chunk). The subscription is optional — a runtime
   // without the SSE surface leaves the stream Off and the page still
   // works (the operator sends manually; answers arrive via tasks.get).
-  function subscribeEvents(c: ProtocolClient): void {
+  //
+  // HA-64 / D-425 (P1) — `resumeSeq` is the durable fold's
+  // `live_resume_seq` (from `hydratePastTurns`), seeded as the stream's
+  // narrowly named initial-resume query param so a terminal event that
+  // landed between the snapshot and this physical subscription is
+  // replayed by the server and converges the rendered bubble instead of
+  // freezing it. The page opens the stream ONLY after the fold completes
+  // (`load` awaits `hydratePastTurns` first); a re-open (retry) closes
+  // any previous EventSource first so no second stream leaks.
+  function subscribeEvents(c: ProtocolClient, resumeSeq?: number): void {
     try {
+      // A re-run of load() (the PageState retry) must not leak a second
+      // EventSource alongside the first.
+      if (taskEvents !== null) {
+        taskEvents.close();
+        taskEvents = null;
+      }
       const url = c.events.subscribeURL({
         eventTypes: [
           'task.completed',
@@ -890,7 +912,8 @@
           'tool.rejected',
           'tool.auth_completed',
           'session.title_changed'
-        ]
+        ],
+        resumeSeq
       });
       const es = new EventSource(url);
       es.onopen = () => {
@@ -1053,8 +1076,14 @@
   // the degraded/forensic legacy reopen (`hydratePastTurnsLegacy`, the
   // `state.history` event-replay path) — the operator must explicitly invoke
   // it. It is never the default open path (D-425).
-  async function hydratePastTurns(): Promise<void> {
-    if (client === null || sessionID === '') return;
+  //
+  // Returns the durable fold's `live_resume_seq` when it is non-zero (the
+  // exclusive subscribe-from cursor the page binds to the EventSource's
+  // initial resume query — the snapshot-to-live handoff), or `undefined`
+  // when the fold produced no cursor (brand-new session, `unknown_method`,
+  // `not_found`, a transport failure, or a page whose cursor is 0).
+  async function hydratePastTurns(): Promise<number | undefined> {
+    if (client === null || sessionID === '') return undefined;
     const c = client;
     historyNotice = null;
     olderError = null;
@@ -1080,7 +1109,7 @@
       // `not_found` on inspect = the session has no catalog row yet (brand-new
       // session id, materialised create-on-first-use) — honest empty start.
       if (err instanceof ProtocolError && err.code === 'not_found') {
-        return;
+        return undefined;
       }
       if (isUnknownMethod(err)) {
         // Runtime predates the lifecycle projection — the turns read below
@@ -1102,10 +1131,16 @@
             ? 'Older messages were trimmed by retention — showing the most recent history.'
             : 'The turn projection is partial — some older messages may be missing.';
       }
-      if (page.turns.length === 0) return;
+      // The resume cursor rides even an empty newest page: a non-zero
+      // `live_resume_seq` means events exist beyond the fold (all-gated or
+      // pre-turn activity), and seeding the stream cursor keeps the
+      // snapshot-to-live handoff gap-free.
+      const resumeSeq = page.liveResumeSeq > 0 ? page.liveResumeSeq : undefined;
+      if (page.turns.length === 0) return resumeSeq;
 
       const rendered = page.turns.map((r) => turnRowMessages(r));
       foldTurnRows(rendered, page.turns);
+      return resumeSeq;
     } catch (err) {
       if (err instanceof TurnPageError && err.kind === 'unknown_method') {
         // The Runtime predates the `sessions.turns.*` surface. The normal
@@ -1113,16 +1148,17 @@
         turnProjectionUnavailable = true;
         historyNotice =
           'This Runtime does not expose the conversation turn projection. You can load earlier messages with the degraded forensic event-replay path.';
-        return;
+        return undefined;
       }
       if (err instanceof TurnPageError && err.kind === 'not_found') {
         // Foreign/erased session — non-oracular empty start.
-        return;
+        return undefined;
       }
       const detail =
         err instanceof ProtocolError ? `${err.code}: ${err.message}` : String(err);
       console.warn('hydratePastTurns: turn projection read failed:', detail);
       historyNotice = `Could not load the conversation projection (${detail}). The conversation continues from here.`;
+      return undefined;
     }
   }
 
@@ -1488,7 +1524,15 @@
     // page). Best-effort: empty for a brand-new session id (the inspect
     // answers not_found) and empty for a pre-restart session (the projection
     // has no rows — see docs/notes/session-model-contract.md).
-    await hydratePastTurns();
+    //
+    // HA-64 / D-425 (P1) — the SSE subscription is the LIVE stream, not a
+    // third projection read: the durable page is folded (and its rendered
+    // running/paused task membership established) BEFORE the EventSource
+    // opens, and the fold's `live_resume_seq` seeds the stream's initial
+    // replay cursor so a terminal event that landed between the snapshot
+    // and the physical subscription is replayed, never lost.
+    const resumeSeq = await hydratePastTurns();
+    subscribeEvents(client, resumeSeq);
     try {
       // Round-8 F1 / phase 84a — gate the topology probe behind the
       // runtime's advertised capabilities. A planner/RunLoop runtime
@@ -1870,7 +1914,6 @@
     // hosted App panels so a fullscreen / pip app stays inside the identity
     // boundary and the unified approval / OAuth gates.
     appHostClient = makeMCPAppHostClient(client);
-    subscribeEvents(client);
     void refreshSessionList();
     void refreshArtifacts();
     void refreshTools();

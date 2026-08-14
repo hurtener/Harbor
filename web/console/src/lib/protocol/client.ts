@@ -663,14 +663,31 @@ export class EventsNamespace {
 	 * `auth.ScopeAdmin` / `auth.ScopeConsoleFleet`, D-079). The bearer
 	 * token rides as `access_token` — `EventSource` cannot carry an
 	 * `Authorization` header.
+	 *
+	 * `resumeSeq` is the snapshot-to-live handoff cursor (HA-64 / D-425):
+	 * the durable turn page's `live_resume_seq`, seeded as the narrowly
+	 * named `?resume_seq=` query param so the stream replays events
+	 * strictly newer than the durable fold before live-tailing. The
+	 * stream server uses it ONLY when the reconnect `Last-Event-ID`
+	 * header is absent — a browser reconnect replays from its own
+	 * cursor, never from this initial snapshot. Omitted/undefined keeps
+	 * the URL byte-identical (no param).
 	 */
-	subscribeURL(opts: { eventTypes?: string[]; admin?: boolean; session?: string } = {}): string {
+	subscribeURL(opts: {
+		eventTypes?: string[];
+		admin?: boolean;
+		session?: string;
+		resumeSeq?: number;
+	} = {}): string {
 		const url = new URL(`${this.#t.baseURL}/v1/events`);
 		for (const t of opts.eventTypes ?? []) {
 			url.searchParams.append('type', t);
 		}
 		if (opts.admin) {
 			url.searchParams.set('admin', '1');
+		}
+		if (opts.resumeSeq !== undefined) {
+			url.searchParams.set('resume_seq', String(opts.resumeSeq));
 		}
 		url.searchParams.set('access_token', this.#t.token);
 		// D-171 — EventSource cannot set the `X-Harbor-Session` header, so
