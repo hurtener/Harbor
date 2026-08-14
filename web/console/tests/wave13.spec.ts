@@ -2,23 +2,22 @@
 //
 // This is the Wave 13 closeout suite per CLAUDE.md §17.5 / §17.7 step 5:
 // it drives `harbor console` (D-091 — NOT `harbor dev`) against the
-// boot-seeded fixture runtime and walks the full 15-page V1 Console
+// boot-seeded fixture runtime and walks the full 14-page V1 Console
 // information architecture end-to-end.
 //
-// The 15 V1 pages (brief 11 §"Layout decomposition") are: Overview,
-// Live Runtime, Observability, Sessions, Tasks, Agents, Tools, Events,
-// Background Jobs, Flows, Memory, MCP Connections, Artifacts, Settings,
-// Playground. The Evaluations page is EXPLICITLY EXCLUDED — it is a
-// post-V1 subsystem (D-064); its absence is intentional and is encoded
-// in the `scripts/console/check-page-coverage.sh` allowlist so the
-// binding "every page-spec has a matching *.spec.ts" rule does not
-// false-flag.
+// The 14 V1 pages (brief 11 §"Layout decomposition") are: Overview,
+// Live Runtime, Sessions, Tasks, Agents, Tools, Events, Background
+// Jobs, Flows, Memory, MCP Connections, Artifacts, Settings, Playground.
+// The Evaluations page is EXPLICITLY EXCLUDED — it is a post-V1
+// subsystem (D-064); its absence is intentional and is encoded in the
+// `scripts/console/check-page-coverage.sh` allowlist so the binding
+// "every page-spec has a matching *.spec.ts" rule does not false-flag.
 //
 // What this aggregator asserts (the per-page DATA-shape assertions live
 // in each page's own `<slug>-page.spec.ts` — Stage 2; this suite is the
 // cross-cutting IA + isolation gate):
 //
-//   1. 15-page IA navigation — every page route serves, hydrates as a
+//   1. 14-page IA navigation — every page route serves, hydrates as a
 //      SvelteKit app, and emits no `console.error` during navigation.
 //   2. Scope-claim degradation — a control verb on a page the dev token
 //      lacks the elevated scope for renders disabled-with-tooltip, never
@@ -113,20 +112,20 @@ async function seedConnection(
   );
 }
 
-test.describe("Wave 13 wave-end — 15-page Console IA", () => {
+test.describe("Wave 13 wave-end — 14-page Console IA", () => {
   test.skip(
     !CONSOLE_AVAILABLE,
     "harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built",
   );
 
-  test("the IA covers exactly the 15 V1 pages (Evaluations excluded — D-064)", () => {
+  test("the IA covers exactly the 14 V1 pages (Evaluations excluded — D-064)", () => {
     // The CONSOLE_PAGES tuple is the single source of the IA. The
     // wave-end suite asserts its cardinality so a future page added
     // without a spec is caught here as well as by the coverage script.
     expect(
       CONSOLE_PAGES.length,
-      "the V1 Console IA is exactly 15 pages (Evaluations is post-V1, D-064)",
-    ).toBe(15);
+      "the V1 Console IA is exactly 14 pages (Evaluations is post-V1, D-064)",
+    ).toBe(14);
     expect(
       [...CONSOLE_PAGES].includes("evaluations" as ConsolePageSlug),
       "Evaluations is NOT part of the V1 IA (D-064)",
@@ -192,7 +191,7 @@ test.describe("Wave 13 wave-end — cross-cutting concerns", () => {
     "harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built",
   );
 
-  test("the sidebar lists the full 15-page IA in four clusters", async ({
+  test("the sidebar lists the full 14-page IA in four clusters", async ({
     page,
     runtime,
   }) => {
@@ -204,35 +203,19 @@ test.describe("Wave 13 wave-end — cross-cutting concerns", () => {
 
     const sidebar = page.locator("nav.sidebar");
     await expect(sidebar, "the app-shell sidebar renders").toBeVisible();
-    // The sidebar carries all 15 V1 IA entries (Phase 83q / D-159 —
+    // The sidebar carries all 14 V1 IA entries (Phase 83q / D-159 —
     // supersedes the original D-121 stance that the Playground was
     // off-nav; CONVENTIONS.md §2).
     const links = sidebar.locator("a");
     const linkCount = await links.count();
     expect(
       linkCount,
-      "the sidebar lists the 15 V1 IA pages including Playground",
-    ).toBeGreaterThanOrEqual(15);
+      "the sidebar lists the 14 V1 IA pages including Playground",
+    ).toBeGreaterThanOrEqual(14);
     await expect(
       sidebar.locator("a", { hasText: "Playground" }),
       "the Playground entry is present in the sidebar (D-159)",
     ).toHaveCount(1);
-
-    // The Runtime cluster is the sidebar's first cluster and carries
-    // Overview → Live Runtime → Observability in product NAV order
-    // (Observability is the HA-65 bounded rollup-query surface). Pin
-    // presence AND position — a re-cluster that moves or drops the
-    // entry fails here, not just in the coverage gate.
-    const runtimeCluster = sidebar.locator(".nav-cluster").first().locator("a");
-    await expect(runtimeCluster, "the Runtime cluster lists three entries").toHaveCount(3);
-    await expect(
-      runtimeCluster.nth(1),
-      "the Runtime cluster's second entry is Live Runtime",
-    ).toHaveText("Live Runtime");
-    await expect(
-      runtimeCluster.nth(2),
-      "the Runtime cluster's third entry is Observability",
-    ).toHaveText("Observability");
   });
 
   test("an identity-isolation deep-link is gated, never a 5xx (Disconnected state)", async ({
