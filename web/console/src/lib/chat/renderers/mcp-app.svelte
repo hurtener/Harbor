@@ -26,6 +26,18 @@
   //      resolveArtifact → artifacts.get_ref). EITHER content source feeds the
   //      SAME sandboxed `srcdoc` — heavy bytes are NEVER inlined through the
   //      context plane, only fetched at the iframe edge.
+  //
+  //      On a deployment where the operator left the opt-in surface OFF
+  //      (`tools.mcp_app_render_admission.enabled: false` — the DEFAULT), the
+  //      opt-in read fails with the Runtime's PRECISE unwired posture
+  //      (`runtime_error` naming "render-admission authority is not wired"),
+  //      NOT a typed refusal. The renderer restores the pre-admission
+  //      behavior then: a LIVE ref still carrying the legacy `binding` falls
+  //      back EXACTLY ONCE to the ordinary NON-minting `readResource` and
+  //      dispatches callbacks on the binding ALONE (never both authorities);
+  //      a durable reopen with no binding shows the explicit admission safe
+  //      state — the unwired surface can never mint the fresh admission a
+  //      reopened app requires, so its callbacks could never be authorized.
   //   3. Wrap the HTML with the strict CSP and load it into the iframe via
   //      `srcdoc` under a sandbox with NO `allow-same-origin` — the iframe
   //      is forced to an opaque origin (no parent-DOM / cookie / localStorage
@@ -41,6 +53,7 @@
     containerDimensionsFromBox,
     DEFAULT_HOST_INFO,
     type MCPAppRenderAdmission,
+    type MCPAppRenderDocument,
     type MCPAppToolContext,
     type McpUiDisplayMode
   } from './app-bridge-host.js';
@@ -74,7 +87,12 @@
   // mint / re-mint the render admission that authorizes its callbacks, after
   // the single bounded refresh. Mounting an iframe whose every callback would
   // be refused is a silent lie about what the turn produced; the explicit safe
-  // state says so instead.
+  // state says so instead. It is ALSO the landing state for a durable reopen
+  // on a disabled surface (`tools.mcp_app_render_admission.enabled: false` —
+  // the default): the ref carries no legacy binding (the durable view never
+  // serializes render authority) and the unwired Runtime can never mint the
+  // fresh admission such a reopen requires, so no callback authority exists
+  // and none can be obtained — the frame must not mount.
   type LoadState = 'loading' | 'ready' | 'error' | 'empty' | 'unavailable' | 'closed' | 'admission';
 
   let loadState = $state<LoadState>('loading');
@@ -259,6 +277,35 @@
     onDisplayModeRequest?.({ requested: mode, granted: mode });
   }
 
+  /**
+   * True when the opt-in document read failed with the Runtime's PRECISE
+   * unwired posture: `runtime_error` naming that the render-admission
+   * authority is not wired — the compatible surface of
+   * `tools.mcp_app_render_admission.enabled: false` (the default), where the
+   * opt-in read fails through the unwired seam while ordinary reads and the
+   * legacy binding stay byte-for-byte unchanged.
+   *
+   * Deliberately duck-typed: the chat module may not import the Protocol
+   * error class (D-091), and the wire gives only `{code, message}`. The
+   * message is the discriminator — the SAME `runtime_error` code also covers
+   * an enabled surface whose authorization seam failed, and that posture must
+   * NOT fall back (it stays fail-closed in the loud error state). Matching
+   * the stable "authority is not wired" wording is the ONLY precise marker of
+   * the disabled surface; every other denial (a typed current-conditions
+   * refusal — which arrives as a RESPONSE, not a throw — tamper, expiry,
+   * foreign identity, resource mismatch, a disabled tool/source) is a
+   * different shape and fails closed.
+   */
+  function isUnwiredRenderAdmissionRuntimeError(err: unknown): boolean {
+    if (err === null || typeof err !== 'object') return false;
+    const e = err as { code?: unknown; message?: unknown };
+    return (
+      e.code === 'runtime_error' &&
+      typeof e.message === 'string' &&
+      e.message.includes('render-admission authority is not wired on this runtime')
+    );
+  }
+
   async function preload(): Promise<void> {
     if (!app || !serverID || !appHostClient) {
       loadState = 'empty';
@@ -335,7 +382,48 @@
       //    `resources/read` handler stays on the ordinary NON-minting
       //    `readResource`, so an App can never mint callback authority merely
       //    by requesting another resource.
-      let resource = await appHostClient.readRenderDocument(serverID, app.resourceUri, app.agentId);
+      //
+      //    The opt-in read's PRECISE unwired posture — the Runtime answering
+      //    `runtime_error` with "render-admission authority is not wired on
+      //    this runtime" — is the compatible surface of
+      //    `tools.mcp_app_render_admission.enabled: false` (the DEFAULT):
+      //    the Runtime wires it so the opt-in read fails through the unwired
+      //    seam while ordinary reads and the legacy binding stay unchanged.
+      //    On a LIVE turn whose ref still carries the legacy `binding`,
+      //    restore that rendering: retry EXACTLY ONCE with the ordinary
+      //    NON-minting `readResource` and dispatch callbacks on the binding
+      //    ALONE (never both authorities). A ref WITHOUT a binding (durable
+      //    reopen — the durable view never serializes render authority)
+      //    cannot authorize any callback and none can be minted while the
+      //    surface is unwired; show the explicit admission safe state instead
+      //    of a generic failure. Every other error — a typed
+      //    current-conditions refusal (handled below), tamper, expiry,
+      //    foreign identity, resource mismatch, a disabled tool/source, an
+      //    authorization-seam failure — stays fail-closed: it throws and
+      //    lands in the loud error state, never a silent downgrade.
+      let resource: MCPAppRenderDocument;
+      try {
+        resource = await appHostClient.readRenderDocument(serverID, app.resourceUri, app.agentId);
+      } catch (err) {
+        if (stale()) return;
+        if (!isUnwiredRenderAdmissionRuntimeError(err)) {
+          // NOT the disabled-surface posture: fail closed, loud.
+          throw err;
+        }
+        if (!app.binding) {
+          // Durable reopen with no legacy binding: no authority exists to
+          // dispatch callbacks with (and the unwired surface can mint none),
+          // so mounting the frame would be the silent lie the admission safe
+          // state exists to prevent. Show it explicitly — never the generic
+          // App load failure, never the tool-context miss.
+          loadState = 'admission';
+          return;
+        }
+        // The legacy live binding authorizes this render's callbacks: one
+        // ordinary NON-minting read for the document; the bridge dispatches
+        // on the binding alone (renderAdmission stays undefined).
+        resource = await appHostClient.readResource(serverID, app.resourceUri, app.agentId);
+      }
       if (stale()) return;
       // A TYPED `unavailable` admission is the Runtime's closed "no admission
       // minted" answer (empty/unknown current provider/catalog generation, or

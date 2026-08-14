@@ -167,6 +167,18 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       // `readResource` above never does, and the sandboxed App can only
       // reach the ordinary path through the bridge's `resources/read`
       // handler (D-173).
+      //
+      // NOTE on the DISABLED surface: when the operator left the opt-in
+      // surface OFF (`tools.mcp_app_render_admission.enabled: false` — the
+      // default), the Runtime answers this distinct read with the PRECISE
+      // unwired posture — `runtime_error`, message "render-admission
+      // authority is not wired on this runtime" — NOT with a typed
+      // `unavailable` admission. That is the compatible surface the Runtime
+      // wires deliberately: ordinary reads and the legacy binding stay
+      // byte-for-byte unchanged. The renderer recovers EXACTLY that posture
+      // (one ordinary `readResource` fallback + binding-only dispatch, or
+      // the explicit admission safe state when the ref carries no binding);
+      // any other error shape is never downgraded.
       const res = await client.mcp.servers.readResource<ReadMCPResourceResponse>(
         serverID,
         resourceURI,

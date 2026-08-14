@@ -135,6 +135,20 @@ interface CallRecord {
 const TOKEN_A = 'opaque-sealed-render-token-A';
 const TOKEN_B = 'opaque-sealed-render-token-B';
 
+/**
+ * The Runtime's PRECISE unwired-posture answer to the opt-in read when the
+ * operator left the surface OFF (`tools.mcp_app_render_admission.enabled:
+ * false` — the default): `runtime_error` naming that the render-admission
+ * authority is not wired (internal/protocol/apps.go::mintRenderAdmission).
+ * This is the shape the P1 fix recovers — it is NOT a typed `unavailable`
+ * admission and NOT the broken-gate "authorization failed" runtime_error.
+ */
+const UNWIRED_RUNTIME_ERROR = {
+  code: 'runtime_error',
+  message:
+    'method "mcp.servers.read_resource": render-admission authority is not wired on this runtime',
+};
+
 function admission(
   token: string,
   availability: 'available' | 'unavailable' = 'available',
@@ -704,5 +718,120 @@ describe('McpAppRenderer — pre-mount render admission (HA-56)', () => {
 
     unmount(componentA);
     unmount(componentB);
+  });
+
+  it('an UNWIRED opt-in read (runtime_error) with a legacy live binding restores the ordinary read + binding-only dispatch', async () => {
+    // The P1 regression: `tools.mcp_app_render_admission.enabled: false`
+    // (the default) makes the opt-in read throw the Runtime's precise
+    // unwired runtime_error instead of returning a typed refusal. A LIVE
+    // ref still carrying the legacy binding must render exactly as it did
+    // before HA-56: one ordinary NON-minting read for the document, and
+    // callbacks dispatched on the binding ALONE — never both authorities.
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const { client, docReads, reads, calls } = makeFakeClient();
+    docReads.mockRejectedValue(UNWIRED_RUNTIME_ERROR);
+    const component = await mountAndConnect(target, client, {
+      ...APP,
+      binding: 'legacy-binding-token',
+    });
+
+    // The opt-in read ran exactly ONCE (the unwired throw is NOT re-read —
+    // no minting retry, no loop), then the renderer fell back EXACTLY ONCE
+    // to the ordinary non-minting read.
+    expect(docReads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledWith('srv', 'ui://srv/app.html', undefined);
+    // The app mounted with the fallback document and NO safe state.
+    expect(captured.instances).toHaveLength(1);
+    expect(frameOf(target)).not.toBeNull();
+    expect(admissionPlaceholder(target)).toBeNull();
+    expect(target.querySelector("[data-testid='mcp-app-unavailable']")).toBeNull();
+    const bridge = captured.instances[0];
+    bridge.fireInitialized();
+    flushSync();
+
+    // An app-initiated callback executes EXACTLY ONCE, dispatched on the
+    // legacy binding ONLY — the renderAdmission slot stays empty (never
+    // both authorities).
+    await bridge.oncalltool?.({ name: 'echo', arguments: { q: 1 } });
+    expect(calls).toHaveBeenCalledTimes(1);
+    const record = recordOf(calls);
+    expect(record.serverID).toBe('srv');
+    expect(record.tool).toBe('srv_echo');
+    expect(record.binding).toBe('legacy-binding-token');
+    expect(record.renderAdmission).toBeUndefined();
+
+    unmount(component);
+  });
+
+  it('an UNWIRED opt-in read (runtime_error) with NO binding shows the admission safe state — no ordinary read, no iframe, no miss', async () => {
+    // The P1 regression, durable-reopen shape: the ref carries no legacy
+    // binding (render authority is never serialized into the durable view)
+    // and the unwired surface can never mint the fresh admission a reopened
+    // app requires. The renderer must land in the EXPLICIT admission safe
+    // state — never a generic App load failure, never the tool-context
+    // miss, never a dead iframe whose every callback would be refused.
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const { client, docReads, reads, calls } = makeFakeClient();
+    docReads.mockRejectedValue(UNWIRED_RUNTIME_ERROR);
+    const component = await mountAndConnect(target, client);
+
+    // The opt-in read ran exactly ONCE. No ordinary-read fallback was
+    // attempted (there is no authority to authorize callbacks with), and no
+    // minting retry loop ran.
+    expect(docReads).toHaveBeenCalledTimes(1);
+    expect(reads).not.toHaveBeenCalled();
+    // The admission safe state, not the tool-context miss, not the generic
+    // error state, not a mounted frame.
+    expect(admissionPlaceholder(target)).not.toBeNull();
+    expect(admissionPlaceholder(target)?.textContent).toContain('could not be authorized');
+    expect(target.querySelector("[data-testid='mcp-app-unavailable']")).toBeNull();
+    expect(target.querySelector("[data-state='error']")).toBeNull();
+    expect(frameOf(target)).toBeNull();
+    expect(captured.instances).toHaveLength(0);
+    // No callback was ever dispatched, and no authority bytes exist anywhere
+    // the sandbox could have touched.
+    expect(calls).not.toHaveBeenCalled();
+    expect(target.innerHTML).not.toContain(TOKEN_A);
+
+    unmount(component);
+  });
+
+  it('a NON-unwired runtime_error does NOT fall back — the opt-in read fails closed in the generic error state', async () => {
+    // The fallback is gated on the PRECISE unwired posture ONLY. A runtime
+    // error from an ENABLED surface whose authorization seam broke (or any
+    // other runtime failure) must NOT downgrade to the ordinary read + legacy
+    // binding — even with a live binding present. This pins the fail-closed
+    // boundary of the P1 fix: only the stable "authority is not wired" wording
+    // opens the fallback.
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const { client, docReads, reads, calls } = makeFakeClient();
+    docReads.mockRejectedValue({
+      code: 'runtime_error',
+      message:
+        'method "mcp.servers.read_resource": render-admission authorization failed: gate blew up',
+    });
+    const component = await mountAndConnect(target, client, {
+      ...APP,
+      binding: 'legacy-binding-token',
+    });
+
+    // Exactly ONE opt-in read; NO ordinary-read fallback despite the live
+    // binding, NO mount, NO admission safe state — the loud generic error.
+    expect(docReads).toHaveBeenCalledTimes(1);
+    expect(reads).not.toHaveBeenCalled();
+    expect(target.querySelector("[data-state='error']")).not.toBeNull();
+    expect(frameOf(target)).toBeNull();
+    expect(captured.instances).toHaveLength(0);
+    expect(admissionPlaceholder(target)).toBeNull();
+    expect(calls).not.toHaveBeenCalled();
+
+    unmount(component);
   });
 });
