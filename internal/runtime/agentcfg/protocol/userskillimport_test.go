@@ -167,9 +167,57 @@ func importTestSealer(t *testing.T) agentcfgprotocol.UserSkillImportProposalSeal
 	return sealer
 }
 
+// Failure-injection sentinels (test-scope only, never used by production):
+// each is wrapped by the spy together with its 1-based call index, so tests
+// assert errors.Is through the service's own wrapping (including the joined
+// compensation-failure path).
+var (
+	errImportSimulatedPut      = errors.New("simulated installed-package put backend failure")
+	errImportSimulatedSaveIf   = errors.New("simulated state saveif backend failure")
+	errImportSimulatedDeleteIf = errors.New("simulated state deleteif backend failure")
+)
+
+// importSkillPutCall is ONE recorded PutInstalledPackage invocation: the
+// 1-based call index, the effective agent, the atomic unit, the exact
+// conditional predicate, and the replace consent. The failure-injection tests
+// assert the exact write shape from this log instead of guessing.
+type importSkillPutCall struct {
+	idx     int
+	agentID string
+	pkg     skills.InstalledPackage
+	cond    skills.InstalledPackageCondition
+	replace bool
+}
+
+// importStateSaveIfCall is ONE recorded SaveIf invocation: the 1-based call
+// index, the exact expectation set, and the next record (whose EventID is the
+// generation the following conditional write must bind).
+type importStateSaveIfCall struct {
+	idx          int
+	expectations []state.SlotExpectation
+	next         state.StateRecord
+}
+
+// importStateDeleteIfCall is ONE recorded DeleteIf invocation: the 1-based
+// call index and the exact slot expectation it targeted.
+type importStateDeleteIfCall struct {
+	idx int
+	exp state.SlotExpectation
+}
+
+// cloneStateRecord deep-copies a StateRecord's Bytes so the call log never
+// aliases driver-returned or caller-owned memory.
+func cloneStateRecord(r state.StateRecord) state.StateRecord {
+	out := r
+	out.Bytes = append([]byte(nil), r.Bytes...)
+	return out
+}
+
 // importSkillStoreSpy wraps the real localdb store and counts every MUTATION
 // method — the ZERO-write validate contract and the exactly-once commit
-// contract are asserted against these counters.
+// contract are asserted against these counters. The fail-at-index knob fails
+// the PutInstalledPackage call at exactly one deterministic 1-based index
+// (0 disables) with a genuine backend error — never a global flag.
 type importSkillStoreSpy struct {
 	skills.SkillStore
 	mu sync.Mutex
@@ -180,12 +228,21 @@ type importSkillStoreSpy struct {
 	deleteAgent      int
 	deleteInstalled  int
 	restoreInstalled int
+	// fail-at-exact-call-index knob + ordered put call log.
+	failPutInstalledAt int
+	putLog             []importSkillPutCall
 }
 
 func (s *importSkillStoreSpy) PutInstalledPackage(ctx context.Context, id identity.Quadruple, agentID string, pkg skills.InstalledPackage, cond skills.InstalledPackageCondition, replace bool) (skills.InstalledPackageReceipt, error) {
 	s.mu.Lock()
 	s.putInstalled++
+	idx := s.putInstalled
+	fail := s.failPutInstalledAt > 0 && idx == s.failPutInstalledAt
+	s.putLog = append(s.putLog, importSkillPutCall{idx: idx, agentID: agentID, pkg: pkg, cond: cond, replace: replace})
 	s.mu.Unlock()
+	if fail {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w (put call %d)", errImportSimulatedPut, idx)
+	}
 	return s.SkillStore.PutInstalledPackage(ctx, id, agentID, pkg, cond, replace)
 }
 
@@ -230,11 +287,29 @@ func (s *importSkillStoreSpy) counts() (put, upsert, del, delAgent, delInstalled
 	return s.putInstalled, s.upsert, s.delete, s.deleteAgent, s.deleteInstalled, s.restoreInstalled
 }
 
+// setFailPutInstalledAt arms the spy to fail the PutInstalledPackage call at
+// exactly this 1-based index with a genuine backend error (0 disarms).
+func (s *importSkillStoreSpy) setFailPutInstalledAt(idx int) {
+	s.mu.Lock()
+	s.failPutInstalledAt = idx
+	s.mu.Unlock()
+}
+
+// putLogSnapshot returns a copy of every recorded put invocation in call
+// order.
+func (s *importSkillStoreSpy) putLogSnapshot() []importSkillPutCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]importSkillPutCall(nil), s.putLog...)
+}
+
 // importStateStoreSpy wraps the in-memory StateStore and counts every MUTATION
 // method (Save / SaveIf / DeleteIf / Delete). The ZERO-write validate
 // contract asserts these counters stay zero; the failWrites mode additionally
 // turns any attempted write into an error so a regression fails loudly at the
-// call site, not just at the assertion.
+// call site, not just at the assertion. The fail-at-index knobs fail the
+// SaveIf / DeleteIf invocation at exactly one deterministic 1-based index
+// (0 disables) with a GENUINE backend error — never a global flag.
 type importStateStoreSpy struct {
 	state.StateStore
 	mu         sync.Mutex
@@ -243,6 +318,11 @@ type importStateStoreSpy struct {
 	deleteIfs  int
 	deletes    int
 	failWrites bool
+	// fail-at-exact-call-index knobs + ordered conditional-write call logs.
+	failSaveIfAt   int
+	failDeleteIfAt int
+	saveIfLog      []importStateSaveIfCall
+	deleteIfLog    []importStateDeleteIfCall
 }
 
 func (s *importStateStoreSpy) Save(ctx context.Context, r state.StateRecord) error {
@@ -259,10 +339,14 @@ func (s *importStateStoreSpy) Save(ctx context.Context, r state.StateRecord) err
 func (s *importStateStoreSpy) SaveIf(ctx context.Context, exp []state.SlotExpectation, next state.StateRecord) error {
 	s.mu.Lock()
 	s.saveIfs++
-	fail := s.failWrites
+	idx := s.saveIfs
+	fail := s.failWrites || (s.failSaveIfAt > 0 && idx == s.failSaveIfAt)
+	s.saveIfLog = append(s.saveIfLog, importStateSaveIfCall{
+		idx: idx, expectations: append([]state.SlotExpectation(nil), exp...), next: cloneStateRecord(next),
+	})
 	s.mu.Unlock()
 	if fail {
-		return fmt.Errorf("state write forbidden during validate")
+		return fmt.Errorf("%w (saveif call %d)", errImportSimulatedSaveIf, idx)
 	}
 	return s.StateStore.SaveIf(ctx, exp, next)
 }
@@ -270,10 +354,12 @@ func (s *importStateStoreSpy) SaveIf(ctx context.Context, exp []state.SlotExpect
 func (s *importStateStoreSpy) DeleteIf(ctx context.Context, exp state.SlotExpectation) (bool, error) {
 	s.mu.Lock()
 	s.deleteIfs++
-	fail := s.failWrites
+	idx := s.deleteIfs
+	fail := s.failWrites || (s.failDeleteIfAt > 0 && idx == s.failDeleteIfAt)
+	s.deleteIfLog = append(s.deleteIfLog, importStateDeleteIfCall{idx: idx, exp: exp})
 	s.mu.Unlock()
 	if fail {
-		return false, fmt.Errorf("state write forbidden during validate")
+		return false, fmt.Errorf("%w (deleteif call %d)", errImportSimulatedDeleteIf, idx)
 	}
 	return s.StateStore.DeleteIf(ctx, exp)
 }
@@ -299,6 +385,38 @@ func (s *importStateStoreSpy) setFailWrites(fail bool) {
 	s.mu.Lock()
 	s.failWrites = fail
 	s.mu.Unlock()
+}
+
+// setFailSaveIfAt arms the spy to fail the SaveIf call at exactly this 1-based
+// index with a genuine backend error (0 disarms).
+func (s *importStateStoreSpy) setFailSaveIfAt(idx int) {
+	s.mu.Lock()
+	s.failSaveIfAt = idx
+	s.mu.Unlock()
+}
+
+// setFailDeleteIfAt arms the spy to fail the DeleteIf call at exactly this
+// 1-based index with a genuine backend error (0 disarms).
+func (s *importStateStoreSpy) setFailDeleteIfAt(idx int) {
+	s.mu.Lock()
+	s.failDeleteIfAt = idx
+	s.mu.Unlock()
+}
+
+// saveIfLogSnapshot returns a copy of every recorded SaveIf invocation in
+// call order.
+func (s *importStateStoreSpy) saveIfLogSnapshot() []importStateSaveIfCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]importStateSaveIfCall(nil), s.saveIfLog...)
+}
+
+// deleteIfLogSnapshot returns a copy of every recorded DeleteIf invocation in
+// call order.
+func (s *importStateStoreSpy) deleteIfLogSnapshot() []importStateDeleteIfCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]importStateDeleteIfCall(nil), s.deleteIfLog...)
 }
 
 // fakeBootOwner is the injected boot-baseline ownership reader (the HA-66
@@ -438,6 +556,58 @@ func (fx *importFixture) validateCommit(t *testing.T, id identity.Identity, agen
 func (fx *importFixture) commitKind(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return "agentcfg.user_skill_import.commit." + hex.EncodeToString(sum[:])
+}
+
+// writeLedgerRecord installs a raw commit-ledger JSON payload at a token's
+// derived slot. Tests use it to deterministically construct the mid-flight
+// (committing) and terminal (committed) ledger states the state machine must
+// resume or refuse.
+func (fx *importFixture) writeLedgerRecord(t *testing.T, q identity.Quadruple, token string, payload map[string]any) {
+	t.Helper()
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode ledger record: %v", err)
+	}
+	rec := state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: fx.commitKind(token), Bytes: b}
+	if err := fx.proposals.Save(context.Background(), rec); err != nil {
+		t.Fatalf("save ledger record: %v", err)
+	}
+}
+
+// ledgerRecord decodes the durable commit-ledger slot of a token so tests can
+// assert the exact slot contents (phase, written hash, receipt presence).
+func (fx *importFixture) ledgerRecord(t *testing.T, q identity.Quadruple, token string) map[string]any {
+	t.Helper()
+	rec, err := fx.proposals.Load(context.Background(), q, fx.commitKind(token))
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rec.Bytes, &m); err != nil {
+		t.Fatalf("decode ledger: %v", err)
+	}
+	return m
+}
+
+// assertNoInstalledWinner asserts the target key holds NO installed package
+// and NO legacy ScopeUser membership row — the atomic unit IS the membership,
+// so a failed transactional put must leave neither (no orphan body, no orphan
+// membership).
+func (fx *importFixture) assertNoInstalledWinner(t *testing.T, ctx context.Context, name string) {
+	t.Helper()
+	q := importQuad(importUserA)
+	if _, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, name); !errors.Is(err, skills.ErrInstalledPackageNotFound) {
+		t.Fatalf("installed winner at %q must be absent: err=%v", name, err)
+	}
+	legacy, err := fx.store.List(ctx, q, skills.ListFilter{Scope: skills.ScopeUser, AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("legacy membership list: %v", err)
+	}
+	for _, sk := range legacy {
+		if sk.Name == name {
+			t.Fatalf("orphan membership row survived: %+v", sk)
+		}
+	}
 }
 
 // tamperLedger rewrites the durable commit-ledger slot's JSON (used to
@@ -1572,5 +1742,579 @@ func TestUserSkillImport_ConcurrentMixedIdentities_N100(t *testing.T) {
 	}
 	if after > baseline+2 {
 		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic state-machine failure injection (the HA-61 P1 review surface)
+// ---------------------------------------------------------------------------
+
+// TestUserSkillImport_Commit_PutFailureCompensatesExactMarker asserts the
+// failed-put compensation contract: when the ONE atomic PutInstalledPackage
+// write fails AFTER the token-derived committing marker landed, the service
+// conditionally deletes EXACTLY that marker (never an empty generation, never
+// a different kind), leaves no package or membership winner, fails loud, and
+// a retry performs exactly one clean atomic install (no orphan, no false
+// success, no cross-proposal deletion).
+func TestUserSkillImport_Commit_PutFailureCompensatesExactMarker(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	q := importQuad(importUserA)
+	kind := fx.commitKind(validated.ProposalToken)
+
+	// The FIRST (and only) put attempt fails with a genuine backend error.
+	fx.store.setFailPutInstalledAt(1)
+	_, err = fx.svc.Commit(ctx, req)
+	if err == nil {
+		t.Fatalf("put-failure commit must fail loud")
+	}
+	if !strings.Contains(err.Error(), "put installed package") {
+		t.Fatalf("put-failure error = %v, want the loud put wrap", err)
+	}
+	put, upsert, del, delAgent, delInstalled, restore := fx.store.counts()
+	if put != 1 || upsert != 0 || del != 0 || delAgent != 0 || delInstalled != 0 || restore != 0 {
+		t.Fatalf("put-failure mutation counters put=%d upsert=%d delete=%d deleteAgent=%d deleteInstalled=%d restore=%d",
+			put, upsert, del, delAgent, delInstalled, restore)
+	}
+	// The attempted write was a create-only absent-condition put of the
+	// reviewed unit — a different proposal's winner can never be targeted.
+	putCalls := fx.store.putLogSnapshot()
+	if len(putCalls) != 1 || putCalls[0].cond != (skills.InstalledPackageCondition{ExpectedAbsent: true}) ||
+		putCalls[0].replace || putCalls[0].pkg.PackageHash != validated.PackageHash {
+		t.Fatalf("failed put call = %+v, want one create-only absent-condition put of the reviewed unit", putCalls)
+	}
+
+	// The compensation ran EXACTLY ONCE and targeted ONLY the marker this
+	// commit wrote: same identity, same token-derived kind, and the exact
+	// committing-marker EventID.
+	markerCalls := fx.proposals.saveIfLogSnapshot()
+	if len(markerCalls) != 1 {
+		t.Fatalf("saveif calls = %d, want exactly the one marker", len(markerCalls))
+	}
+	marker := markerCalls[0]
+	if marker.expectations[0].Identity != q || marker.expectations[0].Kind != kind || marker.expectations[0].ExpectedEventID != "" {
+		t.Fatalf("marker SaveIf expectation = %+v, want the absent slot under %s", marker.expectations[0], kind)
+	}
+	if marker.next.Identity != q || marker.next.Kind != kind {
+		t.Fatalf("marker SaveIf next = %+v, want identity+kind under %s", marker.next, kind)
+	}
+	delCalls := fx.proposals.deleteIfLogSnapshot()
+	if len(delCalls) != 1 {
+		t.Fatalf("deleteif calls = %d, want exactly the one compensation", len(delCalls))
+	}
+	comp := delCalls[0]
+	if comp.exp.Identity != q || comp.exp.Kind != kind || comp.exp.ExpectedEventID != marker.next.ID {
+		t.Fatalf("compensation DeleteIf = %+v, want the exact marker %s under %s", comp.exp, marker.next.ID, kind)
+	}
+
+	// The slot was restored to the genuinely absent pre-operation state and
+	// no package/membership winner exists anywhere.
+	if _, err := fx.proposals.Load(context.Background(), q, kind); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("commit-ledger slot after compensation err=%v, want ErrNotFound (absent restored)", err)
+	}
+	fx.assertNoInstalledWinner(t, ctx, "demo-skill")
+
+	// A retry is a clean fresh commit: exactly ONE further atomic put, a
+	// single winner, the terminal committed receipt.
+	fx.store.setFailPutInstalledAt(0)
+	retried, err := fx.svc.Commit(ctx, req)
+	if err != nil {
+		t.Fatalf("retry commit: %v", err)
+	}
+	if retried.Replayed {
+		t.Fatalf("retry after compensation must not be a replay")
+	}
+	if retried.Receipt.WrittenHash != validated.PackageHash {
+		t.Fatalf("retry receipt hash %q != reviewed %q", retried.Receipt.WrittenHash, validated.PackageHash)
+	}
+	put, _, _, _, _, _ = fx.store.counts()
+	if put != 2 {
+		t.Fatalf("retry put count = %d, want 2 (one failed attempt + one clean install)", put)
+	}
+	winner, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, "demo-skill")
+	if err != nil || winner.PackageHash != validated.PackageHash {
+		t.Fatalf("winner after retry err=%v hash=%q", err, winner.PackageHash)
+	}
+	ledger := fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committed" {
+		t.Fatalf("ledger phase after retry = %v, want committed", ledger["phase"])
+	}
+	if _, ok := ledger["receipt"]; !ok {
+		t.Fatalf("committed ledger lacks the exact receipt")
+	}
+}
+
+// TestUserSkillImport_Commit_MarkerSaveIfBackendFailure_ZeroPutStableRefusal
+// asserts the absent-slot committing-marker SaveIf failure branch: a GENUINE
+// backend error (not ErrConditionFailed) surfaces loud and typed, performs
+// zero package writes, leaves the ledger slot absent, and is stable across
+// retries while the backend is down; once the backend recovers, a retry is a
+// clean single atomic install.
+func TestUserSkillImport_Commit_MarkerSaveIfBackendFailure_ZeroPutStableRefusal(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	q := importQuad(importUserA)
+	kind := fx.commitKind(validated.ProposalToken)
+
+	// The very first SaveIf (the absent-slot committing marker) fails with a
+	// genuine backend error; the second attempt fails identically at the
+	// next call index while the backend is still down.
+	fx.proposals.setFailSaveIfAt(1)
+	for attempt := 0; attempt < 2; attempt++ {
+		_, commitErr := fx.svc.Commit(ctx, req)
+		if commitErr == nil {
+			t.Fatalf("marker SaveIf failure (attempt %d) must fail loud", attempt)
+		}
+		if !strings.Contains(commitErr.Error(), "mark commit committing") {
+			t.Fatalf("marker SaveIf failure error = %v, want the loud committing-marker wrap", commitErr)
+		}
+		if errors.Is(commitErr, state.ErrConditionFailed) {
+			t.Fatalf("a genuine backend error must not surface as ErrConditionFailed: %v", commitErr)
+		}
+		if errors.Is(commitErr, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+			t.Fatalf("a genuine backend error must not surface as ErrUserSkillImportProposalInvalid: %v", commitErr)
+		}
+		put, _, _, _, _, _ := fx.store.counts()
+		if put != 0 {
+			t.Fatalf("marker SaveIf failure performed a package write: put=%d", put)
+		}
+		// The slot stays genuinely absent — no marker ever landed.
+		if _, err := fx.proposals.Load(context.Background(), q, kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("ledger slot after marker SaveIf failure err=%v, want ErrNotFound", err)
+		}
+		// Arm the next SaveIf call so the next attempt fails identically.
+		_, saveIfs, _, _ := fx.proposals.stateCounts()
+		fx.proposals.setFailSaveIfAt(saveIfs + 1)
+	}
+
+	// Every failed marker SaveIf used the exact token-derived kind and the
+	// absent-slot generation.
+	calls := fx.proposals.saveIfLogSnapshot()
+	if len(calls) != 2 {
+		t.Fatalf("saveif calls = %d, want 2", len(calls))
+	}
+	for i, c := range calls {
+		if c.expectations[0].Identity != q || c.expectations[0].Kind != kind || c.expectations[0].ExpectedEventID != "" {
+			t.Fatalf("saveif %d expectation = %+v, want the absent slot under %s", i, c.expectations[0], kind)
+		}
+		if c.next.Identity != q || c.next.Kind != kind {
+			t.Fatalf("saveif %d next = %+v, want identity+kind under %s", i, c.next, kind)
+		}
+	}
+
+	// Backend recovers: exactly one atomic install, terminal ledger.
+	fx.proposals.setFailSaveIfAt(0)
+	committed, err := fx.svc.Commit(ctx, req)
+	if err != nil {
+		t.Fatalf("retry commit after backend recovery: %v", err)
+	}
+	if committed.Replayed || committed.Receipt.WrittenHash != validated.PackageHash {
+		t.Fatalf("recovered commit = %+v", committed)
+	}
+	put, _, _, _, _, _ := fx.store.counts()
+	if put != 1 {
+		t.Fatalf("recovered commit put = %d, want exactly 1", put)
+	}
+	winner, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, "demo-skill")
+	if err != nil || winner.PackageHash != validated.PackageHash {
+		t.Fatalf("winner after recovery err=%v hash=%q", err, winner.PackageHash)
+	}
+	ledger := fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committed" {
+		t.Fatalf("ledger phase after recovery = %v, want committed", ledger["phase"])
+	}
+}
+
+// TestUserSkillImport_Commit_CommittedTransitionBackendFailure_RetryRecognizesWinner
+// asserts the committed-transition SaveIf failure branch: the put lands but
+// the terminal bookkeeping write fails with a genuine backend error — the
+// first call is loud ("the package IS installed"), the ledger stays in
+// "committing" with the exact written hash, and a retry recognizes the exact
+// installed winner, records the terminal receipt, and never calls Put a
+// second time.
+func TestUserSkillImport_Commit_CommittedTransitionBackendFailure_RetryRecognizesWinner(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	q := importQuad(importUserA)
+	kind := fx.commitKind(validated.ProposalToken)
+
+	// SaveIf #1 (committing marker) succeeds, the put lands, SaveIf #2 (the
+	// committed transition) fails with a genuine backend error.
+	fx.proposals.setFailSaveIfAt(2)
+	_, err = fx.svc.Commit(ctx, req)
+	if err == nil {
+		t.Fatalf("committed-transition failure must fail loud")
+	}
+	if !strings.Contains(err.Error(), "record committed marker") || !strings.Contains(err.Error(), "the package IS installed") {
+		t.Fatalf("committed-transition error = %v, want the loud installed-package wrap", err)
+	}
+	put, _, _, _, _, _ := fx.store.counts()
+	if put != 1 {
+		t.Fatalf("committed-transition failure put = %d, want exactly 1 (the write landed)", put)
+	}
+	// The exact installed winner exists.
+	winner, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, "demo-skill")
+	if err != nil || winner.PackageHash != validated.PackageHash {
+		t.Fatalf("winner err=%v hash=%q", err, winner.PackageHash)
+	}
+	// The ledger is still the mid-flight marker with the exact written hash.
+	ledger := fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committing" || ledger["written_package_hash"] != validated.PackageHash {
+		t.Fatalf("ledger after failed transition = %+v, want committing %s", ledger, validated.PackageHash)
+	}
+	if _, ok := ledger["receipt"]; ok {
+		t.Fatalf("failed transition must not record a receipt: %+v", ledger)
+	}
+
+	// The SaveIf generations chain: marker (absent) → transition (marker
+	// generation) — the failed call carried the exact marker expectation.
+	calls := fx.proposals.saveIfLogSnapshot()
+	if len(calls) != 2 {
+		t.Fatalf("saveif calls = %d, want 2", len(calls))
+	}
+	marker := calls[0]
+	if marker.expectations[0].Identity != q || marker.expectations[0].Kind != kind || marker.expectations[0].ExpectedEventID != "" {
+		t.Fatalf("marker SaveIf expectation = %+v, want the absent slot under %s", marker.expectations[0], kind)
+	}
+	if calls[1].expectations[0].Identity != q || calls[1].expectations[0].Kind != kind || calls[1].expectations[0].ExpectedEventID != marker.next.ID {
+		t.Fatalf("transition SaveIf expectation = %+v, want the exact marker generation", calls[1].expectations[0])
+	}
+
+	// Retry: recognizes the exact installed winner, records the terminal
+	// state, returns the reviewed stable result, and never puts again.
+	fx.proposals.setFailSaveIfAt(0)
+	resumed, err := fx.svc.Commit(ctx, req)
+	if err != nil {
+		t.Fatalf("retry commit: %v", err)
+	}
+	if !resumed.Replayed {
+		t.Fatalf("retry of a landed write must be recognized as a replay")
+	}
+	if resumed.Receipt.WrittenHash != validated.PackageHash || resumed.PackageHash != validated.PackageHash {
+		t.Fatalf("retry terminal result = %+v", resumed)
+	}
+	put, _, _, _, _, _ = fx.store.counts()
+	if put != 1 {
+		t.Fatalf("retry performed a second package write: put=%d, want 1", put)
+	}
+	ledger = fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committed" {
+		t.Fatalf("ledger after retry = %+v, want committed", ledger)
+	}
+	// The resume's terminal-record SaveIf carried the same marker generation.
+	calls = fx.proposals.saveIfLogSnapshot()
+	if len(calls) != 3 {
+		t.Fatalf("saveif calls = %d, want 3", len(calls))
+	}
+	if calls[2].expectations[0].Kind != kind || calls[2].expectations[0].ExpectedEventID != marker.next.ID {
+		t.Fatalf("resume SaveIf expectation = %+v, want the marker generation", calls[2].expectations[0])
+	}
+}
+
+// TestUserSkillImport_ResumeCommitting_TerminalRecordBackendFailure_RetryConverges
+// asserts the resume-committing terminal-record SaveIf failure branch: with
+// the write landed and the ledger reverted to the mid-flight marker, a resume
+// whose terminal-record SaveIf fails with a genuine backend error is loud and
+// performs no second put; a later retry converges to the committed terminal
+// receipt.
+func TestUserSkillImport_ResumeCommitting_TerminalRecordBackendFailure_RetryConverges(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	q := importQuad(importUserA)
+
+	// Land a normal commit (put=1), then rewind the ledger to the mid-flight
+	// committing marker (the write landed, the terminal receipt was lost).
+	if _, err := fx.svc.Commit(ctx, req); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	fx.tamperLedger(t, q, validated.ProposalToken, func(m map[string]any) {
+		m["phase"] = "committing"
+		delete(m, "receipt")
+	})
+
+	// The resume's terminal-record SaveIf is the NEXT SaveIf call; fail it
+	// with a genuine backend error.
+	_, saveIfs, _, _ := fx.proposals.stateCounts()
+	fx.proposals.setFailSaveIfAt(saveIfs + 1)
+	_, err = fx.svc.Commit(ctx, req)
+	if err == nil {
+		t.Fatalf("resume terminal-record failure must fail loud")
+	}
+	if !strings.Contains(err.Error(), "record committed marker") || !strings.Contains(err.Error(), "the package IS installed") {
+		t.Fatalf("resume terminal-record error = %v, want the loud installed-package wrap", err)
+	}
+	put, _, _, _, _, _ := fx.store.counts()
+	if put != 1 {
+		t.Fatalf("failed resume performed a second write: put=%d, want 1", put)
+	}
+	// The ledger is still the mid-flight marker.
+	ledger := fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committing" {
+		t.Fatalf("ledger after failed resume = %+v, want committing", ledger)
+	}
+
+	// A later retry converges: terminal committed receipt, still one put.
+	fx.proposals.setFailSaveIfAt(0)
+	resumed, err := fx.svc.Commit(ctx, req)
+	if err != nil {
+		t.Fatalf("converging retry: %v", err)
+	}
+	if !resumed.Replayed || resumed.Receipt.WrittenHash != validated.PackageHash {
+		t.Fatalf("converging retry = %+v", resumed)
+	}
+	put, _, _, _, _, _ = fx.store.counts()
+	if put != 1 {
+		t.Fatalf("converging retry performed a second write: put=%d, want 1", put)
+	}
+	ledger = fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committed" {
+		t.Fatalf("ledger after converging retry = %+v, want committed", ledger)
+	}
+	winner, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, "demo-skill")
+	if err != nil || winner.PackageHash != validated.PackageHash {
+		t.Fatalf("winner err=%v hash=%q", err, winner.PackageHash)
+	}
+}
+
+// TestUserSkillImport_LedgerConstruction_RefusalsZeroPut deterministically
+// constructs the three durable-ledger states the state machine must
+// resume/refuse and asserts each refusal performs ZERO package writes and
+// mutates no ledger slot:
+//
+//   - a committing ledger whose WrittenPackageHash differs from the current
+//     winner → ErrUserSkillImportConcurrentWinner (one winner; a receipt or
+//     marker never overwrites another commit's winner);
+//   - a committing ledger whose written package never landed (no winner) →
+//     ErrUserSkillImportProposalInvalid — re-validate, never a silent
+//     re-install under a stale marker;
+//   - a committed ledger whose current winner differs from the receipt →
+//     ErrUserSkillImportConcurrentWinner (a replay never serves a receipt
+//     over a different winner).
+func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
+	mdV2 := "---\nname: demo-skill\ntrigger: when asked about the demo\n---\nA changed demo body.\n\n## Steps\n- do the thing\n- also this\n"
+	ctx := importCtx(importUserA, testAgentID)
+	q := importQuad(importUserA)
+
+	t.Run("committing ledger different winner", func(t *testing.T) {
+		fx := newImportFixture(t)
+		// v1 wins the target key.
+		v1, _, err := fx.validateCommit(t, importUserA, testAgentID, map[string]string{"SKILL.md": importSkillMD}, false)
+		if err != nil {
+			t.Fatalf("commit v1: %v", err)
+		}
+		// v2 is reviewed but a different winner holds the key.
+		artifactV2 := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": mdV2})
+		v2, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactV2))
+		if err != nil {
+			t.Fatalf("validate v2: %v", err)
+		}
+		if v2.PackageHash == v1.PackageHash {
+			t.Fatalf("fixture versions must differ")
+		}
+		// A mid-flight marker claiming the v2 write, with v1 still the
+		// winner: resume must refuse loudly, never overwrite.
+		fx.writeLedgerRecord(t, q, v2.ProposalToken, map[string]any{
+			"phase": "committing", "name": "demo-skill", "written_package_hash": v2.PackageHash,
+		})
+		putBefore, _, _, _, _, _ := fx.store.counts()
+		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner) {
+			t.Fatalf("committing-different-winner commit err=%v, want ErrUserSkillImportConcurrentWinner", err)
+		}
+		put, _, _, _, _, _ := fx.store.counts()
+		if put != putBefore {
+			t.Fatalf("refusal performed a package write: put=%d before=%d", put, putBefore)
+		}
+		if _, _, deleteIfs, deletes := fx.proposals.stateCounts(); deleteIfs != 0 || deletes != 0 {
+			t.Fatalf("refusal mutated the ledger: deleteIfs=%d deletes=%d", deleteIfs, deletes)
+		}
+		// v1 is still the winner.
+		winner, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, "demo-skill")
+		if err != nil || winner.PackageHash != v1.PackageHash {
+			t.Fatalf("winner disturbed: err=%v hash=%q", err, winner.PackageHash)
+		}
+	})
+
+	t.Run("committing ledger no winner", func(t *testing.T) {
+		fx := newImportFixture(t)
+		artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+		validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		// The mid-flight marker says the write happened, but no winner ever
+		// landed (a failed put whose inline compensation also failed): the
+		// caller must re-validate, never re-install under the stale marker.
+		fx.writeLedgerRecord(t, q, validated.ProposalToken, map[string]any{
+			"phase": "committing", "name": "demo-skill", "written_package_hash": validated.PackageHash,
+		})
+		putBefore, _, _, _, _, _ := fx.store.counts()
+		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+			t.Fatalf("committing-no-winner commit err=%v, want ErrUserSkillImportProposalInvalid", err)
+		}
+		put, _, _, _, _, _ := fx.store.counts()
+		if put != putBefore {
+			t.Fatalf("refusal performed a package write: put=%d before=%d", put, putBefore)
+		}
+		// The stale marker is refused loudly, never deleted or re-installed.
+		ledger := fx.ledgerRecord(t, q, validated.ProposalToken)
+		if ledger["phase"] != "committing" {
+			t.Fatalf("stale marker mutated: %+v", ledger)
+		}
+		fx.assertNoInstalledWinner(t, ctx, "demo-skill")
+	})
+
+	t.Run("committed ledger different winner", func(t *testing.T) {
+		fx := newImportFixture(t)
+		v1, _, err := fx.validateCommit(t, importUserA, testAgentID, map[string]string{"SKILL.md": importSkillMD}, false)
+		if err != nil {
+			t.Fatalf("commit v1: %v", err)
+		}
+		artifactV2 := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": mdV2})
+		v2, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactV2))
+		if err != nil {
+			t.Fatalf("validate v2: %v", err)
+		}
+		if v2.PackageHash == v1.PackageHash {
+			t.Fatalf("fixture versions must differ")
+		}
+		// A terminal ledger whose receipt names v2 — but v1 still wins the
+		// key: the receipt can never be replayed over a different winner.
+		fx.writeLedgerRecord(t, q, v2.ProposalToken, map[string]any{
+			"phase": "committed", "name": "demo-skill", "written_package_hash": v2.PackageHash,
+			"receipt": map[string]any{
+				"TenantID": "t", "UserID": "u", "AgentID": testAgentID, "Name": "demo-skill",
+				"WrittenHash": v2.PackageHash, "WrittenVersion": "0.1.0",
+			},
+		})
+		putBefore, _, _, _, _, _ := fx.store.counts()
+		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner) {
+			t.Fatalf("committed-different-winner commit err=%v, want ErrUserSkillImportConcurrentWinner", err)
+		}
+		put, _, _, _, _, _ := fx.store.counts()
+		if put != putBefore {
+			t.Fatalf("refusal performed a package write: put=%d before=%d", put, putBefore)
+		}
+		winner, err := fx.store.GetInstalledPackage(ctx, q, testAgentID, "demo-skill")
+		if err != nil || winner.PackageHash != v1.PackageHash {
+			t.Fatalf("winner disturbed: err=%v hash=%q", err, winner.PackageHash)
+		}
+	})
+}
+
+// TestUserSkillImport_Commit_PutAndCompensationBothFail_JoinedLoudNoForeignMutation
+// asserts the failed-compensation branch: when the atomic put fails AND the
+// exact-receipt compensation DeleteIf also fails, the commit returns a JOINED
+// loud error naming both failures, the committing marker stays intact at its
+// exact generation (never deleted, never overwritten, no other proposal's
+// slot touched), no winner exists, and a later retry refuses the stale marker
+// rather than silently re-installing or deleting anything.
+func TestUserSkillImport_Commit_PutAndCompensationBothFail_JoinedLoudNoForeignMutation(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	q := importQuad(importUserA)
+	kind := fx.commitKind(validated.ProposalToken)
+
+	fx.store.setFailPutInstalledAt(1)
+	fx.proposals.setFailDeleteIfAt(1)
+	_, err = fx.svc.Commit(ctx, req)
+	if err == nil {
+		t.Fatalf("put+compensation failure must fail loud")
+	}
+	// The joined error carries BOTH the put failure and the compensation
+	// failure.
+	if !errors.Is(err, errImportSimulatedPut) {
+		t.Fatalf("joined error must expose the put failure: %v", err)
+	}
+	if !errors.Is(err, errImportSimulatedDeleteIf) {
+		t.Fatalf("joined error must expose the compensation failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "put installed package") {
+		t.Fatalf("joined error = %v, want the put wrap", err)
+	}
+	put, upsert, del, delAgent, delInstalled, restore := fx.store.counts()
+	if put != 1 || upsert != 0 || del != 0 || delAgent != 0 || delInstalled != 0 || restore != 0 {
+		t.Fatalf("mutation counters put=%d upsert=%d delete=%d deleteAgent=%d deleteInstalled=%d restore=%d",
+			put, upsert, del, delAgent, delInstalled, restore)
+	}
+
+	// The compensation targeted EXACTLY the marker this commit wrote (the
+	// token-derived kind + the marker's EventID — never an empty generation,
+	// never another kind) and the marker survived because the compensation
+	// failed.
+	delCalls := fx.proposals.deleteIfLogSnapshot()
+	if len(delCalls) != 1 {
+		t.Fatalf("deleteif calls = %d, want 1", len(delCalls))
+	}
+	markerCalls := fx.proposals.saveIfLogSnapshot()
+	if len(markerCalls) != 1 {
+		t.Fatalf("saveif calls = %d, want exactly the one marker", len(markerCalls))
+	}
+	marker := markerCalls[0]
+	if delCalls[0].exp.Identity != q || delCalls[0].exp.Kind != kind || delCalls[0].exp.ExpectedEventID != marker.next.ID {
+		t.Fatalf("compensation DeleteIf = %+v, want the exact marker %s under %s", delCalls[0].exp, marker.next.ID, kind)
+	}
+	rec, err := fx.proposals.Load(context.Background(), q, kind)
+	if err != nil {
+		t.Fatalf("marker must survive a failed compensation: %v", err)
+	}
+	if rec.ID != marker.next.ID {
+		t.Fatalf("marker generation changed: got %s want %s", rec.ID, marker.next.ID)
+	}
+	ledger := fx.ledgerRecord(t, q, validated.ProposalToken)
+	if ledger["phase"] != "committing" || ledger["written_package_hash"] != validated.PackageHash {
+		t.Fatalf("ledger after failed compensation = %+v, want the intact committing marker", ledger)
+	}
+	fx.assertNoInstalledWinner(t, ctx, "demo-skill")
+
+	// No other ledger slot was touched: the ONLY state mutations are this
+	// token's marker SaveIf and its failed compensation DeleteIf — no
+	// deletes, no foreign kinds.
+	_, saveIfs, deleteIfs, deletes := fx.proposals.stateCounts()
+	if saveIfs != 1 || deleteIfs != 1 || deletes != 0 {
+		t.Fatalf("state mutation counts saveIfs=%d deleteIfs=%d deletes=%d, want 1/1/0", saveIfs, deleteIfs, deletes)
+	}
+	if marker.next.Kind != kind {
+		t.Fatalf("marker kind %q != token-derived %q", marker.next.Kind, kind)
+	}
+
+	// A retry of the stale marker refuses loudly with the proposal-invalid
+	// refusal (never a silent re-install under a stale marker, never a
+	// second put, never a compensation delete of a marker it did not write).
+	if _, err := fx.svc.Commit(ctx, req); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+		t.Fatalf("retry under the stale marker err=%v, want ErrUserSkillImportProposalInvalid", err)
+	}
+	put, _, _, _, _, _ = fx.store.counts()
+	if put != 1 {
+		t.Fatalf("retry under the stale marker performed a write: put=%d", put)
 	}
 }
