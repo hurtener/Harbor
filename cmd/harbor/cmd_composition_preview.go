@@ -237,7 +237,7 @@ func runCompositionPreviewAgainst(
 			case http.StatusForbidden:
 				hint = "the token's scope did not authorise the preview — the effective agent must be in the caller's signed agent_reach"
 			case http.StatusNotImplemented:
-				hint = "this Runtime does not wire the composition preview (HA-66) — check the Runtime version"
+				hint = "this Runtime does not ship the composition-preview surface — check the Runtime version and CLI compatibility"
 			}
 			return emit(CLIError{
 				Subcommand: "composition-preview",
