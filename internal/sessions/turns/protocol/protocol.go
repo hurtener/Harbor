@@ -108,9 +108,11 @@
 // `turns.DefaultListLimit` (20) and is capped at `turns.MaxListLimit`
 // (50); out-of-range limits fail loud. The response carries the page's
 // snapshot id (as-of retention generation), as-of instant, the
-// exclusive live-resume sequence (composes with `events.subscribe` as
-// subscribe-before-page from `LiveResumeSeq+1`), and the explicit
-// page completeness / partial reason (`retention_eviction`).
+// exclusive live-resume sequence (the page-before-subscribe
+// boundary: the consumer folds the durable page, establishing
+// bounded membership, before opening `events.subscribe` from
+// `LiveResumeSeq+1`), and the explicit page completeness / partial
+// reason (`retention_eviction`).
 //
 // # Pause actionability is never read from the projection
 //
@@ -298,9 +300,12 @@ type ListResponse struct {
 	CountExact bool
 	// LiveResumeSeq is the durable event-log sequence of the newest
 	// observation reflected in this page — the exclusive live-resume
-	// cursor. A consumer subscribes to the session's event stream from
-	// LiveResumeSeq+1 (subscribe-before-page) for a gap-free
-	// page-to-live handoff.
+	// boundary for the page-before-subscribe handoff. The consumer
+	// folds the durable page (establishing bounded membership) first,
+	// then subscribes to the session's event stream from
+	// LiveResumeSeq+1 — a gap-free page-to-live handoff: nothing the
+	// page reflects is re-processed, and nothing applied after the
+	// read is missed.
 	LiveResumeSeq uint64
 	// PageCompleteness is the explicit page completeness: complete, or
 	// partial (retention eviction — older turns exist in the durable

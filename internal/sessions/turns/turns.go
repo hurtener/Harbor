@@ -98,11 +98,13 @@
 // snapshot as-of, the next older cursor, has_more, the exact
 // older-row remaining count when known, the explicit completeness /
 // partial reason, and a live-resume sequence sufficient to compose
-// subscribe-before-page. The projection is BOUNDED: each session
-// retains only the newest `MaxRetainedTurns` rows (older turns live
-// on in the durable event log and are evicted from the projection,
-// with the truncation made explicit on the page). This is a
-// projection, not a warehouse.
+// the page-before-subscribe handoff: the consumer folds the durable
+// tail page (establishing bounded membership) first, then subscribes
+// from the live-resume boundary. The projection is BOUNDED: each
+// session retains only the newest `MaxRetainedTurns` rows (older
+// turns live on in the durable event log and are evicted from the
+// projection, with the truncation made explicit on the page). This
+// is a projection, not a warehouse.
 //
 // # Lifecycle of a row
 //
