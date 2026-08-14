@@ -18,7 +18,7 @@ cd "${ROOT}"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-244-personal-skill-draft-tool.md "phase 244 plan exists"
 assert_grep_present "D-423" docs/decisions.md "D-423 is recorded (HA-62)"
-assert_grep_present "Shipped (v1.28)" docs/plans/README.md "phase 244 is Shipped (v1.28) in the master plan"
+assert_grep_present "Shipped \(v1\.28\)" docs/plans/README.md "phase 244 is Shipped (v1.28) in the master plan"
 assert_grep_present "skill_create_draft" docs/plans/phase-244-personal-skill-draft-tool.md "draft tool is documented"
 assert_grep_present "disabled-by-default" docs/plans/phase-244-personal-skill-draft-tool.md "disabled-by-default posture is documented"
 assert_grep_present "zero mutation authority" docs/plans/phase-244-personal-skill-draft-tool.md "zero mutation authority is documented"

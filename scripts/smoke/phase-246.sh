@@ -23,7 +23,7 @@ cd "${ROOT}"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-246-durable-conversation-turns.md "phase 246 plan exists"
 assert_grep_present "D-425" docs/decisions.md "D-425 is recorded (HA-64)"
-assert_grep_present "Shipped (v1.28)" docs/plans/README.md "phase 246 is Shipped (v1.28) in the master plan"
+assert_grep_present "Shipped \(v1\.28\)" docs/plans/README.md "phase 246 is Shipped (v1.28) in the master plan"
 assert_grep_present "sessions.turns.list" docs/site/protocol/methods.md "turns.list is a canonical Protocol method"
 assert_grep_present "sessions.turns.get" docs/site/protocol/methods.md "turns.get is a canonical Protocol method"
 assert_grep_present "live_resume_seq" docs/site/protocol/types.md "the wire carries the live_resume_seq resume cursor"

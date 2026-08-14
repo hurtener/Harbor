@@ -21,7 +21,7 @@ cd "${ROOT}"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-245-session-lifecycle-projection.md "phase 245 plan exists"
 assert_grep_present "D-424" docs/decisions.md "D-424 is recorded (HA-63)"
-assert_grep_present "Shipped (v1.28)" docs/plans/README.md "phase 245 is Shipped (v1.28) in the master plan"
+assert_grep_present "Shipped \(v1\.28\)" docs/plans/README.md "phase 245 is Shipped (v1.28) in the master plan"
 assert_grep_present 'projection: "lifecycle"' docs/plans/phase-245-session-lifecycle-projection.md "lifecycle selector is documented"
 assert_grep_present "ZERO enrichment" docs/plans/phase-245-session-lifecycle-projection.md "zero-enrichment lifecycle path is documented"
 assert_grep_present "typed invalid request" docs/plans/phase-245-session-lifecycle-projection.md "counter-filter/sort rejection is documented"

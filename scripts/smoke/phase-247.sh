@@ -25,7 +25,7 @@ cd "${ROOT}"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-247-observability-rollups.md "phase 247 plan exists"
 assert_grep_present "D-426" docs/decisions.md "D-426 is recorded (HA-65)"
-assert_grep_present "Shipped (v1.28)" docs/plans/README.md "phase 247 is Shipped (v1.28) in the master plan"
+assert_grep_present "Shipped \(v1\.28\)" docs/plans/README.md "phase 247 is Shipped (v1.28) in the master plan"
 assert_grep_present "observability.query" docs/site/protocol/methods.md "the one administrative query is observability.query"
 assert_grep_present "best-effort" docs/plans/phase-247-observability-rollups.md "best-effort rollups are documented (never billing-exact)"
 assert_grep_present "watermark" docs/plans/phase-247-observability-rollups.md "durable applied-through watermark is documented"

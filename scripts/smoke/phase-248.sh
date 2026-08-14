@@ -28,7 +28,7 @@ cd "${ROOT}"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-248-boot-operator-skill-baseline.md "phase 248 plan exists"
 assert_grep_present "D-427" docs/decisions.md "D-427 is recorded (HA-66)"
-assert_grep_present "Shipped (v1.28)" docs/plans/README.md "phase 248 is Shipped (v1.28) in the master plan"
+assert_grep_present "Shipped \(v1\.28\)" docs/plans/README.md "phase 248 is Shipped (v1.28) in the master plan"
 assert_grep_present "boot_agent_packs" docs/CONFIG.md "the boot baseline config leaf is documented"
 assert_grep_present "boot_agent_packs" examples/harbor.yaml "the example config documents the boot baseline"
 assert_grep_present "config-file-relative" docs/plans/phase-248-boot-operator-skill-baseline.md "config-file-relative loader is documented"

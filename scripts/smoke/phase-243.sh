@@ -18,7 +18,7 @@ cd "${ROOT}"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-243-consumer-skill-package-import.md "phase 243 plan exists"
 assert_grep_present "D-422" docs/decisions.md "D-422 is recorded (HA-61)"
-assert_grep_present "Shipped (v1.28)" docs/plans/README.md "phase 243 is Shipped (v1.28) in the master plan"
+assert_grep_present "Shipped \(v1\.28\)" docs/plans/README.md "phase 243 is Shipped (v1.28) in the master plan"
 assert_grep_present "import_validate" docs/site/protocol/methods.md "import_validate is a canonical Protocol method"
 assert_grep_present "import_commit" docs/site/protocol/methods.md "import_commit is a canonical Protocol method"
 
