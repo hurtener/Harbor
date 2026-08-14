@@ -24,6 +24,9 @@ func (runSnapshotModeReader) Mode(context.Context, string) (sessionoverlay.Cutov
 	return sessionoverlay.CutoverStateOnly, nil
 }
 
+// runSnapshotReader is a frozen skill surface: it serves the rows the
+// run captured at start and never writes. A compile-time assertion
+// pins it to the complete mandatory SkillStore interface below.
 type runSnapshotReader struct {
 	mu   sync.RWMutex
 	rows map[string]skills.Skill
@@ -124,6 +127,37 @@ func (*runSnapshotReader) DeleteAgent(context.Context, identity.Quadruple, strin
 }
 func (*runSnapshotReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
 func (*runSnapshotReader) Close(context.Context) error                                  { return nil }
+
+// ---- Mandatory installed-package surface (interface parity) ----
+//
+// The frozen snapshot never captures installed-package state, so the
+// reads deterministically report an empty surface with the canonical
+// typed not-found errors a real driver returns for an absent key —
+// never a generic lie about the surface. The mutations are never a
+// write path on this reader and follow the fake's established "not
+// used" convention for the legacy write surface. The run loop and
+// every snapshot test resolve only the SkillReader rungs, so these
+// five methods exist purely so runSnapshotReader remains a valid
+// skills.SkillStore.
+func (*runSnapshotReader) GetInstalledPackage(context.Context, identity.Quadruple, string, string) (skills.InstalledPackage, error) {
+	return skills.InstalledPackage{}, skills.ErrInstalledPackageNotFound
+}
+func (*runSnapshotReader) ResolveSupport(context.Context, identity.Quadruple, string, string, skills.PackageURI) (skills.SupportFile, error) {
+	return skills.SupportFile{}, skills.ErrSupportNotFound
+}
+func (*runSnapshotReader) PutInstalledPackage(context.Context, identity.Quadruple, string, skills.InstalledPackage, skills.InstalledPackageCondition, bool) (skills.InstalledPackageReceipt, error) {
+	return skills.InstalledPackageReceipt{}, errors.New("not used")
+}
+func (*runSnapshotReader) DeleteInstalledPackage(context.Context, identity.Quadruple, string, string, skills.InstalledPackageReceipt) (bool, error) {
+	return false, errors.New("not used")
+}
+func (*runSnapshotReader) RestoreInstalledPackage(context.Context, identity.Quadruple, string, string, skills.InstalledPackageReceipt, skills.InstalledPackage) (bool, error) {
+	return false, errors.New("not used")
+}
+
+// ensure the frozen snapshot reader satisfies the complete mandatory
+// SkillStore surface at compile time.
+var _ skills.SkillStore = (*runSnapshotReader)(nil)
 
 func runSnapshotSkill(q identity.Quadruple, name string, scope skills.Scope) skills.Skill {
 	return skills.Skill{
