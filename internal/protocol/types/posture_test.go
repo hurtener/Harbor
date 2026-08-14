@@ -39,6 +39,8 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 		BuildCommit:       "abc1234",
 		BuildDate:         "2026-05-19T00:00:00Z",
 		BuildGoVersion:    "go1.26.0",
+		FrameworkVersion:  "v1.28.0",
+		FrameworkCommit:   "a052b0c7ef5323480b88869665e0f971b1496767",
 		ProtocolVersion:   types.ProtocolVersion,
 		Capabilities:      []types.Capability{types.CapTaskControl, types.CapRuntimePosture},
 		UptimeSeconds:     3600,
@@ -48,7 +50,11 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	// The additive digest field carries its snake_case wire key.
+	// The additive framework and digest fields carry their snake_case wire keys.
+	if !strings.Contains(string(b), `"framework_version":"v1.28.0"`) ||
+		!strings.Contains(string(b), `"framework_commit":"a052b0c7ef5323480b88869665e0f971b1496767"`) {
+		t.Errorf("RuntimeInfo JSON missing framework provenance keys: %s", b)
+	}
 	if !strings.Contains(string(b), `"wire_surface_digest":"sha256:`) {
 		t.Errorf("RuntimeInfo JSON missing wire_surface_digest key: %s", b)
 	}
@@ -61,6 +67,20 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 	}
 	if out.WireSurfaceDigest != in.WireSurfaceDigest {
 		t.Errorf("WireSurfaceDigest round-trip = %q, want %q", out.WireSurfaceDigest, in.WireSurfaceDigest)
+	}
+}
+
+func TestRuntimeInfo_EmptyFrameworkProvenanceIsOmitted(t *testing.T) {
+	b, err := json.Marshal(types.RuntimeInfo{
+		BuildVersion:   "host-v1",
+		BuildCommit:    "host-commit",
+		BuildGoVersion: "go1.26.0",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "framework_version") || strings.Contains(string(b), "framework_commit") {
+		t.Fatalf("empty framework provenance must be omitted: %s", b)
 	}
 }
 

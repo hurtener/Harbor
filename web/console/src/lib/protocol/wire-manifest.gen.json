@@ -7335,6 +7335,16 @@
           "type": "string"
         },
         {
+          "key": "framework_version",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "framework_commit",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "protocol_version",
           "type": "string"
         },

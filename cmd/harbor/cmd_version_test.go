@@ -104,6 +104,19 @@ func TestBuildHash_Format(t *testing.T) {
 	}
 }
 
+// TestBuildHash_PrefersStampedHarborCommit makes the release provenance
+// executable: a successful -X main.HarborCommit stamp must win over ambient
+// build-info so `harbor version --json` reports the exact release checkout.
+func TestBuildHash_PrefersStampedHarborCommit(t *testing.T) {
+	original := HarborCommit
+	t.Cleanup(func() { HarborCommit = original })
+
+	HarborCommit = "a052b0c7ef5323480b88869665e0f971b1496767"
+	if got := buildHash(); got != HarborCommit {
+		t.Fatalf("buildHash() = %q, want stamped HarborCommit %q", got, HarborCommit)
+	}
+}
+
 // TestCurrentVersionInfo_MirrorsConstants pins the assembly path so a
 // future refactor of versionInfo cannot silently break the contract.
 func TestCurrentVersionInfo_MirrorsConstants(t *testing.T) {
@@ -162,5 +175,26 @@ func TestDisplayVersion_StampedReleaseTags(t *testing.T) {
 				t.Errorf("displayVersion() with stamp %q = %q, want %q", tc.stamp, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFrameworkIdentity_RequiresStampedVersionAndCommit pins the stock CLI
+// rule: runtime.info exposes framework provenance only when release tooling
+// supplied the immutable pair. A source/proxy build's version alone is not an
+// exact source identity and must remain omitted.
+func TestFrameworkIdentity_RequiresStampedVersionAndCommit(t *testing.T) {
+	origVersion, origCommit := HarborVersion, HarborCommit
+	t.Cleanup(func() {
+		HarborVersion, HarborCommit = origVersion, origCommit
+	})
+
+	HarborVersion, HarborCommit = "v1.28.1", "a052b0c7ef5323480b88869665e0f971b1496767"
+	if version, commit := frameworkIdentity(); version != "v1.28.1" || commit != "a052b0c7ef5323480b88869665e0f971b1496767" {
+		t.Fatalf("stamped framework identity = (%q, %q)", version, commit)
+	}
+
+	HarborCommit = "unknown"
+	if version, commit := frameworkIdentity(); version != "" || commit != "" {
+		t.Fatalf("unstamped framework identity = (%q, %q), want omitted", version, commit)
 	}
 }

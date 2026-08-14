@@ -142,6 +142,15 @@ my-first-agent/
 
 `main.go` mirrors `harbor serve`'s `--config` / `--port` / `--bind` flags and reaches the Protocol through the public `sdk/server` facade, so the module builds and serves as a standalone external binary. It is **production-only by construction**: `server.Open` always builds the JWKS verifier from `identity.*` and fails loud when the JWKS source is missing — there is no dev signer and no mock. Your `RegisterTools` runs at the pre-policy catalog seam, so every tool keeps its declared `tools.entries` approval / OAuth / policy wrapping (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
 
+For a release-built host, also set `server.Options.Framework` to the exact
+Harbor version and immutable source commit your release pins. `runtime.info`
+then exposes additive `framework_version` / `framework_commit` fields while
+its existing `build_*` fields keep reporting the host binary's own build
+metadata. The scaffold intentionally leaves `Framework` zero: it knows the Go
+module requirement but cannot truthfully infer the immutable commit selected by
+your release process. Set both values together in release configuration; a
+partial pair fails `server.Open` loud.
+
 Because the server verifies every request against your identity provider's JWK Set, the **local-development loop** is the three-command `harbor token` flow — the same loop a self-hosted `harbor serve` operator uses:
 
 ```bash

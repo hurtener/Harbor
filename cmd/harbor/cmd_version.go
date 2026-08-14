@@ -10,7 +10,8 @@
 //     DISTINCT from HarborVersion and versioned independently — a
 //     Runtime refactor that bumps the release version need not bump
 //     the Protocol version, and vice versa.
-//   - the VCS build hash from runtime/debug.ReadBuildInfo().
+//   - the exact release commit when stamped, otherwise the VCS build hash
+//     from runtime/debug.ReadBuildInfo().
 //
 // Human-mode output (default), pinned:
 //
@@ -44,13 +45,16 @@ type versionInfo struct {
 	BuildHash string `json:"build_hash"`
 }
 
-// buildHash extracts the VCS revision from runtime/debug.ReadBuildInfo
-// when available. Returns "unknown" when the binary was not built with
-// VCS info (e.g. `go run` or a test binary). The "unknown" sentinel is
-// the load-bearing operator signal that "this is not a release build"
-// — silent degradation to an empty string is forbidden per CLAUDE.md
-// §5 / §13.
+// buildHash returns a link-stamped exact release commit when one is present;
+// otherwise it extracts the VCS revision from runtime/debug.ReadBuildInfo.
+// It returns "unknown" when neither provenance source is available (e.g.
+// `go run` or a test binary). The "unknown" sentinel is the load-bearing
+// operator signal that "this is not a release build" — silent degradation to
+// an empty string is forbidden per CLAUDE.md §5 / §13.
 func buildHash() string {
+	if HarborCommit != "" && HarborCommit != "unknown" {
+		return HarborCommit
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"

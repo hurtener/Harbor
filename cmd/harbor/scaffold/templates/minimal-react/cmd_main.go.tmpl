@@ -120,6 +120,10 @@ func run() error {
 	}
 	{{end}}
 	h, err := server.Open(ctx, cfg, server.Options{
+		// This scaffold cannot know the immutable Harbor source commit your
+		// release uses. Set Framework to its exact version+commit in release
+		// build configuration; leave it zero for local development. runtime.info
+		// then exposes additive framework_* provenance without changing build_*.
 		// RegisterTools registers this project's compiled tools at the
 		// pre-policy catalog seam, so each keeps its declared approval /
 		// OAuth / policy wrapping from tools.entries in harbor.yaml.

@@ -47,10 +47,10 @@ type RuntimeInfo struct {
 	// Runtime. Empty when the operator configured none — never the
 	// host's machine name without explicit operator config.
 	DisplayName string `json:"display_name,omitempty"`
-	// BuildVersion is the Harbor build version string (e.g. a release
-	// tag or a `v0.0.0-dev` dev marker).
+	// BuildVersion is the hosting binary's build version string (e.g. a
+	// release tag or a `v0.0.0-dev` dev marker).
 	BuildVersion string `json:"build_version"`
-	// BuildCommit is the VCS revision the binary was built from, or
+	// BuildCommit is the VCS revision the hosting binary was built from, or
 	// "unknown" when the build carried no VCS stamp.
 	BuildCommit string `json:"build_commit"`
 	// BuildDate is the build timestamp (RFC 3339), or empty when the
@@ -59,6 +59,15 @@ type RuntimeInfo struct {
 	// BuildGoVersion is the Go toolchain version the binary was built
 	// with.
 	BuildGoVersion string `json:"build_go_version"`
+	// FrameworkVersion is the explicitly supplied Harbor framework product
+	// version. It is distinct from BuildVersion because an external host can
+	// compile Harbor into an application with independent build metadata.
+	// Omitted when the host did not supply framework provenance.
+	FrameworkVersion string `json:"framework_version,omitempty"`
+	// FrameworkCommit is the explicitly supplied immutable Harbor framework
+	// source revision for FrameworkVersion. Omitted with FrameworkVersion when
+	// the host did not supply framework provenance.
+	FrameworkCommit string `json:"framework_commit,omitempty"`
 	// ProtocolVersion is the pinned Harbor Protocol version the Runtime
 	// speaks (the ProtocolVersion constant). A client parses it and
 	// checks Version.Compatible against its own.

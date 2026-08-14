@@ -44,6 +44,20 @@ import (
 // the serving facade never stands up a server from nothing.
 var ErrConfigRequired = errors.New("server: a config or a config path is required")
 
+// ErrFrameworkIdentityIncomplete is returned when an external host supplies
+// only one half of its explicit Harbor framework identity. runtime.info emits
+// framework provenance as an immutable pair, so callers must provide both.
+var ErrFrameworkIdentityIncomplete = errors.New("server: framework identity requires both version and commit")
+
+// FrameworkIdentity is the Harbor framework release compiled into an external
+// host. It is an explicit product identity, not metadata for the host program
+// itself. The all-empty value omits framework provenance; a non-empty value
+// must provide Version and Commit together.
+type FrameworkIdentity struct {
+	Version string
+	Commit  string
+}
+
 // Handle is the running Protocol server a successful Open returns. It
 // wraps the serve band's lifecycle so Close reports an error return for
 // symmetry with Serve.
@@ -95,7 +109,7 @@ func (h *Handle) WaitReady(ctx context.Context) (string, error) { return h.h.Wai
 // this output (e.g. a co-launch binary that captures stderr so Bubble Tea
 // frames are never overwritten) should call OpenWithStderr instead.
 func Open(ctx context.Context, cfg *config.Config, configPath string, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
-	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog)
+	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog, FrameworkIdentity{})
 }
 
 // OpenWithStderr is Open with an explicit stderr sink. A nil stderr
@@ -105,7 +119,7 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 // buffer so the terminal stays clean for Bubble Tea. The slog logger
 // the serve band builds also writes to this sink when the caller does
 // not inject its own logger.
-func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
+func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error, framework FrameworkIdentity) (*Handle, error) {
 	if cfg == nil {
 		if configPath == "" {
 			return nil, ErrConfigRequired
@@ -120,6 +134,10 @@ func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, 
 		stderr = os.Stderr
 	}
 
+	resolvedFramework, err := resolveFrameworkIdentity(framework)
+	if err != nil {
+		return nil, err
+	}
 	version, commit := buildIdentity()
 	boot, err := serve.Boot(ctx, serve.Options{
 		Config:          cfg,
@@ -136,6 +154,8 @@ func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, 
 		InstanceID:           serve.InstanceID("harbor-server"),
 		BuildVersion:         version,
 		BuildCommit:          commit,
+		FrameworkVersion:     resolvedFramework.Version,
+		FrameworkCommit:      resolvedFramework.Commit,
 		Stderr:               stderr,
 		// No LLM-snapshot builder is injected → the default production
 		// projection applies; a missing real provider fails loud at
@@ -145,6 +165,19 @@ func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, 
 		return nil, err
 	}
 	return &Handle{h: boot}, nil
+}
+
+// resolveFrameworkIdentity validates the explicit Harbor framework identity a
+// host elects to expose. The zero value omits framework_version and
+// framework_commit while buildIdentity continues to report host metadata.
+func resolveFrameworkIdentity(framework FrameworkIdentity) (FrameworkIdentity, error) {
+	if framework.Version == "" && framework.Commit == "" {
+		return FrameworkIdentity{}, nil
+	}
+	if framework.Version == "" || framework.Commit == "" {
+		return FrameworkIdentity{}, ErrFrameworkIdentityIncomplete
+	}
+	return framework, nil
 }
 
 // buildIdentity resolves the hosting binary's build identity from the Go

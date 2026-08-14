@@ -84,6 +84,7 @@ func TestScaffold_WithServer_EmitsServerMain(t *testing.T) {
 		"package main",
 		`"github.com/hurtener/Harbor/sdk/server"`,
 		"server.Open(ctx, cfg, server.Options{",
+		"Set Framework to its exact version+commit in release",
 		"RegisterCatalog: agent.RegisterTools,",
 	} {
 		if !strings.Contains(string(mainSrc), want) {

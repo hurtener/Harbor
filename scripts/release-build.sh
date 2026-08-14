@@ -9,11 +9,13 @@
 #
 # What it does:
 #   1. Derives the product release version (RELEASE_VERSION below).
-#   2. Builds the CGo-free static `harbor` binary with the version
-#      stamped into `main.HarborVersion` via `go build -ldflags -X`.
+#   2. Builds the CGo-free static `harbor` binary with the version and exact
+#      source commit stamped into `main.HarborVersion` / `main.HarborCommit`
+#      via `go build -ldflags -X`.
 #   3. Emits the binary plus a SHA-256 checksum into the output dir.
 #   4. Verifies the built binary's `harbor version` actually reports
-#      the stamped version — a stamp that didn't take is a loud failure.
+#      the stamped version and exact commit — a stamp that didn't take is a
+#      loud failure.
 #
 # Version resolution (in priority order):
 #   - $HARBOR_RELEASE_VERSION, if set and non-empty (the release
@@ -27,7 +29,7 @@
 # Distinct from the Protocol version: HarborVersion is the PRODUCT
 # release version of the binary; `internal/protocol/types.ProtocolVersion`
 # is the Runtime↔Console wire contract version (RFC §5.3). They move
-# independently — this script stamps only the former.
+# independently — this script stamps only the product provenance.
 #
 # Usage:
 #   scripts/release-build.sh [OUTPUT_DIR]
@@ -36,6 +38,8 @@
 # Environment:
 #   HARBOR_RELEASE_VERSION   override the derived version (the workflow
 #                            sets this from the tag ref)
+#   HARBOR_RELEASE_COMMIT    override the exact source commit (normally the
+#                            checked-out tag's full HEAD revision)
 #   GOOS / GOARCH            standard Go cross-build knobs (honoured;
 #                            the artifact name carries the os/arch)
 
@@ -71,6 +75,21 @@ resolve_version() {
 
 RELEASE_VERSION="$(resolve_version)"
 
+resolve_commit() {
+    if [ -n "${HARBOR_RELEASE_COMMIT:-}" ]; then
+        printf '%s' "${HARBOR_RELEASE_COMMIT}"
+        return 0
+    fi
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        git rev-parse --verify HEAD 2>/dev/null || true
+    fi
+}
+
+RELEASE_COMMIT="$(resolve_commit)"
+if [ -z "${RELEASE_COMMIT}" ]; then
+    RELEASE_COMMIT="unknown"
+fi
+
 # The HOST platform — captured with GOOS / GOARCH explicitly cleared so
 # `go env` reports the true runner platform even when this build is a
 # cross-build (a set GOOS env var makes `go env GOOS` echo the override,
@@ -91,7 +110,7 @@ if [ "${GOOS_VAL}" = "windows" ]; then
     ARTIFACT_NAME="${ARTIFACT_NAME}.exe"
 fi
 
-echo "release-build: version=${RELEASE_VERSION} os=${GOOS_VAL} arch=${GOARCH_VAL}"
+echo "release-build: version=${RELEASE_VERSION} commit=${RELEASE_COMMIT} os=${GOOS_VAL} arch=${GOARCH_VAL}"
 echo "release-build: output dir=${OUT_DIR}"
 
 # ---------------------------------------------------------------------------
@@ -112,14 +131,14 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Build the CGo-free static binary with the version stamped in.
 #    CGO_ENABLED=0 + -ldflags='-s -w' is the CLAUDE.md §5 invariant; the
-#    extra `-X` clause stamps the release version into main.HarborVersion.
+#    extra `-X` clauses stamp the release version and exact source commit.
 # ---------------------------------------------------------------------------
 mkdir -p "${OUT_DIR}"
 BIN_PATH="${OUT_DIR}/${ARTIFACT_NAME}"
 
 CGO_ENABLED=0 go build \
     -trimpath \
-    -ldflags="-s -w -X 'main.HarborVersion=${RELEASE_VERSION}'" \
+    -ldflags="-s -w -X 'main.HarborVersion=${RELEASE_VERSION}' -X 'main.HarborCommit=${RELEASE_COMMIT}'" \
     -o "${BIN_PATH}" \
     ./cmd/harbor
 
@@ -144,17 +163,27 @@ echo "release-build: wrote checksum ${CHECKSUM_PATH}"
 # ---------------------------------------------------------------------------
 # 5. Verify the stamp took. A cross-built binary cannot be exec'd here,
 #    so this check runs only for a native build (GOOS/GOARCH unchanged).
-#    Fail loudly if `harbor version` does not report the stamped string.
+#    Fail loudly if `harbor version` does not report both stamped values.
 # ---------------------------------------------------------------------------
 if [ "${GOOS_VAL}" = "${HOST_GOOS}" ] && [ "${GOARCH_VAL}" = "${HOST_GOARCH}" ]; then
     REPORTED="$("${BIN_PATH}" version --json)"
     case "${REPORTED}" in
         *"\"harbor\":\"${RELEASE_VERSION}\""*)
-            echo "release-build: verified — harbor version reports ${RELEASE_VERSION}"
             ;;
         *)
             echo "release-build: FAIL — version stamp did not take." >&2
             echo "  expected harbor=${RELEASE_VERSION}" >&2
+            echo "  got: ${REPORTED}" >&2
+            exit 1
+            ;;
+    esac
+    case "${REPORTED}" in
+        *"\"build_hash\":\"${RELEASE_COMMIT}\""*)
+            echo "release-build: verified — harbor version reports ${RELEASE_VERSION} at ${RELEASE_COMMIT}"
+            ;;
+        *)
+            echo "release-build: FAIL — commit stamp did not take." >&2
+            echo "  expected build_hash=${RELEASE_COMMIT}" >&2
             echo "  got: ${REPORTED}" >&2
             exit 1
             ;;

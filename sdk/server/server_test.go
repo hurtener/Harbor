@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -8,12 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 	// Production driver aggregator — the same blank import a served
 	// binary adds. It resolves the real stores/bus the boot opens.
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
@@ -101,6 +105,14 @@ func writeRSAJWKS(t *testing.T, pub *rsa.PublicKey) string {
 // validConfig returns a validated *config.Config with a live jwks_file.
 func validConfig(t *testing.T) *config.Config {
 	t.Helper()
+	cfg, _ := validConfigAndKey(t)
+	return cfg
+}
+
+// validConfigAndKey returns a valid config and the matching signing key so an
+// integration test can exercise the authenticated runtime.info wire surface.
+func validConfigAndKey(t *testing.T) (*config.Config, *rsa.PrivateKey) {
+	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("rsa: %v", err)
@@ -111,7 +123,47 @@ func validConfig(t *testing.T) *config.Config {
 	if err != nil {
 		t.Fatalf("LoadFromBytes: %v", err)
 	}
-	return cfg
+	return cfg, priv
+}
+
+// readRuntimeInfo calls the authenticated runtime.info surface exposed by a
+// public sdk/server Handle. It keeps the framework-provenance tests at the
+// real wire boundary instead of asserting private serving-band state.
+func readRuntimeInfo(t *testing.T, addr string, priv *rsa.PrivateKey) types.RuntimeInfo {
+	t.Helper()
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": "https://issuer.example.com", "aud": "harbor", "sub": "sdkserver-user",
+		"exp": now.Add(time.Hour).Unix(), "nbf": now.Add(-time.Minute).Unix(), "iat": now.Unix(),
+		"tenant": "sdkserver-tenant", "user": "sdkserver-user", "session": "sdkserver-session",
+	})
+	token.Header["kid"] = "sdkserver-test"
+	signed, err := token.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	body := []byte(`{"identity":{"tenant":"sdkserver-tenant","user":"sdkserver-user","session":"sdkserver-session"}}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"http://"+addr+"/v1/control/runtime.info", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new runtime.info request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+signed)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("runtime.info: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("runtime.info status = %d", resp.StatusCode)
+	}
+	var info types.RuntimeInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		t.Fatalf("decode runtime.info: %v", err)
+	}
+	return info
 }
 
 // TestOpen_ProductionBoot_SucceedsAndCloses proves the facade boots a
@@ -215,6 +267,113 @@ func TestOpen_FromConfigFile_LoadsAndBoots(t *testing.T) {
 	defer c()
 	if err := h.Close(cc); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestOpen_FrameworkIdentity_ReportsPinnedHarbor proves the public facade
+// passes the host's explicit Harbor identity all the way to the authenticated
+// runtime.info response, rather than relying on linker variables or the host
+// application's Go build metadata.
+func TestOpen_FrameworkIdentity_ReportsPinnedHarbor(t *testing.T) {
+	cfg, priv := validConfigAndKey(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := server.Open(ctx, cfg, server.Options{Framework: server.FrameworkIdentity{
+		Version: "v1.28.0",
+		Commit:  "a052b0c7ef5323480b88869665e0f971b1496767",
+	}})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		if err := h.Close(cc); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- h.Serve(ctx) }()
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer readyCancel()
+	addr, err := h.WaitReady(readyCtx)
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	info := readRuntimeInfo(t, addr, priv)
+	if info.FrameworkVersion != "v1.28.0" || info.FrameworkCommit != "a052b0c7ef5323480b88869665e0f971b1496767" {
+		t.Fatalf("runtime.info framework identity = (%q, %q)", info.FrameworkVersion, info.FrameworkCommit)
+	}
+	if info.BuildVersion == "" || info.BuildCommit == "" {
+		t.Fatalf("runtime.info host build identity = (%q, %q), want non-empty legacy fallback", info.BuildVersion, info.BuildCommit)
+	}
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after context cancellation")
+	}
+}
+
+// TestOpen_EmptyFrameworkOmitsProvenance proves the zero-valued new option is
+// wire-compatible: host build fields keep their legacy fallback and the
+// additive framework fields stay absent.
+func TestOpen_EmptyFrameworkOmitsProvenance(t *testing.T) {
+	cfg, priv := validConfigAndKey(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := server.Open(ctx, cfg, server.Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		cc, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		if err := h.Close(cc); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- h.Serve(ctx) }()
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer readyCancel()
+	addr, err := h.WaitReady(readyCtx)
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	info := readRuntimeInfo(t, addr, priv)
+	if info.FrameworkVersion != "" || info.FrameworkCommit != "" {
+		t.Fatalf("zero Framework runtime.info = (%q, %q), want omitted", info.FrameworkVersion, info.FrameworkCommit)
+	}
+	if info.BuildVersion == "" || info.BuildCommit == "" {
+		t.Fatalf("runtime.info host build identity = (%q, %q), want non-empty legacy fallback", info.BuildVersion, info.BuildCommit)
+	}
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after context cancellation")
+	}
+}
+
+func TestOpen_FrameworkIdentityRejectsPartialValue(t *testing.T) {
+	_, err := server.Open(context.Background(), validConfig(t), server.Options{
+		Framework: server.FrameworkIdentity{Version: "v1.28.0"},
+	})
+	if !errors.Is(err, server.ErrFrameworkIdentityIncomplete) {
+		t.Fatalf("Open partial Framework error = %v, want ErrFrameworkIdentityIncomplete", err)
 	}
 }
 

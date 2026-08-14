@@ -50,6 +50,8 @@ assert_file "scripts/release-build.sh" "release build script exists"
 assert_file "scripts/release-dryrun.sh" "release dry-run script exists"
 assert_grep_present "main.HarborVersion=" "scripts/release-build.sh" \
     "release build stamps main.HarborVersion via -ldflags -X"
+assert_grep_present "main.HarborCommit=" "scripts/release-build.sh" \
+    "release build stamps main.HarborCommit via -ldflags -X"
 assert_grep_present 'CGO_ENABLED=0' "scripts/release-build.sh" \
     "release build is CGo-free (static binary)"
 assert_grep_present '^release-build:' "Makefile" \

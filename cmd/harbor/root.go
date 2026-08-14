@@ -47,6 +47,13 @@ import (
 // this variable carries.
 var HarborVersion = "v0.0.0-dev"
 
+// HarborCommit is the immutable Harbor source revision carried by a release
+// artifact. scripts/release-build.sh stamps it from the checkout's full HEAD
+// commit alongside HarborVersion. An un-stamped build keeps "unknown" and
+// deliberately omits framework provenance from runtime.info rather than
+// pairing a guessed revision with a product version.
+var HarborCommit = "unknown"
+
 // displayVersion resolves the version shown on operator-facing surfaces
 // (RuntimeInfo.BuildVersion, the TUI banner). The DISPLAY contract
 // differs deliberately from the scaffold's MODULE resolution
@@ -67,6 +74,17 @@ func displayVersion() string {
 		return info.Main.Version
 	}
 	return scaffold.FallbackModuleVersion + "-dev"
+}
+
+// frameworkIdentity returns the Harbor product provenance a runtime may expose
+// separately from its hosting binary's build metadata. Both values are either
+// present or absent: proxy installs and source builds can know a version while
+// lacking the immutable source commit, so they must not manufacture a pair.
+func frameworkIdentity() (version, commit string) {
+	if HarborCommit == "" || HarborCommit == "unknown" {
+		return "", ""
+	}
+	return displayVersion(), HarborCommit
 }
 
 // releaseDisplayRE matches the version strings a binary may legitimately

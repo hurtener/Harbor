@@ -221,6 +221,11 @@ type Options struct {
 	// BuildVersion / BuildCommit stamp runtime.info's build identity.
 	BuildVersion string
 	BuildCommit  string
+	// FrameworkVersion / FrameworkCommit optionally stamp the Harbor framework
+	// provenance in runtime.info for an external host whose own build identity
+	// is independent of the framework it embeds.
+	FrameworkVersion string
+	FrameworkCommit  string
 	// DevAllowMock stamps the Serve start log's dev_allow_mock attribute —
 	// the dev caller sets it when the mock escape hatch fired so an operator
 	// reading the boot line sees the dev-only posture. A stamp only; the mock
@@ -1002,6 +1007,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		InstanceID:                     opts.InstanceID,
 		BuildVersion:                   opts.BuildVersion,
 		BuildCommit:                    opts.BuildCommit,
+		FrameworkVersion:               opts.FrameworkVersion,
+		FrameworkCommit:                opts.FrameworkCommit,
 		TopologyAvailable:              false,
 		RenderAdmissionAuthority:       admissionAuthority,
 		RenderAdmissionGate:            admissionGate,
