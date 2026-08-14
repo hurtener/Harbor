@@ -574,6 +574,31 @@
   // sendMessage adapter consults it to route the message correctly.
   let activeTaskID = $state<string | null>(null);
 
+  // HA-64 / D-425 (P1) — the task ids of durable turn rows the fold
+  // rendered while still in flight (`pending` / `running` / `paused`).
+  // This page did NOT start these tasks (activeTaskID stays null for
+  // them), so without this admission `handleChunk` / `handleTerminal`
+  // would reject every live chunk and the terminal event, and the
+  // reopened bubble would freeze at the fold snapshot forever. The set
+  // is populated ONLY from authoritative `sessions.turns.list` rows in
+  // `foldTurnRows` and pruned on terminal convergence — never widened
+  // to arbitrary session events. Plain (non-reactive) because it is read
+  // only from event handlers, never rendered.
+  let reopenedLiveTaskIDs = new Set<string>();
+
+  // The durable row statuses that keep a fold-rendered turn eligible for
+  // the live lane (the closed in-flight set).
+  const LIVE_TURN_STATUSES = new Set(['pending', 'running', 'paused']);
+
+  // Explicit follow-up, not fabricated proof: the turn page's
+  // `live_resume_seq` — the exclusive subscribe-from cursor (HA-64) —
+  // cannot be bound on this page today, because the accepted client seam
+  // `events.subscribeURL` accepts no resume sequence. The open subscribes
+  // BEFORE the turns.list read and terminal convergence re-reads the
+  // sealed row, so a sub-second snapshot-to-connect window does not corrupt
+  // the final bubble; closing it with a resume cursor is a deliberate
+  // follow-up (a client-seam extension), not part of this fix.
+
   // FIFO queue of "send when current run terminates" messages. The
   // lifecycle watcher below drains the queue with `start` calls as
   // soon as activeTaskID becomes null.
@@ -669,14 +694,25 @@
   // pending agent bubble. Only the `content` channel grows the answer
   // body; `reasoning` deltas land in the accordion at completion, not
   // inline. Done flips the bubble's streaming flag off.
+  //
+  // HA-64 / D-425 (P1) — a chunk is admitted for the locally-started
+  // task (activeTaskID) OR for a reopened in-flight turn the fold
+  // rendered from `sessions.turns.list` (reopenedLiveTaskIDs); any other
+  // task id is ignored, so the live lane never widens to arbitrary
+  // session events. For a reopened turn only the `content` channel is
+  // projected: its durable bubble already carries the row's DERIVED
+  // reasoning summary, and appending raw thinking would corrupt it — the
+  // sealed row's derived summary converges at terminal instead.
   function handleChunk(ev: ChunkEvent): void {
-    if (ev.taskID !== activeTaskID) return;
+    if (ev.taskID !== activeTaskID && !reopenedLiveTaskIDs.has(ev.taskID)) return;
     if (ev.delta !== '') {
       // The content channel grows the answer body; the reasoning channel
       // grows the live "Reasoning" disclosure (108a — runtime reasoning
       // emit fixed in the corrections layer). Neither pollutes the other.
       if (ev.kind === 'reasoning') {
-        messages = applyReasoningChunk(messages, ev.taskID, ev.delta);
+        if (ev.taskID === activeTaskID) {
+          messages = applyReasoningChunk(messages, ev.taskID, ev.delta);
+        }
       } else {
         messages = applyChunk(messages, ev.taskID, ev.delta);
         // 108a-D — live tokens/sec from the content-chunk rate.
@@ -691,6 +727,31 @@
     }
   }
 
+  // Converges one task's agent bubble to a post-terminal message, or
+  // inserts the message right after the turn's user bubble when the fold
+  // rendered no agent bubble for it (a reopened turn that was running
+  // with nothing renderable at reopen). `fallback === null` inserts
+  // nothing. The insert only runs when no agent message for the task
+  // matched, so it can never duplicate the bubble; it keeps timeline
+  // order by sitting directly under the turn's user bubble.
+  function convergeOrInsertAgent(
+    msgs: ChatMessage[],
+    taskID: string,
+    update: (m: ChatMessage) => ChatMessage,
+    fallback: ChatMessage | null
+  ): ChatMessage[] {
+    let matched = false;
+    const mapped = msgs.map((m) => {
+      if (m.taskID !== taskID || m.role !== 'agent') return m;
+      matched = true;
+      return update(m);
+    });
+    if (matched || fallback === null) return mapped;
+    const idx = mapped.findIndex((m) => m.taskID === taskID && m.role === 'user');
+    if (idx === -1) return [...mapped, fallback];
+    return [...mapped.slice(0, idx + 1), fallback, ...mapped.slice(idx + 1)];
+  }
+
   // handleTerminal reconciles a completed/failed/cancelled turn. On
   // completion it fetches the authoritative sealed turn via ONE
   // `sessions.turns.get` (HA-64 / D-425 — the bounded terminal reconciliation
@@ -700,12 +761,23 @@
   // derived reasoning summary, usage availability, bounded activity, App
   // refs) so the completed bubble renders from the SAME consumer-safe read
   // model the reopen path renders — identical skeletons before/after restart.
+  //
+  // HA-64 / D-425 (P1) — the reconcile ALSO admits a reopened in-flight
+  // turn (a task the fold rendered from `sessions.turns.list` while it was
+  // still running/paused, tracked in `reopenedLiveTaskIDs`): its terminal
+  // event converges its durable bubble to the sealed row exactly like the
+  // locally-started path, with exactly one `sessions.turns.get`. The task
+  // is pruned from the eligible set BEFORE the read, so a redelivered
+  // terminal frame is a no-op rather than a second reconcile.
   async function handleTerminal(ev: LifecycleEvent): Promise<void> {
     // Drop any pending intervention parked on this run — a terminal
     // task can never still be awaiting an operator decision.
     interventions = interventions.filter((i) => i.runID !== ev.taskID);
-    if (ev.taskID !== activeTaskID) return;
     const taskID = ev.taskID;
+    const isActive = taskID === activeTaskID;
+    const isReopened = reopenedLiveTaskIDs.has(taskID);
+    if (!isActive && !isReopened) return;
+    if (isReopened) reopenedLiveTaskIDs.delete(taskID);
     if (ev.kind === 'completed' && client !== null) {
       try {
         // ONE sessions.turns.get on the consumer lane. The sealed row is the
@@ -721,25 +793,30 @@
           tokens: rendered.usage.tokens ?? tc?.tokens,
           costUSD: rendered.usage.costUSD ?? tc?.cost
         };
-        messages = messages.map((m) =>
-          m.taskID === taskID && m.role === 'agent'
-            ? {
-                ...m,
-                text: rendered.agent?.text ?? '(no answer recorded)',
-                // The durable row carries only DERIVED reasoning (structurally
-                // no raw thinking) — the live bubble's streamed reasoning is
-                // preserved unless the sealed row has a summary to show.
-                reasoningText: rendered.agent?.reasoningText ?? m.reasoningText,
-                reasoningSteps: m.reasoningSteps,
-                toolCalls: rendered.agent?.toolCalls ?? m.toolCalls,
-                artifacts: rendered.agent?.artifacts ?? m.artifacts,
-                app: rendered.agent?.app ?? m.app,
-                serverID: rendered.agent?.serverID ?? m.serverID,
-                meta,
-                pending: false,
-                streaming: false
-              }
-            : m
+        const sealed: ChatMessage | null =
+          rendered.agent !== null
+            ? { ...rendered.agent, meta, pending: false, streaming: false }
+            : null;
+        messages = convergeOrInsertAgent(
+          messages,
+          taskID,
+          (m) => ({
+            ...m,
+            text: rendered.agent?.text ?? '(no answer recorded)',
+            // The durable row carries only DERIVED reasoning (structurally
+            // no raw thinking) — the live bubble's streamed reasoning is
+            // preserved unless the sealed row has a summary to show.
+            reasoningText: rendered.agent?.reasoningText ?? m.reasoningText,
+            reasoningSteps: m.reasoningSteps,
+            toolCalls: rendered.agent?.toolCalls ?? m.toolCalls,
+            artifacts: rendered.agent?.artifacts ?? m.artifacts,
+            app: rendered.agent?.app ?? m.app,
+            serverID: rendered.agent?.serverID ?? m.serverID,
+            meta,
+            pending: false,
+            streaming: false
+          }),
+          sealed
         );
       } catch {
         messages = messages.map((m) =>
@@ -750,19 +827,33 @@
       }
     } else if (ev.kind !== 'completed') {
       const errorText = `Task ${ev.kind} — see Tasks page for details.`;
-      messages = messages.map((m) =>
-        m.taskID === taskID && m.role === 'agent'
-          ? { ...m, text: errorText, role: 'system', pending: false, streaming: false }
-          : m
+      messages = convergeOrInsertAgent(
+        messages,
+        taskID,
+        (m) => ({ ...m, text: errorText, role: 'system', pending: false, streaming: false }),
+        {
+          id: `m-${Date.now()}-sys`,
+          role: 'system',
+          text: errorText,
+          taskID,
+          at: new Date().toISOString(),
+          pending: false
+        }
       );
     }
-    running = false;
-    paused = false;
-    activeTaskID = null;
-    // Stop the live Duration tick; the turn's real duration_ms was added to
-    // activeWorkMs by recordTurn above.
-    activeTurnStartMs = 0;
-    void drainQueue();
+    if (isActive) {
+      running = false;
+      paused = false;
+      activeTaskID = null;
+      // Stop the live Duration tick; the turn's real duration_ms was added to
+      // activeWorkMs by recordTurn above.
+      activeTurnStartMs = 0;
+      void drainQueue();
+    } else if (reopenedLiveTaskIDs.size === 0 && activeTaskID === null) {
+      // The last reopened in-flight turn converged — the session has no
+      // live work left, so the pause indicator the fold set no longer holds.
+      paused = false;
+    }
     // 108a-F — a completed turn may have produced artifacts (e.g. tool
     // results); refresh the Recent Artifacts card.
     void refreshArtifacts();
@@ -969,6 +1060,10 @@
     olderError = null;
     turnProjectionUnavailable = false;
     turnPages = [];
+    // HA-64 / D-425 (P1) — a re-hydration (retry) rebuilds the eligible
+    // in-flight set from the fresh fold; stale admissions from a previous
+    // hydration must not survive.
+    reopenedLiveTaskIDs.clear();
 
     // ---- read 1 of 2: the lifecycle-only session snapshot (HA-63) ----
     try {
@@ -1052,6 +1147,16 @@
       const taskID = row.task_id || row.turn_id;
       if (present.has(taskID)) continue;
       const m = rendered;
+      // HA-64 / D-425 (P1) — admit the fold-rendered in-flight rows to the
+      // live lane: this page did not start them (activeTaskID stays null),
+      // so without this admission handleChunk/handleTerminal would reject
+      // every live chunk + the terminal event and the reopened bubble would
+      // freeze at the fold snapshot forever. ONLY rows the fold actually
+      // rendered count — a task already in the stream (`present`) was
+      // skipped above and is never admitted.
+      if (LIVE_TURN_STATUSES.has(rendered.status)) {
+        reopenedLiveTaskIDs.add(taskID);
+      }
       // Usage availability-gated KPI fold.
       const tokens = m.usage.tokens;
       const cost = m.usage.costUSD;

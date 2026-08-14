@@ -17,6 +17,12 @@
 //     silent reset to page one, never a fabricated empty page;
 //   - terminal reconciliation after live streaming uses ONE
 //     `sessions.turns.get` (never `tasks.get` / the raw transcript);
+//   - HA-64 P1 — a turn already running when the page reopens is fold-
+//     rendered from `sessions.turns.list` and STAYS live: its chunks are
+//     accepted into the existing bubble and its terminal event converges
+//     that bubble to the sealed row via exactly ONE `sessions.turns.get`
+//     (never `tasks.get` / the raw transcript), even though this page
+//     never started it; a foreign/unrendered task's events are ignored;
 //   - a runtime predating the projection answers `unknown_method` on the open:
 //     the page shows the explicit degraded/forensic control and does NOT run
 //     the legacy `state.history` event-replay path until the operator clicks.
@@ -443,6 +449,185 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(harness.tasksGetCalls).toBe(0);
     expect(harness.stateHistoryCalls).toBe(0);
     expect(bubbleTexts().join('\n')).toContain('sealed answer');
+  });
+
+  it('a reopened running turn accepts live chunks and converges via exactly one sessions.turns.get (HA-64 P1)', async () => {
+    harness.lifecycleRow = { session_id: 's-reopen', status: 'running', started_at: '2026-07-10T11:59:00Z' };
+    harness.turnPages = [
+      newestPage([
+        turnRow('task-reopen', {
+          status: 'running',
+          sealed: false,
+          finished_at: undefined,
+          answer: { state: 'inline', inline: 'partial ', seq: 1, complete: 'complete' }
+        })
+      ])
+    ];
+    harness.turnsGetResult = {
+      session_id: 's-reopen',
+      turn: turnRow('task-reopen', {
+        turn_id: 'task-reopen',
+        task_id: 'task-reopen',
+        status: 'complete',
+        sealed: true,
+        finished_at: '2026-07-10T12:00:05Z',
+        answer: { state: 'inline', inline: 'sealed answer', seq: 2, complete: 'complete' }
+      }),
+      protocol_version: '0.1.0'
+    };
+    await render();
+
+    // The normal open stays EXACTLY two reads — the running durable row
+    // does not widen the open.
+    expect(harness.inspectCalls).toEqual([{ session_id: 's-reopen', projection: 'lifecycle' }]);
+    expect(harness.turnsListCalls).toHaveLength(1);
+
+    // The running durable turn renders its fold snapshot as ONE pending
+    // agent bubble (the sealed row has not been fetched).
+    const bubbleIds = (): string[] =>
+      Array.from(
+        (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
+      ).map((n) => n.getAttribute('data-message-id') ?? '');
+    expect(bubbleTexts().join('\n')).toContain('partial');
+    expect(bubbleTexts().join('\n')).not.toContain('sealed answer');
+    expect(bubbleIds().filter((id) => id === 't-task-reopen-a')).toHaveLength(1);
+
+    // A live content chunk for the PRE-EXISTING task is accepted even
+    // though activeTaskID is null — the admission comes from the durable
+    // fold, not from this page having started the task.
+    const onChunk = harness.eventListeners.get('llm.completion.chunk');
+    expect(onChunk).toBeDefined();
+    onChunk?.({
+      data: JSON.stringify({
+        type: 'llm.completion.chunk',
+        run: 'task-reopen',
+        payload: { TaskID: 'task-reopen', Delta: 'delta-one ', Done: false, Kind: 'content' }
+      })
+    });
+    for (let i = 0; i < 4; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    expect(bubbleTexts().join('\n')).toContain('partial delta-one');
+    // The chunk appended to the SAME bubble — no duplicate bubble.
+    expect(bubbleIds().filter((id) => id === 't-task-reopen-a')).toHaveLength(1);
+
+    // The terminal frame for that pre-existing task seals it via EXACTLY
+    // one sessions.turns.get — never tasks.get / state.history / events.list.
+    const onTerminal = harness.eventListeners.get('task.completed');
+    expect(onTerminal).toBeDefined();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-reopen', payload: { TaskID: 'task-reopen' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    expect(harness.turnsGetCalls).toEqual([{ session_id: 's-reopen', task_id: 'task-reopen' }]);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleTexts().join('\n')).toContain('sealed answer');
+    // The sealed row replaced the bubble's content in place — still the
+    // same single agent bubble.
+    expect(bubbleIds().filter((id) => id === 't-task-reopen-a')).toHaveLength(1);
+
+    // A redelivered terminal frame is a no-op — still exactly one reconcile.
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-reopen', payload: { TaskID: 'task-reopen' } })
+    });
+    for (let i = 0; i < 4; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    expect(harness.turnsGetCalls).toHaveLength(1);
+
+    // A FOREIGN / unrendered task's live events are ignored — no bubble
+    // mutation, no read, no duplicate.
+    onChunk?.({
+      data: JSON.stringify({
+        type: 'llm.completion.chunk',
+        run: 'task-foreign',
+        payload: { TaskID: 'task-foreign', Delta: 'foreign ', Done: false, Kind: 'content' }
+      })
+    });
+    flushSync();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-foreign', payload: { TaskID: 'task-foreign' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+    expect(bubbleTexts().join('\n')).not.toContain('foreign');
+    expect(harness.turnsGetCalls).toHaveLength(1);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+  });
+
+  it('a reopened running turn with no fold-rendered agent bubble still converges to the sealed row (HA-64 P1)', async () => {
+    harness.lifecycleRow = { session_id: 's-reopen', status: 'running' };
+    harness.turnPages = [
+      newestPage([
+        turnRow('task-late', {
+          status: 'running',
+          sealed: false,
+          finished_at: undefined,
+          answer: { state: 'inline', inline: '', seq: 0, complete: 'complete' },
+          apps: []
+        })
+      ])
+    ];
+    harness.turnsGetResult = {
+      session_id: 's-reopen',
+      turn: turnRow('task-late', {
+        turn_id: 'task-late',
+        task_id: 'task-late',
+        status: 'complete',
+        sealed: true,
+        finished_at: '2026-07-10T12:00:05Z',
+        answer: { state: 'inline', inline: 'sealed late', seq: 2, complete: 'complete' }
+      }),
+      protocol_version: '0.1.0'
+    };
+    await render();
+
+    // The fold renders the turn's USER bubble only — the running row had no
+    // renderable agent snapshot (empty answer, no apps), so there is no
+    // frozen bubble to converge; the sealed row must be inserted.
+    const before = bubbleTexts().join('\n');
+    expect(before).toContain('query-task-late');
+    expect(before).not.toContain('sealed late');
+    expect(before).not.toContain('(no answer recorded)');
+
+    // Its terminal event still converges: exactly one sessions.turns.get,
+    // and the sealed agent bubble is inserted directly under its user bubble.
+    const onTerminal = harness.eventListeners.get('task.completed');
+    expect(onTerminal).toBeDefined();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-late', payload: { TaskID: 'task-late' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsGetCalls).toEqual([{ session_id: 's-reopen', task_id: 'task-late' }]);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleTexts().join('\n')).toContain('sealed late');
+    const ids = Array.from(
+      (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
+    ).map((n) => n.getAttribute('data-message-id') ?? '');
+    expect(ids.filter((id) => id === 't-task-late-a')).toHaveLength(1);
+    expect(ids.indexOf('t-task-late-u')).toBe(ids.indexOf('t-task-late-a') - 1);
   });
 
   it('a runtime predating the projection is NOT silently degraded — the forensic reopen is explicit + user-invoked', async () => {
