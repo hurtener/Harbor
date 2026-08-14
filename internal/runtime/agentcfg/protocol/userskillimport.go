@@ -317,6 +317,24 @@ func (a agentConfigCapabilityPolicy) Policy(ctx context.Context, id identity.Ide
 	return policy, nil
 }
 
+// NewUserSkillImportCapabilityPolicy builds the production capability-policy
+// adapter — the canonical ActivePlannerCatalogView projection over the
+// configured tool catalog under the caller's verified identity — and returns
+// it through the UserSkillImportCapability interface, so cross-package
+// composition never needs the private concrete type. Policy semantics are
+// unchanged: the adapter is immutable after construction, a nil catalog fails
+// loud on the first Policy call, and no writes of any kind happen. The
+// granted-scope ceiling slice is defensively copied: mutating the caller's
+// backing array after construction cannot change the adapter's behavior.
+func NewUserSkillImportCapabilityPolicy(registry agentcfg.Registry, overlay sessionoverlay.Store, catalog tools.ToolCatalog, grantedScopes []string) UserSkillImportCapability {
+	return agentConfigCapabilityPolicy{
+		registry:      registry,
+		overlay:       overlay,
+		catalog:       catalog,
+		grantedScopes: append([]string(nil), grantedScopes...),
+	}
+}
+
 // userSkillImportPolicyHash is the deterministic content hash of a policy
 // snapshot (the claims binding). Field order is fixed; unordered slices
 // are sorted before hashing so ordering noise cannot perturb the binding.
