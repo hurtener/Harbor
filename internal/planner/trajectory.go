@@ -188,9 +188,12 @@ func DecisionToolCount(action any) int {
 }
 
 // CountSuccessfulToolInvocationsSince counts successful tool-bearing planner
-// decisions after baseline. A step with a non-empty Error is an attempted but
-// failed dispatch and does not consume a runtime tranche. CallParallel counts
-// as one decision, not one decision per branch.
+// decisions after baseline. A step is an attempted-but-failed dispatch — and
+// does not consume a runtime tranche — when it carries the legacy generic
+// Error stamp OR its structured observation (Observation / LLMObservation)
+// is the classified error-observation map the run loop stamps on a failed
+// executor dispatch ([stepFailed]). CallParallel counts as one decision, not
+// one decision per branch.
 func CountSuccessfulToolInvocationsSince(t *Trajectory, baseline int) int {
 	if t == nil {
 		return 0
@@ -203,9 +206,42 @@ func CountSuccessfulToolInvocationsSince(t *Trajectory, baseline int) int {
 	}
 	n := 0
 	for _, step := range t.Steps[baseline:] {
-		if step.Error == "" {
+		if !stepFailed(step) {
 			n += DecisionToolCount(step.Action)
 		}
 	}
 	return n
+}
+
+// stepFailed reports whether a trajectory step recorded a tool failure. A
+// step fails when it carries the legacy generic Error stamp OR its
+// structured observation — Observation or LLMObservation — is the run
+// loop's error-observation map (a map[string]any carrying the canonical
+// classified-failure "error" key, the payload buildExecutorErrorPayload
+// stamps on a failed executor dispatch).
+//
+// It is the planner-side twin of the closed predicate the run-completion
+// hook applies (internal/runtime/steering/completion.go), re-implemented
+// here because the planner package cannot import steering; it additionally
+// checks the LLMObservation slot, which the run loop stamps with the same
+// map on the classified path. Only the canonical "error" key is treated as
+// failure — arbitrary observation metadata never is, and a legacy
+// unstructured failure keeps working through the generic stamp.
+func stepFailed(step Step) bool {
+	if step.Error != "" {
+		return true
+	}
+	return observationCarriesError(step.Observation) || observationCarriesError(step.LLMObservation)
+}
+
+// observationCarriesError reports whether obs is the run loop's classified
+// error-observation map: a map[string]any carrying the canonical "error"
+// key.
+func observationCarriesError(obs any) bool {
+	m, ok := obs.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, has := m["error"]
+	return has
 }

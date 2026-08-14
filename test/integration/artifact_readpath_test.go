@@ -412,11 +412,28 @@ func TestE2E_ArtifactReadPath_UnresolvableRefReachesTheNextPlannerTurn(t *testin
 			if got := stepErrorClass(t, "Step.LLMObservation", step.LLMObservation); got != want {
 				t.Errorf("Step.LLMObservation class = %q, want %q", got, want)
 			}
-			// The failed dispatch is recorded as a failed trajectory step;
-			// its classified observation remains available rather than being
-			// discarded or converted into a successful step.
-			if step.Error == "" {
-				t.Errorf("the unresolvable dispatch was not recorded as failed (%q / %#v)", step.Error, step.Failure)
+			// The failed dispatch is recorded as a failed trajectory step
+			// via the bounded classified observation — the canonical
+			// failure surface under the HA-54 contract. The generic
+			// Step.Error stamp is suppressed for classified failures (a
+			// generic string would mask the typed class / message on every
+			// ReAct render), so failure recognition reads the observation's
+			// "error" key and the artifact_ref_not_found class instead of
+			// requiring a generic Step.Error.
+			if step.Error != "" {
+				t.Errorf("the classified failure was masked by the generic stamp: Step.Error = %q", step.Error)
+			}
+			for label, obs := range map[string]any{
+				"Step.Observation":    step.Observation,
+				"Step.LLMObservation": step.LLMObservation,
+			} {
+				m, isMap := obs.(map[string]any)
+				if !isMap {
+					t.Fatalf("%s = %#v, want the classified error-observation map", label, obs)
+				}
+				if msg, _ := m["error"].(string); msg == "" {
+					t.Errorf("%s carries no error text under the canonical error key: %#v", label, m)
+				}
 			}
 
 			// Failure mode 3: a tool's own error is the UNCLASSIFIED
