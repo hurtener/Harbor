@@ -22,8 +22,7 @@ import {
 	turnPageFromResponse,
 	TurnPageError,
 	TURN_PAGE_DEFAULT_LIMIT,
-	TURN_PAGE_MAX_LIMIT,
-	type TurnPage
+	TURN_PAGE_MAX_LIMIT
 } from '../turns.js';
 
 /** A minimal well-formed turn row the page renders. */
