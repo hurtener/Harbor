@@ -9,8 +9,9 @@
 # agent policy, create a draft, assert the ref is caller-scoped with no user
 # skill/membership, then validate through Phase 243; authority-shaped input,
 # cross-user access, refused/malformed output, and a direct persist attempt
-# fail without mutation) are exercised by the phase's Go integration suite
-# (test/integration/personal_skill_draft_test.go), not duplicated here.
+# fail without mutation) are exercised by the phase's in-package suites
+# (internal/skills/drafter/, internal/runtime/agentcfg/protocol/), not
+# duplicated here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"

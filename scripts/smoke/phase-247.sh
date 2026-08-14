@@ -16,9 +16,9 @@
 # `counters_partial` and without read-time scans; a stale/unavailable
 # projection surfaces catching_up/unavailable — never zero; a widened fleet
 # query emits the established audit evidence and an ordinary caller cannot
-# enumerate another identity) are exercised by the phase's Go integration
-# suite (test/integration/observability_rollups_test.go), not duplicated
-# here.
+# enumerate another identity) are exercised by the phase's in-package suites
+# (internal/observability/rollups/,
+# internal/runtime/serve/projection_wiring_test.go), not duplicated here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"

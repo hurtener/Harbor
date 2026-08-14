@@ -14,8 +14,9 @@
 # deferred named-activity follow-up. The live assertions (two-read open of a
 # >100,000-event / >=10,000-turn session; no skip/duplicate while paging; no
 # per-turn tasks.get/events.list; inline Activity without arguments/results;
-# cross-identity typed not-found) are exercised by the phase's Go integration
-# suite (test/integration/conversation_turns_test.go), not duplicated here.
+# cross-identity typed not-found) are exercised by the phase's in-package
+# suites (internal/sessions/turns/ incl. the materializer,
+# internal/runtime/serve/projection_wiring_test.go), not duplicated here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"

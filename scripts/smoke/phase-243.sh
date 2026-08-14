@@ -8,9 +8,10 @@
 # mandatory skillpkg:// resolver, and the typed refusal codes — so a
 # regression that reverts the accepted contract fails the gate. The live
 # assertions (upload -> validate -> no skill before commit -> commit -> reopen
-# -> skill survives staging cleanup) are exercised by the phase's Go
-# integration suite (test/integration/user_skill_package_import_test.go),
-# not duplicated here.
+# -> skill survives staging cleanup) are exercised by the phase's in-package
+# integration suite
+# (internal/runtime/agentcfg/protocol/userskillimport_test.go), not duplicated
+# here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"

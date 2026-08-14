@@ -18,8 +18,9 @@
 # agent and a foreign tenant do not compose it; a Protocol mutation/removal
 # verb refuses a boot-declared name with the canonical typed error; an
 # unresolvable default agent fails loud at boot; headless RunOnce fails loud
-# when boot_agent_packs is configured) are exercised by the phase's Go
-# integration suite (test/integration/boot_operator_skill_baseline_test.go),
+# when boot_agent_packs is configured) are exercised by the phase's in-package
+# suites (internal/runtime/serve/bootpacks_test.go,
+# internal/skills/bootpacks/, harbortest/devstack/devstack_bootpack_test.go),
 # not duplicated here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

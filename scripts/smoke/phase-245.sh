@@ -12,9 +12,9 @@
 # before/after restart; a page of N rows never runs N counter scans; a
 # `cost_desc` sort or `cost_above_cents` filter with lifecycle fails typed;
 # the default projection still returns counters; cross-identity lifecycle
-# reads are non-oracular not-found) are exercised by the phase's Go
-# integration suite (test/integration/session_lifecycle_projection_test.go),
-# not duplicated here.
+# reads are non-oracular not-found) are exercised by the phase's in-package
+# suites (internal/sessions/protocol/,
+# internal/runtime/serve/serve_seams_test.go), not duplicated here.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
