@@ -786,7 +786,13 @@ per-package semantic content hash of each loaded package. The loaded
 boot pack set as a whole carries the deterministic `boot_pack_set_hash`
 — a node-local digest over the set, distinct from any per-package hash,
 and never shared through the store: boot packs stay per-node, so
-Postgres never converges them.
+Postgres never converges them. Config removal on the next runtime
+removes only the node-local boot contribution: an independently
+persisted active revision remains visible in the shared preview as
+`revision`-only provenance — no tombstone and no erasure of the durable
+revision — while a name with BOTH contributions absent stays
+non-oracularly unavailable (typed not-found/denied), never a fabricated
+empty or a cross-principal row.
 
 Headless `RunOnce` against a boot-pack agent is unsupported and fails
 loud — it never silently runs without the packs. Production `harbor serve`
