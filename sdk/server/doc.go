@@ -48,4 +48,12 @@
 //
 // This package is an alias-based facade over the internal serving band;
 // no mechanism lives here beyond the single Options adapter.
+//
+// # Runtime build identity
+//
+// A compiled host should set Options.Framework to the exact Harbor product
+// version and immutable source commit it pins. runtime.info then reports those
+// values as framework_version/framework_commit alongside the host application's
+// unchanged build_* metadata. Leaving Options.Framework empty omits the
+// additive framework fields and preserves existing callers' wire shape.
 package server

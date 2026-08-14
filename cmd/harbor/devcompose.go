@@ -68,6 +68,7 @@ func newDevComposition(o devCompositionOptions) (*devComposition, error) {
 // serveOptions projects the dev composition onto serve.Options, wiring the
 // dev-only policy through the promoted injection seams.
 func (c *devComposition) serveOptions(cfgPath string, port int, bindAddr, label string, logger *slog.Logger, stderr io.Writer) serve.Options {
+	frameworkVersion, frameworkCommit := frameworkIdentity()
 	return serve.Options{
 		ConfigPath:      cfgPath,
 		Port:            port,
@@ -91,6 +92,8 @@ func (c *devComposition) serveOptions(cfgPath string, port int, bindAddr, label 
 		InstanceID:       devInstanceID(),
 		BuildVersion:     displayVersion(),
 		BuildCommit:      "dev",
+		FrameworkVersion: frameworkVersion,
+		FrameworkCommit:  frameworkCommit,
 		DevAllowMock:     c.allowMock,
 		BuildLLMSnapshot: newLLMSnapshotBuilder(c.allowMock),
 		BuildAuthSurface: func(red audit.Redactor, bus events.EventBus, lg *slog.Logger) (*auth.RotateSurface, error) {

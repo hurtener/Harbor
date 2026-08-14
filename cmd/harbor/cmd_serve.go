@@ -188,6 +188,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// + banner, independent of the wire-OAuth hatch above.
 	registerAllowWireInjectionIfDev(os.Getenv(EnvAllowWireInjection) == "1", logSink)
 
+	frameworkVersion, frameworkCommit := frameworkIdentity()
 	stack, err := serve.Boot(ctx, serve.Options{
 		ConfigPath:      cfgPath,
 		Port:            port,
@@ -208,10 +209,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			UserID:    DevUser,
 			SessionID: DevSession,
 		},
-		DisplayName:  "harbor serve",
-		InstanceID:   serve.InstanceID("harbor-serve"),
-		BuildVersion: displayVersion(),
-		BuildCommit:  "dev",
+		DisplayName:      "harbor serve",
+		InstanceID:       serve.InstanceID("harbor-serve"),
+		BuildVersion:     displayVersion(),
+		BuildCommit:      "dev",
+		FrameworkVersion: frameworkVersion,
+		FrameworkCommit:  frameworkCommit,
 		// production demands a real LLM provider (allowMock=false): the gate
 		// fails loud on a missing provider.
 		BuildLLMSnapshot: newLLMSnapshotBuilder(false),

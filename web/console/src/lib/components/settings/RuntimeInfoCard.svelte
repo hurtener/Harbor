@@ -22,9 +22,15 @@
     <dl class="kv">
       <dt>Instance</dt>
       <dd>{info.display_name || info.instance_id}</dd>
-      <dt>Build version</dt>
+      {#if info.framework_version}
+        <dt>Harbor framework version</dt>
+        <dd>{info.framework_version}</dd>
+        <dt>Harbor framework commit</dt>
+        <dd class="mono">{info.framework_commit}</dd>
+      {/if}
+      <dt>Host build version</dt>
       <dd>{info.build_version}</dd>
-      <dt>Build commit</dt>
+      <dt>Host build commit</dt>
       <dd class="mono">{info.build_commit}</dd>
       <dt>Go toolchain</dt>
       <dd>{info.build_go_version}</dd>

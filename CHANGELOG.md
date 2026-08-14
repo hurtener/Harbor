@@ -17,6 +17,18 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28.1] — 2026-08-14
+
+### Fixed
+
+- Compiled `sdk/server` hosts can now set a paired Harbor framework version and
+  immutable commit on `server.Options.Framework`. `runtime.info` now reports
+  them in additive `framework_version` / `framework_commit` fields while its
+  existing `build_*` fields continue to identify the host application. Leaving
+  the option empty omits the new fields; partial identities fail loud. Stock
+  release binaries stamp the same pair from their release checkout and expose
+  it through `harbor serve` / `harbor dev`.
+
 ## [1.28.0] — 2026-08-14
 
 ### Fixed

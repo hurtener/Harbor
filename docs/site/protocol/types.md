@@ -3445,6 +3445,8 @@ Declared in `internal/protocol/types`.
 | `build_commit` | `string` |  |
 | `build_date` | `string` | optional (`omitempty`) |
 | `build_go_version` | `string` |  |
+| `framework_version` | `string` | optional (`omitempty`) |
+| `framework_commit` | `string` | optional (`omitempty`) |
 | `protocol_version` | `string` |  |
 | `capabilities` | `[]types.Capability` |  |
 | `uptime_seconds` | `int64` |  |

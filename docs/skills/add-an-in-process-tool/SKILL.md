@@ -82,8 +82,20 @@ The catalog is the planner's tool index. Registration validates at boot — a du
 When you serve your agent from your own binary (`harbor scaffold --with-server`, which reaches the Protocol through `sdk/server` — see [`scaffold-a-harbor-agent`](../scaffold-a-harbor-agent/SKILL.md)), pass this same `RegisterTools` as the server's registrar:
 
 ```go
-h, err := server.Open(ctx, cfg, server.Options{RegisterCatalog: agent.RegisterTools})
+h, err := server.Open(ctx, cfg, server.Options{
+    RegisterCatalog: agent.RegisterTools,
+    Framework: server.FrameworkIdentity{
+        Version: "v1.28.0", // your pinned Harbor product version
+        Commit:  "<immutable-harbor-source-commit>",
+    },
+})
 ```
+
+`Framework` is release provenance, not host-binary metadata. When set, it
+adds `framework_version` / `framework_commit` to `runtime.info`; the existing
+`build_*` fields still identify your compiled agent binary. Supply the pair
+together from your release configuration. Leave it zero only for a local build
+whose immutable Harbor source commit is not known.
 
 `RegisterCatalog` runs at the runtime's **pre-policy catalog seam** — the same point operator YAML tools register — *before* the catalog Builder applies each `tools.entries[]` declaration. So a compiled tool you register here receives the identical declared **approval gate / OAuth binding / reliability policy** an operator's YAML-declared tool gets. Declaring an approval gate for a compiled tool is therefore just a `tools.entries[]` block in `harbor.yaml`:
 

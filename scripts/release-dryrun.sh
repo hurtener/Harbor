@@ -14,8 +14,8 @@
 # What it asserts:
 #   1. release-build.sh produces the binary artifact + its .sha256.
 #   2. The checksum file verifies against the binary.
-#   3. The built binary's `harbor version` reports the stamped version
-#      (both human and --json renderings).
+#   3. The built binary's `harbor version` reports the stamped version and
+#      exact source commit (both human and --json renderings).
 #   4. An un-stamped `go build` (plain `make build`) still reports the
 #      "v0.0.0-dev" sentinel — i.e. the stamp is opt-in, never silently
 #      applied.
@@ -82,7 +82,12 @@ case "${JSON}" in
     *"\"harbor\":\"${DRYRUN_VERSION}\""*) ;;
     *) fail "json version output missing harbor=${DRYRUN_VERSION}: ${JSON}" ;;
 esac
-echo "release-dryrun: OK — stamped binary reports ${DRYRUN_VERSION} (human + json)"
+DRYRUN_COMMIT="$(git rev-parse --verify HEAD)"
+case "${JSON}" in
+    *"\"build_hash\":\"${DRYRUN_COMMIT}\""*) ;;
+    *) fail "json version output missing build_hash=${DRYRUN_COMMIT}: ${JSON}" ;;
+esac
+echo "release-dryrun: OK — stamped binary reports ${DRYRUN_VERSION} at ${DRYRUN_COMMIT} (human + json)"
 
 # ---------------------------------------------------------------------------
 # 5. An un-stamped build still carries the v0.0.0-dev sentinel — proving

@@ -223,6 +223,13 @@ agent with compiled in-process Go tools then reaches wire parity with the stock
 `harbor token keygen` → `identity.jwks_file` → `harbor token mint`). From
 there:
 
+A compiled host should also set `server.Options.Framework` to its pinned Harbor
+product version and immutable commit. That makes `runtime.info` identify the
+Harbor framework that supplies runtime behavior in additive
+`framework_version` / `framework_commit` fields, while the existing `build_*`
+fields continue to identify the host application. Leave `Framework` empty to
+omit the additive fields; version and commit must be supplied together.
+
 - `harbor dev` — boots the local Runtime + Protocol server, mints an ephemeral
   dev token, serves until you `Ctrl-C`.
 - `harbor serve` — the production sibling of `harbor dev`: boots the headless

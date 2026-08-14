@@ -104,6 +104,19 @@ func TestBuildHash_Format(t *testing.T) {
 	}
 }
 
+// TestBuildHash_PrefersStampedHarborCommit makes the release provenance
+// executable: a successful -X main.HarborCommit stamp must win over ambient
+// build-info so `harbor version --json` reports the exact release checkout.
+func TestBuildHash_PrefersStampedHarborCommit(t *testing.T) {
+	original := HarborCommit
+	t.Cleanup(func() { HarborCommit = original })
+
+	HarborCommit = "a052b0c7ef5323480b88869665e0f971b1496767"
+	if got := buildHash(); got != HarborCommit {
+		t.Fatalf("buildHash() = %q, want stamped HarborCommit %q", got, HarborCommit)
+	}
+}
+
 // TestCurrentVersionInfo_MirrorsConstants pins the assembly path so a
 // future refactor of versionInfo cannot silently break the contract.
 func TestCurrentVersionInfo_MirrorsConstants(t *testing.T) {
@@ -160,6 +173,61 @@ func TestDisplayVersion_StampedReleaseTags(t *testing.T) {
 			HarborVersion = tc.stamp
 			if got := displayVersion(); got != tc.want {
 				t.Errorf("displayVersion() with stamp %q = %q, want %q", tc.stamp, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFrameworkIdentity_RequiresStampedVersionAndCommit pins the stock CLI
+// rule: runtime.info exposes framework provenance only when release tooling
+// supplied the immutable pair. A source/proxy build's version alone is not an
+// exact source identity and must remain omitted.
+func TestFrameworkIdentity_RequiresStampedVersionAndCommit(t *testing.T) {
+	origVersion, origCommit := HarborVersion, HarborCommit
+	t.Cleanup(func() {
+		HarborVersion, HarborCommit = origVersion, origCommit
+	})
+
+	for _, tc := range []struct {
+		name    string
+		version string
+		commit  string
+		wantV   string
+		wantC   string
+	}{
+		{
+			name:    "canonical release stamp",
+			version: "v1.28.1",
+			commit:  "a052b0c7ef5323480b88869665e0f971b1496767",
+			wantV:   "v1.28.1",
+			wantC:   "a052b0c7ef5323480b88869665e0f971b1496767",
+		},
+		{
+			name:    "explicit dry-run stamp remains exact",
+			version: "v0.0.0-dryrun",
+			commit:  "b3d284acd8cd489f30009c8ae7cfa7c501f80f27",
+			wantV:   "v0.0.0-dryrun",
+			wantC:   "b3d284acd8cd489f30009c8ae7cfa7c501f80f27",
+		},
+		{
+			name:    "unstamped sentinel is omitted",
+			version: "v0.0.0-dev",
+			commit:  "a052b0c7ef5323480b88869665e0f971b1496767",
+			wantV:   "",
+			wantC:   "",
+		},
+		{
+			name:    "missing commit is omitted",
+			version: "v1.28.1",
+			commit:  "unknown",
+			wantV:   "",
+			wantC:   "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			HarborVersion, HarborCommit = tc.version, tc.commit
+			if version, commit := frameworkIdentity(); version != tc.wantV || commit != tc.wantC {
+				t.Fatalf("frameworkIdentity() = (%q, %q), want (%q, %q)", version, commit, tc.wantV, tc.wantC)
 			}
 		})
 	}

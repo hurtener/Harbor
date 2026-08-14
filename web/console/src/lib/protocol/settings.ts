@@ -33,6 +33,8 @@ export interface RuntimeInfo {
 	build_commit: string;
 	build_date?: string;
 	build_go_version: string;
+	framework_version?: string;
+	framework_commit?: string;
 	protocol_version: string;
 	capabilities: Capability[];
 	uptime_seconds: number;

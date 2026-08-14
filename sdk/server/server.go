@@ -19,6 +19,27 @@ type Handle = external.Handle
 // a config-path is supplied. Compare via errors.Is.
 var ErrConfigRequired = external.ErrConfigRequired
 
+// ErrFrameworkIdentityIncomplete is returned when Options.Framework names
+// only a version or only a commit. runtime.info reports framework provenance
+// as an immutable pair, separate from the hosting binary's build identity.
+var ErrFrameworkIdentityIncomplete = external.ErrFrameworkIdentityIncomplete
+
+// FrameworkIdentity is the Harbor framework release compiled into the host.
+// It is deliberately distinct from the host program's own Go build metadata:
+// a compiled agent can use it to make runtime.info identify the Harbor source
+// that provides its runtime semantics.
+//
+// Leave both fields empty to retain the compatibility fallback, which derives
+// runtime.info's existing build_* fields from the hosting binary's Go build
+// info. When set, Version and Commit are required together and are reported
+// verbatim as framework_version and framework_commit.
+type FrameworkIdentity struct {
+	// Version is the pinned Harbor product version (for example, "v1.28.0").
+	Version string
+	// Commit is the immutable Harbor source revision for Version.
+	Commit string
+}
+
 // Options carries Open's injection points. It is deliberately minimal —
 // the production posture (JWKS from cfg.Identity, full config Validate)
 // is not configurable.
@@ -45,6 +66,14 @@ type Options struct {
 	// frames are never overwritten; on failure the terminal is restored
 	// before the captured stderr is printed.
 	Stderr io.Writer
+
+	// Framework identifies the Harbor framework release compiled into this
+	// host. When non-zero, runtime.info reports this Version and Commit as
+	// framework_version and framework_commit alongside the hosting program's
+	// existing build_* metadata. Leave it zero to omit the additive framework
+	// fields. Set Version and Commit together; a partial value fails Open with
+	// ErrFrameworkIdentityIncomplete.
+	Framework FrameworkIdentity
 }
 
 // Open composes the production Protocol server from cfg (or, when cfg is
@@ -64,5 +93,6 @@ func Open(ctx context.Context, cfg *config.Config, opts Options) (*Handle, error
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	return external.OpenWithStderr(ctx, cfg, opts.ConfigPath, stderr, opts.RegisterCatalog)
+	return external.OpenWithStderr(ctx, cfg, opts.ConfigPath, stderr, opts.RegisterCatalog,
+		external.FrameworkIdentity(opts.Framework))
 }

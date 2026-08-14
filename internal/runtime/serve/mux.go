@@ -194,10 +194,12 @@ type MuxInput struct {
 	AgentReach auth.AgentReachAuthorizer
 
 	// Posture stamps.
-	DisplayName  string
-	InstanceID   string
-	BuildVersion string
-	BuildCommit  string
+	DisplayName      string
+	InstanceID       string
+	BuildVersion     string
+	BuildCommit      string
+	FrameworkVersion string
+	FrameworkCommit  string
 	// TopologyAvailable advertises the topology.snapshot capability (true
 	// only when the caller wired a topology accessor onto the surface).
 	TopologyAvailable bool
@@ -318,6 +320,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			BuildVersion:       in.BuildVersion,
 			BuildCommit:        in.BuildCommit,
 			BuildGoVersion:     goruntime.Version(),
+			FrameworkVersion:   in.FrameworkVersion,
+			FrameworkCommit:    in.FrameworkCommit,
 			MCPAppDisplayModes: cfg.Tools.MCPAppHostDisplayModes(),
 		},
 		Clock:    time.Now,
