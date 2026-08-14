@@ -100,12 +100,21 @@ Every memory write/read is keyed by `(tenant_id, user_id, session_id)`. The plan
 
 ## 2. Runtime skills — DB-backed playbooks the planner searches
 
-Runtime skills are typed, token-savvy reusable patterns the planner can ask for by name mid-reasoning. They originate from two sources:
+Runtime skills are typed, token-savvy reusable patterns the planner can ask for by name mid-reasoning. What a run sees is an **effective composition**, not one flat table: the identity-scoped **base/user/session** rungs plus **one operator tier** applied LAST, so operator-authored content deterministically wins a name collision against caller content.
+
+The operator tier is itself a strict merge of TWO operator-managed sources:
+
+- **Active revision packs** — the selected agent's durable `agent_packs` section of its active agent-config revision (protocol-managed and versioned; the `agent_config.agent_packs.*` verbs author it).
+- **HA-66 boot packs** — the node-local `skills.boot_agent_packs` config-declared baseline, loaded eagerly and immutably before readiness (see below).
+
+The merge is strict, never last-write-wins: the same canonical name with the same canonical semantic content hash dedupes to ONE item marked `source=both` (migration-safe — moving an unchanged body between the durable revision and the boot config must not split the composed view); the same name with a differing hash **fails loud**; and the unique combined tier holds at most **256** items. Run snapshots and the composition preview report per-item `boot|revision|both` provenance plus the deterministic `boot_pack_set_hash` (and combined/revision set hashes), so you can verify exactly what the resolved agent composes.
+
+Skills enter the catalog through these producers:
 
 - **Skills.md importer** — you write a Skills.md file (one skill per file: YAML frontmatter + a `## Steps` body) and ingest it with `harbor skill import <path>`.
 - **In-runtime generator** — the planner itself can author a new skill at runtime (e.g. "this kind of question seems common — let me save the steps as a skill") and persist it via the `skill_propose` built-in (opt-in; see below).
-
-Both sources land in the same SQLite-backed catalog.
+- **Caller-authorized import (HA-61)** — the two-phase `import_validate` / `import_commit` Protocol flow installs a reviewed personal-skill package (see below).
+- **Draft-only authoring (HA-62)** — `skill_create_draft` writes a reviewable draft artifact only, never an installed skill (see below).
 
 ### Example: a Skills.md file
 
@@ -151,6 +160,21 @@ Go-level: the verbs are thin callers over `importer.ImportAndStore` — a headle
 
 Once the skills are in the catalog, the planner sees them at reasoning time two ways: a bounded per-turn `<skills_context>` browse window (the skills directory — see below) and on-demand retrieval via the `skill_search` / `skill_get` meta-tools — token-savvy because full skill bodies only enter the prompt when the LLM actually pulls them.
 
+### Caller-authorized reviewed import (HA-61) — `import_validate` / `import_commit`
+
+For a caller (a Protocol client, not an operator with a shell), installing a personal skill is a two-phase, reviewed proposal flow — never an immediate upsert:
+
+- **`agent_config.user.skills.import_validate`** — the caller uploads a bounded complete skill package (zip carrying exactly one root-level `SKILL.md`, or a single Markdown document) as a caller-owned artifact via `artifacts.put`, then calls validate with that artifact ref plus the effective agent. The runtime runs the ONE production importer/validator and returns the closed normalized review, hashes, and warnings together with a **stateless opaque proposal token**. Validate performs **ZERO writes** of any kind: no SkillStore body/package write, no agent-config membership write, no proposal-ledger write — the review rides entirely inside the sealed token (24h window, refreshable by re-validating).
+- **`agent_config.user.skills.import_commit`** — the caller echoes the token plus the reviewed `PackageHash`, expected config hash, canonical name, and explicit replace consent. The runtime authenticates and strictly decodes the sealed claims, re-derives identity and signed effective-agent reach, rechecks lifecycle / policy / ceilings / expected config hash, forces `ScopeUser` + caller ownership server-side, and atomically materializes the approved package plus membership in ONE conditional write. Response-loss retry is idempotent; competing commits have one winner.
+
+Authority model to rely on: identity comes from the VERIFIED context (no selectable tenant/user/session/scope — the request carries no authority fields), signed session-reach and agent-reach gates run before any artifact lookup or persistence, and the package frontmatter is CLOSED (authority-bearing fields are rejected by the importer). `required_tools` / `required_namespaces` / `required_tags` are **applicability metadata, never grants**: a requirement outside the run-visible capability snapshot is a WARNING (the injection-time filter scrubs it), and the policy snapshot is sealed into the token so a policy change between validate and commit is a typed revocation refusal. A boot-owned canonical name is read-only to this flow too, even at equal hash (see HA-66 below).
+
+### Draft-only authoring (HA-62) — `skill_create_draft`
+
+`skill_create_draft` is an ordinary runtime tool that turns a bounded authoring intent (plus optional revision feedback) into ONE validated, caller-scoped, resource-free `SKILL.md` **draft artifact** — `installed: false`, `state: draft`. It is deliberately non-authoritative: it writes exactly one immutable artifact under the invocation's verified run identity and has **zero mutation authority** — no skill-store upsert, no membership/revision write, no operator-pack proposal/publication, no capability registration, no tool exposure, no approval/OAuth path. Identity comes exclusively from the run context; the closed argument shape (intent + optional feedback) rejects any owner/scope/identity/persistence/publication/grant field.
+
+It is **disabled by default**: the tool is absent from the builtin registry's `KnownNames()` and `tools.built_in` cannot enable it until the composition owner explicitly threads an `llm.LLMClient` onto the registry context and registers the carrier. Once registered it is opt-in per agent through the ordinary tool policy, with the same policy / approval / governance / rate-and-cost / deadline / cancellation / redaction / audit wrappers as every other ordinary tool. Installing the draft is a SEPARATE explicit caller action through the HA-61 validate/commit flow — creating the draft never installs or enables a skill. The result may warn that declared `required_tools` are metadata only and never grant capability.
+
 ### Yaml config
 
 ```yaml
@@ -170,6 +194,11 @@ skills:
     pinned: [triage-incident]      # always listed first, in this order
     max_entries: 10                # 0/unset → planner.skills_context_max (default 5)
     selection: pinned_then_recent  # the one wired value (pinned_then_top is rejected: not yet wired)
+  # boot_agent_packs:              # optional (HA-66) — node-local operator baseline
+  #   - tenant_id: acme            # exact, case-sensitive tenant key
+  #     agent_id: harbor-dev-agent # must equal the resolved boot/default agent
+  #     directory: /etc/harbor/skills   # config-file-relative, never CWD
+  #     include: [workbench-foundation] # package directories, one SKILL.md each
 
 tools:
   built_in:
@@ -177,9 +206,11 @@ tools:
     - skill_get       # the LLM pulls the full bodies of named skills
     - skill_list      # the LLM enumerates the catalog (paged, summary-only)
     # - skill_propose # OPT-IN: lets the LLM author + persist new skills
+    # skill_create_draft (HA-62) is NOT enableable via tools.built_in:
+    # it needs explicit registration with the composed LLM client (see below).
 ```
 
-**Store drivers.** Skills ship at three-driver parity like memory:
+**Store drivers.** Skills ship at two-driver parity (the memory triple has no skills equivalent):
 
 | Driver     | Use when                                                                 |
 | ---------- | ------------------------------------------------------------------------ |
@@ -188,6 +219,19 @@ tools:
 
 Switching backends is a `driver:` + `dsn:` change — the CLI verbs, meta-tools, directory, and semantic mode all behave identically (proven by the shared conformance suite). Identity scoping (`(tenant, user, session)` in the SQL `WHERE`) is enforced at the driver on both.
 
+### Node-local boot agent packs (HA-66) — `skills.boot_agent_packs`
+
+An operator may declare a **node-local, resource-free operator skill baseline** for the resolved boot/default agent in boot config (the `boot_agent_packs:` block above). Behaviour you can rely on:
+
+- **Loaded eagerly, immutably, before readiness.** The strict loader reads every declared package directory through the ONE production importer/validator at boot — before the runtime is ready or any listener binds — and fails the boot LOUD on any malformed, unresolvable, or un-importable entry. The frozen set is fixed for the process lifetime (restart-only; never hot-reloaded).
+- **Zero persistence, zero admin verbs.** The loader performs **no SkillStore writes, no ArtifactStore writes, no AgentConfig revisions, no lifecycle materialization, and no admin pack verbs** — it is a pure eager filesystem read + parse + validate. It never creates agents or widens reach. `EnsureBootAgentLifecycle` is a separate mechanism and MAY write a revision.
+- **Node-local, never converged.** Each node reloads its own files at boot. The durable Postgres `${SKILLS_DSN}` store persists agent revisions and personal state but NEVER the boot packs — a file change on one node never converges the others, and boot packs are never shared through the store.
+- **One combined operator tier.** Boot entries merge with the agent's active durable revision-pack items into ONE strict operator tier (see the §2 intro): same canonical name + same semantic hash dedupes as `source=both`; differing hash fails loud; at most 256 unique combined items; the tier applies LAST over base/user/session skills. Every declared tenant-agent active revision is pre-read before readiness, so a conflict surfaces at boot, not at first run.
+- **Boot/revision provenance + `boot_pack_set_hash`.** The run snapshot and the read-only composition preview (`agent_config.composition.preview`) report per-item `boot|revision|both` provenance alongside the deterministic `boot_pack_set_hash` (a node-local digest over the normalized boot entries, distinct from per-package hashes, stable across restarts for an unchanged config) — so you can verify exactly what the resolved agent composes.
+- **Boot-owned names are read-only.** `upsert`, every proposal-commit path, rollback/activation, and removal all refuse a boot-declared canonical name with a typed error, even at equal hash — the NAME is boot-owned, not the bytes. Removal may delete a real legacy active-revision shadow at that name; a boot-only removal is a typed read-only refusal, never false success.
+- **Config removal affects new runtime/new runs only.** Removing a `boot_agent_packs` declaration removes the boot contribution on the NEXT deployment/run; already-captured in-flight snapshots retain their bytes and hash, and an independently persisted durable revision remains revision-only (no tombstone, no erasure). A name with both contributions absent stays non-oracularly unavailable.
+- **Headless `RunOnce` against a boot-pack agent is unsupported and fails loud** — it never silently runs without the packs. Production `harbor serve` and the devstack resolve the SAME loader path.
+
 ### LLM-side discovery via meta-tools
 
 The React planner runs on native provider tool-calling: the LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in when it needs one. The meta-tools are the rich skills handlers (capability filter + redaction + token budgeter) over the SAME store your `harbor skill import` populated — one source of truth, identity-scoping carries through:
@@ -195,7 +239,7 @@ The React planner runs on native provider tool-calling: the LLM doesn't ask "wha
 - `skill_search(query, limit?)` — ranked candidates, capability-filtered to the tools this run can actually see (a skill requiring a tool the run isn't granted never surfaces).
 - `skill_get(names[], max_tokens?)` — full bodies, budget-fit through a tiered ladder (full → drop optional sections → cap steps at 3); an impossibly small budget errs loudly rather than silently truncating.
 - `skill_list(scope?, task_type?, tags?, limit?, offset?)` — paged enumeration, summary-only.
-- `skill_propose({skill, persist})` — the in-runtime generator. **Deliberately opt-in** (list it in `tools.built_in` only when you want the LLM persisting skills): persisted skills are stamped `Origin=generated`, can never overwrite an imported pack skill, and every persist emits a mandatory redacted `skill.proposed` audit event.
+- `skill_propose({skill, persist})` — the in-runtime generator. **Deliberately opt-in** (list it in `tools.built_in` only when you want the LLM persisting skills): persisted skills are stamped `Origin=generated`, can never overwrite an imported pack skill, and every persist emits a mandatory redacted `skill.proposed` audit event. This is the STRUCTURED generator; the natural-language draft path is the separate HA-62 `skill_create_draft` tool above.
 
 ### The per-turn skills directory (`<skills_context>`)
 
@@ -249,7 +293,7 @@ refusal is expected and protects the authoritative legacy view.
 
 `docs/skills/` (what you're reading right now) holds **operator playbooks** — markdown docs for humans building agents. They are NOT loaded into the planner at runtime; they're adoption material.
 
-`internal/skills/` (RFC §6.7) holds the **runtime skill subsystem** — the SQLite catalog, the Skills.md importer, the in-runtime generator, the planner's mid-reasoning skill lookup path.
+`internal/skills/` (RFC §6.7) holds the **runtime skill subsystem** — the identity-scoped catalog (localdb/postgres), the Skills.md importer, the in-runtime generator, the HA-61 reviewed import flow, the HA-62 draft tool, the HA-66 boot baseline loader, and the planner's mid-reasoning skill lookup path.
 
 The two are unrelated. The glossary entry pins this distinction (`docs/glossary.md` → "skill (operator)" vs "skill (runtime)"). Don't conflate them.
 
@@ -260,6 +304,8 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 - **`harbor skill import` fails with "skill name already exists".** The catalog rejects duplicate names by default. Re-import with `--overwrite`, remove the old entry first (`harbor skill rm <name>`), or rename the skill in the file.
 - **The planner doesn't pick a skill I imported.** Either the skill's `trigger:` doesn't pattern-match the user's input (write more concrete trigger language), the run can't see a tool the skill requires (`required_tools` is capability-filtered — default-deny), or `planner.max_steps` is too low to reach the skill-search turn. Pin it (`skills.directory.pinned`) to guarantee it's at least visible in every `<skills_context>` block.
 - **A session-personal skill update returns `session_skill_cutover_pending`.** This is the production-safe default while the tenant is unlisted, undrained, or still being freshly verified. Do not write through to a legacy shared body. Drain old writers, attest the exact roster, set the declaration true, restart, and wait for Harbor to reach `state_only`.
+- **A boot pack and a revision pack collide at the same name with different content.** That is the strict operator-tier conflict: same canonical name, differing semantic hash — the boot fails loud (pre-read at readiness) and every later run refuses too. It is never a silent overwrite. Align the bodies (or the names), then restart; the boot baseline and the durable revision must agree on the canonical content hash to compose as `source=both`.
+- **A mutation on a boot-owned name returns a typed read-only refusal.** Boot-declared names are read-only to `upsert`, every proposal-commit path, rollback/activation, and removal — even at equal hash (the NAME is boot-owned, not the bytes). Change the boot config (or the revision's name), then restart; do not try to write through.
 - **Cross-session memory leakage suspected.** It can't happen — the SQL filter is at the driver. If you see it, file a bug with the SQL trace from `telemetry.log_level: debug` — a leak would be a P0 security issue.
 
 ## See also
