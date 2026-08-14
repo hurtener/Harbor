@@ -8,8 +8,6 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/observability/rollups"
-	"github.com/hurtener/Harbor/internal/protocol/auth"
-	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
 // ProjectionEnricher is the projection-backed Enricher adapter: it serves
@@ -17,40 +15,58 @@ import (
 // observability rollup projection (internal/observability/rollups) when
 // that projection is CURRENT and its retained horizon COVERS the session's
 // lifetime, and otherwise delegates explicitly to the existing raw
-// CounterEnricher bounded scan — the honest fallback. It composes the
-// projection for exactly the dimensions the projection is authoritative
-// for (successful-completion EVENTS, COST, TOKENS, and TASK OUTCOMES) and
-// reads the one dimension the projection does not model (pending
-// intervention) from the pause registry, mirroring the raw enricher's
-// read so a missing pause read is surfaced as Partial, never as a
-// fabricated "no intervention".
+// CounterEnricher bounded scan — the honest fallback. The projection is
+// used for EXACTLY the dimensions the projection is authoritative for
+// (COST, TOKENS, and FAILED TASK OUTCOMES); the dimensions the projection
+// does not model (total events emitted, total tasks spawned, and pending
+// intervention) are read from the raw bounded scan, and the two are merged
+// deterministically.
 //
-// # When the projection is current and covers the session
+// # What the projection backs — and what it does NOT
 //
 // The rollup projection is an indexed materialization of the canonical
-// event log's supported measures. When its completeness state is `current`
-// (the last source read was empty — nothing newer than the watermark
-// existed at that read) and its retained horizon starts at or before the
-// session's opening bucket, the projection has observed every supported
-// measure the session emitted: the adapter returns EXACT counters — no
-// `CountersPartial`, no read-time event scan. The mapping is the
-// projection's source-backed measures only:
+// event log's supported measures. Its measures are SOURCE-BACKED deltas,
+// and the adapter never maps a measure onto a public counter whose meaning
+// is broader than the measure's:
 //
-//   - EventsCount      ← llm_completions  (the session's `llm.cost.recorded`
-//     successful-completion events — the projection's event measure).
 //   - TotalCostCents   ← llm_cost_micros  (exact integer micro-units of USD,
 //     converted to the existing whole-cent wire representation with ONE
 //     deterministic rounding at the end — sub-cent calls never floor to 0).
 //   - TotalTokens      ← llm_tokens_total.
-//   - TasksCount       ← tasks_completed + tasks_failed + tasks_cancelled
-//     (task OUTCOMES — the projection counts terminal transitions).
-//   - HasFailedTask    ← tasks_failed > 0.
+//   - HasFailedTask    ← tasks_failed > 0 (failed TERMINAL OUTCOMES).
 //
-// The projection does NOT model the pause registry, so
-// HasPendingIntervention is read from the pause coordinator exactly as the
-// raw enricher reads it; a read that cannot be taken marks the rollup
-// Partial (a zero that means "we could not look" is never reported as a
-// zero that means "we looked and there were none").
+// The projection does NOT back events_count or tasks_count:
+//
+//   - llm_completions is the session's `llm.cost.recorded`
+//     successful-completion count — a SUBSET of the events the session
+//     emitted (task / pause / artifact / lifecycle events are not
+//     completions), so presenting it as total events_count would be a
+//     believable-but-false undercount.
+//   - tasks_completed + tasks_failed + tasks_cancelled counts terminal
+//     OUTCOMES, not the tasks the session SPAWNED (running / paused tasks
+//     never produce a terminal outcome), so presenting it as total
+//     tasks_count would be a believable-but-false undercount too.
+//
+// The canonical totals for those two counters — total events emitted and
+// total spawned tasks — plus has_pending_intervention (the projection does
+// not model the pause registry) are read through the existing raw bounded
+// CounterEnricher fallback seam on EVERY projection-backed path. The raw
+// scan's Partial flag rides along: a truncated event scan, an unreadable
+// registry read, or an unreadable pause read makes the aggregate
+// CounterStatus=partial, never current.
+//
+// # Deterministic merge — projection owns its three, raw owns the rest
+//
+// When the projection is current and covers the session, the adapter
+// merges the two sources WITHOUT letting either overwrite the other's
+// authoritative dimension: the projection's EXACT cost / tokens /
+// failed-task values are never replaced by the raw scan's lower bounds,
+// and the raw scan's canonical events / tasks / pending values are never
+// replaced by a projection subset. The aggregate Partial is the raw
+// scan's Partial — a partial raw dimension makes the whole rollup
+// partial (its events / tasks / pending are honest lower bounds), and the
+// projection-backed exact values ride along, never fabricated as current
+// over an incomplete raw read.
 //
 // # Honest fallback — never missing data as exact zero
 //
@@ -63,7 +79,10 @@ import (
 // an unreadable registry read stays an honest lower bound). The fallback is
 // never silent: every delegation is Warn-logged with the reason, and the
 // projection's freshness stays observable through the adapter's Quality
-// accessor.
+// accessor. If the raw fallback cannot provide a trustworthy result under
+// its own contract (an unavailable substrate, an unreadable registry), its
+// honest zero-plus-Partial result is preserved — availability is never
+// fabricated.
 //
 // # Freshness is observable
 //
@@ -78,15 +97,14 @@ import (
 //
 // A constructed *ProjectionEnricher is immutable after
 // NewProjectionEnricher: it holds only the store / quality / fallback /
-// pause-coordinator / window / clock / logger references, each itself safe
-// for concurrent reuse. Every Counters call's per-run state lives in its
+// window / clock / logger references, each itself safe for concurrent
+// reuse. Every Counters call's per-run state lives in its
 // arguments and locals; the adapter reads nothing from itself for
 // run-specific data.
 type ProjectionEnricher struct {
 	store    rollups.Store
 	quality  ProjectionQuality
 	fallback Enricher
-	pauses   pauseresume.Coordinator
 	window   SessionWindowFunc
 	clock    func() time.Time
 	logger   *slog.Logger
@@ -116,23 +134,23 @@ type SessionWindowFunc func(ctx context.Context, id identity.Identity, sessionID
 // build a half-blind adapter (CLAUDE.md §5).
 type ProjectionEnricherDeps struct {
 	// Store is the rollup projection's query surface the adapter reads the
-	// session's authoritative measures from (identity-scoped by the query
-	// filter — the session's own triple, never cross-session bleed).
+	// session's authoritative cost / tokens / failed-task measures from
+	// (identity-scoped by the query filter — the session's own triple,
+	// never cross-session bleed).
 	Store rollups.Store
 	// Quality reads the projection's freshness (state / watermark /
 	// retention). The adapter serves exact projection-backed counters only
 	// when Quality reports StateCurrent AND the retained horizon covers the
 	// session.
 	Quality ProjectionQuality
-	// Fallback is the existing raw CounterEnricher bounded scan the adapter
-	// delegates to whenever the projection cannot be trusted for the
-	// session. Its result is returned verbatim — including its own honest
-	// Partial marking — never replaced by fabricated zeros.
+	// Fallback is the existing raw CounterEnricher bounded scan. It is the
+	// canonical source of the dimensions the projection does not model —
+	// total events emitted, total spawned tasks, and pending intervention —
+	// on the projection-backed path, and the adapter delegates to it
+	// VERBATIM whenever the projection cannot be trusted for the session.
+	// Its result's own honest Partial marking rides along in both cases —
+	// never replaced by fabricated zeros or fabricated availability.
 	Fallback Enricher
-	// Pauses is the pause coordinator the has_pending_intervention counter
-	// reads from, scoped to the session (the projection does not model
-	// pauses; a read that cannot be taken marks the rollup Partial).
-	Pauses pauseresume.Coordinator
 	// Window resolves the session's lifetime for the retention-coverage
 	// proof.
 	Window SessionWindowFunc
@@ -145,11 +163,11 @@ type ProjectionEnricherDeps struct {
 }
 
 // NewProjectionEnricher builds the projection-backed Enricher adapter. Every
-// dependency is mandatory — a nil Store / Quality / Fallback / Pauses /
-// Window fails loud with ErrMisconfigured rather than building an adapter
-// that reports believable-but-false counters on one dimension (CLAUDE.md
-// §5). The returned *ProjectionEnricher is immutable and safe for
-// concurrent reuse.
+// dependency is mandatory — a nil Store / Quality / Fallback / Window
+// fails loud with ErrMisconfigured rather than building an adapter that
+// reports believable-but-false counters on one dimension (CLAUDE.md §5).
+// The returned *ProjectionEnricher is immutable and safe for concurrent
+// reuse.
 func NewProjectionEnricher(deps ProjectionEnricherDeps) (*ProjectionEnricher, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("%w: ProjectionEnricher Store is nil", ErrMisconfigured)
@@ -159,9 +177,6 @@ func NewProjectionEnricher(deps ProjectionEnricherDeps) (*ProjectionEnricher, er
 	}
 	if deps.Fallback == nil {
 		return nil, fmt.Errorf("%w: ProjectionEnricher Fallback is nil", ErrMisconfigured)
-	}
-	if deps.Pauses == nil {
-		return nil, fmt.Errorf("%w: ProjectionEnricher Pauses is nil", ErrMisconfigured)
 	}
 	if deps.Window == nil {
 		return nil, fmt.Errorf("%w: ProjectionEnricher Window is nil", ErrMisconfigured)
@@ -178,7 +193,6 @@ func NewProjectionEnricher(deps ProjectionEnricherDeps) (*ProjectionEnricher, er
 		store:    deps.Store,
 		quality:  deps.Quality,
 		fallback: deps.Fallback,
-		pauses:   deps.Pauses,
 		window:   deps.Window,
 		clock:    clock,
 		logger:   logger,
@@ -196,9 +210,11 @@ func (e *ProjectionEnricher) Quality(ctx context.Context) (rollups.Quality, erro
 }
 
 // Counters implements Enricher. It serves the session's counter rollup from
-// the projection when the projection is current and covers the session, and
-// otherwise delegates to the raw bounded scan. It never turns missing
-// projection data into an exact zero.
+// the projection when the projection is current and covers the session
+// (projection-backed cost / tokens / failed-task merged with the raw scan's
+// canonical events / tasks / pending), and otherwise delegates to the raw
+// bounded scan. It never turns missing projection data into an exact zero
+// and never maps a projection subset onto a broader public counter.
 func (e *ProjectionEnricher) Counters(ctx context.Context, id identity.Identity, sessionID string) SessionCounters {
 	if sessionID != "" {
 		id.SessionID = sessionID
@@ -232,23 +248,31 @@ func (e *ProjectionEnricher) Counters(ctx context.Context, id identity.Identity,
 		return e.delegateToFallback(ctx, id, "rollup projection retention gap (session predates the retained horizon)", nil)
 	}
 
-	counters, err := e.projectionCounters(ctx, id, openedAt)
+	projection, err := e.projectionCounters(ctx, id, openedAt)
 	if err != nil {
 		// A projection query failure is an unavailable projection: the raw
 		// scan is the honest fallback, never a partial zero.
 		return e.delegateToFallback(ctx, id, "rollup projection query failed", err)
 	}
 
-	// The projection does not model the pause registry: read
-	// has_pending_intervention from the coordinator, mirroring the raw
-	// enricher's session-scoped read. A read that cannot be taken (an
-	// unentitled foreign row) marks the rollup Partial — a zero that means
-	// "we could not look" is never reported as "we looked and there were
-	// none".
-	pending, read := e.pendingIntervention(ctx, id)
-	counters.HasPendingIntervention = pending
-	counters.Partial = !read
-	return counters
+	// The dimensions the projection does not model — total events emitted,
+	// total spawned tasks, and pending intervention — come from the raw
+	// bounded scan, the same canonical seam the delegation paths use. Its
+	// Partial flag rides along: a truncated / unreadable raw dimension
+	// makes the aggregate CounterStatus=partial, never current.
+	raw := e.fallback.Counters(ctx, id, id.SessionID)
+
+	// Merge deterministically: the projection owns the three exact outputs
+	// it authoritatively backs (cost, tokens, failed-task) and the raw scan
+	// owns events / tasks / pending. The projection's exact values are
+	// NEVER overwritten by the raw lower bounds, and the raw's canonical
+	// values are never replaced by a projection subset. The aggregate is
+	// partial exactly when the raw result is partial.
+	projection.EventsCount = raw.EventsCount
+	projection.TasksCount = raw.TasksCount
+	projection.HasPendingIntervention = raw.HasPendingIntervention
+	projection.Partial = raw.Partial
+	return projection
 }
 
 // delegateToFallback delegates to the raw bounded-scan enricher, logging the
@@ -282,14 +306,21 @@ const maxProjectionQueryPages = 8
 
 // projectionCounters runs the authoritative session-scoped rollup query over
 // the session's lifetime window and sums the exact integer measures into
-// the projection-backed counter dimensions. The window ends at the
-// adapter's "now" (a `current` projection is caught up to the log head, so
-// every supported event up to now is reflected). The bucket size is chosen
-// adaptively — minute, hour, day — so a multi-week session fits the
+// the projection-backed counter dimensions — EXACTLY the three the
+// projection authoritatively backs: cost (micros, converted to cents once
+// at the end), total tokens, and HasFailedTask (from failed terminal
+// outcomes). Events count and spawned-task count are deliberately NOT read
+// here: llm_completions is a subset of emitted events and terminal outcomes
+// are not spawned tasks, so both would be believable-but-false undercounts
+// (the raw bounded scan supplies the canonical totals). The window ends at
+// the adapter's "now" (a `current` projection is caught up to the log head,
+// so every supported event up to now is reflected). The bucket size is
+// chosen adaptively — minute, hour, day — so a multi-week session fits the
 // query's MaxBuckets budget while day coarsening keeps the SUM exact
 // (coarsening never changes the totals). A session with no projection rows
 // returns measured zeros (the projection observed none of the session's
-// supported measures) — Partial stays false, so the zeros are exact.
+// supported measures) — the raw scan's Partial marking, not this query,
+// decides the aggregate's partiality.
 func (e *ProjectionEnricher) projectionCounters(ctx context.Context, id identity.Identity, openedAt time.Time) (SessionCounters, error) {
 	now := e.clock()
 	size, from, to, err := sessionRollupWindow(openedAt, now)
@@ -298,9 +329,8 @@ func (e *ProjectionEnricher) projectionCounters(ctx context.Context, id identity
 	}
 
 	var (
-		completions, costMicros, tokens int64
-		tasksDone, tasksFailed          int64
-		tasksCancelled                  int64
+		costMicros, tokens int64
+		tasksFailed        int64
 	)
 	cursor := ""
 	for page := 0; ; page++ {
@@ -318,15 +348,15 @@ func (e *ProjectionEnricher) projectionCounters(ctx context.Context, id identity
 				SessionIDs: []string{id.SessionID},
 			},
 			// The projection-backed dimensions' source measures only:
-			// successful-completion events, cost, total tokens, and task
-			// outcomes. No measure the projection does not back is read.
+			// cost, total tokens, and failed task outcomes. No measure the
+			// projection does not back is read — in particular neither
+			// llm_completions (a completion is not the session's total
+			// events) nor tasks_completed / tasks_cancelled (a terminal
+			// outcome is not a spawned task).
 			Measures: []rollups.Measure{
-				rollups.MeasureLLMCompletions,
 				rollups.MeasureLLMCostMicros,
 				rollups.MeasureLLMTokensTotal,
-				rollups.MeasureTasksCompleted,
 				rollups.MeasureTasksFailed,
-				rollups.MeasureTasksCancelled,
 			},
 			Sort:   rollups.SortKeyBucketAsc,
 			Limit:  rollups.MaxRowsPerQuery,
@@ -336,12 +366,9 @@ func (e *ProjectionEnricher) projectionCounters(ctx context.Context, id identity
 			return SessionCounters{}, fmt.Errorf("sessions/protocol: projection counter query: %w", err)
 		}
 		for _, r := range res.Rows {
-			completions += r.Measures[rollups.MeasureLLMCompletions].N
 			costMicros += r.Measures[rollups.MeasureLLMCostMicros].N
 			tokens += r.Measures[rollups.MeasureLLMTokensTotal].N
-			tasksDone += r.Measures[rollups.MeasureTasksCompleted].N
 			tasksFailed += r.Measures[rollups.MeasureTasksFailed].N
-			tasksCancelled += r.Measures[rollups.MeasureTasksCancelled].N
 		}
 		if res.NextCursor == "" {
 			break
@@ -353,10 +380,8 @@ func (e *ProjectionEnricher) projectionCounters(ctx context.Context, id identity
 	}
 
 	return SessionCounters{
-		EventsCount:    int(completions),
 		TotalCostCents: microsToCents(costMicros),
 		TotalTokens:    tokens,
-		TasksCount:     int(tasksDone + tasksFailed + tasksCancelled),
 		HasFailedTask:  tasksFailed > 0,
 	}, nil
 }
@@ -402,61 +427,6 @@ func microsToCents(micros int64) int64 {
 		return 0
 	}
 	return (micros + centScaleMicros/2) / centScaleMicros
-}
-
-// pendingIntervention reports whether the session has a paused pause record
-// awaiting resume / approval, mirroring the raw enricher's session-scoped
-// pause read. A read that cannot be taken (an unentitled foreign row, a
-// coordinator failure) returns read=false — the caller must mark the rollup
-// Partial, never report a fabricated "no intervention".
-func (e *ProjectionEnricher) pendingIntervention(ctx context.Context, id identity.Identity) (pending bool, read bool) {
-	idCtx, err := e.rowScopedCtx(ctx, id)
-	if err != nil {
-		e.logger.WarnContext(ctx, "sessions/protocol: projection enricher intervention row scope refused",
-			slog.String("session_id", id.SessionID), slog.Any("error", err))
-		return false, false
-	}
-	resp, err := e.pauses.List(idCtx, pauseresume.ListRequest{
-		Identity: id,
-		Filter: pauseresume.ListFilter{
-			States: []pauseresume.State{pauseresume.StatusPaused},
-			// Scope by the full triple (tenant is implied by Identity;
-			// UserIDs + SessionIDs mirror the events / tasks reads and
-			// CLAUDE.md §6 defence-in-depth — never scope by session alone).
-			UserIDs:    []string{id.UserID},
-			SessionIDs: []string{id.SessionID},
-		},
-		Page:     1,
-		PageSize: 1,
-	})
-	if err != nil {
-		e.logger.WarnContext(ctx, "sessions/protocol: projection enricher intervention list failed",
-			slog.String("session_id", id.SessionID), slog.Any("error", err))
-		return false, false
-	}
-	return resp.TotalRows > 0, true
-}
-
-// rowScopedCtx seats the ROW's own identity for the row-scoped pause read.
-//
-// It mirrors CounterEnricher.rowScopedCtx (enricher.go) exactly: a row
-// inside the caller's verified tenant is ordinary narrowing; a row from
-// ANOTHER tenant is a crossing the adapter re-checks against the admin-tier
-// claim the fleet listing gated on, seating it as an audited re-scope so
-// the crossing stays visible instead of being an unexplained widening. The
-// rollup store read itself needs no elevation — its query filter names the
-// session triple explicitly — but the pause coordinator scopes reads by the
-// ctx identity, so the crossing is minted here.
-func (e *ProjectionEnricher) rowScopedCtx(ctx context.Context, id identity.Identity) (context.Context, error) {
-	verified, anchored := identity.FromVerified(ctx)
-	if !anchored || id.TenantID == verified.TenantID {
-		return identity.With(ctx, id)
-	}
-	if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
-		return nil, fmt.Errorf("sessions projection enricher intervention: %w", errRowScopeUnentitled)
-	}
-	return identity.WithElevated(ctx, id,
-		"sessions projection enricher intervention: reading a row returned by an authorized fleet listing under that row's own identity")
 }
 
 // Compile-time assertion: *ProjectionEnricher satisfies Enricher.

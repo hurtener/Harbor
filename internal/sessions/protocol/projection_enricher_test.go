@@ -14,7 +14,6 @@ import (
 	"github.com/hurtener/Harbor/internal/observability/rollups"
 	"github.com/hurtener/Harbor/internal/observability/rollups/memstore"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
-	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
 // fakeProjectionQuality is a controllable ProjectionQuality double: it
@@ -28,15 +27,18 @@ type fakeProjectionQuality struct {
 
 func (f fakeProjectionQuality) Quality(context.Context) (rollups.Quality, error) { return f.q, f.err }
 
-// countingFallbackEnricher records every delegation the adapter makes to
-// the raw bounded scan and returns a wired result, so a test can assert
-// both "the fallback was invoked" and "its result was returned verbatim".
+// countingFallbackEnricher records every invocation the adapter makes of the
+// raw bounded scan and returns the wired result — a shared `result`, or a
+// per-session result when `bySession` is set — so a test can assert both
+// "the raw scan was invoked" and "its result was merged / returned
+// verbatim".
 type countingFallbackEnricher struct {
 	mu          sync.Mutex
 	calls       int
 	lastID      identity.Identity
 	lastSession string
 	result      SessionCounters
+	bySession   map[string]SessionCounters // optional per-session raw results
 }
 
 func (f *countingFallbackEnricher) Counters(_ context.Context, id identity.Identity, sessionID string) SessionCounters {
@@ -45,6 +47,9 @@ func (f *countingFallbackEnricher) Counters(_ context.Context, id identity.Ident
 	f.calls++
 	f.lastID = id
 	f.lastSession = sessionID
+	if r, ok := f.bySession[sessionID]; ok {
+		return r
+	}
 	return f.result
 }
 
@@ -120,13 +125,14 @@ func sessionWindow(openedAt, lastActivityAt time.Time) SessionWindowFunc {
 
 // newProjectionEnricher assembles a ProjectionEnricher over the given
 // doubles with a silent logger (assertions, not diagnostics, carry the
-// test's verdicts).
+// test's verdicts). The raw bounded scan (Fallback) is the canonical source
+// of events / tasks / pending on the projection-backed path, so every
+// assembled adapter requires one.
 func newProjectionEnricher(
 	t *testing.T,
 	store *memstore.Store,
 	quality ProjectionQuality,
 	fallback Enricher,
-	pauses pauseresume.Coordinator,
 	window SessionWindowFunc,
 	clock func() time.Time,
 ) *ProjectionEnricher {
@@ -135,7 +141,6 @@ func newProjectionEnricher(
 		Store:    store,
 		Quality:  quality,
 		Fallback: fallback,
-		Pauses:   pauses,
 		Window:   window,
 		Clock:    clock,
 		Logger:   testLogger(t),
@@ -168,7 +173,6 @@ func TestProjectionEnricher_NilDeps_FailLoud(t *testing.T) {
 		Store:    memstore.New(),
 		Quality:  currentQuality(opened),
 		Fallback: &countingFallbackEnricher{},
-		Pauses:   pauseresume.New(),
 		Window:   sessionWindow(opened, opened),
 		Clock:    clockAt(opened.Add(time.Hour)),
 	}
@@ -176,7 +180,6 @@ func TestProjectionEnricher_NilDeps_FailLoud(t *testing.T) {
 		"nil-store":    func(d *ProjectionEnricherDeps) { d.Store = nil },
 		"nil-quality":  func(d *ProjectionEnricherDeps) { d.Quality = nil },
 		"nil-fallback": func(d *ProjectionEnricherDeps) { d.Fallback = nil },
-		"nil-pauses":   func(d *ProjectionEnricherDeps) { d.Pauses = nil },
 		"nil-window":   func(d *ProjectionEnricherDeps) { d.Window = nil },
 	} {
 		deps := base
@@ -187,64 +190,79 @@ func TestProjectionEnricher_NilDeps_FailLoud(t *testing.T) {
 	}
 }
 
-// TestProjectionEnricher_Current_ExactProjectionBackedCounters is the
-// primary projection-backed contract: when the projection is CURRENT and
-// its retained horizon COVERS the session, the counters are EXACT
-// projection-backed totals (no counters_partial, no raw scan, no fallback
-// call), scoped to the session's own triple.
-func TestProjectionEnricher_Current_ExactProjectionBackedCounters(t *testing.T) {
+// TestProjectionEnricher_Current_MergedDivergentCounters is the primary
+// corrected contract: when the projection is CURRENT and its retained
+// horizon COVERS the session, the rollup is the DETERMINISTIC MERGE of the
+// two authoritative sources, proven with intentionally DIVERGENT numbers —
+// neither source may leak into the other's dimensions:
+//
+//   - The projection backs EXACTLY cost (micros→cents), total tokens, and
+//     HasFailedTask (failed terminal outcomes). The session's 2
+//     llm_completions are a SUBSET of its emitted events and its 1
+//     terminal outcome is NOT its spawned-task count, so neither may
+//     present as events_count / tasks_count.
+//   - The raw bounded scan backs the canonical totals: 11 events emitted
+//     and 7 spawned tasks, plus has_pending_intervention.
+//   - The raw scan's divergent cost / tokens / failed-task lower bounds
+//     never overwrite the projection's exact values, and the projection's
+//     subset counts never overwrite the raw scan's canonical events /
+//     tasks.
+//   - Partial stays false: every raw read succeeded, so the aggregate is
+//     current.
+func TestProjectionEnricher_Current_MergedDivergentCounters(t *testing.T) {
 	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
-	now := opened.Add(90 * time.Minute)
+	now := opened.Add(60 * time.Minute)
 	target := sid("t1", "u1", "s1")
-	other := sid("t1", "u1", "s-other")
 
 	store := memstore.New()
 	applyRollupBatch(t, store, 1,
-		costDelta(target, opened.Add(0*time.Minute), 0.50, 100), // 50c / 100 tok / 1 event
-		costDelta(target, opened.Add(5*time.Minute), 1.00, 500), // 100c / 500 tok
-		costDelta(target, opened.Add(6*time.Minute), 2.50, 300), // 250c / 300 tok
-		costDelta(other, opened.Add(7*time.Minute), 9.99, 9999), // cross-session — must NOT bleed
-		taskOutcomeDelta(target, opened.Add(8*time.Minute), "completed"),
-		taskOutcomeDelta(target, opened.Add(9*time.Minute), "failed"),
-		taskOutcomeDelta(target, opened.Add(10*time.Minute), "cancelled"),
+		costDelta(target, opened, 1.00, 300),                          // 100c / 300 tok / 1 completion
+		costDelta(target, opened.Add(5*time.Minute), 2.00, 200),       // 200c / 200 tok / 2nd completion
+		taskOutcomeDelta(target, opened.Add(6*time.Minute), "failed"), // 1 terminal outcome — a FAILED one
 	)
 
-	pauses := pauseresume.New()
-	if _, err := pauses.Request(context.Background(), pauseresume.PauseRequest{
-		Identity: target,
-		Reason:   pauseresume.ReasonApprovalRequired,
-	}); err != nil {
-		t.Fatalf("pause request: %v", err)
+	raw := SessionCounters{
+		EventsCount:            11, // 11 events emitted — NOT the 2 completions
+		TasksCount:             7,  // 7 tasks spawned — NOT the 1 terminal outcome
+		HasPendingIntervention: true,
+		// Deliberately divergent from the projection's exact values: the
+		// raw scan's lower bounds must NEVER overwrite the projection's
+		// exact cost / tokens / failed-task.
+		TotalCostCents: 999,
+		TotalTokens:    9999,
+		HasFailedTask:  false,
 	}
 
-	fallback := &countingFallbackEnricher{result: SessionCounters{TasksCount: 99}}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauses,
+	fallback := &countingFallbackEnricher{result: raw}
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	c := enr.Counters(context.Background(), target, "s1")
-	if c.TotalCostCents != 400 {
-		t.Errorf("TotalCostCents = %d, want 400 (0.50 + 1.00 + 2.50)", c.TotalCostCents)
+	// Projection-backed (exact) — never replaced by the raw lower bounds.
+	if c.TotalCostCents != 300 {
+		t.Errorf("TotalCostCents = %d, want 300 (projection-backed; the raw scan's 999 must not leak in)", c.TotalCostCents)
 	}
-	if c.TotalTokens != 900 {
-		t.Errorf("TotalTokens = %d, want 900", c.TotalTokens)
-	}
-	if c.EventsCount != 3 {
-		t.Errorf("EventsCount = %d, want 3 (the session's successful-completion events)", c.EventsCount)
-	}
-	if c.TasksCount != 3 {
-		t.Errorf("TasksCount = %d, want 3 (completed + failed + cancelled)", c.TasksCount)
+	if c.TotalTokens != 500 {
+		t.Errorf("TotalTokens = %d, want 500 (projection-backed; the raw scan's 9999 must not leak in)", c.TotalTokens)
 	}
 	if !c.HasFailedTask {
-		t.Error("HasFailedTask = false, want true (one failed task outcome)")
+		t.Error("HasFailedTask = false, want true — the projection's failed terminal outcome is authoritative, not the raw scan's false")
+	}
+	// Raw-backed (canonical) — never replaced by the projection subsets.
+	if c.EventsCount != 11 {
+		t.Errorf("EventsCount = %d, want 11 (canonical events emitted from the raw scan, NOT the 2 completions)", c.EventsCount)
+	}
+	if c.TasksCount != 7 {
+		t.Errorf("TasksCount = %d, want 7 (canonical spawned tasks from the raw scan, NOT the 1 terminal outcome)", c.TasksCount)
 	}
 	if !c.HasPendingIntervention {
-		t.Error("HasPendingIntervention = false, want true (the pause read must still run on the projection path)")
+		t.Error("HasPendingIntervention = false, want true (from the raw scan)")
 	}
 	if c.Partial {
-		t.Error("Partial = true, want false — a current, covering projection returns EXACT counters, never counters_partial")
+		t.Error("Partial = true, want false — a current, covering projection with a complete raw read is exact")
 	}
-	if got := fallback.called(); got != 0 {
-		t.Errorf("fallback delegations = %d, want 0 — a current, covering projection must never touch the raw bounded scan", got)
+	if got := fallback.called(); got != 1 {
+		t.Errorf("fallback delegations = %d, want exactly 1 — the projection-backed path reads events/tasks/pending from the raw scan", got)
 	}
 }
 
@@ -252,7 +270,9 @@ func TestProjectionEnricher_Current_ExactProjectionBackedCounters(t *testing.T) 
 // coverage boundary: a retention horizon that starts EXACTLY at the
 // session's opening bucket covers the session (BucketStart(openedAt) is
 // NOT before RetentionStart) — only a horizon that starts AFTER the
-// opening bucket is a gap.
+// opening bucket is a gap. The merge path still consults the raw scan for
+// the unmodelled dimensions; a raw result of measured zeros keeps the
+// rollup exact.
 func TestProjectionEnricher_Current_RetentionBoundaryIsCovered(t *testing.T) {
 	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	now := opened.Add(30 * time.Minute)
@@ -262,23 +282,29 @@ func TestProjectionEnricher_Current_RetentionBoundaryIsCovered(t *testing.T) {
 	applyRollupBatch(t, store, 1, costDelta(target, opened, 0.25, 50))
 
 	fallback := &countingFallbackEnricher{}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauseresume.New(),
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	c := enr.Counters(context.Background(), target, "s1")
 	if c.TotalCostCents != 25 {
 		t.Errorf("TotalCostCents = %d, want 25 (boundary-covered session reads exactly)", c.TotalCostCents)
 	}
-	if got := fallback.called(); got != 0 {
-		t.Errorf("fallback delegations = %d, want 0 — an exactly-covered session must not fall back", got)
+	if c.Partial {
+		t.Error("Partial = true, want false — a complete raw read next to an exactly-covered projection is exact")
+	}
+	if got := fallback.called(); got != 1 {
+		t.Errorf("fallback delegations = %d, want exactly 1 (the projection-backed merge)", got)
 	}
 }
 
 // TestProjectionEnricher_Current_NoRows_MeasuredExactZeros pins that a
 // current, covering projection with NO rows for the session returns
-// MEASURED zeros — Partial=false — never a fabricated or degraded value:
+// MEASURED zeros for the projection-backed dimensions — Partial=false when
+// the raw scan also read in full — never a fabricated or degraded value:
 // the projection observed none of the session's supported measures, which
-// is a real measurement, not missing data.
+// is a real measurement, not missing data. The raw scan still supplies the
+// canonical events / tasks / pending (its zeros here are exact because it
+// is not partial).
 func TestProjectionEnricher_Current_NoRows_MeasuredExactZeros(t *testing.T) {
 	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	now := opened.Add(30 * time.Minute)
@@ -288,23 +314,24 @@ func TestProjectionEnricher_Current_NoRows_MeasuredExactZeros(t *testing.T) {
 	store := memstore.New()
 	applyRollupBatch(t, store, 1, costDelta(other, opened, 5.00, 500)) // rows exist, but not for target
 
-	fallback := &countingFallbackEnricher{}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauseresume.New(),
+	fallback := &countingFallbackEnricher{} // raw scan: measured zeros, not partial
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	c := enr.Counters(context.Background(), target, "s1")
 	if c.Partial {
-		t.Error("Partial = true, want false — zero projection rows for a covered session is a measured zero")
+		t.Error("Partial = true, want false — zero projection rows for a covered session is a measured zero and the raw scan read in full")
 	}
-	if c.TotalCostCents != 0 || c.TotalTokens != 0 || c.EventsCount != 0 || c.TasksCount != 0 {
-		t.Errorf("measured zeros expected, got cost=%d tokens=%d events=%d tasks=%d",
-			c.TotalCostCents, c.TotalTokens, c.EventsCount, c.TasksCount)
+	if c.TotalCostCents != 0 || c.TotalTokens != 0 || c.HasFailedTask {
+		t.Errorf("measured zeros expected for the projection-backed dimensions, got cost=%d tokens=%d failed=%v",
+			c.TotalCostCents, c.TotalTokens, c.HasFailedTask)
 	}
-	if c.HasPendingIntervention || c.HasFailedTask {
-		t.Error("intervention / failed-task must be false on a session with no rows and no pauses")
+	if c.EventsCount != 0 || c.TasksCount != 0 || c.HasPendingIntervention {
+		t.Errorf("raw-backed zeros expected for a session with no events / tasks / pauses, got events=%d tasks=%d pending=%v",
+			c.EventsCount, c.TasksCount, c.HasPendingIntervention)
 	}
-	if got := fallback.called(); got != 0 {
-		t.Errorf("fallback delegations = %d, want 0 — measured zeros never trigger the raw scan", got)
+	if got := fallback.called(); got != 1 {
+		t.Errorf("fallback delegations = %d, want exactly 1 — the merge path still reads events/tasks/pending from the raw scan", got)
 	}
 }
 
@@ -313,6 +340,9 @@ func TestProjectionEnricher_Current_NoRows_MeasuredExactZeros(t *testing.T) {
 // and converts to cents ONCE at the end (round-half-up), so a session of
 // sub-cent per-call costs sums to its true cent total instead of flooring
 // every call to zero — the same false-absence the raw enricher closes.
+// The raw scan's canonical events / tasks are deliberately divergent from
+// the 50 completions, proving events_count never reads as the completion
+// count.
 func TestProjectionEnricher_SubCentCosts_ExactDeterministicCents(t *testing.T) {
 	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	now := opened.Add(60 * time.Minute)
@@ -325,8 +355,8 @@ func TestProjectionEnricher_SubCentCosts_ExactDeterministicCents(t *testing.T) {
 	}
 	applyRollupBatch(t, store, 1, deltas...)
 
-	fallback := &countingFallbackEnricher{}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauseresume.New(),
+	fallback := &countingFallbackEnricher{result: SessionCounters{EventsCount: 11, TasksCount: 7}}
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	c := enr.Counters(context.Background(), target, "s1")
@@ -337,8 +367,11 @@ func TestProjectionEnricher_SubCentCosts_ExactDeterministicCents(t *testing.T) {
 	if c.TotalTokens != 150 {
 		t.Errorf("TotalTokens = %d, want 150 (50 × 3)", c.TotalTokens)
 	}
-	if c.EventsCount != 50 {
-		t.Errorf("EventsCount = %d, want 50", c.EventsCount)
+	if c.EventsCount != 11 {
+		t.Errorf("EventsCount = %d, want 11 — events_count is the raw scan's canonical total, never the 50-completion subset", c.EventsCount)
+	}
+	if c.TasksCount != 7 {
+		t.Errorf("TasksCount = %d, want 7 (the raw scan's spawned-task total)", c.TasksCount)
 	}
 }
 
@@ -422,7 +455,7 @@ func TestProjectionEnricher_FallsBackToRawScan(t *testing.T) {
 				}
 			}
 			fallback := &countingFallbackEnricher{result: raw}
-			enr := newProjectionEnricher(t, s, tc.quality, fallback, pauseresume.New(), tc.window, clockAt(now))
+			enr := newProjectionEnricher(t, s, tc.quality, fallback, tc.window, clockAt(now))
 
 			c := enr.Counters(context.Background(), target, "s1")
 			if got := fallback.called(); got != 1 {
@@ -439,65 +472,56 @@ func TestProjectionEnricher_FallsBackToRawScan(t *testing.T) {
 	}
 }
 
-// TestProjectionEnricher_UnreachableRow_PauseReadMarksPartial pins that
-// the projection path still performs the pause read and that a read it
-// cannot take marks the rollup Partial: the rollup query itself is
-// filter-scoped (the store read needs no ctx elevation, so the
-// projection-backed counts ARE read), but a row whose tenant the adapter
-// may not reach leaves has_pending_intervention unmeasured — Partial says
-// so, instead of a fabricated false.
-func TestProjectionEnricher_UnreachableRow_PauseReadMarksPartial(t *testing.T) {
+// TestProjectionEnricher_Current_RawPartialMarksAggregatePartial pins the
+// merge's honesty marker: when the raw bounded scan reports Partial (a
+// truncated event scan, an unreadable registry read), the aggregate is
+// Partial even though the projection is current and covering — the
+// projection's exact cost / tokens / failed-task ride along, but the
+// row's CounterStatus is partial (events / tasks / pending are honest
+// lower bounds), never current. The raw scan's honest zero-plus-Partial
+// result is preserved verbatim — availability is never fabricated.
+func TestProjectionEnricher_Current_RawPartialMarksAggregatePartial(t *testing.T) {
 	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	now := opened.Add(30 * time.Minute)
-	foreign := sid("t-other", "u9", "s9")
+	target := sid("t1", "u1", "s1")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1, costDelta(foreign, opened, 5.00, 500))
+	applyRollupBatch(t, store, 1,
+		costDelta(target, opened, 1.00, 100),
+		taskOutcomeDelta(target, opened.Add(time.Minute), "failed"),
+	)
 
-	anchored, err := identity.WithVerified(context.Background(), sid("t1", "u1", "s1"))
-	if err != nil {
-		t.Fatalf("seat verified identity: %v", err)
+	// The raw scan could not be taken in full: its events / tasks / pending
+	// are honest lower bounds (a zero means "we could not look", and the
+	// marker says so), and its divergent cost / tokens lower bounds must
+	// not leak into the projection's exact values.
+	raw := SessionCounters{
+		EventsCount:    2,   // lower bound — the scan truncated
+		TotalCostCents: 777, // divergent lower bound — must not overwrite
+		Partial:        true,
 	}
 
-	enr := newProjectionEnricher(t, store, currentQuality(opened), &countingFallbackEnricher{},
-		pauseresume.New(), sessionWindow(opened, now), clockAt(now))
+	fallback := &countingFallbackEnricher{result: raw}
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
+		sessionWindow(opened, now), clockAt(now))
 
-	c := enr.Counters(anchored, foreign, "s9")
+	c := enr.Counters(context.Background(), target, "s1")
 	if !c.Partial {
-		t.Error("Partial = false, want true — a pause read the adapter could not take must mark the rollup, never a fabricated false intervention")
+		t.Error("Partial = false, want true — a partial raw read makes the aggregate partial, never current")
 	}
-	// The projection counts are still read (the rollup query is scoped by
-	// its filter, not by ctx elevation) — Partial marks them lower-bound.
-	if c.TotalCostCents != 500 {
-		t.Errorf("TotalCostCents = %d, want 500 — the filter-scoped projection read still serves the counts", c.TotalCostCents)
+	if c.EventsCount != 2 {
+		t.Errorf("EventsCount = %d, want 2 (the raw scan's honest lower bound rides along)", c.EventsCount)
 	}
-	if c.HasPendingIntervention {
-		t.Error("HasPendingIntervention = true for an unreadable row — the unmeasured value must read false WITH Partial")
+	// The projection's exact values are preserved next to the raw's
+	// partial marker.
+	if c.TotalCostCents != 100 {
+		t.Errorf("TotalCostCents = %d, want 100 — the raw lower bound (777) must not overwrite the projection's exact cost", c.TotalCostCents)
 	}
-}
-
-// TestProjectionEnricher_ForeignRowUnderFleetClaim_ReadInFull is the
-// companion: under the admin-tier claim a fleet listing carries, the
-// adapter's audited re-scope makes the pause read succeed, so the foreign
-// row is read in full — Partial stays false. Without this pin the test
-// above would pass for an adapter that never reads anything.
-func TestProjectionEnricher_ForeignRowUnderFleetClaim_ReadInFull(t *testing.T) {
-	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
-	now := opened.Add(30 * time.Minute)
-	foreign := sid("t-other", "u9", "s9")
-
-	store := memstore.New()
-	applyRollupBatch(t, store, 1, costDelta(foreign, opened, 5.00, 500))
-
-	enr := newProjectionEnricher(t, store, currentQuality(opened), &countingFallbackEnricher{},
-		pauseresume.New(), sessionWindow(opened, now), clockAt(now))
-
-	c := enr.Counters(fleetCtx(t, sid("t1", "u1", "s1")), foreign, "s9")
-	if c.Partial {
-		t.Error("Partial = true for a complete foreign row under the fleet claim, want false")
+	if c.TotalTokens != 100 {
+		t.Errorf("TotalTokens = %d, want 100 (projection-backed, preserved under the partial marker)", c.TotalTokens)
 	}
-	if c.TotalCostCents != 500 {
-		t.Errorf("TotalCostCents = %d, want 500", c.TotalCostCents)
+	if !c.HasFailedTask {
+		t.Error("HasFailedTask = false, want true — the projection's failed terminal outcome is preserved under the partial marker")
 	}
 }
 
@@ -542,7 +566,7 @@ func TestProjectionEnricher_LifecycleProjection_ZeroEnricherCalls(t *testing.T) 
 	now := opened.Add(30 * time.Minute)
 	store := memstore.New()
 	fallback := &countingFallbackEnricher{result: SessionCounters{TasksCount: 7}}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauseresume.New(),
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	projector, err := NewListerProjector(catalogLister{snapshots: catalogSnapshots(20, "tenant-1", "user-1", "lc-proj")},
@@ -602,7 +626,10 @@ func TestProjectionEnricher_LifecycleProjection_ZeroEnricherCalls(t *testing.T) 
 // adaptive bucket-size path: a session whose lifetime exceeds the rollup
 // query's minute-bucket budget must still return EXACT projection-backed
 // totals — the adapter coarsens the query to the hour / day grid, and
-// coarsening never changes the summed measures.
+// coarsening never changes the summed measures. The raw scan's canonical
+// events / tasks are deliberately divergent from the projection's 2
+// completions / 2 terminal outcomes, proving the public counters never read
+// as projection subsets.
 func TestProjectionEnricher_Current_LongLivedSession_CoarsenedExact(t *testing.T) {
 	opened := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	now := opened.Add(200 * 24 * time.Hour) // 200 days: 288k minutes > MaxBuckets, 4800h > MaxBuckets → day grid
@@ -610,14 +637,14 @@ func TestProjectionEnricher_Current_LongLivedSession_CoarsenedExact(t *testing.T
 
 	store := memstore.New()
 	applyRollupBatch(t, store, 1,
-		costDelta(target, opened, 1.00, 100),                                // 100c / 100 tok / 1 event
+		costDelta(target, opened, 1.00, 100),                                // 100c / 100 tok — at the window start
 		costDelta(target, opened.Add(199*24*time.Hour), 2.50, 300),          // 250c / 300 tok — near the window end
-		taskOutcomeDelta(target, opened.Add(100*24*time.Hour), "completed"), // a task outcome mid-window
-		taskOutcomeDelta(target, opened.Add(100*24*time.Hour), "failed"),    // 2 tasks total
+		taskOutcomeDelta(target, opened.Add(100*24*time.Hour), "completed"), // a terminal outcome mid-window
+		taskOutcomeDelta(target, opened.Add(100*24*time.Hour), "failed"),    // a failed terminal outcome
 	)
 
-	fallback := &countingFallbackEnricher{}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauseresume.New(),
+	fallback := &countingFallbackEnricher{result: SessionCounters{EventsCount: 11, TasksCount: 7}}
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	c := enr.Counters(context.Background(), target, "s1")
@@ -627,26 +654,27 @@ func TestProjectionEnricher_Current_LongLivedSession_CoarsenedExact(t *testing.T
 	if c.TotalTokens != 400 {
 		t.Errorf("TotalTokens = %d, want 400", c.TotalTokens)
 	}
-	if c.EventsCount != 2 {
-		t.Errorf("EventsCount = %d, want 2", c.EventsCount)
+	if !c.HasFailedTask {
+		t.Error("HasFailedTask = false, want true (the projection's failed terminal outcome)")
 	}
-	if c.TasksCount != 2 || !c.HasFailedTask {
-		t.Errorf("TasksCount = %d, HasFailedTask = %v, want 2/true", c.TasksCount, c.HasFailedTask)
+	if c.EventsCount != 11 || c.TasksCount != 7 {
+		t.Errorf("EventsCount = %d, TasksCount = %d, want 11/7 (raw-backed canonical totals on a coarsened query)", c.EventsCount, c.TasksCount)
 	}
 	if c.Partial {
 		t.Error("Partial = true, want false — a covered long-lived session returns exact counters")
 	}
-	if got := fallback.called(); got != 0 {
-		t.Errorf("fallback delegations = %d, want 0", got)
+	if got := fallback.called(); got != 1 {
+		t.Errorf("fallback delegations = %d, want exactly 1", got)
 	}
 }
 
 // TestProjectionEnricher_ConcurrentReuse_NoCrossTalk pins the D-025-style
 // concurrent-reuse contract for the adapter: N≥100 concurrent Counters
 // calls against ONE shared ProjectionEnricher under -race, with distinct
-// sessions, must show no data races, no context bleed (each session reads
-// exactly its own projection-backed counters), no fallback invocations,
-// and no goroutine leak after the wave.
+// sessions, must show no data races, no context bleed across EITHER seam
+// (each session reads exactly its own projection-backed cost / tokens /
+// failed-task AND its own raw-backed events / tasks / pending), no goroutine
+// leak after the wave, and exactly one raw-scan invocation per read.
 func TestProjectionEnricher_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	opened := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	now := opened.Add(2 * time.Hour)
@@ -655,22 +683,20 @@ func TestProjectionEnricher_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 
 	store := memstore.New()
 	applyRollupBatch(t, store, 1,
-		costDelta(a, opened, 1.00, 100), // sA: 100c / 100 tok / 1 event
-		costDelta(b, opened, 5.00, 500), // sB: 500c / 500 tok / 1 event
+		costDelta(a, opened, 1.00, 100), // sA projection: 100c / 100 tok
+		costDelta(b, opened, 5.00, 500), // sB projection: 500c / 500 tok
 		taskOutcomeDelta(a, opened.Add(time.Minute), "completed"),
 		taskOutcomeDelta(a, opened.Add(2*time.Minute), "failed"),
 	)
 
-	pauses := pauseresume.New()
-	if _, err := pauses.Request(context.Background(), pauseresume.PauseRequest{
-		Identity: a,
-		Reason:   pauseresume.ReasonApprovalRequired,
-	}); err != nil {
-		t.Fatalf("pause request: %v", err)
-	}
-
-	fallback := &countingFallbackEnricher{}
-	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback, pauses,
+	// Each session's raw scan supplies ITS OWN canonical events / tasks /
+	// pending — deliberately divergent from the projection-backed values so
+	// cross-talk on either seam is caught.
+	fallback := &countingFallbackEnricher{bySession: map[string]SessionCounters{
+		a.SessionID: {EventsCount: 11, TasksCount: 7, HasPendingIntervention: true},
+		b.SessionID: {EventsCount: 5, TasksCount: 3, HasPendingIntervention: false},
+	}}
+	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
 		sessionWindow(opened, now), clockAt(now))
 
 	baseline := settledGoroutineCount()
@@ -689,13 +715,13 @@ func TestProjectionEnricher_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 			c := enr.Counters(context.Background(), want, want.SessionID)
 			switch want.SessionID {
 			case a.SessionID:
-				if c.TotalCostCents != 100 || c.TotalTokens != 100 || c.EventsCount != 1 ||
-					c.TasksCount != 2 || !c.HasFailedTask || !c.HasPendingIntervention || c.Partial {
+				if c.TotalCostCents != 100 || c.TotalTokens != 100 || !c.HasFailedTask ||
+					c.EventsCount != 11 || c.TasksCount != 7 || !c.HasPendingIntervention || c.Partial {
 					errCh <- "context bleed: session sA got " + fmt.Sprintf("%+v", c)
 				}
 			case b.SessionID:
-				if c.TotalCostCents != 500 || c.TotalTokens != 500 || c.EventsCount != 1 ||
-					c.TasksCount != 0 || c.HasFailedTask || c.HasPendingIntervention || c.Partial {
+				if c.TotalCostCents != 500 || c.TotalTokens != 500 || c.HasFailedTask ||
+					c.EventsCount != 5 || c.TasksCount != 3 || c.HasPendingIntervention || c.Partial {
 					errCh <- "context bleed: session sB got " + fmt.Sprintf("%+v", c)
 				}
 			}
@@ -706,8 +732,8 @@ func TestProjectionEnricher_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	for e := range errCh {
 		t.Error(e)
 	}
-	if got := fallback.called(); got != 0 {
-		t.Errorf("fallback delegations = %d, want 0 across %d concurrent projection-backed reads", got, N)
+	if got := fallback.called(); got != N {
+		t.Errorf("fallback delegations = %d, want %d — every projection-backed read consults the raw scan for events/tasks/pending", got, N)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
