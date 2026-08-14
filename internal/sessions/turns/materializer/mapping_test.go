@@ -101,7 +101,7 @@ func TestMaterialize_ToolCompletionWithoutInvocationIsOmitted(t *testing.T) {
 	quad := testQuad(h.id, "run-uc")
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-uc", tasks.KindForeground, ""))
 	h.src.publish(t, startedEv(h.id, "task-uc"))
-	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "ghost.tool", 1, 5))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "ghost.tool", 5))
 	h.src.publish(t, failedEv(h.id, "task-uc", "timeout"))
 	if _, err := m.Materialize(context.Background()); err != nil {
 		t.Fatalf("materialize: %v", err)
@@ -205,12 +205,12 @@ func TestMaterialize_ReasoningOverflowClampsAndContinues(t *testing.T) {
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-of", tasks.KindForeground, ""))
 	h.src.publish(t, startedEv(h.id, "task-of"))
 	steps := turns.MaxReasoningSteps*4 + 20 // > the projector's 128-step feed-acceptance bound
-	for i := 0; i < steps; i++ {
+	for range steps {
 		h.src.publish(t, decisionEv(h.id, quad.RunID, "CallTool"))
 	}
 	// Events AFTER the overflow still apply (the pass never wedges).
 	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "post.tool", time.Now()))
-	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "post.tool", 1, 5))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "post.tool", 5))
 	last := h.src.publish(t, failedEv(h.id, "task-of", "timeout"))
 
 	res, err := m.Materialize(context.Background())
@@ -253,9 +253,9 @@ func TestMaterialize_InputDispositionDedupAndEdgeSkips(t *testing.T) {
 	quad := testQuad(h.id, "run-d")
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-d", tasks.KindForeground, ""))
 	h.src.publish(t, startedEv(h.id, "task-d"))
-	h.src.publish(t, inputDispositionEv(h.id, "task-d", "art-1", "image/png", "inline"))
-	h.src.publish(t, inputDispositionEv(h.id, "task-d", "art-1", "image/png", "inline")) // dedup
-	h.src.publish(t, inputDispositionEv(h.id, "task-d", "", "image/png", "inline"))      // empty id → omitted
+	h.src.publish(t, inputDispositionEv(h.id, "task-d", "art-1"))
+	h.src.publish(t, inputDispositionEv(h.id, "task-d", "art-1")) // dedup
+	h.src.publish(t, inputDispositionEv(h.id, "task-d", ""))      // empty id → omitted
 	h.src.publish(t, appAvailableEv(h.id, quad.RunID, "agent-a", "srv-1", "ui://one"))
 	h.src.publish(t, appAvailableEv(h.id, quad.RunID, "agent-a", "", "")) // missing server/uri → omitted
 	h.src.publish(t, failedEv(h.id, "task-d", "timeout"))

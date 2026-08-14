@@ -408,7 +408,7 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("page 1: %v", err)
 		}
-		if next == nil || len(page) != 2 || info.CountExact != true || info.Remaining != 3 {
+		if next == nil || len(page) != 2 || !info.CountExact || info.Remaining != 3 {
 			t.Errorf("page 1 wrong: %d rows next=%v remaining=%d count_exact=%v, want 2/non-nil/3/true",
 				len(page), next != nil, info.Remaining, info.CountExact)
 		}
@@ -585,8 +585,8 @@ func Run(t *testing.T, factory Factory) {
 		if err := s.SaveCheckpoint(ctx, id, 10); err != nil {
 			t.Fatalf("save 10: %v", err)
 		}
-		if seq, _ := s.LoadCheckpoint(ctx, id); seq != 10 {
-			t.Errorf("checkpoint=%d, want 10", seq)
+		if seq, err := s.LoadCheckpoint(ctx, id); err != nil || seq != 10 {
+			t.Errorf("checkpoint=%d err=%v, want 10 nil", seq, err)
 		}
 		// A regress or same-value save is a no-op, never an error.
 		if err := s.SaveCheckpoint(ctx, id, 5); err != nil {
@@ -595,8 +595,8 @@ func Run(t *testing.T, factory Factory) {
 		if err := s.SaveCheckpoint(ctx, id, 10); err != nil {
 			t.Errorf("same-value error=%v, want nil", err)
 		}
-		if seq, _ := s.LoadCheckpoint(ctx, id); seq != 10 {
-			t.Errorf("checkpoint after regress=%d, want 10 (never regresses)", seq)
+		if seq, err := s.LoadCheckpoint(ctx, id); err != nil || seq != 10 {
+			t.Errorf("checkpoint after regress=%d err=%v, want 10 nil (never regresses)", seq, err)
 		}
 	})
 
@@ -605,16 +605,19 @@ func Run(t *testing.T, factory Factory) {
 		defer cleanup()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		const writers = 16
+		const writers uint64 = 16
+		const perWriter uint64 = 20
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		for w := 0; w < writers; w++ {
+		for w := range writers {
 			wg.Add(1)
-			go func(w int) {
+			go func(w uint64) {
 				defer wg.Done()
 				<-start
-				for v := 0; v < 20; v++ {
-					_ = s.SaveCheckpoint(ctx, id, uint64(w*20+v))
+				for v := range perWriter {
+					if err := s.SaveCheckpoint(ctx, id, w*perWriter+v); err != nil {
+						t.Errorf("concurrent checkpoint save %d: %v", w*perWriter+v, err)
+					}
 				}
 			}(w)
 		}
@@ -624,8 +627,8 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if seq != uint64(writers*20-1) {
-			t.Errorf("checkpoint=%d, want %d (concurrent advances converge to the max)", seq, uint64(writers*20-1))
+		if seq != writers*perWriter-1 {
+			t.Errorf("checkpoint=%d, want %d (concurrent advances converge to the max)", seq, writers*perWriter-1)
 		}
 	})
 
@@ -674,8 +677,8 @@ func Run(t *testing.T, factory Factory) {
 		if _, err := s.GetTurn(ctx, id, "run-1"); !errors.Is(err, turns.ErrTurnNotFound) {
 			t.Errorf("post-erase get error=%v, want ErrTurnNotFound", err)
 		}
-		if seq, _ := s.LoadCheckpoint(ctx, id); seq != 0 {
-			t.Errorf("post-erase checkpoint=%d, want 0", seq)
+		if seq, err := s.LoadCheckpoint(ctx, id); err != nil || seq != 0 {
+			t.Errorf("post-erase checkpoint=%d err=%v, want 0 nil", seq, err)
 		}
 		if _, err := s.AppendTurnIf(ctx, id, freshRow("run-3", id)); !errors.Is(err, turns.ErrErasureFenced) {
 			t.Errorf("post-erase append error=%v, want ErrErasureFenced (fence survives erase)", err)
@@ -718,8 +721,8 @@ func Run(t *testing.T, factory Factory) {
 		if _, err := s.GetTurn(ctx, id, "run-1"); !errors.Is(err, turns.ErrTurnNotFound) {
 			t.Errorf("post-erase get error=%v, want ErrTurnNotFound", err)
 		}
-		if seq, _ := s.LoadCheckpoint(ctx, id); seq != 0 {
-			t.Errorf("post-erase checkpoint=%d, want 0", seq)
+		if seq, err := s.LoadCheckpoint(ctx, id); err != nil || seq != 0 {
+			t.Errorf("post-erase checkpoint=%d err=%v, want 0 nil", seq, err)
 		}
 		// Idempotent.
 		if _, err := s.DeleteScope(ctx, id); err != nil {
@@ -929,12 +932,12 @@ func Run(t *testing.T, factory Factory) {
 		start := make(chan struct{})
 		errs := make(chan error, appenders)
 		var wg sync.WaitGroup
-		for w := 0; w < appenders; w++ {
+		for w := range appenders {
 			wg.Add(1)
 			go func(w int) {
 				defer wg.Done()
 				<-start
-				for i := 0; i < perAppender; i++ {
+				for i := range perAppender {
 					if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("w%d-%02d", w, i), id)); err != nil {
 						errs <- err
 						return
@@ -1004,7 +1007,7 @@ func Run(t *testing.T, factory Factory) {
 		baseline := runtime.NumGoroutine()
 		ctx := context.Background()
 		id := triple("tenant-a", "user-a", "session-a")
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("r-%d", i), id)); err != nil {
 				t.Fatalf("append: %v", err)
 			}

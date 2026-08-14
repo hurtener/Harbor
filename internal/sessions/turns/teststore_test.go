@@ -117,19 +117,6 @@ func (s *testStore) loadRow(ctx context.Context, id identity.Identity, turnID Tu
 	return row, rec, nil
 }
 
-func (s *testStore) saveRow(ctx context.Context, id identity.Identity, row TurnRow) (state.EventID, error) {
-	q, kind := rowKey(id, row.TurnID)
-	bytes, err := json.Marshal(row)
-	if err != nil {
-		return "", fmt.Errorf("turns: row %q encode: %w", row.TurnID, err)
-	}
-	eid := state.NewEventID()
-	if err := s.st.Save(ctx, state.StateRecord{ID: eid, Identity: q, Kind: kind, Bytes: bytes}); err != nil {
-		return "", err
-	}
-	return eid, nil
-}
-
 func (s *testStore) AppendTurnIf(ctx context.Context, id identity.Identity, row TurnRow) (TurnRow, error) {
 	if err := s.closedErr(); err != nil {
 		return TurnRow{}, err
@@ -211,7 +198,7 @@ func (s *testStore) mintSeq(ctx context.Context, id identity.Identity) (Seq, err
 		}
 		next := cur + 1
 		bytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(bytes, uint64(next))
+		binary.BigEndian.PutUint64(bytes, next)
 		eid := state.NewEventID()
 		expect := []state.SlotExpectation{}
 		if cur == 0 {
@@ -321,7 +308,7 @@ type truncationMarker struct {
 func (s *testStore) mutate(ctx context.Context, id identity.Identity, turnID TurnID, expectedVersion int, row TurnRow, sealed bool) (TurnRow, error) {
 	q, kind := rowKey(id, turnID)
 	fq := identity.Quadruple{Identity: id}
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		// The store-local erasure fence is checked in the same
 		// serialized section as the write (a real driver checks it in
 		// the same transaction).

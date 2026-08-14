@@ -271,7 +271,7 @@ func (m *Materializer) completeSealProjection(ctx context.Context, sess *session
 		ts.inputs = append([]turns.Attachment(nil), snap.Inputs...)
 		u.Inputs = ts.inputs
 	}
-	if _, err := m.updateTurn(ctx, sess, ts, u); err != nil {
+	if err := m.updateTurn(ctx, sess, ts, u); err != nil {
 		return false, false, err
 	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{

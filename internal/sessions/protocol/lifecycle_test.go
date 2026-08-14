@@ -39,13 +39,6 @@ func catalogSnapshots(count int, tenant, user, idPrefix string) []sessions.Sessi
 	return snapshots
 }
 
-// mixedCatalog is a two-tenant catalog with tenant-unique session ids:
-// tenant-1 owns t1-session-000.., tenant-other owns tother-session-000..
-func mixedCatalog() []sessions.SessionSnapshot {
-	return append(catalogSnapshots(3, "tenant-1", "user-1", "t1-session"),
-		catalogSnapshots(3, "tenant-other", "user-other", "tother-session")...)
-}
-
 // lifecycleCaller is the caller triple the lifecycle tests run under.
 func lifecycleCaller() identity.Identity {
 	return identity.Identity{TenantID: "tenant-1", UserID: "user-1", SessionID: "caller-session"}

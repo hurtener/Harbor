@@ -357,7 +357,7 @@ func TestMaterialize_ChildActivityFoldsIntoParent(t *testing.T) {
 	h.src.publish(t, startedEv(h.id, "task-child"))
 	// The child's tool dispatch folds into the PARENT turn's activity.
 	h.src.publish(t, toolInvokedEv(h.id, childQuad.RunID, "child.tool", time.Now()))
-	h.src.publish(t, toolCompletedEv(h.id, childQuad.RunID, "child.tool", 1, 3))
+	h.src.publish(t, toolCompletedEv(h.id, childQuad.RunID, "child.tool", 3))
 	// The child's own completion folds nowhere (it is not a turn).
 	h.src.publish(t, completedEv(h.id, "task-child"))
 	// The parent fails terminally.
@@ -710,8 +710,8 @@ func TestMaterialize_DecodesRedactedMapPayloads(t *testing.T) {
 	publish(startedEv(h.id, "task-1"))
 	publish(decisionEv(h.id, quad.RunID, "CallTool"))
 	publish(toolInvokedEv(h.id, quad.RunID, "clock.now", time.Unix(1_700_000_100, 0)))
-	publish(toolCompletedEv(h.id, quad.RunID, "clock.now", 1, 5))
-	publish(inputDispositionEv(h.id, "task-1", "art-1", "image/png", "inline"))
+	publish(toolCompletedEv(h.id, quad.RunID, "clock.now", 5))
+	publish(inputDispositionEv(h.id, "task-1", "art-1"))
 	publish(appAvailableEv(h.id, quad.RunID, "agent-a", "server-1", "ui://doc"))
 	publish(costRecordedEv(h.id, quad.RunID, "model-x", llm.Usage{
 		PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, LatencyMS: 120,
@@ -887,7 +887,7 @@ func TestMaterialize_RunLoopWatchesAndCatchesUp(t *testing.T) {
 	h.lifecycle(t, testQuad(h.id, "run-1"), "task-1")
 	h.src.notify()
 
-	if !eventually(t, 5*time.Second, func() bool {
+	if !eventually(t, func() bool {
 		row, err := h.proj.Get(context.Background(), h.id, "task-1")
 		return err == nil && row.Sealed
 	}) {
@@ -1087,7 +1087,7 @@ func TestMaterialize_MidPageFailureRetryIsTransactional(t *testing.T) {
 		PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, LatencyMS: 120,
 	}, 0.25))
 	h.src.publish(t, appAvailableEv(h.id, quad.RunID, "agent-a", "srv-1", "ui://one"))
-	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "tx.tool", 1, 5))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "tx.tool", 5))
 	last := h.src.publish(t, failedEv(h.id, "task-tx", "timeout"))
 
 	// Pass 1 fails loud at the injected write — never a silent partial
@@ -1241,7 +1241,7 @@ func TestMaterialize_DeferredCompleteRetryNoOpDoesNotFalseSeal(t *testing.T) {
 	// to the session checkpoint — exactly the shape that makes the
 	// end-of-pass retry a sequence no-op.
 	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "fs.tool", time.Now()))
-	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "fs.tool", 1, 5))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "fs.tool", 5))
 
 	res, err := m.Materialize(context.Background())
 	if err != nil {

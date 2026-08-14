@@ -31,7 +31,7 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 	ids := make([]identity.Identity, n)
 	quads := make([]identity.Quadruple, n)
 	taskIDs := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := identity.Identity{
 			TenantID:  fmt.Sprintf("tenant-%d", i%3),
 			UserID:    fmt.Sprintf("user-%d", i),
@@ -44,7 +44,7 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 
 	// One full canonical lifecycle per identity — mixed tenants, users,
 	// and sessions on ONE shared projection.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		h.lifecycle(t, quads[i], taskIDs[i])
 	}
 	if _, err := m.Materialize(context.Background()); err != nil {
@@ -53,7 +53,7 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 
 	// Same-user/session reach: every identity pages exactly its own
 	// turn and nothing else.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		page, err := h.proj.List(context.Background(), ids[i], turns.ListOptions{Limit: 50})
 		if err != nil {
 			t.Fatalf("list identity %d: %v", i, err)
@@ -71,7 +71,7 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 	// Cross-identity denial is NON-ORACULAR: asking for another
 	// identity's turn under this triple is a typed not-found, never a
 	// cross-session row and never an invented one.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		other := (i + 1) % n
 		if _, err := h.proj.Get(context.Background(), ids[i], turns.TurnID(taskIDs[other])); !errors.Is(err, turns.ErrTurnNotFound) {
 			t.Fatalf("cross-identity get = %v, want ErrTurnNotFound (identity %d read identity %d)", err, i, other)
@@ -86,11 +86,11 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 	var wg sync.WaitGroup
 	const readers = 16
 	const readsPerReader = 200
-	for w := 0; w < readers; w++ {
+	for w := range readers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for k := 0; k < readsPerReader; k++ {
+			for k := range readsPerReader {
 				i := (w*31 + k*7) % n
 				if _, err := h.proj.List(context.Background(), ids[i], turns.ListOptions{Limit: 50}); err != nil {
 					t.Errorf("concurrent list identity %d: %v", i, err)
@@ -106,7 +106,7 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 	matDone := make(chan struct{})
 	go func() {
 		defer close(matDone)
-		for pass := 0; pass < 2; pass++ {
+		for range 2 {
 			if _, err := m.Materialize(ctx); err != nil {
 				t.Errorf("concurrent materialize: %v", err)
 				return
@@ -117,7 +117,7 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 	wg.Wait()
 
 	// The concurrent idempotent passes did not mutate the rows.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		row, err := h.proj.Get(context.Background(), ids[i], turns.TurnID(taskIDs[i]))
 		if err != nil || !row.Sealed {
 			t.Fatalf("post-stress get identity %d: err=%v sealed=%v", i, err, row.Sealed)
@@ -150,12 +150,11 @@ func TestMaterialize_ConcurrentMaterializers_Converge(t *testing.T) {
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for _, m := range []*Materializer{m1, m2} {
-		m := m
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			for pass := 0; pass < 3; pass++ {
+			for range 3 {
 				if _, err := m.Materialize(ctx); err != nil {
 					errs <- err
 					return
@@ -199,7 +198,7 @@ func TestMaterialize_EraseDuringPass_NoResurrectionUnderRace(t *testing.T) {
 
 	// Publish a batch for OTHER identities, then the erased session's
 	// events, so the erase lands while the pass is mid-application.
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		oid := identity.Identity{TenantID: "tenant-y", UserID: fmt.Sprintf("user-%d", i), SessionID: fmt.Sprintf("sess-%d", i)}
 		h.src.publish(t, spawnEv(oid, fmt.Sprintf("run-%d", i), fmt.Sprintf("task-%d", i), tasks.KindForeground, ""))
 		h.src.publish(t, startedEv(oid, fmt.Sprintf("task-%d", i)))

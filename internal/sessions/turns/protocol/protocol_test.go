@@ -84,11 +84,11 @@ func fixtureRow(turnID string, status turns.Status, agentID string) turns.TurnRo
 // OLDEST-first seed order (turn-<n-1> gets the lowest sequence), so
 // the newest retained row is always turn-00. Returns the stored rows
 // in seed order.
-func seedN(t *testing.T, st *memStore, id identity.Identity, n int, status turns.Status, agentID string) []turns.TurnRow {
+func seedN(t *testing.T, st *memStore, id identity.Identity, n int) []turns.TurnRow {
 	t.Helper()
 	out := make([]turns.TurnRow, 0, n)
 	for i := n - 1; i >= 0; i-- {
-		row := mustSeedRow(t, st, id, fixtureRow(turnIDAt(i), status, agentID))
+		row := mustSeedRow(t, st, id, fixtureRow(turnIDAt(i), turns.StatusComplete, ""))
 		out = append(out, row)
 	}
 	return out
@@ -219,7 +219,7 @@ func TestService_Get_InvalidRequest_FailsLoud(t *testing.T) {
 
 func TestService_List_SessionReach_PresentClaimDeniesForeignSession(t *testing.T) {
 	svc, st, _, _ := newTestService(t)
-	seedN(t, st, fixtureID, 2, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 2)
 
 	// A PRESENT session_reach claim that excludes the effective session
 	// denies LOUDLY (the settled signed-reach contract).
@@ -249,7 +249,7 @@ func TestService_List_SessionReach_UnwiredGatePasses(t *testing.T) {
 	// No session-reach gate wired: the transport edge is the
 	// enforcement point; the exact-session boundary still holds.
 	svc, st, _, _ := newTestService(t, WithSessionReachAuthorizer(nil))
-	seedN(t, st, fixtureID, 1, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 1)
 	ctx := verifiedCtx(t, fixtureID)
 	if _, err := svc.List(ctx, ListRequest{SessionID: "session-1"}); err != nil {
 		t.Fatalf("unwired gate list: unexpected err %v", err)
@@ -260,7 +260,7 @@ func TestService_List_SessionReach_UnwiredGatePasses(t *testing.T) {
 
 func TestService_List_ForeignSession_NonOracularNotFound(t *testing.T) {
 	svc, st, _, _ := newTestService(t)
-	seedN(t, st, fixtureID, 3, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 3)
 
 	// A sibling session of the same user, a foreign user, a foreign
 	// tenant, and a never-existing session all answer EXACTLY the same
@@ -314,7 +314,7 @@ func TestService_List_OwnEmptySession_HonestEmptyPage(t *testing.T) {
 
 func TestService_List_DefaultLimitAndShape(t *testing.T) {
 	svc, st, _, _ := newTestService(t)
-	seedN(t, st, fixtureID, turns.MaxListLimit+2, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, turns.MaxListLimit+2)
 	ctx := verifiedCtx(t, fixtureID)
 
 	// Zero limit ⇒ the Protocol-mandated default of 20.
@@ -356,7 +356,7 @@ func TestService_List_DefaultLimitAndShape(t *testing.T) {
 
 func TestService_List_PartialRetentionHonest(t *testing.T) {
 	svc, st, _, _ := newTestService(t)
-	seedN(t, st, fixtureID, 3, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 3)
 	st.setTruncated(fixtureID)
 	ctx := verifiedCtx(t, fixtureID)
 
@@ -376,7 +376,7 @@ func TestService_List_PartialRetentionHonest(t *testing.T) {
 
 func TestService_List_Cursor_TypedOutcomes(t *testing.T) {
 	svc, st, _, _ := newTestService(t)
-	rows := seedN(t, st, fixtureID, 3, turns.StatusComplete, "")
+	rows := seedN(t, st, fixtureID, 3)
 	ctx := verifiedCtx(t, fixtureID)
 
 	// Malformed cursor fails loud with the domain's invalid-cursor
@@ -443,7 +443,7 @@ func TestService_List_Cursor_TypedOutcomes(t *testing.T) {
 
 func TestService_List_AppendWhilePaging_NoSkipDuplicate(t *testing.T) {
 	svc, st, proj, _ := newTestService(t)
-	seedN(t, st, fixtureID, 5, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 5)
 	ctx := verifiedCtx(t, fixtureID)
 
 	page1, err := svc.List(ctx, ListRequest{SessionID: "session-1", Limit: 2})
@@ -492,7 +492,7 @@ func TestService_List_AppendWhilePaging_NoSkipDuplicate(t *testing.T) {
 	if seen["turn-new"] {
 		t.Fatal("appended turn appeared on an already-issued cursor")
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if !seen[turnIDAt(i)] {
 			t.Fatalf("missing turn %q — a skip while appending", turnIDAt(i))
 		}
@@ -610,7 +610,7 @@ func TestService_List_AgentGate_ReachAdmitsRows(t *testing.T) {
 
 func TestService_ErasedSession_NonOracularAndNoResurrection(t *testing.T) {
 	svc, st, _, _ := newTestService(t)
-	seedN(t, st, fixtureID, 3, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 3)
 	ctx := verifiedCtx(t, fixtureID)
 
 	if err := st.erase(ctx, fixtureID); err != nil {
@@ -864,13 +864,13 @@ func TestService_NoTokenFields_AnywhereInResponses(t *testing.T) {
 
 func walkFields(t *testing.T, typ reflect.Type, path string) {
 	t.Helper()
-	if typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Map {
+	if typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Map {
 		typ = typ.Elem()
 	}
 	if typ.Kind() != reflect.Struct {
 		return
 	}
-	for i := 0; i < typ.NumField(); i++ {
+	for i := range typ.NumField() {
 		f := typ.Field(i)
 		lower := strings.ToLower(f.Name)
 		if strings.Contains(lower, "receipt") ||
@@ -883,7 +883,7 @@ func walkFields(t *testing.T, typ reflect.Type, path string) {
 			t.Errorf("%s.%s: pause-authority field %q must never ride a read response (actionability is computed from the verified caller's control tier, never read from the projection)",
 				path, typ.Name(), f.Name)
 		}
-		if f.Type.Kind() == reflect.Struct || f.Type.Kind() == reflect.Slice || f.Type.Kind() == reflect.Ptr {
+		if f.Type.Kind() == reflect.Struct || f.Type.Kind() == reflect.Slice || f.Type.Kind() == reflect.Pointer {
 			walkFields(t, f.Type, path+"."+f.Name)
 		}
 	}
@@ -893,7 +893,7 @@ func walkFields(t *testing.T, typ reflect.Type, path string) {
 
 func TestService_List_OneProjectionRead_NoFallback(t *testing.T) {
 	_, st, proj, _ := newTestService(t)
-	seedN(t, st, fixtureID, 3, turns.StatusComplete, "")
+	seedN(t, st, fixtureID, 3)
 	rec := &recordingProjector{inner: proj}
 	svc2, err := NewService(rec,
 		WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()),

@@ -48,7 +48,7 @@ func TestCoreDTO_RawThinkingSentinelsAbsent(t *testing.T) {
 		if typ.Kind() != reflect.Struct {
 			continue
 		}
-		for i := 0; i < typ.NumField(); i++ {
+		for i := range typ.NumField() {
 			name := typ.Field(i).Name
 			if exactForbidden[name] {
 				t.Errorf("%s.%s must never exist — raw provider thinking / tool content cannot be represented", typ.Name(), name)

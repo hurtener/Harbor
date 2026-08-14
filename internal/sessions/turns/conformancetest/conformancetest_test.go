@@ -137,7 +137,7 @@ func (d *smokeDriver) AppendTurnIf(ctx context.Context, id identity.Identity, ro
 	return cloneRow(row), nil
 }
 
-func (d *smokeDriver) mutate(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, sealed bool) (turns.TurnRow, error) {
+func (d *smokeDriver) mutate(id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, sealed bool) (turns.TurnRow, error) {
 	if err := d.fencedErr(id); err != nil {
 		return turns.TurnRow{}, err
 	}
@@ -175,7 +175,7 @@ func (d *smokeDriver) UpdateTurnIf(ctx context.Context, id identity.Identity, tu
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.mutate(ctx, id, turnID, expectedVersion, row, false)
+	return d.mutate(id, turnID, expectedVersion, row, false)
 }
 
 func (d *smokeDriver) SealTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow) (turns.TurnRow, error) {
@@ -190,7 +190,7 @@ func (d *smokeDriver) SealTurnIf(ctx context.Context, id identity.Identity, turn
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.mutate(ctx, id, turnID, expectedVersion, row, true)
+	return d.mutate(id, turnID, expectedVersion, row, true)
 }
 
 func (d *smokeDriver) FenceSession(ctx context.Context, id identity.Identity) error {

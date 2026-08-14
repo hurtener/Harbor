@@ -337,7 +337,7 @@ func (s *memStore) DeleteScope(ctx context.Context, id identity.Identity) (int, 
 // rows (terminal / paused / agent-bound / etc.). When row.Sequence is
 // zero the next per-session sequence is minted, mirroring
 // AppendTurnIf. Returns a deep copy.
-func (s *memStore) seedRow(ctx context.Context, id identity.Identity, row turns.TurnRow) (turns.TurnRow, error) {
+func (s *memStore) seedRow(id identity.Identity, row turns.TurnRow) (turns.TurnRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.closedErr(); err != nil {
@@ -398,7 +398,7 @@ func mustProjector(t *testing.T, st *memStore) *turns.Projector {
 // fixture row (with a fresh sequence) and returns the stored copy.
 func mustSeedRow(t *testing.T, st *memStore, id identity.Identity, row turns.TurnRow) turns.TurnRow {
 	t.Helper()
-	stored, err := st.seedRow(context.Background(), id, row)
+	stored, err := st.seedRow(id, row)
 	if err != nil {
 		t.Fatalf("seedRow: %v", err)
 	}

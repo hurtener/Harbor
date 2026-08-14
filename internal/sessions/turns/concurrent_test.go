@@ -37,12 +37,12 @@ func TestProjector_ConcurrentReuse_D025(t *testing.T) {
 	// Per-worker run scopes: each worker owns its turns (no two
 	// workers touch the same turn), so context bleed would be visible
 	// as a foreign answer/query on the row.
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
 			<-start
-			for i := 0; i < invocations/workers; i++ {
+			for i := range invocations / workers {
 				turnID := TurnID(fmt.Sprintf("w%d-i%03d", w, i))
 				row, err := p.Append(context.Background(), id, Append{TurnID: turnID, Query: fmt.Sprintf("query-%d-%d", w, i)})
 				if err != nil {
@@ -73,14 +73,14 @@ func TestProjector_ConcurrentReuse_D025(t *testing.T) {
 	// A second cohort exercises cancellation cross-talk: cancelling
 	// one worker's ctx must not abort another's in-flight op.
 	var cancelWG sync.WaitGroup
-	for w := 0; w < 4; w++ {
+	for w := range 4 {
 		cancelWG.Add(1)
 		go func(w int) {
 			defer cancelWG.Done()
 			<-start
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				turnID := TurnID(fmt.Sprintf("cancel-%d-%03d", w, i))
 				if i == 2 {
 					cancel() // cancel this worker's scope mid-cohort
@@ -146,7 +146,7 @@ func TestProjector_ConcurrentReuse_ParallelCancelIsolation(t *testing.T) {
 	healthyWG.Add(1)
 	go func() {
 		defer healthyWG.Done()
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			if _, err := appendTurn(p, id, TurnID(fmt.Sprintf("healthy-%03d", i))); err != nil {
 				healthy <- err
 				return
@@ -160,7 +160,7 @@ func TestProjector_ConcurrentReuse_ParallelCancelIsolation(t *testing.T) {
 	// A cancelled caller's ops fail (with ctx errors or the store's
 	// own cancellation handling) — but must not poison the healthy
 	// caller or the shared store.
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		_, _ = p.Append(cancelCtx, id, Append{TurnID: TurnID(fmt.Sprintf("cancelled-%03d", i)), Query: "q"})
 	}
 
@@ -199,7 +199,7 @@ func TestProjector_ConcurrentReuse_UpdateSealRace(t *testing.T) {
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	versionMismatches := make(chan error, writers)
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()

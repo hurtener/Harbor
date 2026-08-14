@@ -81,7 +81,7 @@ func TestOpsDTOs_ForbiddenContentIsNotRepresentable(t *testing.T) {
 		if typ.Kind() != reflect.Struct {
 			continue
 		}
-		for i := 0; i < typ.NumField(); i++ {
+		for i := range typ.NumField() {
 			f := typ.Field(i)
 			switch f.Name {
 			case "Transcript", "History", "Messages":
@@ -103,7 +103,7 @@ func TestOpsDTOs_ForbiddenContentIsNotRepresentable(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing type %q in the operations-read scan", typeName)
 		}
-		for i := 0; i < typ.NumField(); i++ {
+		for i := range typ.NumField() {
 			f := typ.Field(i)
 			switch f.Name {
 			case "Transcript", "History", "Messages":
@@ -176,7 +176,7 @@ func typeByName(name string) (reflect.Type, bool) {
 
 func fieldNames(typ reflect.Type) []string {
 	out := make([]string, 0, typ.NumField())
-	for i := 0; i < typ.NumField(); i++ {
+	for i := range typ.NumField() {
 		out = append(out, typ.Field(i).Name)
 	}
 	return out

@@ -175,7 +175,7 @@ func TestMaterialize_RunLoop_PendingCompleteConvergesOnUnchangedWatermarkPoll(t 
 	// running/unsealed), then make the answer available WITHOUT
 	// publishing any new event: only the poll's pending-queue check can
 	// converge it (the source watermark is unchanged).
-	if !eventually(t, 5*time.Second, func() bool {
+	if !eventually(t, func() bool {
 		row, err := h.proj.Get(context.Background(), h.id, "task-p")
 		return err == nil && !row.Sealed && reader.callCount() >= 2
 	}) {
@@ -185,7 +185,7 @@ func TestMaterialize_RunLoop_PendingCompleteConvergesOnUnchangedWatermarkPoll(t 
 		AnswerPresent: true, Answer: turns.Answer{State: turns.AnswerStateInline, Inline: "poll-converged"},
 	})
 
-	if !eventually(t, 5*time.Second, func() bool {
+	if !eventually(t, func() bool {
 		row, err := h.proj.Get(context.Background(), h.id, "task-p")
 		return err == nil && row.Sealed && row.Status == turns.StatusComplete && row.Answer.Inline == "poll-converged"
 	}) {
@@ -224,7 +224,7 @@ func TestMaterialize_Restart_DeferredCompleteConvergesAtOrBelowCheckpoint(t *tes
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-d", tasks.KindForeground, ""))
 	h.src.publish(t, startedEv(h.id, "task-d"))
 	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "d.tool", time.Now()))
-	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "d.tool", 1, 5))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "d.tool", 5))
 	last := h.src.publish(t, completedEv(h.id, "task-d"))
 
 	// Pass 1: the completion defers (no answer yet) but the durable
@@ -641,7 +641,7 @@ func TestMaterialize_DeferredConvergence_BoundedManyPendingFairness(t *testing.T
 	defer h.closeStore()
 	const n = 4
 	var snaps []TaskSnapshot
-	for i := 0; i < n; i++ {
+	for range n {
 		// spawn read + completion read per turn: no answer.
 		snaps = append(snaps, TaskSnapshot{}, TaskSnapshot{})
 	}
@@ -649,7 +649,7 @@ func TestMaterialize_DeferredConvergence_BoundedManyPendingFairness(t *testing.T
 	m := h.newMaterializer(t, WithTaskSnapshotReader(reader), WithConvergenceBudget(1))
 
 	quad := testQuad(h.id, "run-f")
-	for i := 0; i < n; i++ {
+	for i := range n {
 		taskID := fmt.Sprintf("task-f%d", i)
 		h.src.publish(t, spawnEv(h.id, quad.RunID, taskID, tasks.KindForeground, ""))
 		h.src.publish(t, startedEv(h.id, taskID))
@@ -666,7 +666,7 @@ func TestMaterialize_DeferredConvergence_BoundedManyPendingFairness(t *testing.T
 	}
 
 	// The first three records gain their answers — WITHOUT new events.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		reader.set(fmt.Sprintf("task-f%d", i), TaskSnapshot{
 			AnswerPresent: true, Answer: turns.Answer{State: turns.AnswerStateInline, Inline: fmt.Sprintf("answer %d", i)},
 		})
@@ -696,7 +696,7 @@ func TestMaterialize_DeferredConvergence_BoundedManyPendingFairness(t *testing.T
 
 	// Exactly the three answer-available turns are sealed; the
 	// never-answer turn stays honestly mutable.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		row := mustGetRow(t, h, fmt.Sprintf("task-f%d", i))
 		if !row.Sealed || row.Status != turns.StatusComplete {
 			t.Errorf("turn f%d = status %q sealed %v, want complete sealed", i, row.Status, row.Sealed)
@@ -786,7 +786,7 @@ func TestMaterialize_DeferredConvergence_NoSequenceRegressionByteStableSealed(t 
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-s", tasks.KindForeground, ""))
 	h.src.publish(t, startedEv(h.id, "task-s"))
 	h.src.publish(t, toolInvokedEv(h.id, quad.RunID, "s.tool", time.Now()))
-	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "s.tool", 1, 5))
+	h.src.publish(t, toolCompletedEv(h.id, quad.RunID, "s.tool", 5))
 	last := h.src.publish(t, completedEv(h.id, "task-s"))
 
 	if res, err := m.Materialize(context.Background()); err != nil {

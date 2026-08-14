@@ -465,7 +465,7 @@ func (p *Projector) Seal(ctx context.Context, id identity.Identity, turnID TurnI
 	} {
 		if msg.value != "" {
 			if err := validateText(msg.value, "terminal "+msg.name, MaxTerminalMessageRunes); err != nil {
-				return TurnRow{}, fmt.Errorf("%w: seal %s: %v", ErrInvalidInput, msg.name, err)
+				return TurnRow{}, fmt.Errorf("%w: seal %s: %w", ErrInvalidInput, msg.name, err)
 			}
 		}
 	}
@@ -1015,16 +1015,16 @@ func normalizeActivity(fed []ActivityRow, limit int) (Activity, error) {
 			return Activity{}, fmt.Errorf("%w: activity row %d has an empty tool name", ErrInvalidInput, i)
 		}
 		if err := validateText(row.Tool, "activity tool", MaxToolNameRunes); err != nil {
-			return Activity{}, fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+			return Activity{}, fmt.Errorf("%w: activity row %d: %w", ErrInvalidInput, i, err)
 		}
 		if row.InvocationID != "" {
 			if err := validateText(row.InvocationID, "activity invocation id", MaxInvocationIDRunes); err != nil {
-				return Activity{}, fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+				return Activity{}, fmt.Errorf("%w: activity row %d: %w", ErrInvalidInput, i, err)
 			}
 		}
 		if row.BatchID != "" {
 			if err := validateText(row.BatchID, "activity batch id", MaxBatchIDRunes); err != nil {
-				return Activity{}, fmt.Errorf("%w: activity row %d: %v", ErrInvalidInput, i, err)
+				return Activity{}, fmt.Errorf("%w: activity row %d: %w", ErrInvalidInput, i, err)
 			}
 		}
 		status := row.Status
@@ -1200,7 +1200,7 @@ func validateAnswer(a Answer, inlineLimit int) error {
 			return fmt.Errorf("%w: answer ref id is empty", ErrInvalidInput)
 		}
 		if err := validateText(a.Ref.ID, "answer ref id", MaxArtifactIDRunes); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+			return fmt.Errorf("%w: %w", ErrInvalidInput, err)
 		}
 		for _, f := range []struct {
 			name  string
@@ -1212,7 +1212,7 @@ func validateAnswer(a Answer, inlineLimit int) error {
 			{"sha256 digest", a.Ref.SHA256, MaxSHA256Runes},
 		} {
 			if err := validateText(f.value, "answer ref "+f.name, f.max); err != nil {
-				return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+				return fmt.Errorf("%w: %w", ErrInvalidInput, err)
 			}
 		}
 		if a.Ref.SizeBytes < 0 {
@@ -1284,7 +1284,7 @@ func normalizeUsage(u Usage) (Usage, error) {
 	}
 	if u.Model != "" {
 		if err := validateText(u.Model, "usage model", MaxModelRunes); err != nil {
-			return Usage{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+			return Usage{}, fmt.Errorf("%w: %w", ErrInvalidInput, err)
 		}
 	}
 	return cloneUsage(u), nil
@@ -1309,7 +1309,7 @@ func normalizeAttachments(atts []Attachment) ([]Attachment, error) {
 			return nil, fmt.Errorf("%w: attachment %d has an empty id", ErrInvalidInput, i)
 		}
 		if err := validateText(a.ID, "attachment id", MaxArtifactIDRunes); err != nil {
-			return nil, fmt.Errorf("%w: attachment %d: %v", ErrInvalidInput, i, err)
+			return nil, fmt.Errorf("%w: attachment %d: %w", ErrInvalidInput, i, err)
 		}
 		for _, f := range []struct {
 			name  string
@@ -1322,7 +1322,7 @@ func normalizeAttachments(atts []Attachment) ([]Attachment, error) {
 			{"disposition", a.Disposition, MaxAttachmentDispositionRunes},
 		} {
 			if err := validateText(f.value, "attachment "+f.name, f.max); err != nil {
-				return nil, fmt.Errorf("%w: attachment %d: %v", ErrInvalidInput, i, err)
+				return nil, fmt.Errorf("%w: attachment %d: %w", ErrInvalidInput, i, err)
 			}
 		}
 		if a.SizeBytes < 0 {
@@ -1463,7 +1463,7 @@ func normalizeAppRef(ref AppRef, i int) (AppRef, error) {
 	}
 	for _, f := range fields {
 		if err := validateText(f.value, "app ref "+f.name, f.max); err != nil {
-			return AppRef{}, fmt.Errorf("%w: app ref %d: %v", ErrInvalidInput, i, err)
+			return AppRef{}, fmt.Errorf("%w: app ref %d: %w", ErrInvalidInput, i, err)
 		}
 	}
 	if ref.Availability == "" {

@@ -47,7 +47,7 @@ func TestService_ConcurrentMixedIdentities_NoBleed(t *testing.T) {
 	// Three sessions of one user, each with content rows bound to
 	// agent-a plus one unbound row.
 	const sessions = 3
-	for s := 0; s < sessions; s++ {
+	for s := range sessions {
 		sid := identity.Identity{TenantID: "tenant-a", UserID: "user-1", SessionID: fmt.Sprintf("session-%d", s)}
 		mustSeedRow(t, st, sid, fixtureRow("turn-a", turns.StatusComplete, "agent-a"))
 		mustSeedRow(t, st, sid, fixtureRow("turn-b", turns.StatusComplete, "agent-a"))
@@ -61,7 +61,7 @@ func TestService_ConcurrentMixedIdentities_NoBleed(t *testing.T) {
 	opErrs := make(chan error, workers)
 	cancelErr := make(chan error, workers)
 
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
@@ -109,11 +109,11 @@ func TestService_ConcurrentMixedIdentities_NoBleed(t *testing.T) {
 					return
 				}
 				if _, err := svc.List(foreignCtx, ListRequest{SessionID: "session-0"}); !errIs(err, ErrTurnNotFound) {
-					opErrs <- fmt.Errorf("worker %d foreign list: err = %v, want ErrTurnNotFound", w, err)
+					opErrs <- fmt.Errorf("worker %d foreign list: err = %w, want ErrTurnNotFound", w, err)
 					return
 				}
 				if _, err := svc.Get(foreignCtx, GetRequest{SessionID: "session-0", TaskID: "turn-a"}); !errIs(err, ErrTurnNotFound) {
-					opErrs <- fmt.Errorf("worker %d foreign get: err = %v, want ErrTurnNotFound", w, err)
+					opErrs <- fmt.Errorf("worker %d foreign get: err = %w, want ErrTurnNotFound", w, err)
 					return
 				}
 			case 3: // admin operations read of a sibling session (widened, audited)
@@ -155,7 +155,7 @@ func TestService_ConcurrentMixedIdentities_NoBleed(t *testing.T) {
 	// healthy cohort. Their failures are their OWN scope — the healthy
 	// cohort must never see them.
 	var cancelWG sync.WaitGroup
-	for w := 0; w < 20; w++ {
+	for w := range 20 {
 		cancelWG.Add(1)
 		go func(w int) {
 			defer cancelWG.Done()
@@ -164,7 +164,7 @@ func TestService_ConcurrentMixedIdentities_NoBleed(t *testing.T) {
 			cancel()
 			if _, err := svc.List(cancelCtx, ListRequest{SessionID: "session-1"}); err != nil {
 				if !errors.Is(err, context.Canceled) && !errIs(err, ErrTurnNotFound) {
-					cancelErr <- fmt.Errorf("cancel worker %d: unexpected err %v", w, err)
+					cancelErr <- fmt.Errorf("cancel worker %d: unexpected err %w", w, err)
 				}
 			}
 		}(w)
@@ -207,7 +207,7 @@ func TestService_ConcurrentPagingAndAppends_NoSkipDuplicate(t *testing.T) {
 	svc, st, proj, _ := newTestService(t)
 	id := fixtureID
 	ctx := verifiedCtx(t, id)
-	seedN(t, st, id, 10, turns.StatusComplete, "")
+	seedN(t, st, id, 10)
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -215,12 +215,12 @@ func TestService_ConcurrentPagingAndAppends_NoSkipDuplicate(t *testing.T) {
 	// Appender cohort: mints 200 new turns via the real projector
 	// (atomic sequence minting under contention).
 	const appenders = 8
-	for a := 0; a < appenders; a++ {
+	for a := range appenders {
 		wg.Add(1)
 		go func(a int) {
 			defer wg.Done()
 			<-start
-			for i := 0; i < 25; i++ {
+			for i := range 25 {
 				if _, err := proj.Append(ctx, id, turns.Append{
 					TurnID:  turns.TurnID(fmt.Sprintf("race-%d-%03d", a, i)),
 					TaskID:  fmt.Sprintf("race-%d-%03d", a, i),
@@ -238,7 +238,7 @@ func TestService_ConcurrentPagingAndAppends_NoSkipDuplicate(t *testing.T) {
 	// Pager cohort: full walks from the newest page while appends land.
 	const pagers = 8
 	walkErrs := make(chan error, pagers)
-	for p := 0; p < pagers; p++ {
+	for p := range pagers {
 		wg.Add(1)
 		go func(p int) {
 			defer wg.Done()
@@ -266,7 +266,7 @@ func TestService_ConcurrentPagingAndAppends_NoSkipDuplicate(t *testing.T) {
 			// The walk must have covered every row that existed BEFORE
 			// the race started (the 10 seeded turns) exactly once; the
 			// appended turns may or may not appear but never duplicate.
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				if !seen[turnIDAt(i)] {
 					walkErrs <- fmt.Errorf("pager %d skipped seeded turn %q — keyset paging is not gap-free", p, turnIDAt(i))
 					return

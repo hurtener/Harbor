@@ -127,13 +127,10 @@ func TestRestart_IdenticalPagesGetAndCheckpoint(t *testing.T) {
 	s1 := openAt(t, dsn)
 	ctx := context.Background()
 	const n = 30
-	appended := make([]turns.TurnRow, 0, n)
 	for i := 1; i <= n; i++ {
-		row, err := s1.AppendTurnIf(ctx, id, richRow(fmt.Sprintf("run-%02d", i), id, i))
-		if err != nil {
+		if _, err := s1.AppendTurnIf(ctx, id, richRow(fmt.Sprintf("run-%02d", i), id, i)); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
-		appended = append(appended, row)
 	}
 	// Update + seal a few rows so the reopened store must reproduce the
 	// versioned + sealed forms too.

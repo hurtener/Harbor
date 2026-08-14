@@ -316,7 +316,7 @@ func (m *Materializer) applyToSession(ctx context.Context, sess *sessionState, e
 	case pauseresume.EventTypePauseRequested:
 		return m.applyPauseRequested(ctx, sess, ev, payload)
 	case pauseresume.EventTypePauseResumed:
-		return m.applyPauseResumed(ctx, sess, ev, payload)
+		return m.applyPauseResumed(ctx, sess, ev)
 	case llm.EventTypeCostRecorded:
 		return m.applyCostRecorded(ctx, sess, ev, payload)
 	}
@@ -459,14 +459,14 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 // the row must not carry an active episode while running.
 func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.taskTurn(taskID)
+	ts, ok := sess.taskTurn(taskID)
 	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Status:   turns.StatusRunning,
 		Pause:    &turns.Pause{Availability: turns.CompletenessUnavailable},
 		EventSeq: ev.Sequence,
@@ -514,7 +514,7 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 // not re-applied, and the checkpoint / row sequence never regresses.
 func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.rootTaskTurn(taskID)
+	ts, ok := sess.rootTaskTurn(taskID)
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -593,7 +593,7 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 // the projector, never truncated.
 func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.rootTaskTurn(taskID)
+	ts, ok := sess.rootTaskTurn(taskID)
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -669,7 +669,7 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 // reason only).
 func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
-	_, ts, ok := sess.rootTaskTurn(taskID)
+	ts, ok := sess.rootTaskTurn(taskID)
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -736,7 +736,7 @@ func mapTaskErrorClass(code string) turns.ErrorClass {
 // families — the decoder honours the persisted key shape.
 func (m *Materializer) applyInputDisposition(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "task_id")
-	_, ts, ok := sess.taskTurn(taskID)
+	ts, ok := sess.taskTurn(taskID)
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -762,7 +762,7 @@ func (m *Materializer) applyInputDisposition(ctx context.Context, sess *sessionS
 		ts.inputs = newInputs
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Inputs:   newInputs,
 		EventSeq: ev.Sequence,
 	})
@@ -816,7 +816,7 @@ func reasoningKindFor(decisionKind string) (turns.ReasoningKind, bool) {
 // honestly (the row already reports Partial + Dropped) and the event
 // still applies — the feed never grows unbounded and never fails.
 func (m *Materializer) applyPlannerDecision(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -865,7 +865,7 @@ func (m *Materializer) applyPlannerDecision(ctx context.Context, sess *sessionSt
 // the exact turn-level totals are derived by the projector from the
 // full cumulative feed.
 func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -890,7 +890,7 @@ func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState,
 		ts.activity = newActivity
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
@@ -910,7 +910,7 @@ func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState,
 // eviction that dropped the invoked event is surfaced by the source's
 // RetentionGap signal, never silently hidden).
 func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -931,7 +931,7 @@ func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionStat
 		ts.activity = newActivity
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
@@ -947,7 +947,7 @@ func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionStat
 // closed error class) — the payload's error message is caller content
 // and never reaches the row.
 func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -972,7 +972,7 @@ func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, 
 		ts.activity = newActivity
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
@@ -988,7 +988,7 @@ func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, 
 // policy_exhausted (the status and its derived terminal class), with
 // the closed last error class in the summary.
 func (m *Materializer) applyToolPolicyExhausted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -1014,7 +1014,7 @@ func (m *Materializer) applyToolPolicyExhausted(ctx context.Context, sess *sessi
 		ts.activity = newActivity
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Activity: newActivity,
 		EventSeq: ev.Sequence,
 	})
@@ -1053,7 +1053,7 @@ func findInFlight(rows []turns.ActivityRow, tool string) int {
 // replayed projection never rehydrates live callback authority — and
 // the tool_call_id rides as correlation metadata only.
 func (m *Materializer) applyAppAvailable(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -1112,7 +1112,7 @@ func pauseClassFor(reason string) (turns.PauseClass, bool) {
 // the opaque pause Token is structurally absent from the Pause
 // component and actionability is never stored).
 func (m *Materializer) applyPauseRequested(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -1123,7 +1123,7 @@ func (m *Materializer) applyPauseRequested(ctx context.Context, sess *sessionSta
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Status: turns.StatusPaused,
 		Pause: &turns.Pause{
 			Class:        class,
@@ -1142,15 +1142,15 @@ func (m *Materializer) applyPauseRequested(ctx context.Context, sess *sessionSta
 // applyPauseResumed folds a pause termination into the owning turn:
 // the row returns to running and the pause episode is cleared
 // explicitly (a resume never leaves an active episode behind).
-func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState, ev events.Event) (bool, error) {
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	err := m.updateTurn(ctx, sess, ts, turns.Update{
 		Status:   turns.StatusRunning,
 		Pause:    &turns.Pause{Availability: turns.CompletenessUnavailable},
 		EventSeq: ev.Sequence,
@@ -1385,7 +1385,7 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) 
 // by rounding and accumulated as integers (money is never accumulated
 // in float64); latency is accumulated as exact integer nanoseconds.
 func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
-	_, ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
 	}
@@ -1405,7 +1405,7 @@ func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState
 		ts.usage = candidate
 		return true, nil
 	}
-	_, err = m.updateTurn(ctx, sess, ts, turns.Update{
+	err = m.updateTurn(ctx, sess, ts, turns.Update{
 		Usage:    &candidate,
 		EventSeq: ev.Sequence,
 	})
@@ -1429,24 +1429,24 @@ func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState
 // HONEST TERMINAL PROJECTION GAP: the turn's routing state is retired
 // and the event is skipped (nil error, no write) — never a hard pass
 // failure, never a resurrected row, never a wedged cursor.
-func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *turnState, u turns.Update) (turns.TurnRow, error) {
+func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *turnState, u turns.Update) error {
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
 			if errors.Is(err, turns.ErrTurnNotFound) {
 				ts.retired = true
-				return turns.TurnRow{}, nil
+				return nil
 			}
-			return turns.TurnRow{}, err
+			return err
 		}
 		if current.Sealed {
 			ts.sealed = true
-			return current, nil
+			return nil
 		}
-		row, err := m.proj.Update(ctx, sess.id, turns.TurnID(ts.taskID), current.Version, u)
+		_, err = m.proj.Update(ctx, sess.id, turns.TurnID(ts.taskID), current.Version, u)
 		if err == nil {
-			return row, nil
+			return nil
 		}
 		if errors.Is(err, turns.ErrStaleVersion) {
 			lastErr = err
@@ -1456,15 +1456,15 @@ func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *t
 			// Evicted between the read and the write (or the read raced
 			// a retention pass): same honest terminal-gap handling.
 			ts.retired = true
-			return turns.TurnRow{}, nil
+			return nil
 		}
 		if errors.Is(err, turns.ErrTurnSealed) {
 			ts.sealed = true
-			return turns.TurnRow{}, err
+			return err
 		}
-		return turns.TurnRow{}, err
+		return err
 	}
-	return turns.TurnRow{}, fmt.Errorf("materializer: update %s: %w", ts.taskID, lastErr)
+	return fmt.Errorf("materializer: update %s: %w", ts.taskID, lastErr)
 }
 
 // sealTurn applies one Seal observation. Same retry/guard semantics as
@@ -1473,7 +1473,7 @@ func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *t
 // (never a hard pass failure, never a resurrected row).
 func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *turnState, s turns.Seal) (turns.TurnRow, error) {
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
 			if errors.Is(err, turns.ErrTurnNotFound) {
@@ -1508,7 +1508,7 @@ func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *tur
 // evicted row).
 func (m *Materializer) attachReasoning(ctx context.Context, sess *sessionState, ts *turnState, r turns.ReasoningInput) (turns.TurnRow, error) {
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
 			if errors.Is(err, turns.ErrTurnNotFound) {
@@ -1543,7 +1543,7 @@ func (m *Materializer) attachReasoning(ctx context.Context, sess *sessionState, 
 // evicted row).
 func (m *Materializer) attachAppRefs(ctx context.Context, sess *sessionState, ts *turnState, a turns.AppRefInput) (turns.TurnRow, error) {
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		current, err := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
 		if err != nil {
 			if errors.Is(err, turns.ErrTurnNotFound) {

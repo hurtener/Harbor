@@ -70,7 +70,7 @@ func TestConcurrent_AppendListCheckpoint_N100(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// PHASE 1a: 100 concurrent appenders, one distinct turn each.
-	for w := 0; w < concurrentWorkers; w++ {
+	for w := range concurrentWorkers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
@@ -82,12 +82,12 @@ func TestConcurrent_AppendListCheckpoint_N100(t *testing.T) {
 	}
 
 	// PHASE 1b: 100 concurrent checkpoint writers racing to the max.
-	for w := 0; w < concurrentWorkers; w++ {
+	for w := range concurrentWorkers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
 			<-start
-			for v := 0; v < checkpointIterations; v++ {
+			for v := range checkpointIterations {
 				if err := s.SaveCheckpoint(ctx, id, uint64(w*checkpointIterations+v)); err != nil {
 					writeErrs <- fmt.Errorf("checkpoint %d: %w", w, err)
 					return
@@ -107,7 +107,7 @@ func TestConcurrent_AppendListCheckpoint_N100(t *testing.T) {
 	// all writes have landed. Each walk must see every row exactly
 	// once, strictly newest-first.
 	readErrs := make(chan error, concurrentReaders)
-	for r := 0; r < concurrentReaders; r++ {
+	for range concurrentReaders {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -203,11 +203,11 @@ func TestConcurrent_NoGoroutineLeak_AfterClose(t *testing.T) {
 
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
-	for w := 0; w < 20; w++ {
+	for w := range 20 {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				if _, err := s.AppendTurnIf(ctx, id, richRow(fmt.Sprintf("g-%d-%02d", w, i), id, w*10+i)); err != nil {
 					t.Errorf("append: %v", err)
 					return

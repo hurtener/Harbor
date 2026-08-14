@@ -420,12 +420,12 @@ func TestList_NoSkipNoDuplicate_UnderConcurrentAppends(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make(chan error, appenders)
-	for w := 0; w < appenders; w++ {
+	for w := range appenders {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
 			<-start
-			for i := 0; i < turnsPerAppender; i++ {
+			for i := range turnsPerAppender {
 				turnID := TurnID(fmt.Sprintf("w%d-t%02d", w, i))
 				if _, err := p.Append(context.Background(), id, Append{TurnID: turnID, Query: "q"}); err != nil {
 					errs <- fmt.Errorf("append %q: %w", turnID, err)
@@ -519,7 +519,7 @@ func TestList_AppendDuringOlderPaging_NoSkipNoDuplicate(t *testing.T) {
 		t.Fatalf("page 1 has %d rows (HasMore=%v), want 3/true", len(page1.Rows), page1.HasMore)
 	}
 	// Append NEWER turns mid-walk.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := appendTurn(p, id, TurnID(fmt.Sprintf("mid-%d", i))); err != nil {
 			t.Fatalf("mid-walk append: %v", err)
 		}
@@ -597,7 +597,7 @@ func TestList_ConcurrentAppends_UniquePerSessionSequences(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

@@ -525,10 +525,14 @@ func (m *Materializer) Run(ctx context.Context) error {
 	}
 
 	// catchUp runs one forward pass. A cancellation that lands mid-pass
-	// is a clean exit (nil), never reported as a pass failure.
+	// is a clean exit (nil), never reported as a pass failure — but ONLY
+	// when the pass error actually stems from the run context's own
+	// cancellation. A genuine pass failure (a store failure, a source
+	// anomaly) is reported even when cancellation lands concurrently:
+	// the real error path is never suppressed.
 	catchUp := func() error {
 		_, err := m.Materialize(ctx)
-		if err != nil && ctx.Err() != nil {
+		if err == nil || (ctx.Err() != nil && errors.Is(err, ctx.Err())) {
 			return nil
 		}
 		return err

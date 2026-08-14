@@ -26,12 +26,6 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
-func (c *fakeClock) advance(d time.Duration) {
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	c.mu.Unlock()
-}
-
 var testClockStart = time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 
 func newTestProjector(t *testing.T, retain int, durable bool) (*Projector, *testStore) {
@@ -293,7 +287,7 @@ func TestProjector_Update_StaleVersionAndSealedRejected(t *testing.T) {
 	}
 
 	// After sealing, updates are refused.
-	if err := sealComplete(p, id, "run-1", row.Version); err != nil {
+	if err := sealComplete(p, id); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	if _, err := p.Update(context.Background(), id, "run-1", row.Version+1, Update{}); !errors.Is(err, ErrTurnSealed) {
@@ -302,22 +296,22 @@ func TestProjector_Update_StaleVersionAndSealedRejected(t *testing.T) {
 }
 
 // sealComplete attaches a complete answer and seals the turn complete.
-func sealComplete(p *Projector, id identity.Identity, turnID TurnID, version int) error {
-	row, err := p.Get(context.Background(), id, turnID)
+func sealComplete(p *Projector, id identity.Identity) error {
+	row, err := p.Get(context.Background(), id, "run-1")
 	if err != nil {
 		return err
 	}
 	if row.Answer.Complete != CompletenessComplete {
 		ans := Answer{State: AnswerStateInline, Inline: "final answer"}
-		if _, err := p.Update(context.Background(), id, turnID, row.Version, Update{Answer: &ans}); err != nil {
+		if _, err := p.Update(context.Background(), id, "run-1", row.Version, Update{Answer: &ans}); err != nil {
 			return err
 		}
-		row, err = p.Get(context.Background(), id, turnID)
+		row, err = p.Get(context.Background(), id, "run-1")
 		if err != nil {
 			return err
 		}
 	}
-	_, err = p.Seal(context.Background(), id, turnID, row.Version, Seal{Status: StatusComplete, FinishReason: FinishGoal})
+	_, err = p.Seal(context.Background(), id, "run-1", row.Version, Seal{Status: StatusComplete, FinishReason: FinishGoal})
 	return err
 }
 
@@ -431,11 +425,10 @@ func TestProjector_Seal_CompleteWithReferencedAnswer(t *testing.T) {
 func TestProjector_Seal_ReSealSemantics(t *testing.T) {
 	p, _ := newTestProjector(t, 0, false)
 	id := tripleA()
-	row, err := appendTurn(p, id, "run-1")
-	if err != nil {
+	if _, err := appendTurn(p, id, "run-1"); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if err := sealComplete(p, id, "run-1", row.Version); err != nil {
+	if err := sealComplete(p, id); err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	sealed, err := p.Get(context.Background(), id, "run-1")
@@ -826,7 +819,7 @@ func TestActivity_NoThirdRead_APIAbsent(t *testing.T) {
 	for _, tn := range []reflect.Type{
 		reflect.TypeOf(Append{}), reflect.TypeOf(Update{}),
 	} {
-		for i := 0; i < tn.NumField(); i++ {
+		for i := range tn.NumField() {
 			if strings.Contains(tn.Field(i).Name, "Reader") || strings.Contains(tn.Field(i).Name, "Cursor") {
 				t.Errorf("%s.%s must never exist — no third activity read", tn.Name(), tn.Field(i).Name)
 			}
@@ -891,7 +884,7 @@ func TestProjector_Reconcile_ResumesFromCheckpoint(t *testing.T) {
 		if _, err := p.Update(ctx, id, "run-1", row.Version, Update{Answer: &ans}); err != nil {
 			return 0, err
 		}
-		if err := sealComplete(p, id, "run-1", row.Version+1); err != nil {
+		if err := sealComplete(p, id); err != nil {
 			return 0, err
 		}
 		return 7, nil // the durable event log's high-water mark
@@ -930,8 +923,7 @@ func TestProjector_Reconcile_ResumesFromCheckpoint(t *testing.T) {
 		if _, err := appendTurn(p, id, "run-1"); err != nil { // already exists: no-op
 			return 0, err
 		}
-		row, err := p.Get(ctx, id, "run-1")
-		if err != nil {
+		if _, err := p.Get(ctx, id, "run-1"); err != nil {
 			return 0, err
 		}
 		// Re-apply an update with a STALE version against the sealed
@@ -942,7 +934,7 @@ func TestProjector_Reconcile_ResumesFromCheckpoint(t *testing.T) {
 			return 0, err
 		}
 		// Same-status re-seal is an idempotent replay no-op.
-		if err := sealComplete(p, id, "run-1", row.Version); err != nil {
+		if err := sealComplete(p, id); err != nil {
 			return 0, err
 		}
 		return 9, nil
@@ -1111,7 +1103,7 @@ func TestProjector_Erase_NoResurrectionAfterReplay(t *testing.T) {
 	// sessions). The replay surfaces loudly; nothing is resurrected.
 	_, err := p.Reconcile(context.Background(), id, func(ctx context.Context, id identity.Identity, from uint64) (uint64, error) {
 		if _, err := appendTurn(p, id, "run-1"); !errors.Is(err, ErrErasureFenced) {
-			return 0, fmt.Errorf("replay append error=%v, want ErrErasureFenced (no resurrection)", err)
+			return 0, fmt.Errorf("replay append error=%w, want ErrErasureFenced (no resurrection)", err)
 		}
 		return 5, nil
 	})
@@ -1173,7 +1165,7 @@ func TestProjector_Get_UnknownTurnNotFound(t *testing.T) {
 func TestProjector_List_TruncatedFlag_AfterRetentionEviction(t *testing.T) {
 	p, _ := newTestProjector(t, testStoreRetentionTiny, false)
 	id := tripleA()
-	for i := 0; i < testStoreRetentionTiny+3; i++ {
+	for i := range testStoreRetentionTiny + 3 {
 		if _, err := appendTurn(p, id, TurnID(strings.Repeat("r", 1)+string(rune('a'+i)))); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
@@ -1230,7 +1222,7 @@ func TestProjector_Pause_DataNoTokens(t *testing.T) {
 	// ops_safety allowlist pin enforces the field set; here we also
 	// assert the honest absence of any token-ish field via reflection.
 	pt := reflect.TypeOf(Pause{})
-	for i := 0; i < pt.NumField(); i++ {
+	for i := range pt.NumField() {
 		if strings.Contains(strings.ToLower(pt.Field(i).Name), "token") {
 			t.Errorf("Pause.%s must never exist — pause/resume/approval tokens are not stored", pt.Field(i).Name)
 		}
@@ -1917,7 +1909,7 @@ func TestProjector_EventSequence_ConcurrentAdvances_ConvergeMonotonic(t *testing
 	race := func(seq uint64, inline string) {
 		<-start
 		ans := Answer{State: AnswerStateInline, Inline: inline}
-		for attempt := 0; attempt < 5; attempt++ {
+		for range 5 {
 			cur, err := p.Get(context.Background(), id, "run-1")
 			if err != nil {
 				done <- err
@@ -1943,7 +1935,7 @@ func TestProjector_EventSequence_ConcurrentAdvances_ConvergeMonotonic(t *testing
 	go race(30, "from-30")
 	go race(20, "from-20")
 	close(start)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if err := <-done; err != nil {
 			t.Fatalf("concurrent update: %v", err)
 		}
@@ -2081,7 +2073,7 @@ func TestProjector_AppRefs_BoundsAndControlRejection(t *testing.T) {
 	// identities fit; one more NEW identity fails loud (never silently
 	// dropped).
 	refs := make([]AppRef, 0, MaxAppsPerTurn)
-	for i := 0; i < MaxAppsPerTurn; i++ {
+	for i := range MaxAppsPerTurn {
 		refs = append(refs, AppRef{ServerID: "srv", ResourceURI: fmt.Sprintf("ui://srv/app-%d", i), ToolName: "t"})
 	}
 	got, err := p.AttachAppRefs(context.Background(), id, "run-1", v, AppRefInput{Refs: refs})
@@ -2358,7 +2350,7 @@ func TestProjector_ConcurrentReuse_PointerBackedInputsNoAliasingRace(t *testing.
 		// Busy-read the returned row's pointer-backed fields while the
 		// writer mutates the caller's inputs (20000 iterations give the
 		// scheduler ample overlap for the -race detector).
-		for j := 0; j < 20000; j++ {
+		for range 20000 {
 			if r.Answer.Ref == nil || r.Answer.Ref.ID != "art-1" {
 				readerErrs <- fmt.Errorf("reader saw a corrupted Answer.Ref: %+v", r.Answer.Ref)
 				return
@@ -2370,7 +2362,7 @@ func TestProjector_ConcurrentReuse_PointerBackedInputsNoAliasingRace(t *testing.
 		}
 		readerErrs <- nil
 	}()
-	for j := 0; j < 20000; j++ {
+	for range 20000 {
 		ref.ID = "CORRUPTED"
 		value = -1
 	}

@@ -144,51 +144,51 @@ func (m *Materializer) newSessionState(ctx context.Context, id identity.Identity
 // ok=false when the run is unknown or the chain is malformed (a cycle
 // is impossible — task ids are ULIDs and parents are always spawned
 // before children — but the walk is bounded defensively).
-func (s *sessionState) rootTurn(runID string) (turns.TurnID, *turnState, bool) {
+func (s *sessionState) rootTurn(runID string) (*turnState, bool) {
 	taskID, ok := s.runs[runID]
 	if !ok {
-		return "", nil, false
+		return nil, false
 	}
-	for depth := 0; depth < 128; depth++ {
+	for range 128 {
 		parent, hasParent := s.tasks[taskID]
 		if !hasParent {
 			// The task is not registered in this session's index (a
 			// legacy event or a task whose spawn was never observed) —
 			// it cannot be routed.
-			return "", nil, false
+			return nil, false
 		}
 		if parent == "" {
 			// Root task: its turn, if materialized.
 			ts, ok := s.turns[turns.TurnID(taskID)]
 			if !ok {
-				return "", nil, false
+				return nil, false
 			}
-			return turns.TurnID(taskID), ts, true
+			return ts, true
 		}
 		taskID = parent
 	}
-	return "", nil, false
+	return nil, false
 }
 
 // taskTurn resolves the turn a task lifecycle event (which names its
 // TaskID in the payload) belongs to: walk the task → parent chain to
 // the root foreground task. This is the task-event twin of rootTurn.
-func (s *sessionState) taskTurn(taskID string) (turns.TurnID, *turnState, bool) {
-	for depth := 0; depth < 128; depth++ {
+func (s *sessionState) taskTurn(taskID string) (*turnState, bool) {
+	for range 128 {
 		parent, hasParent := s.tasks[taskID]
 		if !hasParent {
-			return "", nil, false
+			return nil, false
 		}
 		if parent == "" {
 			ts, ok := s.turns[turns.TurnID(taskID)]
 			if !ok {
-				return "", nil, false
+				return nil, false
 			}
-			return turns.TurnID(taskID), ts, true
+			return ts, true
 		}
 		taskID = parent
 	}
-	return "", nil, false
+	return nil, false
 }
 
 // rootTaskTurn resolves the turn a TERMINAL task lifecycle event may
@@ -199,21 +199,21 @@ func (s *sessionState) taskTurn(taskID string) (turns.TurnID, *turnState, bool) 
 // untouched — only the root foreground task's OWN terminal lifecycle
 // seals its turn. A root background task (no parent, no turn) is
 // likewise never a seal target.
-func (s *sessionState) rootTaskTurn(taskID string) (turns.TurnID, *turnState, bool) {
+func (s *sessionState) rootTaskTurn(taskID string) (*turnState, bool) {
 	parent, hasParent := s.tasks[taskID]
 	if !hasParent {
-		return "", nil, false
+		return nil, false
 	}
 	if parent != "" {
 		// A child / background task: never the root — its terminal
 		// lifecycle must not seal the root turn.
-		return "", nil, false
+		return nil, false
 	}
 	ts, ok := s.turns[turns.TurnID(taskID)]
 	if !ok {
-		return "", nil, false
+		return nil, false
 	}
-	return turns.TurnID(taskID), ts, true
+	return ts, true
 }
 
 // terminal reports whether the turn can accept no further mutation:

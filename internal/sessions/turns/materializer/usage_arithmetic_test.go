@@ -53,7 +53,7 @@ func TestMaterialize_UsageArithmeticFailsLoud(t *testing.T) {
 		{"-Inf cost", nil, map[string]any{"TotalCost": math.Inf(-1)}},
 		{"out-of-range token float", map[string]any{"PromptTokens": 1e300}, nil},
 		{"non-numeric cost", nil, map[string]any{"TotalCost": "twelve"}},
-		{"latency ms to ns overflow", map[string]any{"LatencyMS": int64(math.MaxInt64/int64(time.Millisecond)) + 1}, nil},
+		{"latency ms to ns overflow", map[string]any{"LatencyMS": int64(math.MaxInt64/time.Millisecond) + 1}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

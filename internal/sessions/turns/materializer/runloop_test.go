@@ -26,7 +26,7 @@ func TestMaterialize_RunLoop_DroppedWakeConvergesWithPoll(t *testing.T) {
 	// converge it.
 	h.lifecycle(t, testQuad(h.id, "run-1"), "task-1")
 
-	if !eventually(t, 5*time.Second, func() bool {
+	if !eventually(t, func() bool {
 		row, err := h.proj.Get(context.Background(), h.id, "task-1")
 		return err == nil && row.Sealed
 	}) {
@@ -59,7 +59,7 @@ func TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll(t *testing.T) {
 	h.lifecycle(t, testQuad(h.id, "run-1"), "task-1")
 	h.src.notify()
 
-	if !eventually(t, 5*time.Second, func() bool {
+	if !eventually(t, func() bool {
 		row, err := h.proj.Get(context.Background(), h.id, "task-1")
 		return err == nil && row.Sealed
 	}) {
@@ -94,7 +94,7 @@ func TestMaterialize_RunLoop_CancellationStopsWatcherAndTimer(t *testing.T) {
 
 	// Wait for the initial catch-up page (Run is inside the loop), let
 	// a few poll ticks fire, then cancel.
-	if !eventually(t, 5*time.Second, func() bool { return h.src.pageCallCount() > 0 }) {
+	if !eventually(t, func() bool { return h.src.pageCallCount() > 0 }) {
 		t.Fatal("run loop never reached its catch-up")
 	}
 	cancel()

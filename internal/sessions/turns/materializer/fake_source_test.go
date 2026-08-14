@@ -220,7 +220,7 @@ func toolInvokedEv(id identity.Identity, runID, tool string, startedAt time.Time
 	}
 }
 
-func toolCompletedEv(id identity.Identity, runID, tool string, attempts int, durationMS int64) events.Event {
+func toolCompletedEv(id identity.Identity, runID, tool string, durationMS int64) events.Event {
 	return events.Event{
 		Type:     tools.EventTypeToolCompleted,
 		Identity: testQuad(id, runID),
@@ -228,23 +228,8 @@ func toolCompletedEv(id identity.Identity, runID, tool string, attempts int, dur
 			Identity:   testQuad(id, runID),
 			ToolName:   tool,
 			Transport:  tools.TransportInProcess,
-			Attempts:   attempts,
+			Attempts:   1,
 			DurationMS: durationMS,
-		},
-	}
-}
-
-func toolFailedEv(id identity.Identity, runID, tool, class string) events.Event {
-	return events.Event{
-		Type:     tools.EventTypeToolFailed,
-		Identity: testQuad(id, runID),
-		Payload: tools.ToolFailedPayload{
-			Identity:     testQuad(id, runID),
-			ToolName:     tool,
-			Transport:    tools.TransportInProcess,
-			Attempts:     1,
-			ErrorClass:   tools.ErrorClass(class),
-			ErrorMessage: "caller-controlled error text that must never reach a row",
 		},
 	}
 }
@@ -319,7 +304,7 @@ func costRecordedEv(id identity.Identity, runID, model string, usage llm.Usage, 
 	}
 }
 
-func inputDispositionEv(id identity.Identity, taskID, artifactID, mime, disposition string) events.Event {
+func inputDispositionEv(id identity.Identity, taskID, artifactID string) events.Event {
 	return events.Event{
 		Type:     runctx.EventTypeInputDispositionResolved,
 		Identity: testQuad(id, ""),
@@ -327,8 +312,8 @@ func inputDispositionEv(id identity.Identity, taskID, artifactID, mime, disposit
 			Identity:    testQuad(id, ""),
 			TaskID:      taskID,
 			ArtifactID:  artifactID,
-			MIME:        mime,
-			Disposition: disposition,
+			MIME:        "image/png",
+			Disposition: "inline",
 			Layer:       "runtime_default",
 		},
 	}
@@ -361,7 +346,6 @@ type harness struct {
 	store      turns.Store
 	proj       *turns.Projector
 	src        *fakeSource
-	m          *Materializer
 	closeStore func()
 }
 
@@ -422,8 +406,8 @@ func (h *harness) lifecycle(t *testing.T, quad identity.Quadruple, taskID string
 		startedEv(quad.Identity, taskID),
 		decisionEv(quad.Identity, quad.RunID, "CallTool"),
 		toolInvokedEv(quad.Identity, quad.RunID, "clock.now", time.Unix(1_700_000_100, 0)),
-		toolCompletedEv(quad.Identity, quad.RunID, "clock.now", 1, 5),
-		inputDispositionEv(quad.Identity, taskID, "art-1", "image/png", "inline"),
+		toolCompletedEv(quad.Identity, quad.RunID, "clock.now", 5),
+		inputDispositionEv(quad.Identity, taskID, "art-1"),
 		appAvailableEv(quad.Identity, quad.RunID, "agent-a", "server-1", "ui://doc"),
 		costRecordedEv(quad.Identity, quad.RunID, "model-x", llm.Usage{
 			PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, LatencyMS: 120,
@@ -437,12 +421,12 @@ func (h *harness) lifecycle(t *testing.T, quad identity.Quadruple, taskID string
 	return evs
 }
 
-// eventually polls fn until it returns true or the deadline passes —
-// the bounded real-time assertion helper (no time.Sleep as a
+// eventually polls fn until it returns true or the bounded deadline
+// passes — the real-time assertion helper (no time.Sleep as a
 // synchronisation primitive).
-func eventually(t *testing.T, timeout time.Duration, fn func() bool) bool {
+func eventually(t *testing.T, fn func() bool) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if fn() {
 			return true

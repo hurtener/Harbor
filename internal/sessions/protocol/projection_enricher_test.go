@@ -61,10 +61,12 @@ func (f *countingFallbackEnricher) called() int {
 
 // applyRollupBatch applies one delta batch to the store. The checkpoint
 // must advance across calls in a test (ApplyBatch no-ops on a
-// non-advancing checkpoint — the replay-idempotency invariant).
-func applyRollupBatch(t *testing.T, store *memstore.Store, checkpoint uint64, deltas ...rollups.Delta) {
+// non-advancing checkpoint — the replay-idempotency invariant); each
+// test applies exactly one batch to a fresh store, so the first
+// checkpoint is always 1.
+func applyRollupBatch(t *testing.T, store *memstore.Store, deltas ...rollups.Delta) {
 	t.Helper()
-	if err := store.ApplyBatch(context.Background(), rollups.Batch{Checkpoint: checkpoint, Deltas: deltas}); err != nil {
+	if err := store.ApplyBatch(context.Background(), rollups.Batch{Checkpoint: 1, Deltas: deltas}); err != nil {
 		t.Fatalf("ApplyBatch: %v", err)
 	}
 }
@@ -215,7 +217,7 @@ func TestProjectionEnricher_Current_MergedDivergentCounters(t *testing.T) {
 	target := sid("t1", "u1", "s1")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1,
+	applyRollupBatch(t, store,
 		costDelta(target, opened, 1.00, 300),                          // 100c / 300 tok / 1 completion
 		costDelta(target, opened.Add(5*time.Minute), 2.00, 200),       // 200c / 200 tok / 2nd completion
 		taskOutcomeDelta(target, opened.Add(6*time.Minute), "failed"), // 1 terminal outcome — a FAILED one
@@ -279,7 +281,7 @@ func TestProjectionEnricher_Current_RetentionBoundaryIsCovered(t *testing.T) {
 	target := sid("t1", "u1", "s1")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1, costDelta(target, opened, 0.25, 50))
+	applyRollupBatch(t, store, costDelta(target, opened, 0.25, 50))
 
 	fallback := &countingFallbackEnricher{}
 	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
@@ -312,7 +314,7 @@ func TestProjectionEnricher_Current_NoRows_MeasuredExactZeros(t *testing.T) {
 	other := sid("t1", "u1", "s-other")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1, costDelta(other, opened, 5.00, 500)) // rows exist, but not for target
+	applyRollupBatch(t, store, costDelta(other, opened, 5.00, 500)) // rows exist, but not for target
 
 	fallback := &countingFallbackEnricher{} // raw scan: measured zeros, not partial
 	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
@@ -353,7 +355,7 @@ func TestProjectionEnricher_SubCentCosts_ExactDeterministicCents(t *testing.T) {
 	for i := range 50 {
 		deltas = append(deltas, costDelta(target, opened.Add(time.Duration(i)*time.Minute), 0.004, 3))
 	}
-	applyRollupBatch(t, store, 1, deltas...)
+	applyRollupBatch(t, store, deltas...)
 
 	fallback := &countingFallbackEnricher{result: SessionCounters{EventsCount: 11, TasksCount: 7}}
 	enr := newProjectionEnricher(t, store, currentQuality(opened), fallback,
@@ -386,7 +388,7 @@ func TestProjectionEnricher_FallsBackToRawScan(t *testing.T) {
 	now := opened.Add(30 * time.Minute)
 	target := sid("t1", "u1", "s1")
 	store := memstore.New()
-	applyRollupBatch(t, store, 1, costDelta(target, opened, 1.00, 100))
+	applyRollupBatch(t, store, costDelta(target, opened, 1.00, 100))
 
 	raw := SessionCounters{
 		TasksCount:             7,
@@ -448,7 +450,7 @@ func TestProjectionEnricher_FallsBackToRawScan(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := memstore.New()
-			applyRollupBatch(t, s, 1, costDelta(target, opened, 1.00, 100))
+			applyRollupBatch(t, s, costDelta(target, opened, 1.00, 100))
 			if tc.close {
 				if err := s.Close(context.Background()); err != nil {
 					t.Fatalf("close store: %v", err)
@@ -486,7 +488,7 @@ func TestProjectionEnricher_Current_RawPartialMarksAggregatePartial(t *testing.T
 	target := sid("t1", "u1", "s1")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1,
+	applyRollupBatch(t, store,
 		costDelta(target, opened, 1.00, 100),
 		taskOutcomeDelta(target, opened.Add(time.Minute), "failed"),
 	)
@@ -636,7 +638,7 @@ func TestProjectionEnricher_Current_LongLivedSession_CoarsenedExact(t *testing.T
 	target := sid("t1", "u1", "s1")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1,
+	applyRollupBatch(t, store,
 		costDelta(target, opened, 1.00, 100),                                // 100c / 100 tok — at the window start
 		costDelta(target, opened.Add(199*24*time.Hour), 2.50, 300),          // 250c / 300 tok — near the window end
 		taskOutcomeDelta(target, opened.Add(100*24*time.Hour), "completed"), // a terminal outcome mid-window
@@ -682,7 +684,7 @@ func TestProjectionEnricher_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	b := sid("t2", "u2", "sB")
 
 	store := memstore.New()
-	applyRollupBatch(t, store, 1,
+	applyRollupBatch(t, store,
 		costDelta(a, opened, 1.00, 100), // sA projection: 100c / 100 tok
 		costDelta(b, opened, 5.00, 500), // sB projection: 500c / 500 tok
 		taskOutcomeDelta(a, opened.Add(time.Minute), "completed"),
