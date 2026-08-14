@@ -310,7 +310,7 @@ event: task.completed
 data: {"task_id":"tsk_01HXYZ","status":"completed"}
 ```
 
-Governance emits its own canonical events on the same stream — subscribe with `X-Harbor-Event-Type: governance.failover` to observe LLM-provider failover. When a runtime is configured with a broker-pulled failover chain, each HOP the Harbor-orchestrated walk takes on a retryable provider error emits a `governance.failover` event carrying the run identity, the `from_provider` / `to_provider`, the 1-based `hop_index`, the accumulated per-identity cost the re-run budget check gates against, and a bounded retryable-error class (never the raw provider error). Every hop is a Harbor event through audit + bus + cost — the provider SDK's native fallback array is deliberately unused (D-018) — and a hop whose re-run budget/rate check trips fails the run loud rather than silently walking further down the chain. The full event catalogue (137+ types) is the generated [events reference](https://hurtener.github.io/Harbor/protocol/events).
+Governance emits its own canonical events on the same stream — subscribe with `X-Harbor-Event-Type: governance.failover` to observe LLM-provider failover. When a runtime is configured with a broker-pulled failover chain, each HOP the Harbor-orchestrated walk takes on a retryable provider error emits a `governance.failover` event carrying the run identity, the `from_provider` / `to_provider`, the 1-based `hop_index`, the accumulated per-identity cost the re-run budget check gates against, and a bounded retryable-error class (never the raw provider error). Every hop is a Harbor event through audit + bus + cost — the provider SDK's native fallback array is deliberately unused (D-018) — and a hop whose re-run budget/rate check trips fails the run loud rather than silently walking further down the chain. The full event catalogue (147 types) is the generated [events reference](https://hurtener.github.io/Harbor/protocol/events).
 
 **A gotcha**: the event payload's task ID field is `payload.TaskID` (capital T) — match exactly when parsing in JS/TS. Documented in the Console's chat panel handler; easy to miss when hand-rolling.
 
@@ -500,6 +500,20 @@ from forensic events:
   package in one conditional write). A stale/foreign/expired token answers
   the typed `skill_import_proposal_*` refusal; `replace: true` is required
   to replace an existing package.
+- **Draft-only skill authoring (HA-62 / D-423).** `skill_create_draft` is an
+  ordinary runtime tool (absent from the model-visible catalog until an
+  operator enables it per agent through the ordinary tool policy) that turns a
+  bounded `{intent, feedback?}` into ONE caller-scoped immutable `SKILL.md`
+  draft artifact — an artifact ref plus its versioned `package_hash`, a
+  bounded summary/warnings, and an explicit `state: "draft"` /
+  `installed: false`. It is a local draft/proposal with no approval, storage,
+  or authority grant: no skill-store upsert, membership/revision write, or
+  operator-pack proposal/publication; identity comes exclusively from the run
+  context (`persist`/`publish`-shaped input is rejected), and declared
+  required tools are metadata only. Installing a draft is the LATER explicit
+  HA-61 path: `agent_config.user.skills.import_validate` the artifact ref,
+  review, then `import_commit` — the runtime reauthenticates and revalidates
+  before the one conditional install.
 - **Composition preview (HA-66 / D-427).** `agent_config.composition.preview`
   (`POST /v1/agent_config/composition/preview`, claim-free for your own
   triple) reports the effective skill composition a run would compose for
@@ -647,6 +661,29 @@ When an MCP-backed tool call is refused downstream with a `403` + `WWW-Authentic
 - **On the MCP connection view** — `mcp.servers.get` returns `MCPServerView.last_scope_shortfall` (`MCPScopeShortfallView`) recording the last observed shortfall on that connection — visible even to a reader who never made the offending call. It rides the DETAIL read only (like `oauth_requirement`), not the hot list row.
 
 Both are **report-only**: the runtime never auto-escalates, re-consents, or widens a binding on a shortfall. The operator acts on it via the boot-declared `oauth_provider` / `tool_oauth_providers` bindings (which bind a distinct provider per MCP-side entry — a tool call by tool name, a resource read / subscribe by resource URI, and a prompt get by prompt name — for a server fronting several downstream audiences).
+
+**Typed MCP failure classification survives replay (HA-54 / D-410).** When an
+MCP server marks a `CallToolResult` `IsError: true` with the namespaced
+`harbor.error` classification (`{error: {class, message}}` on `_meta` or in
+`structuredContent`), the runtime lowers it to a typed failure — one of
+`invalid_argument` / `validation` / `authorization` / `not_found` / `conflict`
+/ `tool_domain` / `transient` / `provider_unavailable`, with a bounded
+message — and projects it onto permanent-vs-retryable policy: the
+deterministic classes invoke exactly once (a `conflict` such as a
+`revision_conflict` is permanent for the unchanged invocation and carries the
+current revision in its bounded message for reread/retry), while a retryable
+provider/transport failure uses the configured budget. The classified
+observation SURVIVES the runloop's step recording into the actual next ReAct
+prompt: the typed class, retry-policy outcome, bounded message, and retained
+bounded result content render as fields, and a generic `Step.Error` never
+masks them. Raw tool arguments are redacted on every failed-replay shape — no
+raw args, secrets, or unbounded provider output reach the observation or the
+prompt. A legacy unclassified `IsError` keeps the generic safe fallback: its
+lowered text is preserved, policy treats it as transient, and the generic
+render remains. The terminal projection is observable on the stream as
+`tool.failed` (`ErrorClass` / `ErrorMessage` / `Attempts`) and
+`tool.policy_exhausted` (`LastClass` / `LastError`), which agree with what the
+planner observed.
 
 ### 8b. What an MCP connection admin write can reach
 
