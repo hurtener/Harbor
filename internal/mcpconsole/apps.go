@@ -205,11 +205,13 @@ const defaultHeavyThreshold = config.DefaultConsoleInlinePayloadBytes
 // inlined unbounded and never silently truncated.
 const appDocumentInlineCap = 2 * 1024 * 1024 // 2 MiB
 
-// compile-time assertions: AppsAccessor satisfies the three Apps seams.
+// compile-time assertions: AppsAccessor satisfies the three Apps seams
+// plus the distinct admission-aware invoker seam (HA-56).
 var (
-	_ protocol.MCPResourceReader    = (*AppsAccessor)(nil)
-	_ protocol.AppToolInvoker       = (*AppsAccessor)(nil)
-	_ protocol.AppToolContextReader = (*AppsAccessor)(nil)
+	_ protocol.MCPResourceReader       = (*AppsAccessor)(nil)
+	_ protocol.AppToolInvoker          = (*AppsAccessor)(nil)
+	_ protocol.AppToolContextReader    = (*AppsAccessor)(nil)
+	_ protocol.AppToolAdmissionInvoker = (*AppsAccessor)(nil)
 )
 
 // ReadResource implements protocol.MCPResourceReader. It fetches the
@@ -288,8 +290,44 @@ func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args
 
 // CallToolWithBinding dispatches an app callback using its opaque render
 // capability while preserving the ordinary invoker compatibility seam.
+// It is the LEGACY live-binding path (HA-56): the binding is passed to
+// the provider-local ValidateAppBinding for app-only resolution. A
+// render-admission-backed call NEVER rides here — it rides the distinct
+// admission-aware seam (CallToolAdmitted).
 func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	return a.callTool(ctx, serverID, binding, resourceURI, tool, args)
+}
+
+// CallToolAdmitted implements protocol.AppToolAdmissionInvoker — the
+// distinct, narrow admission-verified invocation seam (HA-56). The
+// AppsSurface calls it ONLY after verifying a fresh render admission for
+// the exact (identity, agent, server, resource) tuple.
+//
+// Unlike CallTool / CallToolWithBinding, this path resolves the named
+// tool EXCLUSIVELY through its own server's App dispatch catalog
+// (ResolveAppTool) — never the ordinary planner/model catalog, never a
+// provider-local ValidateAppBinding. The sealed admission token is never
+// handed to a provider-local validator. The current paused/disabled
+// exposure gate re-runs, and the SAME wrapped descriptor the ordinary
+// path invokes fires, so approval / OAuth / policy / redaction / retry /
+// audit still work exactly as they do on a planner call.
+//
+// A host-derived server identity is MANDATORY: an empty server never
+// falls through to ordinary/global resolution.
+func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	if serverID == "" {
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
+			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
+	}
+	desc, ok := a.reg.ResolveAppTool(serverID, tool)
+	if !ok {
+		// The server is absent, or does not hold an app-only callback
+		// under this name. Same typed not-found — the App renders it as
+		// a permanent "there is no such action on this server".
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q (server %q)",
+			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool, serverID)
+	}
+	return a.invokeAppTool(ctx, tool, desc, args)
 }
 
 func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
@@ -326,6 +364,16 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: app call to tool %q names server %q, but the tool belongs to server %q",
 			protocol.ErrAccessorScopeDenied, tool, serverID, desc.Tool.Source)
 	}
+	return a.invokeAppTool(ctx, tool, desc, args)
+}
+
+// invokeAppTool runs the shared invocation tail every app-tool-call path
+// converges on: the current paused/disabled exposure gate, the SAME
+// wrapped descriptor the planner resolves (approval / OAuth / policy /
+// redaction / retry / audit), and the heavy-content-disciplined result
+// projection. It is the one place the proxy's wrapped invocation lives —
+// no path may bypass it.
+func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tools.ToolDescriptor, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	if desc.Invoke == nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: tool %q registered without an Invoke function", tool)
 	}
@@ -433,6 +481,23 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 		}
 	}
 	return nil
+}
+
+// CurrentGeneration returns the deterministic current provider/catalog
+// generation fingerprint for the named server, delegating to the MCP
+// registry. The value is content-derived from the canonical CURRENT
+// descriptor set (resources + app-only callbacks + ordinary catalog), so
+// it changes on detach, replacement, and every successful discovery
+// change, and is stable across replicas with the same canonical current
+// descriptor set. Unknown/empty fails closed (false) — a render
+// admission never binds an empty generation.
+//
+// This is the "current provider/catalog generation" a fresh
+// render-admission gate binds into the sealed tuple. It is NOT itself a
+// proof of erasure / session+agent exposure / paused+disabled state —
+// the gate composes those checks (G4).
+func (a *AppsAccessor) CurrentGeneration(serverID string) (string, bool) {
+	return a.reg.CurrentGeneration(serverID)
 }
 
 // ToolContext implements protocol.AppToolContextReader. It resolves the

@@ -63,6 +63,10 @@ type stubInvoker struct {
 	gotAgent string
 	gotSrv   string
 	gotAuth  string
+	// admittedCalls counts render-admission-backed invocations (the
+	// distinct AppToolAdmissionInvoker seam) so tests can assert exactly
+	// which seam a render-admission-backed call rode.
+	admittedCalls int
 }
 
 func (s *stubInvoker) CallTool(ctx context.Context, serverID, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
@@ -75,14 +79,28 @@ func (s *stubInvoker) CallTool(ctx context.Context, serverID, tool string, _ jso
 	return s.res, nil
 }
 
-// CallToolWithBinding implements the appBindingInvoker seam (HA-56): the
-// wrapped invocation the legacy binding AND the fresh render admission
-// ride. It records the authority so tests can assert which one reached
-// the invocation.
+// CallToolWithBinding implements the legacy appBindingInvoker seam
+// (HA-56): the legacy live-binding path. A render-admission-backed call
+// NEVER rides here — it rides CallToolAdmitted.
 func (s *stubInvoker) CallToolWithBinding(ctx context.Context, serverID, authority, _ string, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
 	s.gotSrv = serverID
 	s.gotTool = tool
 	s.gotAuth = authority
+	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
+	if s.err != nil {
+		return protocol.MCPAppToolResultRow{}, s.err
+	}
+	return s.res, nil
+}
+
+// CallToolAdmitted implements the distinct admission-aware invoker seam
+// (HA-56). It records the admission-backed invocation so tests can assert
+// a render-admission-backed call rode the admission seam exactly once and
+// never the legacy binding path.
+func (s *stubInvoker) CallToolAdmitted(ctx context.Context, serverID, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	s.admittedCalls++
+	s.gotSrv = serverID
+	s.gotTool = tool
 	s.gotAgent, _ = tools.EffectiveAgentConfigFrom(ctx)
 	if s.err != nil {
 		return protocol.MCPAppToolResultRow{}, s.err

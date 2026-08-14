@@ -2,7 +2,9 @@ package protocol_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,19 +47,19 @@ func (f *fakeAdmissionAuthority) Verify(ctx context.Context, expected admission.
 	return f.auth.Verify(ctx, expected, token)
 }
 
-// fixedGenerationReader returns one fixed descriptor generation.
-type fixedGenerationReader struct {
+// fixedGenerationGate returns one fixed provider/catalog generation.
+type fixedGenerationGate struct {
 	gen string
 	err error
 }
 
-func (f *fixedGenerationReader) DescriptorGeneration(_ context.Context, _, _ string) (string, error) {
+func (f *fixedGenerationGate) AuthorizeRender(_ context.Context, _, _ string) (string, error) {
 	return f.gen, f.err
 }
 
 // newAdmissionSurface builds an AppsSurface with the render-admission
-// seams wired. A nil authority / generation leaves the seam unwired.
-func newAdmissionSurface(t *testing.T, authority protocol.RenderAdmissionAuthority, gen protocol.DescriptorGenerationReader) *protocol.AppsSurface {
+// seams wired. A nil authority / gate leaves the seam unwired.
+func newAdmissionSurface(t *testing.T, authority protocol.RenderAdmissionAuthority, gate protocol.RenderAdmissionGate) *protocol.AppsSurface {
 	t.Helper()
 	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
 		Resource: &stubResourceReader{content: protocol.MCPResourceContent{
@@ -68,7 +70,7 @@ func newAdmissionSurface(t *testing.T, authority protocol.RenderAdmissionAuthori
 		AgentResolver:            &stubAppsAgentResolver{},
 		AgentReach:               allowAppsAgentReach{},
 		RenderAdmissionAuthority: authority,
-		DescriptorGeneration:     gen,
+		RenderAdmissionGate:      gate,
 	})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
@@ -90,7 +92,7 @@ func appsID() types.IdentityScope {
 // ordinary read byte-for-byte and mints NO callback authority — even when
 // the admission seam IS wired.
 func TestAppsSurface_ReadResource_NoFlagMintsNothing(t *testing.T) {
-	s := newAdmissionSurface(t, newFakeAdmissionAuthority(t), &fixedGenerationReader{gen: "gen-1"})
+	s := newAdmissionSurface(t, newFakeAdmissionAuthority(t), &fixedGenerationGate{gen: "gen-1"})
 	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity:    appsID(),
 		ServerID:    "srv",
@@ -114,7 +116,7 @@ func TestAppsSurface_ReadResource_NoFlagMintsNothing(t *testing.T) {
 // status — and nothing else.
 func TestAppsSurface_ReadResource_OptInMintsBoundedAdmission(t *testing.T) {
 	authz := newFakeAdmissionAuthority(t)
-	s := newAdmissionSurface(t, authz, &fixedGenerationReader{gen: "gen-1"})
+	s := newAdmissionSurface(t, authz, &fixedGenerationGate{gen: "gen-1"})
 	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity:               appsID(),
 		ServerID:               "srv",
@@ -178,7 +180,7 @@ func TestAppsSurface_ReadResource_OptInUnwiredSeamFailsLoud(t *testing.T) {
 // generation answers the closed "unavailable" availability with NO token,
 // never an admission over an empty generation.
 func TestAppsSurface_ReadResource_EmptyGenerationIsUnavailable(t *testing.T) {
-	s := newAdmissionSurface(t, newFakeAdmissionAuthority(t), &fixedGenerationReader{gen: ""})
+	s := newAdmissionSurface(t, newFakeAdmissionAuthority(t), &fixedGenerationGate{gen: ""})
 	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
 		Identity:               appsID(),
 		ServerID:               "srv",
@@ -217,7 +219,7 @@ func TestAppsSurface_CallTool_RenderAdmissionVerifiedAndRidesInvocation(t *testi
 		AgentResolver:            &stubAppsAgentResolver{},
 		AgentReach:               allowAppsAgentReach{},
 		RenderAdmissionAuthority: authz,
-		DescriptorGeneration:     &fixedGenerationReader{gen: "gen-1"},
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
 	})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
@@ -233,8 +235,9 @@ func TestAppsSurface_CallTool_RenderAdmissionVerifiedAndRidesInvocation(t *testi
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	// The stub invoker implements the binding-invoker seam, so the
-	// verified admission token rides the wrapped invocation.
+	// The stub invoker implements the distinct admission-aware seam, so
+	// the verified admission rides the admission-aware invocation (never
+	// the legacy binding path).
 	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 		Identity:        appsID(),
 		ServerID:        "srv",
@@ -248,6 +251,9 @@ func TestAppsSurface_CallTool_RenderAdmissionVerifiedAndRidesInvocation(t *testi
 	if _, ok := resp.(*types.MCPAppCallToolResponse); !ok {
 		t.Fatalf("response = %T, want *types.MCPAppCallToolResponse", resp)
 	}
+	if inv.admittedCalls != 1 {
+		t.Errorf("admission-aware invocations = %d, want exactly 1", inv.admittedCalls)
+	}
 	if inv.gotSrv != "srv" || inv.gotTool != "srv_tool" {
 		t.Errorf("invoker got server=%q tool=%q, want srv/srv_tool", inv.gotSrv, inv.gotTool)
 	}
@@ -258,7 +264,7 @@ func TestAppsSurface_CallTool_RenderAdmissionVerifiedAndRidesInvocation(t *testi
 // refused as ambiguous — the Runtime never guesses which the App meant.
 func TestAppsSurface_CallTool_BothAuthoritiesAmbiguous(t *testing.T) {
 	authz := newFakeAdmissionAuthority(t)
-	s := newAdmissionSurface(t, authz, &fixedGenerationReader{gen: "gen-1"})
+	s := newAdmissionSurface(t, authz, &fixedGenerationGate{gen: "gen-1"})
 	tok, err := authz.auth.Mint(context.Background(), admission.RenderTuple{
 		Identity:              identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"},
 		AgentID:               appsDefaultAgentID,
@@ -289,10 +295,23 @@ func TestAppsSurface_CallTool_BothAuthoritiesAmbiguous(t *testing.T) {
 // TestAppsSurface_CallTool_TypedAdmissionOutcomes pins the exact typed
 // mapping for every admission failure — an otherwise-current App with an
 // unavailable / invalid / expired / mismatched admission never collapses
-// to an ambiguous not-found.
+// to an ambiguous not-found — and asserts every negative retains the
+// counted admission-aware invoker with ZERO executions.
 func TestAppsSurface_CallTool_TypedAdmissionOutcomes(t *testing.T) {
 	authz := newFakeAdmissionAuthority(t)
-	s := newAdmissionSurface(t, authz, &fixedGenerationReader{gen: "gen-1"})
+	inv := &stubInvoker{}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               allowAppsAgentReach{},
+		RenderAdmissionAuthority: authz,
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
 
 	mint := func(tuple admission.RenderTuple) string {
 		t.Helper()
@@ -340,9 +359,31 @@ func TestAppsSurface_CallTool_TypedAdmissionOutcomes(t *testing.T) {
 		// call that carries no token at all.
 		{"unavailable (not base64url)", "!!!not-base64url!!!", protoerrors.CodeRenderAdmissionUnavailable},
 		{"unavailable (garbage envelope)", "AAAAgarbageAAAA", protoerrors.CodeRenderAdmissionUnavailable},
+		{"invalid (tampered well-formed base64url)", mint(func() admission.RenderTuple {
+			m := base
+			// A structurally broken token: valid base64url wrapping
+			// garbage that fails envelope open as unavailable OR claims
+			// decode as invalid — either way typed, never not-found.
+			return m
+		}()) + "tampered", protoerrors.CodeRenderAdmissionUnavailable},
 		{"mismatch (foreign resource)", mint(func() admission.RenderTuple {
 			m := base
 			m.ResourceURI = "ui://other/main.html"
+			return m
+		}()), protoerrors.CodeRenderAdmissionMismatch},
+		{"mismatch (foreign server)", mint(func() admission.RenderTuple {
+			m := base
+			m.ServerID = "other-srv"
+			return m
+		}()), protoerrors.CodeRenderAdmissionMismatch},
+		{"mismatch (foreign identity)", mint(func() admission.RenderTuple {
+			m := base
+			m.Identity = identity.Identity{TenantID: "t-9", UserID: "u-9", SessionID: "s-9"}
+			return m
+		}()), protoerrors.CodeRenderAdmissionMismatch},
+		{"mismatch (foreign agent)", mint(func() admission.RenderTuple {
+			m := base
+			m.AgentID = "other-agent"
 			return m
 		}()), protoerrors.CodeRenderAdmissionMismatch},
 	}
@@ -354,6 +395,9 @@ func TestAppsSurface_CallTool_TypedAdmissionOutcomes(t *testing.T) {
 			}
 			if got.Code != tc.want {
 				t.Errorf("code = %q, want %q", got.Code, tc.want)
+			}
+			if inv.admittedCalls != 0 {
+				t.Errorf("admission-aware invocations = %d, want 0 (negative must execute zero callbacks)", inv.admittedCalls)
 			}
 		})
 	}
@@ -367,5 +411,274 @@ func TestAppsSurface_CallTool_TypedAdmissionOutcomes(t *testing.T) {
 	}())
 	if got := call(stale); got.Code != protoerrors.CodeRenderAdmissionMismatch {
 		t.Errorf("stale-generation token code = %q, want %q", got.Code, protoerrors.CodeRenderAdmissionMismatch)
+	}
+	if inv.admittedCalls != 0 {
+		t.Errorf("admission-aware invocations after stale-generation negative = %d, want 0", inv.admittedCalls)
+	}
+}
+
+// TestAppsSurface_NewRejectsHalfWiredAdmissionSeam pins the construction
+// rule: the render-admission authority and the fresh admission gate are a
+// WIRED PAIR. Exactly one of the two is a half-wired seam — rejected at
+// construction with ErrAppsMisconfigured, never silently degraded to the
+// disabled surface.
+func TestAppsSurface_NewRejectsHalfWiredAdmissionSeam(t *testing.T) {
+	authz := newFakeAdmissionAuthority(t)
+	gate := &fixedGenerationGate{gen: "gen-1"}
+
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: &stubResourceReader{}, Invoker: &stubInvoker{}, ToolContext: &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		RenderAdmissionAuthority: authz, // gate missing
+	}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
+		t.Errorf("authority-only err = %v, want ErrAppsMisconfigured", err)
+	}
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: &stubResourceReader{}, Invoker: &stubInvoker{}, ToolContext: &stubToolContextReader{},
+		AgentResolver:       &stubAppsAgentResolver{},
+		RenderAdmissionGate: gate, // authority missing
+	}); !errors.Is(err, protocol.ErrAppsMisconfigured) {
+		t.Errorf("gate-only err = %v, want ErrAppsMisconfigured", err)
+	}
+	// Both absent remains the compatible disabled surface.
+	if _, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource: &stubResourceReader{}, Invoker: &stubInvoker{}, ToolContext: &stubToolContextReader{},
+		AgentResolver: &stubAppsAgentResolver{},
+	}); err != nil {
+		t.Errorf("both-absent construction err = %v, want the disabled surface to construct", err)
+	}
+}
+
+// TestAppsSurface_CallTool_RenderAdmissionRequiresServerAndURI asserts a
+// render-admission-backed call requires BOTH the host-derived server
+// identity and the exact resource URI before any lookup — an empty server
+// must never fall through to ordinary/global resolution.
+func TestAppsSurface_CallTool_RenderAdmissionRequiresServerAndURI(t *testing.T) {
+	s := newAdmissionSurface(t, newFakeAdmissionAuthority(t), &fixedGenerationGate{gen: "gen-1"})
+	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: appsID(), Tool: "srv_tool", ResourceURI: "ui://app/main.html",
+		RenderAdmission: "opaque-token",
+	})
+	assertCode(t, err, protoerrors.CodeInvalidRequest)
+	_, err = s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: appsID(), ServerID: "srv", Tool: "srv_tool",
+		RenderAdmission: "opaque-token",
+	})
+	assertCode(t, err, protoerrors.CodeInvalidRequest)
+}
+
+// TestAppsSurface_CallTool_AdmissionInvokerSeamAbsentFailsLoud asserts a
+// render-admission-backed call fails LOUD (CodeRuntimeError) when the
+// surface's invoker does NOT implement the distinct admission-aware
+// seam — it never falls back to the ordinary or the legacy-binding
+// invocation path, and executes zero callbacks.
+func TestAppsSurface_CallTool_AdmissionInvokerSeamAbsentFailsLoud(t *testing.T) {
+	authz := newFakeAdmissionAuthority(t)
+	tok, err := authz.auth.Mint(context.Background(), admission.RenderTuple{
+		Identity:              identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"},
+		AgentID:               appsDefaultAgentID,
+		ServerID:              "srv",
+		ResourceURI:           "ui://app/main.html",
+		DescriptorFingerprint: "gen-1",
+	})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	// nonAdmissionInvoker implements ONLY the ordinary + legacy binding
+	// seams — deliberately NOT the admission-aware seam.
+	inv := &nonAdmissionInvoker{}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               allowAppsAgentReach{},
+		RenderAdmissionAuthority: authz,
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	_, err = s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: appsID(), ServerID: "srv", Tool: "srv_tool",
+		ResourceURI: "ui://app/main.html", RenderAdmission: tok.Value,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *protoerrors.Error", err)
+	}
+	if perr.Code != protoerrors.CodeRuntimeError {
+		t.Errorf("code = %q, want %q (seam absent must fail loud, never fall back)", perr.Code, protoerrors.CodeRuntimeError)
+	}
+	if inv.CallToolCalls != 0 || inv.BindingCalls != 0 {
+		t.Errorf("ordinary/legacy invocations = %d/%d, want 0/0 (no fallback)", inv.CallToolCalls, inv.BindingCalls)
+	}
+}
+
+// nonAdmissionInvoker implements the ordinary + legacy binding seams but
+// NOT the distinct admission-aware seam, so the surface can prove a
+// render-admission-backed call fails loud instead of falling back. It is
+// deliberately NOT an embedding of stubInvoker (embedding would promote
+// CallToolAdmitted and defeat the test).
+type nonAdmissionInvoker struct {
+	res           protocol.MCPAppToolResultRow
+	err           error
+	gotSrv        string
+	gotTool       string
+	CallToolCalls int
+	BindingCalls  int
+}
+
+func (n *nonAdmissionInvoker) CallTool(_ context.Context, serverID, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	n.CallToolCalls++
+	n.gotSrv, n.gotTool = serverID, tool
+	if n.err != nil {
+		return protocol.MCPAppToolResultRow{}, n.err
+	}
+	return n.res, nil
+}
+
+func (n *nonAdmissionInvoker) CallToolWithBinding(_ context.Context, serverID, _, _, tool string, _ json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	n.BindingCalls++
+	n.gotSrv, n.gotTool = serverID, tool
+	if n.err != nil {
+		return protocol.MCPAppToolResultRow{}, n.err
+	}
+	return n.res, nil
+}
+
+// TestAppsSurface_CallTool_GateRefusalIsScopeMismatch asserts a fresh-gate
+// refusal (current render-admission conditions refuse the tuple — erasure,
+// exposure, paused/disabled) maps to CodeScopeMismatch at the callback
+// with ZERO executions — never a collapse into not-found, never a silent
+// fall-through.
+func TestAppsSurface_CallTool_GateRefusalIsScopeMismatch(t *testing.T) {
+	authz := newFakeAdmissionAuthority(t)
+	inv := &stubInvoker{}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               allowAppsAgentReach{},
+		RenderAdmissionAuthority: authz,
+		RenderAdmissionGate:      &refusingGate{},
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	tok, err := authz.auth.Mint(context.Background(), admission.RenderTuple{
+		Identity:              identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"},
+		AgentID:               appsDefaultAgentID,
+		ServerID:              "srv",
+		ResourceURI:           "ui://app/main.html",
+		DescriptorFingerprint: "gen-1",
+	})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	_, err = s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: appsID(), ServerID: "srv", Tool: "srv_tool",
+		ResourceURI: "ui://app/main.html", RenderAdmission: tok.Value,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *protoerrors.Error", err)
+	}
+	if perr.Code != protoerrors.CodeScopeMismatch {
+		t.Errorf("code = %q, want %q (fresh-gate refusal is a scope-level refusal)", perr.Code, protoerrors.CodeScopeMismatch)
+	}
+	if inv.admittedCalls != 0 {
+		t.Errorf("admission-aware invocations = %d, want 0", inv.admittedCalls)
+	}
+}
+
+// refusingGate always refuses the render tuple with ErrRenderAdmissionRefused.
+type refusingGate struct{}
+
+func (*refusingGate) AuthorizeRender(context.Context, string, string) (string, error) {
+	return "", fmt.Errorf("%w: tuple refused by test gate", protocol.ErrRenderAdmissionRefused)
+}
+
+// TestAppsSurface_ReadResource_GateRefusalIsUnavailable asserts a
+// fresh-gate refusal at MINT answers the closed `unavailable` admission
+// object with NO token — the read itself succeeded; the admission could
+// not be minted because the CURRENT conditions refuse.
+func TestAppsSurface_ReadResource_GateRefusalIsUnavailable(t *testing.T) {
+	s := newAdmissionSurface(t, newFakeAdmissionAuthority(t), &refusingGate{})
+	resp, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity: appsID(), ServerID: "srv", ResourceURI: "ui://app/main.html",
+		RequestRenderAdmission: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(read_resource): %v", err)
+	}
+	out := resp.(*types.ReadMCPResourceResponse)
+	if out.RenderAdmission == nil {
+		t.Fatal("gate refusal: expected the explicit unavailable admission object")
+	}
+	if out.RenderAdmission.Availability != types.RenderAdmissionUnavailable {
+		t.Errorf("availability = %q, want %q", out.RenderAdmission.Availability, types.RenderAdmissionUnavailable)
+	}
+	if out.RenderAdmission.Token != "" {
+		t.Error("refused admission must carry no token")
+	}
+}
+
+// TestAppsSurface_CallTool_ExpiredThroughSurface exercises the EXPIRED
+// outcome through the AppsSurface (not only the sealed-authority unit
+// package): a token minted under a controllable clock, then verified
+// after its TTL passes, fails with CodeRenderAdmissionExpired and ZERO
+// executions.
+func TestAppsSurface_CallTool_ExpiredThroughSurface(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	sealer, err := authsealer.NewAESGCMSealer([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewAESGCMSealer: %v", err)
+	}
+	clock := func() time.Time { return now }
+	authz, err := admission.New(sealer, admission.WithClock(clock), admission.WithTTL(15*time.Minute))
+	if err != nil {
+		t.Fatalf("admission.New: %v", err)
+	}
+	inv := &stubInvoker{}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               allowAppsAgentReach{},
+		RenderAdmissionAuthority: &fakeAdmissionAuthority{auth: authz},
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	tok, err := authz.Mint(context.Background(), admission.RenderTuple{
+		Identity:              identity.Identity{TenantID: "t-1", UserID: "u-1", SessionID: "s-1"},
+		AgentID:               appsDefaultAgentID,
+		ServerID:              "srv",
+		ResourceURI:           "ui://app/main.html",
+		DescriptorFingerprint: "gen-1",
+	})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	// Advance past the TTL AND the bounded clock-skew tolerance, then
+	// verify through the surface.
+	now = now.Add(30 * time.Minute)
+	_, err = s.Dispatch(verifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: appsID(), ServerID: "srv", Tool: "srv_tool",
+		ResourceURI: "ui://app/main.html", RenderAdmission: tok.Value,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *protoerrors.Error", err)
+	}
+	if perr.Code != protoerrors.CodeRenderAdmissionExpired {
+		t.Errorf("code = %q, want %q", perr.Code, protoerrors.CodeRenderAdmissionExpired)
+	}
+	if inv.admittedCalls != 0 {
+		t.Errorf("admission-aware invocations = %d, want 0", inv.admittedCalls)
 	}
 }

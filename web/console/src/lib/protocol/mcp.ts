@@ -328,17 +328,25 @@ export interface MCPResourceArtifactRef {
  * client echoes it back on `mcp.apps.call_tool` (the request's DISTINCT
  * `render_admission` field — NOT the legacy `binding`), and the Runtime
  * re-verifies it against the CURRENT render tuple before invocation.
+ *
+ * An explicit successful opt-in read may return the `unavailable` object
+ * with NO token when the admission could not be minted (empty/unknown
+ * current provider/catalog generation, or a current-conditions refusal) —
+ * the caller must re-read. An omitted/false `request_render_admission`
+ * never produces this object.
  */
 export interface RenderAdmission {
   /**
    * The opaque sealed render-admission token (bounded base64url). Empty
-   * only when `availability` is "unavailable".
+   * when `availability` is "unavailable" — a closed "no admission minted"
+   * answer carries no token.
    */
   token?: string;
-  /** The mint instant, RFC 3339 UTC. Omitted when unavailable. */
+  /** The mint instant, RFC 3339 UTC. Empty when unavailable. */
   issued_at?: string;
   /** The admission expiry, RFC 3339 UTC — a past expiry is refused with
-   * the typed `render_admission_expired` code at call time. */
+   * the typed `render_admission_expired` code at call time. Empty when
+   * unavailable. */
   expires_at: string;
   /**
    * The CLOSED availability status at mint: "available" (the render
@@ -365,11 +373,14 @@ export interface ReadMCPResourceResponse {
   /** By-reference stub — set only at or above the heavy threshold. */
   artifact_ref?: MCPResourceArtifactRef;
   /**
-   * The bounded render admission minted for this read — present ONLY
-   * when the request carried `request_render_admission: true` AND the
-   * read succeeded AND the admission could be minted. An omitted/false
-   * flag never mints authority; a failed read never returns an
-   * admission.
+   * The bounded render admission for this read — present ONLY when the
+   * request carried `request_render_admission: true` AND the read
+   * succeeded. An explicit successful opt-in read returns either the
+   * available admission (token + bounded expiry metadata) or the explicit
+   * `unavailable` object with NO token when the admission could not be
+   * minted (empty/unknown current generation, or a current-conditions
+   * refusal) — never a silent omission. An omitted/false flag never mints
+   * authority; a failed read never returns an admission.
    */
   render_admission?: RenderAdmission;
   /** The Protocol version the Runtime answered under. */

@@ -208,12 +208,12 @@ const (
 	// CodeAgentRetirementConflict marks a bad retirement precondition or a
 	// replay under a different operation identity. Maps to 409.
 	CodeAgentRetirementConflict Code = "agent_retirement_conflict"
-	// CodeRenderAdmissionMissing — MCP Apps surface: an app-tool-call
-	// request carried a render-admission authority (the fresh opaque
-	// `render_admission` token) but the value was empty, or the request
-	// referenced one that was not supplied at all. Typed — never
-	// collapsed into a generic not-found: an otherwise-current App whose
-	// admission is missing must fail here, distinctly.
+	// CodeRenderAdmissionMissing — MCP Apps surface: a render-admission
+	// verification was asked to open an EMPTY token. Defensive-only
+	// branch: the surface only verifies a render-admission-backed call
+	// when a non-empty `render_admission` token was supplied, so this
+	// answers a direct seam misuse, never an ordinary request. Typed —
+	// never collapsed into a generic not-found.
 	CodeRenderAdmissionMissing Code = "render_admission_missing"
 	// CodeRenderAdmissionUnavailable — MCP Apps surface: the supplied
 	// render-admission token could not be opened — invalid base64url, an

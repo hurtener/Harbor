@@ -532,15 +532,18 @@ export class MCPServersNamespace {
 	 * the bounded render admission for THIS successful `ui://` read. Omitted
 	 * or false preserves the ordinary read byte-for-byte and mints NO
 	 * callback authority — only a successful read carrying true may return
-	 * the `render_admission` object on the response.
+	 * the `render_admission` object on the response. A successful opt-in
+	 * read may return the explicit `unavailable` admission object with no
+	 * token when the current provider/catalog generation is empty/unknown;
+	 * an omitted/false flag never returns one.
 	 */
-	readResource(
+	readResource<R = ReadMCPResourceResponse>(
 		serverID: string,
 		resourceURI: string,
 		agentID?: string,
 		requestRenderAdmission = false
-	): Promise<ReadMCPResourceResponse> {
-		return this.#t.request<ReadMCPResourceResponse>(
+	): Promise<R> {
+		return this.#t.request<R>(
 			'/v1/control/mcp.servers.read_resource',
 			{
 				server_id: serverID,

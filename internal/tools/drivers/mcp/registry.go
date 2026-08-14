@@ -2,9 +2,13 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -313,6 +317,21 @@ type serverEntry struct {
 	catalog       tools.ToolCatalog
 	toolAllowlist []string
 	toolDenylist  []string
+	// currentGeneration is the DETERMINISTIC current provider/catalog
+	// generation fingerprint for this server: a content digest of the
+	// canonical CURRENT descriptor set (resources + app-only callbacks +
+	// ordinary catalog), recomputed whenever a successful discovery
+	// snapshot rebuilds either view. It changes on detach (entry removed
+	// → unknown → fail closed), replacement (new descriptor set), and
+	// every successful discovery change to resources / app-only /
+	// ordinary catalog — even when the deployment registration
+	// descriptor (`descriptorFingerprint`) did not change. It is stable
+	// across replicas with the same canonical current descriptor set
+	// (content-derived, NEVER a process-local counter), and empty means
+	// "unknown" (fail closed: a render admission never binds an empty
+	// generation). Guarded by the Registry's mu like every other
+	// per-server field.
+	currentGeneration string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -618,6 +637,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 	// replacement swaps the appOnly set exactly when it swaps the catalog
 	// publication, so no stale callback can survive either direction.
 	entry.appOnly = partitionAppOnly(descs)
+	entry.currentGeneration = currentGenerationFor(descs)
 	if descs != nil {
 		entry.stats.lastDiscoveryAt = now
 	}
@@ -650,6 +670,42 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 	return out
 }
 
+// currentGenerationFor computes the deterministic current
+// provider/catalog generation fingerprint for a canonical descriptor
+// set: a content digest over the sorted per-descriptor classification
+// rows (name, form, app-only flag, source, transport, description).
+//
+// Content-derived — two replicas holding the SAME canonical current
+// descriptor set produce the SAME fingerprint, and any successful
+// discovery change to the resources / app-only / ordinary catalog rows
+// changes it, even when the deployment registration descriptor did not.
+// It is NEVER a process-local counter. An empty or nil set yields ""
+// (unknown — fail closed: a render admission never binds an empty
+// generation).
+func currentGenerationFor(descs []tools.ToolDescriptor) string {
+	if len(descs) == 0 {
+		return ""
+	}
+	rows := make([]string, 0, len(descs))
+	for _, d := range descs {
+		rows = append(rows, strings.Join([]string{
+			d.Tool.Name,
+			string(d.Tool.Form),
+			strconv.FormatBool(d.Tool.AppOnly),
+			string(d.Tool.Source),
+			string(d.Tool.Transport),
+			d.Tool.Description,
+		}, "\x00"))
+	}
+	sort.Strings(rows)
+	h := sha256.New()
+	for _, row := range rows {
+		io.WriteString(h, row)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // ResolveAppTool resolves an app-only callback from the named server's App
 // dispatch catalog — the ONLY authority a rendered App may invoke an
 // app-only callback through. The server identity is the host-derived key:
@@ -673,6 +729,31 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 	}
 	d, ok := e.appOnly[toolName]
 	return d, ok
+}
+
+// CurrentGeneration returns the deterministic current provider/catalog
+// generation fingerprint for the named server: a content digest of the
+// canonical CURRENT descriptor set (resources + app-only callbacks +
+// ordinary catalog). It changes on detach (server absent → unknown),
+// replacement, and every successful discovery change — even when the
+// deployment registration descriptor did not change. It is stable across
+// replicas with the same canonical current descriptor set (content-
+// derived, never a process-local counter).
+//
+// Unknown/empty fails closed: the second result is false when the server
+// is absent or no successful discovery has established its current
+// descriptor set yet, and a render admission never binds an empty
+// generation. This is the value a render-admission gate binds into the
+// sealed tuple; a stale generation after refresh or replacement must
+// execute zero callbacks.
+func (r *Registry) CurrentGeneration(serverID string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.servers[serverID]
+	if !ok || e.currentGeneration == "" {
+		return "", false
+	}
+	return e.currentGeneration, true
 }
 
 // RegistrationSwap is a reversible live-registry publication. Commit makes
@@ -1797,8 +1878,13 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		catalogSwap.Commit()
 	}
 	// Rebuild the App dispatch view from the SAME fresh snapshot that just
-	// re-derived the counts — one discovered set, two views.
+	// re-derived the counts — one discovered set, two views. The
+	// deterministic current provider/catalog generation recomputes with
+	// the snapshot, so a refresh that changes resources / app-only /
+	// ordinary catalog rows bumps the generation even when the deployment
+	// registration descriptor did not change.
 	e.appOnly = partitionAppOnly(descs)
+	e.currentGeneration = currentGenerationFor(descs)
 	r.mu.Unlock()
 
 	return &DiscoveryResult{
@@ -2094,6 +2180,11 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	e.stats.promptCount = pc
 	e.stats.lastDiscoveryAt = r.clock()
 	e.stats.state = ServerStateOnline
+	// The boot-time descriptor snapshot also establishes the current
+	// provider/catalog generation — RecordDiscovery is the no-network
+	// counterpart to RefreshDiscovery, so it must seed the same
+	// deterministic generation the refresh path maintains.
+	e.currentGeneration = currentGenerationFor(descs)
 	return nil
 }
 
