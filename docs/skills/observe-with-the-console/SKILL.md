@@ -1,6 +1,6 @@
 ---
 name: observe-with-the-console
-description: "Tour the Console's observability pages — Overview, Live Runtime, Sessions, Tasks, Agents, Tools, Events, Background Jobs, Playground, Flows, Memory, MCP Connections, Artifacts, Settings. Use when debugging an agent's behavior, hunting a regression, or building intuition for what the runtime is actually doing under the hood."
+description: "Tour the Console's observability pages — Overview, Live Runtime, Observability, Sessions, Tasks, Agents, Tools, Events, Background Jobs, Playground, Flows, Memory, MCP Connections, Artifacts, Settings. Use when debugging an agent's behavior, hunting a regression, or building intuition for what the runtime is actually doing under the hood."
 license: Apache-2.0
 metadata:
   framework: harbor
@@ -19,7 +19,7 @@ This skill tours the pages and what each is for.
 The sidebar groups pages into four labelled clusters:
 
 ```text
-Runtime    · Overview · Live Runtime
+Runtime    · Overview · Live Runtime · Observability
 Execution  · Sessions · Tasks · Agents · Tools · Events · Background Jobs · Playground
 Resources  · Flows · Memory · MCP Connections · Artifacts
 Settings   · Settings
@@ -53,19 +53,51 @@ This page absorbs several things that are NOT standalone nav pages:
 - **Traces** — toggle the trace overlay on, then select a run/node to see its OTel span tree. Same data your real OTel collector sees if you've wired one.
 - **Topology** — a capability-gated panel (gated on the `topology.snapshot` method). It draws a live graph of the runtime's wiring: LLM client, tool catalog (one node per tool), memory driver, state driver, artifact store, event bus, skill catalog, with edges for data flow. `topology.snapshot` is a Protocol method — third-party UIs can read it too. On a planner/RunLoop runtime that doesn't advertise topology, the cockpit fills the viewport with the other spine panels instead of a topology void.
 
+### Observability — the one bounded rollup query
+
+A **minimal** administrative rollup page: it consumes exactly ONE Protocol method, `observability.query` (`POST /v1/observability/query`), against the runtime's durable-event-log projection. It is not an analytics dashboard — no live-cursor redesign, no raw event/history scans, no operator-analytics surface beyond the one bounded query. For production metrics, point a real Prometheus at the Runtime (see Overview).
+
+What the page is:
+
+- **Explicit, bounded, UTC-grid-aligned window.** Every query is a half-open `[from, to)` window aligned to the bucket grid — presets ("Last 60 min", "Last 24 h", "Last 7 d") are aligned by construction, and a hand-edited window is re-aligned (floor start / ceil end) before it reaches the wire. The wire rejects unaligned edges loudly, so the consumer never sends one; the effective aligned window is always shown.
+- **Closed control sets, exposed verbatim.** Bucket `minute | hour | day`; group-by axes `tenant | user | session | model` (no `agent` axis — agent is not a rollup dimension); the 15 source-backed measures (LLM completions/tokens/cost/latency family + task completed/failed/cancelled family); four total sorts (`bucket_asc | bucket_desc | measure_asc | measure_desc`). A measure with no canonical event carrier is ABSENT from the set — never synthesized.
+- **Authority posture.** The verified identity triple is enforced server-side — the page exposes NO tenant/user/session filter inputs. The only non-identity filter axis is the closed `models` axis. A widened (`admin` | `console:fleet`) fan-in is gated + audited server-side and surfaced only as an informational note.
+- **Deterministic cursor paging.** A stale or foreign cursor is rejected with `invalid_cursor` — every page is a deterministic slice of the full query shape.
+
+**The freshness banner is mandatory and honest.** Every response carries a quality block the page renders loudly above the table, never hidden behind the rows:
+
+- **Projection state: `current | catching_up | unavailable`** — three DISTINCT chip kinds. An `unavailable` projection (the projector's last ingestion failed) renders a notice that the rows below are the last exact values the store held and totals are NOT current — it never reads as "no data".
+- **Watermark** — the last successfully applied sequence of the local durable sequence, rendered exactly (never float-normalised), plus the instant it advanced.
+- **Retention horizon + window-coverage quality: `covered | partial | gap`** — when the window falls outside the retained horizon (`gap`) the empty table says "empty BY RETENTION, not because nothing happened"; `partial` says the window overlaps the horizon so totals are incomplete by retention.
+
+**Missing measures render "—", never an ambiguous zero.** A row that did not carry a requested measure shows the dash; unsupported counters are absent, not synthesized. Exact integer / micro-unit values (cost is integer micro-units of USD) render via integer arithmetic — no float precision loss.
+
+A Runtime that does not mount `observability.query` answers `unknown_method`: the page shows an informational banner ("Observability query unavailable") instead of an error.
+
 ---
 
 ## Execution
 
 ### Sessions — the per-user lifecycle view
 
-Every session for the attached identity. Idle TTL countdown, hard-cap countdown, status (active / idle / expired). Sweep events when sessions are reaped. Click a session for its detail.
+Every session for the attached identity. Idle TTL countdown, hard-cap countdown, status (running / paused / completed / failed). Sweep events when sessions are reaped. Click a session for its detail.
 
 A session row shows its **title** when one is set (truncated, with the full title + id in a tooltip) and falls back to the bare id otherwise. Click **Rename** inline to set/change/clear it — this calls `sessions.set_title` (D-288) and can name any session of your own `(tenant, user)`, not just the one you're currently attached to.
 
 The session-detail bottom dock's **Events** tab also surfaces the session's background-wake notifications (`notification.task_completed`, `notification.task_group_resolved`, `notification.task_group_cancelled`, `notification.task_failed`) with their human-readable `Summary` — so when a background task or task group resolves (or an unprompted cascade/fail-fast cancel stops one) while you're watching a session, you see the same narrative the TUI shows. A group cancel the operator drove themselves is suppressed — you already know — so `notification.task_group_cancelled` appears only for the unprompted cancels worth surfacing.
 
 The **"Most expensive"** sort and the **cost-above** facet chip now operate on TRUTHFUL per-session cost — the runtime populates `total_cost_cents` / `total_tokens` / `tasks_count` / `events_count` at the source (D-309), so sorting by cost actually reorders by real spend instead of the old permanently-zero placeholder. The Events cell shows a **"≥"** prefix when a row's counts are an honest lower bound (its per-session scan hit its bound). The Agent column reads `—` when no single agent is bound to the session (there is no one authoritative agent for a multi-agent session), and the page carries no agent-id filter chip — a programmatic `filter.agent_ids` call fails loud rather than lying with an empty page.
+
+Every row is a **projected session** — the page asks for the `full` projection (D-424), because its counter columns, the `cost_desc` sort, and the counter facets depend on the read-time counter enrichment. The sibling `lifecycle` projection is the Playground chat catalog's read: lifecycle-only rows carry NO counter/history/task/pause enrichment, their counters stay at zero, and their `counter_status` reads `not_requested` — a zero that never reads as a measured zero. A counter-dependent filter or sort (`cost_above_cents` / `has_failed_task` / `has_intervention` / `cost_desc`) is rejected `invalid_request` on a lifecycle request.
+
+Each row's counter fields carry an explicit **`counter_status`** marker — the four-state `current | partial | not_requested | unavailable` superset of the legacy `counters_partial` flag (D-424), so every zero counter is SELF-DESCRIBING:
+
+- `current` — computed in full; the counters are exact (a real `$0.00` is a measured zero).
+- `partial` — computed but an honest lower bound (a bounded per-session scan hit its bound); rendered with the "≥" prefix, and no sort/filter over such a row is authoritative.
+- `not_requested` — a lifecycle-only projection skipped the counters.
+- `unavailable` — no counter Enricher is wired on this runtime.
+
+Absent counters (`not_requested` / `unavailable`) render as a **"—" dash, never an ambiguous zero** — the marker is consulted BEFORE any wire count or the 30-day `events.aggregate` fallback, so a zero counter on such a row means "not computed", never "measured as zero".
 
 ### Tasks — the request-level view
 
@@ -120,6 +152,8 @@ The queue view for planner-spawned background tasks — a focused `tasks.list` p
 
 Covered in depth in [`drive-the-playground`](../drive-the-playground/SKILL.md). Where you actually use the agent; the Tasks page links from here.
 
+Opening (or reopening) an existing session uses the **two-read chat open** (HA-64 / D-425): ONE lifecycle-only session read — `sessions.inspect` with `projection: 'lifecycle'` — drives the header's paused flag, the KPI Started column, and honest brand-new-session detection; plus ONE durable tail page — `sessions.turns.list` — the runtime's consumer-safe conversation projection. When a turn you rendered from that fold seals mid-view, the page reconciles it with exactly ONE `sessions.turns.get` on the consumer lane — never a raw-transcript refetch. A runtime that predates the `sessions.turns.*` surface answers `unknown_method`, and the degraded legacy reopen (`state.history` event replay) is offered but never the default.
+
 ---
 
 ## Resources
@@ -167,6 +201,7 @@ If a page shows infinite Loading, the underlying Protocol call is hung — check
 - **Events page shows nothing but the stream is "active".** Identity scope mismatch — you're scoped to `tenant=A` but tasks are running as `tenant=B`. Update the identity context OR the localStorage seed.
 - **A panel reads "not available on this Runtime".** Capability disabled — the runtime advertised that the method isn't supported. Either it's an intentional deployment (embedded runtime, stripped down) or the runtime version is older than the Console.
 - **Live Runtime's topology panel is missing.** The runtime doesn't advertise `topology.snapshot` (e.g. a planner/RunLoop runtime). The cockpit fills the gap with its other spine panels rather than showing an empty graph.
+- **Observability page shows an "Observability query unavailable" banner instead of a table.** The runtime answered but does not mount `observability.query` — an older Runtime or a stripped-down shape. This is the `unknown_method` info state, not an error (D-164); the freshness banner and table are simply not part of that Runtime's surface.
 
 ## See also
 
