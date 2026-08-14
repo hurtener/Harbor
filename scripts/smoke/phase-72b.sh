@@ -122,6 +122,18 @@ CANONICAL_ERROR_CODES=(
     CodeSessionSkillReadUnstable
     CodeAgentRetired
     CodeAgentRetirementConflict
+    CodeRenderAdmissionMissing
+    CodeRenderAdmissionUnavailable
+    CodeRenderAdmissionInvalid
+    CodeRenderAdmissionExpired
+    CodeRenderAdmissionMismatch
+    CodeRenderAuthorityAmbiguous
+    CodeSkillImportProposalInvalid
+    CodeSkillImportProposalExpired
+    CodeSkillImportPackageInvalid
+    CodeSkillImportReplaceRequired
+    CodeQueryBudgetExceeded
+    CodeInvalidCursor
 )
 for code in "${CANONICAL_ERROR_CODES[@]}"; do
     assert_grep_present "^[[:space:]]*${code}[[:space:]]+Code[[:space:]]*=" \
