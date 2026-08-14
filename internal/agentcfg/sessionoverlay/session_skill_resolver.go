@@ -11,6 +11,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/bootpacks"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -36,10 +37,13 @@ type CutoverModeReader interface {
 // eligible) from an explicitly empty selection. UserPersonalNames are added
 // back from the exact ScopeUser rung; neither list selects an agent. Packs
 // are the converted operator-managed per-agent skill bodies from the agent's
-// active `agent_packs` section (HA-55); they compose LAST, so a pack body
-// wins a name collision against a base row, a durable user personal skill,
-// or a session personal skill — a user's personal skill can never replace
-// the operator-pack body.
+// active `agent_packs` section (HA-55), and Boot are the boot-declared
+// operator baseline entries for the agent's exact (tenant, agent) key
+// (HA-66). Both compose into ONE combined operator tier FIRST through the
+// strict composer — same canonical name + same semantic hash dedupes as
+// `source=both`, a differing hash fails loud, ≤ MaxOperatorTierItems unique
+// items — and the tier applies LAST over base/user/session skills, so a
+// user's personal skill can never replace the operator-pack body.
 type SessionSkillMembership struct {
 	AdminMembershipSet bool
 	AdminNames         []string
@@ -48,6 +52,12 @@ type SessionSkillMembership struct {
 	// agent. Each carries Origin=pack and Scope=tenant (the pack rung is
 	// fixed by construction; see agentcfg.AgentPackItem.Skill).
 	Packs []skills.Skill
+	// Boot are the boot-declared operator baseline entries for the
+	// selected agent's exact (tenant, agent) key, already loaded and
+	// frozen by the eager boot loader (HA-66). Nil/empty means no
+	// boot baseline for this agent — the composed tier's boot set hash is
+	// then absent.
+	Boot []bootpacks.Entry
 }
 
 // SessionSkillResolverConfig contains the complete authority inputs for one
@@ -76,6 +86,7 @@ type SessionSkillResolver struct {
 	byScope  map[skills.Scope]map[string]skills.Skill
 	session  map[string]skills.Skill
 	pack     map[string]skills.Skill
+	tier     OperatorTier
 }
 
 // NewSessionSkillResolver captures a fence-stable composed skill view for one
@@ -262,32 +273,29 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	if len(session) > 0 {
 		byScope[skills.ScopeSession] = cloneSkillMap(session)
 	}
-	// Operator-managed pack: compose LAST with pack-wins precedence. A pack
-	// body never enters byScope — the pack is not a storage rung, so a
-	// rung-precise GetScope/delete can never touch it — and it overrides
-	// any same-named base / user / session row in `all` (HA-55 acceptance:
-	// a user's personal skill cannot replace the operator-pack body). Pack
-	// skills are already validated by the projection (conversion fails
-	// loudly), but the resolver re-validates + re-hashes so a tampered
-	// membership input cannot smuggle a malformed body into the composed
-	// view.
-	pack := make(map[string]skills.Skill, len(cfg.Membership.Packs))
-	for _, skill := range cfg.Membership.Packs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		normalized, err := normalizeResolverSkill(skill)
-		if err != nil {
-			return nil, err
-		}
-		canonical := canonicalNameFor(normalized.Name)
-		if canonical == "" {
-			return nil, fmt.Errorf("%w: pack skill name is empty", ErrInvalidSessionSkillResolver)
-		}
-		all[canonical] = cloneSkill(normalized)
-		pack[canonical] = cloneSkill(normalized)
+	// Operator-managed tier: compose the boot baseline and the active
+	// durable revision pack into ONE combined operator tier FIRST through
+	// the strict composer — same canonical name + same semantic hash
+	// dedupes as `source=both`; a differing hash fails loud; at most
+	// MaxOperatorTierItems unique items (HA-55 + HA-66 acceptance) — then
+	// apply the tier LAST over base/user/session skills in `all`, so a
+	// user's personal skill can never replace the operator body. The tier
+	// never enters byScope — the operator tier is not a storage rung, so a
+	// rung-precise GetScope/delete can never touch it. The composer
+	// re-validates + re-hashes every input so a tampered membership input
+	// cannot smuggle a malformed body or a mismatched hash into the
+	// composed view.
+	tier, err := ComposeOperatorTier(cfg.Membership.Boot, cfg.Membership.Packs)
+	if err != nil {
+		return nil, err
 	}
-	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Base, all: all, byScope: byScope, session: cloneSkillMap(session), pack: pack}, nil
+	pack := make(map[string]skills.Skill, tier.Len())
+	for _, item := range tier.Items() {
+		canonical := canonicalNameFor(item.Skill.Name)
+		all[canonical] = cloneSkill(item.Skill)
+		pack[canonical] = cloneSkill(item.Skill)
+	}
+	return &SessionSkillResolver{run: cfg.Run, agentID: cfg.AgentID, searcher: cfg.Base, all: all, byScope: byScope, session: cloneSkillMap(session), pack: pack, tier: tier}, nil
 }
 
 func loadLegacySessionTier(ctx context.Context, cfg SessionSkillResolverConfig) (map[string]skills.Skill, error) {
@@ -431,6 +439,20 @@ func (r *SessionSkillResolver) SessionSkills(ctx context.Context, id identity.Qu
 		return nil, err
 	}
 	return sortedSkills(r.session), nil
+}
+
+// OperatorTier returns the immutable combined operator tier composed at run
+// start from the boot baseline and the active durable revision pack (HA-66).
+// It is the run-start provenance surface the caller reads to bind
+// boot_pack_set_hash and the per-item `boot|revision|both` source markers
+// into the run skill-reader snapshot. The value is read-only; every accessor
+// returns deep copies. Gated by the resolver's exact identity binding like
+// every other read.
+func (r *SessionSkillResolver) OperatorTier(ctx context.Context, id identity.Quadruple) (OperatorTier, error) {
+	if err := r.validateCall(ctx, id); err != nil {
+		return OperatorTier{}, err
+	}
+	return r.tier, nil
 }
 
 // Get returns the highest-precedence composed skill for name.
