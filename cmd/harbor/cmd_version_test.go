@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hurtener/Harbor/cmd/harbor/scaffold"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
@@ -116,5 +117,43 @@ func TestCurrentVersionInfo_MirrorsConstants(t *testing.T) {
 	}
 	if info.BuildHash == "" {
 		t.Error("versionInfo.BuildHash empty — buildHash() must return non-empty (\"unknown\" sentinel allowed)")
+	}
+}
+
+// TestDisplayVersion_StampedReleaseTags pins displayVersion's release
+// resolution: a link-stamped two-component GA tag (`v1.28`), the
+// three-component patch form (`v1.28.0`), and either with a conventional
+// prerelease suffix are returned as-is; malformed / non-release stamps
+// (the "v0.0.0-dev" sentinel, git-describe derivatives, four-component
+// dotted strings) fall back to the honest `FallbackModuleVersion +
+// "-dev"` rather than reporting the junk stamp.
+//
+// The test MUTATES the package-level HarborVersion stamp to simulate
+// the release build's -ldflags -X injection, so it MUST NOT call
+// t.Parallel: the parallel tests in this package read the var, and Go
+// pauses every parallel test until all sequential tests have finished.
+func TestDisplayVersion_StampedReleaseTags(t *testing.T) {
+	orig := HarborVersion
+	t.Cleanup(func() { HarborVersion = orig })
+	for _, tc := range []struct {
+		name  string
+		stamp string
+		want  string
+	}{
+		{"two-component GA tag", "v1.28", "v1.28"},
+		{"three-component patch", "v1.28.0", "v1.28.0"},
+		{"three-component prerelease", "v1.28.0-rc.1", "v1.28.0-rc.1"},
+		{"two-component prerelease", "v1.28-rc.1", "v1.28-rc.1"},
+		{"major prerelease", "v2.0.0-rc.1", "v2.0.0-rc.1"},
+		{"un-stamped sentinel falls back", "v0.0.0-dev", scaffold.FallbackModuleVersion + "-dev"},
+		{"git-describe derivative falls back", "v1.13.0-4-gdeadbee", scaffold.FallbackModuleVersion + "-dev"},
+		{"four-component falls back", "v1.27.0.1", scaffold.FallbackModuleVersion + "-dev"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			HarborVersion = tc.stamp
+			if got := displayVersion(); got != tc.want {
+				t.Errorf("displayVersion() with stamp %q = %q, want %q", tc.stamp, got, tc.want)
+			}
+		})
 	}
 }

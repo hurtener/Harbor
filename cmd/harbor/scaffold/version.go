@@ -31,8 +31,10 @@ import (
 const FallbackModuleVersion = "v1.27"
 
 // releaseVersionRE matches the version strings that name a real,
-// proxy-resolvable Harbor release tag: `vX.Y.Z`, optionally with a
-// conventional pre-release suffix (`-rc.1`, `-beta.2`).
+// proxy-resolvable Harbor release tag: Harbor's canonical two-component
+// GA tags (`v1.28`) and the older three-component patch form
+// (`v1.28.0`), each optionally with a conventional pre-release suffix
+// (`-rc.1`, `-beta.2`).
 //
 // It deliberately REJECTS the shapes that are not fetchable module
 // versions even though they are syntactically semver-ish: the
@@ -48,7 +50,7 @@ const FallbackModuleVersion = "v1.27"
 // `github.com/hurtener/Harbor`. A v2 cut must update the template's
 // require path (and Harbor's own module path) in the same change, or
 // the generated project will not resolve.
-var releaseVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[.0-9A-Za-z-]*)?$`)
+var releaseVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)[.0-9A-Za-z-]*)?$`)
 
 // resolveModuleVersion picks the Harbor module version the generated
 // `go.mod` requires, in priority order:
