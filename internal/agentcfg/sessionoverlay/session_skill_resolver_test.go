@@ -28,8 +28,13 @@ func (r resolverModeReader) Mode(context.Context, string) (sessionoverlay.Cutove
 type resolverReader struct {
 	mu        sync.RWMutex
 	rows      map[string]skills.Skill
+	pkgs      map[string]skills.InstalledPackage
 	searchErr error
 }
+
+// resolverReader implements the complete mandatory skills.SkillStore
+// surface (AGENTS.md §4.4 — no optional installed-package capability).
+var _ skills.SkillStore = (*resolverReader)(nil)
 
 func resolverKey(id identity.Quadruple, name string, scope skills.Scope) string {
 	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID + "\x00" + string(scope) + "\x00" + name
@@ -153,6 +158,251 @@ func (*resolverReader) DeleteAgent(context.Context, identity.Quadruple, string, 
 }
 func (*resolverReader) DeleteSessionScope(context.Context, identity.Quadruple) error { return nil }
 func (*resolverReader) Close(context.Context) error                                  { return nil }
+
+// ---- Mandatory installed-package surface ----
+//
+// `resolverReader` is a standalone in-memory fake (no wrapped driver to
+// delegate to), so the five mandatory installed-package methods are a
+// faithful minimal in-memory implementation of the accepted contract,
+// mirroring the canonical `conformancetest.referenceStore` semantics:
+// the atomic unit lives at the session-zeroed (tenant, user, effective-
+// agent, name) key in its own map (never coupled to the legacy `rows`
+// key space, which the resolver tests keep deliberately small), values
+// are deep-copied at the boundary, `PutInstalledPackage` is a
+// conditional compare-and-swap with explicit replace + origin
+// precedence + idempotent exact replay, and `DeleteInstalledPackage` /
+// `RestoreInstalledPackage` bind to the receipt's `WrittenHash` so a
+// receipt never touches another proposal's winner. The session
+// resolver never exercises this surface (it composes read-only views
+// over the legacy tiers); the methods exist so the fake remains a
+// valid `skills.SkillStore`.
+func installedPackageKey(id identity.Quadruple, agentID, name string) string {
+	return id.TenantID + "\x00" + id.UserID + "\x00" + agentID + "\x00" + name
+}
+
+func deepCopyResolverSkill(s skills.Skill) skills.Skill {
+	out := s
+	out.Tags = append([]string(nil), s.Tags...)
+	out.Steps = append([]string(nil), s.Steps...)
+	out.Preconditions = append([]string(nil), s.Preconditions...)
+	out.FailureModes = append([]string(nil), s.FailureModes...)
+	out.RequiredTools = append([]string(nil), s.RequiredTools...)
+	out.RequiredNS = append([]string(nil), s.RequiredNS...)
+	out.RequiredTags = append([]string(nil), s.RequiredTags...)
+	if len(s.Extra) > 0 {
+		out.Extra = make(map[string]any, len(s.Extra))
+		for k, v := range s.Extra {
+			out.Extra[k] = v
+		}
+	}
+	return out
+}
+
+func deepCopyResolverPackage(p skills.Package) skills.Package {
+	out := p
+	out.Skill = skills.PackageSkill{
+		Name:          p.Skill.Name,
+		Title:         p.Skill.Title,
+		Description:   p.Skill.Description,
+		Trigger:       p.Skill.Trigger,
+		TaskType:      p.Skill.TaskType,
+		Tags:          append([]string(nil), p.Skill.Tags...),
+		Steps:         append([]string(nil), p.Skill.Steps...),
+		Preconditions: append([]string(nil), p.Skill.Preconditions...),
+		FailureModes:  append([]string(nil), p.Skill.FailureModes...),
+		RequiredTools: append([]string(nil), p.Skill.RequiredTools...),
+		RequiredNS:    append([]string(nil), p.Skill.RequiredNS...),
+		RequiredTags:  append([]string(nil), p.Skill.RequiredTags...),
+	}
+	if len(p.Supports) > 0 {
+		out.Supports = make([]skills.SupportFile, len(p.Supports))
+		for i, f := range p.Supports {
+			out.Supports[i] = f
+			if f.Data != nil {
+				out.Supports[i].Data = append([]byte(nil), f.Data...)
+			}
+		}
+	}
+	return out
+}
+
+func deepCopyResolverUnit(u skills.InstalledPackage) skills.InstalledPackage {
+	out := u
+	out.Skill = deepCopyResolverSkill(u.Skill)
+	out.Package = deepCopyResolverPackage(u.Package)
+	return out
+}
+
+// currentInstalledWinner returns a deep copy of the installed winner at
+// the target key, or nil. Callers hold the read lock.
+func (r *resolverReader) currentInstalledWinner(id identity.Quadruple, agentID, name string) *skills.InstalledPackage {
+	unit, ok := r.pkgs[installedPackageKey(id, agentID, name)]
+	if !ok {
+		return nil
+	}
+	cp := deepCopyResolverUnit(unit)
+	return &cp
+}
+
+func (r *resolverReader) GetInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string) (skills.InstalledPackage, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if winner := r.currentInstalledWinner(id, agentID, name); winner != nil {
+		return *winner, nil
+	}
+	return skills.InstalledPackage{}, fmt.Errorf("%w: name=%q agent_id=%q", skills.ErrInstalledPackageNotFound, name, agentID)
+}
+
+func (r *resolverReader) ResolveSupport(ctx context.Context, id identity.Quadruple, agentID, name string, uri skills.PackageURI) (skills.SupportFile, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.SupportFile{}, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.SupportFile{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	winner := r.currentInstalledWinner(id, agentID, name)
+	if winner == nil {
+		return skills.SupportFile{}, fmt.Errorf("%w: name=%q agent_id=%q", skills.ErrInstalledPackageNotFound, name, agentID)
+	}
+	// A foreign hash or a dangling path never resolves — the exact
+	// immutable `skillpkg://` reference is the only address.
+	if uri.Hash != winner.PackageHash {
+		return skills.SupportFile{}, fmt.Errorf("%w: uri hash %q is foreign to installed package %q", skills.ErrSupportNotFound, uri.Hash, winner.PackageHash)
+	}
+	for _, f := range winner.Package.Supports {
+		if f.Path == uri.Path {
+			out := f
+			out.Data = append([]byte(nil), f.Data...)
+			return out, nil
+		}
+	}
+	return skills.SupportFile{}, fmt.Errorf("%w: %q is not in the installed package manifest", skills.ErrSupportNotFound, uri.Path)
+}
+
+func (r *resolverReader) PutInstalledPackage(ctx context.Context, id identity.Quadruple, agentID string, pkg skills.InstalledPackage, cond skills.InstalledPackageCondition, replace bool) (skills.InstalledPackageReceipt, error) {
+	if err := ctx.Err(); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if err := skills.ValidateIdentity(id); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if err := skills.ValidateInstalledPackageCondition(cond); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: agentID (effective agent) must be non-empty", skills.ErrInstalledPackageInvalid)
+	}
+	if err := skills.ValidateInstalledPackage(pkg); err != nil {
+		return skills.InstalledPackageReceipt{}, err
+	}
+	if pkg.Skill.AgentID != agentID {
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: Skill.AgentID %q != effective agent %q", skills.ErrInstalledPackageInvalid, pkg.Skill.AgentID, agentID)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := pkg.Package.Name
+	winner, present := r.pkgs[installedPackageKey(id, agentID, name)]
+	priorHash, priorVersion := "", ""
+	if present {
+		priorHash, priorVersion = winner.PackageHash, winner.Package.Version
+	}
+
+	if present && winner.PackageHash == pkg.PackageHash {
+		// Idempotent exact replay: the winner is already the incoming
+		// package. No mutation; the receipt names the installed version.
+		return skills.InstalledPackageReceipt{
+			TenantID: id.TenantID, UserID: id.UserID, AgentID: agentID, Name: name,
+			WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
+			PriorHash: "", PriorVersion: "",
+		}, nil
+	}
+
+	switch {
+	case !present:
+		if !cond.ExpectedAbsent {
+			return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected prior hash %q but the key is absent", skills.ErrInstalledPackageConditionFailed, cond.ExpectedHash)
+		}
+	case cond.ExpectedAbsent:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q", skills.ErrInstalledPackageExists, name)
+	case winner.PackageHash != cond.ExpectedHash:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected hash %q, winner has %q", skills.ErrInstalledPackageConditionFailed, cond.ExpectedHash, winner.PackageHash)
+	case cond.ExpectedVersion != "" && winner.Package.Version != cond.ExpectedVersion:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: expected version %q, winner has %q", skills.ErrInstalledPackageConditionFailed, cond.ExpectedVersion, winner.Package.Version)
+	case !replace:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q", skills.ErrInstalledPackageReplaceRequired, name)
+	case winner.Skill.Origin == skills.OriginPack && pkg.Skill.Origin != skills.OriginPack:
+		return skills.InstalledPackageReceipt{}, fmt.Errorf("%w: name=%q existing_origin=pack incoming=%s", skills.ErrPackOverwriteRefused, name, pkg.Skill.Origin)
+	}
+
+	if r.pkgs == nil {
+		r.pkgs = make(map[string]skills.InstalledPackage)
+	}
+	r.pkgs[installedPackageKey(id, agentID, name)] = deepCopyResolverUnit(pkg)
+	return skills.InstalledPackageReceipt{
+		TenantID: id.TenantID, UserID: id.UserID, AgentID: agentID, Name: name,
+		WrittenHash: pkg.PackageHash, WrittenVersion: pkg.Package.Version,
+		PriorHash: priorHash, PriorVersion: priorVersion,
+	}, nil
+}
+
+func (r *resolverReader) DeleteInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackageReceipt(receipt, id, agentID, name); err != nil {
+		return false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	winner, present := r.pkgs[installedPackageKey(id, agentID, name)]
+	if !present || winner.PackageHash != receipt.WrittenHash {
+		// A different proposal's winner or an already-erased key is a
+		// normal concurrent outcome — never deleted.
+		return false, nil
+	}
+	delete(r.pkgs, installedPackageKey(id, agentID, name))
+	return true, nil
+}
+
+func (r *resolverReader) RestoreInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt, prior skills.InstalledPackage) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackageReceipt(receipt, id, agentID, name); err != nil {
+		return false, err
+	}
+	if err := skills.ValidateInstalledPackage(prior); err != nil {
+		return false, err
+	}
+	if prior.Skill.AgentID != agentID {
+		return false, fmt.Errorf("%w: prior Skill.AgentID %q != effective agent %q", skills.ErrInstalledPackageInvalid, prior.Skill.AgentID, agentID)
+	}
+	if receipt.PriorHash == "" {
+		return false, fmt.Errorf("%w: the receipt records an absent prior; compensate with DeleteInstalledPackage", skills.ErrInstalledPackageInvalid)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	winner, present := r.pkgs[installedPackageKey(id, agentID, name)]
+	if !present || winner.PackageHash != receipt.WrittenHash {
+		// The receipt's write is no longer the winner — another
+		// proposal's winner or an erased key; never replaced.
+		return false, nil
+	}
+	if prior.PackageHash != receipt.PriorHash {
+		return false, fmt.Errorf("%w: prior hash %q does not match the receipt's recorded prior %q", skills.ErrInstalledPackageConditionFailed, prior.PackageHash, receipt.PriorHash)
+	}
+	r.pkgs[installedPackageKey(id, agentID, name)] = deepCopyResolverUnit(prior)
+	return true, nil
+}
 
 func resolverSkill(id identity.Quadruple, name string, scope skills.Scope) skills.Skill {
 	skill := durableSkill(name)
