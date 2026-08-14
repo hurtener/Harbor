@@ -415,13 +415,31 @@ FIXTURE_EOF
     # v1.26.12 (the three-component MODULE pin — the grammar the ledger
     # accepts), v1.26.11 (one back), v1.26.10 (two back). The ledger ALSO
     # carries tags the guard must REFUSE: v1.27 (a two-component ARTIFACT
-    # tag — a release identity, not a module version; a loose grammar
-    # would make it `newest` and demand a two-component pin the proxy
-    # cannot resolve), v9.9.9-rc1 (a prerelease) and v1.27.0.1 (a four-
-    # component malformed dotted string). The pristine corpus only passes
-    # if the grammar accepts the three-component form AND refuses all
-    # three junk tags — the v1.28 artifact-vs-module split (the two-
-    # component tag must not shift `newest`) is this baseline, mirrored.
+    # tag — a release identity, not a module version), v9.9.9-rc1 (a
+    # prerelease) and v1.27.0.1 (a four-component malformed dotted
+    # string). The pristine corpus alone does NOT pin every refusal;
+    # where each junk tag is held out differs, and the difference is
+    # load-bearing:
+    #
+    #   - v9.9.9-rc1 and v1.27.0.1 are pinned by the PRISTINE RUN below.
+    #     Admit either into the ledger and `newest` shifts to a version
+    #     the fixture CHANGELOG carries no section for, so the release-
+    #     ledger check FAILs the baseline (BASE_RC != 0) before any
+    #     mutation runs.
+    #   - v1.27 is pinned only INDIRECTLY, by the release-ledger mutation
+    #     case (mut_release_ledger). A two-component `newest` leaves the
+    #     v1.26.12 pin at a one-release trail — which the guard
+    #     deliberately allows — and the fixture CHANGELOG's own
+    #     `## [1.27]` section would satisfy the ledger check, so the
+    #     pristine run stays green under a two-component-accepting
+    #     grammar. The trip-wire is the mutation case: it deletes
+    #     `## [1.26.12]`, and only while `newest` is STILL v1.26.12 does
+    #     the ledger guard FAIL and the case go green. A grammar that
+    #     admitted v1.27 would shift `newest` onto the surviving
+    #     `## [1.27]` section, the mutation would go uncaught, and the
+    #     case would turn red — which is how the artifact-vs-module
+    #     split (a two-component tag must not shift `newest`) is held
+    #     in place here.
     (
         cd "${d}"
         git init -q .
