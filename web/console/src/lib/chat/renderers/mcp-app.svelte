@@ -6,30 +6,31 @@
   // INJECTED `appHostClient` (D-091, CLAUDE.md §4.5 #11).
   //
   // Lifecycle:
-  //   1. Preload the app's `ui://` HTML via the injected client's RENDERER-
-  //      INTERNAL opt-in read (→ mcp.servers.read_resource with
-  //      `request_render_admission: true` — readRenderDocument), minting the
-  //      bounded render admission for THIS successful read (HA-56). The
-  //      admission is host-private: it lives only on this renderer instance
-  //      and the bridge's closure, is never serialized into DOM / storage /
-  //      logs / replay / history / control surfaces, and is echoed back on
-  //      mcp.apps.call_tool (never the legacy binding when it is in play).
-  //      A document at/above the heavy-content threshold (D-026) is offloaded
-  //      to the ArtifactStore by reference; the host resolves that stub to a
-  //      presigned URL and fetches the bytes (→ resolveArtifact →
-  //      artifacts.get_ref). EITHER content source feeds the SAME sandboxed
-  //      `srcdoc` — heavy bytes are NEVER inlined through the context plane,
-  //      only fetched at the iframe edge.
-  //   1b. Resolve the captured tool context (→ mcp.apps.tool_context) BEFORE
-  //      mounting, so the miss path is decided while there is still nothing to
-  //      tear down: an unresolvable context (evicted / unknown / another
-  //      identity — the shape a REPLAYED app hits) renders the honest
-  //      "no longer available" placeholder and mounts no iframe at all.
-  //   2. Wrap the HTML with the strict CSP and load it into the iframe via
+  //   1. Resolve the captured tool context (→ mcp.apps.tool_context) BEFORE any
+  //      admission-requesting read, so the miss path is decided while there is
+  //      still nothing minted: an unresolvable context (evicted / unknown /
+  //      another identity — the shape a REPLAYED app hits) renders the honest
+  //      "no longer available" placeholder, mints NO render admission, and
+  //      mounts no iframe at all.
+  //   2. Only a successful replay proceeds to the preload of the app's `ui://`
+  //      HTML via the injected client's RENDERER-INTERNAL opt-in read (→
+  //      mcp.servers.read_resource with `request_render_admission: true` —
+  //      readRenderDocument), minting the bounded render admission for THIS
+  //      successful read (HA-56). The admission is host-private: it lives only
+  //      on this renderer instance and the bridge's closure, is never
+  //      serialized into DOM / storage / logs / replay / history / control
+  //      surfaces, and is echoed back on mcp.apps.call_tool (never the legacy
+  //      binding when it is in play). A document at/above the heavy-content
+  //      threshold (D-026) is offloaded to the ArtifactStore by reference; the
+  //      host resolves that stub to a presigned URL and fetches the bytes (→
+  //      resolveArtifact → artifacts.get_ref). EITHER content source feeds the
+  //      SAME sandboxed `srcdoc` — heavy bytes are NEVER inlined through the
+  //      context plane, only fetched at the iframe edge.
+  //   3. Wrap the HTML with the strict CSP and load it into the iframe via
   //      `srcdoc` under a sandbox with NO `allow-same-origin` — the iframe
   //      is forced to an opaque origin (no parent-DOM / cookie / localStorage
   //      access).
-  //   3. Construct the AppBridge host (manual-handler mode) and connect it to
+  //   4. Construct the AppBridge host (manual-handler mode) and connect it to
   //      the iframe's `contentWindow`, completing the `ui/initialize`
   //      handshake. Every app→host request routes through `appHostClient`.
   import { untrack } from 'svelte';
@@ -298,13 +299,42 @@
     renderAdmission = undefined;
     admissionRefreshBudget = 1;
     try {
-      // The pre-mount document read is the OPT-IN admission-requesting read
-      // (HA-56): `readRenderDocument` routes to `mcp.servers.read_resource`
-      // with `request_render_admission: true`, minting the bounded render
-      // admission for THIS successful read. The AppBridge's app-initiated
-      // `resources/read` handler stays on the ordinary NON-minting
-      // `readResource`, so an App can never mint callback authority merely by
-      // requesting another resource.
+      // 1. Resolve the captured tool context BEFORE any admission-requesting
+      //    read. Doing it here (rather than letting the bridge fetch it after
+      //    the handshake) is what makes the miss path honest: a context that
+      //    cannot be resolved yields a placeholder instead of a mounted app
+      //    whose data never arrives. A `null` is the Runtime's `not_found` —
+      //    unknown / evicted / cross-identity — and is the common REPLAY
+      //    shape; any other failure throws and lands in the loud error state
+      //    below. The miss is decided FIRST (HA-56): a replayed app whose
+      //    backing record is gone returns the `unavailable` state here,
+      //    before the opt-in read runs, so no render admission is ever minted
+      //    for an app whose data cannot be delivered.
+      if (app.toolCallId !== undefined && app.toolCallId !== '') {
+        const ctx = await appHostClient.toolContext(serverID, app.toolCallId);
+        if (stale()) return;
+        if (ctx === null) {
+          resolvedToolContext = undefined;
+          loadedKey = undefined;
+          loadState = 'unavailable';
+          return;
+        }
+        resolvedToolContext = ctx;
+      } else {
+        // The discovery recorded no correlation id, so no context was ever
+        // captured for this app — nothing has gone missing. The app mounts and
+        // boots without delivered data, exactly as it always has.
+        resolvedToolContext = undefined;
+      }
+
+      // 2. ONLY a successful replay proceeds to the pre-mount document read —
+      //    the OPT-IN admission-requesting read (HA-56): `readRenderDocument`
+      //    routes to `mcp.servers.read_resource` with
+      //    `request_render_admission: true`, minting the bounded render
+      //    admission for THIS successful read. The AppBridge's app-initiated
+      //    `resources/read` handler stays on the ordinary NON-minting
+      //    `readResource`, so an App can never mint callback authority merely
+      //    by requesting another resource.
       let resource = await appHostClient.readRenderDocument(serverID, app.resourceUri, app.agentId);
       if (stale()) return;
       // A TYPED `unavailable` admission is the Runtime's closed "no admission
@@ -361,30 +391,6 @@
       if (documentHTML === '') {
         loadState = 'empty';
         return;
-      }
-
-      // Resolve the captured tool context BEFORE mounting the iframe. Doing it
-      // here (rather than letting the bridge fetch it after the handshake) is
-      // what makes the miss path honest: a context that cannot be resolved
-      // yields a placeholder instead of a mounted app whose data never
-      // arrives. A `null` is the Runtime's `not_found` — unknown / evicted /
-      // cross-identity — and is the common REPLAY shape; any other failure
-      // throws and lands in the loud error state below.
-      if (app.toolCallId !== undefined && app.toolCallId !== '') {
-        const ctx = await appHostClient.toolContext(serverID, app.toolCallId);
-        if (stale()) return;
-        if (ctx === null) {
-          resolvedToolContext = undefined;
-          loadedKey = undefined;
-          loadState = 'unavailable';
-          return;
-        }
-        resolvedToolContext = ctx;
-      } else {
-        // The discovery recorded no correlation id, so no context was ever
-        // captured for this app — nothing has gone missing. The app mounts and
-        // boots without delivered data, exactly as it always has.
-        resolvedToolContext = undefined;
       }
 
       srcdoc = wrapAppDocument(documentHTML, buildAppCSP(trusted));

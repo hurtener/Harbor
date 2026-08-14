@@ -849,14 +849,10 @@ export function createAppHandlers(opts: AppBridgeHostOptions): AppHandlers {
       return null;
     }
     admission = next;
-    try {
-      return await dispatchCallTool(qualified, args);
-    } catch (retryErr) {
-      // The RETRIED call's error propagates (the outer catch re-enters this
-      // helper, which is now budget-exhausted and returns null — so the
-      // retry verdict surfaces, never a second retry).
-      throw retryErr;
-    }
+    // The RETRIED call's error propagates (the outer catch re-enters this
+    // helper, which is now budget-exhausted and returns null — so the
+    // retry verdict surfaces, never a second retry).
+    return dispatchCallTool(qualified, args);
   }
 
   /**

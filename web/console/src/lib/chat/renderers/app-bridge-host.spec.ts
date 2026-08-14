@@ -463,7 +463,7 @@ describe('HA-56 — the fresh render admission rides app callbacks (never both a
         expiresAt: '2026-08-14T02:00:00Z',
       },
     }));
-    const callTool = vi.fn(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, admission?: string) => {
+    const callTool = vi.fn(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, _admission?: string) => {
       call += 1;
       if (call === 1) {
         throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
@@ -500,7 +500,7 @@ describe('HA-56 — the fresh render admission rides app callbacks (never both a
       content: '<p>app</p>',
       renderAdmission: { ...ADMISSION, token: 'freshly-minted-token-2' },
     }));
-    const callTool = vi.fn(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, admission?: string) => {
+    const callTool = vi.fn(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, _admission?: string) => {
       call += 1;
       if (call === 1) {
         throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
@@ -532,7 +532,7 @@ describe('HA-56 — the fresh render admission rides app callbacks (never both a
       content: '<p>app</p>',
       renderAdmission: { token: '', expiresAt: '', availability: 'unavailable' },
     }));
-    const callTool = vi.fn(async (_s: string, tool: string) => {
+    const callTool = vi.fn(async (_s: string, _tool: string) => {
       throw new MCPAppRenderAdmissionError('render_admission_expired', 'expired');
     });
     const { client } = makeFakeClient({ readRenderDocument, callTool });

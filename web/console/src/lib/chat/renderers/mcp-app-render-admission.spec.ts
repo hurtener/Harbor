@@ -13,6 +13,9 @@
 //     same-server app-only callback exactly once, with the fresh token on the
 //     wire and ZERO token bytes in the DOM / storage / srcdoc / bridge payloads
 //     (the read-time `tool_context` leg is pinned by the sibling replay spec);
+//   - a context MISS (evicted / unknown / foreign replay) completes the bounded
+//     replay BEFORE the opt-in read: zero `readRenderDocument` calls, zero
+//     minted authority, the honest placeholder, no iframe;
 //   - a typed UNAVAILABLE admission at read time: at most ONE bounded fresh
 //     opt-in re-read, then the explicit `admission` safe state — never a
 //     retry loop, never a silent downgrade to the tool-context miss;
@@ -85,6 +88,12 @@ vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => {
     }
     async sendToolResult(p: unknown): Promise<void> {
       this.sendToolResultCalls.push(p);
+    }
+    // The official graceful-teardown surface. The host calls it on unmount of
+    // an initialized app; without it the mock throws the repeated swallowed
+    // TypeError in `AppBridgeHost.close()`'s best-effort teardown.
+    async teardownResource(): Promise<Record<string, unknown>> {
+      return {};
     }
     fireInitialized(): void {
       this.oninitialized?.({});
@@ -336,6 +345,32 @@ describe('McpAppRenderer — pre-mount render admission (HA-56)', () => {
     unmount(component);
   });
 
+  it('a context MISS completes the bounded replay BEFORE the opt-in read — zero reads, zero minted authority', async () => {
+    // The REPLAY shape: the app carries a `toolCallId` but its captured
+    // context record is gone (evicted / unknown / another identity). The
+    // bounded replay resolves FIRST and misses, so the renderer returns the
+    // honest placeholder WITHOUT ever invoking the admission-requesting
+    // document read — no opt-in read, no minted render admission, no iframe.
+    installMatchMedia();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const { client, docReads, reads, calls } = makeFakeClient();
+    const missClient: MCPAppHostClient = { ...client, toolContext: async () => null };
+    const component = await mountAndConnect(target, missClient);
+
+    expect(docReads).toHaveBeenCalledTimes(0);
+    expect(reads).not.toHaveBeenCalled();
+    expect(target.querySelector("[data-testid='mcp-app-unavailable']")).not.toBeNull();
+    expect(frameOf(target)).toBeNull();
+    expect(captured.instances).toHaveLength(0);
+    // No authority was ever minted: the fake's callTool was never reached and
+    // no token exists anywhere the sandbox could have touched.
+    expect(calls).not.toHaveBeenCalled();
+    expect(target.innerHTML).not.toContain(TOKEN_A);
+
+    unmount(component);
+  });
+
   it('a typed UNAVAILABLE admission re-reads ONCE, then shows the explicit safe state — never a loop', async () => {
     installMatchMedia();
     const target = document.createElement('div');
@@ -447,7 +482,7 @@ describe('McpAppRenderer — pre-mount render admission (HA-56)', () => {
         renderAdmission: admission('freshly-minted-token-2'),
       });
     let call = 0;
-    calls.mockImplementation(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, admissionToken?: string): Promise<MCPAppToolResult> => {
+    calls.mockImplementation(async (_s: string, tool: string, _a: unknown, _ag: string | undefined, _b: string | undefined, _r: string | undefined, _admissionToken?: string): Promise<MCPAppToolResult> => {
       call += 1;
       if (call === 1) {
         // The Runtime refuses the first dispatch: the admission expired.
@@ -552,7 +587,7 @@ describe('McpAppRenderer — pre-mount render admission (HA-56)', () => {
     installMatchMedia();
     const target = document.createElement('div');
     document.body.appendChild(target);
-    const { client, docReads, calls } = makeFakeClient();
+    const { client, calls } = makeFakeClient();
     const { component, props } = mountRendererReactive(target, {
       mime: 'application/vnd.harbor.mcp-app',
       src: '',

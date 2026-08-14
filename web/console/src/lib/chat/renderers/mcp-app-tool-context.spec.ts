@@ -147,8 +147,8 @@ async function mountRenderer(
       appHostClient: client,
     },
   });
-  // Drain the async preload (readResource → toolContext) and the lifecycle
-  // effect that constructs + connects the bridge.
+  // Drain the async preload (bounded tool-context replay → readRenderDocument)
+  // and the lifecycle effect that constructs + connects the bridge.
   for (let i = 0; i < 12; i++) {
     flushSync();
     await Promise.resolve();
@@ -194,8 +194,10 @@ describe('McpAppRenderer — replayed-App tool-context resolution (D-348)', () =
     // half-mounted iframe, never a silent drop.
     const target = document.createElement('div');
     document.body.appendChild(target);
+    const client = fakeClient(async () => null);
+    const docReads = vi.spyOn(client, 'readRenderDocument');
 
-    const component = await mountRenderer(target, fakeClient(async () => null), 'tc_gone');
+    const component = await mountRenderer(target, client, 'tc_gone');
 
     const placeholder = target.querySelector('[data-testid="mcp-app-unavailable"]');
     expect(placeholder).not.toBeNull();
@@ -205,6 +207,9 @@ describe('McpAppRenderer — replayed-App tool-context resolution (D-348)', () =
     expect(captured.instances).toHaveLength(0);
     // Not silently blank either — the placeholder is announced.
     expect(placeholder?.getAttribute('role')).toBe('status');
+    // The replay missed FIRST (HA-56): the admission-requesting document read
+    // never ran — zero opt-in reads, zero minted render admission.
+    expect(docReads).not.toHaveBeenCalled();
 
     unmount(component);
   });
@@ -316,37 +321,48 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
   });
 
   /**
-   * A client whose `readRenderDocument` (the pre-mount document read) parks
-   * until the caller releases it, and whose `toolContext` resolves for the
-   * FIRST caller and misses for every one after.
+   * A client whose `toolContext` — the FIRST await of the preload (the bounded
+   * context replay, HA-56) — parks until the caller releases it, and whose
+   * document read resolves immediately (and is counted).
    *
    * Divergence has to come from call ORDER, not from the ref: everything after
    * the first `await` reads the LIVE `app` prop, so both in-flight preloads
    * would otherwise ask for the same context and reach the same outcome — and
    * an interleaving where both agree cannot detect a stale write at all. With
-   * this client, whichever preload gets past the document await first mounts,
-   * and a second one arriving behind it would report a miss — the write that
-   * must never land on a bridge the first one built.
+   * this client the FIRST caller (the one that becomes stale the moment the
+   * second preload starts) carries the MISS, and the second caller — the
+   * CURRENT preload — resolves the captured context and mounts. The write that
+   * must never land on a bridge the current preload built is the stale one's
+   * miss.
+   *
+   * Under the new order both in-flight preloads inevitably spend the context
+   * round-trip (it is the first await, and neither knows it is stale until its
+   * promise resolves) — the guard under test is the POST-replay stale check:
+   * it must keep the stale miss from writing `unavailable`, and it must keep
+   * the stale preload from ever reaching the admission-requesting document
+   * read (zero minting reads from it).
    */
   function gatedClient() {
     const releases: Array<() => void> = [];
     const base = fakeClient(async () => CONTEXT);
     let contextCalls = 0;
+    let documentReads = 0;
     return {
       releases,
       contextCalls: () => contextCalls,
+      documentReads: () => documentReads,
       client: {
         ...base,
         readRenderDocument(_serverID: string, uri: string) {
-          return new Promise<{ resourceUri: string; mimeType: string; content: string }>(
-            (resolve) => {
-              releases.push(() => resolve({ resourceUri: uri, mimeType: 'text/html', content: '<p>app</p>' }));
-            },
-          );
+          documentReads += 1;
+          return Promise.resolve({ resourceUri: uri, mimeType: 'text/html', content: '<p>app</p>' });
         },
-        async toolContext() {
+        toolContext(_serverID: string, _toolCallId: string) {
           contextCalls += 1;
-          return contextCalls === 1 ? CONTEXT : null;
+          const call = contextCalls;
+          return new Promise<MCPAppToolContext | null>((resolve) => {
+            releases.push(() => resolve(call === 1 ? null : CONTEXT));
+          });
         },
       } as MCPAppHostClient,
     };
@@ -363,7 +379,7 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
   it('a stale preload never lands a miss on the bridge the current one built', async () => {
     const target = document.createElement('div');
     document.body.appendChild(target);
-    const { releases, client, contextCalls } = gatedClient();
+    const { releases, client, contextCalls, documentReads } = gatedClient();
     const { component, props } = mountRendererReactive(target, {
       mime: 'application/vnd.harbor.mcp-app',
       src: '',
@@ -372,7 +388,7 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
       appHostClient: client,
     });
     await settle();
-    expect(releases).toHaveLength(1); // preload #1 parked on the document read
+    expect(releases).toHaveLength(1); // preload #1 parked on the context replay
 
     // Churn the prop mid-flight → preload #2 starts and parks too.
     props.app = { ...MISSING_REF };
@@ -385,13 +401,16 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
     releases[1]();
     await settle();
 
-    // Exactly one context fetch happened — the stale preload bailed before it,
-    // so it neither spent a round-trip nor produced an outcome.
-    expect(contextCalls()).toBe(1);
+    // Both in-flight preloads spent the context round-trip (it is the FIRST
+    // await — a preload cannot know it is stale until it resolves). The stale
+    // preload's miss was discarded at the post-replay stale check: it wrote
+    // nothing and never reached the admission-requesting document read.
+    expect(contextCalls()).toBe(2);
+    expect(documentReads()).toBe(1);
     // The current preload mounted the app: one bridge, NEVER closed. Without
-    // the in-flight guard the stale one reaches `ready` first, builds a bridge,
-    // and the current one's miss then writes `unavailable` — firing the
-    // lifecycle effect's cleanup and closing that bridge mid-`ui/initialize`.
+    // the in-flight guard the stale one's miss lands after the current one
+    // reaches `ready`, writes `unavailable`, and fires the lifecycle effect's
+    // cleanup — closing that bridge mid-`ui/initialize`.
     expect(captured.instances).toHaveLength(1);
     expect(captured.instances[0].closeCalls).toBe(0);
     expect(target.querySelector('iframe')).not.toBeNull();
@@ -403,7 +422,7 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
   it('a stale preload arriving AFTER the current one cannot tear its bridge down', async () => {
     const target = document.createElement('div');
     document.body.appendChild(target);
-    const { releases, client } = gatedClient();
+    const { releases, client, documentReads } = gatedClient();
     const { component, props } = mountRendererReactive(target, {
       mime: 'application/vnd.harbor.mcp-app',
       src: '',
@@ -417,10 +436,11 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
     expect(releases).toHaveLength(2);
 
     // Reverse interleaving: the CURRENT preload lands first and mounts, with
-    // its bridge live; the stale one resolves afterwards.
+    // its bridge live; the stale one's miss resolves afterwards.
     releases[1]();
     await settle();
     expect(captured.instances).toHaveLength(1);
+    expect(documentReads()).toBe(1);
     const bridge = captured.instances[0];
     bridge.fireInitialized();
     flushSync();
@@ -428,8 +448,10 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
     releases[0]();
     await settle();
 
-    // The stale resolution changed nothing: the app is still mounted, its
-    // bridge still live and never closed.
+    // The stale miss changed nothing: the app is still mounted, its bridge
+    // still live and never closed — and the stale preload never reached a
+    // second admission-requesting read (exactly one document read total).
+    expect(documentReads()).toBe(1);
     expect(target.querySelector('iframe')).not.toBeNull();
     expect(target.querySelector('[data-testid="mcp-app-unavailable"]')).toBeNull();
     expect(captured.instances).toHaveLength(1);
