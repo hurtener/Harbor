@@ -143,10 +143,10 @@ type harness struct {
 	svc     *protocol.Service
 }
 
-func newHarness(t *testing.T, state rollups.State) *harness {
+func newHarness(t *testing.T) *harness {
 	t.Helper()
 	store := memstore.New()
-	q := &testQuality{store: store, state: state}
+	q := &testQuality{store: store, state: rollups.StateCurrent}
 	rec := &auditRecorder{}
 	svc, err := protocol.NewService(store, q, fleetScope, rec.publish, patterns.New(),
 		protocol.WithLogger(slog.New(slog.DiscardHandler)))
@@ -220,7 +220,7 @@ func sum(t *testing.T, resp protocol.Response, m rollups.Measure) int64 {
 }
 
 func TestQuery_OrdinaryCallerForcedToOwnTriple(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	// An ordinary caller with EMPTY filters must see only their own
@@ -242,7 +242,7 @@ func TestQuery_OrdinaryCallerForcedToOwnTriple(t *testing.T) {
 }
 
 func TestQuery_OrdinaryCallerGroupByNeverLeaksForeignAxisValues(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	// Grouping by user / session / tenant must surface ONLY the caller's
@@ -278,7 +278,7 @@ func TestQuery_OrdinaryCallerGroupByNeverLeaksForeignAxisValues(t *testing.T) {
 }
 
 func TestQuery_OrdinaryCallerNamingForeignIdentityFailsClosed(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	cases := []struct {
@@ -337,7 +337,7 @@ func TestQuery_OrdinaryCallerNamingForeignIdentityFailsClosed(t *testing.T) {
 }
 
 func TestQuery_MissingVerifiedIdentityFailsClosed(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	// No verified identity on ctx: the request body cannot supply one, so
@@ -349,7 +349,7 @@ func TestQuery_MissingVerifiedIdentityFailsClosed(t *testing.T) {
 }
 
 func TestQuery_ElevatedCallerWildcardFanInAuditedExactlyOnce(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	// Admin caller, own tenant (folded), user axis elided → wildcard
@@ -389,7 +389,7 @@ func TestQuery_ElevatedCallerWildcardFanInAuditedExactlyOnce(t *testing.T) {
 }
 
 func TestQuery_ElevatedCallerCrossTenantAudited(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	admin := scopedCtx(t, caller, protocolauth.ScopeAdmin)
@@ -416,7 +416,7 @@ func TestQuery_ElevatedCallerCrossTenantAudited(t *testing.T) {
 }
 
 func TestQuery_ConsoleFleetScopeWidensLikeAdmin(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	fleet := scopedCtx(t, caller, protocolauth.ScopeConsoleFleet)
@@ -434,7 +434,7 @@ func TestQuery_ConsoleFleetScopeWidensLikeAdmin(t *testing.T) {
 }
 
 func TestQuery_ElevatedCallerOwnScopeNotAudited(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	admin := scopedCtx(t, caller, protocolauth.ScopeAdmin)
@@ -457,7 +457,7 @@ func TestQuery_ElevatedCallerOwnScopeNotAudited(t *testing.T) {
 }
 
 func TestQuery_AuditEmitFailureFailsReadLoud(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	sinkErr := errors.New("bus down")
@@ -471,7 +471,7 @@ func TestQuery_AuditEmitFailureFailsReadLoud(t *testing.T) {
 }
 
 func TestQuery_RedactorRefusalFailsReadLoud(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	// A refusing redactor cannot be swapped post-construction (the
@@ -505,7 +505,7 @@ func (f redactorFunc) Redact(ctx context.Context, payload any) (any, error) {
 }
 
 func TestQuery_ClosedContractValidation(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 	ctx := scopedCtx(t, caller)
 
@@ -569,14 +569,14 @@ func TestQuery_ClosedContractValidation(t *testing.T) {
 }
 
 func TestQuery_CursorBoundToQueryShapeAndIdentity(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 
 	// Seed nine distinct rows for the caller's triple — three models per
 	// hour across three buckets — each with a unique cost so the
 	// measure-descending order is total and paging is observable.
 	models := []string{"m-a", "m-b", "m-c"}
 	ckpt := uint64(0)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		for j, m := range models {
 			ckpt++
 			seed(t, h.store, ckpt, rollups.Key{
@@ -596,7 +596,7 @@ func TestQuery_CursorBoundToQueryShapeAndIdentity(t *testing.T) {
 	ctx := scopedCtx(t, caller)
 	var seen []int64
 	cursor := ""
-	for page := 0; page < 10; page++ {
+	for page := range 10 {
 		req.Cursor = cursor
 		resp, err := h.svc.Query(ctx, req)
 		if err != nil {
@@ -659,7 +659,7 @@ func TestQuery_CursorBoundToQueryShapeAndIdentity(t *testing.T) {
 }
 
 func TestQuery_ExactIntegerDecimalValues(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	req := baseRequest()
@@ -694,7 +694,7 @@ func TestQuery_ExactIntegerDecimalValues(t *testing.T) {
 }
 
 func TestQuery_FreshnessCurrentWatermarkAndCoverage(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 	h.quality.setState(rollups.StateCurrent)
 
@@ -729,7 +729,7 @@ func TestQuery_FreshnessCurrentWatermarkAndCoverage(t *testing.T) {
 }
 
 func TestQuery_FreshnessCatchingUpRelayedHonestly(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 	h.quality.setState(rollups.StateCatchingUp)
 
@@ -748,7 +748,7 @@ func TestQuery_FreshnessCatchingUpRelayedHonestly(t *testing.T) {
 }
 
 func TestQuery_FreshnessUnavailableNeverZero(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 	h.quality.setState(rollups.StateUnavailable)
 
@@ -788,7 +788,7 @@ func TestQuery_FreshnessUnavailableNeverZero(t *testing.T) {
 }
 
 func TestQuery_QualityReadFailureFailsLoud(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 	h.quality.fail = errors.New("quality source broken")
 
@@ -799,7 +799,7 @@ func TestQuery_QualityReadFailureFailsLoud(t *testing.T) {
 }
 
 func TestQuery_CoverageQualities(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	ctx := scopedCtx(t, caller)
@@ -832,7 +832,7 @@ func TestQuery_CoverageQualities(t *testing.T) {
 	}
 
 	// An empty store reports gap for every window.
-	empty := newHarness(t, rollups.StateCurrent)
+	empty := newHarness(t)
 	resp, err := empty.svc.Query(ctx, baseRequest())
 	if err != nil {
 		t.Fatalf("empty-store Query: %v", err)
@@ -874,15 +874,16 @@ func (s *scriptedSource) Next(ctx context.Context, after uint64, limit int) ([]e
 	return out, nil
 }
 
-// costEvent builds one canonical llm.cost.recorded event for the identity.
-func costEvent(seq uint64, id identity.Identity, at time.Time, model string, usd float64) events.Event {
+// costEvent builds one canonical llm.cost.recorded event for the identity
+// (the service's test fixtures all use the same model).
+func costEvent(seq uint64, id identity.Identity, at time.Time, usd float64) events.Event {
 	return events.Event{
 		Type:       llm.EventTypeCostRecorded,
 		Identity:   identity.Quadruple{Identity: id},
 		OccurredAt: at,
 		Sequence:   seq,
 		Payload: llm.CostRecordedPayload{
-			Model: model,
+			Model: "gpt-x",
 			Cost:  llm.Cost{TotalCost: usd, Currency: "USD"},
 			Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, LatencyMS: 42},
 		},
@@ -894,7 +895,7 @@ func costEvent(seq uint64, id identity.Identity, at time.Time, model string, usd
 // store with the projector as the quality source — the production wiring
 // the phase intends. The projector is returned so tests can drive its
 // Advance / CatchUp state machine.
-func realProjectorHarness(t *testing.T, src *scriptedSource) (*memstore.Store, *rollups.Projector, *protocol.Service, *auditRecorder) {
+func realProjectorHarness(t *testing.T, src *scriptedSource) (*rollups.Projector, *protocol.Service) {
 	t.Helper()
 	store := memstore.New()
 	proj, err := rollups.NewProjector(src, store)
@@ -906,7 +907,7 @@ func realProjectorHarness(t *testing.T, src *scriptedSource) (*memstore.Store, *
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	return store, proj, svc, rec
+	return proj, svc
 }
 
 func TestQuery_RealProjectorSubCentCostReconcilesExactly(t *testing.T) {
@@ -915,10 +916,10 @@ func TestQuery_RealProjectorSubCentCostReconcilesExactly(t *testing.T) {
 	// exact integer model pins: the source float is converted to integer
 	// micro-units EXACTLY ONCE per event and never accumulated as float.
 	src := &scriptedSource{events: []events.Event{
-		costEvent(1, caller, refHour, "gpt-x", 0.1),
-		costEvent(2, caller, refHour, "gpt-x", 0.2),
+		costEvent(1, caller, refHour, 0.1),
+		costEvent(2, caller, refHour, 0.2),
 	}}
-	_, proj, svc, _ := realProjectorHarness(t, src)
+	proj, svc := realProjectorHarness(t, src)
 	if err := proj.CatchUp(context.Background()); err != nil {
 		t.Fatalf("CatchUp: %v", err)
 	}
@@ -962,9 +963,9 @@ func TestQuery_ProjectorStateTransitionsReachTheFreshnessBlock(t *testing.T) {
 
 	t.Run("current", func(t *testing.T) {
 		src := &scriptedSource{events: []events.Event{
-			costEvent(1, caller, refHour, "gpt-x", 0.25),
+			costEvent(1, caller, refHour, 0.25),
 		}}
-		_, proj, svc, _ := realProjectorHarness(t, src)
+		proj, svc := realProjectorHarness(t, src)
 		if err := proj.CatchUp(context.Background()); err != nil {
 			t.Fatalf("CatchUp: %v", err)
 		}
@@ -985,9 +986,9 @@ func TestQuery_ProjectorStateTransitionsReachTheFreshnessBlock(t *testing.T) {
 
 	t.Run("catching_up", func(t *testing.T) {
 		src := &scriptedSource{events: []events.Event{
-			costEvent(1, caller, refHour, "gpt-x", 0.25),
+			costEvent(1, caller, refHour, 0.25),
 		}}
-		_, proj, svc, _ := realProjectorHarness(t, src)
+		proj, svc := realProjectorHarness(t, src)
 		// One non-empty advance does NOT prove caught up — the projector
 		// honestly reports catching_up until a subsequent empty read.
 		if _, err := proj.Advance(context.Background()); err != nil {
@@ -1007,11 +1008,11 @@ func TestQuery_ProjectorStateTransitionsReachTheFreshnessBlock(t *testing.T) {
 
 	t.Run("unavailable", func(t *testing.T) {
 		src := &scriptedSource{
-			events: []events.Event{costEvent(1, caller, refHour, "gpt-x", 0.25)},
+			events: []events.Event{costEvent(1, caller, refHour, 0.25)},
 			failAt: 2,
 			fail:   errors.New("durable log read failed"),
 		}
-		_, proj, svc, _ := realProjectorHarness(t, src)
+		proj, svc := realProjectorHarness(t, src)
 		// First advance applies the event; the second read fails and the
 		// projector lands in StateUnavailable with the failure recorded.
 		if _, err := proj.Advance(context.Background()); err != nil {
@@ -1048,7 +1049,7 @@ var (
 func TestNewService_MissingDependencyFailsLoud(t *testing.T) {
 	q := &testQuality{store: memstore.New(), state: rollups.StateCurrent}
 	rec := &auditRecorder{}
-	ok := func() *memstore.Store { return memstore.New() }
+	ok := memstore.New
 	cases := []struct {
 		name string
 	}{
@@ -1165,7 +1166,7 @@ func TestQuery_AuditRedactorFailureModesFailLoud(t *testing.T) {
 }
 
 func TestQuery_ElevatedWideningAxesAudited(t *testing.T) {
-	h := newHarness(t, rollups.StateCurrent)
+	h := newHarness(t)
 	seedStandardRows(t, h)
 
 	cases := []struct {
@@ -1229,7 +1230,7 @@ func TestQuery_ElevatedTenantAuditTargetPayloads(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t, rollups.StateCurrent)
+			h := newHarness(t)
 			seedStandardRows(t, h)
 
 			admin := scopedCtx(t, caller, protocolauth.ScopeAdmin)

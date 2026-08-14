@@ -323,7 +323,7 @@ func (p *Projector) Advance(ctx context.Context) (bool, error) {
 // loop shares the serialization guarantees of a single Advance: no two
 // advances overlap, and a Rebuild waits for the in-flight step.
 func (p *Projector) CatchUp(ctx context.Context) error {
-	for i := 0; i < maxCatchUpIterations; i++ {
+	for range maxCatchUpIterations {
 		caughtUp, err := p.Advance(ctx)
 		if err != nil {
 			return err

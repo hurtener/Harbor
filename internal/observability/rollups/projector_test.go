@@ -85,13 +85,14 @@ func newStore(t *testing.T) *memstore.Store {
 	return memstore.New()
 }
 
-// costMicros queries the store for the exact cost in micro-units.
-func costMicros(ctx context.Context, t *testing.T, s rollups.Store, from, to time.Time, bucket rollups.BucketSize) int64 {
+// costMicros queries the store for the exact cost in micro-units, summed
+// over the hour bucket containing the given window.
+func costMicros(ctx context.Context, t *testing.T, s rollups.Store, from, to time.Time) int64 {
 	t.Helper()
 	res, err := s.Query(ctx, rollups.Query{
 		From:     from,
 		To:       to,
-		Bucket:   bucket,
+		Bucket:   rollups.BucketHour,
 		Measures: []rollups.Measure{rollups.MeasureLLMCostMicros, rollups.MeasureTasksCompleted},
 		Sort:     rollups.SortKeyBucketAsc,
 		Limit:    100,
@@ -168,7 +169,7 @@ func TestProjector_RestartCatchUpAndReplayIdempotency(t *testing.T) {
 	}
 
 	// Replay idempotency: the restart must not have changed the sums.
-	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 3_000_000 {
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour)); got != 3_000_000 {
 		t.Fatalf("cost after restart = %d micros; want 3_000_000 (no double-count)", got)
 	}
 	res, err := store.Query(ctx, rollups.Query{
@@ -357,7 +358,7 @@ func TestProjector_ShortBatchDoesNotProveCurrent(t *testing.T) {
 		t.Fatalf("state after empty read = %q; want current", q.State)
 	}
 
-	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 7_000_000 {
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour)); got != 7_000_000 {
 		t.Fatalf("cost = %d micros; want 7_000_000", got)
 	}
 }
@@ -436,7 +437,7 @@ func TestProjector_FencedSessionDrop(t *testing.T) {
 		t.Fatalf("watermark = %d; want 3 (the fenced event is dropped, not fatal)", q.Watermark)
 	}
 
-	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 4_000_000 {
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour)); got != 4_000_000 {
 		t.Fatalf("cost = %d micros; want 4_000_000 (events 1+3; fenced event 2 dropped)", got)
 	}
 }
@@ -497,7 +498,7 @@ func TestProjector_Rebuild(t *testing.T) {
 	if q.Watermark != 2 {
 		t.Fatalf("watermark after rebuild catch-up = %d; want 2", q.Watermark)
 	}
-	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 2_000_000 {
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour)); got != 2_000_000 {
 		t.Fatalf("post-rebuild cost = %d micros; want 2_000_000 (only session-b; session-a never resurrected)", got)
 	}
 	if f, err := store.IsFenced(ctx, quadA.Identity); err != nil || !f {
@@ -511,7 +512,7 @@ func TestProjector_CatchUpMultipleBatches(t *testing.T) {
 	quad := eventID("tenant-a", "user-1", "session-1")
 
 	var evs []events.Event
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		evs = append(evs, costRecord(uint64(i+1), h.Add(time.Duration(i)*time.Second), quad, "m", 1))
 	}
 	src := &testSource{events: evs}
@@ -532,7 +533,7 @@ func TestProjector_CatchUpMultipleBatches(t *testing.T) {
 	if q.Watermark != 25 || q.State != rollups.StateCurrent {
 		t.Fatalf("quality = %+v; want watermark 25, current", q)
 	}
-	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 25_000_000 {
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour)); got != 25_000_000 {
 		t.Fatalf("cost after multi-batch catch-up = %d micros; want 25_000_000", got)
 	}
 }
@@ -725,7 +726,7 @@ func TestProjector_AdvanceRebuildSerialization(t *testing.T) {
 	if ck, err := store.Checkpoint(ctx); err != nil || ck != 10 {
 		t.Fatalf("final checkpoint = %d, %v; want 10", ck, err)
 	}
-	if got := costMicros(ctx, t, store, h, h.Add(time.Hour), rollups.BucketHour); got != 55_000_000 {
+	if got := costMicros(ctx, t, store, h, h.Add(time.Hour)); got != 55_000_000 {
 		t.Fatalf("final cost = %d micros; want 55_000_000 (events 1..10 applied exactly once)", got)
 	}
 	if !q.RetentionStart.Equal(h.Add(1*time.Minute)) || !q.RetentionEnd.Equal(h.Add(10*time.Minute)) {

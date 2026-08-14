@@ -24,9 +24,9 @@ func TestQuery_IndexProportionalScan(t *testing.T) {
 	// 100 minute buckets × 100 rows (25 per tenant) = 10_000 rows total.
 	var deltas []rollups.Delta
 	var seq uint64
-	for b := 0; b < 100; b++ {
+	for b := range 100 {
 		bstart := base.Add(time.Duration(b) * time.Minute)
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			seq++
 			tenant := fmt.Sprintf("tenant-%02d", i%4)
 			deltas = append(deltas, rollups.Delta{
@@ -137,9 +137,9 @@ func TestQuery_Adversarial_NarrowWindowHugeSameTenantHistory(t *testing.T) {
 	const buckets = 2_000
 	var deltas []rollups.Delta
 	var seq uint64
-	for b := 0; b < buckets; b++ {
+	for b := range buckets {
 		bstart := base.Add(time.Duration(b) * time.Minute)
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			seq++
 			deltas = append(deltas, rollups.Delta{
 				Key: rollups.Key{
@@ -199,9 +199,9 @@ func TestQuery_Adversarial_NarrowSelectiveDimensionLargeWindow(t *testing.T) {
 	const buckets = 2_000
 	var deltas []rollups.Delta
 	var seq uint64
-	for b := 0; b < buckets; b++ {
+	for b := range buckets {
 		bstart := base.Add(time.Duration(b) * time.Minute)
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if i == 1 && b > 0 {
 				continue // u001 only in bucket 0
 			}

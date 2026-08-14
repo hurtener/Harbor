@@ -40,17 +40,17 @@ const (
 	// payloads carry.
 	MeasureLLMCompletions Measure = "llm_completions"
 	// MeasureLLMTokensPrompt is the sum of Usage.PromptTokens.
-	MeasureLLMTokensPrompt Measure = "llm_tokens_prompt"
+	MeasureLLMTokensPrompt Measure = "llm_tokens_prompt" //nolint:gosec // G101 false positive: closed rollup measure-name wire constant, not a credential
 	// MeasureLLMTokensCompletion is the sum of Usage.CompletionTokens.
-	MeasureLLMTokensCompletion Measure = "llm_tokens_completion"
+	MeasureLLMTokensCompletion Measure = "llm_tokens_completion" //nolint:gosec // G101 false positive: closed rollup measure-name wire constant, not a credential
 	// MeasureLLMTokensReasoning is the sum of Usage.ReasoningTokens.
-	MeasureLLMTokensReasoning Measure = "llm_tokens_reasoning"
+	MeasureLLMTokensReasoning Measure = "llm_tokens_reasoning" //nolint:gosec // G101 false positive: closed rollup measure-name wire constant, not a credential
 	// MeasureLLMTokensCacheRead is the sum of Usage.CacheReadTokens.
-	MeasureLLMTokensCacheRead Measure = "llm_tokens_cache_read"
+	MeasureLLMTokensCacheRead Measure = "llm_tokens_cache_read" //nolint:gosec // G101 false positive: closed rollup measure-name wire constant, not a credential
 	// MeasureLLMTokensCacheWrite is the sum of Usage.CacheWriteTokens.
-	MeasureLLMTokensCacheWrite Measure = "llm_tokens_cache_write"
+	MeasureLLMTokensCacheWrite Measure = "llm_tokens_cache_write" //nolint:gosec // G101 false positive: closed rollup measure-name wire constant, not a credential
 	// MeasureLLMTokensTotal is the sum of Usage.TotalTokens.
-	MeasureLLMTokensTotal Measure = "llm_tokens_total"
+	MeasureLLMTokensTotal Measure = "llm_tokens_total" //nolint:gosec // G101 false positive: closed rollup measure-name wire constant, not a credential
 	// MeasureLLMCostMicros is the sum of provider-reported TotalCost in
 	// exact integer micro-units of USD (USD * CostScaleMicros), across
 	// successful LLM completions. The source float is converted once per

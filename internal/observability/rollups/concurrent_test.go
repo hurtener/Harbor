@@ -2,6 +2,7 @@ package rollups_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -34,7 +35,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 		return eventID(fmt.Sprintf("tenant-%02d", i%4), fmt.Sprintf("user-%02d", i%3), fmt.Sprintf("session-%02d", i))
 	}
 	var log []events.Event
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		q := quad(i)
 		log = append(log, events.Event{
 			Type:       llm.EventTypeCostRecorded,
@@ -72,7 +73,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 
 	// Readers: each queries its own tenant (context-bleed check) and reads
 	// quality; a handful of Advancers drain the shared log concurrently.
-	for i := 0; i < readers; i++ {
+	for i := range readers {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -91,7 +92,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 			}
 			res, err := store.Query(gctx, q)
 			if err != nil {
-				if idx == 0 && err == context.Canceled {
+				if idx == 0 && errors.Is(err, context.Canceled) {
 					return // the expected cancellation path
 				}
 				failures.Add(1)
@@ -120,7 +121,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -165,7 +166,7 @@ func TestProjector_ConcurrentReuse(t *testing.T) {
 	}
 
 	// Post-drain exactness: every tenant has all 150 of its events.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		res, err := store.Query(ctx, rollups.Query{
 			From:     h,
 			To:       h.Add(2 * time.Hour),

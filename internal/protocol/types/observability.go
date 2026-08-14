@@ -76,17 +76,17 @@ const (
 	// LLM completions.
 	ObservabilityMeasureLLMCompletions = "llm_completions"
 	// ObservabilityMeasureLLMTokensPrompt — sum of prompt tokens.
-	ObservabilityMeasureLLMTokensPrompt = "llm_tokens_prompt"
+	ObservabilityMeasureLLMTokensPrompt = "llm_tokens_prompt" //nolint:gosec // G101 false positive: closed observability measure-name wire constant, not a credential
 	// ObservabilityMeasureLLMTokensCompletion — sum of completion tokens.
-	ObservabilityMeasureLLMTokensCompletion = "llm_tokens_completion"
+	ObservabilityMeasureLLMTokensCompletion = "llm_tokens_completion" //nolint:gosec // G101 false positive: closed observability measure-name wire constant, not a credential
 	// ObservabilityMeasureLLMTokensReasoning — sum of reasoning tokens.
-	ObservabilityMeasureLLMTokensReasoning = "llm_tokens_reasoning"
+	ObservabilityMeasureLLMTokensReasoning = "llm_tokens_reasoning" //nolint:gosec // G101 false positive: closed observability measure-name wire constant, not a credential
 	// ObservabilityMeasureLLMTokensCacheRead — sum of cache-read tokens.
-	ObservabilityMeasureLLMTokensCacheRead = "llm_tokens_cache_read"
+	ObservabilityMeasureLLMTokensCacheRead = "llm_tokens_cache_read" //nolint:gosec // G101 false positive: closed observability measure-name wire constant, not a credential
 	// ObservabilityMeasureLLMTokensCacheWrite — sum of cache-write tokens.
-	ObservabilityMeasureLLMTokensCacheWrite = "llm_tokens_cache_write"
+	ObservabilityMeasureLLMTokensCacheWrite = "llm_tokens_cache_write" //nolint:gosec // G101 false positive: closed observability measure-name wire constant, not a credential
 	// ObservabilityMeasureLLMTokensTotal — sum of total tokens.
-	ObservabilityMeasureLLMTokensTotal = "llm_tokens_total"
+	ObservabilityMeasureLLMTokensTotal = "llm_tokens_total" //nolint:gosec // G101 false positive: closed observability measure-name wire constant, not a credential
 	// ObservabilityMeasureLLMCostMicros — sum of provider-reported
 	// TotalCost in exact integer micro-units of USD.
 	ObservabilityMeasureLLMCostMicros = "llm_cost_micros"

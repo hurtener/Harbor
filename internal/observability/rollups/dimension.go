@@ -68,14 +68,6 @@ func ValidateDimensions(dims []Dimension) error {
 // e.g. model "" for task outcomes).
 type DimensionValues map[Dimension]string
 
-// valueIn returns the row's value for a group dimension ("" when absent).
-func (v DimensionValues) valueIn(d Dimension) string {
-	if v == nil {
-		return ""
-	}
-	return v[d]
-}
-
 // Less reports whether v sorts before w. Both rows carry the same GroupBy
 // dimensions, compared in AllDimensions order — the comparison is total
 // (every value is a Go string, so lexicographic order is total).

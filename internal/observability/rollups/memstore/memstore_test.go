@@ -49,7 +49,7 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 	// can query its own identity slice.
 	var seed []events.Event
 	seq := uint64(1)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		quad := identity.Quadruple{Identity: identity.Identity{
 			TenantID:  fmt.Sprintf("tenant-%02d", i%4),
 			UserID:    fmt.Sprintf("user-%02d", i%5),
@@ -86,7 +86,7 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 	var failures atomic.Int64
 	cancelOne, cancel := context.WithCancel(ctx)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -107,7 +107,7 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 			}
 			res, err := s.Query(gctx, q)
 			if err != nil {
-				if idx == 0 && err == context.Canceled {
+				if idx == 0 && errors.Is(err, context.Canceled) {
 					return // the expected cancellation path
 				}
 				failures.Add(1)
@@ -141,7 +141,7 @@ func TestStore_ConcurrentReuse(t *testing.T) {
 	// single advancing write or an idempotent/regressive no-op — the
 	// invariant under test is that the checkpoint stays monotonic and no
 	// row is ever double-counted or torn, never that every writer lands.
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

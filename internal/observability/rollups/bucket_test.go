@@ -46,7 +46,7 @@ func TestBucketStart_PureFunction(t *testing.T) {
 	for _, size := range AllBucketSizes {
 		for _, in := range instants {
 			want := BucketStart(in, size)
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				if got := BucketStart(in, size); !got.Equal(want) {
 					t.Fatalf("BucketStart(%v, %s) not pure: %v vs %v", in, size, got, want)
 				}

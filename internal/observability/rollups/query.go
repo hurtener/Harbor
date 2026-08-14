@@ -447,7 +447,7 @@ func DecodeCursor(s string) (PageCursor, error) {
 	dec.DisallowUnknownFields()
 	var c PageCursor
 	if err := dec.Decode(&c); err != nil {
-		return PageCursor{}, fmt.Errorf("%w: malformed cursor: %v", ErrBadCursor, err)
+		return PageCursor{}, fmt.Errorf("%w: malformed cursor: %w", ErrBadCursor, err)
 	}
 	if dec.More() {
 		return PageCursor{}, fmt.Errorf("%w: malformed cursor: trailing data", ErrBadCursor)

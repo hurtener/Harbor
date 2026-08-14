@@ -136,11 +136,11 @@ func taskEvent(seq uint64, at time.Time, quad identity.Quadruple, typ events.Eve
 }
 
 // apply applies a run of contiguous events (sequences 1..len in order) as
-// one atomic batch, returning the batch checkpoint.
-func apply(ctx context.Context, t *testing.T, s rollups.Store, evs ...events.Event) uint64 {
+// one atomic batch.
+func apply(ctx context.Context, t *testing.T, s rollups.Store, evs ...events.Event) {
 	t.Helper()
 	if len(evs) == 0 {
-		return 0
+		return
 	}
 	var deltas []rollups.Delta
 	for _, ev := range evs {
@@ -154,7 +154,6 @@ func apply(ctx context.Context, t *testing.T, s rollups.Store, evs ...events.Eve
 	if err := s.ApplyBatch(ctx, rollups.Batch{Checkpoint: ckpt, Deltas: deltas}); err != nil {
 		t.Fatalf("ApplyBatch(checkpoint=%d): %v", ckpt, err)
 	}
-	return ckpt
 }
 
 // query runs a read over the store with a mandatory window + closed fields.
@@ -247,7 +246,7 @@ func precisionExactIntegers(t *testing.T, factory Factory) {
 
 	h := rollups.BucketStart(anchor, rollups.StoreGranularity)
 	// Costs that sum exactly: 0.25+0.25+0.5+1.0+2.0 = 4.00 USD.
-	var evs []events.Event
+	evs := make([]events.Event, 0, 5)
 	for i, c := range []float64{0.25, 0.25, 0.5, 1.0, 2.0} {
 		evs = append(evs, costEvent(uint64(i+1), h.Add(time.Duration(i)*time.Minute), quadT1U1S1, "model-a", c, 10, 20, 100))
 	}
@@ -939,9 +938,9 @@ func deterministicPagination(t *testing.T, factory Factory) {
 	// HOUR floor so the events land exactly on hour boundaries and the
 	// query window [h0, h0+3h) is hour-aligned.
 	h0 := rollups.BucketStart(anchor, rollups.BucketHour)
-	var evs []events.Event
+	evs := make([]events.Event, 0, 9)
 	seq := uint64(1)
-	for hour := 0; hour < 3; hour++ {
+	for hour := range 3 {
 		for _, quad := range []identity.Quadruple{quadT1U1S1, quadT1U1S2, quadT1U2S3} {
 			evs = append(evs, costEvent(seq, h0.Add(time.Duration(hour)*time.Hour), quad, "model-a", float64(seq), 10, 10, 10))
 			seq++
@@ -1083,9 +1082,9 @@ func cursorShapeBinding(t *testing.T, factory Factory) {
 	// 3 sessions × 3 hour buckets, one cost event per (session, bucket):
 	// 9 rows so Limit 2 forces real pages and a non-empty NextCursor.
 	h0 := rollups.BucketStart(anchor, rollups.BucketHour)
-	var evs []events.Event
+	evs := make([]events.Event, 0, 9)
 	seq := uint64(1)
-	for hour := 0; hour < 3; hour++ {
+	for hour := range 3 {
 		for _, quad := range []identity.Quadruple{quadT1U1S1, quadT1U1S2, quadT1U2S3} {
 			evs = append(evs, costEvent(seq, h0.Add(time.Duration(hour)*time.Hour), quad, "model-a", float64(seq), 10, 10, 10))
 			seq++
@@ -1410,8 +1409,8 @@ func concurrentQueries(t *testing.T, factory Factory) {
 	defer cleanup()
 
 	h := rollups.BucketStart(anchor, rollups.StoreGranularity)
-	var evs []events.Event
-	for i := 0; i < 40; i++ {
+	evs := make([]events.Event, 0, 40)
+	for i := range 40 {
 		evs = append(evs, costEvent(uint64(i+1), h.Add(time.Duration(i)*time.Second), quadT1U1S1, "model-a", float64(i+1), 10, 10, 10))
 	}
 	apply(ctx, t, s, evs...)
@@ -1430,7 +1429,7 @@ func concurrentQueries(t *testing.T, factory Factory) {
 	const n = 32
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

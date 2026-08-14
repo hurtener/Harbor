@@ -42,7 +42,7 @@ func TestService_ConcurrentMixedIdentityReuse(t *testing.T) {
 	defer func() { _ = store.Close(ctx) }()
 
 	costOf := func(i int) int64 { return int64(1000 + i) }
-	for i := 0; i < total; i++ {
+	for i := range total {
 		seed(t, store, uint64(i+1), rollups.Key{
 			BucketStart: refHour,
 			TenantID:    fmt.Sprintf("t-%02d", i/10),
@@ -68,7 +68,7 @@ func TestService_ConcurrentMixedIdentityReuse(t *testing.T) {
 	}
 	calls := make([]call, total)
 	auditsWant := int64(0)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		id := identityOf(i)
 		c := call{ctx: scopedCtx(t, id), req: baseRequest()}
 		if i%3 == 0 {
@@ -99,7 +99,7 @@ func TestService_ConcurrentMixedIdentityReuse(t *testing.T) {
 	var failures atomic.Int64
 	var auditsGot atomic.Int64
 
-	for i := 0; i < total; i++ {
+	for i := range total {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -121,7 +121,7 @@ func TestService_ConcurrentMixedIdentityReuse(t *testing.T) {
 				// The elevated fan-in sees the WHOLE tenant (10 users) —
 				// its own rows plus its tenant-mates' — exactly once.
 				want := int64(0)
-				for j := 0; j < 10; j++ {
+				for j := range 10 {
 					want += costOf((idx/10)*10 + j)
 				}
 				got := sum(t, resp, rollups.MeasureLLMCostMicros)
