@@ -98,7 +98,7 @@ model_profiles:
 
 Look up the official context-window number from the provider's docs; never guess.
 
-Future fields (post-V1.1) will let you set per-model `output_max_tokens`, `pricing_per_input_token`, and `pricing_per_output_token`. For V1.1, only `context_window_tokens` is honoured.
+The profile is not a one-field shape: alongside `context_window_tokens`, the documented fields `token_estimator`, `json_schema_mode`, `default_max_tokens`, `reasoning_effort`, `cost_overrides`, `corrections`, and `max_retries` (see §5) are all honoured. `output_max_tokens` and per-token pricing (`pricing_per_input_token` / `pricing_per_output_token`) are not profile fields today — leave them out of a profile.
 
 ## 3. The dev-mock escape hatch
 

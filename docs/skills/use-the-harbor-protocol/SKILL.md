@@ -464,9 +464,12 @@ from forensic events:
   turns (opaque `older_cursor`, `limit` default 20 / max 50) with
   renderable answer (inline or by artifact reference, or
   `empty`/`evicted`/`unavailable`), consumer-safe reasoning, ordered tool
-  Activity (never arguments/results), usage, intervention metadata (the
-  action token only for a caller satisfying the pause's tier), and ordered
-  durable MCP App references. `sessions.turns.get` is the one
+  Activity (never arguments/results), usage, intervention metadata
+  (bounded durable pause class / reason / lifecycle / availability — never
+  a pause/resume/approval action token; actionability is computed from the
+  verified caller's tier, and callers act through `pause.list` plus the
+  control/steering verbs), and ordered durable MCP App references.
+  `sessions.turns.get` is the one
   `(session, task)` terminal reconciliation read. Both are exact-session:
   a foreign session answers typed `not_found` (non-oracular).
 - **Page-before-subscribe live handoff.** Chat open is two reads — one
