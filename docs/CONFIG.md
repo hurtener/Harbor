@@ -1867,8 +1867,24 @@ Planner driver. Default: `react` (V1 reference). Validation: `react`
 
 ### planner.max_steps
 
-Step circuit-breaker cap. Default: `0` → driver default
-(`react.DefaultMaxSteps` = 12). Validation: >= 0.
+The planner step **tranche** and the runtime's continuation authority
+(HA-57, D-417/D-418): the number of planner steps a run may consume in
+one cycle before it is parked for continuation. When a tranche of
+planner steps is consumed without a terminal Finish, the run is
+**parked** through the unified pause primitive — a typed
+`constraints_conflict` pause carrying `{cause: max_steps_exceeded,
+max_steps, steps_observed}` — instead of terminating; it is never
+forced to finalise. An authorised RESUME continues the SAME run with a
+fresh tranche (the tranche counter resets; the cumulative trajectory is
+untouched), so long-running work spans repeated cycles as ONE run. A
+fresh process cannot resume a parked run — it answers the typed
+`pauseresume.ErrRestartUnavailable` (D-417). The planner-side per-tranche
+breaker (`react.DefaultMaxSteps` = 12) ends the cycle with the typed
+`NoPath` Finish carrying `max_steps_exceeded`; the runtime's outer
+`ErrMaxStepsExceeded` guard (default 64) remains the runaway backstop
+when tranche pausing is unavailable. Default: `0` → the driver default
+(12); it never means unbounded and never selects the legacy
+terminal-only loop. Validation: >= 0 (a negative value is rejected).
 
 ### planner.extra_guidance
 
