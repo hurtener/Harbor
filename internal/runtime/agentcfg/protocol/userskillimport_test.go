@@ -1,21 +1,27 @@
 package protocol_test
 
 // userskillimport_test.go — the verified-caller two-phase complete-skill-package
-// import service tests: the ZERO-mutation validate contract, the
-// validate→commit round trip that installs ONE atomic package+membership unit
-// (never a second legacy membership write), idempotent response-loss replay,
-// explicit replacement consent, the full stale/foreign/expired/policy/config/
-// ceiling/boot-owned refusal matrix, exact-receipt compensation, cross-session
-// and cross-user isolation, focused same-proposal commit races, and the N>=100
-// concurrent mixed-identity run under -race.
+// import service tests: the ZERO-write validate contract (no SkillStore
+// mutation AND no StateStore proposal-ledger write — the review rides inside
+// a sealed stateless token), the validate→commit round trip that installs ONE
+// atomic package+membership unit (never a second legacy membership write),
+// idempotent response-loss replay, explicit replacement consent, the full
+// stale/foreign/expired/tampered/policy/config/artifact/boot-owned refusal
+// matrix, exact-receipt compensation, cross-session and cross-user isolation,
+// focused same-token commit races, and the N>=100 concurrent mixed-identity
+// run under -race.
 
 import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -34,7 +40,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills/importer"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
-	"runtime"
+	toolsauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -145,6 +151,22 @@ func defaultImportCapability() agentcfgprotocol.UserSkillImportPolicy {
 	}
 }
 
+// importTestSealer returns the deterministic dev token sealer. The KEK is a
+// documented test-only dummy (the fixed-byte pattern mirrors the auth sealer
+// conformance fixture) and is NEVER used outside tests.
+func importTestSealer(t *testing.T) agentcfgprotocol.UserSkillImportProposalSealer {
+	t.Helper()
+	kek := make([]byte, 32)
+	for i := range kek {
+		kek[i] = byte(i)
+	}
+	sealer, err := toolsauth.NewAESGCMSealer(kek)
+	if err != nil {
+		t.Fatalf("NewAESGCMSealer: %v", err)
+	}
+	return sealer
+}
+
 // importSkillStoreSpy wraps the real localdb store and counts every MUTATION
 // method — the ZERO-write validate contract and the exactly-once commit
 // contract are asserted against these counters.
@@ -208,6 +230,77 @@ func (s *importSkillStoreSpy) counts() (put, upsert, del, delAgent, delInstalled
 	return s.putInstalled, s.upsert, s.delete, s.deleteAgent, s.deleteInstalled, s.restoreInstalled
 }
 
+// importStateStoreSpy wraps the in-memory StateStore and counts every MUTATION
+// method (Save / SaveIf / DeleteIf / Delete). The ZERO-write validate
+// contract asserts these counters stay zero; the failWrites mode additionally
+// turns any attempted write into an error so a regression fails loudly at the
+// call site, not just at the assertion.
+type importStateStoreSpy struct {
+	state.StateStore
+	mu         sync.Mutex
+	saves      int
+	saveIfs    int
+	deleteIfs  int
+	deletes    int
+	failWrites bool
+}
+
+func (s *importStateStoreSpy) Save(ctx context.Context, r state.StateRecord) error {
+	s.mu.Lock()
+	s.saves++
+	fail := s.failWrites
+	s.mu.Unlock()
+	if fail {
+		return fmt.Errorf("state write forbidden during validate")
+	}
+	return s.StateStore.Save(ctx, r)
+}
+
+func (s *importStateStoreSpy) SaveIf(ctx context.Context, exp []state.SlotExpectation, next state.StateRecord) error {
+	s.mu.Lock()
+	s.saveIfs++
+	fail := s.failWrites
+	s.mu.Unlock()
+	if fail {
+		return fmt.Errorf("state write forbidden during validate")
+	}
+	return s.StateStore.SaveIf(ctx, exp, next)
+}
+
+func (s *importStateStoreSpy) DeleteIf(ctx context.Context, exp state.SlotExpectation) (bool, error) {
+	s.mu.Lock()
+	s.deleteIfs++
+	fail := s.failWrites
+	s.mu.Unlock()
+	if fail {
+		return false, fmt.Errorf("state write forbidden during validate")
+	}
+	return s.StateStore.DeleteIf(ctx, exp)
+}
+
+func (s *importStateStoreSpy) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
+	s.mu.Lock()
+	s.deletes++
+	fail := s.failWrites
+	s.mu.Unlock()
+	if fail {
+		return fmt.Errorf("state write forbidden during validate")
+	}
+	return s.StateStore.Delete(ctx, id, kind)
+}
+
+func (s *importStateStoreSpy) stateCounts() (saves, saveIfs, deleteIfs, deletes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saves, s.saveIfs, s.deleteIfs, s.deletes
+}
+
+func (s *importStateStoreSpy) setFailWrites(fail bool) {
+	s.mu.Lock()
+	s.failWrites = fail
+	s.mu.Unlock()
+}
+
 // fakeBootOwner is the injected boot-baseline ownership reader (the HA-66
 // guard seam): a canonical name it owns is read-only to the control plane.
 type fakeBootOwner struct{ names map[string]struct{} }
@@ -227,16 +320,18 @@ type importFixture struct {
 	admin     *agentcfgprotocol.Service
 	imp       importer.Importer
 	artifacts artifacts.ArtifactStore
-	proposals state.StateStore
+	proposals *importStateStoreSpy
 	store     *importSkillStoreSpy
 	reg       agentcfg.RetirementRegistry
 	cap       *fakeCapability
 	clock     *fakeClock
+	sealer    agentcfgprotocol.UserSkillImportProposalSealer
 }
 
 // newImportFixture builds the production-posture fixture: both signed-reach
-// gates wired, real importer + localdb store + statestore registry + in-memory
-// artifact/proposal stores, and the default capability snapshot.
+// gates wired, real importer + localdb store + statestore registry +
+// in-memory artifact store + write-counting StateStore, the deterministic dev
+// token sealer, and the default capability snapshot.
 func newImportFixture(t *testing.T) *importFixture {
 	t.Helper()
 	return newImportFixtureOpts(t, func(f *importFixture) {})
@@ -264,12 +359,14 @@ func newImportFixtureOpts(t *testing.T, mutate func(*importFixture)) *importFixt
 	cap := &fakeCapability{policy: defaultImportCapability()}
 	clock := &fakeClock{t: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}
 	fx := &importFixture{
-		imp: imp, artifacts: artifactStore, proposals: proposals,
-		store: &importSkillStoreSpy{SkillStore: newSkills(t)},
-		reg:   rr, cap: cap, clock: clock,
+		imp: imp, artifacts: artifactStore,
+		proposals: &importStateStoreSpy{StateStore: proposals},
+		store:     &importSkillStoreSpy{SkillStore: newSkills(t)},
+		reg:       rr, cap: cap, clock: clock,
+		sealer: importTestSealer(t),
 	}
 	mutate(fx)
-	svc, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, proposals, fx.store, rr, cap,
+	svc, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, fx.sealer, fx.proposals, fx.store, rr, cap,
 		agentcfgprotocol.WithImportSessionReach(auth.NewSessionReachAuthorizer()),
 		agentcfgprotocol.WithImportAgentReach(auth.NewAgentReachAuthorizer()),
 		agentcfgprotocol.WithImportClock(clock.Now),
@@ -286,7 +383,7 @@ func newImportFixtureOpts(t *testing.T, mutate func(*importFixture)) *importFixt
 	t.Cleanup(func() {
 		_ = imp.Close(context.Background())
 		_ = artifactStore.Close(context.Background())
-		_ = proposals.Close(context.Background())
+		_ = fx.proposals.Close(context.Background())
 		_ = fx.store.Close(context.Background())
 	})
 	return fx
@@ -314,7 +411,7 @@ func (fx *importFixture) validateReq(id identity.Identity, agentID, artifactID s
 // commitReqFromValidate echoes the proposal inputs the way the caller would.
 func commitReqFromValidate(validate agentcfgprotocol.UserSkillImportValidateResponse, id identity.Identity, agentID string, replace bool) agentcfgprotocol.UserSkillImportCommitRequest {
 	return agentcfgprotocol.UserSkillImportCommitRequest{
-		ProposalID:          validate.ProposalID,
+		ProposalToken:       validate.ProposalToken,
 		AgentID:             agentID,
 		Name:                validate.Review.Name,
 		ReviewedPackageHash: validate.PackageHash,
@@ -336,30 +433,34 @@ func (fx *importFixture) validateCommit(t *testing.T, id identity.Identity, agen
 	return validated, committed, err
 }
 
-// tamperProposal rewrites the durable proposal slot's JSON (used to exercise
-// the ceiling-snapshot and committing-resume paths).
-func (fx *importFixture) tamperProposal(t *testing.T, q identity.Quadruple, kind string, mutate func(map[string]any)) {
+// commitKind derives the durable commit-ledger slot kind of a proposal token
+// (SHA-256 of the token bytes — the same derivation the service uses).
+func (fx *importFixture) commitKind(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "agentcfg.user_skill_import.commit." + hex.EncodeToString(sum[:])
+}
+
+// tamperLedger rewrites the durable commit-ledger slot's JSON (used to
+// exercise the committing-resume path).
+func (fx *importFixture) tamperLedger(t *testing.T, q identity.Quadruple, token string, mutate func(map[string]any)) {
 	t.Helper()
+	kind := fx.commitKind(token)
 	rec, err := fx.proposals.Load(context.Background(), q, kind)
 	if err != nil {
-		t.Fatalf("load proposal for tamper: %v", err)
+		t.Fatalf("load commit ledger for tamper: %v", err)
 	}
 	var m map[string]any
 	if err := json.Unmarshal(rec.Bytes, &m); err != nil {
-		t.Fatalf("decode proposal for tamper: %v", err)
+		t.Fatalf("decode commit ledger for tamper: %v", err)
 	}
 	mutate(m)
 	b, err := json.Marshal(m)
 	if err != nil {
-		t.Fatalf("re-encode proposal for tamper: %v", err)
+		t.Fatalf("re-encode commit ledger for tamper: %v", err)
 	}
 	if err := fx.proposals.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: b}); err != nil {
-		t.Fatalf("save tampered proposal: %v", err)
+		t.Fatalf("save tampered commit ledger: %v", err)
 	}
-}
-
-func (fx *importFixture) proposalKind(proposalID string) string {
-	return "agentcfg.user_skill_import.proposal." + proposalID
 }
 
 // assertZeroMutations asserts the validate contract: no SkillStore mutation of
@@ -370,6 +471,18 @@ func (fx *importFixture) assertZeroMutations(t *testing.T) {
 	if put != 0 || upsert != 0 || del != 0 || delAgent != 0 || delInstalled != 0 || restore != 0 {
 		t.Fatalf("validate performed a durable skill mutation: put=%d upsert=%d delete=%d deleteAgent=%d deleteInstalled=%d restore=%d",
 			put, upsert, del, delAgent, delInstalled, restore)
+	}
+}
+
+// assertZeroStateWrites asserts the validate contract: no StateStore write
+// (Save / SaveIf / DeleteIf / Delete) of any kind happened — validate seals
+// the review into the token instead of persisting a proposal.
+func (fx *importFixture) assertZeroStateWrites(t *testing.T) {
+	t.Helper()
+	saves, saveIfs, deleteIfs, deletes := fx.proposals.stateCounts()
+	if saves != 0 || saveIfs != 0 || deleteIfs != 0 || deletes != 0 {
+		t.Fatalf("validate performed a durable state write: saves=%d saveIfs=%d deleteIfs=%d deletes=%d",
+			saves, saveIfs, deleteIfs, deletes)
 	}
 }
 
@@ -390,23 +503,27 @@ func TestUserSkillImport_NewService_MissingDependencyFailsLoud(t *testing.T) {
 		t.Fatalf("registry does not implement RetirementRegistry")
 	}
 	cap := &fakeCapability{policy: defaultImportCapability()}
+	sealer := importTestSealer(t)
 
-	if _, err := agentcfgprotocol.NewUserSkillImportService(nil, artifactStore, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+	if _, err := agentcfgprotocol.NewUserSkillImportService(nil, artifactStore, sealer, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
 		t.Fatalf("nil importer err=%v, want ErrUserSkillImportMisconfigured", err)
 	}
-	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, nil, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, nil, sealer, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
 		t.Fatalf("nil artifact store err=%v, want ErrUserSkillImportMisconfigured", err)
 	}
-	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, nil, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
-		t.Fatalf("nil proposal ledger err=%v, want ErrUserSkillImportMisconfigured", err)
+	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, nil, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+		t.Fatalf("nil sealer err=%v, want ErrUserSkillImportMisconfigured", err)
 	}
-	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, sealer, nil, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+		t.Fatalf("nil commit ledger err=%v, want ErrUserSkillImportMisconfigured", err)
+	}
+	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, sealer, proposals, nil, rr, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
 		t.Fatalf("nil skill store err=%v, want ErrUserSkillImportMisconfigured", err)
 	}
-	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, proposals, fxStore(t), nil, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, sealer, proposals, fxStore(t), nil, cap); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
 		t.Fatalf("nil registry err=%v, want ErrUserSkillImportMisconfigured", err)
 	}
-	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, proposals, fxStore(t), rr, nil); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
+	if _, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, sealer, proposals, fxStore(t), rr, nil); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportMisconfigured) {
 		t.Fatalf("nil capability err=%v, want ErrUserSkillImportMisconfigured", err)
 	}
 }
@@ -414,7 +531,7 @@ func TestUserSkillImport_NewService_MissingDependencyFailsLoud(t *testing.T) {
 func fxStore(t *testing.T) skills.SkillStore { return newSkills(t) }
 
 // ---------------------------------------------------------------------------
-// Validate: ZERO writes, closed review, warnings, durability
+// Validate: ZERO writes (skill + state), closed review, warnings, sealed token
 // ---------------------------------------------------------------------------
 
 func TestUserSkillImport_Validate_ZeroMutations(t *testing.T) {
@@ -429,8 +546,13 @@ func TestUserSkillImport_Validate_ZeroMutations(t *testing.T) {
 
 	// Closed review shape: canonical name, reviewed hash, stored content
 	// hash, trigger, steps, support manifest, no authority fields.
-	if resp.ProposalID == "" {
-		t.Fatalf("validate returned no proposal id")
+	if resp.ProposalToken == "" {
+		t.Fatalf("validate returned no proposal token")
+	}
+	// The token is the base64url of the sealed envelope: valid base64url
+	// and round-trip decodable.
+	if _, err := base64.RawURLEncoding.Strict().DecodeString(resp.ProposalToken); err != nil {
+		t.Fatalf("proposal token is not valid base64url: %v", err)
 	}
 	if resp.PackageHash == "" || !strings.HasPrefix(resp.PackageHash, "v1:") {
 		t.Fatalf("package hash %q is not versioned", resp.PackageHash)
@@ -459,6 +581,10 @@ func TestUserSkillImport_Validate_ZeroMutations(t *testing.T) {
 	// ZERO durable SkillStore/package mutation.
 	fx.assertZeroMutations(t)
 
+	// ZERO StateStore write: the review lives inside the sealed token, not
+	// in a durable proposal ledger.
+	fx.assertZeroStateWrites(t)
+
 	// ZERO agent-config membership mutation: the caller still has no user
 	// revision.
 	ug, err := fx.admin.UserGet(ctx, prototypes.AgentConfigUserGetRequest{Identity: scope(), AgentID: testAgentID})
@@ -468,16 +594,55 @@ func TestUserSkillImport_Validate_ZeroMutations(t *testing.T) {
 	if ug.Set {
 		t.Fatalf("validate wrote a user-scope config revision")
 	}
+}
 
-	// The proposal IS durably recorded (the two-phase ledger, not a skill
-	// write).
-	rec, err := fx.proposals.Load(context.Background(), importQuad(importUserA), fx.proposalKind(resp.ProposalID))
+// TestUserSkillImport_Validate_WriteCountingStateStoreRefusesWrites asserts
+// the P1 contract with a state wrapper that FAILS any Save / SaveIf /
+// DeleteIf / Delete attempt during validate: validate must not persist a
+// proposal-ledger record (the review is sealed into the stateless token).
+func TestUserSkillImport_Validate_WriteCountingStateStoreRefusesWrites(t *testing.T) {
+	fx := newImportFixture(t)
+	fx.proposals.setFailWrites(true)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	ctx := importCtx(importUserA, testAgentID)
+
+	resp, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
 	if err != nil {
-		t.Fatalf("proposal not durably recorded: %v", err)
+		t.Fatalf("validate: %v", err)
 	}
-	if len(rec.Bytes) == 0 {
-		t.Fatalf("proposal record is empty")
+	if resp.ProposalToken == "" {
+		t.Fatalf("validate returned no proposal token")
 	}
+	// All four mutation surfaces stayed at zero.
+	fx.assertZeroStateWrites(t)
+	fx.assertZeroMutations(t)
+}
+
+// TestUserSkillImport_Validate_SealedTokensAreFresh asserts every validate
+// seals a FRESH token (a fresh claims nonce + sealer nonce): two validates of
+// the SAME package under the SAME identity must never produce the same token,
+// and the closed review is identical.
+func TestUserSkillImport_Validate_SealedTokensAreFresh(t *testing.T) {
+	fx := newImportFixture(t)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	ctx := importCtx(importUserA, testAgentID)
+
+	first, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate 1: %v", err)
+	}
+	second, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate 2: %v", err)
+	}
+	if first.ProposalToken == second.ProposalToken {
+		t.Fatalf("two validates of the same package produced the same token (nonce reuse)")
+	}
+	if first.PackageHash != second.PackageHash || first.Review.Name != second.Review.Name {
+		t.Fatalf("re-validated review drifted: first=%+v second=%+v", first.Review, second.Review)
+	}
+	fx.assertZeroStateWrites(t)
+	fx.assertZeroMutations(t)
 }
 
 func TestUserSkillImport_Validate_WarningsForNonVisibleRequirements(t *testing.T) {
@@ -495,6 +660,7 @@ func TestUserSkillImport_Validate_WarningsForNonVisibleRequirements(t *testing.T
 		t.Fatalf("warnings = %+v, want the two non-visible requirements", resp.Warnings)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Validate_RejectsAuthorityAndUnknownFrontmatter(t *testing.T) {
@@ -521,6 +687,7 @@ func TestUserSkillImport_Validate_RejectsAuthorityAndUnknownFrontmatter(t *testi
 		}
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Validate_RejectsMalformedPackages(t *testing.T) {
@@ -553,6 +720,7 @@ func TestUserSkillImport_Validate_RejectsMalformedPackages(t *testing.T) {
 		})
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Validate_ArtifactNotCallerOwned(t *testing.T) {
@@ -577,6 +745,7 @@ func TestUserSkillImport_Validate_ArtifactNotCallerOwned(t *testing.T) {
 		t.Fatalf("cross-tenant validate err=%v, want ErrUserSkillImportArtifactNotFound", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +794,22 @@ func TestUserSkillImport_Commit_InstallsAtomicUnit(t *testing.T) {
 	}
 	if ug.Set {
 		t.Fatalf("commit wrote a legacy user-scope config revision")
+	}
+
+	// The token-derived commit ledger records the exact terminal receipt.
+	ledgerRec, err := fx.proposals.Load(context.Background(), importQuad(importUserA), fx.commitKind(validated.ProposalToken))
+	if err != nil {
+		t.Fatalf("commit ledger not durably recorded: %v", err)
+	}
+	var ledger map[string]any
+	if err := json.Unmarshal(ledgerRec.Bytes, &ledger); err != nil {
+		t.Fatalf("decode commit ledger: %v", err)
+	}
+	if ledger["phase"] != "committed" {
+		t.Fatalf("commit ledger phase = %v, want committed", ledger["phase"])
+	}
+	if _, ok := ledger["receipt"]; !ok {
+		t.Fatalf("commit ledger lacks the exact receipt")
 	}
 
 	// The stored unit is the durable package: ScopeUser forced, the
@@ -706,9 +891,9 @@ func TestUserSkillImport_Commit_CommittingResumeRecognizesLandedWrite(t *testing
 	}
 
 	// Simulate the mid-flight window: the atomic write landed but the
-	// terminal receipt was never recorded (the slot still says
-	// "committing", no receipt).
-	fx.tamperProposal(t, importQuad(importUserA), fx.proposalKind(validated.ProposalID), func(m map[string]any) {
+	// terminal receipt was never recorded (the token-derived ledger slot
+	// still says "committing", no receipt).
+	fx.tamperLedger(t, importQuad(importUserA), validated.ProposalToken, func(m map[string]any) {
 		m["phase"] = "committing"
 		delete(m, "receipt")
 	})
@@ -792,7 +977,7 @@ func TestUserSkillImport_Commit_ExplicitReplaceConsent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Commit refusal matrix: stale / foreign / expired / moved / revoked
+// Commit refusal matrix: stale / foreign / expired / tampered / moved / revoked
 // ---------------------------------------------------------------------------
 
 func TestUserSkillImport_Commit_ExpiredProposalRefused(t *testing.T) {
@@ -809,6 +994,7 @@ func TestUserSkillImport_Commit_ExpiredProposalRefused(t *testing.T) {
 		t.Fatalf("expired commit err=%v, want ErrUserSkillImportExpired", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Commit_MovedConfigBaseRefused(t *testing.T) {
@@ -831,6 +1017,7 @@ func TestUserSkillImport_Commit_MovedConfigBaseRefused(t *testing.T) {
 		t.Fatalf("moved-base commit err=%v, want ErrUserSkillImportConfigMoved", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Commit_PolicyRevocationRefused(t *testing.T) {
@@ -847,6 +1034,7 @@ func TestUserSkillImport_Commit_PolicyRevocationRefused(t *testing.T) {
 		t.Fatalf("revoked-policy commit err=%v, want ErrUserSkillImportPolicyRevoked", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Commit_LostReachRefused(t *testing.T) {
@@ -888,6 +1076,7 @@ func TestUserSkillImport_Commit_LostReachRefused(t *testing.T) {
 		t.Fatalf("other-session reach commit err=%v, want ErrUserSkillImportSessionReachDenied", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Commit_HashNameConfigMismatchRefused(t *testing.T) {
@@ -906,7 +1095,7 @@ func TestUserSkillImport_Commit_HashNameConfigMismatchRefused(t *testing.T) {
 	if _, err := fx.svc.Commit(ctx, wrongHash); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportHashMismatch) {
 		t.Fatalf("wrong hash err=%v, want ErrUserSkillImportHashMismatch", err)
 	}
-	// A different reviewed name is a foreign/stale proposal.
+	// A different reviewed name is a foreign/stale token.
 	wrongName := base
 	wrongName.Name = "other-skill"
 	if _, err := fx.svc.Commit(ctx, wrongName); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
@@ -918,13 +1107,102 @@ func TestUserSkillImport_Commit_HashNameConfigMismatchRefused(t *testing.T) {
 	if _, err := fx.svc.Commit(ctx, wrongConfig); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
 		t.Fatalf("wrong expected config hash err=%v, want ErrUserSkillImportProposalInvalid", err)
 	}
-	// An unknown proposal id.
+	// An unknown token (valid base64url over an envelope the sealer
+	// refuses).
 	unknown := base
-	unknown.ProposalID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	unknown.ProposalToken = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 	if _, err := fx.svc.Commit(ctx, unknown); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
-		t.Fatalf("unknown proposal err=%v, want ErrUserSkillImportProposalInvalid", err)
+		t.Fatalf("unknown token err=%v, want ErrUserSkillImportProposalInvalid", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
+}
+
+// TestUserSkillImport_Commit_TokenTamperRefused exercises every stale token
+// form (bit-flipped ciphertext, oversize, malformed base64, sealed garbage)
+// — each returns the SAME typed proposal error before any write: the sealer
+// and the strict claims decoder refuse without an oracle.
+func TestUserSkillImport_Commit_TokenTamperRefused(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+
+	// One flipped character in the base64url token: AEAD authentication
+	// must refuse — the same typed error as every other stale form (no
+	// oracle), before any write.
+	tampered := validated.ProposalToken
+	last := tampered[len(tampered)-1]
+	replacement := byte('A')
+	if last == 'A' {
+		replacement = 'B'
+	}
+	tampered = tampered[:len(tampered)-1] + string(replacement)
+	bitFlip := req
+	bitFlip.ProposalToken = tampered
+	if _, err := fx.svc.Commit(ctx, bitFlip); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+		t.Fatalf("tampered-token commit err=%v, want ErrUserSkillImportProposalInvalid", err)
+	}
+	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
+
+	// Oversize token: refused on length before any decode.
+	oversize := req
+	oversize.ProposalToken = strings.Repeat("A", 1<<24)
+	if _, err := fx.svc.Commit(ctx, oversize); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+		t.Fatalf("oversize-token commit err=%v, want ErrUserSkillImportProposalInvalid", err)
+	}
+	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
+
+	// Malformed base64: refused before any decode.
+	badBase64 := req
+	badBase64.ProposalToken = "!!!not-base64url!!!"
+	if _, err := fx.svc.Commit(ctx, badBase64); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+		t.Fatalf("malformed-base64 commit err=%v, want ErrUserSkillImportProposalInvalid", err)
+	}
+	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
+
+	// Sealed garbage: valid base64url over an envelope the sealer refuses
+	// (too short / bad version / bad tag).
+	garbage := req
+	garbage.ProposalToken = base64.RawURLEncoding.EncodeToString([]byte("garbage-envelope-bytes"))
+	if _, err := fx.svc.Commit(ctx, garbage); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+		t.Fatalf("sealed-garbage commit err=%v, want ErrUserSkillImportProposalInvalid", err)
+	}
+	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
+
+	// Malformed claims: crafted JSON sealed with the same dev sealer must
+	// be refused by the strict decoder (unknown field / unsupported schema
+	// version / zero nonce / trailing data) — the SAME typed error, before
+	// any write.
+	seal := func(payload string) string {
+		env, err := fx.sealer.Seal([]byte(payload))
+		if err != nil {
+			t.Fatalf("seal crafted claims: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(env)
+	}
+	for _, payload := range []string{
+		`{"schema_version":1,"bogus":true}`,
+		`{"schema_version":99}`,
+		`{"schema_version":1,"nonce":"AAAAAAAAAAAAAAAAAAAAAA"}`,
+		`{"schema_version":1}` + " trailing",
+	} {
+		bad := req
+		bad.ProposalToken = seal(payload)
+		if _, err := fx.svc.Commit(ctx, bad); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+			t.Fatalf("malformed-claims commit err=%v, want ErrUserSkillImportProposalInvalid (payload %q)", err, payload)
+		}
+		fx.assertZeroMutations(t)
+		fx.assertZeroStateWrites(t)
+	}
 }
 
 func TestUserSkillImport_Commit_ForeignIdentityRefused(t *testing.T) {
@@ -937,22 +1215,23 @@ func TestUserSkillImport_Commit_ForeignIdentityRefused(t *testing.T) {
 	}
 	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
 
-	// A different USER with the same proposal id cannot load the slot.
+	// A different USER with the same token: the sealed actor must equal
+	// the caller's exact triple.
 	userB := identity.Identity{TenantID: "t", UserID: "v", SessionID: "s1"}
 	ctxB := importCtx(userB, testAgentID)
 	if _, err := fx.svc.Commit(ctxB, req); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
 		t.Fatalf("cross-user commit err=%v, want ErrUserSkillImportProposalInvalid", err)
 	}
-	// A different SESSION of the same user: the proposal's actor triple
-	// must equal the caller's exact triple.
+	// A different SESSION of the same user: the token's actor triple must
+	// equal the caller's exact triple.
 	userASess2 := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s2"}
 	ctxS2 := importCtx(userASess2, testAgentID)
 	if _, err := fx.svc.Commit(ctxS2, req); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
 		t.Fatalf("cross-session commit err=%v, want ErrUserSkillImportProposalInvalid", err)
 	}
-	// A different AGENT with the same proposal id: reach is signed for the
-	// OTHER agent, so the reach gate passes and the proposal-binding check
-	// refuses (the proposal is bound to testAgentID).
+	// A different AGENT with the same token: reach is signed for the OTHER
+	// agent, so the reach gate passes and the claims-binding check refuses
+	// (the token is bound to testAgentID).
 	ctxOtherAgent := importCtx(importUserA, "agent-other")
 	crossAgent := req
 	crossAgent.AgentID = "agent-other"
@@ -960,29 +1239,7 @@ func TestUserSkillImport_Commit_ForeignIdentityRefused(t *testing.T) {
 		t.Fatalf("cross-agent commit err=%v, want ErrUserSkillImportProposalInvalid", err)
 	}
 	fx.assertZeroMutations(t)
-}
-
-func TestUserSkillImport_Commit_ChangedCeilingSnapshotRefused(t *testing.T) {
-	fx := newImportFixture(t)
-	ctx := importCtx(importUserA, testAgentID)
-	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
-	if err != nil {
-		t.Fatalf("validate: %v", err)
-	}
-	// Tamper the reviewed ceiling snapshot: the archive entry bound is no
-	// longer the canonical value.
-	fx.tamperProposal(t, importQuad(importUserA), fx.proposalKind(validated.ProposalID), func(m map[string]any) {
-		limits, ok := m["archive_limits"].(map[string]any)
-		if !ok {
-			t.Fatalf("proposal JSON lacks archive_limits: %v", m)
-		}
-		limits["MaxEntries"] = 999
-	})
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportCeilingChanged) {
-		t.Fatalf("changed-ceiling commit err=%v, want ErrUserSkillImportCeilingChanged", err)
-	}
-	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_Commit_ChangedArtifactRefused(t *testing.T) {
@@ -1002,6 +1259,7 @@ func TestUserSkillImport_Commit_ChangedArtifactRefused(t *testing.T) {
 		t.Fatalf("erased-artifact commit err=%v, want ErrUserSkillImportArtifactNotFound", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,12 +1279,13 @@ func TestUserSkillImport_RetiredAgentRefused(t *testing.T) {
 		t.Fatalf("retired validate err=%v, want ErrAgentRetired", err)
 	}
 	if _, err := fx.svc.Commit(ctx, agentcfgprotocol.UserSkillImportCommitRequest{
-		ProposalID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", AgentID: testAgentID, Name: "x",
+		ProposalToken: "01ARZ3NDEKTSV4RRFFQ69G5FAV", AgentID: testAgentID, Name: "x",
 		ReviewedPackageHash: "v1:" + strings.Repeat("ab", 32),
 	}); !errors.Is(err, agentcfg.ErrAgentRetired) {
 		t.Fatalf("retired commit err=%v, want ErrAgentRetired", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 func TestUserSkillImport_UnwiredAgentReachFailsClosed(t *testing.T) {
@@ -1037,7 +1296,7 @@ func TestUserSkillImport_UnwiredAgentReachFailsClosed(t *testing.T) {
 	artifactStore := fx.artifacts
 	imp := fx.imp
 	proposals := fx.proposals
-	svc, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, proposals, fx.store, fx.reg, fx.cap)
+	svc, err := agentcfgprotocol.NewUserSkillImportService(imp, artifactStore, fx.sealer, proposals, fx.store, fx.reg, fx.cap)
 	if err != nil {
 		t.Fatalf("NewUserSkillImportService (no reach gates): %v", err)
 	}
@@ -1047,6 +1306,7 @@ func TestUserSkillImport_UnwiredAgentReachFailsClosed(t *testing.T) {
 		t.Fatalf("unwired-gate validate err=%v, want ErrUserSkillImportAgentReachDenied", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,15 +1318,16 @@ func TestUserSkillImport_BootOwnedNameRefusedEverywhere(t *testing.T) {
 	owner := &fakeBootOwner{names: map[string]struct{}{"demo-skill": {}}}
 	guarded := agentcfgprotocol.WithBootOwnership(importCtx(importUserA, testAgentID), owner)
 
-	// Validate refuses BEFORE a proposal exists.
+	// Validate refuses BEFORE a token exists.
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
 	if _, err := fx.svc.Validate(guarded, fx.validateReq(importUserA, testAgentID, artifactID)); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
 		t.Fatalf("boot-owned validate err=%v, want ErrBootPackOwned", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 
-	// Commit refuses on EVERY path even when the proposal was created
-	// before the baseline bound the name.
+	// Commit refuses on EVERY path even when the token was created before
+	// the baseline bound the name.
 	unguarded := importCtx(importUserA, testAgentID)
 	validated, err := fx.svc.Validate(unguarded, fx.validateReq(importUserA, testAgentID, artifactID))
 	if err != nil {
@@ -1077,6 +1338,7 @@ func TestUserSkillImport_BootOwnedNameRefusedEverywhere(t *testing.T) {
 		t.Fatalf("boot-owned commit err=%v, want ErrBootPackOwned", err)
 	}
 	fx.assertZeroMutations(t)
+	fx.assertZeroStateWrites(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,9 +1368,8 @@ func TestUserSkillImport_CrossUserIsolation(t *testing.T) {
 func TestUserSkillImport_CrossSessionIsolation(t *testing.T) {
 	fx := newImportFixture(t)
 	// Validate in session s, attempt the commit in session s2 of the SAME
-	// user: the proposal's actor triple must equal the caller's exact
-	// triple — the artifact is session-scoped and the review is
-	// session-bound.
+	// user: the token's actor triple must equal the caller's exact triple —
+	// the artifact is session-scoped and the review is session-bound.
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
 	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
@@ -1185,8 +1446,8 @@ func TestUserSkillImport_Compensation_ExactReceiptUndoesOnlyItsOwnUnit(t *testin
 // ---------------------------------------------------------------------------
 
 // TestUserSkillImport_ConcurrentSameProposal_OneWinner races N commits of the
-// SAME proposal: the durable SaveIf serialization plus the package CAS must
-// produce exactly one put, and every caller either receives the terminal
+// SAME token: the absent-slot SaveIf CAS (first commit) plus the package CAS
+// must produce exactly one put, and every caller either receives the terminal
 // result or a typed refusal — never a double write, never a panic.
 func TestUserSkillImport_ConcurrentSameProposal_OneWinner(t *testing.T) {
 	fx := newImportFixture(t)
@@ -1213,7 +1474,7 @@ func TestUserSkillImport_ConcurrentSameProposal_OneWinner(t *testing.T) {
 
 	put, _, _, _, _, _ := fx.store.counts()
 	if put != 1 {
-		t.Fatalf("concurrent same-proposal commits wrote %d packages, want exactly 1", put)
+		t.Fatalf("concurrent same-token commits wrote %d packages, want exactly 1", put)
 	}
 	successes := 0
 	for i := 0; i < n; i++ {
