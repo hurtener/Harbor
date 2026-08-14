@@ -111,6 +111,17 @@ harbor dev
 
 `harbor dev` boots the Runtime on `127.0.0.1:18080` and mints an ephemeral `HARBOR_DEV_TOKEN` (printed on stderr). The Console is a separate process — see [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) for the attach flow.
 
+### Verify the effective composition before you trust the run (`harbor composition-preview`)
+
+When the yaml declares `skills.boot_agent_packs` — or you simply want to confirm exactly what the run-start composer would compose for the scaffolded agent (operator pack + durable revision + personal skills, deduped into one combined operator tier) — preview it read-only against the running runtime:
+
+```bash
+HARBOR_TOKEN=$jwt harbor composition-preview \
+  --tenant dev --user dev --session dev --agent harbor-dev-agent
+```
+
+The verb is a thin caller over the read-only `agent_config.composition.preview` Protocol method. It reports the typed outcome (`available | unavailable | conflict | retired`), the deterministic set hashes (`boot_pack_set_hash` / `combined_hash` / `revision_hash`), and each operator-tier item with its exact `boot|revision|both` provenance and canonical semantic hash — what the next run would actually compose. It never mutates: no lifecycle creation, no revision write, no skill/artifact store write. `--json` re-emits the canonical wire response for scripting. The same strict resolver feeds boot preflight, run, and preview, so a preview here is the ground truth for the scaffolded config. (The `boot_agent_packs` block itself is node-local, eager, immutable, and restart-required — see [`validate-and-package`](../validate-and-package/SKILL.md) before shipping it.)
+
 ## 6. Serve the Protocol from your own binary (`--with-server`)
 
 `harbor dev` is the development loop; when you want your agent — with its compiled in-process Go tools — to serve the Harbor Protocol from its **own** binary at parity with the stock `harbor serve`, add `--with-server`:

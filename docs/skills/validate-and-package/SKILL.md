@@ -26,6 +26,7 @@ This is the cheapest gate. It runs the config loader against your yaml and repor
 - Bound violations (`governance.identity_tiers.free.budget_ceiling_usd: -1`).
 - Cross-field constraints (`memory.driver: sqlite` without `memory.dsn`).
 - Driver-existence checks (`llm.provider: nim` without a matching `custom_providers:` entry).
+- The v1.28 projection blocks follow the same driver + DSN contract as the state/memory/artifacts blocks: `sessions.turns.driver: sqlite` without `sessions.turns.dsn` fails, `observability.rollups.driver: postgres` without `observability.rollups.dsn` fails, and any `skills.boot_agent_packs` declaration without a configured `skills.driver` + `skills.dsn` fails loud (the composite resolver needs the configured skill store).
 
 Run after every yaml edit. Failure modes are usually obvious from the message.
 
@@ -93,6 +94,12 @@ Beyond the gates above, before deploying to a non-dev environment:
 - [ ] `telemetry.log_level: info` (NOT `debug` — debug leaks prompt/completion content).
 - [ ] If using Postgres: migrations run, connection pool sized.
 - [ ] If using SQLite: WAL mode confirmed, DSN on a fast disk.
+
+The v1.28 projection and boot-baseline blocks are deployment decisions, not defaults:
+
+- [ ] `sessions.turns.driver` — durable conversation-turn projection backing `sessions.turns.list` / `sessions.turns.get` (HA-64). `inmem` loses the projection on restart; `sqlite` / `postgres` are durable. An absent block leaves the projection unwired (the turn routes answer 501 — the partial-build convention). Restart-required. Optional `sessions.turns.retention` bounds newest rows kept per session (≤ 0 = the projection's documented default).
+- [ ] `observability.rollups.driver` — durable rollup store behind `observability.query` (HA-65). Same driver triad; `inmem` loses aggregates on restart; `sqlite` / `postgres` are durable. An absent block leaves the surface unwired. Rollups are best-effort aggregates over persisted canonical events — never billing-exact. Restart-required.
+- [ ] `skills.boot_agent_packs` — node-local, per-node configuration. The pack files are read eagerly and immutably at boot (restart-required, never hot-reloaded), resolved relative to the config file's directory, and a file change on one node never converges the others — ship the pack directories to every node. Requires `skills.driver` + `skills.dsn`. Headless `RunOnce` is explicitly unsupported and fails loud when the baseline is configured. Verify the effective composition read-only with `harbor composition-preview --tenant <t> --user <u> --session <s> --agent <boot-agent>` (items report exact `boot|revision|both` provenance + the `boot_pack_set_hash`).
 
 ## 5. Mirror invariant — AGENTS.md ↔ CLAUDE.md
 
