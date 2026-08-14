@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/hurtener/Harbor/internal/protocol/types"
 
 	// Production driver aggregator — the same blank import a served
