@@ -92,7 +92,10 @@ func WithBootOwnership(ctx context.Context, owner BootOwnership) context.Context
 // integration owner re-points at a Service field once the field + option
 // land; every verb reads the reader through this one function.
 func bootOwnershipFromContext(ctx context.Context) BootOwnership {
-	owner, _ := ctx.Value(bootOwnershipContextKey{}).(BootOwnership)
+	owner, ok := ctx.Value(bootOwnershipContextKey{}).(BootOwnership)
+	if !ok {
+		return nil
+	}
 	return owner
 }
 

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
-	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -108,7 +107,6 @@ type admissionGateFixture struct {
 	sessions *sessions.Registry
 	eraser   *sessions.CascadeEraser
 	agentCfg *fakeAdmissionAgentCfg
-	overlay  sessionoverlay.Store
 }
 
 func buildAdmissionGateFixture(t *testing.T) admissionGateFixture {

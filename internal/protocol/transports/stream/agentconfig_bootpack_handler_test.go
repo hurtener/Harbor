@@ -56,11 +56,12 @@ func (o packBootOwner) OwnsName(tenantID, agentID, name string) bool {
 }
 
 // packOwnerFor builds a reader that owns names for ONE exact (tenant, agent)
-// pair.
-func packOwnerFor(tenantID, agentID string, names ...string) packBootOwner {
+// pair. The tenant is the fixture identity's fixed "t1" and the agent the
+// fixture's acAgent (see acID).
+func packOwnerFor(names ...string) packBootOwner {
 	o := packBootOwner{}
 	for _, n := range names {
-		o[packOwnerKey(tenantID, agentID, n)] = true
+		o[packOwnerKey("t1", acAgent, n)] = true
 	}
 	return o
 }
@@ -182,7 +183,7 @@ func newPackSessionHandlerFixture(t *testing.T) sessionHandlerFixture {
 // the same reader.
 func TestAgentConfigHandler_AgentPacksUpsert_BootOwnedTypedRefusal(t *testing.T) {
 	h := sessionHandler(t)
-	owner := packOwnerFor("t1", acAgent, "playbook")
+	owner := packOwnerFor("playbook")
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","skill":{"name":"playbook","trigger":"trigger","steps":["step"]}}`
 	code, resp := acReqOwned(t, h, "agent_packs/upsert", body, acID(), []auth.Scope{auth.ScopeAdmin}, owner)
 	if code != http.StatusBadRequest {
@@ -207,7 +208,7 @@ func TestAgentConfigHandler_AgentPacksUpsert_BootOwnedTypedRefusal(t *testing.T)
 // non-boot-only absent name would produce.
 func TestAgentConfigHandler_AgentPacksRemove_BootOnlyTypedRefusal(t *testing.T) {
 	h := sessionHandler(t)
-	owner := packOwnerFor("t1", acAgent, "playbook")
+	owner := packOwnerFor("playbook")
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","name":"playbook"}`
 	code, resp := acReqOwned(t, h, "agent_packs/remove", body, acID(), []auth.Scope{auth.ScopeAdmin}, owner)
 	if code != http.StatusBadRequest {
@@ -243,7 +244,7 @@ func TestAgentConfigHandler_AgentPacksRollback_BootOwnedTypedRefusal(t *testing.
 	if code, resp := acReq(t, h, "agent_packs/upsert", headBody, acID(), []auth.Scope{auth.ScopeAdmin}); code != http.StatusOK {
 		t.Fatalf("seed head upsert status=%d body=%s", code, resp)
 	}
-	owner := packOwnerFor("t1", acAgent, "playbook")
+	owner := packOwnerFor("playbook")
 	rollbackBody := fmt.Sprintf(`{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","revision_id":%q}`, shadowRev)
 	code, resp = acReqOwned(t, h, "rollback", rollbackBody, acID(), []auth.Scope{auth.ScopeAdmin}, owner)
 	if code != http.StatusBadRequest {
@@ -282,7 +283,7 @@ func TestAgentConfigHandler_AgentPacksCommit_BootOwnedTypedRefusal(t *testing.T)
 	}
 	commitBody := fmt.Sprintf(`{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","skill":%s,"reviewed_hash":%q,"provenance":%q,"proposal_id":%q,"expected_content_hash":%q}`,
 		skillJSON, proposed.Hash, proposed.Provenance, proposed.ProposalID, proposed.ExpectedContentHash)
-	owner := packOwnerFor("t1", acAgent, "playbook")
+	owner := packOwnerFor("playbook")
 	code, resp = acReqOwned(t, h, "agent_packs/commit", commitBody, acID(), []auth.Scope{auth.ScopeAdmin}, owner)
 	if code != http.StatusBadRequest {
 		t.Fatalf("boot-owned commit status = %d body=%s, want 400", code, resp)

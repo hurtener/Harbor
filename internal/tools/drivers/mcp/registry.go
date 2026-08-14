@@ -757,7 +757,7 @@ func currentGenerationFor(descs []tools.ToolDescriptor) string {
 		var lenBuf [8]byte
 		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(row)))
 		h.Write(lenBuf[:])
-		io.WriteString(h, string(row))
+		h.Write(row)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -788,23 +788,34 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 		buf.Write(lenBuf[:])
 		buf.WriteString(s)
 	}
-	writeInt := func(v int64) {
+	writeInt := func(v int64) error {
+		if v < 0 {
+			// Every caller passes a length, count, or duration — all
+			// non-negative by construction; a negative value would be a
+			// corrupt field and must fail the row closed, never wrap
+			// into a garbage prefix byte.
+			return fmt.Errorf("mcp: canonical row field is negative: %d", v)
+		}
 		var fieldBuf [8]byte
 		binary.BigEndian.PutUint64(fieldBuf[:], uint64(v))
 		buf.Write(fieldBuf[:])
+		return nil
 	}
 	writeFloat := func(f float64) {
 		var fieldBuf [8]byte
 		binary.BigEndian.PutUint64(fieldBuf[:], math.Float64bits(f))
 		buf.Write(fieldBuf[:])
 	}
-	writeSorted := func(values []string) {
-		writeInt(int64(len(values)))
+	writeSorted := func(values []string) error {
+		if err := writeInt(int64(len(values))); err != nil {
+			return err
+		}
 		sorted := append([]string(nil), values...)
 		sort.Strings(sorted)
 		for _, v := range sorted {
 			writeField(v)
 		}
+		return nil
 	}
 
 	writeField(t.Name)
@@ -820,18 +831,28 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 	}
 	writeField(outSchema)
 	writeField(string(t.SideEffects))
-	writeSorted(t.Tags)
-	writeSorted(t.AuthScopes)
+	if err := writeSorted(t.Tags); err != nil {
+		return nil, err
+	}
+	if err := writeSorted(t.AuthScopes); err != nil {
+		return nil, err
+	}
 	writeField(t.CostHint)
-	writeInt(int64(t.LatencyHint))
+	if err := writeInt(int64(t.LatencyHint)); err != nil {
+		return nil, err
+	}
 	writeField(t.SafetyNotes)
 	writeField(string(t.Loading))
 	// Examples are order-bearing (the planner sees them in order), so
 	// they keep their order.
-	writeInt(int64(len(t.Examples)))
+	if err := writeInt(int64(len(t.Examples))); err != nil {
+		return nil, err
+	}
 	for _, ex := range t.Examples {
 		writeField(ex.Description)
-		writeSorted(ex.Tags)
+		if err := writeSorted(ex.Tags); err != nil {
+			return nil, err
+		}
 		args := ex.Args
 		if args == nil {
 			// nil and the empty map are semantically the same "no args".
@@ -846,11 +867,19 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 	writeField(string(t.Source))
 	writeField(string(t.Transport))
 	// Policy — the reliability shell, a stable semantic field family.
-	writeInt(int64(t.Policy.TimeoutMS))
-	writeInt(int64(t.Policy.MaxRetries))
-	writeInt(int64(t.Policy.BackoffBase))
+	if err := writeInt(int64(t.Policy.TimeoutMS)); err != nil {
+		return nil, err
+	}
+	if err := writeInt(int64(t.Policy.MaxRetries)); err != nil {
+		return nil, err
+	}
+	if err := writeInt(int64(t.Policy.BackoffBase)); err != nil {
+		return nil, err
+	}
 	writeFloat(t.Policy.BackoffMult)
-	writeInt(int64(t.Policy.BackoffMax))
+	if err := writeInt(int64(t.Policy.BackoffMax)); err != nil {
+		return nil, err
+	}
 	// RetryOn has a behaviorally meaningful nil-versus-explicit-empty
 	// distinction that the digest MUST preserve: a nil RetryOn (zero
 	// value) inherits the default retry allowlist ([transient, timeout,
@@ -869,9 +898,13 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 	for i, class := range t.Policy.RetryOn {
 		retryOn[i] = string(class)
 	}
-	writeSorted(retryOn)
+	if err := writeSorted(retryOn); err != nil {
+		return nil, err
+	}
 	writeField(string(t.Policy.Validate))
-	writeSorted(t.HandlesMIME)
+	if err := writeSorted(t.HandlesMIME); err != nil {
+		return nil, err
+	}
 	writeField(string(t.Form))
 	if t.AppOnly {
 		writeField("1")

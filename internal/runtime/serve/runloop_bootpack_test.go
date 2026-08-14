@@ -105,7 +105,7 @@ func TestRunLoopDriver_BootPackReader_ExactKeyComposesBootBaseline(t *testing.T)
 	const agentID = "agent-x"
 	activateRunSnapshotAgent(t, st, q, agentID)
 	idx := buildTestBootIndex(t, bootSkillFor("playbook", "boot trigger", "boot step"))
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = idx
 
 	snapshot, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q, nil)
@@ -140,7 +140,7 @@ func TestRunLoopDriver_BootPackReader_ForeignTenantOrAgentMisses(t *testing.T) {
 	st := runSnapshotState(t)
 	base := &runSnapshotReader{}
 	idx := buildTestBootIndex(t, bootSkillFor("playbook", "boot trigger", "boot step"))
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = idx
 
 	cases := []struct {
@@ -200,7 +200,7 @@ func TestRunLoopDriver_BootPackReader_SameHashRevisionDedupesBoth(t *testing.T) 
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = idx
 
 	snapshot, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q, nil)
@@ -249,7 +249,7 @@ func TestRunLoopDriver_BootPackReader_DifferingRevisionFailsSnapshot(t *testing.
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = idx
 
 	_, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q, nil)
@@ -284,7 +284,7 @@ func TestRunLoopDriver_BootPackReader_DeterministicHashesAndEveryItemSource(t *t
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = idx
 
 	snapshot, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q, nil)
@@ -326,7 +326,7 @@ func TestRunLoopDriver_BootPackReader_VirtualAllowlistKeepsProvenance(t *testing
 	const agentID = "agent-x"
 	activateRunSnapshotAgent(t, st, q, agentID)
 	idx := buildTestBootIndex(t, bootSkillFor("playbook", "boot trigger", "boot step"))
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = idx
 
 	// The virtual profile narrows to a skill the boot baseline does NOT
@@ -366,7 +366,7 @@ func TestRunLoopDriver_BootPackReader_ConcurrentLookupsAndSnapshotsNoBleed(t *te
 	st := runSnapshotState(t)
 	base := &runSnapshotReader{}
 	fake := bootPackFake{entries: make(map[bootpacks.Key][]bootpacks.Entry, runs)}
-	driver, _ := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, _ := newRunSnapshotDriver(t, reg, base, st)
 	driver.bootPackReader = fake
 	for i := range runs {
 		q := concurrencySnapshotQ(i)
@@ -393,7 +393,7 @@ func TestRunLoopDriver_BootPackReader_ConcurrentLookupsAndSnapshotsNoBleed(t *te
 			// Leg 2: the full run-start snapshot capture.
 			snapshot, ok, err := driver.captureRunSkillSnapshot(t.Context(), agentID, q, nil)
 			if err != nil || !ok {
-				errCh <- fmt.Errorf("run %d: capture: ok=%t err=%v", i, ok, err)
+				errCh <- fmt.Errorf("run %d: capture: ok=%t err=%w", i, ok, err)
 				return
 			}
 			if snapshot.BootPackSetHash() == "" {

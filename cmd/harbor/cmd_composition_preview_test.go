@@ -24,10 +24,12 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// runCompositionPreviewTest builds a fresh root, sets args, captures
-// stdout/stderr, returns (stdout, stderr, err). Mirrors
-// runInspectTopologyTest for the composition-preview path.
-func runCompositionPreviewTest(t *testing.T, args ...string) (string, string, error) {
+// runCompositionPreviewTest builds a fresh root, sets args, and executes
+// it, returning the error. Neither stdout nor stderr is returned: no
+// caller reads them (the golden assertions drive the testable core
+// directly). Mirrors runInspectTopologyTest for the composition-preview
+// path.
+func runCompositionPreviewTest(t *testing.T, args ...string) error {
 	t.Helper()
 	root := NewRootCmd()
 	var out, errBuf bytes.Buffer
@@ -40,8 +42,7 @@ func runCompositionPreviewTest(t *testing.T, args ...string) (string, string, er
 		}
 	}
 	root.SetArgs(append([]string{"composition-preview"}, args...))
-	err := root.Execute()
-	return out.String(), errBuf.String(), err
+	return root.Execute()
 }
 
 // canonicalPreviewFixture is the deterministic `available` wire
@@ -111,7 +112,7 @@ func previewFixtureServer(t *testing.T, responses map[string]string) (*httptest.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body []byte
 		if r.Body != nil {
-			body, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture; a body read failure surfaces as an empty-body assertion
+			body, _ = io.ReadAll(r.Body)
 		}
 		select {
 		case captured <- capturedPreviewRequest{req: r.Clone(r.Context()), body: body}:
@@ -148,7 +149,7 @@ func awaitPreviewRequest(t *testing.T, captured <-chan capturedPreviewRequest) c
 // network call).
 func TestCompositionPreview_MissingIdentity(t *testing.T) {
 	t.Parallel()
-	_, _, err := runCompositionPreviewTest(t, "--agent", "harbor-dev-agent")
+	err := runCompositionPreviewTest(t, "--agent", "harbor-dev-agent")
 	if err == nil {
 		t.Fatal("expected error for missing identity triple")
 	}
@@ -165,7 +166,7 @@ func TestCompositionPreview_MissingIdentity(t *testing.T) {
 // surfaces CodeCompositionPreviewAgentMissing.
 func TestCompositionPreview_MissingAgent(t *testing.T) {
 	t.Parallel()
-	_, _, err := runCompositionPreviewTest(t, "--tenant", "t", "--user", "u", "--session", "s")
+	err := runCompositionPreviewTest(t, "--tenant", "t", "--user", "u", "--session", "s")
 	if err == nil {
 		t.Fatal("expected error for missing --agent")
 	}
@@ -183,7 +184,7 @@ func TestCompositionPreview_MissingAgent(t *testing.T) {
 func TestCompositionPreview_MissingToken(t *testing.T) {
 	t.Setenv(envHarborToken, "")
 	t.Setenv("HOME", t.TempDir())
-	_, _, err := runCompositionPreviewTest(t,
+	err := runCompositionPreviewTest(t,
 		"--tenant", "t", "--user", "u", "--session", "s", "--agent", "harbor-dev-agent")
 	if err == nil {
 		t.Fatal("expected error for missing token")
@@ -201,7 +202,7 @@ func TestCompositionPreview_MissingToken(t *testing.T) {
 // CodeBindInvalid. Cannot run t.Parallel — it mutates env.
 func TestCompositionPreview_BadBind(t *testing.T) {
 	t.Setenv(envHarborToken, "test-bearer-token")
-	_, _, err := runCompositionPreviewTest(t,
+	err := runCompositionPreviewTest(t,
 		"--tenant", "t", "--user", "u", "--session", "s", "--agent", "a", "--bind", "http://exa mple")
 	if err == nil {
 		t.Fatal("expected error for bad --bind")

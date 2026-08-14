@@ -674,7 +674,7 @@ func TestRegistry_ResolveAppToolAtGeneration_ConcurrentIsolation(t *testing.T) {
 	start := make(chan struct{})
 	refusals := new(atomic.Int64)
 	hits := new(atomic.Int64)
-	for i := 0; i < n; i++ {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

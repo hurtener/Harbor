@@ -578,7 +578,7 @@ func TestProjection_ConcurrentReadersPublishers(t *testing.T) {
 		pwg.Add(1)
 		go func(p int) {
 			defer pwg.Done()
-			for i := 0; i < perPublisher; i++ {
+			for i := range perPublisher {
 				ev := events.Event{
 					Type:     events.EventTypeRuntimeError,
 					Identity: ids[p],

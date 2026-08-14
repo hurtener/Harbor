@@ -190,14 +190,14 @@ func activateRunSnapshotAgent(t *testing.T, st state.StateStore, q identity.Quad
 	}
 }
 
-func newRunSnapshotDriver(t *testing.T, reg agentcfg.Registry, base skills.SkillStore, st state.StateStore, bootAgent string) (*RunLoopDriver, *sessionoverlay.DurableStore) {
+func newRunSnapshotDriver(t *testing.T, reg agentcfg.Registry, base skills.SkillStore, st state.StateStore) (*RunLoopDriver, *sessionoverlay.DurableStore) {
 	t.Helper()
 	personal, err := sessionoverlay.NewDurableStore(st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &RunLoopDriver{
-		agentConfig: reg, agentConfigID: bootAgent, skillStore: base,
+		agentConfig: reg, agentConfigID: "boot-agent", skillStore: base,
 		sessionPersonalSkills: personal, sessionSkillCutover: runSnapshotModeReader{},
 	}, personal
 }
@@ -253,7 +253,7 @@ func TestRunLoopDriver_SkillSnapshot_UsesEffectiveAgentAndFreezesEveryConsumer(t
 	if _, err := reg.SetRevision(t.Context(), q, selectedAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{"user-skill"}}}, agentcfg.SetOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	driver, personal := newRunSnapshotDriver(t, reg, base, st, bootAgent)
+	driver, personal := newRunSnapshotDriver(t, reg, base, st)
 	if _, err := personal.SavePersonal(t.Context(), q, selectedAgent, runSnapshotSkill(q, "session-old", skills.ScopeSession), "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestRunLoopDriver_SkillSnapshot_ConcurrentTupleIsolation(t *testing.T) {
 	reg := acTestRegistry(t)
 	st := runSnapshotState(t)
 	base := &runSnapshotReader{}
-	driver, personal := newRunSnapshotDriver(t, reg, base, st, "boot-agent")
+	driver, personal := newRunSnapshotDriver(t, reg, base, st)
 	for i := range runs {
 		q := concurrencySnapshotQ(i)
 		agentID := "agent-" + q.SessionID

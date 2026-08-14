@@ -518,7 +518,7 @@ func TestProjection_ConcurrentReadersPublishers(t *testing.T) {
 		pwg.Add(1)
 		go func(p int) {
 			defer pwg.Done()
-			for i := 0; i < perPublisher; i++ {
+			for i := range perPublisher {
 				if err := bus.Publish(context.Background(), safeCanonical(ids[p], uint64(i))); err != nil {
 					t.Errorf("publisher %d Publish: %v", p, err)
 					return

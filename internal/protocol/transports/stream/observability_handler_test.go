@@ -54,9 +54,9 @@ func (f *obsFakeQuality) Quality(_ context.Context) (rollups.Quality, error) {
 	}, nil
 }
 
-func newObservabilityHandler(t *testing.T, q *obsFakeQuerier, ql *obsFakeQuality, scoped bool) *stream.ObservabilityHandler {
+func newObservabilityHandler(t *testing.T, q *obsFakeQuerier, ql *obsFakeQuality) *stream.ObservabilityHandler {
 	t.Helper()
-	scope := func(ctx context.Context) bool { return scoped }
+	scope := func(ctx context.Context) bool { return false }
 	svc, err := protocol.NewService(q, ql, scope,
 		func(context.Context, events.Event) error { return nil },
 		patterns.New())
@@ -98,7 +98,7 @@ func TestObservabilityHandler_Query_ProjectsRowsAndQuality(t *testing.T) {
 			rollups.MeasureLLMCompletions: {N: 7, Scale: 1},
 			rollups.MeasureLLMCostMicros:  {N: 2_500_000, Scale: 1_000_000},
 		},
-	}}}, &obsFakeQuality{state: rollups.StateCurrent}, false)
+	}}}, &obsFakeQuality{state: rollups.StateCurrent})
 	code, body := doObsRequest(t, h,
 		`{"from":"2026-05-19T09:00:00Z","to":"2026-05-19T10:00:00Z","bucket":"hour","measures":["llm_completions","llm_cost_micros"],"limit":100}`)
 	if code != http.StatusOK {
@@ -145,7 +145,7 @@ func TestObservabilityHandler_Query_ProjectsRowsAndQuality(t *testing.T) {
 }
 
 func TestObservabilityHandler_Query_MissingIdentityIs401(t *testing.T) {
-	h := newObservabilityHandler(t, &obsFakeQuerier{}, &obsFakeQuality{state: rollups.StateCurrent}, false)
+	h := newObservabilityHandler(t, &obsFakeQuerier{}, &obsFakeQuality{state: rollups.StateCurrent})
 	req := httptest.NewRequest(http.MethodPost, "/v1/observability/query",
 		strings.NewReader(`{"from":"2026-05-19T09:00:00Z","to":"2026-05-19T10:00:00Z","bucket":"hour","measures":["llm_completions"],"limit":100}`))
 	rec := httptest.NewRecorder()
@@ -156,7 +156,7 @@ func TestObservabilityHandler_Query_MissingIdentityIs401(t *testing.T) {
 }
 
 func TestObservabilityHandler_Query_CrossTenantFilterRequiresScope(t *testing.T) {
-	h := newObservabilityHandler(t, &obsFakeQuerier{}, &obsFakeQuality{state: rollups.StateCurrent}, false)
+	h := newObservabilityHandler(t, &obsFakeQuerier{}, &obsFakeQuality{state: rollups.StateCurrent})
 	code, body := doObsRequest(t, h,
 		`{"from":"2026-05-19T09:00:00Z","to":"2026-05-19T10:00:00Z","bucket":"hour","measures":["llm_completions"],"limit":100,"filters":{"tenant_ids":["t-other"]}}`)
 	if code != http.StatusForbidden {
@@ -165,7 +165,7 @@ func TestObservabilityHandler_Query_CrossTenantFilterRequiresScope(t *testing.T)
 }
 
 func TestObservabilityHandler_Query_BudgetExceededMapsTyped(t *testing.T) {
-	h := newObservabilityHandler(t, &obsFakeQuerier{err: protocol.ErrBudgetExceeded}, &obsFakeQuality{state: rollups.StateCurrent}, false)
+	h := newObservabilityHandler(t, &obsFakeQuerier{err: protocol.ErrBudgetExceeded}, &obsFakeQuality{state: rollups.StateCurrent})
 	code, body := doObsRequest(t, h,
 		`{"from":"2026-05-19T09:00:00Z","to":"2026-05-19T10:00:00Z","bucket":"hour","measures":["llm_completions"],"limit":100}`)
 	if code != http.StatusBadRequest {
@@ -177,7 +177,7 @@ func TestObservabilityHandler_Query_BudgetExceededMapsTyped(t *testing.T) {
 }
 
 func TestObservabilityHandler_Query_BadCursorMapsTyped(t *testing.T) {
-	h := newObservabilityHandler(t, &obsFakeQuerier{err: protocol.ErrBadCursor}, &obsFakeQuality{state: rollups.StateCurrent}, false)
+	h := newObservabilityHandler(t, &obsFakeQuerier{err: protocol.ErrBadCursor}, &obsFakeQuality{state: rollups.StateCurrent})
 	code, body := doObsRequest(t, h,
 		`{"from":"2026-05-19T09:00:00Z","to":"2026-05-19T10:00:00Z","bucket":"hour","measures":["llm_completions"],"limit":100,"cursor":"stale"}`)
 	if code != http.StatusBadRequest {

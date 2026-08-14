@@ -308,6 +308,9 @@ func TestTryAssemble_NoBootPacks_PreviewAvailable(t *testing.T) {
 		srv.URL+"/v1/agent_config/composition/preview",
 		bytes.NewReader(bodyBytes),
 	)
+	if err != nil {
+		t.Fatalf("build preview request: %v", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+stack.Token)
 	resp, err := http.DefaultClient.Do(req)

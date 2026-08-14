@@ -37,7 +37,7 @@ func TestAuthority_Concurrent_MixedTuples_NoBleed(t *testing.T) {
 	// Phase 1 — concurrent mints, one unique tuple per goroutine.
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -70,7 +70,7 @@ func TestAuthority_Concurrent_MixedTuples_NoBleed(t *testing.T) {
 	// token against its own tuple (must fail closed as Mismatch).
 	wg = sync.WaitGroup{}
 	errs = make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -87,7 +87,7 @@ func TestAuthority_Concurrent_MixedTuples_NoBleed(t *testing.T) {
 			}
 			neighbor := (i + 1) % n
 			if _, err := a.Verify(ctx, results[i].tuple, results[neighbor].tok.Value); !errors.Is(err, ErrTokenMismatch) {
-				errs <- fmt.Errorf("swap %d<-%d: want ErrTokenMismatch, got %v", i, neighbor, err)
+				errs <- fmt.Errorf("swap %d<-%d: want ErrTokenMismatch, got %w", i, neighbor, err)
 			}
 		}(i)
 	}

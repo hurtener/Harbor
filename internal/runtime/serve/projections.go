@@ -74,7 +74,8 @@ func OpenTurnsProjection(ctx context.Context, cfg *config.Config, deps TurnsProj
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("sessions.turns: %w", err)
 	}
-	closers := []func(context.Context) error{store.Close}
+	closers := make([]func(context.Context) error, 0, 2)
+	closers = append(closers, store.Close)
 
 	projector, pErr := turns.New(store,
 		turns.WithErasureProbe(turnsErasureProbe(deps.Sessions)),
@@ -369,7 +370,8 @@ func OpenRollupsProjection(ctx context.Context, cfg *config.Config, deps Rollups
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("observability.rollups: %w", err)
 	}
-	closers := []func(context.Context) error{store.Close}
+	closers := make([]func(context.Context) error, 0, 2)
+	closers = append(closers, store.Close)
 
 	src, sErr := events.OpenProjectionSource(deps.Bus)
 	if sErr != nil {

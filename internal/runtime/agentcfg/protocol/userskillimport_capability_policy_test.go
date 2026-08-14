@@ -85,7 +85,7 @@ func TestUserSkillImportCapabilityPolicy_Constructor_UsableThroughInterface(t *t
 
 	// The constructor returns the interface, so composition from another
 	// package never needs the private concrete type.
-	var capability agentcfgprotocol.UserSkillImportCapability = agentcfgprotocol.NewUserSkillImportCapabilityPolicy(fx.reg, fx.overlay, cat, granted)
+	capability := agentcfgprotocol.NewUserSkillImportCapabilityPolicy(fx.reg, fx.overlay, cat, granted)
 
 	policy, err := capability.Policy(ctx, fx.caller, testAgentID)
 	if err != nil {

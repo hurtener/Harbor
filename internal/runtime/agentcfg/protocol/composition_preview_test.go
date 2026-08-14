@@ -196,11 +196,12 @@ func seedPackItem(t *testing.T, svc *agentcfgprotocol.Service, item prototypes.A
 // expectedTier composes the SAME strict composer over the SAME inputs the
 // preview service reads (the fresh active revision's durable agent_packs
 // section + the frozen boot baseline) — the parity oracle for every
-// available-preview assertion.
-func expectedTier(t *testing.T, reg agentcfg.RetirementRegistry, bootIdx agentcfgprotocol.BootPackReader, tenant, user, session, agentID string) (sessionoverlay.OperatorTier, agentcfg.Revision, bool) {
+// available-preview assertion. The tenant and agent are the fixture's fixed
+// "t" / testAgentID (see scope).
+func expectedTier(t *testing.T, reg agentcfg.RetirementRegistry, bootIdx agentcfgprotocol.BootPackReader, user, session string) (sessionoverlay.OperatorTier, agentcfg.Revision, bool) {
 	t.Helper()
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session}}
-	rev, set, err := reg.Active(context.Background(), q, agentID, agentcfg.ConfigScopeAgent)
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: user, SessionID: session}}
+	rev, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		t.Fatalf("expected active: %v", err)
 	}
@@ -211,7 +212,7 @@ func expectedTier(t *testing.T, reg agentcfg.RetirementRegistry, bootIdx agentcf
 			t.Fatalf("expected pack convert: %v", err)
 		}
 	}
-	boot, _ := bootIdx.Lookup(tenant, agentID)
+	boot, _ := bootIdx.Lookup("t", testAgentID)
 	tier, err := sessionoverlay.ComposeOperatorTier(boot, revSkills)
 	if err != nil {
 		t.Fatalf("expected compose: %v", err)
@@ -376,7 +377,7 @@ func TestCompositionPreview_OwnTriple_ComposesBootRevisionAndBoth(t *testing.T) 
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
-	tier, rev, set := expectedTier(t, fx.reg, fx.bootIdx, "t", "ua", "sa", testAgentID)
+	tier, rev, set := expectedTier(t, fx.reg, fx.bootIdx, "ua", "sa")
 	assertPreviewMatchesTier(t, resp, tier, rev, set)
 
 	if resp.Widened {
@@ -462,7 +463,7 @@ func TestCompositionPreview_SameHashMigrationShadow_DedupesBoth(t *testing.T) {
 	}
 	// The unique combined tier stays 2 — the composer deduped rather than
 	// splitting the moved body.
-	tier, rev, set := expectedTier(t, fx.reg, fx.bootIdx, "t", "ua", "sa", testAgentID)
+	tier, rev, set := expectedTier(t, fx.reg, fx.bootIdx, "ua", "sa")
 	assertPreviewMatchesTier(t, resp, tier, rev, set)
 	if tier.Len() != 2 {
 		t.Fatalf("composer tier len=%d want 2", tier.Len())
@@ -518,7 +519,7 @@ func TestBootPackPreview_BootOnly_NoActiveRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
-	tier, rev, set := expectedTier(t, fx.reg, fx.bootIdx, "t", "ua", "sa", testAgentID)
+	tier, rev, set := expectedTier(t, fx.reg, fx.bootIdx, "ua", "sa")
 	assertPreviewMatchesTier(t, resp, tier, rev, set)
 	if set {
 		t.Fatal("expected no active revision")
@@ -640,7 +641,7 @@ func TestCompositionPreview_ElevatedSameTenantWidened_AuditedBeforeRead(t *testi
 	if err != nil {
 		t.Fatalf("widened preview: %v", err)
 	}
-	tier, rev, set := expectedTier(t, reg, bootIdx, "t", "ub", "sb", testAgentID)
+	tier, rev, set := expectedTier(t, reg, bootIdx, "ub", "sb")
 	assertPreviewMatchesTier(t, resp, tier, rev, set)
 	if !resp.Widened {
 		t.Error("elevated same-tenant preview must be marked widened")
@@ -1137,7 +1138,7 @@ func TestCompositionPreview_FreshRevisionRead_AndConfigRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removed-key preview: %v", err)
 	}
-	removedTier, removedRev, removedSet := expectedTier(t, fx.reg, removedIdx, "t", "ua", "sa", testAgentID)
+	removedTier, removedRev, removedSet := expectedTier(t, fx.reg, removedIdx, "ua", "sa")
 	assertPreviewMatchesTier(t, removedResp, removedTier, removedRev, removedSet)
 	if !removedSet {
 		t.Fatal("config removal must not erase the durable active revision")

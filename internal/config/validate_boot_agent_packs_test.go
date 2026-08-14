@@ -318,7 +318,7 @@ func TestValidate_BootAgentPacks_Bounds(t *testing.T) {
 					inc[i] = fmt.Sprintf("pack-%03d", i)
 				}
 				packs := make([]config.BootAgentPackConfig, 0, 5)
-				for i := 0; i < 5; i++ {
+				for i := range 5 {
 					packs = append(packs, config.BootAgentPackConfig{
 						TenantID: fmt.Sprintf("tenant-%03d", i), AgentID: "boot-agent",
 						Directory: "/etc/harbor/skills", Include: inc,
@@ -953,7 +953,7 @@ func TestValidateBootAgentPacks_ConcurrentReuse(t *testing.T) {
 	)
 	const resolvedAgent = "resolved-boot-agent"
 	packs := make([]config.BootAgentPackConfig, 0, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		packs = append(packs, validBootAgentPack(fmt.Sprintf("tenant-%03d", i), resolvedAgent))
 	}
 	cfg := bootAgentPackConfig(t, packs...)

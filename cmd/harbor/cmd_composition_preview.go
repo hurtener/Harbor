@@ -295,7 +295,7 @@ func writeCompositionPreviewHuman(out io.Writer, resp prototypes.AgentConfigComp
 		// The CLI writes to cmd.OutOrStdout; a write failure surfaces
 		// on the next line — the golden assertions run against an
 		// in-memory buffer that cannot fail.
-		_, _ = fmt.Fprintf(out, format, args...) //nolint:errcheck // best-effort render to CLI stdout
+		_, _ = fmt.Fprintf(out, format, args...)
 	}
 
 	write("outcome: %s\n", resp.Outcome)

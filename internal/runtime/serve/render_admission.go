@@ -192,7 +192,7 @@ func (g *renderAdmissionGate) AuthorizeRender(ctx context.Context, serverID, res
 		return "", fmt.Errorf("%w: mcpconsole: render-admission gate: identity missing from ctx", protocol.ErrRenderAdmissionRefused)
 	}
 	if err := identity.Validate(id); err != nil {
-		return "", fmt.Errorf("%w: mcpconsole: render-admission gate: %v", protocol.ErrRenderAdmissionRefused, err)
+		return "", fmt.Errorf("%w: mcpconsole: render-admission gate: %w", protocol.ErrRenderAdmissionRefused, err)
 	}
 
 	// The request's reach-admitted effective agent: the Protocol

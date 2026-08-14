@@ -147,7 +147,7 @@ func validateClaimsStructure(c *Claims, now time.Time) error {
 	}
 	for _, f := range fields {
 		if err := validateBoundString(f.name, f.val); err != nil {
-			return fmt.Errorf("%w: %v", ErrTokenInvalid, err)
+			return fmt.Errorf("%w: %w", ErrTokenInvalid, err)
 		}
 	}
 	if !strings.HasPrefix(c.ResourceURI, resourceScheme) {
@@ -155,7 +155,7 @@ func validateClaimsStructure(c *Claims, now time.Time) error {
 	}
 	nonce, err := base64.RawURLEncoding.DecodeString(c.Nonce)
 	if err != nil {
-		return fmt.Errorf("%w: claim nonce is not valid base64url: %v", ErrTokenInvalid, err)
+		return fmt.Errorf("%w: claim nonce is not valid base64url: %w", ErrTokenInvalid, err)
 	}
 	if len(nonce) != NonceSize {
 		return fmt.Errorf("%w: claim nonce is %d bytes, want %d", ErrTokenInvalid, len(nonce), NonceSize)

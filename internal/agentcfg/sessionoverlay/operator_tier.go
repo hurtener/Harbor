@@ -39,7 +39,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"hash"
 	"sort"
 	"strconv"
 
@@ -365,7 +365,7 @@ func (t OperatorTier) RevisionHash() string { return t.revisionHash }
 // matters: the pairs are sorted by canonical name before hashing.
 func candidatesSetHash(envelope string, candidates map[string]operatorTierCandidate) string {
 	h := sha256.New()
-	_, _ = io.WriteString(h, envelope)
+	_, _ = h.Write([]byte(envelope))
 	names := make([]string, 0, len(candidates))
 	for name := range candidates {
 		names = append(names, name)
@@ -380,11 +380,13 @@ func candidatesSetHash(envelope string, candidates map[string]operatorTierCandid
 
 // writeOperatorTierFramed appends the length-prefixed framing of one field:
 // "<byte-len>:<bytes>;". Byte-identical to the bootpacks index's framing.
-func writeOperatorTierFramed(w io.Writer, s string) {
-	_, _ = io.WriteString(w, strconv.Itoa(len(s)))
-	_, _ = io.WriteString(w, ":")
-	_, _ = io.WriteString(w, s)
-	_, _ = io.WriteString(w, ";")
+// The writer is a hash.Hash (sha256); its Write never fails and is excluded
+// from errcheck like every other hash write in the digest paths.
+func writeOperatorTierFramed(w hash.Hash, s string) {
+	_, _ = w.Write([]byte(strconv.Itoa(len(s))))
+	_, _ = w.Write([]byte(":"))
+	_, _ = w.Write([]byte(s))
+	_, _ = w.Write([]byte(";"))
 }
 
 // shortHash renders a hash prefix for a deterministic, readable conflict

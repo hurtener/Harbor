@@ -54,11 +54,11 @@ func (f *fakeBootOwnership) OwnsName(tenantID, agentID, name string) bool {
 func (f *fakeBootOwnership) ownsCalls() int64 { return f.calls.Load() }
 
 // bootOwner builds a reader that owns names for ONE exact (tenant, agent)
-// pair.
-func bootOwner(tenantID, agentID string, names ...string) *fakeBootOwnership {
+// pair. The tenant is the fixture identity's fixed "t" (see agentQuad).
+func bootOwner(agentID string, names ...string) *fakeBootOwnership {
 	f := &fakeBootOwnership{ownedByKey: make(map[string]bool, len(names))}
 	for _, name := range names {
-		f.ownedByKey[bootOwnerKey(tenantID, agentID, name)] = true
+		f.ownedByKey[bootOwnerKey("t", agentID, name)] = true
 	}
 	return f
 }
@@ -198,7 +198,7 @@ func TestAgentPacksUpsert_BootOwnedNameRejectedAtEqualAndDifferentHash(t *testin
 	}
 	shadowSetCalls := reg.setRevisionCalls()
 
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 
 	// Equal hash: the submitted body is byte-identical to the stored shadow.
 	if _, err := s.AgentPacksUpsert(guarded, upsertPackRequest("playbook")); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
@@ -231,7 +231,7 @@ func TestAgentPacksRemove_BootOnlyNameIsTypedReadOnlyRefusal(t *testing.T) {
 	}
 	// No durable shadow for "playbook": the boot baseline owns the name and
 	// the durable revision does not contain it (boot-only).
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	if _, err := s.AgentPacksRemove(guarded, removePackRequest("playbook")); err == nil {
 		t.Fatal("boot-only remove unexpectedly succeeded (false success)")
 	} else if !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
@@ -262,7 +262,7 @@ func TestAgentPacksRemove_DeletesLegacyDurableShadowLeavesBoot(t *testing.T) {
 	}
 	before := reg.setRevisionCalls()
 
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	if _, err := s.AgentPacksRemove(guarded, removePackRequest("playbook")); err != nil {
 		t.Fatalf("remove of the actual legacy shadow failed: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestAgentPacksRemove_DeletesLegacyDurableShadowLeavesBoot(t *testing.T) {
 		t.Fatalf("list after shadow remove = %+v err=%v, want empty (shadow gone)", list.Items, err)
 	}
 	// …while boot still owns the name (the baseline is untouched by remove).
-	if owner := bootOwner("t", testAgentID, "playbook"); !owner.OwnsName("t", testAgentID, "playbook") {
+	if owner := bootOwner(testAgentID, "playbook"); !owner.OwnsName("t", testAgentID, "playbook") {
 		t.Fatal("boot baseline lost ownership after shadow remove")
 	}
 }
@@ -290,7 +290,7 @@ func TestAgentPacksRemove_NonBootOwnedBehaviorUnchanged(t *testing.T) {
 	if _, err := s.AgentPacksUpsert(ctx, upsertPackRequest("plain")); err != nil {
 		t.Fatalf("seed plain item: %v", err)
 	}
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	// Present, non-boot-owned → normal removal.
 	if _, err := s.AgentPacksRemove(guarded, removePackRequest("plain")); err != nil {
 		t.Fatalf("remove non-boot-owned present name failed: %v", err)
@@ -330,7 +330,7 @@ func TestAgentPacksCommit_BootOwnedNameRejectedOnInitialCommit(t *testing.T) {
 		Identity: scope(), AgentID: testAgentID, Skill: proposal.Skill, ReviewedHash: proposal.Hash,
 		Provenance: proposal.Provenance, ProposalID: proposal.ProposalID, ExpectedContentHash: proposal.ExpectedContentHash,
 	}
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	if _, err := s.AgentPacksCommit(guarded, commit); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
 		t.Fatalf("initial commit of boot-owned name error = %v, want ErrBootPackOwned", err)
 	}
@@ -436,7 +436,7 @@ func TestAgentPacksCommit_BootOwnedNameRejectedOnPreparedResumeAndResponseLossRe
 	if err != nil {
 		t.Fatalf("NewService retry: %v", err)
 	}
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "other"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "other"))
 	setBefore := countingReg.setRevisionCalls()
 	if _, err := retry.AgentPacksCommit(guarded, commit); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
 		t.Fatalf("prepared-resume commit error = %v, want ErrBootPackOwned", err)
@@ -512,7 +512,7 @@ func TestAgentPacksCommit_PayloadCarryingBootOwnedShadowRejectedBeforePublicatio
 	// carries the boot-owned shadow "playbook" forward — the pre-publication
 	// guard must refuse the whole publication, so no proposal path can
 	// reintroduce a boot-owned name into the durable revision.
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	setBefore := reg.setRevisionCalls()
 	if _, err := s.AgentPacksCommit(guarded, commit); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
 		t.Fatalf("commit carrying boot-owned shadow error = %v, want ErrBootPackOwned", err)
@@ -529,7 +529,7 @@ func TestAgentPacksCommit_PayloadCarryingBootOwnedShadowRejectedBeforePublicatio
 }
 
 func TestAgentPacksBootGuards_RollbackHelperRefusesBootOwnedTarget(t *testing.T) {
-	owner := bootOwner("t", testAgentID, "playbook")
+	owner := bootOwner(testAgentID, "playbook")
 	// Nil reader → inert (no baseline bound on this runtime).
 	if err := agentcfgprotocol.GuardBootOwnedRevision(nil, "t", testAgentID, []skills.AgentPackItem{packItem("playbook")}); err != nil {
 		t.Fatalf("nil owner must be inert, got %v", err)
@@ -585,7 +585,7 @@ func TestAgentPacksRollback_BootOwnedTargetRefusedNoMutation(t *testing.T) {
 	}
 	rollbackCallsBefore := reg.rollbackCalls()
 
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	rollback := func(revisionID string) error {
 		_, err := s.Rollback(guarded, prototypes.AgentConfigRollbackRequest{
 			Identity: scope(), AgentID: testAgentID, RevisionID: revisionID,
@@ -631,7 +631,7 @@ func TestAgentPacksRollback_BootFreeTargetPermitted(t *testing.T) {
 	}
 	rollbackCallsBefore := reg.rollbackCalls()
 
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	// A revision without boot-owned names is fully rollback-able under the
 	// SAME boot-owned reader — the guard only refuses boot-owned targets.
 	got, err := s.Rollback(guarded, prototypes.AgentConfigRollbackRequest{
@@ -667,7 +667,7 @@ func TestAgentPacksBootGuards_KeyedExactTenantAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	owner := bootOwner("t", testAgentID, "playbook")
+	owner := bootOwner(testAgentID, "playbook")
 	guarded := bootOwnedContext(owner)
 	// The reader owns "playbook" for (t, agent-x) ONLY — the same name for a
 	// different agent or a different tenant is not boot-owned and must be
@@ -696,7 +696,7 @@ func TestAgentPacksList_DurableRevisionAuthoringOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	guarded := bootOwnedContext(bootOwner("t", testAgentID, "playbook"))
+	guarded := bootOwnedContext(bootOwner(testAgentID, "playbook"))
 	// A boot-only name (owned, no durable shadow) never appears in the list.
 	list, err := s.AgentPacksList(guarded, listPackRequest())
 	if err != nil || len(list.Items) != 0 {
@@ -781,8 +781,8 @@ func TestAgentPacksBootGuards_ConcurrentMixedGuards(t *testing.T) {
 	}
 	// The reader owns "playbook" for BOTH the upsert/remove/list leg
 	// (agent-x) and the commit leg (agent-c, whose base stays frozen).
-	owner := bootOwner("t", testAgentID, "playbook")
-	for key, value := range bootOwner("t", "agent-c", "playbook").ownedByKey {
+	owner := bootOwner(testAgentID, "playbook")
+	for key, value := range bootOwner("agent-c", "playbook").ownedByKey {
 		owner.ownedByKey[key] = value
 	}
 	guarded := bootOwnedContext(owner)
@@ -809,21 +809,21 @@ func TestAgentPacksBootGuards_ConcurrentMixedGuards(t *testing.T) {
 			case 0: // upsert of a boot-owned name → typed refusal, zero mutation
 				_, err := s.AgentPacksUpsert(guarded, upsertPackRequest("playbook"))
 				if !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
-					errs <- fmt.Errorf("upsert boot-owned: %v", err)
+					errs <- fmt.Errorf("upsert boot-owned: %w", err)
 				}
 			case 1: // remove of a boot-only name → typed refusal, zero mutation
 				_, err := s.AgentPacksRemove(guarded, removePackRequest("playbook"))
 				if !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
-					errs <- fmt.Errorf("remove boot-only: %v", err)
+					errs <- fmt.Errorf("remove boot-only: %w", err)
 				}
 			case 2: // upsert of a distinct free name → success
 				if _, err := s.AgentPacksUpsert(guarded, upsertPackRequest(fmt.Sprintf("free-%d", i))); err != nil {
-					errs <- fmt.Errorf("upsert free-%d: %v", i, err)
+					errs <- fmt.Errorf("upsert free-%d: %w", i, err)
 				}
 			case 3: // list → success, boot-only names never appear
 				list, err := s.AgentPacksList(guarded, listPackRequest())
 				if err != nil {
-					errs <- fmt.Errorf("list: %v", err)
+					errs <- fmt.Errorf("list: %w", err)
 					return
 				}
 				for _, item := range list.Items {
@@ -837,7 +837,7 @@ func TestAgentPacksBootGuards_ConcurrentMixedGuards(t *testing.T) {
 					Identity: scope(), AgentID: "agent-c", Intent: "make a playbook", ExpectedContentHash: baseC.ContentHash,
 				})
 				if err != nil {
-					errs <- fmt.Errorf("propose: %v", err)
+					errs <- fmt.Errorf("propose: %w", err)
 					return
 				}
 				_, err = s.AgentPacksCommit(guarded, prototypes.AgentConfigAgentPacksCommitRequest{
@@ -845,7 +845,7 @@ func TestAgentPacksBootGuards_ConcurrentMixedGuards(t *testing.T) {
 					Provenance: proposal.Provenance, ProposalID: proposal.ProposalID, ExpectedContentHash: proposal.ExpectedContentHash,
 				})
 				if !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
-					errs <- fmt.Errorf("commit boot-owned: %v", err)
+					errs <- fmt.Errorf("commit boot-owned: %w", err)
 				}
 			}
 		}(i)

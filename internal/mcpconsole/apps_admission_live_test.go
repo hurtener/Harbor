@@ -184,7 +184,7 @@ func newAdmissionAuthority(t *testing.T, opts ...admission.Option) *admission.Au
 // AppsAccessor + AppsSurface with the admission seams. It returns the
 // surface, the counted Invoke counter (for zero-execution assertions),
 // and the registry (for generation reads / detach / replacement).
-func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, providerID string, descs []tools.ToolDescriptor, authz *admission.Authority, gate protocol.RenderAdmissionGate) (*protocol.AppsSurface, *atomic.Int64, *mcp.Registry, *mcpconsole.AppsAccessor) {
+func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, descs []tools.ToolDescriptor, authz *admission.Authority) (*protocol.AppsSurface, *atomic.Int64, *mcp.Registry, *mcpconsole.AppsAccessor) {
 	t.Helper()
 	// (Re)stage the server with a counted Invoke on every app-only
 	// callback, so admission-path executions are observable.
@@ -199,7 +199,7 @@ func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, providerID string, d
 		}
 		counted = append(counted, d)
 	}
-	stageAdmissionServer(t, reg, providerID, counted)
+	stageAdmissionServer(t, reg, "srv-a", counted)
 
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
 		Registry:    reg,
@@ -212,9 +212,6 @@ func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, providerID string, d
 	if err != nil {
 		t.Fatalf("NewAppsAccessor: %v", err)
 	}
-	if gate == nil {
-		gate = &realAdmissionGate{acc: acc}
-	}
 	if authz == nil {
 		authz = newAdmissionAuthority(t)
 	}
@@ -225,7 +222,7 @@ func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, providerID string, d
 		AgentResolver:            &admissionAgentResolver{},
 		AgentReach:               allowAdmissionReach{},
 		RenderAdmissionAuthority: &admissionAuthoritySeam{auth: authz},
-		RenderAdmissionGate:      gate,
+		RenderAdmissionGate:      &realAdmissionGate{acc: acc},
 	})
 	if err != nil {
 		t.Fatalf("NewAppsSurface: %v", err)
@@ -245,7 +242,7 @@ func TestAdmissionPath_RealRegistry_MintsViaSurfaceAndInvokesExactlyOnce(t *test
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, _, _ := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, _, _ := buildAdmissionSurface(t, reg, descs, nil)
 
 	// Mint through the REAL surface path: read_resource with the opt-in
 	// flag binds the current registry generation and seals the tuple.
@@ -304,7 +301,7 @@ func TestAdmissionPath_CrossServer_ZeroExecutions(t *testing.T) {
 		admissionResourceDesc("srv-b__resource.ui://srv-b/app.html", "srv-b"),
 		admissionAppDesc("srv-b_cb", "srv-b", new(atomic.Int64)),
 	}
-	s, calls, reg, acc := buildAdmissionSurface(t, reg, "srv-a", descsA, nil, nil)
+	s, calls, reg, acc := buildAdmissionSurface(t, reg, descsA, nil)
 	stageAdmissionServer(t, reg, "srv-b", descsB)
 	authz := newAdmissionAuthority(t)
 
@@ -349,7 +346,7 @@ func TestAdmissionPath_GenerationMismatchAfterRefresh_ZeroExecutions(t *testing.
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, reg, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, reg, acc := buildAdmissionSurface(t, reg, descs, nil)
 	_ = acc
 	authz := newAdmissionAuthority(t)
 
@@ -414,7 +411,7 @@ func TestAdmissionPath_Detach_FailsClosedZeroExecutions(t *testing.T) {
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, reg, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, reg, acc := buildAdmissionSurface(t, reg, descs, nil)
 	_ = acc
 	authz := newAdmissionAuthority(t)
 
@@ -464,7 +461,7 @@ func TestAdmissionPath_ExpiredThroughSurface_ZeroExecutions(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	authz := newAdmissionAuthority(t, admission.WithClock(clock), admission.WithTTL(15*time.Minute))
-	s, calls, reg, _ := buildAdmissionSurface(t, reg, "srv-a", descs, authz, nil)
+	s, calls, reg, _ := buildAdmissionSurface(t, reg, descs, authz)
 
 	gen, _ := reg.CurrentGeneration("srv-a")
 	tok, err := authz.Mint(context.Background(), admission.RenderTuple{
@@ -503,7 +500,7 @@ func TestAdmissionPath_TamperedThroughSurface_ZeroExecutions(t *testing.T) {
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, _, _ := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, _, _ := buildAdmissionSurface(t, reg, descs, nil)
 	_, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
 		Identity: admissionID(), ServerID: "srv-a", Tool: "srv-a_cb",
 		ResourceURI: "ui://srv-a/app.html", RenderAdmission: "!!!not-base64url!!!",
@@ -708,7 +705,7 @@ func TestAdmissionPath_DirectCall_NoProof_RefusedZeroExecutions(t *testing.T) {
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, _, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, _, acc := buildAdmissionSurface(t, reg, descs, nil)
 	_ = s
 
 	_, err := acc.CallToolAdmitted(directAdmissionCtx(t), "srv-a", "ui://srv-a/app.html", "srv-a_cb", json.RawMessage(`{}`))
@@ -731,7 +728,7 @@ func TestAdmissionPath_DirectCall_NoProof_RefusalPrecedesResolveAppTool(t *testi
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, _, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, _, acc := buildAdmissionSurface(t, reg, descs, nil)
 	_ = s
 
 	_, err := acc.CallToolAdmitted(directAdmissionCtx(t), "absent-srv", "ui://absent-srv/app.html", "absent_cb", json.RawMessage(`{}`))
@@ -753,7 +750,7 @@ func TestAdmissionPath_DirectCall_NoIdentity_FailsClosed(t *testing.T) {
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, _, acc := buildAdmissionSurface(t, reg, "srv-a", descs, nil, nil)
+	s, calls, _, acc := buildAdmissionSurface(t, reg, descs, nil)
 	_ = s
 
 	ctx := tools.WithEffectiveAgentConfig(context.Background(), appsAdmissionAgentID)
@@ -794,10 +791,10 @@ func (r *racingAdmissionInvoker) CallToolAdmitted(ctx context.Context, serverID,
 // and the racing surface share ONE authority instance, so a token minted
 // through either verifies through the other. No sleeps — the hook is the
 // synchronization point.
-func buildRacingAdmissionSurface(t *testing.T, reg *mcp.Registry, providerID string, descs []tools.ToolDescriptor, hook func()) (*protocol.AppsSurface, *atomic.Int64, *mcp.Registry, *mcpconsole.AppsAccessor) {
+func buildRacingAdmissionSurface(t *testing.T, reg *mcp.Registry, descs []tools.ToolDescriptor, hook func()) (*protocol.AppsSurface, *atomic.Int64, *mcp.Registry, *mcpconsole.AppsAccessor) {
 	t.Helper()
 	authz := newAdmissionAuthority(t)
-	_, calls, reg, acc := buildAdmissionSurface(t, reg, providerID, descs, authz, nil)
+	_, calls, reg, acc := buildAdmissionSurface(t, reg, descs, authz)
 	race := &racingAdmissionInvoker{AppsAccessor: acc, beforeAdmitted: hook}
 	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
 		Resource:                 acc,
@@ -826,7 +823,7 @@ func TestAdmissionPath_UnchangedGeneration_SucceedsExactlyOnce(t *testing.T) {
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, _, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, nil)
+	s, calls, _, _ := buildRacingAdmissionSurface(t, reg, descs, nil)
 
 	// Mint through the real surface path (binds the current generation).
 	resp, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
@@ -872,7 +869,7 @@ func TestAdmissionPath_GenerationChangeAfterProofMint_ZeroExecutions(t *testing.
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
 	v2Calls := new(atomic.Int64)
-	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, func() {
+	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, descs, func() {
 		// Force the catalog generation change AFTER the surface's sealed
 		// verification / proof mint, BEFORE the accessor's atomic
 		// compare+resolve.
@@ -936,7 +933,7 @@ func TestAdmissionPath_DetachAfterProofMint_ZeroExecutions(t *testing.T) {
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
-	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, func() {
+	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, descs, func() {
 		if err := reg.Deregister(admissionVerifiedCtx(t), "srv-a", authsealer.Owner{}); err != nil {
 			t.Errorf("Deregister: %v", err)
 		}
@@ -990,7 +987,7 @@ func TestAdmissionPath_GenerationMismatch_WireErrorHidesDigests(t *testing.T) {
 		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
 	v2Calls := new(atomic.Int64)
-	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, func() {
+	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, descs, func() {
 		// Force the catalog generation change AFTER the surface's sealed
 		// verification / proof mint, BEFORE the accessor's atomic
 		// compare+resolve — the exact window whose refusal message must

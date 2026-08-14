@@ -521,16 +521,21 @@ func importQuad(id identity.Identity) identity.Quadruple {
 	return identity.Quadruple{Identity: id}
 }
 
-// validateReq builds the first-phase request for the fixture package.
-func (fx *importFixture) validateReq(id identity.Identity, agentID, artifactID string) agentcfgprotocol.UserSkillImportValidateRequest {
-	return agentcfgprotocol.UserSkillImportValidateRequest{ArtifactID: artifactID, AgentID: agentID}
+// validateReq builds the first-phase request for the fixture package. The
+// identity and effective agent ride the request ctx (see importCtx), not the
+// wire request, which carries only the artifact id (agent is the fixture's
+// fixed testAgentID).
+func (fx *importFixture) validateReq(artifactID string) agentcfgprotocol.UserSkillImportValidateRequest {
+	return agentcfgprotocol.UserSkillImportValidateRequest{ArtifactID: artifactID, AgentID: testAgentID}
 }
 
 // commitReqFromValidate echoes the proposal inputs the way the caller would.
-func commitReqFromValidate(validate agentcfgprotocol.UserSkillImportValidateResponse, id identity.Identity, agentID string, replace bool) agentcfgprotocol.UserSkillImportCommitRequest {
+// The identity rides the request ctx, not the wire request, and the agent is
+// the fixture's fixed testAgentID.
+func commitReqFromValidate(validate agentcfgprotocol.UserSkillImportValidateResponse, replace bool) agentcfgprotocol.UserSkillImportCommitRequest {
 	return agentcfgprotocol.UserSkillImportCommitRequest{
 		ProposalToken:       validate.ProposalToken,
-		AgentID:             agentID,
+		AgentID:             testAgentID,
 		Name:                validate.Review.Name,
 		ReviewedPackageHash: validate.PackageHash,
 		ExpectedContentHash: validate.ExpectedContentHash,
@@ -538,16 +543,17 @@ func commitReqFromValidate(validate agentcfgprotocol.UserSkillImportValidateResp
 	}
 }
 
-// validateCommit is the happy-path helper: upload, validate, commit.
-func (fx *importFixture) validateCommit(t *testing.T, id identity.Identity, agentID string, entries map[string]string, replace bool) (agentcfgprotocol.UserSkillImportValidateResponse, agentcfgprotocol.UserSkillImportCommitResponse, error) {
+// validateCommit is the happy-path helper: upload, validate, commit. The
+// effective agent is the fixture's fixed testAgentID.
+func (fx *importFixture) validateCommit(t *testing.T, id identity.Identity, entries map[string]string, replace bool) (agentcfgprotocol.UserSkillImportValidateResponse, agentcfgprotocol.UserSkillImportCommitResponse, error) {
 	t.Helper()
 	artifactID := fx.uploadPackage(t, id, entries)
-	ctx := importCtx(id, agentID)
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(id, agentID, artifactID))
+	ctx := importCtx(id, testAgentID)
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		return agentcfgprotocol.UserSkillImportValidateResponse{}, agentcfgprotocol.UserSkillImportCommitResponse{}, err
 	}
-	committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, id, agentID, replace))
+	committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, replace))
 	return validated, committed, err
 }
 
@@ -663,10 +669,10 @@ func (fx *importFixture) assertZeroStateWrites(t *testing.T) {
 func TestUserSkillImport_NewService_MissingDependencyFailsLoud(t *testing.T) {
 	ctx := context.Background()
 	artifactStore, _ := artifactsinmem.New(config.ArtifactsConfig{})
-	defer artifactStore.Close(ctx) //nolint:errcheck // test teardown
+	defer artifactStore.Close(ctx)
 	imp, _ := importer.New(importer.Deps{Store: artifactStore})
 	proposals, _ := stateinmem.New(config.StateConfig{Driver: "inmem"})
-	defer proposals.Close(ctx) //nolint:errcheck // test teardown
+	defer proposals.Close(ctx)
 	reg := newRegistry(t)
 	rr, ok := reg.(agentcfg.RetirementRegistry)
 	if !ok {
@@ -709,7 +715,7 @@ func TestUserSkillImport_Validate_ZeroMutations(t *testing.T) {
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
 	ctx := importCtx(importUserA, testAgentID)
 
-	resp, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	resp, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -776,7 +782,7 @@ func TestUserSkillImport_Validate_WriteCountingStateStoreRefusesWrites(t *testin
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
 	ctx := importCtx(importUserA, testAgentID)
 
-	resp, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	resp, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -797,11 +803,11 @@ func TestUserSkillImport_Validate_SealedTokensAreFresh(t *testing.T) {
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
 	ctx := importCtx(importUserA, testAgentID)
 
-	first, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	first, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate 1: %v", err)
 	}
-	second, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	second, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate 2: %v", err)
 	}
@@ -820,7 +826,7 @@ func TestUserSkillImport_Validate_WarningsForNonVisibleRequirements(t *testing.T
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importAnnotatedMD})
 	ctx := importCtx(importUserA, testAgentID)
 
-	resp, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	resp, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -848,7 +854,7 @@ func TestUserSkillImport_Validate_RejectsAuthorityAndUnknownFrontmatter(t *testi
 	} {
 		md := "---\nname: auth-skill\ntrigger: t\n" + keyValue + "\n---\n## Steps\n- s\n"
 		artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": md})
-		_, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+		_, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 		if !errors.Is(err, importer.ErrPackageFrontmatterDisallowed) {
 			t.Fatalf("frontmatter %q err=%v, want ErrPackageFrontmatterDisallowed", keyValue, err)
 		}
@@ -880,7 +886,7 @@ func TestUserSkillImport_Validate_RejectsMalformedPackages(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			artifactID := fx.uploadPackage(t, importUserA, c.entries)
-			_, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+			_, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 			if err == nil || !errors.Is(err, c.want) {
 				t.Fatalf("err=%v, want errors.Is %v", err, c.want)
 			}
@@ -901,17 +907,17 @@ func TestUserSkillImport_Validate_ArtifactNotCallerOwned(t *testing.T) {
 	// B's exact triple does not resolve — non-oracular not-found.
 	userB := identity.Identity{TenantID: "t", UserID: "v", SessionID: "s1"}
 	ctxB := importCtx(userB, testAgentID)
-	if _, err := fx.svc.Validate(ctxB, fx.validateReq(userB, testAgentID, artifactID)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
+	if _, err := fx.svc.Validate(ctxB, fx.validateReq(artifactID)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
 		t.Fatalf("cross-user validate err=%v, want ErrUserSkillImportArtifactNotFound", err)
 	}
 	// A guessed / erased id is the SAME typed outcome — no enumeration.
-	if _, err := fx.svc.Validate(ctxB, fx.validateReq(userB, testAgentID, "guessed-id")); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
+	if _, err := fx.svc.Validate(ctxB, fx.validateReq("guessed-id")); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
 		t.Fatalf("guessed id err=%v, want ErrUserSkillImportArtifactNotFound", err)
 	}
 	// Cross-tenant too.
 	userOther := identity.Identity{TenantID: "other", UserID: "u", SessionID: "s1"}
 	ctxOther := importCtx(userOther, testAgentID)
-	if _, err := fx.svc.Validate(ctxOther, fx.validateReq(userOther, testAgentID, artifactID)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
+	if _, err := fx.svc.Validate(ctxOther, fx.validateReq(artifactID)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
 		t.Fatalf("cross-tenant validate err=%v, want ErrUserSkillImportArtifactNotFound", err)
 	}
 	fx.assertZeroMutations(t)
@@ -930,14 +936,14 @@ func TestUserSkillImport_Commit_InstallsAtomicUnit(t *testing.T) {
 		"examples/demo.json": `{"demo": true}`,
 		"docs/usage.txt":     "usage notes",
 	})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	if len(validated.Review.SupportFiles) != 2 {
 		t.Fatalf("support manifest review = %+v, want 2 entries", validated.Review.SupportFiles)
 	}
-	committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false))
+	committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false))
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -1014,11 +1020,11 @@ func TestUserSkillImport_Commit_ResponseLossReplayIsIdempotent(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 
 	first, err := fx.svc.Commit(ctx, req)
 	if err != nil {
@@ -1051,11 +1057,11 @@ func TestUserSkillImport_Commit_CommittingResumeRecognizesLandedWrite(t *testing
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	if _, err := fx.svc.Commit(ctx, req); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -1089,18 +1095,18 @@ func TestUserSkillImport_Commit_ExplicitReplaceConsent(t *testing.T) {
 	ctx := importCtx(importUserA, testAgentID)
 	// Version 1 of the package.
 	artifactV1 := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	v1, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactV1))
+	v1, err := fx.svc.Validate(ctx, fx.validateReq(artifactV1))
 	if err != nil {
 		t.Fatalf("validate v1: %v", err)
 	}
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v1, importUserA, testAgentID, false)); err != nil {
+	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v1, false)); err != nil {
 		t.Fatalf("commit v1: %v", err)
 	}
 
 	// Version 2: same canonical name, different body → different hash.
 	mdV2 := "---\nname: demo-skill\ntrigger: when asked about the demo\n---\nA changed demo body.\n\n## Steps\n- do the thing\n- also this\n"
 	artifactV2 := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": mdV2})
-	v2, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactV2))
+	v2, err := fx.svc.Validate(ctx, fx.validateReq(artifactV2))
 	if err != nil {
 		t.Fatalf("validate v2: %v", err)
 	}
@@ -1110,7 +1116,7 @@ func TestUserSkillImport_Commit_ExplicitReplaceConsent(t *testing.T) {
 
 	// Without explicit consent the different winner is refused BEFORE any
 	// write.
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportReplaceRequired) {
+	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportReplaceRequired) {
 		t.Fatalf("no-consent commit err=%v, want ErrUserSkillImportReplaceRequired", err)
 	}
 	stored, err := fx.store.GetInstalledPackage(ctx, importQuad(importUserA), testAgentID, "demo-skill")
@@ -1126,7 +1132,7 @@ func TestUserSkillImport_Commit_ExplicitReplaceConsent(t *testing.T) {
 	}
 
 	// With explicit consent the replace lands as ONE atomic write.
-	replaced, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, importUserA, testAgentID, true))
+	replaced, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, true))
 	if err != nil {
 		t.Fatalf("consented commit: %v", err)
 	}
@@ -1154,13 +1160,13 @@ func TestUserSkillImport_Commit_ExpiredProposalRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	// The review window elapses.
 	fx.clock.advance(25 * time.Hour)
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportExpired) {
+	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportExpired) {
 		t.Fatalf("expired commit err=%v, want ErrUserSkillImportExpired", err)
 	}
 	fx.assertZeroMutations(t)
@@ -1171,7 +1177,7 @@ func TestUserSkillImport_Commit_MovedConfigBaseRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -1183,7 +1189,7 @@ func TestUserSkillImport_Commit_MovedConfigBaseRefused(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed user revision: %v", err)
 	}
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConfigMoved) {
+	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConfigMoved) {
 		t.Fatalf("moved-base commit err=%v, want ErrUserSkillImportConfigMoved", err)
 	}
 	fx.assertZeroMutations(t)
@@ -1194,13 +1200,13 @@ func TestUserSkillImport_Commit_PolicyRevocationRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	// The capability snapshot is revoked between validate and commit.
 	fx.cap.set(agentcfgprotocol.UserSkillImportPolicy{ID: "harbor.user-skill-import", Version: "1", PermittedTools: []string{"tool-b"}})
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportPolicyRevoked) {
+	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportPolicyRevoked) {
 		t.Fatalf("revoked-policy commit err=%v, want ErrUserSkillImportPolicyRevoked", err)
 	}
 	fx.assertZeroMutations(t)
@@ -1211,11 +1217,11 @@ func TestUserSkillImport_Commit_LostReachRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 
 	// No agent reach on ctx → fails closed.
 	noReach, err := identity.WithVerified(context.Background(), importUserA)
@@ -1253,11 +1259,11 @@ func TestUserSkillImport_Commit_HashNameConfigMismatchRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	base := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	base := commitReqFromValidate(validated, false)
 
 	// A different reviewed hash is a changed review.
 	wrongHash := base
@@ -1296,11 +1302,11 @@ func TestUserSkillImport_Commit_TokenTamperRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 
 	// One flipped character in the base64url token: AEAD authentication
 	// must refuse — the same typed error as every other stale form (no
@@ -1379,11 +1385,11 @@ func TestUserSkillImport_Commit_ForeignIdentityRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 
 	// A different USER with the same token: the sealed actor must equal
 	// the caller's exact triple.
@@ -1416,7 +1422,7 @@ func TestUserSkillImport_Commit_ChangedArtifactRefused(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -1425,7 +1431,7 @@ func TestUserSkillImport_Commit_ChangedArtifactRefused(t *testing.T) {
 	if _, err := fx.artifacts.Delete(ctx, artifacts.ArtifactScope{TenantID: "t", UserID: "u", SessionID: "s"}, artifactID); err != nil {
 		t.Fatalf("delete artifact: %v", err)
 	}
-	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
+	if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
 		t.Fatalf("erased-artifact commit err=%v, want ErrUserSkillImportArtifactNotFound", err)
 	}
 	fx.assertZeroMutations(t)
@@ -1445,7 +1451,7 @@ func TestUserSkillImport_RetiredAgentRefused(t *testing.T) {
 		t.Fatalf("retire: %v", err)
 	}
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	if _, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID)); !errors.Is(err, agentcfg.ErrAgentRetired) {
+	if _, err := fx.svc.Validate(ctx, fx.validateReq(artifactID)); !errors.Is(err, agentcfg.ErrAgentRetired) {
 		t.Fatalf("retired validate err=%v, want ErrAgentRetired", err)
 	}
 	if _, err := fx.svc.Commit(ctx, agentcfgprotocol.UserSkillImportCommitRequest{
@@ -1472,7 +1478,7 @@ func TestUserSkillImport_UnwiredAgentReachFailsClosed(t *testing.T) {
 	}
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	if _, err := svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportAgentReachDenied) {
+	if _, err := svc.Validate(ctx, fx.validateReq(artifactID)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportAgentReachDenied) {
 		t.Fatalf("unwired-gate validate err=%v, want ErrUserSkillImportAgentReachDenied", err)
 	}
 	fx.assertZeroMutations(t)
@@ -1490,7 +1496,7 @@ func TestUserSkillImport_BootOwnedNameRefusedEverywhere(t *testing.T) {
 
 	// Validate refuses BEFORE a token exists.
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	if _, err := fx.svc.Validate(guarded, fx.validateReq(importUserA, testAgentID, artifactID)); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
+	if _, err := fx.svc.Validate(guarded, fx.validateReq(artifactID)); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
 		t.Fatalf("boot-owned validate err=%v, want ErrBootPackOwned", err)
 	}
 	fx.assertZeroMutations(t)
@@ -1499,11 +1505,11 @@ func TestUserSkillImport_BootOwnedNameRefusedEverywhere(t *testing.T) {
 	// Commit refuses on EVERY path even when the token was created before
 	// the baseline bound the name.
 	unguarded := importCtx(importUserA, testAgentID)
-	validated, err := fx.svc.Validate(unguarded, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(unguarded, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate (unguarded): %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	if _, err := fx.svc.Commit(guarded, req); !errors.Is(err, agentcfgprotocol.ErrBootPackOwned) {
 		t.Fatalf("boot-owned commit err=%v, want ErrBootPackOwned", err)
 	}
@@ -1521,7 +1527,7 @@ func TestUserSkillImport_CrossUserIsolation(t *testing.T) {
 	userB := identity.Identity{TenantID: "t", UserID: "v", SessionID: "s1"}
 
 	// A commits its own skill.
-	if _, _, err := fx.validateCommit(t, userA, testAgentID, map[string]string{"SKILL.md": importSkillMD}, false); err != nil {
+	if _, _, err := fx.validateCommit(t, userA, map[string]string{"SKILL.md": importSkillMD}, false); err != nil {
 		t.Fatalf("A validate+commit: %v", err)
 	}
 	// B's (tenant, user, agent, name) key has nothing — no leakage.
@@ -1530,7 +1536,7 @@ func TestUserSkillImport_CrossUserIsolation(t *testing.T) {
 		t.Fatalf("B sees A's installed package: err=%v", err)
 	}
 	// B cannot validate A's artifact either (already covered above).
-	if _, err := fx.svc.Validate(ctxB, fx.validateReq(userB, testAgentID, fx.uploadPackage(t, userA, map[string]string{"SKILL.md": importSkillMD}))); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
+	if _, err := fx.svc.Validate(ctxB, fx.validateReq(fx.uploadPackage(t, userA, map[string]string{"SKILL.md": importSkillMD}))); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
 		t.Fatalf("B validating A's artifact err=%v, want not found", err)
 	}
 }
@@ -1542,13 +1548,13 @@ func TestUserSkillImport_CrossSessionIsolation(t *testing.T) {
 	// the artifact is session-scoped and the review is session-bound.
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	userASess2 := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s2"}
 	ctxS2 := importCtx(userASess2, testAgentID)
-	if _, err := fx.svc.Commit(ctxS2, commitReqFromValidate(validated, userASess2, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+	if _, err := fx.svc.Commit(ctxS2, commitReqFromValidate(validated, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
 		t.Fatalf("cross-session commit err=%v, want ErrUserSkillImportProposalInvalid", err)
 	}
 }
@@ -1563,11 +1569,11 @@ func TestUserSkillImport_Compensation_ExactReceiptUndoesOnlyItsOwnUnit(t *testin
 
 	mdV1 := importSkillMD
 	mdV2 := "---\nname: demo-skill\ntrigger: when asked about the demo\n---\nA changed demo body.\n\n## Steps\n- do the thing\n- also this\n"
-	_, c1, err := fx.validateCommit(t, importUserA, testAgentID, map[string]string{"SKILL.md": mdV1}, false)
+	_, c1, err := fx.validateCommit(t, importUserA, map[string]string{"SKILL.md": mdV1}, false)
 	if err != nil {
 		t.Fatalf("commit v1: %v", err)
 	}
-	_, c2, err := fx.validateCommit(t, importUserA, testAgentID, map[string]string{"SKILL.md": mdV2}, true)
+	_, c2, err := fx.validateCommit(t, importUserA, map[string]string{"SKILL.md": mdV2}, true)
 	if err != nil {
 		t.Fatalf("commit v2 (replace): %v", err)
 	}
@@ -1623,17 +1629,17 @@ func TestUserSkillImport_ConcurrentSameProposal_OneWinner(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 
 	const n = 32
 	var wg sync.WaitGroup
 	errs := make([]error, n)
 	results := make([]agentcfgprotocol.UserSkillImportCommitResponse, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -1647,7 +1653,7 @@ func TestUserSkillImport_ConcurrentSameProposal_OneWinner(t *testing.T) {
 		t.Fatalf("concurrent same-token commits wrote %d packages, want exactly 1", put)
 	}
 	successes := 0
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if errs[i] == nil {
 			successes++
 			if results[i].PackageHash != validated.PackageHash {
@@ -1685,7 +1691,7 @@ func TestUserSkillImport_ConcurrentMixedIdentities_N100(t *testing.T) {
 	const n = 100
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -1693,12 +1699,12 @@ func TestUserSkillImport_ConcurrentMixedIdentities_N100(t *testing.T) {
 			md := fmt.Sprintf("---\nname: skill-%03d\ntrigger: when asked about %d\n---\nA skill for user %d.\n\n## Steps\n- do the thing\n", i, i, i)
 			ctx := importCtx(user, testAgentID)
 			artifactID := fx.uploadPackage(t, user, map[string]string{"SKILL.md": md})
-			validated, err := fx.svc.Validate(ctx, fx.validateReq(user, testAgentID, artifactID))
+			validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 			if err != nil {
 				errs[i] = fmt.Errorf("validate: %w", err)
 				return
 			}
-			committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, user, testAgentID, false))
+			committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false))
 			if err != nil {
 				errs[i] = fmt.Errorf("commit: %w", err)
 				return
@@ -1719,7 +1725,7 @@ func TestUserSkillImport_ConcurrentMixedIdentities_N100(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if errs[i] != nil {
 			t.Fatalf("worker %d: %v", i, errs[i])
 		}
@@ -1760,11 +1766,11 @@ func TestUserSkillImport_Commit_PutFailureCompensatesExactMarker(t *testing.T) {
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	q := importQuad(importUserA)
 	kind := fx.commitKind(validated.ProposalToken)
 
@@ -1860,11 +1866,11 @@ func TestUserSkillImport_Commit_MarkerSaveIfBackendFailure_ZeroPutStableRefusal(
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	q := importQuad(importUserA)
 	kind := fx.commitKind(validated.ProposalToken)
 
@@ -1872,7 +1878,7 @@ func TestUserSkillImport_Commit_MarkerSaveIfBackendFailure_ZeroPutStableRefusal(
 	// genuine backend error; the second attempt fails identically at the
 	// next call index while the backend is still down.
 	fx.proposals.setFailSaveIfAt(1)
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		_, commitErr := fx.svc.Commit(ctx, req)
 		if commitErr == nil {
 			t.Fatalf("marker SaveIf failure (attempt %d) must fail loud", attempt)
@@ -1948,11 +1954,11 @@ func TestUserSkillImport_Commit_CommittedTransitionBackendFailure_RetryRecognize
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	q := importQuad(importUserA)
 	kind := fx.commitKind(validated.ProposalToken)
 
@@ -2039,11 +2045,11 @@ func TestUserSkillImport_ResumeCommitting_TerminalRecordBackendFailure_RetryConv
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	q := importQuad(importUserA)
 
 	// Land a normal commit (put=1), then rewind the ledger to the mid-flight
@@ -2122,13 +2128,13 @@ func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
 	t.Run("committing ledger different winner", func(t *testing.T) {
 		fx := newImportFixture(t)
 		// v1 wins the target key.
-		v1, _, err := fx.validateCommit(t, importUserA, testAgentID, map[string]string{"SKILL.md": importSkillMD}, false)
+		v1, _, err := fx.validateCommit(t, importUserA, map[string]string{"SKILL.md": importSkillMD}, false)
 		if err != nil {
 			t.Fatalf("commit v1: %v", err)
 		}
 		// v2 is reviewed but a different winner holds the key.
 		artifactV2 := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": mdV2})
-		v2, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactV2))
+		v2, err := fx.svc.Validate(ctx, fx.validateReq(artifactV2))
 		if err != nil {
 			t.Fatalf("validate v2: %v", err)
 		}
@@ -2141,7 +2147,7 @@ func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
 			"phase": "committing", "name": "demo-skill", "written_package_hash": v2.PackageHash,
 		})
 		putBefore, _, _, _, _, _ := fx.store.counts()
-		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner) {
+		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner) {
 			t.Fatalf("committing-different-winner commit err=%v, want ErrUserSkillImportConcurrentWinner", err)
 		}
 		put, _, _, _, _, _ := fx.store.counts()
@@ -2161,7 +2167,7 @@ func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
 	t.Run("committing ledger no winner", func(t *testing.T) {
 		fx := newImportFixture(t)
 		artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-		validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+		validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 		if err != nil {
 			t.Fatalf("validate: %v", err)
 		}
@@ -2172,7 +2178,7 @@ func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
 			"phase": "committing", "name": "demo-skill", "written_package_hash": validated.PackageHash,
 		})
 		putBefore, _, _, _, _, _ := fx.store.counts()
-		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
+		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportProposalInvalid) {
 			t.Fatalf("committing-no-winner commit err=%v, want ErrUserSkillImportProposalInvalid", err)
 		}
 		put, _, _, _, _, _ := fx.store.counts()
@@ -2189,12 +2195,12 @@ func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
 
 	t.Run("committed ledger different winner", func(t *testing.T) {
 		fx := newImportFixture(t)
-		v1, _, err := fx.validateCommit(t, importUserA, testAgentID, map[string]string{"SKILL.md": importSkillMD}, false)
+		v1, _, err := fx.validateCommit(t, importUserA, map[string]string{"SKILL.md": importSkillMD}, false)
 		if err != nil {
 			t.Fatalf("commit v1: %v", err)
 		}
 		artifactV2 := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": mdV2})
-		v2, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactV2))
+		v2, err := fx.svc.Validate(ctx, fx.validateReq(artifactV2))
 		if err != nil {
 			t.Fatalf("validate v2: %v", err)
 		}
@@ -2211,7 +2217,7 @@ func TestUserSkillImport_LedgerConstruction_RefusalsZeroPut(t *testing.T) {
 			},
 		})
 		putBefore, _, _, _, _, _ := fx.store.counts()
-		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, importUserA, testAgentID, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner) {
+		if _, err := fx.svc.Commit(ctx, commitReqFromValidate(v2, false)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportConcurrentWinner) {
 			t.Fatalf("committed-different-winner commit err=%v, want ErrUserSkillImportConcurrentWinner", err)
 		}
 		put, _, _, _, _, _ := fx.store.counts()
@@ -2236,11 +2242,11 @@ func TestUserSkillImport_Commit_PutAndCompensationBothFail_JoinedLoudNoForeignMu
 	fx := newImportFixture(t)
 	ctx := importCtx(importUserA, testAgentID)
 	artifactID := fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
-	validated, err := fx.svc.Validate(ctx, fx.validateReq(importUserA, testAgentID, artifactID))
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(artifactID))
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	req := commitReqFromValidate(validated, importUserA, testAgentID, false)
+	req := commitReqFromValidate(validated, false)
 	q := importQuad(importUserA)
 	kind := fx.commitKind(validated.ProposalToken)
 

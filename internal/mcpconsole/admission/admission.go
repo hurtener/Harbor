@@ -182,7 +182,7 @@ type Token struct {
 // reserved `ui://` scheme on the resource URI.
 func validateTuple(rt RenderTuple) error {
 	if err := identity.Validate(rt.Identity); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMintInput, err)
+		return fmt.Errorf("%w: %w", ErrInvalidMintInput, err)
 	}
 	fields := []struct {
 		name string
@@ -195,7 +195,7 @@ func validateTuple(rt RenderTuple) error {
 	}
 	for _, f := range fields {
 		if err := validateBoundString(f.name, f.val); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidMintInput, err)
+			return fmt.Errorf("%w: %w", ErrInvalidMintInput, err)
 		}
 	}
 	if !strings.HasPrefix(rt.ResourceURI, resourceScheme) {
@@ -297,11 +297,11 @@ func (a *Authority) Verify(ctx context.Context, expected RenderTuple, token stri
 	}
 	sealed, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: token is not valid base64url: %v", ErrTokenUnavailable, err)
+		return Claims{}, fmt.Errorf("%w: token is not valid base64url: %w", ErrTokenUnavailable, err)
 	}
 	plaintext, err := a.sealer.Open(sealed)
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: envelope: %v", ErrTokenUnavailable, err)
+		return Claims{}, fmt.Errorf("%w: envelope: %w", ErrTokenUnavailable, err)
 	}
 	if len(plaintext) > MaxClaimJSONBytes {
 		return Claims{}, fmt.Errorf("%w: claims plaintext is %d bytes, max %d", ErrTokenInvalid, len(plaintext), MaxClaimJSONBytes)
@@ -311,7 +311,7 @@ func (a *Authority) Verify(ctx context.Context, expected RenderTuple, token stri
 	}
 	var claims Claims
 	if err := strictDecode(plaintext, &claims); err != nil {
-		return Claims{}, fmt.Errorf("%w: claims decode: %v", ErrTokenInvalid, err)
+		return Claims{}, fmt.Errorf("%w: claims decode: %w", ErrTokenInvalid, err)
 	}
 	now := a.clock()
 	if err := validateClaimsStructure(&claims, now); err != nil {
