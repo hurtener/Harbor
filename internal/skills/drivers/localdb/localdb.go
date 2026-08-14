@@ -200,6 +200,21 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 		}
 	}()
 
+	// Legacy-mutation fence: an installed-package key is read-only from
+	// the legacy surface. Refuse BEFORE the probe so a legacy upsert can
+	// never silently overwrite (or idempotently echo) the installed
+	// unit's membership row — the unit is only ever mutated through the
+	// dedicated package-aware methods.
+	if skills.LegacyMutationTargetsInstalledKey(skill.Scope, skill.AgentID, skill.Name) {
+		exists, err := d.installedPackageExists(ctx, tx, id, skill.AgentID, skill.Name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return errInstalledPackageReadOnly(skill.Name, skill.AgentID, skill.Scope)
+		}
+	}
+
 	// User-scope rows persist session-zeroed so they resolve across every
 	// session of the same (tenant, user) — the durable-by-default rung. All
 	// other scopes pin the caller's real session (unchanged). Identity was
@@ -255,6 +270,24 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 	}
 	skill.UpdatedAt = now
 
+	if err := upsertSkillRow(ctx, tx, id, skill); err != nil {
+		return fmt.Errorf("skills/localdb: upsert exec: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("skills/localdb: commit upsert: %w", err)
+	}
+	committed = true
+	return d.emitUpserted(ctx, id, skill, false)
+}
+
+// upsertSkillRow is the single writer of the `skills` table, shared by
+// the legacy Upsert path and the installed-package commit/restore paths
+// so the membership row and the legacy surface never diverge. It writes
+// the canonical stored skill at the rung its Scope dictates (session-
+// zeroed for ScopeUser) via INSERT ... ON CONFLICT DO UPDATE. Callers
+// run the surrounding transaction.
+func upsertSkillRow(ctx context.Context, tx *sql.Tx, id identity.Quadruple, skill skills.Skill) error {
+	storeSession := skills.StorageSessionID(id, skill.Scope)
 	tagsJSON, err := marshalStrings(skill.Tags)
 	if err != nil {
 		return err
@@ -289,7 +322,7 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 	}
 	tagsText := strings.Join(skill.Tags, " ")
 
-	if _, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
         INSERT INTO skills
             (tenant, user, session, scope, agent_id, name, title, description, trigger,
              task_type, tags_json, tags_text, steps_json, preconditions_json,
@@ -325,14 +358,11 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 		skill.ScopeTenantID, skill.ScopeProjectID,
 		skill.ContentHash, skill.CreatedAt, skill.UpdatedAt, skill.LastUsed,
 		skill.UseCount, extraJSON,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("skills/localdb: upsert exec: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("skills/localdb: commit upsert: %w", err)
-	}
-	committed = true
-	return d.emitUpserted(ctx, id, skill, false)
+	return nil
 }
 
 func (d *driver) emitUpserted(ctx context.Context, id identity.Quadruple, s skills.Skill, idempotent bool) error {
@@ -577,6 +607,34 @@ func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID
 	if skills.ValidateIdentity(id) != nil {
 		return skills.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("skills/localdb: begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // best-effort; the original error is the surfaced one
+		}
+	}()
+
+	// Legacy-mutation fence: a ScopeUser-rung DeleteAgent whose
+	// (effective-agent, name) matches an installed package targets the
+	// unit's membership row. Refuse BEFORE any row is touched — the
+	// atomic unit can never be torn (row deleted, package left); the
+	// dedicated DeleteInstalledPackage / RestoreInstalledPackage methods
+	// are its only package-aware mutation path. Keys without an installed
+	// package keep the exact legacy behavior.
+	if skills.LegacyMutationTargetsInstalledKey(scope, agentID, name) {
+		exists, err := d.installedPackageExists(ctx, tx, id, agentID, name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return errInstalledPackageReadOnly(name, agentID, scope)
+		}
+	}
+
 	// RUNG-PRECISE delete: reads union the session + user rungs, but a
 	// DESTRUCTIVE op must never cross that boundary. A ScopeUser delete
 	// targets ONLY the durable user-scope row (keyed (tenant, user), session
@@ -594,7 +652,7 @@ func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID
 		query = `DELETE FROM skills WHERE tenant = ? AND user = ? AND session = ? AND scope != ? AND agent_id = ? AND name = ?`
 		args = []any{id.TenantID, id.UserID, id.SessionID, string(skills.ScopeUser), agentID, name}
 	}
-	res, err := d.db.ExecContext(ctx, query, args...)
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("skills/localdb: Delete exec: %w", err)
 	}
@@ -605,6 +663,10 @@ func (d *driver) deleteAgent(ctx context.Context, id identity.Quadruple, agentID
 	if n == 0 {
 		return fmt.Errorf("%w: name=%q", skills.ErrSkillNotFound, name)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("skills/localdb: commit delete: %w", err)
+	}
+	committed = true
 	if err := d.bus.Publish(ctx, events.Event{
 		Type:       skills.EventTypeSkillDeleted,
 		Identity:   id,
@@ -665,6 +727,10 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	pragmas := []string{
 		"busy_timeout(" + fmt.Sprint(busyTimeoutMs) + ")",
 		"journal_mode(WAL)",
+		// foreign_keys enforces the installed_support → installed_packages
+		// FK of migration 0003; no pre-existing table declares a foreign
+		// key, so the pragma is strictly additive.
+		"foreign_keys(1)",
 	}
 	if strings.HasPrefix(dsn, "file:") {
 		u, err := url.Parse(dsn)
