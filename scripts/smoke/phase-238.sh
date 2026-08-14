@@ -147,6 +147,27 @@ assert_grep_absent "HARBOR_MCP_APP_SEALING_KEY" \
 # authority; a process-local discovery counter is not acceptable, and a
 # replica holding a different current catalog fails closed as a generation
 # mismatch. Every owned authoritative surface carries the corrected binding.
+
+# Pin the affirmative semantics against the canonical plan text itself: the
+# generation is deterministic and stable across replicas holding the same
+# current catalog, and it changes after ANY successful discovery/catalog/
+# resource change even when the deployment descriptor configuration did not
+# change.
+assert_grep_present "deterministic and stable across replicas holding the same current" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan acceptance pins deterministic, replica-stable generation"
+assert_grep_present "stable across replicas holding the same current catalog" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins stability across replicas holding the same current catalog"
+assert_grep_present "replica-stable generation of the server's current discovered catalog" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins replica-stable generation of the current discovered catalog"
+assert_grep_present "successful discovery/catalog/resource change even with unchanged" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins generation change after discovery/catalog/resource change with unchanged descriptor config"
+assert_grep_present "even when deployment descriptor configuration did not" \
+    docs/plans/phase-238-app-only-callback-catalog.md \
+    "amendment: plan pins generation change even when deployment descriptor config did not change"
 assert_grep_present "detach, replacement, and ANY" \
     docs/plans/phase-238-app-only-callback-catalog.md \
     "amendment: plan pins generation change on detach/replacement/discovery change"
