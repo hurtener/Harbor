@@ -23,6 +23,12 @@
 //     that bubble to the sealed row via exactly ONE `sessions.turns.get`
 //     (never `tasks.get` / the raw transcript), even though this page
 //     never started it; a foreign/unrendered task's events are ignored;
+//   - HA-64 P1 — a real page retry over STILL-RENDERED bubbles re-runs the
+//     two-read open (one inspect + one turns.list per load, no wider set):
+//     the running row is re-admitted to the live lane (no duplicate bubble,
+//     no re-folded KPI) and its terminal frame still converges via exactly
+//     ONE `sessions.turns.get`, while a terminal row served on retry never
+//     regains membership;
 //   - a runtime predating the projection answers `unknown_method` on the open:
 //     the page shows the explicit degraded/forensic control and does NOT run
 //     the legacy `state.history` event-replay path until the operator clicks.
@@ -46,6 +52,10 @@ const harness = vi.hoisted(() => ({
   getError: undefined as unknown,
   lifecycleRow: {} as Record<string, unknown>,
   lifecycleError: undefined as unknown,
+  // The connectivity probe (capabilities) — a non-unknown_method failure
+  // here puts the page in the Error state so the REAL PageState retry
+  // button is reachable while the hydrated messages stay in the stream.
+  capabilitiesError: undefined as unknown,
   // The lifecycle/terminal frames the fake EventSource can dispatch.
   eventListeners: new Map<string, (msg: { data: string }) => void>(),
   // Every SSE URL the page opened an EventSource against, in order.
@@ -184,7 +194,10 @@ vi.mock('$lib/protocol/harbor.js', () => ({
       cancel: async () => ({})
     };
     runs = { setOverrides: async () => ({}) };
-    capabilities = async () => new Set<string>();
+    capabilities = async () => {
+      if (harness.capabilitiesError !== undefined) throw harness.capabilitiesError;
+      return new Set<string>();
+    };
     topology = { snapshot: async () => ({ nodes: [] }) };
     posture = { info: async () => ({}) };
     agents = { list: async () => ({ agents: [] }) };
@@ -328,6 +341,7 @@ afterEach(() => {
   harness.getError = undefined;
   harness.lifecycleRow = {};
   harness.lifecycleError = undefined;
+  harness.capabilitiesError = undefined;
   harness.eventListeners.clear();
   harness.eventSourceUrls.length = 0;
   harness.orderLog.length = 0;
@@ -664,6 +678,186 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
       (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
     ).map((n) => n.getAttribute('data-message-id') ?? '');
     expect(ids.filter((id) => id === 't-task-race-a')).toHaveLength(1);
+  });
+
+  it('a retry over still-rendered running-turn bubbles re-admits the live lane — no duplicate, two-read open repeats, one turns.get (HA-64 P1)', async () => {
+    // The bug: hydratePastTurns clears reopenedLiveTaskIDs, then the retry's
+    // fold skips any row whose task already has a rendered message — so a
+    // page retry/reload with existing bubbles loses the live admission and
+    // later chunks/terminal events freeze. The fix RE-ADMITS a freshly read
+    // running/pending/paused row whose message is already present while still
+    // skipping message/KPI insertion.
+    harness.lifecycleRow = { session_id: 's-reopen', status: 'running', started_at: '2026-07-10T11:59:00Z' };
+    // The SAME running turn is served on both reads — the retry re-reads the
+    // authoritative page while the first hydration's bubbles are still in the
+    // stream.
+    const runningRow = (): Record<string, unknown> =>
+      turnRow('task-retry', {
+        status: 'running',
+        sealed: false,
+        finished_at: undefined,
+        answer: { state: 'inline', inline: 'partial ', seq: 1, complete: 'complete' }
+      });
+    harness.turnPages = [newestPage([runningRow()]), newestPage([runningRow()])];
+    harness.turnsGetResult = {
+      session_id: 's-reopen',
+      turn: turnRow('task-retry', {
+        turn_id: 'task-retry',
+        task_id: 'task-retry',
+        status: 'complete',
+        sealed: true,
+        finished_at: '2026-07-10T12:00:05Z',
+        answer: { state: 'inline', inline: 'sealed retry answer', seq: 2, complete: 'complete' }
+      }),
+      protocol_version: '0.1.0'
+    };
+    // The first load folds the durable page and then fails the connectivity
+    // probe — the page lands in the Error state (the REAL retry button) with
+    // the hydrated bubbles still in the stream.
+    harness.capabilitiesError = new Error('probe failed');
+    await render();
+
+    // The first open was the two-read open; the probe failure surfaced the
+    // Error state's retry button.
+    expect(harness.inspectCalls).toHaveLength(1);
+    expect(harness.turnsListCalls).toHaveLength(1);
+    const retry = target?.querySelector('[data-testid="page-state-retry"]');
+    expect(retry).not.toBeNull();
+
+    // Retry — the real PageState re-invocation of load(). The first fold's
+    // bubbles remain in the stream, so the second fold must not duplicate
+    // them, and the two authoritative reads repeat.
+    harness.capabilitiesError = undefined;
+    (retry as HTMLButtonElement | null)?.click();
+    for (let i = 0; i < 16; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    // The two-read open repeated — still no forensic/raw surfaces.
+    expect(harness.inspectCalls).toHaveLength(2);
+    expect(harness.turnsListCalls).toHaveLength(2);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.tasksListCalls).toBe(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+
+    // The existing bubble was NOT duplicated — still exactly one user + one
+    // agent bubble for the running task, still showing the fold snapshot.
+    const bubbleIds = (): string[] =>
+      Array.from(
+        (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
+      ).map((n) => n.getAttribute('data-message-id') ?? '');
+    expect(bubbleIds().filter((id) => id === 't-task-retry-u')).toHaveLength(1);
+    expect(bubbleIds().filter((id) => id === 't-task-retry-a')).toHaveLength(1);
+    expect(bubbleTexts().join('\n')).toContain('partial');
+    expect(bubbleTexts().join('\n')).not.toContain('sealed retry answer');
+
+    // The retried page re-opened the stream (the previous EventSource closed
+    // first), still seeded with the fold's live_resume_seq.
+    expect(harness.eventSourceUrls).toHaveLength(2);
+    for (const url of harness.eventSourceUrls) {
+      expect(new URL(url).searchParams.get('resume_seq')).toBe('1');
+    }
+    expect(harness.orderLog).toEqual([
+      `turns.list`,
+      `eventsource:${harness.eventSourceUrls[0]}`,
+      `turns.list`,
+      `eventsource:${harness.eventSourceUrls[1]}`
+    ]);
+
+    // The re-admitted running turn's terminal frame still converges via
+    // exactly one sessions.turns.get — the retry did NOT freeze the bubble.
+    const onTerminal = harness.eventListeners.get('task.completed');
+    expect(onTerminal).toBeDefined();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-retry', payload: { TaskID: 'task-retry' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsGetCalls).toEqual([{ session_id: 's-reopen', task_id: 'task-retry' }]);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleTexts().join('\n')).toContain('sealed retry answer');
+    expect(bubbleIds().filter((id) => id === 't-task-retry-a')).toHaveLength(1);
+  });
+
+  it('a terminal row on retry never regains live-lane membership (HA-64 P1)', async () => {
+    // The retry's authoritative read returns the SAME turn already SEALED —
+    // it finished between the two reads. A terminal row must not be re-admitted
+    // to reopenedLiveTaskIDs (the fix re-admits ONLY the closed live status
+    // set), so its terminal frame stays a no-op — no reconcile read, no
+    // duplicate bubble.
+    harness.lifecycleRow = { session_id: 's-reopen', status: 'running', started_at: '2026-07-10T11:59:00Z' };
+    harness.turnPages = [
+      newestPage([
+        turnRow('task-retry-term', {
+          status: 'running',
+          sealed: false,
+          finished_at: undefined,
+          answer: { state: 'inline', inline: 'partial ', seq: 1, complete: 'complete' }
+        })
+      ]),
+      newestPage([
+        turnRow('task-retry-term', {
+          status: 'complete',
+          sealed: true,
+          finished_at: '2026-07-10T12:00:05Z',
+          answer: { state: 'inline', inline: 'sealed term', seq: 2, complete: 'complete' }
+        })
+      ])
+    ];
+    harness.capabilitiesError = new Error('probe failed');
+    await render();
+    expect(harness.turnsListCalls).toHaveLength(1);
+
+    // Retry — the second fold sees the terminal row already present: message
+    // insertion is skipped (no duplicate) AND membership is not regained.
+    harness.capabilitiesError = undefined;
+    const retry = target?.querySelector('[data-testid="page-state-retry"]');
+    expect(retry).not.toBeNull();
+    (retry as HTMLButtonElement | null)?.click();
+    for (let i = 0; i < 16; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsListCalls).toHaveLength(2);
+    const bubbleIds = (): string[] =>
+      Array.from(
+        (target?.querySelectorAll('[data-testid="chat-message-bubble"]') ?? []) as NodeListOf<HTMLElement>
+      ).map((n) => n.getAttribute('data-message-id') ?? '');
+    // No duplicate bubble; the fold snapshot is untouched (the sealed row is
+    // never fetched — the page was not tracking this turn after the retry).
+    expect(bubbleIds().filter((id) => id === 't-task-retry-term-a')).toHaveLength(1);
+    expect(bubbleTexts().join('\n')).toContain('partial');
+    expect(bubbleTexts().join('\n')).not.toContain('sealed term');
+
+    // The terminal frame for the sealed row is a no-op — no reconcile read
+    // fires, proving membership was not regained.
+    const onTerminal = harness.eventListeners.get('task.completed');
+    expect(onTerminal).toBeDefined();
+    onTerminal?.({
+      data: JSON.stringify({ type: 'task.completed', run: 'task-retry-term', payload: { TaskID: 'task-retry-term' } })
+    });
+    for (let i = 0; i < 8; i++) {
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+
+    expect(harness.turnsGetCalls).toHaveLength(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.stateHistoryCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
+    expect(bubbleIds().filter((id) => id === 't-task-retry-term-a')).toHaveLength(1);
   });
 
   it('a brand-new session opens the stream with NO resume cursor and zero fallback reads (HA-64 P1)', async () => {

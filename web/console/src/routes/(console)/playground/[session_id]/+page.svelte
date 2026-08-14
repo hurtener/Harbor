@@ -1181,7 +1181,21 @@
       const rendered = renderedRows[i];
       const row = rows[i];
       const taskID = row.task_id || row.turn_id;
-      if (present.has(taskID)) continue;
+      if (present.has(taskID)) {
+        // HA-64 / D-425 (P1) — a page retry re-runs hydration with the
+        // previous fold's bubbles STILL rendered. The row already has a
+        // rendered message, so message/KPI insertion is skipped (no duplicate
+        // bubble, no double-folded KPI) — but the live-lane admission must be
+        // REBUILT: `reopenedLiveTaskIDs` was cleared at the top of hydration,
+        // and without re-adding the freshly-read running/pending/paused row
+        // the retried page loses the live admission and later chunks/terminal
+        // events freeze. ONLY the closed live status set is re-admitted — a
+        // terminal row never regains membership.
+        if (LIVE_TURN_STATUSES.has(rendered.status)) {
+          reopenedLiveTaskIDs.add(taskID);
+        }
+        continue;
+      }
       const m = rendered;
       // HA-64 / D-425 (P1) — admit the fold-rendered in-flight rows to the
       // live lane: this page did not start them (activeTaskID stays null),

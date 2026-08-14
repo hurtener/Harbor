@@ -116,12 +116,15 @@ const (
 
 // InitialResumeQuery is the narrowly named query parameter that carries
 // the durable turn page's live_resume_seq as the INITIAL replay cursor on
-// first connect — the snapshot-to-live handoff cursor (HA-64 / D-425).
-// The Console seeds it from `sessions.turns.list` BEFORE opening the
-// EventSource so events strictly newer than the fold snapshot are
-// replayed; the server consults it ONLY when the reconnect Last-Event-ID
-// header is absent, so a browser reconnect replays from its own cursor,
-// never from the original snapshot forever.
+// first connect — the snapshot-to-live initial-resume handoff: the
+// Console folds the durable page, then seeds this cursor so events
+// strictly newer than the snapshot are replayed through the same bounded
+// Replay path a reconnect uses before live-tailing. The Console seeds it
+// from `sessions.turns.list` BEFORE opening the EventSource so events
+// strictly newer than the fold snapshot are replayed; the server consults
+// it ONLY when the reconnect Last-Event-ID header is absent, so a browser
+// reconnect replays from its own cursor, never from the original snapshot
+// forever.
 const InitialResumeQuery = "resume_seq"
 
 // defaultKeepalive is the interval between SSE keepalive comment frames
