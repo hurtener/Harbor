@@ -1166,7 +1166,11 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 //   - ("", false, error wrapping ErrGenerationMismatch): the server is
 //     absent, has no established current generation, or its current
 //     generation differs from expectedGeneration. A refusal — the
-//     admission is stale — never a resolution of the new row.
+//     admission is stale — never a resolution of the new row. The
+//     refusal's error text deliberately carries neither generation
+//     digest: the accessor surfaces it verbatim on the wire (a scope
+//     refusal), and a digest in the message would leak catalog state to
+//     whoever probes the refusal (CLAUDE.md §7).
 //   - ("", false, nil): the server's current generation equals
 //     expectedGeneration, but the server does not hold an app-only
 //     callback under toolName (a plain not-found within the exact
@@ -1180,8 +1184,12 @@ func (r *Registry) ResolveAppToolAtGeneration(serverID, toolName, expectedGenera
 			ErrGenerationMismatch, serverID)
 	}
 	if e.currentGeneration != expectedGeneration {
-		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q current generation changed while resolving (current %q != expected %q)",
-			ErrGenerationMismatch, serverID, e.currentGeneration, expectedGeneration)
+		// The typed mismatch (ErrGenerationMismatch) is the whole verdict.
+		// Neither the current nor the expected generation digest is echoed
+		// into the text — the accessor wraps this error verbatim into the
+		// wire-facing CodeScopeMismatch message.
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q current generation changed while resolving",
+			ErrGenerationMismatch, serverID)
 	}
 	d, ok := e.appOnly[toolName]
 	return d, ok, nil
@@ -2636,10 +2644,16 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	e.stats.promptCount = pc
 	e.stats.lastDiscoveryAt = r.clock()
 	e.stats.state = ServerStateOnline
-	// The boot-time descriptor snapshot also establishes the current
-	// provider/catalog generation — RecordDiscovery is the no-network
-	// counterpart to RefreshDiscovery, so it must seed the same
-	// deterministic generation the refresh path maintains.
+	// The boot-time descriptor snapshot also establishes BOTH projections
+	// from the SAME set: the App dispatch catalog (entry.appOnly) and the
+	// deterministic current provider/catalog generation. RecordDiscovery is
+	// the no-network counterpart to RefreshDiscovery, so it must seed the
+	// same two views the refresh path maintains together, under one write
+	// lock — a subsequent generation-bound app-only resolution
+	// (ResolveAppToolAtGeneration) must see the refreshed partition under
+	// the refreshed generation, never stale descriptors from the
+	// pre-discovery stage.
+	e.appOnly = partitionAppOnly(descs)
 	e.currentGeneration = currentGenerationFor(descs)
 	return nil
 }

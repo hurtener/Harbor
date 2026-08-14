@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,11 @@ import (
 
 	"github.com/hurtener/Harbor/internal/tools"
 )
+
+// digestHex matches a SHA-256 hex digest — the generation fingerprint's
+// exact shape — so a regression test can prove a refusal message carries
+// no generation digest no matter which value leaked.
+var digestHex = regexp.MustCompile(`[0-9a-f]{64}`)
 
 // genBaseTool returns a tool populating EVERY stable semantic field
 // family the generation digest covers, so a mutation test can flip
@@ -693,5 +700,106 @@ func TestRegistry_ResolveAppToolAtGeneration_ConcurrentIsolation(t *testing.T) {
 	}
 	if got := refusals.Load(); got != 0 {
 		t.Errorf("typed refusals = %d, want 0 under an unchanged generation", got)
+	}
+}
+
+// TestRegistry_ResolveAppToolAtGeneration_MismatchErrorHidesDigests pins
+// the P2 hardening: a generation-mismatch refusal is TYPED
+// (ErrGenerationMismatch — the admission is stale, never a resolution of
+// the new row) but its error text discloses neither the current nor the
+// expected catalog-generation digest. The accessor wraps this error
+// verbatim into the wire-facing CodeScopeMismatch message, so a digest in
+// the text would leak catalog state to whoever probes the refusal.
+func TestRegistry_ResolveAppToolAtGeneration_MismatchErrorHidesDigests(t *testing.T) {
+	reg := NewRegistry()
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
+		appDesc("srv-a_cb", "srv-a", true),
+	})
+	gen1, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen1 == "" {
+		t.Fatalf("v1 registration did not establish a generation (gen1=%q ok=%v)", gen1, ok)
+	}
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
+		appDesc("srv-a_cb-v2", "srv-a", true),
+	})
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("replacement did not move the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+
+	// A caller holding gen1 that reaches the atomic compare+resolve after
+	// the replacement (gen1 → gen2) is refused TYPED — the typed mismatch
+	// still propagates through errors.Is — while the text carries no
+	// digest: neither generation value, and no 64-hex SHA-256 digest run
+	// anywhere in the message.
+	_, ok, err := reg.ResolveAppToolAtGeneration("srv-a", "srv-a_cb-v2", gen1)
+	if err == nil || !errors.Is(err, ErrGenerationMismatch) {
+		t.Fatalf("stale-generation resolve err = %v, want a wrapped %v", err, ErrGenerationMismatch)
+	}
+	if ok {
+		t.Fatal("stale-generation resolve must not return a descriptor")
+	}
+	if msg := err.Error(); strings.Contains(msg, gen1) || strings.Contains(msg, gen2) {
+		t.Errorf("mismatch error text discloses a generation digest: %q", msg)
+	} else if digestHex.MatchString(msg) {
+		t.Errorf("mismatch error text carries a hex digest: %q", msg)
+	}
+
+	// The absent-server refusal (no current generation to compare) is the
+	// same fail-closed family and likewise carries no digest.
+	_, ok, err = reg.ResolveAppToolAtGeneration("absent-srv", "x", gen2)
+	if err == nil || !errors.Is(err, ErrGenerationMismatch) || ok {
+		t.Fatalf("absent-server resolve must refuse with ErrGenerationMismatch (ok=%v err=%v)", ok, err)
+	}
+	if msg := err.Error(); digestHex.MatchString(msg) {
+		t.Errorf("absent-server refusal text carries a hex digest: %q", msg)
+	}
+}
+
+// TestRegistry_RecordDiscovery_RefreshesAppOnlyPartitionWithGeneration
+// pins the P2 latent-path fix: RecordDiscovery is the no-network
+// counterpart to RefreshDiscovery, so it must rebuild BOTH projections
+// from the SAME fresh descriptor set — the App dispatch catalog
+// (entry.appOnly) AND the deterministic current generation — under one
+// write lock. A subsequent generation-bound app-only resolution
+// (ResolveAppToolAtGeneration) must see the refreshed partition: the new
+// app-only callback resolves under the new generation, the stale callback
+// is gone, and an ordinary descriptor never leaks into the app-only
+// partition.
+func TestRegistry_RecordDiscovery_RefreshesAppOnlyPartitionWithGeneration(t *testing.T) {
+	reg := NewRegistry()
+	stageAppServer(t, reg, "srv-a", []tools.ToolDescriptor{
+		appDesc("srv-a_old", "srv-a", true),
+	})
+	genBefore, ok := reg.CurrentGeneration("srv-a")
+	if !ok || genBefore == "" {
+		t.Fatalf("staged server must have an established generation (gen=%q ok=%v)", genBefore, ok)
+	}
+	// The boot-time path re-records a FRESH descriptor slice after a new
+	// discovery: the old app-only callback is replaced by a new one, plus
+	// an ordinary tool that must stay OUT of the app-only partition.
+	fresh := []tools.ToolDescriptor{
+		appDesc("srv-a_plain", "srv-a", false),
+		appDesc("srv-a_new", "srv-a", true),
+	}
+	if err := reg.RecordDiscovery("srv-a", fresh); err != nil {
+		t.Fatalf("RecordDiscovery: %v", err)
+	}
+	genAfter, ok := reg.CurrentGeneration("srv-a")
+	if !ok || genAfter == "" || genAfter == genBefore {
+		t.Fatalf("RecordDiscovery must move the generation with the refreshed set (before=%q after=%q ok=%v)", genBefore, genAfter, ok)
+	}
+	// A generation-bound app-only resolution against the refreshed
+	// generation resolves the NEW callback — the partition the accessor
+	// reads was rebuilt from the SAME set that moved the generation.
+	d, ok, err := reg.ResolveAppToolAtGeneration("srv-a", "srv-a_new", genAfter)
+	if err != nil || !ok || d.Tool.Name != "srv-a_new" {
+		t.Fatalf("generation-bound resolve of the refreshed callback failed (d=%+v ok=%v err=%v)", d.Tool, ok, err)
+	}
+	if _, ok := reg.ResolveAppTool("srv-a", "srv-a_old"); ok {
+		t.Fatalf("stale app-only callback %q survived RecordDiscovery — the partition must rebuild from the fresh set", "srv-a_old")
+	}
+	if _, ok := reg.ResolveAppTool("srv-a", "srv-a_plain"); ok {
+		t.Fatalf("ordinary descriptor %q leaked into the app-only partition", "srv-a_plain")
 	}
 }

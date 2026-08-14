@@ -381,9 +381,12 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 		// generation that is no longer current. A scope-level refusal
 		// (ErrAccessorScopeDenied → CodeScopeMismatch at the wire edge),
 		// never a not-found: the target may exist, but this call is not
-		// authorized to reach it under the current generation.
-		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof is missing or does not bind the exact (identity, agent, server %q, resource %q, generation %q) tuple",
-			protocol.ErrAccessorScopeDenied, serverID, resourceURI, currentGen)
+		// authorized to reach it under the current generation. The refusal
+		// text deliberately does not echo the generation digest — the wire
+		// edge carries this message verbatim, and a digest in it would
+		// leak catalog state to whoever probes the refusal.
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof is missing or does not bind the exact (identity, agent, server %q, resource %q) tuple under the current generation",
+			protocol.ErrAccessorScopeDenied, serverID, resourceURI)
 	}
 	// The atomic compare+resolve: ONE registry read lock re-verifies the
 	// exact current generation and resolves the app-only descriptor in the

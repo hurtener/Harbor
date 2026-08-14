@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +23,12 @@ import (
 	authsealer "github.com/hurtener/Harbor/internal/tools/auth"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
+
+// admissionWireDigestHex matches a SHA-256 hex digest — the generation
+// fingerprint's exact shape — so the wire-facing regression can prove a
+// refusal Message carries no generation digest no matter which value
+// leaked.
+var admissionWireDigestHex = regexp.MustCompile(`[0-9a-f]{64}`)
 
 // --- HA-56 real Registry+AppsAccessor+AppsSurface admission path -------
 
@@ -961,5 +969,81 @@ func TestAdmissionPath_DetachAfterProofMint_ZeroExecutions(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Errorf("wrapped invocations = %d, want 0 (detach must execute zero callbacks)", got)
+	}
+}
+
+// TestAdmissionPath_GenerationMismatch_WireErrorHidesDigests is the P2
+// wire-facing regression: after a catalog generation change races the
+// call (the surface verifies the sealed admission and mints the call-local
+// proof for generation G1; the server is then replaced with G2 before the
+// accessor's atomic compare+resolve), the typed scope refusal
+// (CodeScopeMismatch — the admission is stale) still propagates and zero
+// callbacks execute, while the wire Message carries NO generation digest —
+// neither the stale one the proof bound (G1) nor the current one the
+// accessor re-read (G2). The accessor wraps the refusal verbatim into the
+// wire message, so a digest in its text would leak catalog state to
+// whoever probes the refusal.
+func TestAdmissionPath_GenerationMismatch_WireErrorHidesDigests(t *testing.T) {
+	reg := mcp.NewRegistry()
+	descs := []tools.ToolDescriptor{
+		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+	}
+	v2Calls := new(atomic.Int64)
+	s, calls, reg, _ := buildRacingAdmissionSurface(t, reg, "srv-a", descs, func() {
+		// Force the catalog generation change AFTER the surface's sealed
+		// verification / proof mint, BEFORE the accessor's atomic
+		// compare+resolve — the exact window whose refusal message must
+		// not disclose a digest.
+		stageAdmissionServer(t, reg, "srv-a", []tools.ToolDescriptor{
+			admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
+			admissionAppDesc("srv-a_cb-v2", "srv-a", v2Calls),
+		})
+	})
+
+	gen1, _ := reg.CurrentGeneration("srv-a")
+	// Mint through the real surface path (binds G1).
+	resp, err := s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity: admissionID(), ServerID: "srv-a", ResourceURI: "ui://srv-a/app.html",
+		RequestRenderAdmission: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(read_resource): %v", err)
+	}
+	out := resp.(*types.ReadMCPResourceResponse)
+	if out.RenderAdmission == nil || out.RenderAdmission.Token == "" {
+		t.Fatalf("opt-in read returned no bounded admission: %+v", out.RenderAdmission)
+	}
+	// The call races the replacement: the hook fires between the surface's
+	// verify/proof-mint and the accessor's atomic compare+resolve.
+	_, err = s.Dispatch(admissionVerifiedCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: admissionID(), ServerID: "srv-a", Tool: "srv-a_cb",
+		ResourceURI: "ui://srv-a/app.html", RenderAdmission: out.RenderAdmission.Token,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want *protoerrors.Error", err)
+	}
+	// The typed mismatch still propagates at the wire: a scope refusal.
+	if perr.Code != protoerrors.CodeScopeMismatch {
+		t.Errorf("code = %q, want %q (stale admission raced a generation change → scope refusal)",
+			perr.Code, protoerrors.CodeScopeMismatch)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("v1 wrapped invocations = %d, want 0 (the old row must never execute)", got)
+	}
+	if got := v2Calls.Load(); got != 0 {
+		t.Errorf("v2 wrapped invocations = %d, want 0 (the new row must never execute)", got)
+	}
+	gen2, ok := reg.CurrentGeneration("srv-a")
+	if !ok || gen2 == gen1 {
+		t.Fatalf("replacement did not move the generation (gen1=%q gen2=%q ok=%v)", gen1, gen2, ok)
+	}
+	// The wire-facing Message carries NO digest: neither generation value,
+	// and no 64-hex SHA-256 digest run anywhere in it.
+	if msg := perr.Message; strings.Contains(msg, gen1) || strings.Contains(msg, gen2) {
+		t.Errorf("wire message discloses a generation digest: %q", msg)
+	} else if admissionWireDigestHex.MatchString(msg) {
+		t.Errorf("wire message carries a hex digest: %q", msg)
 	}
 }
