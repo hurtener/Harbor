@@ -641,6 +641,58 @@ func TestMaterialize_TaskSnapshot_LegacyFailureMetadataCannotStallProjection(t *
 	})
 }
 
+// TestMaterialize_TaskSnapshot_OverBoundFailureMessageCorruptionFailsClosed
+// pins the security ordering around the one size-tolerance exception. A
+// message that is over-bound AND structurally corrupt is not a pure size
+// overflow: invalid UTF-8 and prohibited controls still fail the pass before
+// omission, leaving the terminal event unapplied and the row mutable.
+func TestMaterialize_TaskSnapshot_OverBoundFailureMessageCorruptionFailsClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{
+			name:    "over-bound plus NUL control",
+			message: strings.Repeat("m", turns.MaxTerminalMessageRunes+1) + "\x00",
+		},
+		{
+			name:    "over-bound plus invalid UTF-8",
+			message: strings.Repeat("m", turns.MaxTerminalMessageRunes+1) + string([]byte{0xff}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			defer h.closeStore()
+			reader := newFakeTaskReader().set("task-corrupt-message", TaskSnapshot{
+				FailurePresent: true,
+				ErrorCode:      "timeout",
+				ErrorMessage:   tt.message,
+			})
+			m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+
+			h.src.publish(t, spawnEv(h.id, "run-corrupt-message", "task-corrupt-message", tasks.KindForeground, ""))
+			h.src.publish(t, startedEv(h.id, "task-corrupt-message"))
+			last := h.src.publish(t, failedEv(h.id, "task-corrupt-message", "timeout"))
+
+			if _, err := m.Materialize(context.Background()); !errors.Is(err, turns.ErrInvalidInput) {
+				t.Fatalf("materialize corrupt over-bound message = %v, want ErrInvalidInput", err)
+			}
+			row := mustGetRow(t, h, "task-corrupt-message")
+			if row.Sealed || row.Status != turns.StatusRunning {
+				t.Errorf("row = status %q sealed %v, want running/unsealed", row.Status, row.Sealed)
+			}
+			cp, err := h.proj.Checkpoint(context.Background(), h.id)
+			if err != nil {
+				t.Fatalf("checkpoint: %v", err)
+			}
+			if cp != last.Sequence-1 {
+				t.Errorf("checkpoint = %d, want %d (corrupt terminal event unapplied)", cp, last.Sequence-1)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // bounds, redaction posture, cross-identity denial
 // ---------------------------------------------------------------------------

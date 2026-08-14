@@ -200,16 +200,25 @@ func snapshotOutputs(snap TaskSnapshot) []turns.Attachment {
 }
 
 // snapshotFailureMessage returns the optional task-record failure message
-// only when it fits the durable turn bound. A historical record can predate
-// that bound, and its advisory message must not stop the global lifecycle
-// projector: omission is the honest unavailable representation. UTF-8 and
-// control-character validation remains the Projector's fail-loud concern;
-// only the compatibility-relevant size overflow is tolerated here.
-func snapshotFailureMessage(message string) string {
-	if utf8.RuneCountInString(message) > turns.MaxTerminalMessageRunes {
-		return ""
+// only when it is structurally safe and fits the durable turn bound. A
+// historical record can predate that bound, and its advisory message must not
+// stop the global lifecycle projector: PURE size overflow is omitted as the
+// honest unavailable representation. Invalid UTF-8 and NUL/C0/DEL controls
+// remain fail-closed even when the same string is also over-bound; checking
+// those invariants first prevents size tolerance from masking corruption.
+func snapshotFailureMessage(message string) (string, error) {
+	if !utf8.ValidString(message) {
+		return "", fmt.Errorf("%w: task snapshot terminal error message is not valid UTF-8", turns.ErrInvalidInput)
 	}
-	return message
+	for _, r := range message {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("%w: task snapshot terminal error message contains a NUL / control character (U+%04X) — rejected as ambiguous", turns.ErrInvalidInput, r)
+		}
+	}
+	if utf8.RuneCountInString(message) > turns.MaxTerminalMessageRunes {
+		return "", nil
+	}
+	return message, nil
 }
 
 // readTaskSnapshot reads the canonical task record through the
