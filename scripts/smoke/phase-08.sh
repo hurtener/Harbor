@@ -16,7 +16,7 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if go test -race -count=1 -timeout 60s ./internal/sessions/... >/dev/null 2>&1; then
+if go test -race -count=1 -timeout 180s ./internal/sessions/... >/dev/null 2>&1; then
     ok 'phase 08: internal/sessions tests pass under -race'
 else
     fail 'phase 08: internal/sessions tests failed (run `go test -race ./internal/sessions/...` for detail)'

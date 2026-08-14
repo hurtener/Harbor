@@ -89,27 +89,39 @@ fi
 # 3. Read the sealed consumer turn. HA-64 made sessions.turns.get the
 # authoritative terminal transcript snapshot used by the Playground; tasks.get
 # result_inline remains a task API compatibility surface, not the UI read path.
-TURN_DETAIL="$(curl -sS -X POST "$(api_url /v1/sessions/turns/get)" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  "${ID_HEADERS[@]}" \
-  -H "Content-Type: application/json" \
-  -d "{\"session_id\":\"dev\",\"task_id\":\"${TASK_ID}\"}")"
+# Task lifecycle completion and projection publication are intentionally
+# decoupled, so wait boundedly for the successfully persisted terminal events
+# to become visible instead of treating the first post-completion read as a
+# synchronous projection barrier.
+TURN_DETAIL=""
+TURN_TASK_ID=""
+for i in $(seq 1 30); do
+  TURN_DETAIL="$(curl -sS -X POST "$(api_url /v1/sessions/turns/get)" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    "${ID_HEADERS[@]}" \
+    -H "Content-Type: application/json" \
+    -d "{\"session_id\":\"dev\",\"task_id\":\"${TASK_ID}\"}")"
+  TURN_TASK_ID="$(echo "${TURN_DETAIL}" | jq -r '.turn.task_id // empty')"
+  ANSWER_STATE="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.state // empty')"
+  ANSWER="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.inline // empty')"
+  if [ "${TURN_TASK_ID}" = "${TASK_ID}" ] && [ "${ANSWER_STATE}" = "inline" ] && [ -n "${ANSWER}" ]; then
+    break
+  fi
+  sleep 1
+done
 
-TURN_TASK_ID="$(echo "${TURN_DETAIL}" | jq -r '.turn.task_id // empty')"
 if [ "${TURN_TASK_ID}" = "${TASK_ID}" ]; then
   ok "sessions.turns.get returned the completed task's consumer turn"
 else
   fail "sessions.turns.get did not return the completed task's consumer turn"
 fi
 
-ANSWER_STATE="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.state // empty')"
 if [ "${ANSWER_STATE}" = "inline" ]; then
   ok "sealed consumer turn records an inline assistant answer"
 else
   fail "sealed consumer turn answer.state is ${ANSWER_STATE:-empty}, want inline"
 fi
 
-ANSWER="$(echo "${TURN_DETAIL}" | jq -r '.turn.answer.inline // empty')"
 if [ -n "${ANSWER}" ]; then
   ok "sealed consumer turn's inline answer is non-empty"
 else
