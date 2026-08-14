@@ -1603,15 +1603,19 @@ Default: nil (resolves to `[inline]`). Restart-required.
 
 **Fresh render-admission consequence (D-412 amendment, Pending v1.28).** The
 durable-reopen MCP App admission surface mints stateless,
-integrity-protected render admissions sealed by the deployment's
-**shared sealing authority** (the shared KEK). Production and devstack share
-ONE implementation. When the admission surface is enabled,
-`mcp_app_host.shared_sealing_authority` names the shared sealing key as an
-`env.NAME` reference (never a literal — §7 no-hardcoded-secrets). An enabled
-surface without a configured authority fails readiness **loud**, naming the
-missing key. Restart and multi-replica deployments verify admissions against
-the shared authority — a per-process ephemeral key would make one replica's
-admission unverifiable on another. The admission claim binds
+integrity-protected render admissions sealed with the deployment's existing
+shared KEK authority — the `tools.oauth_token_kek_env`-backed AES-256-GCM
+sealer the OAuth token path already uses (D-095). Production and devstack
+use ONE constructor/composition path and ONE immutable shared sealer
+instance. The surface is enabled by `tools.mcp_app_render_admission.enabled`
+(default `false`; omitted stays compatible with existing deployments — there
+is no second authority field and no literal key). When the surface is
+enabled, an empty `tools.oauth_token_kek_env` name, a missing/unset/invalid
+KEK, or a sealer construction failure fails readiness **loud**, naming the
+problem, even when no OAuth provider or credential broker is configured.
+Restart and multi-replica deployments verify admissions against the shared
+KEK — a per-process ephemeral key would make one replica's admission
+unverifiable on another. The admission claim binds
 schema/time/`(tenant,user,session)`/effective-agent/server/resource/
 generation and never carries raw arguments, secrets, provider output,
 callback names, or general capabilities; ordinary resource reads never mint
@@ -1625,7 +1629,9 @@ Example:
 tools:
   mcp_app_host:
     display_modes: [inline, fullscreen, pip]
-    # shared_sealing_authority: env.HARBOR_MCP_APP_SEALING_KEY
+  mcp_app_render_admission:
+    enabled: true   # default false; when enabled, tools.oauth_token_kek_env
+                    # must name a valid 32-byte hex KEK or readiness fails loud
 ```
 
 ### tools.mcp_artifact_egress_max_bytes

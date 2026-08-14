@@ -81,9 +81,14 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
    never reruns the originating tool.
 7. **Typed unavailable/expired behavior is explicit**; refresh requires fresh
    checks — nothing is silently extended.
-8. **Production and devstack share ONE implementation**; an enabled surface
-   without a configured shared sealing authority fails readiness loud;
-   restart/multi-replica verify against the shared authority.
+8. **Production and devstack share ONE implementation and ONE immutable
+   shared sealer instance**; the surface is enabled by
+   `tools.mcp_app_render_admission.enabled` (default `false`) and seals with
+   the existing `tools.oauth_token_kek_env` KEK-backed AES-256-GCM sealer —
+   no second authority field and no literal key. An enabled surface with an
+   empty env name, a missing/unset/invalid KEK, or a sealer construction
+   failure fails readiness loud, even when no OAuth provider or credential
+   broker is configured; restart/multi-replica verify against the shared KEK.
 9. **Pinned non-goals:** no generic capability framework, no persisted
    callback authority, no arbitrary origins, no provider exceptions, no hot
    registry, and no transcript impersonation.
@@ -117,9 +122,14 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 7. **Typed unavailable/expired:** an unavailable or expired admission answers
    typed `unavailable`/`expired`; refresh re-runs the full fresh check list.
 8. **One implementation:** production and devstack resolve the same
-   implementation; an enabled surface without a configured shared sealing
-   authority fails readiness loud; restart and multi-replica admission
-   verification use the shared authority.
+   implementation and one immutable shared sealer instance; the surface is
+   enabled by `tools.mcp_app_render_admission.enabled` (default `false`) and
+   seals with the existing `tools.oauth_token_kek_env` KEK — no second
+   authority field; an enabled surface with an empty env name, a
+   missing/unset/invalid KEK, or a sealer construction failure fails
+   readiness loud even with no OAuth provider or credential broker
+   configured; restart and multi-replica admission verification use the
+   shared KEK.
 9. **N≥100 concurrent reopen/isolation under `-race`** with no cross-talk,
    and zero originating-tool rerun / callback execution on refusal across all
    negative cases.

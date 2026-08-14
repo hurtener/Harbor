@@ -57,7 +57,7 @@ assert_grep_present "shared-KEK" \
     "amendment: shared-KEK admission is pinned"
 assert_grep_present "fails readiness loud" \
     docs/plans/phase-238-app-only-callback-catalog.md \
-    "amendment: readiness-loud on missing shared sealing authority is pinned"
+    "amendment: readiness-loud on enabled surface with missing/invalid KEK is pinned"
 assert_grep_present "ResolveAppTool" \
     docs/plans/phase-238-app-only-callback-catalog.md \
     "amendment: same-server ResolveAppTool dispatch is pinned"
@@ -99,13 +99,42 @@ assert_grep_present "Fresh render admission" \
     docs/skills/drive-the-playground/SKILL.md \
     "amendment: drive-the-playground skill records the fresh render-admission reopen contract"
 
-# Config/example docs: enabled surface without a shared sealing authority
-# fails readiness loud; restart/multi-replica use the shared authority.
-assert_grep_present "shared sealing authority" \
+# Config/example docs: the exact default-disabled enabled switch
+# (tools.mcp_app_render_admission.enabled), reuse of the existing
+# tools.oauth_token_kek_env KEK sealer, readiness-loud on a missing/invalid
+# KEK — and NO invented second authority field.
+assert_grep_present "mcp_app_render_admission.enabled" \
     docs/CONFIG.md \
-    "amendment: CONFIG.md documents the shared sealing authority consequence"
-assert_grep_present "shared sealing authority" \
+    "amendment: CONFIG.md pins the exact render-admission enabled switch"
+assert_grep_present "mcp_app_render_admission" \
     examples/harbor.yaml \
-    "amendment: example config documents the shared sealing authority consequence"
+    "amendment: example config documents the render-admission enabled switch"
+assert_grep_present "oauth_token_kek_env" \
+    docs/CONFIG.md \
+    "amendment: CONFIG.md pins the existing KEK field reuse"
+assert_grep_present "oauth_token_kek_env" \
+    examples/harbor.yaml \
+    "amendment: example config pins the existing KEK field reuse"
+assert_grep_present 'default `false`' \
+    docs/CONFIG.md \
+    "amendment: CONFIG.md pins default-disabled compatibility"
+assert_grep_present "fails readiness" \
+    docs/CONFIG.md \
+    "amendment: CONFIG.md pins readiness-loud semantics"
+assert_grep_present "fails readiness LOUD" \
+    examples/harbor.yaml \
+    "amendment: example config pins readiness-loud semantics"
+assert_grep_absent "shared_sealing_authority" \
+    docs/CONFIG.md \
+    "amendment: invented second authority field is absent from CONFIG.md"
+assert_grep_absent "shared_sealing_authority" \
+    examples/harbor.yaml \
+    "amendment: invented second authority field is absent from the example config"
+assert_grep_absent "HARBOR_MCP_APP_SEALING_KEY" \
+    docs/CONFIG.md \
+    "amendment: invented literal-key env is absent from CONFIG.md"
+assert_grep_absent "HARBOR_MCP_APP_SEALING_KEY" \
+    examples/harbor.yaml \
+    "amendment: invented literal-key env is absent from the example config"
 
 smoke_summary

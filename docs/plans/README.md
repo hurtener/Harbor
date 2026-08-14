@@ -605,11 +605,15 @@ real two-client race under `-race`.
   metadata/component availability only, no token; `mcp.apps.tool_context`
   replay is unchanged and never reruns the originating tool. Typed
   unavailable/expired is explicit; refresh re-runs fresh checks. Production/
-  devstack share one implementation; an enabled surface without a configured
-  shared sealing authority fails readiness loud; restart/multi-replica use the
-  shared authority. No generic capability framework, persisted callback
-  authority, arbitrary origins, provider exceptions, hot registry, or
-  transcript impersonation.
+  devstack share one implementation and one immutable shared sealer; the
+  surface is enabled by `tools.mcp_app_render_admission.enabled` (default
+  `false`) and seals with the existing `tools.oauth_token_kek_env` KEK — no
+  second authority field; an enabled surface with an empty env name, a
+  missing/unset/invalid KEK, or a sealer construction failure fails readiness
+  loud even with no OAuth provider or credential broker configured;
+  restart/multi-replica use the shared KEK. No generic capability framework,
+  persisted callback authority, arbitrary origins, provider exceptions, hot
+  registry, or transcript impersonation.
 - **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
   fixtures compose with 242's durable task-progress projection at wave E2E).
 - **Decision:** D-412. **Status:** Shipped (v1.27); fresh render-admission amendment Pending (v1.28).

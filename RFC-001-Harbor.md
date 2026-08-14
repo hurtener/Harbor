@@ -1337,9 +1337,14 @@ component availability only — never an admission token; `mcp.apps.tool_context
 replay is unchanged and never reruns the originating tool. Unavailable and
 expired admissions answer typed unavailable/expired, and refresh re-runs
 every fresh check — nothing is silently extended. Production and devstack
-share ONE implementation; an enabled surface without a configured shared
-sealing authority fails readiness loud, and restart/multi-replica deployments
-verify against the shared authority. Pinned non-goals: no generic capability
+share ONE implementation and one immutable shared sealer instance; the
+surface is enabled by `tools.mcp_app_render_admission.enabled` (default
+`false`) and seals with the existing `tools.oauth_token_kek_env` KEK-backed
+AES-256-GCM sealer — no second authority field and no literal key; an
+enabled surface with an empty env name, a missing/unset/invalid KEK, or a
+sealer construction failure fails readiness loud even when no OAuth provider
+or credential broker is configured, and restart/multi-replica deployments
+verify against the shared KEK. Pinned non-goals: no generic capability
 framework, no persisted callback authority, no arbitrary origins, no
 provider exceptions, no hot registry, and no transcript impersonation.
 

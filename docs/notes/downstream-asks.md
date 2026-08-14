@@ -200,13 +200,17 @@ same-server `ResolveAppTool` + existing approval/OAuth/policy/redaction/
 retry/audit. HA-64 rows retain metadata/component availability only, no
 token; `mcp.apps.tool_context` replay is unchanged and never reruns the
 originating tool. Typed unavailable/expired is explicit and refresh requires
-fresh checks. Production/devstack share one implementation; an enabled
-surface without a configured shared sealing authority fails readiness loud;
-restart/multi-replica use the shared authority. No generic capability
-framework, persisted callback authority, arbitrary origins, provider
-exceptions, hot registry, or transcript impersonation. No new phase,
-decision, HA, event, or Protocol method is allocated; HA-56 remains phase
-238 / D-412.
+fresh checks. Production/devstack share one implementation and one immutable
+shared sealer; the surface is enabled by
+`tools.mcp_app_render_admission.enabled` (default `false`) and seals with the
+existing `tools.oauth_token_kek_env` KEK — no second authority field; an
+enabled surface with an empty env name, a missing/unset/invalid KEK, or a
+sealer construction failure fails readiness loud even with no OAuth provider
+or credential broker configured; restart/multi-replica use the shared KEK.
+No generic capability framework, persisted callback authority, arbitrary
+origins, provider exceptions, hot registry, or transcript impersonation. No
+new phase, decision, HA, event, or Protocol method is allocated; HA-56
+remains phase 238 / D-412.
 
 **What the consumer sees.** A provider may mark an MCP tool with
 `_meta.ui.visibility: ["app"]` because it is a callback for its rendered App,
