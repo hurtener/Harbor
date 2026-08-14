@@ -7,15 +7,15 @@ import (
 	"syscall"
 )
 
-// linkCount returns the hard-link count of info and whether the
+// hasSingleLink reports whether info has exactly one hard link and whether the
 // platform reported one. On unix the Lstat/fstat identity carries the
 // nlink field; any file with nlink > 1 is rejected by the loader.
 //
 //nolint:misspell // "hardlinked" is the correct term for a file with nlink > 1.
-func linkCount(info os.FileInfo) (uint64, bool) {
+func hasSingleLink(info os.FileInfo) (bool, bool) {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, false
+		return false, false
 	}
-	return uint64(st.Nlink), true
+	return st.Nlink == 1, true
 }

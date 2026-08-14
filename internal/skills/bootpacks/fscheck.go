@@ -47,12 +47,12 @@ func checkRegularFile(info os.FileInfo, path string) error {
 	case !m.IsRegular():
 		return fmt.Errorf("%w: %s mode=%v", ErrSpecialFile, path, m)
 	}
-	n, ok := linkCount(info)
+	single, ok := hasSingleLink(info)
 	if !ok {
 		return fmt.Errorf("%w: %s: link count unavailable (cannot prove nlink == 1)", ErrHardlink, path)
 	}
-	if n != 1 {
-		return fmt.Errorf("%w: %s nlink=%d", ErrHardlink, path, n)
+	if !single {
+		return fmt.Errorf("%w: %s nlink != 1", ErrHardlink, path)
 	}
 	return nil
 }
