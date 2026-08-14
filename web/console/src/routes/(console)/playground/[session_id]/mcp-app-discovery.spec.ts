@@ -33,14 +33,21 @@ import {
 } from '$lib/components/playground/layout.js';
 
 // A fake injected Protocol surface (D-173 — the renderer NEVER opens a direct
-// MCP transport; it drives every app→host request through this). `readResource`
-// records the (serverID, resourceURI) pair so the test can assert the renderer
-// resolved the document from the discovered server.
+// MCP transport; it drives every app→host request through this). The
+// renderer's pre-mount document read routes through `readRenderDocument` (the
+// HA-56 opt-in admission-requesting read), which records the (serverID,
+// resourceURI) pair so the test can assert the renderer resolved the document
+// from the discovered server; the app-initiated `resources/read` handler stays
+// on the ordinary non-minting `readResource`.
 function fakeHostClient(): MCPAppHostClient & { reads: Array<[string, string]> } {
   const reads: Array<[string, string]> = [];
   return {
     reads,
-    async readResource(serverID, resourceURI) {
+    async readResource(_serverID, resourceURI) {
+      reads.push(['ordinary', resourceURI]);
+      return { resourceUri: resourceURI, mimeType: 'text/html', content: '<p>app body</p>' };
+    },
+    async readRenderDocument(serverID, resourceURI) {
       reads.push([serverID, resourceURI]);
       return { resourceUri: resourceURI, mimeType: 'text/html', content: '<p>app body</p>' };
     },
@@ -246,7 +253,7 @@ function makeHeavyAppHTML(): string {
   );
 }
 
-// A host client whose readResource OFFLOADS the document by reference (the
+// A host client whose document read OFFLOADS the document by reference (the
 // D-026 heavy path) instead of returning inline `content`, and whose
 // resolveArtifact hands back a presigned URL. Records both legs so the test
 // asserts the renderer walked artifactRef → resolveArtifact → fetch.
@@ -255,6 +262,13 @@ function heavyHostClient(): MCPAppHostClient & { resolved: string[] } {
   return {
     resolved,
     async readResource(_serverID, resourceURI) {
+      return {
+        resourceUri: resourceURI,
+        mimeType: 'text/html',
+        artifactRef: { id: 'art_studio_abc', mimeType: 'text/html', sizeBytes: 88_500 }
+      };
+    },
+    async readRenderDocument(_serverID, resourceURI) {
       return {
         resourceUri: resourceURI,
         mimeType: 'text/html',

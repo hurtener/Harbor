@@ -12,9 +12,14 @@
 // The Playground page injects the result of {@link makeMCPAppHostClient} into
 // the MCP App renderer's props (`appHostClient`).
 
-import { MCPAppToolNotFoundError } from '$lib/chat/renderers/app-bridge-host.js';
+import {
+  MCPAppRenderAdmissionError,
+  MCPAppToolNotFoundError,
+  type MCPAppRenderAdmissionErrorCode,
+} from '$lib/chat/renderers/app-bridge-host.js';
 import type {
   MCPAppHostClient,
+  MCPAppRenderDocument,
   MCPAppResource,
   MCPAppResourceListing,
   MCPAppResourceTemplateListing,
@@ -47,6 +52,22 @@ import type { ToolListResponse } from '$lib/protocol/tools.js';
  */
 export const ARTIFACT_READ_WINDOW_BYTES = 1024 * 1024;
 
+/**
+ * The closed set of Protocol error codes that refuse an admission-backed
+ * `mcp.apps.call_tool` — mapped onto the typed
+ * {@link MCPAppRenderAdmissionError} so the host can branch on the verdict
+ * (the single bounded expiry refresh vs explicit failure). Any other code
+ * propagates unchanged.
+ */
+const RENDER_ADMISSION_ERROR_CODES = new Set<string>([
+  'render_admission_expired',
+  'render_admission_invalid',
+  'render_admission_mismatch',
+  'render_admission_missing',
+  'render_admission_unavailable',
+  'render_authority_ambiguous',
+]);
+
 /** Decode one base64 `artifacts.get` window into its raw bytes. */
 function decodeArtifactWindow(content: string | undefined): Uint8Array {
   if (!content) return new Uint8Array(0);
@@ -61,10 +82,19 @@ function decodeArtifactWindow(content: string | undefined): Uint8Array {
  * module's `MCPAppHostClient`. Every method delegates to a single Protocol
  * call:
  *
- *   - `readResource` → `mcp.servers.read_resource`
+ *   - `readResource` → `mcp.servers.read_resource` (the ORDINARY,
+ *                      non-minting read — the AppBridge's app-initiated
+ *                      `resources/read` handler)
+ *   - `readRenderDocument` → `mcp.servers.read_resource` with
+ *                      `request_render_admission: true` — the renderer's
+ *                      pre-mount initial-document read that mints the fresh
+ *                      render admission (HA-56); the ONLY method that may
+ *                      ask the Runtime to mint
  *   - `callTool`     → `mcp.apps.call_tool` (re-enters the tool-safety gates);
  *                      a `not_found` becomes the typed `MCPAppToolNotFoundError`
- *                      so an app can tell "no such tool here" from "the
+ *                      and a typed render-admission refusal becomes the typed
+ *                      `MCPAppRenderAdmissionError`, so an app can tell "no
+ *                      such tool here" / "the admission was refused" from "the
  *                      transport broke"
  *   - `listResources`→ `mcp.servers.resources`
  *   - `listResourceTemplates` → no Protocol method exists; resolves empty
@@ -105,6 +135,10 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
   }
   return {
     async readResource(serverID, resourceURI, agentID): Promise<MCPAppResource> {
+      // The ORDINARY, NON-MINTING read — the AppBridge's app-initiated
+      // `resources/read` handler routes here, and it NEVER carries
+      // `request_render_admission`. An App must not be able to mint
+      // callback authority merely by requesting another resource.
       const res = await client.mcp.servers.readResource<ReadMCPResourceResponse>(
         serverID,
         resourceURI,
@@ -124,19 +158,70 @@ export function makeMCPAppHostClient(client: ProtocolClient): MCPAppHostClient {
       };
     },
 
-	async callTool(serverID, tool, args, agentID, binding, resourceURI): Promise<MCPAppToolResult> {
+    async readRenderDocument(serverID, resourceURI, agentID): Promise<MCPAppRenderDocument> {
+      // The RENDERER-INTERNAL initial-document read (HA-56): the same
+      // `mcp.servers.read_resource` request, but with the explicit
+      // `request_render_admission: true` opt-in, so a SUCCESSFUL read may
+      // additionally return the bounded render-admission object. Only this
+      // distinct method may ask the Runtime to mint — the ordinary
+      // `readResource` above never does, and the sandboxed App can only
+      // reach the ordinary path through the bridge's `resources/read`
+      // handler (D-173).
+      const res = await client.mcp.servers.readResource<ReadMCPResourceResponse>(
+        serverID,
+        resourceURI,
+        agentID,
+        true,
+      );
+      return {
+        resourceUri: res.resource_uri,
+        mimeType: res.mime_type,
+        content: res.content,
+        artifactRef: res.artifact_ref
+          ? {
+              id: res.artifact_ref.id,
+              mimeType: res.artifact_ref.mime_type,
+              sizeBytes: res.artifact_ref.size_bytes,
+            }
+          : undefined,
+        renderAdmission: res.render_admission
+          ? {
+              token: res.render_admission.token ?? '',
+              issuedAt: res.render_admission.issued_at,
+              expiresAt: res.render_admission.expires_at,
+              availability: res.render_admission.availability,
+            }
+          : undefined,
+      };
+    },
+
+	async callTool(serverID, tool, args, agentID, binding, resourceURI, renderAdmission): Promise<MCPAppToolResult> {
       let res: MCPAppCallToolResponse;
       try {
-		res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(serverID, tool, args, agentID, binding, resourceURI);
+		res = await client.mcp.apps.callTool<MCPAppCallToolResponse>(serverID, tool, args, agentID, binding, resourceURI, renderAdmission);
       } catch (err) {
         // `tool` is already server-qualified by the caller (the confinement
         // control), so a `not_found` means the name does not exist WITHIN the
         // calling app's own server — the one outcome an app can act on. Raise
         // the typed error so the host handler can tell the app that, instead of
         // the undifferentiated runtime failure the Runtime used to return for
-        // an unresolvable tool. Every other failure propagates unchanged.
+        // an unresolvable tool.
         if (err instanceof ProtocolError && err.code === 'not_found') {
           throw new MCPAppToolNotFoundError(tool);
+        }
+        // HA-56: a typed render-admission refusal (expired / invalid /
+        // mismatched / missing / unavailable / ambiguous) is a verdict the
+        // host branches on for the single bounded recovery — map it onto the
+        // typed error. Never collapsed into the not-found shape, and never
+        // re-thrown as an undifferentiated runtime failure.
+        if (
+          err instanceof ProtocolError &&
+          RENDER_ADMISSION_ERROR_CODES.has(err.code)
+        ) {
+          throw new MCPAppRenderAdmissionError(
+            err.code as MCPAppRenderAdmissionErrorCode,
+            err.message,
+          );
         }
         throw err;
       }

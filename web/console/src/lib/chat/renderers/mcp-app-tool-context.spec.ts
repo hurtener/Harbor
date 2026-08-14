@@ -101,6 +101,9 @@ function fakeClient(toolContext: () => Promise<MCPAppToolContext | null>): MCPAp
     async readResource(_s, uri) {
       return { resourceUri: uri, mimeType: 'text/html', content: '<p>app body</p>' };
     },
+    async readRenderDocument(_s, uri) {
+      return { resourceUri: uri, mimeType: 'text/html', content: '<p>app body</p>' };
+    },
     async callTool(_serverID, tool) {
       return { tool, content: {}, isError: false };
     },
@@ -313,8 +316,9 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
   });
 
   /**
-   * A client whose `readResource` parks until the caller releases it, and whose
-   * `toolContext` resolves for the FIRST caller and misses for every one after.
+   * A client whose `readRenderDocument` (the pre-mount document read) parks
+   * until the caller releases it, and whose `toolContext` resolves for the
+   * FIRST caller and misses for every one after.
    *
    * Divergence has to come from call ORDER, not from the ref: everything after
    * the first `await` reads the LIVE `app` prop, so both in-flight preloads
@@ -333,7 +337,7 @@ describe('McpAppRenderer — concurrent preloads (D-348)', () => {
       contextCalls: () => contextCalls,
       client: {
         ...base,
-        readResource(_serverID: string, uri: string) {
+        readRenderDocument(_serverID: string, uri: string) {
           return new Promise<{ resourceUri: string; mimeType: string; content: string }>(
             (resolve) => {
               releases.push(() => resolve({ resourceUri: uri, mimeType: 'text/html', content: '<p>app</p>' }));

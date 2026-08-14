@@ -6,13 +6,20 @@
   // INJECTED `appHostClient` (D-091, CLAUDE.md §4.5 #11).
   //
   // Lifecycle:
-  //   1. Preload the app's `ui://` HTML via the injected client
-  //      (→ mcp.servers.read_resource). A document at/above the heavy-content
-  //      threshold (D-026) is offloaded to the ArtifactStore by reference;
-  //      the host resolves that stub to a presigned URL and fetches the bytes
-  //      (→ resolveArtifact → artifacts.get_ref). EITHER content source feeds
-  //      the SAME sandboxed `srcdoc` — heavy bytes are NEVER inlined through
-  //      the context plane, only fetched at the iframe edge.
+  //   1. Preload the app's `ui://` HTML via the injected client's RENDERER-
+  //      INTERNAL opt-in read (→ mcp.servers.read_resource with
+  //      `request_render_admission: true` — readRenderDocument), minting the
+  //      bounded render admission for THIS successful read (HA-56). The
+  //      admission is host-private: it lives only on this renderer instance
+  //      and the bridge's closure, is never serialized into DOM / storage /
+  //      logs / replay / history / control surfaces, and is echoed back on
+  //      mcp.apps.call_tool (never the legacy binding when it is in play).
+  //      A document at/above the heavy-content threshold (D-026) is offloaded
+  //      to the ArtifactStore by reference; the host resolves that stub to a
+  //      presigned URL and fetches the bytes (→ resolveArtifact →
+  //      artifacts.get_ref). EITHER content source feeds the SAME sandboxed
+  //      `srcdoc` — heavy bytes are NEVER inlined through the context plane,
+  //      only fetched at the iframe edge.
   //   1b. Resolve the captured tool context (→ mcp.apps.tool_context) BEFORE
   //      mounting, so the miss path is decided while there is still nothing to
   //      tear down: an unresolvable context (evicted / unknown / another
@@ -32,6 +39,7 @@
     AppBridgeHost,
     containerDimensionsFromBox,
     DEFAULT_HOST_INFO,
+    type MCPAppRenderAdmission,
     type MCPAppToolContext,
     type McpUiDisplayMode
   } from './app-bridge-host.js';
@@ -59,14 +67,36 @@
   // It renders a short placeholder rather than leaving a dead frame in the
   // transcript, and it is STICKY — a transcript re-render must not resurrect an
   // app that asked to be gone.
-  type LoadState = 'loading' | 'ready' | 'error' | 'empty' | 'unavailable' | 'closed';
+  // `admission` is the RENDER-ADMISSION safe state (HA-56): the app itself is
+  // CURRENT (its document read and its captured tool context resolved fine —
+  // this is deliberately NOT the `unavailable` miss) but the Runtime could not
+  // mint / re-mint the render admission that authorizes its callbacks, after
+  // the single bounded refresh. Mounting an iframe whose every callback would
+  // be refused is a silent lie about what the turn produced; the explicit safe
+  // state says so instead.
+  type LoadState = 'loading' | 'ready' | 'error' | 'empty' | 'unavailable' | 'closed' | 'admission';
 
   let loadState = $state<LoadState>('loading');
   let errorMessage = $state('');
+  // The typed Runtime verdict that landed the app in the `admission` safe
+  // state (e.g. `render_admission_unavailable`), shown as debug detail. NEVER
+  // a token — the admission itself is host-private and never rendered.
+  let admissionFailureCode = $state<string | undefined>(undefined);
   // The tool context resolved BEFORE the iframe mounts, handed to the bridge
   // for after-init delivery. Non-reactive on purpose (the bridge snapshots it
   // untracked), and only ever set on the path that reaches `ready`.
   let resolvedToolContext: MCPAppToolContext | undefined;
+  // The FRESH render admission minted by the pre-mount opt-in document read
+  // (HA-56). Non-reactive on purpose: it is HOST-PRIVATE, kept only on this
+  // live renderer instance and handed to the bridge (which holds its own
+  // closure copy); it is NEVER rendered to the DOM, written to storage,
+  // logged, or carried on any replay/history/control surface. Only ever set
+  // on the path that reaches `ready`, and cleared on every new preload.
+  let renderAdmission: MCPAppRenderAdmission | undefined;
+  // The bounded re-read budget for a TYPED `unavailable` admission at read
+  // time: at most ONE fresh opt-in read (the Runtime's documented "the caller
+  // must re-read"), then the explicit safe state. Reset per preload attempt.
+  let admissionRefreshBudget = 1;
   let srcdoc = $state('');
   let iframeEl = $state<HTMLIFrameElement | null>(null);
   let host: AppBridgeHost | undefined;
@@ -261,9 +291,51 @@
 
     loadState = 'loading';
     errorMessage = '';
+    admissionFailureCode = undefined;
+    // The fresh admission belongs to the preload about to run; a re-preload
+    // (new app) must never hand a STALE token to a new bridge. Cleared here
+    // and only set again on the path that reaches `ready`.
+    renderAdmission = undefined;
+    admissionRefreshBudget = 1;
     try {
-      const resource = await appHostClient.readResource(serverID, app.resourceUri, app.agentId);
+      // The pre-mount document read is the OPT-IN admission-requesting read
+      // (HA-56): `readRenderDocument` routes to `mcp.servers.read_resource`
+      // with `request_render_admission: true`, minting the bounded render
+      // admission for THIS successful read. The AppBridge's app-initiated
+      // `resources/read` handler stays on the ordinary NON-minting
+      // `readResource`, so an App can never mint callback authority merely by
+      // requesting another resource.
+      let resource = await appHostClient.readRenderDocument(serverID, app.resourceUri, app.agentId);
       if (stale()) return;
+      // A TYPED `unavailable` admission is the Runtime's closed "no admission
+      // minted" answer (empty/unknown current provider/catalog generation, or
+      // a current-conditions refusal) — it says the caller must re-read. The
+      // app itself is CURRENT: this is deliberately NOT the `unavailable`
+      // tool-context miss, and it must never be silently reduced to one. At
+      // most ONE bounded fresh opt-in re-read happens here; a second typed
+      // refusal is the explicit `admission` safe state, not a retry loop.
+      if (resource.renderAdmission && resource.renderAdmission.availability !== 'available') {
+        if (admissionRefreshBudget > 0) {
+          admissionRefreshBudget -= 1;
+          const fresh = await appHostClient.readRenderDocument(serverID, app.resourceUri, app.agentId);
+          if (stale()) return;
+          resource = fresh;
+        }
+      }
+      if (resource.renderAdmission && resource.renderAdmission.availability !== 'available') {
+        admissionFailureCode = resource.renderAdmission.availability;
+        loadState = 'admission';
+        return;
+      }
+      // An AVAILABLE admission carries the opaque token; an ABSENT
+      // renderAdmission means the runtime answered the old (non-admission)
+      // surface — the preserved legacy path (the bridge then sends the
+      // legacy `binding`, never both authorities).
+      const admission = resource.renderAdmission;
+      renderAdmission =
+        admission && admission.availability === 'available' && admission.token !== ''
+          ? admission
+          : undefined;
       let documentHTML: string;
       if (resource.artifactRef) {
         // The `ui://` document is at/above the heavy-content threshold (D-026),
@@ -356,7 +428,12 @@
       // effect (a size-shaped dependency on the bridge-owning effect is the
       // exact hazard D-342 closes).
       container: measureContainer(iframeEl),
-      toolContext: resolvedToolContext
+      toolContext: resolvedToolContext,
+      // The FRESH render admission minted by the pre-mount opt-in read —
+      // host-private, never serialized; the bridge holds its own closure copy
+      // and echoes it on `mcp.apps.call_tool` (never the legacy binding when
+      // it is in play).
+      admission: renderAdmission
     }));
     if (!s.win || !s.app || !s.serverID || !s.client) return;
     lastAppliedTheme = s.theme;
@@ -380,8 +457,18 @@
       client: s.client,
       serverID: s.serverID,
       agentID: s.app.agentId,
+      // The preserved LEGACY live-result path — distinct from the fresh
+      // render admission below. The bridge sends EXACTLY ONE authority on
+      // `mcp.apps.call_tool`: the fresh admission when minted, else this
+      // legacy binding (never both — the Runtime refuses
+      // `render_authority_ambiguous`).
       binding: s.app.binding,
       resourceURI: s.app.resourceUri,
+      // The FRESH render admission from the pre-mount opt-in read. Host-
+      // private: it lives only on this renderer instance + the bridge's
+      // closure, and is never aliased into `binding`, never serialized into
+      // DOM / storage / logs / replay / history / control surfaces.
+      renderAdmission: s.admission,
       availableDisplayModes: s.availableDisplayModes,
       onDisplayModeRequest: s.onDisplayModeRequest,
       // Host identity is injected through the seam (not baked into the module).
@@ -394,6 +481,17 @@
       containerDimensions: s.container,
       // The already-resolved context for the after-init Data Delivery push.
       toolContext: s.toolContext,
+      // A typed render-admission refusal that the single bounded refresh did
+      // not recover: the app's callback authority is genuinely gone. Replace
+      // the mounted app with the explicit safe state — never silently keep a
+      // frame whose every callback would be refused.
+      onAdmissionInvalid: (code) => {
+        if (host !== created) return;
+        cancelPendingSize();
+        appHeightPx = null;
+        admissionFailureCode = code;
+        loadState = 'admission';
+      },
       // The renderer flips its live-theme gate here, AFTER the handshake.
       onInitialized: () => {
         if (host !== created) return;
@@ -512,6 +610,25 @@
       <span class="mcp-app__state-detail">
         The app asked to be shut down and the host released it. The rest of the conversation
         is unchanged.
+      </span>
+    </div>
+  {:else if loadState === 'admission'}
+    <!-- The render-admission safe state (HA-56). The app itself is CURRENT —
+         its document read and captured tool context resolved fine; this is NOT
+         the tool-context miss. But the Runtime could not mint / re-mint the
+         render admission that authorizes its callbacks (after the single
+         bounded refresh), so mounting the iframe would produce an app whose
+         every callback is refused. Explicit and stable; never a retry loop,
+         and never silently downgraded to the "no longer available" miss. The
+         detail carries the typed verdict code only — never a token. -->
+    <div class="mcp-app__state" data-state="admission" data-testid="mcp-app-admission" role="status">
+      <span class="mcp-app__state-title">This app's interactive session could not be authorized</span>
+      <span class="mcp-app__state-detail">
+        The Runtime could not issue the render admission this app needs to run, so its
+        controls are not available. The rest of the conversation is unchanged.
+        {#if admissionFailureCode}
+          <span class="mcp-app__state-code">({admissionFailureCode})</span>
+        {/if}
       </span>
     </div>
   {:else if loadState === 'empty'}
@@ -678,6 +795,18 @@
      lifecycle outcome, not a failure. Muted, not red. */
   .mcp-app__state[data-state='closed'] {
     color: var(--color-text-muted);
+  }
+
+  /* Same reasoning: a refused render admission is an authorization outcome,
+     not a transport failure. Muted, not red. The verdict code is quiet
+     debug detail — never a token. */
+  .mcp-app__state[data-state='admission'] {
+    color: var(--color-text-muted);
+  }
+
+  .mcp-app__state-code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
   }
 
   .mcp-app__state-title {
