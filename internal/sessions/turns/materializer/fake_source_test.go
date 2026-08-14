@@ -40,6 +40,9 @@ type fakeSource struct {
 	skip        func(events.Event) bool
 	pageCalls   int
 	wake        chan<- uint64 // the registered wake sink (Run loop tests)
+	// unsubscribed records that the last Watch handle's Unsubscribe ran
+	// — the Run-loop cancellation test asserts the watcher is stopped.
+	unsubscribed bool
 }
 
 func (f *fakeSource) publish(t *testing.T, ev events.Event) events.Event {
@@ -106,7 +109,11 @@ func (f *fakeSource) Watch(_ context.Context, wake chan<- uint64) (events.Projec
 		default:
 		}
 	}
-	return events.ProjectionWatchFunc(func() {}), nil
+	return events.ProjectionWatchFunc(func() {
+		f.mu.Lock()
+		f.unsubscribed = true
+		f.mu.Unlock()
+	}), nil
 }
 
 // notify delivers the current watermark to the registered wake sink —
@@ -127,6 +134,12 @@ func (f *fakeSource) pageCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.pageCalls
+}
+
+func (f *fakeSource) wasUnsubscribed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unsubscribed
 }
 
 // ---------------------------------------------------------------------------

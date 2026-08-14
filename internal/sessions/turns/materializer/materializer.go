@@ -27,8 +27,9 @@
 //     from the event source after a restart;
 //   - coupled to publication — it never publishes, never subscribes to
 //     the live fan-out, and never fails the publish path (it consumes
-//     the source's best-effort wake notifications only to avoid
-//     polling);
+//     the source's best-effort wake notifications to avoid polling;
+//     the optional bounded poll — WithPollInterval — is the lost-wake
+//     safety net, never the fast path);
 //   - a synchronous rebuild path — chat open reads the projection
 //     (turns.Projector.List / Get) directly; the materializer runs in
 //     the background and never rebuilds history on the query path.
@@ -85,13 +86,27 @@
 //     micro-dollars, honestly estimated; latency in integer
 //     nanoseconds).
 //
-// # The answer source (honest unavailable)
+// # The answer source (honest unavailable, converging via the seam)
 //
 // (continued from the previous section:)
 //
-// No canonical event currently carries the final answer content (the
-// runtime persists answers on the task record, which a projection
-// never reads). The answer component therefore materializes as
+// No canonical EVENT carries the final answer content — the runtime
+// persists answers on the task RECORD, which a projection never reads.
+// The materializer therefore exposes the injected read-only
+// TaskSnapshotReader seam (WithTaskSnapshotReader): while projecting a
+// successfully persisted task.spawned / task.completed / task.failed,
+// it reads the already-redacted canonical task record under the EVENT
+// identity and converges the query / agent / input-attachment /
+// answer / output-attachment / failure components from it. A runtime
+// that wires the reader gets the bounded Harbor answer envelope
+// (inline, empty, or artifact-reference shaped) onto a COMPLETE seal;
+// a runtime that does not (or a legacy record that lacks the fields)
+// keeps the honest Unavailable posture below. The seam is invoked only
+// during event projection, never on Protocol reads, and never with a
+// widened identity; a transient snapshot error fails the projection
+// WITHOUT advancing the checkpoint.
+//
+// Without a wired reader, the answer component materializes as
 // Unavailable, and a task.completed whose answer has not converged
 // defers the complete seal: the row honestly stays MUTABLE (running)
 // while its sources have not converged and the materializer retries
@@ -145,6 +160,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -182,8 +198,20 @@ type Materializer struct {
 	// declared none (an honest availability gap — see the projector's
 	// own ErasureProbe contract).
 	probe turns.ErasureProbe
+	// snap is the injected READ-ONLY seam over the runtime's canonical
+	// task records (see TaskSnapshotReader); nil means the runtime
+	// declared none — an honest availability gap: the query / agent /
+	// input / answer / output / failure-message components stay
+	// unavailable and a complete seal defers.
+	snap TaskSnapshotReader
 	// pageLimit bounds one forward source page.
 	pageLimit int
+	// pollInterval is the bounded lost-wake recovery poll cadence (0 =
+	// wake-only, the default). When set, Run re-checks the source
+	// watermark on this interval so a dropped best-effort wake
+	// notification converges without a restart; wake notifications stay
+	// primary.
+	pollInterval time.Duration
 
 	mu sync.Mutex
 	// cursor is the materializer's in-memory global forward cursor:
@@ -222,6 +250,24 @@ func WithPageLimit(n int) Option {
 // MUST wire it; a nil probe is an honest availability gap.
 func WithErasureProbe(pb turns.ErasureProbe) Option {
 	return func(m *Materializer) { m.probe = pb }
+}
+
+// WithPollInterval enables the bounded lost-wake recovery poll: when
+// set (a strictly positive interval), Run re-checks the source
+// watermark on that cadence so a DROPPED best-effort wake notification
+// converges without a restart. Wake notifications stay PRIMARY — a
+// wake triggers an immediate catch-up; the poll is the safety net,
+// never the fast path, and it never fires while the loop is already
+// catching up. A non-positive value is ignored (wake-only, the
+// default). The poll is bounded by the caller-chosen interval and is
+// stopped on every Run exit path, so cancellation stops the watcher
+// AND the timer with no goroutine leaks.
+func WithPollInterval(d time.Duration) Option {
+	return func(m *Materializer) {
+		if d > 0 {
+			m.pollInterval = d
+		}
+	}
 }
 
 // New constructs a Materializer over a mandatory source and projector.
@@ -402,10 +448,15 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 }
 
 // Run drives the background materialization loop: catch up, then wait
-// for the source's best-effort wake notifications (or its own poll
-// fallback) and catch up again, until ctx is cancelled. The wake sink
-// is caller-owned bounded and unsubscribed on exit so a dead
-// materializer never accumulates dropped sends. Run returns nil on
+// for the source's best-effort wake notifications (or, when
+// WithPollInterval is set, its own bounded watermark poll) and catch up
+// again, until ctx is cancelled. Wake notifications are the PRIMARY
+// fast path; the poll is the bounded lost-wake safety net — a dropped
+// best-effort wake (a full or absent sink) converges without a restart
+// because the poll re-checks the source watermark on a bounded cadence.
+// The wake sink is caller-owned bounded and unsubscribed on exit, and
+// the poll timer is stopped on exit, so a cancelled Run stops the
+// watcher AND the timer goroutines with no leaks. Run returns nil on
 // clean cancellation, ErrSourceUnavailable when the source cannot
 // serve a projection, or the pass error otherwise.
 func (m *Materializer) Run(ctx context.Context) error {
@@ -419,7 +470,28 @@ func (m *Materializer) Run(ctx context.Context) error {
 	}
 	defer watch.Unsubscribe()
 
-	if _, err := m.Materialize(ctx); err != nil {
+	// The bounded lost-wake recovery poll. A nil pollC never fires, so
+	// the wake-only default is unchanged. The ticker is stopped on
+	// every exit path (defer) — no timer goroutine outlives Run.
+	var poll *time.Ticker
+	var pollC <-chan time.Time
+	if m.pollInterval > 0 {
+		poll = time.NewTicker(m.pollInterval)
+		pollC = poll.C
+		defer poll.Stop()
+	}
+
+	// catchUp runs one forward pass. A cancellation that lands mid-pass
+	// is a clean exit (nil), never reported as a pass failure.
+	catchUp := func() error {
+		_, err := m.Materialize(ctx)
+		if err != nil && ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+
+	if err := catchUp(); err != nil {
 		return err
 	}
 	for {
@@ -433,7 +505,28 @@ func (m *Materializer) Run(ctx context.Context) error {
 			if !behind {
 				continue
 			}
-			if _, err := m.Materialize(ctx); err != nil {
+			if err := catchUp(); err != nil {
+				return err
+			}
+		case <-pollC:
+			// The poll tick: compare the source watermark against the
+			// cursor and catch up only when genuinely behind — a
+			// caught-up tick is one cheap watermark read, never a full
+			// page.
+			wm, err := m.src.Watermark(ctx)
+			if err != nil {
+				if errors.Is(err, events.ErrProjectionUnavailable) {
+					return ErrSourceUnavailable
+				}
+				return fmt.Errorf("materializer: poll source watermark: %w", err)
+			}
+			m.mu.Lock()
+			behind := wm > m.cursor
+			m.mu.Unlock()
+			if !behind {
+				continue
+			}
+			if err := catchUp(); err != nil {
 				return err
 			}
 		}

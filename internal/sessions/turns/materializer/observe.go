@@ -334,6 +334,17 @@ func (m *Materializer) applyToSession(ctx context.Context, sess *sessionState, e
 // or are omitted by an explicit relationship rule"; their trajectory
 // presence reaches the parent turn through the parent's own planner
 // decisions and tool dispatches).
+//
+// When the runtime wires the TaskSnapshotReader seam, the root spawn
+// projection ALSO reads the already-redacted canonical task record
+// under the event identity and captures the authoritative TaskID +
+// RunID, the bounded renderable query + instant, the effective agent
+// binding, and the input attachment metadata onto the append. The
+// reader is invoked only while projecting this successfully persisted
+// spawn event — never on a Protocol read. A nil reader or a missing
+// record is the honest legacy gap (the components stay unavailable);
+// a transient snapshot error aborts the projection without advancing
+// the checkpoint.
 func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	if taskID == "" {
@@ -361,25 +372,78 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		return false, nil
 	}
 
+	// The task-record snapshot enriches the append with the
+	// authoritative task/run identity, the bounded renderable query +
+	// instant, the effective agent binding, and the input attachment
+	// metadata. It is read on BOTH the fresh-apply path and restart
+	// catch-up: on catch-up the append is a no-op, but the in-memory
+	// input accumulator still needs the record's input metadata so a
+	// later disposition update never replaces the row's inputs without
+	// them (restart convergence). A nil reader / missing record leaves
+	// the components honestly unavailable.
+	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
+	if err != nil {
+		return false, err
+	}
+	snapTaskID := taskID
+	if snap.TaskID != "" {
+		snapTaskID = snap.TaskID
+	}
+	snapRunID := runID
+	if snap.RunID != "" {
+		snapRunID = snap.RunID
+	}
+
 	// Transactional creation: the durable append lands BEFORE the
 	// turn's in-memory state is registered, so a failed append (a
-	// mid-page store error) leaves no phantom routing entry — the retry
-	// re-attempts the append cleanly instead of seeing an "already
-	// exists" skip.
+	// mid-page store error, a transient snapshot error, or an
+	// over-bound snapshot field refused by the projector) leaves no
+	// phantom routing entry — the retry re-attempts the append cleanly
+	// instead of seeing an "already exists" skip.
 	if ev.Sequence > sess.checkpoint {
+		var appendInputs []turns.Attachment
+		var appendQuery string
+		var appendQueryAt time.Time
+		var appendAgentID, appendAgentName string
+		var appendBinding turns.AgentBindingSource
+		if snap.InputsPresent {
+			appendInputs = snap.Inputs
+		}
+		if snap.QueryPresent {
+			appendQuery = snap.Query
+			appendQueryAt = snap.QueryAt
+		}
+		if snap.AgentPresent {
+			appendAgentID = snap.AgentID
+			appendAgentName = snap.AgentName
+			appendBinding = snap.AgentBindingSource
+		}
 		if _, err := m.proj.Append(ctx, sess.id, turns.Append{
-			TurnID:    turns.TurnID(taskID),
-			TaskID:    taskID,
-			RunID:     runID,
-			Status:    turns.StatusPending,
-			StartedAt: ev.OccurredAt,
-			EventSeq:  ev.Sequence,
+			TurnID:             turns.TurnID(taskID),
+			TaskID:             snapTaskID,
+			RunID:              snapRunID,
+			Query:              appendQuery,
+			QueryAt:            appendQueryAt,
+			AgentID:            appendAgentID,
+			AgentName:          appendAgentName,
+			AgentBindingSource: appendBinding,
+			Inputs:             appendInputs,
+			Status:             turns.StatusPending,
+			StartedAt:          ev.OccurredAt,
+			EventSeq:           ev.Sequence,
 		}); err != nil {
 			return false, fmt.Errorf("materializer: append turn %s: %w", taskID, err)
 		}
 	}
 
-	ts := &turnState{taskID: taskID, runID: runID}
+	ts := &turnState{taskID: taskID, runID: snapRunID}
+	if snap.InputsPresent {
+		// Seed the in-memory input accumulator with the record's input
+		// metadata (deep-copied) so a later disposition event for the
+		// SAME artifact is deduplicated and the cumulative list fed to
+		// the projector always includes the append-time inputs.
+		ts.inputs = append([]turns.Attachment(nil), snap.Inputs...)
+	}
 	sess.turns[turns.TurnID(taskID)] = ts
 	return true, nil
 }
@@ -411,17 +475,26 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 // applyTaskCompleted folds a successful terminal into a COMPLETE seal.
 // Only the ROOT foreground task's own completion may seal (or
 // defer-seal) the turn: a child/background task's completion never
-// touches the root lifecycle. The projector refuses a complete seal
-// until the answer component is in a definite state; because no
-// canonical event currently carries the final answer content (the
-// runtime persists answers on the task record, which a projection
-// never reads), the seal is deferred — turn.pendingComplete records it
-// and the materializer retries it at the end of every pass, so a
-// late-converging answer source seals the row without any manual
-// rebuild. The row honestly stays mutable (running) while its sources
-// have not converged; it is never fabricated as complete, and a
-// sequence no-op (the observation was already applied) is never
-// equated with a durable seal.
+// touches the root lifecycle.
+//
+// When the runtime wires the TaskSnapshotReader seam, the projection
+// reads the already-redacted canonical task record under the EVENT
+// identity and captures the bounded Harbor answer envelope (inline,
+// empty, or artifact-reference shaped) plus the output attachment
+// metadata; the definite answer is attached to the row (with the
+// outputs) and the seal lands immediately, so the task record and the
+// durable turn agree. The reader is invoked only while projecting this
+// successfully persisted completion event — never on a Protocol read.
+//
+// Without a wired reader (or for a legacy record with no answer
+// envelope) the answer stays honestly unavailable: the projector
+// refuses the complete seal (ErrSealIncomplete), turn.pendingComplete
+// records it, and the materializer retries the seal at the end of
+// every pass — the row honestly stays mutable (running) while its
+// sources have not converged; it is never fabricated as complete, and
+// a sequence no-op (the observation was already applied) is never
+// equated with a durable seal. A transient snapshot error aborts the
+// projection without advancing the checkpoint.
 func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	_, ts, ok := sess.rootTaskTurn(taskID)
@@ -431,15 +504,37 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
+	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
+	if err != nil {
+		return false, err
+	}
+	if snap.AnswerPresent {
+		// The answer envelope has converged: attach it (with the
+		// output attachment metadata) BEFORE the seal, so the
+		// complete seal's required answer source is present on the
+		// row. The seal below carries EventSeq 0 ON PURPOSE: the
+		// update just stamped the completion observation's sequence on
+		// the row, and a seal carrying the same sequence would be a
+		// monotonic no-op (never a seal).
+		ans := snap.Answer
+		if _, err := m.updateTurn(ctx, sess, ts, turns.Update{
+			Answer:   &ans,
+			Outputs:  snapshotOutputs(snap),
+			EventSeq: ev.Sequence,
+		}); err != nil {
+			return false, err
+		}
+	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusComplete,
 		FinishReason: turns.FinishGoal,
-		EventSeq:     ev.Sequence,
+		EventSeq:     0, // the answer update already stamped ev.Sequence
 	})
 	if err != nil {
 		if errors.Is(err, turns.ErrSealIncomplete) {
-			// The answer source has not converged: record the deferred
-			// seal and keep the row mutable. Not an error.
+			// The answer source has not converged (a legacy record
+			// without an answer envelope): record the deferred seal and
+			// keep the row mutable. Not an error.
 			ts.pendingComplete = true
 			return true, nil
 		}
@@ -469,8 +564,20 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 // closed content-free error class derived from the task's error code.
 // Only the ROOT foreground task's own failure seals the turn — a
 // child/background task's failure never seals (or otherwise mutates)
-// the root lifecycle. The redacted consumer-safe error message is not
-// carried by the event — it stays unavailable ("").
+// the root lifecycle.
+//
+// When the runtime wires the TaskSnapshotReader seam, the projection
+// reads the already-redacted canonical task record under the EVENT
+// identity and captures the canonical classified code and the bounded
+// safe message, so the task event and the durable turn agree: the
+// closed error class derives from the record's code (the event's code
+// stands in for a legacy record that lacks it) and the bounded redacted
+// message rides the seal. A nil reader / legacy record leaves the
+// message unavailable (""). The reader is invoked only while
+// projecting this successfully persisted failure event — never on a
+// Protocol read. A transient snapshot error aborts the projection
+// without advancing the checkpoint; an over-bound message is refused
+// loudly by the projector, never truncated.
 func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	_, ts, ok := sess.rootTaskTurn(taskID)
@@ -480,10 +587,23 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
 	}
+	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
+	if err != nil {
+		return false, err
+	}
+	code := fieldString(payload, "ErrorCode")
+	message := ""
+	if snap.FailurePresent {
+		if snap.ErrorCode != "" {
+			code = snap.ErrorCode
+		}
+		message = snap.ErrorMessage
+	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
-		Status:     turns.StatusFailed,
-		ErrorClass: mapTaskErrorClass(fieldString(payload, "ErrorCode")),
-		EventSeq:   ev.Sequence,
+		Status:       turns.StatusFailed,
+		ErrorClass:   mapTaskErrorClass(code),
+		ErrorMessage: message,
+		EventSeq:     ev.Sequence,
 	})
 	if err != nil {
 		return false, err
@@ -1011,6 +1131,88 @@ func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState
 // usage
 // ---------------------------------------------------------------------------
 
+// usageDelta decodes ONE per-call usage measure from the payload field
+// map. It returns (delta, present, nil) where present is true when the
+// field carries a numeric value, and a wrapped error for a CORRUPT
+// source: a NaN / ±Inf float64, a float64 outside the int64 range (a
+// silent conversion would yield a garbage int64 — the wrap the
+// fail-loud contract forbids), or an unparseable json.Number. An
+// absent field returns (0, false, nil). The semantic sign checks
+// (negative deltas) live in accumulateUsage, so the sign authority is
+// in one place.
+func usageDelta(m map[string]any, key string) (int64, bool, error) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return 0, false, nil
+	}
+	switch n := v.(type) {
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false, fmt.Errorf("materializer: usage %s is non-finite (%v) — corrupt arithmetic never wraps or is silently omitted", key, n)
+		}
+		if n >= float64(math.MaxInt64) || n < float64(math.MinInt64) {
+			return 0, false, fmt.Errorf("materializer: usage %s %v overflows int64 — corrupt arithmetic never wraps or is silently omitted", key, n)
+		}
+		return int64(math.Round(n)), true, nil
+	case int64:
+		return n, true, nil
+	case int:
+		return int64(n), true, nil
+	case json.Number:
+		i, err := n.Int64()
+		if err == nil {
+			return i, true, nil
+		}
+		f, err := n.Float64()
+		if err != nil {
+			return 0, false, fmt.Errorf("materializer: usage %s is not a number: %w", key, err)
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false, fmt.Errorf("materializer: usage %s is non-finite (%v) — corrupt arithmetic never wraps or is silently omitted", key, f)
+		}
+		if f >= float64(math.MaxInt64) || f < float64(math.MinInt64) {
+			return 0, false, fmt.Errorf("materializer: usage %s %v overflows int64 — corrupt arithmetic never wraps or is silently omitted", key, f)
+		}
+		return int64(math.Round(f)), true, nil
+	}
+	return 0, false, nil
+}
+
+// costUSD decodes the per-call TotalCost field into a finite,
+// non-negative float64 USD amount, failing loud on a corrupt source: a
+// non-numeric type, a NaN / ±Inf, or a negative total. Zero (absent)
+// is NOT an error — the canonical payload contract treats a zero /
+// absent total as "no cost reported".
+func costUSD(v any) (float64, error) {
+	switch n := v.(type) {
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, fmt.Errorf("materializer: cost total is non-finite (%v) — corrupt arithmetic never wraps or is silently omitted", n)
+		}
+		if n < 0 {
+			return 0, fmt.Errorf("materializer: cost total is negative (%v) — corrupt arithmetic never wraps or is silently omitted", n)
+		}
+		return n, nil
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("materializer: cost total is not a number: %w", err)
+		}
+		return costUSD(f)
+	case int64:
+		if n < 0 {
+			return 0, fmt.Errorf("materializer: cost total is negative (%d) — corrupt arithmetic never wraps or is silently omitted", n)
+		}
+		return float64(n), nil
+	case int:
+		if n < 0 {
+			return 0, fmt.Errorf("materializer: cost total is negative (%d) — corrupt arithmetic never wraps or is silently omitted", n)
+		}
+		return float64(n), nil
+	}
+	return 0, fmt.Errorf("materializer: cost total has unsupported type %T — corrupt cost arithmetic is never silently omitted", v)
+}
+
 // accumulateUsage derives the cumulative usage CANDIDATE from the
 // current accumulator and one per-call llm.cost.recorded payload
 // (the payload's usage / cost field maps and the reported model).
@@ -1018,49 +1220,122 @@ func (m *Materializer) applyPauseResumed(ctx context.Context, sess *sessionState
 // the candidate to the in-memory accumulator only after the durable
 // write succeeds, so a mid-page failure can never double-accumulate a
 // per-call snapshot on retry.
-func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) turns.Usage {
+//
+// The arithmetic FAILS LOUD — it never wraps, clamps, or silently
+// omits a corrupt value: a negative token / latency / cost delta, a
+// non-finite or out-of-range numeric source, or an int64 accumulation
+// / latency-ms→ns / USD→micro-dollar conversion overflow aborts the
+// projection with a wrapped error (and therefore without advancing the
+// checkpoint). A zero delta leaves the measure unchanged (the
+// canonical payload contract makes zero indistinguishable from
+// not-reported, so zero never becomes a fabricated exact claim).
+func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) (turns.Usage, error) {
 	next := cur
-	addMeasure := func(prev turns.UsageMeasure, delta int64) turns.UsageMeasure {
-		if delta <= 0 {
-			return prev
+	addMeasure := func(prev turns.UsageMeasure, delta int64) (turns.UsageMeasure, error) {
+		if delta < 0 {
+			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage delta %d is negative — corrupt arithmetic never wraps or is silently omitted", delta)
+		}
+		if delta == 0 {
+			return prev, nil
 		}
 		acc := int64(0)
 		if prev.Value != nil {
 			acc = *prev.Value
 		}
+		if acc < 0 {
+			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage accumulator is negative (%d) — corrupt arithmetic never wraps or is silently omitted", acc)
+		}
+		if delta > math.MaxInt64-acc {
+			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage overflows int64 (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, delta)
+		}
 		acc += delta
-		return turns.UsageMeasure{State: turns.UsageExact, Value: &acc}
+		return turns.UsageMeasure{State: turns.UsageExact, Value: &acc}, nil
 	}
-	next.PromptTokens = addMeasure(next.PromptTokens, fieldInt64(usage, "PromptTokens"))
-	next.CompletionTokens = addMeasure(next.CompletionTokens, fieldInt64(usage, "CompletionTokens"))
-	next.ReasoningTokens = addMeasure(next.ReasoningTokens, fieldInt64(usage, "ReasoningTokens"))
-	next.CacheReadTokens = addMeasure(next.CacheReadTokens, fieldInt64(usage, "CacheReadTokens"))
-	next.CacheWriteTokens = addMeasure(next.CacheWriteTokens, fieldInt64(usage, "CacheWriteTokens"))
-	next.TotalTokens = addMeasure(next.TotalTokens, fieldInt64(usage, "TotalTokens"))
-	next.LatencyNS = addMeasure(next.LatencyNS, fieldInt64(usage, "LatencyMS")*int64(time.Millisecond))
+	addField := func(key string, prev turns.UsageMeasure) (turns.UsageMeasure, error) {
+		delta, present, err := usageDelta(usage, key)
+		if err != nil {
+			return turns.UsageMeasure{}, err
+		}
+		if !present {
+			return prev, nil
+		}
+		return addMeasure(prev, delta)
+	}
+
+	var err error
+	if next.PromptTokens, err = addField("PromptTokens", next.PromptTokens); err != nil {
+		return turns.Usage{}, err
+	}
+	if next.CompletionTokens, err = addField("CompletionTokens", next.CompletionTokens); err != nil {
+		return turns.Usage{}, err
+	}
+	if next.ReasoningTokens, err = addField("ReasoningTokens", next.ReasoningTokens); err != nil {
+		return turns.Usage{}, err
+	}
+	if next.CacheReadTokens, err = addField("CacheReadTokens", next.CacheReadTokens); err != nil {
+		return turns.Usage{}, err
+	}
+	if next.CacheWriteTokens, err = addField("CacheWriteTokens", next.CacheWriteTokens); err != nil {
+		return turns.Usage{}, err
+	}
+	if next.TotalTokens, err = addField("TotalTokens", next.TotalTokens); err != nil {
+		return turns.Usage{}, err
+	}
+	// Latency: the payload reports integer milliseconds; the projection
+	// accumulates exact integer nanoseconds. The ms→ns conversion must
+	// not overflow — a corruptly huge latency aborts loudly.
+	latencyMS, present, err := usageDelta(usage, "LatencyMS")
+	if err != nil {
+		return turns.Usage{}, err
+	}
+	if present {
+		if latencyMS > math.MaxInt64/int64(time.Millisecond) {
+			return turns.Usage{}, fmt.Errorf("materializer: latency %d ms overflows integer nanoseconds — corrupt arithmetic never wraps or is silently omitted", latencyMS)
+		}
+		if next.LatencyNS, err = addMeasure(next.LatencyNS, latencyMS*int64(time.Millisecond)); err != nil {
+			return turns.Usage{}, err
+		}
+	}
 
 	// Cost: the float64 USD per-call total is converted to integer
 	// micro-dollars by rounding and accumulated as integers; the measure
-	// is honestly ESTIMATED (the source is approximate).
-	totalUSD := 0.0
-	if v, ok := cost["TotalCost"]; ok {
-		if f, ok := v.(float64); ok {
-			totalUSD = f
+	// is honestly ESTIMATED (the source is approximate) and money is
+	// never accumulated in float64. The conversion and accumulation are
+	// overflow-checked — corrupt cost arithmetic never wraps.
+	if v, ok := cost["TotalCost"]; ok && v != nil {
+		totalUSD, err := costUSD(v)
+		if err != nil {
+			return turns.Usage{}, err
 		}
-	}
-	if totalUSD > 0 {
-		micro := int64(math.Round(totalUSD * 1e6))
-		acc := int64(0)
-		if next.CostMicroUSD.Value != nil {
-			acc = *next.CostMicroUSD.Value
+		if totalUSD > 0 {
+			if totalUSD > math.MaxInt64/1e6 {
+				return turns.Usage{}, fmt.Errorf("materializer: cost total %v overflows integer micro-dollars — corrupt arithmetic never wraps or is silently omitted", totalUSD)
+			}
+			micro := int64(math.Round(totalUSD * 1e6))
+			if micro < 0 {
+				// A float64 conversion wrap is impossible after the
+				// bound above, but the guard keeps the arithmetic
+				// fail-loud against a future bound regression.
+				return turns.Usage{}, fmt.Errorf("materializer: cost total %v overflows integer micro-dollars — corrupt arithmetic never wraps or is silently omitted", totalUSD)
+			}
+			acc := int64(0)
+			if next.CostMicroUSD.Value != nil {
+				acc = *next.CostMicroUSD.Value
+			}
+			if acc < 0 {
+				return turns.Usage{}, fmt.Errorf("materializer: cost accumulator is negative (%d) — corrupt arithmetic never wraps or is silently omitted", acc)
+			}
+			if micro > math.MaxInt64-acc {
+				return turns.Usage{}, fmt.Errorf("materializer: cumulative cost overflows integer micro-dollars (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, micro)
+			}
+			acc += micro
+			next.CostMicroUSD = turns.UsageMeasure{State: turns.UsageEstimated, Value: &acc}
 		}
-		acc += micro
-		next.CostMicroUSD = turns.UsageMeasure{State: turns.UsageEstimated, Value: &acc}
 	}
 	if model != "" {
 		next.Model = model
 	}
-	return next
+	return next, nil
 }
 
 // applyCostRecorded folds the per-call llm.cost.recorded event into the
@@ -1084,13 +1359,19 @@ func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState
 	cost := fieldNested(payload, "Cost")
 	// Transactional update: the candidate rollup commits to memory only
 	// after the durable write succeeds, so a mid-page failure never
-	// double-counts a per-call snapshot on retry.
-	candidate := accumulateUsage(ts.usage, usage, cost, fieldString(payload, "Model"))
+	// double-counts a per-call snapshot on retry. Corrupt arithmetic
+	// (negative / non-finite / overflowing deltas) fails loud here —
+	// the pass aborts without advancing the checkpoint and the corrupt
+	// event is never wrapped, clamped, or silently omitted.
+	candidate, err := accumulateUsage(ts.usage, usage, cost, fieldString(payload, "Model"))
+	if err != nil {
+		return false, err
+	}
 	if ev.Sequence <= sess.checkpoint {
 		ts.usage = candidate
 		return true, nil
 	}
-	_, err := m.updateTurn(ctx, sess, ts, turns.Update{
+	_, err = m.updateTurn(ctx, sess, ts, turns.Update{
 		Usage:    &candidate,
 		EventSeq: ev.Sequence,
 	})
