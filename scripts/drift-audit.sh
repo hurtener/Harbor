@@ -522,6 +522,22 @@ else
     # bash 3.2 (macOS default) has no `mapfile`; read every list portably.
     # `--sort=-v:refname` gives newest-first without relying on `sort -V`,
     # which BSD sort does not provide.
+    #
+    # THE RELEASE-TAG GRAMMAR, SHARED BY ALL THREE RUNGS BELOW. Harbor's
+    # published release tags carry TWO components (`v1.27` — the historical
+    # convention, and the current one) or THREE (`v1.26.12` — the older
+    # patch-level form). Everything else is not a release and must not enter
+    # the ledger: suffixed tags and prereleases (`v1.27-rc1`), four-plus-
+    # component dotted strings (`v1.27.0.1`), and bare one-component names
+    # (`v1`) would each shift `newest` and corrupt the one-release-trail rule
+    # below — a guard that counts a prerelease as the newest published release
+    # is the same silent drift this block exists to catch. One pattern feeds
+    # all three rungs so origin tags, local tags and the CHANGELOG fallback
+    # cannot drift apart. Double quotes are deliberate: the shared grammar is
+    # interpolated into each extraction, `\$` passes the end-anchor through to
+    # sed, and `\1` is sed's backreference.
+    release_num='[0-9]+\.[0-9]+(\.[0-9]+)?'
+
     released_versions=()
     release_source=''
 
@@ -529,7 +545,7 @@ else
         while IFS= read -r v; do
             [ -n "${v}" ] && released_versions+=("${v}")
         done < <(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs --sort=-v:refname origin 2>/dev/null \
-            | sed -nE 's#.*refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p')
+            | sed -nE "s#.*refs/tags/v(${release_num})\$#\1#p")
         [ "${#released_versions[@]}" -gt 0 ] && release_source='published tags (origin)'
     fi
 
@@ -537,7 +553,7 @@ else
         while IFS= read -r v; do
             [ -n "${v}" ] && released_versions+=("${v}")
         done < <(git tag --list --sort=-v:refname 'v[0-9]*' 2>/dev/null \
-            | sed -nE 's#^v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p')
+            | sed -nE "s#^v(${release_num})\$#\1#p")
         [ "${#released_versions[@]}" -gt 0 ] && release_source='local tags'
     fi
 
@@ -545,7 +561,7 @@ else
         while IFS= read -r v; do
             [ -n "${v}" ] && released_versions+=("${v}")
         done < <(git show origin/main:CHANGELOG.md 2>/dev/null \
-            | grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' | sed -E 's/^## \[(.*)\]/\1/')
+            | grep -oE "^## \[${release_num}\]" | sed -E 's/^## \[(.*)\]/\1/')
         [ "${#released_versions[@]}" -gt 0 ] && release_source="origin/main's CHANGELOG"
     fi
 

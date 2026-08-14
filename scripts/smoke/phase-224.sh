@@ -243,13 +243,18 @@ FIXTURE_EOF
     cat > "${d}/CHANGELOG.md" <<'FIXTURE_EOF'
 # Changelog
 
-## [2.0.0]
+## [1.27]
 
-- The newest published fixture release.
+- The newest published fixture release — a TWO-component tag, the grammar
+  Harbor actually publishes (v1.27, v1.26.12, ...).
 
-## [1.9.0]
+## [1.26.12]
 
 - An older fixture release.
+
+## [1.26.11]
+
+- The oldest fixture release.
 FIXTURE_EOF
 
     # `drift-audit:` must be a real target: the audit greps for it, and the
@@ -389,7 +394,7 @@ FIXTURE_EOF
 package scaffold
 
 // FallbackModuleVersion names the release a source build cannot name itself.
-const FallbackModuleVersion = "v2.0.0"
+const FallbackModuleVersion = "v1.27"
 FIXTURE_EOF
 
     cat > "${d}/web/console/src/routes/(console)/playground/+page.svelte" <<'FIXTURE_EOF'
@@ -398,15 +403,24 @@ FIXTURE_EOF
 
     # Local release tags are the ledger the scaffold-pin guard reads once
     # HARBOR_DRIFT_AUDIT_OFFLINE=1 removes the remote rung. Newest first:
-    # v2.0.0 (the pin), v1.9.0 (one back), v1.8.0 (two back).
+    # v1.27 (the two-component pin — the grammar Harbor actually publishes),
+    # v1.26.12 (one back), v1.26.11 (two back). The ledger ALSO carries two
+    # tags the guard must REFUSE: v9.9.9-rc1 (a prerelease — a loose grammar
+    # would make it `newest` and break the pin) and v1.27.0.1 (a four-
+    # component malformed dotted string). The pristine corpus only passes if
+    # the grammar accepts the two-component form AND refuses both junk tags —
+    # the v1.28 drift (v1.27 ignored, newest misread as v1.26.12, the correct
+    # pin falsely rejected) is this baseline, mirrored.
     (
         cd "${d}"
         git init -q .
         git -c user.email='fixture@harbor.invalid' -c user.name='fixture' \
             commit -q --allow-empty -m 'fixture'
-        git tag v1.8.0
-        git tag v1.9.0
-        git tag v2.0.0
+        git tag v1.26.11
+        git tag v1.26.12
+        git tag v1.27
+        git tag v9.9.9-rc1
+        git tag v1.27.0.1
     ) >/dev/null 2>&1
 }
 
@@ -714,19 +728,22 @@ mut_skill_frontmatter() {
 
 mut_pin_phantom() {
     local v="$1/cmd/harbor/scaffold/version.go"
-    sed 's/"v2.0.0"/"v0.0.1"/' "${v}" > "${v}.tmp"
+    sed 's/"v1.27"/"v0.0.1"/' "${v}" > "${v}.tmp"
     mv "${v}.tmp" "${v}"
 }
 
 mut_pin_trails() {
     local v="$1/cmd/harbor/scaffold/version.go"
-    sed 's/"v2.0.0"/"v1.8.0"/' "${v}" > "${v}.tmp"
+    # v1.26.11 sits TWO releases back from v1.27 (index 2 in the ledger), so
+    # this is a genuine two-release trail — the numeric ordering across the
+    # grammar boundary (v1.27 > v1.26.12 > v1.26.11) is what makes it one.
+    sed 's/"v1.27"/"v1.26.11"/' "${v}" > "${v}.tmp"
     mv "${v}.tmp" "${v}"
 }
 
 mut_release_ledger() {
     local c="$1/CHANGELOG.md"
-    grep -v '^## .2.0.0.$' "${c}" > "${c}.tmp"
+    grep -v '^## .1.27.$' "${c}" > "${c}.tmp"
     mv "${c}.tmp" "${c}"
 }
 
@@ -896,7 +913,7 @@ expect_caught 'scaffold pin trails by two releases' FAIL \
 
 expect_caught 'release ledger vs CHANGELOG' FAIL \
     'release ledger: CHANGELOG.md carries a section' \
-    'release ledger: v2.0.0 is published' \
+    'release ledger: v1.27 is published' \
     mut_release_ledger
 
 expect_caught 'smoke regex portability (scripts/smoke/ root)' FAIL \
