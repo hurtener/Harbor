@@ -40,19 +40,51 @@ ERRORS_MD='docs/site/protocol/errors.md'
 # silently never fires on Linux CI).
 # ---------------------------------------------------------------------------
 
-# (1) EXACT count, not ">= 1": dropping one of the twenty-five doors FAILS here.
-# Phase 233b adds the signed OAuth MCP pair's creation and removal requests.
-# Creation and removal are additive wire fields; removal is optional for
-# additive decoding but the service still requires it semantically. Phase
-# 234's retirement also requires the active revision hash before it can create
-# a terminal tombstone. The named assertions below keep those semantically
-# different additions from being satisfied by fields on unrelated request
-# types. The census is 25 total = 21 optional + 4 mandatory.
-#     Mutation 3 (drop the field from one request type) turns this OK -> FAIL.
-assert_grep_count 'ExpectedContentHash string' "${TYPES_GO}" 25 \
-    'phase 221: all twenty-five Go ExpectedContentHash carriers are present (25 total = 21 optional + 4 mandatory)'
-assert_grep_count 'expected_content_hash,omitempty' "${TYPES_GO}" 21 \
-    'phase 221: twenty-one Go ExpectedContentHash carriers remain optional (25 total = 21 optional + 4 mandatory)'
+# (1) Exact named CAS-wire census. A count cannot distinguish a new governed
+# response from a field accidentally added to an unrelated request. HA-61 adds
+# the import validate response and import commit request bindings, bringing the
+# closed set to 27: 21 optional request tokens and six mandatory
+# request/response bindings.
+# This fails for a missing member, an unexpected member, or changed optionality.
+declare -a P221_CAS_CARRIERS=(
+    'AgentConfigSetRevisionRequest:optional'
+    'AgentConfigRollbackRequest:optional'
+    'AgentConfigRetireRequest:mandatory'
+    'AgentConfigSetToolExposureRequest:optional'
+    'AgentConfigSetPromptLayersRequest:optional'
+    'AgentConfigSetExtraSystemBlocksRequest:optional'
+    'AgentConfigSetLLMParamsRequest:optional'
+    'AgentConfigAddMCPConnectionRequest:optional'
+    'AgentConfigRemoveMCPConnectionRequest:optional'
+    'AgentConfigSetMCPDiscoveryOriginsRequest:optional'
+    'AgentConfigSetOAuthProviderRequest:optional'
+    'AgentConfigRegisterOAuthMCPCapabilityRequest:optional'
+    'AgentConfigRemoveOAuthMCPCapabilityRequest:optional'
+    'AgentConfigRemoveOAuthProviderRequest:optional'
+    'AgentConfigSkillsUpsertRequest:optional'
+    'AgentConfigSkillsDeleteRequest:optional'
+    'AgentConfigAgentPacksUpsertRequest:optional'
+    'AgentConfigAgentPacksRemoveRequest:optional'
+    'AgentConfigAgentPacksProposeRequest:mandatory'
+    'AgentConfigAgentPacksProposeResponse:mandatory'
+    'AgentConfigAgentPacksCommitRequest:mandatory'
+    'AgentConfigUserSkillsUpsertRequest:optional'
+    'AgentConfigUserSkillsDeleteRequest:optional'
+    'AgentConfigUserSetRevisionRequest:optional'
+    'AgentConfigUserRollbackRequest:optional'
+    'AgentConfigUserSkillsImportValidateResponse:mandatory'
+    'AgentConfigUserSkillsImportCommitRequest:mandatory'
+)
+P221_ACTUAL_CAS_CARRIERS="$(awk '
+    /^type [A-Za-z0-9_]+ struct \{/ { name = $2; next }
+    /ExpectedContentHash string/ { print name ":" ($0 ~ /omitempty/ ? "optional" : "mandatory") }
+' "${TYPES_GO}")"
+P221_EXPECTED_CAS_CARRIERS="$(printf '%s\n' "${P221_CAS_CARRIERS[@]}")"
+if [ "${P221_ACTUAL_CAS_CARRIERS}" = "${P221_EXPECTED_CAS_CARRIERS}" ]; then
+    ok 'phase 221: the exact 27-member Go CAS-wire census has the required optional/mandatory semantics'
+else
+    fail "phase 221: Go CAS-wire census changed or changed semantics (expected=$(printf '%s' "${P221_EXPECTED_CAS_CARRIERS}" | tr '\n' ' ') actual=$(printf '%s' "${P221_ACTUAL_CAS_CARRIERS}" | tr '\n' ' '))"
+fi
 if awk '
     $0 == "type AgentConfigRegisterOAuthMCPCapabilityRequest struct {" { inside = 1; next }
     inside && /^}/ { exit }
