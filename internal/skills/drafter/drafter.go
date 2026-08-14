@@ -50,11 +50,14 @@ import (
 )
 
 // ToolName is the ordinary tool name this lane registers under. The
-// tool is DISABLED BY DEFAULT: nothing registers it until the
-// composition owner explicitly wires the registration carrier into the
-// built-in registry, so it is absent from the model-visible catalog
-// unless an operator enables it per-agent through the ordinary tool
-// policy surface.
+// registration carrier is already wired into the built-in registry, so
+// the name is present in `KnownNames()`; the tool is DISABLED BY
+// DEFAULT only because the recommended/default `tools.built_in` lists
+// omit it. An operator enables it by listing it there, exactly like
+// every other built-in. Registration pulls the assembly's composed LLM
+// client from the registry context: listing the tool on a runtime
+// without a usable LLM fails the boot loud rather than silently
+// skipping.
 const ToolName = "skill_create_draft"
 
 // Bounds. Every bound is a named limit enforced before any artifact
