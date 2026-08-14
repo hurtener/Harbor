@@ -169,6 +169,20 @@ var wave11ID = identity.Identity{
 // than imported because cmd/harbor is `package main`).
 const wave11Kid = "harbor-test"
 
+// wave11KEKEnv is the env slot the wave11 YAML fixture declares via
+// `tools.oauth_token_kek_env`. Harbor v1.28 resolves every explicitly
+// configured shared KEK before readiness, so the fixture MUST populate
+// this slot before config/runtime assembly or devstack.Assemble fails
+// loud with "env var ... is unset or empty" (ResolveSharedKEKSealer →
+// NewSealerFromEnv).
+const wave11KEKEnv = "WAVE11_TEST_OAUTH_KEK"
+
+// wave11DummyKEKHex is a documented-dummy 32-byte hex KEK (64 hex
+// chars, AES-256-GCM) — fixed and deterministic, never a real
+// credential (CLAUDE.md §7 rule 2). Set via testing.T.Setenv in
+// buildWave11Stack before any config/runtime assembly.
+const wave11DummyKEKHex = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+
 // wave11Stack is the assembled dev-shaped runtime the wave-end E2E
 // boots. Mirrors `cmd/harbor` devStack — but with `tools.entries[]`
 // pre-populated so the catalog Builder wires real approval gates +
@@ -252,6 +266,13 @@ func (s *wave11StubProvider) AllowedDownstreamHosts() []string { return nil }
 // fields the wave11 tests reach for.
 func buildWave11Stack(t *testing.T, oauthProvider toolauth.OAuthProvider) *wave11Stack {
 	t.Helper()
+	// The wave11 YAML declares `tools.oauth_token_kek_env:
+	// WAVE11_TEST_OAUTH_KEK`, and Harbor v1.28 resolves every explicitly
+	// configured shared KEK before readiness — devstack.Assemble fails
+	// loud on an unset slot. Populate the declared test secret (a fixed
+	// documented-dummy 32-byte hex KEK, never a real credential) via
+	// testing.T.Setenv before config load / runtime assembly.
+	t.Setenv(wave11KEKEnv, wave11DummyKEKHex)
 	cfg := writeWave11Config(t)
 	providers := map[string]toolauth.OAuthProvider{
 		"wave11-stub": oauthProvider,
@@ -344,6 +365,9 @@ memory:
   driver: inmem
   strategy: none
 tools:
+  # Declared so v1.28 readiness resolves the shared KEK before
+  # assembly; buildWave11Stack populates this slot via t.Setenv with
+  # wave11DummyKEKHex.
   oauth_token_kek_env: WAVE11_TEST_OAUTH_KEK
   oauth_providers:
     # The wave11 E2E injects its own stub OAuthProvider via the
