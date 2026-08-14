@@ -1601,12 +1601,31 @@ fullscreen-tab and side-by-side (pip) layouts.
 
 Default: nil (resolves to `[inline]`). Restart-required.
 
+**Fresh render-admission consequence (D-412 amendment, Pending v1.28).** The
+durable-reopen MCP App admission surface mints stateless,
+integrity-protected render admissions sealed by the deployment's
+**shared sealing authority** (the shared KEK). Production and devstack share
+ONE implementation. When the admission surface is enabled,
+`mcp_app_host.shared_sealing_authority` names the shared sealing key as an
+`env.NAME` reference (never a literal — §7 no-hardcoded-secrets). An enabled
+surface without a configured authority fails readiness **loud**, naming the
+missing key. Restart and multi-replica deployments verify admissions against
+the shared authority — a per-process ephemeral key would make one replica's
+admission unverifiable on another. The admission claim binds
+schema/time/`(tenant,user,session)`/effective-agent/server/resource/
+generation and never carries raw arguments, secrets, provider output,
+callback names, or general capabilities; ordinary resource reads never mint
+an admission, and unavailable/expired admissions answer typed
+unavailable/expired with fresh checks on refresh. There is no persisted
+callback authority, no hot registry, and no transcript impersonation.
+
 Example:
 
 ```yaml
 tools:
   mcp_app_host:
     display_modes: [inline, fullscreen, pip]
+    # shared_sealing_authority: env.HARBOR_MCP_APP_SEALING_KEY
 ```
 
 ### tools.mcp_artifact_egress_max_bytes

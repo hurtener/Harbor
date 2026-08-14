@@ -381,7 +381,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |235 | Agent authority/lifecycle wave E2E + v1.26 checkpoint: real SQLite/Postgres composition of signed OAuth capability registration, session records, erasure, retirement, and byte-exact reasoning durability; two-runtime write races, N≥10 mixed-identity stress, read-only §17.5 audit and corrective gate before release | test/integration + scripts/smoke + release docs | §4, §5.5, §6.2, §6.4, §6.5, §6.8, §6.9, §6.11, §6.13, §6.16, §9 | 232, 233, 233a, 233b, 233c, 234 | inherited floors | Shipped (v1.26) |
 |236 | Typed MCP errors (HA-54) | tools/mcp + tools/policy + runtime/steering + planner/react | §6.4, §6.5, §6.13 | 26b, 28 | measured floors | Shipped (v1.27); planner-replay amendment Pending (v1.28) |
 |237 | Agent-owned skills and governed authoring (HA-55) | skills + agentcfg + serve | §6.7, §6.16, §6.11, §5.2 | 201, 221, 233, 233a | measured floors | Shipped (v1.27) |
-|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27) |
+|238 | App-only callback catalog (HA-56) | tools/mcp + mcpconsole + protocol | §6.4, §7.3, §5.2, §7 | 207, 204, 109k, 109l | measured floors | Shipped (v1.27); fresh render-admission amendment Pending (v1.28) |
 |239 | Same-run step-tranche resume (HA-57) | runtime + tasks + protocol | §3.3, §6.8, §6.11, §7 | 176, 193, 233 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |240 | Governed virtual child profiles (HA-58) | runtime + agentcfg + protocol | §5.5, §6.16, §7 | 237, 239 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
 |241 | Virtual-child artifact/output forwarding (HA-59) | artifacts + tasks + runtime + protocol | §6.8, §6.10, §6.11, §7 | 17, 146, 239, 240 | web-CI gate; local validation intentionally skipped | Shipped (v1.27) |
@@ -586,9 +586,33 @@ real two-client race under `-race`.
   discovered snapshot for HTTP and stdio, with no stale callback surviving
   replacement or detach. Non-goals: no authorization shortcut, no
   ordinary-caller exposure, no provider-specific exceptions.
+- **Fresh render-admission acceptance (governance amendment, Pending (v1.28);
+  HA-56 stays phase 238 / D-412, no new phase or decision):** the corrected
+  render-admission contract is authoritative for the v1.28 wave. The live
+  provider-local binding is a bounded, short-lived compatibility path for a
+  LIVE tool-result App only — never durable, never restored. Embedded/durable
+  reopen uses a FRESH stateless, integrity-protected, shared-KEK admission
+  minted only after verified identity, signed effective-agent reach,
+  retirement, erasure, current session/agent exposure, exact server, exact
+  current `ui://` resource availability, paused/disabled state, and exact
+  current registry descriptor fingerprint generation. Claims bind
+  schema/time/triple/effective-agent/server/resource/generation and carry no
+  raw args, secrets, provider output, callback name, or general capability.
+  Ordinary resource reads never mint; only the explicit admission-requesting
+  read path does. Callbacks stay absent from planner/`tools.list`/search/
+  generic resolution and dispatch via same-server `ResolveAppTool` + existing
+  approval/OAuth/policy/redaction/retry/audit. HA-64 rows retain
+  metadata/component availability only, no token; `mcp.apps.tool_context`
+  replay is unchanged and never reruns the originating tool. Typed
+  unavailable/expired is explicit; refresh re-runs fresh checks. Production/
+  devstack share one implementation; an enabled surface without a configured
+  shared sealing authority fails readiness loud; restart/multi-replica use the
+  shared authority. No generic capability framework, persisted callback
+  authority, arbitrary origins, provider exceptions, hot registry, or
+  transcript impersonation.
 - **Ordering:** 238 is independent of 236/237/239/240/241/242 (its App-host
   fixtures compose with 242's durable task-progress projection at wave E2E).
-- **Decision:** D-412. **Status:** Shipped (v1.27).
+- **Decision:** D-412. **Status:** Shipped (v1.27); fresh render-admission amendment Pending (v1.28).
 
 ### Phase 239 — Same-run step-tranche resume (HA-57)
 

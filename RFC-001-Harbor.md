@@ -1312,6 +1312,37 @@ to identity, agent reach, capability, approval, OAuth, state, redaction, and
 audit gates. Refresh, reconnect, replacement, and detach rebuild both views
 from one server snapshot.
 
+**Fresh render-admission contract (Settled — D-412 amendment; HA-56 stays
+phase 238 / D-412, Pending v1.28).** A rendered MCP App has exactly two
+render paths. The LIVE path — the App mounted while the originating
+tool-result App is in-process — may use a bounded, short-lived,
+provider-local binding as a compatibility convenience; that binding is never
+durable and is never restored. Embedded/durable reopen — the App remounted
+from a reopened session's durable turns — instead uses a FRESH stateless,
+integrity-protected, shared-KEK admission minted by the Runtime only after
+ALL of: verified identity, signed effective-agent reach, agent retirement,
+session/agent erasure, current session/agent exposure, exact server
+identity, exact current `ui://` resource availability, paused/disabled
+state, and exact current registry descriptor fingerprint generation. The
+admission claim binds claim schema, mint time, the `(tenant, user, session)`
+triple, effective agent, server, resource, and descriptor generation — and
+carries no raw tool arguments, secrets, provider output, callback name, or
+general capability. Ordinary resource reads never mint an admission; only
+the explicit admission-requesting read path does. The app-only callback
+stays absent from planner context, `tools.list`, search, and generic
+resolution, and dispatches only via the same-server `ResolveAppTool` path
+followed by the existing approval/OAuth/policy/redaction/retry/audit gates.
+Durable turn rows (the HA-64 / D-425 projection) retain metadata and
+component availability only — never an admission token; `mcp.apps.tool_context`
+replay is unchanged and never reruns the originating tool. Unavailable and
+expired admissions answer typed unavailable/expired, and refresh re-runs
+every fresh check — nothing is silently extended. Production and devstack
+share ONE implementation; an enabled surface without a configured shared
+sealing authority fails readiness loud, and restart/multi-replica deployments
+verify against the shared authority. Pinned non-goals: no generic capability
+framework, no persisted callback authority, no arbitrary origins, no
+provider exceptions, no hot registry, and no transcript impersonation.
+
 MCP App tool-context records have an explicit session-lifetime contract by
 default: they survive session reopen and are removed by session erasure.
 `not_found` therefore means unknown or cross-identity unless a separately

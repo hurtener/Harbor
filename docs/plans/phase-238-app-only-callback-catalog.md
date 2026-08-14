@@ -44,6 +44,86 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 - [ ] Mixed identity/agent-reach concurrent tests prove no cross-talk.
 - [ ] Compatibility transcripts cover supported metadata variants and rendered App behavior.
 
+## Governance amendment — corrected fresh render-admission contract (Pending v1.28)
+
+> This section is the authoritative correction to the render-admission half of
+> the shipped contract. It is a governance amendment only: **HA-56 stays phase
+> 238 / D-412 — no new HA, phase, or decision is allocated**, and the original
+> shipped app-only callback catalog history above and in D-412 is preserved
+> verbatim. The amendment is recorded in D-412, RFC §6.10 (the callback and
+> tool-context contracts section), the master-plan detail block and index row,
+> the HA-56 register entry, the glossary, this plan, the operator skill, and
+> the config/example docs. Implementation lands in the v1.28 release wave under
+> the exclusive release-doc owner; this amendment owns only the governance
+> surfaces.
+
+**The corrected contract.**
+
+1. **Live provider-local binding is a bounded, short-lived compatibility path
+   for a LIVE tool-result App only.** It is never durable and is never
+   restored on reopen.
+2. **Embedded/durable reopen uses a FRESH stateless, integrity-protected,
+   shared-KEK admission** minted only after ALL of: verified identity, signed
+   effective-agent reach, retirement, erasure, current session/agent exposure,
+   exact server, exact current `ui://` resource availability, paused/disabled
+   state, and exact current registry descriptor fingerprint generation.
+3. **The admission claim binds** claim schema, mint time, `(tenant, user,
+   session)`, effective agent, server, resource, and descriptor generation —
+   and carries NO raw args, secrets, provider output, callback name, or
+   general capability.
+4. **Ordinary resource reads never mint.** Only the explicit
+   admission-requesting read path mints an admission.
+5. **The callback stays absent from planner / `tools.list` / search / generic
+   resolution** and dispatches via the same-server `ResolveAppTool` followed
+   by the existing approval/OAuth/policy/redaction/retry/audit gates.
+6. **Durable turn rows (HA-64 / D-425) retain metadata/component availability
+   only — no token**; `mcp.apps.tool_context` replay remains unchanged and
+   never reruns the originating tool.
+7. **Typed unavailable/expired behavior is explicit**; refresh requires fresh
+   checks — nothing is silently extended.
+8. **Production and devstack share ONE implementation**; an enabled surface
+   without a configured shared sealing authority fails readiness loud;
+   restart/multi-replica verify against the shared authority.
+9. **Pinned non-goals:** no generic capability framework, no persisted
+   callback authority, no arbitrary origins, no provider exceptions, no hot
+   registry, and no transcript impersonation.
+
+**Amended acceptance (binding for the v1.28 implementation wave).**
+
+1. **Durable reopen through a real Console consumer:** reopen a session and
+   remount an App through the fresh admission path using the real Console
+   App host/bridge, not a unit-level stand-in; the live provider-local
+   binding path is separately exercised for a live tool-result App and proven
+   bounded (expires with the live App) and never restored.
+2. **Negative admission cases each fail typed before render or dispatch, with
+   zero callback executions:** wrong/missing identity, retired effective
+   agent, erased session/agent, changed session/agent exposure, wrong server,
+   missing current `ui://` resource, paused/disabled server, stale registry
+   descriptor generation, tampered claim, and expired claim.
+3. **Claim-content pin:** the admission claim carries schema/time/triple/
+   effective-agent/server/resource/generation only; a test asserts raw args,
+   secrets, provider output, callback name, and general-capability content
+   are absent from the claim.
+4. **Ordinary `mcp.servers.read_resource` never mints;** only the explicit
+   admission-requesting read path does — proven by a test that ordinary reads
+   yield no admission.
+5. **Callback dispatch stays on the same-server `ResolveAppTool` path** with
+   the existing approval/OAuth/policy/redaction/retry/audit gates; planner /
+   `tools.list` / search / generic resolution never see the callback.
+6. **Durable turn rows (HA-64 / D-425) carry metadata/component availability
+   only** — a test asserts no admission token is persisted in the turn rows;
+   `mcp.apps.tool_context` replay is unchanged and never reruns the
+   originating tool.
+7. **Typed unavailable/expired:** an unavailable or expired admission answers
+   typed `unavailable`/`expired`; refresh re-runs the full fresh check list.
+8. **One implementation:** production and devstack resolve the same
+   implementation; an enabled surface without a configured shared sealing
+   authority fails readiness loud; restart and multi-replica admission
+   verification use the shared authority.
+9. **N≥100 concurrent reopen/isolation under `-race`** with no cross-talk,
+   and zero originating-tool rerun / callback execution on refusal across all
+   negative cases.
+
 ## Files added or changed
 
 - `internal/tools/{tools.go,catalog.go,planner_view.go}`
@@ -52,6 +132,15 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 - `internal/protocol/{apps.go,types,mcp.go}` if additive identity is needed
 - `test/integration/mcp_app_callback_catalog_test.go`
 - `docs/glossary.md`, `RFC-001-Harbor.md`, `CHANGELOG.md`, `scripts/smoke/phase-238.sh`
+
+**Governance-amendment (v1.28) surfaces only** — this amendment changes no
+implementation, no Protocol generated output, no Console source, no
+`CHANGELOG.md`, and no HA-61–HA-66 phase plans/smokes. It touches: the D-412
+decision entry, RFC §6.10, the master-plan detail block + index row
+(`docs/plans/README.md`), the HA-56 register entry
+(`docs/notes/downstream-asks.md`), this plan, the glossary, the focused
+`scripts/smoke/phase-238.sh`, the `drive-the-playground` operator skill, and
+the config/example docs (`docs/CONFIG.md`, `examples/harbor.yaml`).
 
 ## Public API surface
 
@@ -64,10 +153,12 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 - **Integration:** real MCP SDK fixtures and rendered App bridge over HTTP/stdio; identity and forced paused/denied failure.
 - **Conformance:** provider transcript matrix for all named compatibility fixtures.
 - **Concurrency / leak:** N=128 shared catalog refresh/dispatch calls with cancellation and teardown leak assertions.
+- **Amendment (v1.28):** durable reopen through the real Console App host/bridge, the negative admission matrix (identity / server / resource / generation / expiry / tamper / erasure / paused-disabled), the claim-content pin, the ordinary-read-never-mints pin, the HA-64 row metadata-only pin, and N≥100 concurrent reopen/isolation under `-race` with zero originating-tool rerun / callback execution on refusal.
 
 ## Smoke script additions
 
 - Static checks for visibility parsing, separate catalogs, host-derived identity, both transports, compatibility fixture names, and no planner callback exposure.
+- **Amendment (v1.28):** static checks pinning the fresh render-admission contract across the governance surfaces — the plan's durable-reopen / negative-matrix / N≥100 / zero-rerun acceptance, the D-412 amendment record, the RFC §6.10 amendment, the master-plan and register statuses, the glossary term, and the config/example readiness-loud consequence.
 
 ## Coverage target
 
@@ -90,6 +181,7 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 ## Glossary additions
 
 - **App-only callback catalog** — Harbor's per-server callback lookup retained beside, but never merged into, the planner projection.
+- **Fresh render admission** — the stateless, integrity-protected, shared-KEK admission minted for an MCP App on embedded/durable reopen; never a restored live binding, never a persisted token, and never minted by ordinary resource reads. D-412.
 
 ## Pre-merge checklist
 
@@ -102,3 +194,4 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 - [ ] Concurrent-reuse N≥100 under `-race`
 - [ ] Real-driver/spec-derived integration with failure mode under `-race`
 - [ ] Glossary updated
+- [ ] Amendment: the fresh render-admission contract is recorded on every governance surface (D-412, RFC §6.10, master plan, register, glossary, smoke, skill, config docs) before the v1.28 implementation wave lands

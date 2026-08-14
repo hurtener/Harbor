@@ -1889,7 +1889,24 @@ start. The agent is not an isolation principal. D-411.
 
 **App dispatch catalog** — a per-MCP-server callback lookup retained beside,
 but not merged into, the planner's tool projection. App visibility is not a
-grant. D-412.
+grant: the callback stays absent from planner context, `tools.list`, search,
+and generic resolution, and dispatches only through the same-server
+`ResolveAppTool` path under the existing approval/OAuth/policy/redaction/
+retry/audit gates. D-412.
+
+**Fresh render admission** — the stateless, integrity-protected, shared-KEK
+admission the Runtime mints for an MCP App on embedded/durable reopen; it is
+never a restored live binding (the live path's provider-local binding is
+bounded, short-lived, and for a live tool-result App only) and never a
+persisted token (durable turn rows carry metadata/component availability
+only). It is minted only after verified identity, signed effective-agent
+reach, retirement, erasure, current session/agent exposure, exact server,
+exact current `ui://` resource availability, paused/disabled state, and
+exact current registry descriptor fingerprint generation. The claim binds
+schema/time/triple/effective-agent/server/resource/generation and carries no
+raw args, secrets, provider output, callback name, or general capability;
+ordinary resource reads never mint, and unavailable/expired admissions
+answer typed `unavailable`/`expired` with fresh checks on refresh. D-412.
 
 **Reliability classification metadata** — server-derived, non-secret event
 fields describing a tool failure's resolved class and retry accounting.

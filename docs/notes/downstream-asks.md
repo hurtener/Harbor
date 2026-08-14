@@ -30,7 +30,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-51 | Bifrost reasoning byte fidelity | internal/llm + planner + tasks + Console | Release blocker | Contained | Shipped (v1.26) — phase 233c / D-402 |
 | HA-54 | Typed retry classification for MCP `CallToolResult.IsError` | internal/tools/drivers/mcp + internal/tools | High | Contained | Shipped (v1.27) — phase 236 / D-410; planner-replay amendment Pending (v1.28) |
 | HA-55 | Operator-managed per-agent skill packs across authenticated users | internal/skills + runtime/agentcfg + runtime/serve | High | Medium | Planned — phase 237 / D-411 |
-| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Planned — phase 238 / D-412 |
+| HA-56 | Per-server MCP App callback catalog outside planner projection | internal/tools/drivers/mcp + internal/tools + internal/mcpconsole + protocol | High | Medium | Shipped (v1.27) — phase 238 / D-412; fresh render-admission amendment Pending (v1.28) |
 | HA-57 | Finite same-run step-tranche receipts/resume of the original live run | runtime + tasks + protocol | High | Contained | Shipped — phase 239 / D-418 |
 | HA-58 | Governed read-only virtual child profiles derived from a parent | runtime + agentcfg + protocol | High | Medium | Shipped — phase 240 / D-419 |
 | HA-59 | Virtual-child execution artifacts and bounded output forwarding by reference | artifacts + tasks + runtime + protocol | Medium | Medium | Shipped — phase 241 / D-420 |
@@ -179,6 +179,34 @@ are available.
 **Priority:** High (host interoperability and least-privilege discovery).
 **Size:** medium (MCP discovery/catalog representation, App host dispatch
 surface, Protocol/transport parity, and integration fixtures).
+**State:** Shipped (v1.27) — phase 238 / D-412; the fresh render-admission governance amendment below is Pending (v1.28).
+
+**Governance amendment — corrected fresh render-admission contract (Pending (v1.28)).** A
+verification review corrected the render-admission half of the shipped
+contract; the original app-only callback catalog history is preserved. A
+rendered MCP App has exactly two render paths: the LIVE path may use a
+bounded, short-lived, provider-local binding for a live tool-result App
+only — never durable, never restored — while embedded/durable reopen uses a
+FRESH stateless, integrity-protected, shared-KEK admission minted only after
+verified identity, signed effective-agent reach, retirement, erasure,
+current session/agent exposure, exact server, exact current `ui://` resource
+availability, paused/disabled state, and exact current registry descriptor
+fingerprint generation. Claims bind schema/time/triple/effective-agent/
+server/resource/generation and carry no raw args, secrets, provider output,
+callback name, or general capability. Ordinary resource reads never mint;
+only the explicit admission-requesting read path does. Callbacks stay absent
+from planner/`tools.list`/search/generic resolution and dispatch via
+same-server `ResolveAppTool` + existing approval/OAuth/policy/redaction/
+retry/audit. HA-64 rows retain metadata/component availability only, no
+token; `mcp.apps.tool_context` replay is unchanged and never reruns the
+originating tool. Typed unavailable/expired is explicit and refresh requires
+fresh checks. Production/devstack share one implementation; an enabled
+surface without a configured shared sealing authority fails readiness loud;
+restart/multi-replica use the shared authority. No generic capability
+framework, persisted callback authority, arbitrary origins, provider
+exceptions, hot registry, or transcript impersonation. No new phase,
+decision, HA, event, or Protocol method is allocated; HA-56 remains phase
+238 / D-412.
 
 **What the consumer sees.** A provider may mark an MCP tool with
 `_meta.ui.visibility: ["app"]` because it is a callback for its rendered App,
