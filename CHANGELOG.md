@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28.2] — 2026-08-14
+
 ### Fixed
 
 - Durable conversation-turn projection no longer stalls behind incompatible
@@ -4560,7 +4562,9 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.2...HEAD
+[1.28.2]: https://github.com/hurtener/Harbor/compare/v1.28.1...v1.28.2
+[1.28.1]: https://github.com/hurtener/Harbor/compare/v1.28.0...v1.28.1
 [1.28.0]: https://github.com/hurtener/Harbor/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/hurtener/Harbor/compare/v1.26.12...v1.27.0
 [1.26.12]: https://github.com/hurtener/Harbor/compare/v1.26.11...v1.26.12
