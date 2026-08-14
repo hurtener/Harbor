@@ -1,9 +1,9 @@
 package localdb
 
 // installed_package.go — the complete installed-package contract on the
-// SQLite driver (Phase 243 / D-422, the mandatory store seam).
+// SQLite driver (the mandatory store seam).
 //
-// Five mandatory methods (D-422; every SkillStore implements all of
+// Five mandatory methods (every SkillStore implements all of
 // them, no `Supports*` ceremony):
 //
 //   - GetInstalledPackage / ResolveSupport — the atomic read surface of
@@ -591,8 +591,10 @@ func (d *driver) DeleteInstalledPackage(ctx context.Context, id identity.Quadrup
 // the winner — a receipt NEVER replaces another proposal's winner, and an
 // absent key is a no-op. The restore does not re-apply the origin-
 // precedence gate: it can only ever replace the version the receipt
-// itself wrote. `prior` must validate and match the receipt's recorded
-// prior hash; both fail loudly.
+// itself wrote. `prior` must validate, bind to the receipt's canonical
+// target key (the same package name — a differently-named prior can
+// never be written, not even at its own key), and match the receipt's
+// recorded prior hash; every mismatch fails loudly without mutation.
 func (d *driver) RestoreInstalledPackage(ctx context.Context, id identity.Quadruple, agentID, name string, receipt skills.InstalledPackageReceipt, prior skills.InstalledPackage) (bool, error) {
 	if d.closed.Load() {
 		return false, skills.ErrStoreClosed
@@ -609,6 +611,10 @@ func (d *driver) RestoreInstalledPackage(ctx context.Context, id identity.Quadru
 	if prior.Skill.AgentID != agentID {
 		return false, fmt.Errorf("%w: prior Skill.AgentID %q != effective agent %q",
 			skills.ErrInstalledPackageInvalid, prior.Skill.AgentID, agentID)
+	}
+	if prior.Package.Name != name {
+		return false, fmt.Errorf("%w: prior package name %q does not bind to the receipt/target key %q (a restore writes only the exact key its receipt names)",
+			skills.ErrInstalledPackageInvalid, prior.Package.Name, name)
 	}
 	if receipt.PriorHash == "" {
 		return false, fmt.Errorf("%w: the receipt records an absent prior; compensate with DeleteInstalledPackage",

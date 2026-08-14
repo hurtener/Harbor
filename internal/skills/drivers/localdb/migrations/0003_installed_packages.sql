@@ -1,4 +1,4 @@
--- Phase 243 / D-422 — durable installed-package storage.
+-- Durable installed-package storage.
 --
 -- The installed-package atomic unit (canonical stored skill + versioned
 -- PackageHash + ordered support manifest with bounded immutable support

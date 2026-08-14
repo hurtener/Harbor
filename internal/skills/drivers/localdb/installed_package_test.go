@@ -231,6 +231,60 @@ func TestInstalledPackage_LegacyFence_Direct(t *testing.T) {
 	}
 }
 
+// TestInstalledPackage_RestoreBindsPriorToTargetKey pins the canonical-
+// key binding of the exact-receipt restore: a receipt legitimately bound
+// to name A must never let a `prior` unit named B be written anywhere.
+// Before the binding fix, the recorded-prior hash match was the only
+// gate on `prior` and the write keyed off the prior's OWN name — so a
+// plan-constructed receipt for A whose recorded prior hash matched a
+// foreign package B would overwrite B's winner (bypassing B's
+// condition/origin winner) while leaving A unrestored. The driver must
+// reject the mismatch with ErrInstalledPackageInvalid BEFORE any write,
+// leaving both winners exactly unchanged.
+func TestInstalledPackage_RestoreBindsPriorToTargetKey(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	const agent = "agent-restore-bind"
+
+	// Key A: v1A displaced by v2A — the receipt's written version is
+	// still A's winner.
+	v1A := installedFixture(t, "restore-bind-a", agent, skills.OriginGenerated, "1.0.0", 1)
+	v2A := installedFixture(t, "restore-bind-a", agent, skills.OriginGenerated, "2.0.0", 1)
+	installAbsent(t, store, ctx, agent, v1A)
+	if _, err := store.PutInstalledPackage(ctx, fixtureID, agent, v2A,
+		skills.InstalledPackageCondition{ExpectedHash: v1A.PackageHash, ExpectedVersion: v1A.Package.Version}, true); err != nil {
+		t.Fatalf("seed A replace: %v", err)
+	}
+
+	// Key B: a pack-origin winner — the origin gate PutInstalledPackage
+	// enforces (a generated prior can never overwrite it).
+	v1BPack := installedFixture(t, "restore-bind-b", agent, skills.OriginPack, "1.0.0", 1)
+	installAbsent(t, store, ctx, agent, v1BPack)
+
+	// A plan-constructed receipt legitimately bound to A (its written
+	// version is still A's winner) but whose recorded prior hash matches
+	// the FOREIGN package B. The prior unit is named B, not A.
+	hostile := installedFixture(t, "restore-bind-b", agent, skills.OriginGenerated, "9.9.9", 1)
+	planReceipt := skills.InstalledPackageReceipt{
+		TenantID: fixtureID.TenantID, UserID: fixtureID.UserID, AgentID: agent, Name: "restore-bind-a",
+		WrittenHash: v2A.PackageHash, WrittenVersion: v2A.Package.Version,
+		PriorHash: hostile.PackageHash, PriorVersion: hostile.Package.Version,
+	}
+
+	restored, err := store.RestoreInstalledPackage(ctx, fixtureID, agent, "restore-bind-a", planReceipt, hostile)
+	if !errors.Is(err, skills.ErrInstalledPackageInvalid) {
+		t.Fatalf("foreign-name prior restore err=%v, want ErrInstalledPackageInvalid", err)
+	}
+	if restored {
+		t.Fatal("foreign-name prior restore reported success")
+	}
+
+	// Neither winner moved: A keeps the receipt's written version, B
+	// keeps its pack-origin winner.
+	assertWinnerDirect(t, store, ctx, agent, "restore-bind-a", v2A, "A's winner must survive a foreign-name prior")
+	assertWinnerDirect(t, store, ctx, agent, "restore-bind-b", v1BPack, "B's pack-origin winner must survive a foreign-name prior")
+}
+
 // TestInstalledPackage_ExactReceipt_NeverTouchesAnotherWinner pins the
 // exact-receipt compensation contract end to end against SQLite: a
 // receipt restores or deletes ONLY the version it wrote; another
