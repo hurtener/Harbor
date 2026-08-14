@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"sort"
 	"strings"
 	"sync"
@@ -699,11 +700,20 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 // Set-like fields (Tags, AuthScopes, HandlesMIME, Policy.RetryOn,
 // example Tags) are sorted before encoding, so element ORDER never
 // changes the generation. Order-bearing fields (the Examples list) keep
-// their order. JSON (ArgsSchema / OutSchema) is encoded BYTE-FAITHFUL
-// with a length prefix — never re-parsed or re-emitted — so
-// invalid/non-canonical JSON cannot be coerced into a form that collides
-// with different bytes, and replicas carrying identical bytes hash
-// identically. Example Args maps are marshalled with encoding/json's
+// their order. ArgsSchema and OutSchema are canonicalized by SEMANTIC
+// JSON VALUE before the length-prefixed write: each valid document is
+// re-encoded compactly, with deterministic object-key order and an exact
+// canonical number form, so a replica whose discovery serialization
+// differs only in whitespace or object-key order hashes identically,
+// while a meaningful schema change — and array-order changes — still
+// moves the generation. A schema that is not a single canonical JSON
+// document (invalid JSON, trailing data, duplicate object members at any
+// nesting depth, a non-finite literal, or a number with no exact
+// canonical decimal form) fails the row, so the whole generation becomes
+// unknown: raw invalid bytes are never hashed as authoritative state.
+// Empty schema bytes — the MCP driver's encoding of "no schema
+// declared" — are preserved as the fixed empty marker instead of being
+// rejected. Example Args maps are marshalled with encoding/json's
 // deterministic key-sorted form (a nil map encodes as the empty map:
 // both mean "no args"). Descriptors are sorted by their canonical row
 // bytes, so discovery ORDER never changes the generation.
@@ -711,10 +721,11 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 // Identical semantic catalogs across replicas hash identically; changing
 // any covered semantic field changes the generation. The digest is NEVER
 // a process-local counter. An empty/nil set, or a set containing a
-// descriptor whose stable fields cannot be canonically encoded (e.g.
-// non-serializable example args), yields "" — unknown, fail closed: a
-// render admission never binds an empty generation, and a
-// non-canonically determinable catalog is refused rather than guessed.
+// descriptor whose stable fields cannot be canonically encoded (a
+// non-serializable example args value, or a non-canonical schema),
+// yields "" — unknown, fail closed: a render admission never binds an
+// empty generation, and a non-canonically determinable catalog is
+// refused rather than guessed.
 func currentGenerationFor(descs []tools.ToolDescriptor) string {
 	if len(descs) == 0 {
 		return ""
@@ -751,8 +762,10 @@ func currentGenerationFor(descs []tools.ToolDescriptor) string {
 // The row is a pure function of the Tool's stable fields: two replicas
 // with identical semantic content produce identical bytes, and changing
 // any covered field changes the bytes. An error means the descriptor's
-// stable fields cannot be canonically encoded (e.g. a non-serializable
-// example args map) — the caller treats the catalog as non-determinable.
+// stable fields cannot be canonically encoded (a non-serializable
+// example args map, or an ArgsSchema / OutSchema that is not a single
+// canonical JSON document) — the caller treats the catalog as
+// non-determinable and the generation as unknown.
 func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 	t := d.Tool
 	var buf bytes.Buffer
@@ -786,8 +799,16 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 
 	writeField(t.Name)
 	writeField(t.Description)
-	writeField(string(t.ArgsSchema)) // byte-faithful; never re-parsed
-	writeField(string(t.OutSchema))  // byte-faithful; never re-parsed
+	argsSchema, err := canonicalJSONSchema(t.ArgsSchema)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: args schema: %w", err)
+	}
+	writeField(argsSchema)
+	outSchema, err := canonicalJSONSchema(t.OutSchema)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: out schema: %w", err)
+	}
+	writeField(outSchema)
 	writeField(string(t.SideEffects))
 	writeSorted(t.Tags)
 	writeSorted(t.AuthScopes)
@@ -834,6 +855,239 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 		writeField("0")
 	}
 	return buf.Bytes(), nil
+}
+
+// canonicalJSONSchema canonicalizes ONE JSON document by SEMANTIC value:
+// compact output, deterministic object-key order, an exact canonical
+// number form, exactly one document, and no ambiguous duplicate object
+// members. It returns the canonical re-encoding, or an error when the
+// raw bytes are not a single canonical JSON document. Empty bytes — the
+// MCP driver's encoding of "no schema declared" (marshalSchema(nil) →
+// nil) — canonicalize to the empty string: a legitimate semantic state,
+// not a JSON document, so schema-free tools keep a deterministic
+// replica-stable row without failing closed.
+func canonicalJSONSchema(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// Preserve number literals verbatim so canonicalJSONNumber can reduce
+	// them exactly; without UseNumber the decoder would parse to float64
+	// and silently lose precision on large integers.
+	dec.UseNumber()
+	first, err := dec.Token()
+	if err != nil {
+		return "", fmt.Errorf("invalid JSON: %w", err)
+	}
+	var out strings.Builder
+	if err := canonicalJSONValue(dec, first, &out); err != nil {
+		return "", err
+	}
+	// Exactly one document: the walker consumed the first value, so any
+	// remaining bytes form a trailing document (or invalid trailing data).
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return "", errors.New("trailing JSON document")
+		}
+		return "", fmt.Errorf("trailing JSON document: %w", err)
+	}
+	return out.String(), nil
+}
+
+// canonicalJSONValue walks one JSON value starting at the token the
+// caller already read, appending its canonical re-encoding to out.
+// Objects re-emit members in sorted key order; arrays keep their element
+// order (array order is order-bearing in JSON Schema). The walk rejects
+// duplicate object members at any nesting depth, so last-key-wins
+// coercion can never hide an ambiguous document.
+func canonicalJSONValue(dec *json.Decoder, first json.Token, out *strings.Builder) error {
+	if delim, composite := first.(json.Delim); composite {
+		switch delim {
+		case '{':
+			return canonicalJSONObject(dec, out)
+		case '[':
+			return canonicalJSONArray(dec, out)
+		default:
+			return errors.New("unexpected JSON delimiter")
+		}
+	}
+	switch v := first.(type) {
+	case nil:
+		out.WriteString("null")
+	case bool:
+		if v {
+			out.WriteString("true")
+		} else {
+			out.WriteString("false")
+		}
+	case string:
+		return writeJSONString(out, v)
+	case json.Number:
+		canon, err := canonicalJSONNumber(v)
+		if err != nil {
+			return err
+		}
+		out.WriteString(canon)
+	default:
+		return fmt.Errorf("unexpected JSON token of type %T", first)
+	}
+	return nil
+}
+
+// canonicalMember is one object member's canonical re-encoding, sorted
+// by name before emission.
+type canonicalMember struct {
+	name  string
+	value string
+}
+
+func canonicalJSONObject(dec *json.Decoder, out *strings.Builder) error {
+	seen := make(map[string]struct{})
+	var members []canonicalMember
+	for dec.More() {
+		nameToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := nameToken.(string)
+		if !ok {
+			return errors.New("expected JSON object member name")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("duplicate JSON object member %q", name)
+		}
+		seen[name] = struct{}{}
+		valueToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		var value strings.Builder
+		if err := canonicalJSONValue(dec, valueToken, &value); err != nil {
+			return err
+		}
+		members = append(members, canonicalMember{name: name, value: value.String()})
+	}
+	end, err := dec.Token()
+	if err != nil || end != json.Delim('}') {
+		return errors.New("unterminated JSON object")
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].name < members[j].name })
+	out.WriteByte('{')
+	for i, m := range members {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		if err := writeJSONString(out, m.name); err != nil {
+			return err
+		}
+		out.WriteByte(':')
+		out.WriteString(m.value)
+	}
+	out.WriteByte('}')
+	return nil
+}
+
+func canonicalJSONArray(dec *json.Decoder, out *strings.Builder) error {
+	var elements []string
+	for dec.More() {
+		valueToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		var value strings.Builder
+		if err := canonicalJSONValue(dec, valueToken, &value); err != nil {
+			return err
+		}
+		elements = append(elements, value.String())
+	}
+	end, err := dec.Token()
+	if err != nil || end != json.Delim(']') {
+		return errors.New("unterminated JSON array")
+	}
+	out.WriteByte('[')
+	for i, e := range elements {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		out.WriteString(e)
+	}
+	out.WriteByte(']')
+	return nil
+}
+
+// writeJSONString appends s as a JSON string literal. encoding/json
+// cannot fail on a plain string; the error is returned for shape
+// uniformity with the other canonical encoders.
+func writeJSONString(out *strings.Builder, s string) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	out.Write(b)
+	return nil
+}
+
+// canonicalJSONNumber reduces a JSON number literal to its exact
+// canonical decimal form: no exponent, no leading or trailing zeros, no
+// sign on zero. Semantically equal literals (1, 1.0, 1e0) converge, so
+// a replica whose discovery serialization renders the same number
+// differently hashes identically; a literal with no exact canonical
+// decimal form (SetString failure — e.g. an astronomically large
+// exponent) is rejected so the document fails closed instead of hashing
+// a lossy rendering.
+func canonicalJSONNumber(n json.Number) (string, error) {
+	rat, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		return "", fmt.Errorf("JSON number %q has no exact canonical decimal form", n.String())
+	}
+	// A JSON number literal is a finite decimal, so its reduced
+	// denominator is always of the form 2^a · 5^b. Anything else would
+	// mean SetString accepted a form the JSON grammar cannot produce.
+	a, b, ok := finiteDecimalFactors(rat.Denom())
+	if !ok {
+		return "", fmt.Errorf("JSON number %q has no exact canonical decimal form", n.String())
+	}
+	// FloatString is exact when the value terminates at or before prec
+	// digits; a terminating decimal with denominator 2^a · 5^b terminates
+	// at max(a, b) digits.
+	prec := a
+	if b > a {
+		prec = b
+	}
+	s := rat.FloatString(prec)
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimSuffix(s, ".")
+	}
+	return s, nil
+}
+
+// finiteDecimalFactors reports whether d has no prime factors other than
+// 2 and 5, returning their exponents. Every terminating decimal's
+// reduced denominator satisfies this; any other denominator means the
+// value is not a finite decimal.
+func finiteDecimalFactors(d *big.Int) (twos, fives int, ok bool) {
+	div := new(big.Int).Set(d)
+	quot := new(big.Int)
+	rem := new(big.Int)
+	factors := []struct {
+		prime *big.Int
+		exp   *int
+	}{
+		{big.NewInt(2), &twos},
+		{big.NewInt(5), &fives},
+	}
+	for _, f := range factors {
+		for {
+			quot.QuoRem(div, f.prime, rem)
+			if rem.Sign() != 0 {
+				break
+			}
+			div.Set(quot)
+			*f.exp++
+		}
+	}
+	return twos, fives, div.Cmp(big.NewInt(1)) == 0
 }
 
 // ResolveAppTool resolves an app-only callback from the named server's App

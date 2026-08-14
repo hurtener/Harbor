@@ -193,35 +193,175 @@ func TestCurrentGenerationFor_ExamplesAreOrderBearing(t *testing.T) {
 	}
 }
 
-// TestCurrentGenerationFor_JSONIsByteFaithful proves invalid or
-// non-canonical JSON cannot be silently confused with different bytes or
-// cause replica divergence: the digest is a pure function of the raw
-// schema bytes — identical bytes hash identically (even when the JSON is
-// invalid), and DIFFERENT byte renderings of the same semantic schema
-// hash differently (never coerced into a canonical form that would
-// collide).
-func TestCurrentGenerationFor_JSONIsByteFaithful(t *testing.T) {
-	valid := genBaseSet()
-	invalid := genBaseSet()
-	invalid[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object",`) // truncated: invalid JSON
-
-	// A replica carrying the SAME invalid bytes must hash identically —
-	// no divergence, no coercion to something else.
-	invalid2 := genBaseSet()
-	invalid2[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object",`)
-	if ga, gb := currentGenerationFor(invalid), currentGenerationFor(invalid2); ga != gb {
-		t.Fatalf("identical invalid JSON bytes diverged across replicas (%q != %q)", ga, gb)
+// TestCurrentGenerationFor_JSONSchemaReplicaStability proves the P1
+// fix: ArgsSchema / OutSchema are canonicalized by SEMANTIC JSON value
+// before hashing, so two replicas whose discovery serialization differs
+// only in whitespace or object-key order — a harmless divergence — hash
+// identically. The byte-faithful expectation is gone: semantically equal
+// schemas are replica-stable by construction.
+func TestCurrentGenerationFor_JSONSchemaReplicaStability(t *testing.T) {
+	baseGen := currentGenerationFor(genBaseSet())
+	if baseGen == "" {
+		t.Fatal("the base descriptor set produced an empty (unknown) generation")
 	}
-	if invalidGen := currentGenerationFor(invalid); invalidGen == "" {
-		t.Fatal("invalid JSON must still produce a deterministic byte-faithful digest (never coerced, never unknown)")
+	// Every variant re-renders the SAME semantic ArgsSchema (an object
+	// with one string property "x") with different whitespace / key order
+	// / nesting layout, and must hash identically to the base.
+	variants := []struct {
+		name   string
+		schema string
+	}{
+		{"whitespace", `{"type": "object", "properties": {"x": {"type": "string"}}}`},
+		{"key order", `{"properties":{"x":{"type":"string"}},"type":"object"}`},
+		{"nested whitespace and key order", `{"properties": { "x": { "type": "string" } }, "type": "object"}`},
+		{"pretty multi-line", "{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"x\": { \"type\": \"string\" }\n\t}\n}"},
 	}
+	for _, tc := range variants {
+		descs := genBaseSet()
+		descs[0].Tool.ArgsSchema = json.RawMessage(tc.schema)
+		got := currentGenerationFor(descs)
+		if got == "" {
+			t.Fatalf("%s variant produced an empty (unknown) generation", tc.name)
+		}
+		if got != baseGen {
+			t.Errorf("%s variant changed the generation (%q != %q) — semantically equal schemas must be replica-stable", tc.name, got, baseGen)
+		}
+	}
+	// The same replica-stability holds through the REAL registry path
+	// with a genuinely different discovery serialization.
+	reg1 := NewRegistry()
+	stageAppServer(t, reg1, "srv-a", genBaseSet())
+	reg2 := NewRegistry()
+	reordered := genBaseSet()
+	reordered[0].Tool.ArgsSchema = json.RawMessage(`{"properties":{"x":{"type":"string"}},"type":"object"}`)
+	reordered[0].Tool.OutSchema = json.RawMessage(`{"properties":{"y":{"type":"number"}},"type":"object"}`)
+	stageAppServer(t, reg2, "srv-a", reordered)
+	gen1, ok1 := reg1.CurrentGeneration("srv-a")
+	gen2, ok2 := reg2.CurrentGeneration("srv-a")
+	if !ok1 || !ok2 || gen1 == "" || gen1 != gen2 {
+		t.Fatalf("whitespace/key-order-only discovery divergence must not break shared-key admission routing (gen1=%q ok1=%v gen2=%q ok2=%v)", gen1, ok1, gen2, ok2)
+	}
+}
 
-	// Two different byte renderings of the same semantic schema must NOT
-	// collide — no canonicalization laundering.
-	spaced := genBaseSet()
-	spaced[0].Tool.ArgsSchema = json.RawMessage(`{"type": "object","properties": {"x": {"type": "string"}}}`)
-	if ga, gb := currentGenerationFor(valid), currentGenerationFor(spaced); ga == gb {
-		t.Fatalf("different JSON bytes must not collide (%q == %q)", ga, gb)
+// TestCurrentGenerationFor_JSONSchemaNumbersAreStable proves number
+// literals canonicalize by VALUE: semantically equal forms (1, 1.0, 1e0,
+// 1E+0, 0.1e1, -0 vs 0) hash identically, a meaningful number change
+// still moves the generation, and a number with no exact canonical
+// decimal form fails the whole generation closed.
+func TestCurrentGenerationFor_JSONSchemaNumbersAreStable(t *testing.T) {
+	forms := []string{
+		`{"type":"object","properties":{"n":{"type":"number","maximum":1}}}`,
+		`{"type":"object","properties":{"n":{"type":"number","maximum":1.0}}}`,
+		`{"type":"object","properties":{"n":{"type":"number","maximum":1e0}}}`,
+		`{"type":"object","properties":{"n":{"type":"number","maximum":1E+0}}}`,
+		`{"type":"object","properties":{"n":{"type":"number","maximum":0.1e1}}}`,
+	}
+	var baseGen string
+	for i, schema := range forms {
+		descs := genBaseSet()
+		descs[0].Tool.ArgsSchema = json.RawMessage(schema)
+		got := currentGenerationFor(descs)
+		if got == "" {
+			t.Fatalf("form %q produced an empty (unknown) generation", schema)
+		}
+		if i == 0 {
+			baseGen = got
+		} else if got != baseGen {
+			t.Errorf("semantically equal number form %q moved the generation (%q != %q)", schema, got, baseGen)
+		}
+	}
+	// Negative zero is the value zero.
+	negZero := genBaseSet()
+	negZero[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"n":{"type":"number","maximum":-0}}}`)
+	zero := genBaseSet()
+	zero[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"n":{"type":"number","maximum":0}}}`)
+	if ga, gb := currentGenerationFor(negZero), currentGenerationFor(zero); ga == "" || ga != gb {
+		t.Fatalf("-0 and 0 are the same value and must converge (got %q vs %q)", ga, gb)
+	}
+	// A meaningful number change must still move the generation.
+	changed := genBaseSet()
+	changed[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"n":{"type":"number","maximum":2}}}`)
+	if got := currentGenerationFor(changed); got == "" || got == baseGen {
+		t.Fatalf("changing the schema number must move the generation (got %q, base %q)", got, baseGen)
+	}
+	// A number with no exact canonical decimal form (an astronomically
+	// large exponent) fails the whole generation closed — never hashed
+	// as authoritative state.
+	huge := genBaseSet()
+	huge[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"n":{"type":"number","maximum":1e99999999999999999999}}}`)
+	if got := currentGenerationFor(huge); got != "" {
+		t.Fatalf("a number with no exact canonical decimal form must fail closed, got %q", got)
+	}
+}
+
+// TestCurrentGenerationFor_JSONSchemaArraysAreOrderBearing proves array
+// order remains order-bearing in the canonical form: reversing an array
+// (here a JSON-Schema `enum`) changes the generation, exactly as it did
+// under byte-faithful hashing.
+func TestCurrentGenerationFor_JSONSchemaArraysAreOrderBearing(t *testing.T) {
+	fwd := genBaseSet()
+	fwd[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"x":{"type":"string","enum":["a","b"]}}}`)
+	rev := genBaseSet()
+	rev[0].Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"x":{"type":"string","enum":["b","a"]}}}`)
+	ga, gb := currentGenerationFor(fwd), currentGenerationFor(rev)
+	if ga == "" || gb == "" || ga == gb {
+		t.Fatalf("array order is order-bearing in JSON Schema: reversing enum must move the generation (fwd=%q rev=%q)", ga, gb)
+	}
+}
+
+// TestCurrentGenerationFor_NonCanonicalSchemasFailClosed proves the
+// fail-closed posture for schemas: any document that is not a single
+// canonical JSON value — invalid JSON, trailing data, duplicate object
+// members at any nesting depth, or a non-finite / non-exact number —
+// makes the ENTIRE generation unknown (""), so admission fails closed
+// and raw invalid bytes are never hashed as authoritative state.
+func TestCurrentGenerationFor_NonCanonicalSchemasFailClosed(t *testing.T) {
+	bad := []string{
+		`{"type":"object",`,                  // truncated
+		`{"type":"object"`,                   // unterminated
+		`{not json`,                          // garbage
+		`{"type":"object"} {"type":"array"}`, // trailing document
+		`{"type":"object"} trailing`,         // trailing garbage
+		`{"a":1,"a":2}`,                      // duplicate top-level member
+		`{"a":1,"b":2,"a":3}`,                // duplicate non-adjacent member
+		`{"a":{"b":1,"b":2}}`,                // duplicate nested member
+		`{"a":[{"b":1,"b":2}]}`,              // duplicate member inside an array element
+		`NaN`,                                // non-finite literal (invalid JSON)
+	}
+	for _, raw := range bad {
+		descs := genBaseSet()
+		descs[0].Tool.ArgsSchema = json.RawMessage(raw)
+		if got := currentGenerationFor(descs); got != "" {
+			t.Errorf("ArgsSchema %q yielded %q, want empty (unknown, fail closed)", raw, got)
+		}
+		descs = genBaseSet()
+		descs[0].Tool.OutSchema = json.RawMessage(raw)
+		if got := currentGenerationFor(descs); got != "" {
+			t.Errorf("OutSchema %q yielded %q, want empty (unknown, fail closed)", raw, got)
+		}
+	}
+}
+
+// TestCurrentGenerationFor_EmptySchemaIsNoSchemaMarker proves the empty
+// ArgsSchema / OutSchema (the MCP driver's encoding of "no schema
+// declared", produced for wire tools that omit inputSchema /
+// outputSchema) keeps a deterministic, non-empty replica-stable
+// generation instead of failing closed: it is a legitimate semantic
+// state, not a JSON document. A declared schema must still hash
+// differently from the marker.
+func TestCurrentGenerationFor_EmptySchemaIsNoSchemaMarker(t *testing.T) {
+	empty := genBaseSet()
+	empty[0].Tool.ArgsSchema = nil
+	empty[0].Tool.OutSchema = json.RawMessage(nil)
+	emptyOther := genBaseSet()
+	emptyOther[0].Tool.ArgsSchema = json.RawMessage{}
+	emptyOther[0].Tool.OutSchema = json.RawMessage("")
+	ga, gb := currentGenerationFor(empty), currentGenerationFor(emptyOther)
+	if ga == "" || ga != gb {
+		t.Fatalf("empty schemas must be a deterministic replica-stable marker (gen1=%q gen2=%q)", ga, gb)
+	}
+	if got := currentGenerationFor(genBaseSet()); got == "" || got == ga {
+		t.Fatal("a declared schema must hash differently from the no-schema marker")
 	}
 }
 
