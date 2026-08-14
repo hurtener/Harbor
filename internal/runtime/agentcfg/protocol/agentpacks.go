@@ -421,6 +421,13 @@ func cloneStringMapCopy(in map[string]string) map[string]string {
 // AgentPacksList returns the agent's active pack (full items, canonical
 // order) under the caller's verified identity. A missing revision or an
 // absent pack section yields an empty list — the valid "no pack" state.
+//
+// The list is DURABLE-revision authoring state only: it reflects exactly
+// the active revision's agent_packs section. Boot-declared baseline names
+// (internal/skills/bootpacks) are never stored in a revision, so a
+// boot-only name never appears here; a legacy durable shadow of a
+// now-boot-owned name does appear (until removed), exactly like any other
+// revisioned item.
 func (s *Service) AgentPacksList(ctx context.Context, req prototypes.AgentConfigAgentPacksListRequest) (prototypes.AgentConfigAgentPacksListResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAgentPacksListResponse{}, err
@@ -481,6 +488,13 @@ func (s *Service) AgentPacksUpsert(ctx context.Context, req prototypes.AgentConf
 	item := agentPackItemToDomain(req.Skill)
 	if err := item.Validate(); err != nil {
 		return prototypes.AgentConfigAgentPacksUpsertResponse{}, fmt.Errorf("%w: %w", ErrAgentPacksInvalid, err)
+	}
+	// A boot-declared canonical name is read-only from the control plane:
+	// refuse BEFORE any mutation — even when the submitted body hashes
+	// identically to the boot entry (an equal hash proves nothing; the boot
+	// baseline wins and is edited in the boot config + restart).
+	if err := guardBootOwnedName(bootOwnershipFromContext(ctx), q.TenantID, req.AgentID, item.Name); err != nil {
+		return prototypes.AgentConfigAgentPacksUpsertResponse{}, err
 	}
 	skill, err := item.Skill()
 	if err != nil {
@@ -550,6 +564,16 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksRemoveResponse{}, err
 	}
 	canonical := skills.CanonicalPackName(req.Name)
+	// A boot-declared name is read-only from the control plane EXCEPT for the
+	// one allowed mutation: removing an ACTUAL legacy durable revision shadow
+	// (the pre-baseline durable copy of a now-boot-owned name) while leaving
+	// the boot baseline in place. A boot-only name (owned by the baseline and
+	// absent from the durable revision) is a typed read-only refusal below —
+	// never a false success.
+	var bootOwned bool
+	if owner := bootOwnershipFromContext(ctx); owner != nil {
+		bootOwned = owner.OwnsName(q.TenantID, req.AgentID, canonical)
+	}
 	var removed bool
 	payload, err := s.packPayloadFromActive(ctx, q, req.AgentID, func(current []skills.AgentPackItem) []skills.AgentPackItem {
 		out := make([]skills.AgentPackItem, 0, len(current))
@@ -566,6 +590,9 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksRemoveResponse{}, err
 	}
 	if !removed {
+		if bootOwned {
+			return prototypes.AgentConfigAgentPacksRemoveResponse{}, fmt.Errorf("%w: %q (boot-declared baseline name is read-only; edit the boot config and restart)", ErrBootPackOwned, canonical)
+		}
 		return prototypes.AgentConfigAgentPacksRemoveResponse{}, fmt.Errorf("%w: name=%q", ErrAgentPackNotFound, req.Name)
 	}
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, opts)
@@ -756,6 +783,17 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	if err := normalizePackProposalProvenance(&proposal); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
+	// A boot-declared canonical name is read-only from the control plane.
+	// The commit refuses it on EVERY proposal path — initial commit,
+	// response-loss replay, and prepared/committing resume alike — so no
+	// proposal can ever land a boot-owned name in the durable revision
+	// (even at equal hash). This check fires before any receipt write and
+	// before the replay/committing branches below, so a replay of an
+	// already-published boot-owned target is refused rather than
+	// acknowledged.
+	if err := guardBootOwnedName(bootOwnershipFromContext(ctx), q.TenantID, req.AgentID, proposal.Item.Name); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
 	item := agentPackItemToDomain(req.Skill)
 	if err := item.Validate(); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("%w: %w", ErrAgentPacksInvalid, err)
@@ -854,6 +892,14 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	if err := boundPackSize(payload.AgentPacks); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
+	// Fresh ownership check on the FULL composed payload immediately before
+	// publication/activation: no proposal path may reintroduce a boot-owned
+	// name into the durable revision — including one carried forward from
+	// the active revision's legacy shadow. The operator's only mutation on
+	// a boot-owned name is `remove` deleting that actual shadow.
+	if err := GuardBootOwnedRevision(bootOwnershipFromContext(ctx), q.TenantID, req.AgentID, payload.AgentPacks); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}
 	targetHash, err := agentcfg.ContentHash(agentcfg.NormalizePayload(payload))
