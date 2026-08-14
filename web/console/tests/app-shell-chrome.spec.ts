@@ -47,11 +47,11 @@ test.describe("Console app-shell chrome (Phase 108b)", () => {
     await helpers.gotoPage("overview");
     await expect(page.locator("[data-testid='console-hydrated']")).toBeAttached();
 
-    // 14 nav items, each with a (lucide) svg icon.
+    // 15 nav items, each with a (lucide) svg icon.
     const items = page.locator(".nav-cluster a");
-    await expect(items).toHaveCount(14);
+    await expect(items).toHaveCount(15);
     const icons = page.locator(".nav-cluster a .nav-icon svg");
-    await expect(icons).toHaveCount(14);
+    await expect(icons).toHaveCount(15);
 
     // Two-line brand lockup.
     await expect(page.locator(".brand-name")).toHaveText("Harbor");
@@ -80,7 +80,7 @@ test.describe("Console app-shell chrome (Phase 108b)", () => {
     await expect(page.locator(".console-shell.collapsed")).toBeAttached();
     // Labels hidden, icons remain.
     await expect(page.locator(".nav-label")).toHaveCount(0);
-    await expect(page.locator(".nav-cluster a .nav-icon svg")).toHaveCount(14);
+    await expect(page.locator(".nav-cluster a .nav-icon svg")).toHaveCount(15);
 
     // Persisted: reload still collapsed.
     await page.reload();
