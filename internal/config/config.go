@@ -71,6 +71,13 @@ type Config struct {
 	// feature. Optional; validated at boot.
 	VirtualAgents VirtualAgentsConfig `yaml:"virtual_agents,omitempty"`
 
+	// Observability is the observability-rollup block (HA-65): the
+	// durable, indexed rollup projection backing
+	// `observability.query` and the projection-backed session
+	// counters. Optional; an absent block leaves the rollup surface
+	// unwired and the route at 501 (the partial-build convention).
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
+
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
 	// it never appears in YAML / logging output.
@@ -921,6 +928,43 @@ type SessionsConfig struct {
 	IdleTTL       time.Duration `yaml:"idle_ttl"`
 	HardCap       time.Duration `yaml:"hard_cap"`
 	SweepInterval time.Duration `yaml:"sweep_interval"`
+
+	// Turns configures the durable conversation-turn projection store
+	// (HA-64) — the indexed read model backing
+	// `sessions.turns.list` / `sessions.turns.get`. Optional; an
+	// absent block (Driver empty) leaves the projection unwired and
+	// the turn routes at 501 (the partial-build convention). Drivers:
+	// `inmem` (dev/embedded, per-process), `sqlite`
+	// (`modernc.org/sqlite`, CGo-free, durable), `postgres`
+	// (pgx-backed, durable, multi-replica). Restart-required.
+	Turns TurnsConfig `yaml:"turns,omitempty"`
+}
+
+// TurnsConfig configures the HA-64 durable conversation-turn projection
+// store. The shape mirrors the other driver-selecting blocks
+// (state/memory/artifacts): a `driver` name plus the connection
+// `dsn`. `Retention` bounds the newest turn rows retained per session
+// (<= 0 applies the projection's documented default).
+type TurnsConfig struct {
+	Driver    string `yaml:"driver,omitempty"`
+	DSN       string `yaml:"dsn,omitempty" secret:"true"`
+	Retention int    `yaml:"retention,omitempty"`
+}
+
+// ObservabilityConfig owns the observability-rollup projection block
+// (HA-65). Optional; the zero value leaves the rollup surface unwired.
+type ObservabilityConfig struct {
+	// Rollups configures the durable rollup store. Drivers:
+	// `inmem` (dev/embedded reference), `sqlite`, `postgres`.
+	// Optional; an empty Driver leaves the projection unwired.
+	Rollups RollupsConfig `yaml:"rollups,omitempty"`
+}
+
+// RollupsConfig configures the HA-65 observability rollup store — the
+// same driver + dsn shape as the other driver-selecting blocks.
+type RollupsConfig struct {
+	Driver string `yaml:"driver,omitempty"`
+	DSN    string `yaml:"dsn,omitempty" secret:"true"`
 }
 
 // PauseResumeConfig configures the pause lifecycle (RFC §3.3 + §6.3).
@@ -1287,6 +1331,32 @@ type ToolsConfig struct {
 	// MiB) through [ToolsConfig.ResolvedMCPArtifactEgressMaxBytes].
 	// Optional. Restart-required.
 	MCPArtifactEgressMaxBytes int `yaml:"mcp_artifact_egress_max_bytes,omitempty"`
+
+	// MCPAppRenderAdmission is the narrow operator-facing switch for the
+	// HA-56 fresh render-admission surface (the opt-in
+	// `request_render_admission` `ui://` read authority that lets a
+	// sandboxed MCP App re-invoke an app-only callback through the
+	// admission-aware AppsAccessor seam). Default FALSE — the compatible
+	// disabled surface: ordinary reads and the legacy live-binding path
+	// work byte-for-byte, and the opt-in mint / admission-backed call
+	// fail loud at the seam. When ENABLED the runtime resolves its
+	// restart-stable AES-256-GCM sealing authority from the SAME
+	// deployment-shared `tools.oauth_token_kek_env` the OAuth token store
+	// uses — there is deliberately no second secret field and no
+	// process-local seeded key. An empty env name, an unset / invalid
+	// KEK, or a failure to construct the shared sealer fails readiness
+	// LOUD even when no OAuth provider or credential broker is declared.
+	// Restart-required.
+	MCPAppRenderAdmission MCPAppRenderAdmissionConfig `yaml:"mcp_app_render_admission,omitempty"`
+}
+
+// MCPAppRenderAdmissionConfig is the operator-facing block that enables
+// the fresh render-admission surface. The zero value (the block absent)
+// is the compatible disabled surface.
+type MCPAppRenderAdmissionConfig struct {
+	// Enabled turns the HA-56 render-admission surface on. Default
+	// false (backward-compatible deployments). Restart-required.
+	Enabled bool `yaml:"enabled,omitempty"`
 }
 
 // MCPAddConnectionConfig declares the operator allowlist for the

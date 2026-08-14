@@ -47,6 +47,16 @@ var (
 	// without a planner / run loop (no LLM driver, or SkipSteering /
 	// SkipRunLoop). The wrapped detail names the missing component.
 	ErrNotRunnable = errors.New("assemble: stack is not runnable")
+	// ErrBootBaselineUnsupported fires when RunOnce is called on a
+	// stack whose configuration declares a boot operator-skill baseline
+	// (`skills.boot_agent_packs`). The boot baseline is a serve-band
+	// surface: it binds to the resolved boot/default agent under the
+	// runtime's loader/composer/preview/guard wiring, none of which a
+	// headless one-shot run has. RunOnce refuses loudly instead of
+	// silently composing the baseline under an invented identity (the
+	// HA-66 "no invented boot identity" + "never a silent empty set"
+	// contract).
+	ErrBootBaselineUnsupported = errors.New("assemble: boot_agent_packs is configured and headless RunOnce is explicitly unsupported")
 )
 
 // runOnceConfig holds the per-call knobs RunOption sets. The type is
@@ -215,6 +225,17 @@ func (s *Stack) RunOnce(
 	id identity.Identity,
 	opts ...RunOption,
 ) (planner.AnswerEnvelope, error) {
+	// HA-66: headless RunOnce is explicitly unsupported when a boot
+	// operator-skill baseline is configured. The boot baseline is
+	// resolved by the serve band for the resolved boot/default agent
+	// (loader + pre-read + guards + preview); a headless one-shot run
+	// has no boot identity and no guard wiring, so composing it here
+	// would invent an identity or silently skip the baseline — both
+	// forbidden. This refuses loud BEFORE any runnability / identity
+	// work, and the phase smoke asserts the typed error.
+	if len(s.Cfg.Skills.BootAgentPacks) > 0 {
+		return planner.AnswerEnvelope{}, fmt.Errorf("%w: run the runtime with the agent-config surface instead (skills.boot_agent_packs is a serve-band baseline)", ErrBootBaselineUnsupported)
+	}
 	if s.RunLoop == nil {
 		return planner.AnswerEnvelope{}, fmt.Errorf("%w: no RunLoop (assembled without an LLM/planner, or with SkipSteering/SkipRunLoop)", ErrNotRunnable)
 	}

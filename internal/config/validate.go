@@ -99,6 +99,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateMemory,
 		c.validateSkills,
 		c.validateTools,
+		c.validateObservability,
 		c.validatePlanner,
 		c.validateMultimodal,
 		c.validateCLI,
@@ -744,6 +745,51 @@ func (c *Config) validateSessions() error {
 		return fieldError("sessions.sweep_interval",
 			fmt.Sprintf("must be <= sessions.idle_ttl (%s) so sessions can't live past TTL by more than one sweep; got %s",
 				c.Sessions.IdleTTL, c.Sessions.SweepInterval))
+	}
+	// The HA-64 conversation-turn projection store block. Optional: an
+	// empty driver leaves the projection unwired. A non-empty driver
+	// must be one of the shipped triad and carries the same DSN
+	// contract as the other driver-selecting blocks.
+	if t := c.Sessions.Turns; t.Driver != "" {
+		if _, ok := allowedProjectionDrivers[t.Driver]; !ok {
+			return fieldError("sessions.turns.driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedProjectionDrivers), t.Driver))
+		}
+		if t.Driver != "inmem" && t.DSN == "" {
+			return fieldError("sessions.turns.dsn",
+				fmt.Sprintf("must be set when driver=%q", t.Driver))
+		}
+	}
+	return nil
+}
+
+// allowedProjectionDrivers is the closed driver triad every
+// runtime-owned durable projection store (the HA-64 turns projection
+// and the HA-65 observability rollups) ships with — in-memory
+// (dev/embedded), SQLite (modernc.org/sqlite, CGo-free) and Postgres
+// (pgx) with conformance parity.
+var allowedProjectionDrivers = map[string]struct{}{
+	"inmem":    {},
+	"sqlite":   {},
+	"postgres": {},
+}
+
+// validateObservability validates the HA-65 observability-rollup
+// block. Optional: an empty rollups.driver leaves the projection
+// unwired and the surface at 501. A non-empty driver must be one of
+// the shipped triad and carries the DSN contract.
+func (c *Config) validateObservability() error {
+	if r := c.Observability.Rollups; r.Driver != "" {
+		if _, ok := allowedProjectionDrivers[r.Driver]; !ok {
+			return fieldError("observability.rollups.driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedProjectionDrivers), r.Driver))
+		}
+		if r.Driver != "inmem" && r.DSN == "" {
+			return fieldError("observability.rollups.dsn",
+				fmt.Sprintf("must be set when driver=%q", r.Driver))
+		}
 	}
 	return nil
 }
@@ -2414,6 +2460,12 @@ var allowedBuiltInTools = map[string]struct{}{
 	// recommended default.
 	"skill_list":    {},
 	"skill_propose": {},
+	// `skill_create_draft` (HA-62) — the draft-only personal-skill
+	// proposer: a deliberate operator opt-in absent from every
+	// recommended default, like skill_propose. It additionally requires
+	// the composed LLM client at registration (the assembly threads it),
+	// so a catalog listing it on an LLM-less runtime fails the boot loud.
+	"skill_create_draft": {},
 }
 
 // KnownBuiltInTools returns the sorted built-in allowlist as a slice.

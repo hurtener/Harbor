@@ -543,6 +543,10 @@ func skillTestRegistryContext(t *testing.T) RegistryContext {
 		SkillStore: newFakeSkillStore(bus),
 		Bus:        bus,
 		Redactor:   auditpatterns.New(),
+		// The composed-client slot the HA-62 draft carrier requires at
+		// registration (the full-set register test names every
+		// KnownNames entry, including skill_create_draft).
+		LLMClient: scriptedClient{content: "draft"},
 	}
 }
 

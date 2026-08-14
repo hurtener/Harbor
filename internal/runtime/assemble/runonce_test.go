@@ -163,6 +163,44 @@ func TestRunOnce_NotRunnable_FailsLoud(t *testing.T) {
 	}
 }
 
+// TestRunOnce_BootBaselineConfigured_FailsLoud — the HA-66 headless
+// posture: a stack whose configuration declares `skills.boot_agent_packs`
+// refuses RunOnce loud with the typed sentinel, BEFORE any runnability /
+// identity work. The boot baseline is a serve-band surface (resolved
+// boot/default agent, loader/composer/guard/preview wiring); a headless
+// one-shot run must never compose it under an invented identity and
+// never silently skip it.
+func TestRunOnce_BootBaselineConfigured_FailsLoud(t *testing.T) {
+	ctx := context.Background()
+	// A minimal stack whose config declares one boot pack — RunOnce
+	// checks the declaration before touching the RunLoop, so the guard
+	// fires even on a zero-value stack.
+	stack := &assemble.Stack{Cfg: &config.Config{Skills: config.SkillsConfig{
+		BootAgentPacks: []config.BootAgentPackConfig{{
+			TenantID: "acme", AgentID: "boot-agent", Directory: "/tmp/boot",
+		}},
+	}}}
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+	_, err := stack.RunOnce(ctx, "goal", id)
+	if !errors.Is(err, assemble.ErrBootBaselineUnsupported) {
+		t.Fatalf("RunOnce with boot_agent_packs configured: got %v, want ErrBootBaselineUnsupported", err)
+	}
+}
+
+// TestRunOnce_BootBaselineAbsent_Unchanged — with no boot declaration
+// the guard is inert: the zero-value stack reaches the ordinary
+// runnability refusal (ErrNotRunnable), proving the fail-loud is scoped
+// to the declared baseline and never blocks the default path.
+func TestRunOnce_BootBaselineAbsent_Unchanged(t *testing.T) {
+	ctx := context.Background()
+	stack := &assemble.Stack{Cfg: minimalCfg(t)}
+	id := identity.Identity{TenantID: "acme", UserID: "u-1", SessionID: "s-1"}
+	_, err := stack.RunOnce(ctx, "goal", id)
+	if !errors.Is(err, assemble.ErrNotRunnable) {
+		t.Fatalf("RunOnce without boot_agent_packs: got %v, want ErrNotRunnable (default posture unchanged)", err)
+	}
+}
+
 // TestRunOnce_ConcurrentReuse_NoBleedNoLeak — the mandatory D-025
 // concurrent-reuse stress: N≥100 concurrent RunOnce invocations against
 // ONE shared Stack, each with a distinct identity triple AND its own

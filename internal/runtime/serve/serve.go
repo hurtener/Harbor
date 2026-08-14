@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
+	"github.com/hurtener/Harbor/internal/observability/rollups"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -67,7 +68,10 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
+	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/bootpacks"
+	"github.com/hurtener/Harbor/internal/skills/importer"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -487,6 +491,189 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
 
+	// ── v1.28 projection + admission + boot-baseline band ─────────────
+	// The HA-56 render-admission surface, HA-64 turns projection, HA-65
+	// rollups projection, and HA-66 boot baseline all derive from ONE
+	// shared restart-stable KEK-backed sealer and ONE eager immutable
+	// boot-pack index — resolved HERE, before readiness / listeners, so a
+	// missing authority fails the boot loud.
+	bootIdentity := resolveMCPAttachIdentity(opts.MCPDefaultIdentity)
+
+	// The ONE shared KEK-backed sealer (never a second instance over the
+	// same key): the ProviderBuilder's broker sealer when one exists,
+	// else exactly one instance from `tools.oauth_token_kek_env`. When
+	// `tools.mcp_app_render_admission.enabled` is set, an empty env
+	// name / unset-invalid KEK / construction failure fails readiness
+	// LOUD even with no OAuth provider or credential broker declared.
+	sharedSealer, sealerErr := ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
+	if sealerErr != nil {
+		closeAll(ctx)
+		return nil, sealerErr
+	}
+	// The shared sealer also authenticates durable control.start reach
+	// admissions when no broker declared one: the SAME immutable
+	// authority serves OAuth, signed admissions, HA-61 proposal tokens
+	// and HA-56 render admissions.
+	if agentReachAdmissions == nil && sharedSealer != nil {
+		agentReachAdmissions, err = tasks.NewAgentReachAdmissionAuthority(sharedSealer)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("agent reach admission authority: %w", err)
+		}
+	}
+
+	// The HA-66 boot baseline: the eager immutable index loaded from
+	// `skills.boot_agent_packs` (all files read before readiness), every
+	// declared agent id validated against the one resolved boot/default
+	// agent, static required_tools validation against the WRAPPED
+	// catalog, and the pre-read durable collision check (same hash
+	// dedupes both, differing hash fails loud). Loader/composer never
+	// invokes admin pack verbs, lifecycle, SkillStore/ArtifactStore
+	// writes, or AgentConfig revisions.
+	// The agent-config registry's retirement/read seam is asserted ONCE
+	// here: the enabled v1.28 surfaces (boot baseline, render admission,
+	// import, preview) all require it, so a registry that cannot serve it
+	// fails the boot loud rather than degrading a surface.
+	retirementRegistry, retirementOK := agentConfigRegistry.(agentcfg.RetirementRegistry)
+	if !retirementOK && (len(cfg.Skills.BootAgentPacks) > 0 || cfg.Tools.MCPAppRenderAdmission.Enabled) {
+		closeAll(ctx)
+		return nil, fmt.Errorf("agent-config registry does not implement the retirement/read seam required by the enabled v1.28 surface")
+	}
+	var bootIndex *bootpacks.Index
+	if len(cfg.Skills.BootAgentPacks) > 0 {
+		bootIndex, err = OpenBootPackIndex(ctx, cfg, toolCat)
+		if err != nil {
+			closeAll(ctx)
+			return nil, err
+		}
+		if vErr := ValidateBootAgentPacksForAgent(cfg, devAgentConfigID); vErr != nil {
+			closeAll(ctx)
+			return nil, vErr
+		}
+		if pErr := PreReadBootPackCollisions(ctx, bootIndex, retirementRegistry, bootIdentity.UserID); pErr != nil {
+			closeAll(ctx)
+			return nil, pErr
+		}
+	}
+
+	// The HA-64 turns projection + HA-65 rollups projection: opened over
+	// the operator's config blocks with inmem / SQLite / Postgres parity,
+	// each running its own cancelable wake-driven loop.
+	var turnsProj *turns.Projector
+	var turnsStore turns.Store
+	var turnsCloser func(context.Context) error
+	var rollupsStore rollups.Store
+	var rollupsWorker *rollupWorker
+	var rollupsCloser func(context.Context) error
+	var turnsSvc *turnsService
+	turnsProj, turnsSvc, turnsCloser, err = OpenTurnsProjection(ctx, cfg, TurnsProjectionDeps{
+		Bus:       bus,
+		Sessions:  sessionRegistry,
+		Tasks:     taskReg,
+		Artifacts: artStore,
+		Logger:    opts.Logger,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, err
+	}
+	if turnsCloser != nil {
+		closers = append(closers, turnsCloser)
+	}
+	if turnsSvc != nil {
+		turnsStore = turnsSvc.store
+	}
+	rollupsStore, rollupsWorker, rollupsCloser, err = OpenRollupsProjection(ctx, cfg, RollupsProjectionDeps{
+		Bus:    bus,
+		Logger: opts.Logger,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, err
+	}
+	if rollupsCloser != nil {
+		closers = append(closers, rollupsCloser)
+	}
+
+	// The HA-56 render-admission authority + gate pair. The pair is
+	// wired ONLY when the operator explicitly opted in
+	// (`tools.mcp_app_render_admission.enabled`); sealer availability is
+	// NOT feature enablement, so an OAuth broker sealer alone never
+	// wires the surface. Both halves are wired together (neither wired
+	// keeps the compatible disabled surface). The gate re-runs verified
+	// identity / the request's reach-admitted effective agent /
+	// erasure / retirement / current exposure / exact server+resource /
+	// paused-disabled before every mint and every callback
+	// verification, and binds the exact current provider/catalog
+	// generation.
+	admissionAuthority, admissionGate, admErr := WireRenderAdmission(RenderAdmissionAuthorityDeps{
+		Enabled:        cfg.Tools.MCPAppRenderAdmission.Enabled,
+		Sessions:       sessionRegistry,
+		AgentConfig:    retirementRegistry,
+		SessionOverlay: sessionOverlayStore,
+		Registry:       mcpRegistry,
+		Sealer:         sharedSealer,
+	})
+	if admErr != nil {
+		closeAll(ctx)
+		return nil, admErr
+	}
+
+	// The HA-61 two-phase import service, built from the SAME
+	// already-composed seams the rest of the v1.28 band uses: the
+	// production importer over the caller-owned artifact store, the ONE
+	// shared restart-stable sealer, the runtime StateStore commit
+	// ledger, the configured SkillStore, the agent-config registry's
+	// retirement/read seam, and the capability-policy adapter projected
+	// over the wrapped catalog under the caller's verified identity.
+	// The signed effective-agent and session-reach gates ride the same
+	// authorizers the ControlSurface and the AppsSurface use. The
+	// service is nil (routes stay 501) only when a mandatory seam is
+	// genuinely absent — no SkillStore, no shared sealer, or a registry
+	// without the retirement/read seam — never a stub capability, never
+	// a silent empty surface.
+	var userSkillImportService *agentcfgprotocol.UserSkillImportService
+	if skillStore != nil && sharedSealer != nil && retirementOK {
+		imp, impErr := importer.New(importer.Deps{Store: artStore})
+		if impErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("user skill import service: %w", impErr)
+		}
+		userSkillImportService, err = agentcfgprotocol.NewUserSkillImportService(
+			imp, artStore, sharedSealer, stack.State, skillStore,
+			retirementRegistry,
+			agentcfgprotocol.NewUserSkillImportCapabilityPolicy(agentConfigRegistry,
+				sessionOverlayStore, toolCat, cfg.Tools.GrantedScopes),
+			agentcfgprotocol.WithImportAgentReach(agentReach),
+			agentcfgprotocol.WithImportSessionReach(auth.NewSessionReachAuthorizer()),
+			agentcfgprotocol.WithImportLogger(opts.Logger),
+		)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("user skill import service: %w", err)
+		}
+	}
+
+	// The HA-66 read-only composition preview: the frozen boot index as
+	// the BootPackReader + the agent-config reader + the signed gates.
+	// Nil when no boot baseline is bound (the preview route stays 501).
+	var compositionPreviewService *agentcfgprotocol.CompositionPreviewService
+	if bootIndex != nil {
+		compositionPreviewService, err = agentcfgprotocol.NewCompositionPreviewService(
+			retirementRegistry,
+			bootIndex,
+			agentcfgprotocol.WithPreviewAgentReach(agentReach),
+			agentcfgprotocol.WithPreviewSessionReach(auth.NewSessionReachAuthorizer()),
+			agentcfgprotocol.WithPreviewBus(bus),
+			agentcfgprotocol.WithPreviewRedactor(red),
+			agentcfgprotocol.WithPreviewLogger(opts.Logger),
+		)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("composition preview service: %w", err)
+		}
+	}
+	// ── end v1.28 band ────────────────────────────────────────────────
 	dispositionPolicy, err := planner.DispositionPolicyFromConfig(cfg.Multimodal)
 	if err != nil {
 		closeAll(ctx)
@@ -785,6 +972,15 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		BuildVersion:                   opts.BuildVersion,
 		BuildCommit:                    opts.BuildCommit,
 		TopologyAvailable:              false,
+		RenderAdmissionAuthority:       admissionAuthority,
+		RenderAdmissionGate:            admissionGate,
+		TurnsProjector:                 turnsProj,
+		TurnsStore:                     turnsStore,
+		RollupsStore:                   rollupsStore,
+		RollupsQuality:                 rollupsWorker,
+		UserSkillImportService:         userSkillImportService,
+		CompositionPreviewService:      compositionPreviewService,
+		BootOwnership:                  bootIndex,
 	}
 	muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
 	built, err := BuildMux(muxInput)

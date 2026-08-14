@@ -217,3 +217,68 @@ func TestBuildProviders_HappyPath_BuildsAndCloses(t *testing.T) {
 		t.Errorf("provider Close: %v", err)
 	}
 }
+
+// TestNewSealerFromEnv_Matrix pins the generalized restart-stable
+// KEK-backed sealer construction (HA-56 shared authority): an empty env
+// name, an unset/empty env value, non-hex content, and a wrong-length
+// key all fail loud naming the env var; a valid 32-byte hex KEK yields
+// an immutable Sealer that round-trips Seal/Open.
+func TestNewSealerFromEnv_Matrix(t *testing.T) {
+	const env = "HARBOR_BP_TEST_NEW_SEALER_KEK"
+
+	// Empty env name → loud failure.
+	if _, err := NewSealerFromEnv(""); err == nil {
+		t.Fatal("NewSealerFromEnv(\"\") must fail loud")
+	}
+
+	// Unset env → loud failure.
+	if _, err := NewSealerFromEnv(env); err == nil {
+		t.Fatal("NewSealerFromEnv(unset env) must fail loud")
+	} else if !strings.Contains(err.Error(), env) {
+		t.Fatalf("unset-env error %q does not name the env var", err)
+	}
+
+	// Empty env value → loud failure.
+	t.Setenv(env, "")
+	if _, err := NewSealerFromEnv(env); err == nil {
+		t.Fatal("NewSealerFromEnv(empty env) must fail loud")
+	}
+
+	// Non-hex content → loud failure.
+	t.Setenv(env, "not-hex!!")
+	if _, err := NewSealerFromEnv(env); err == nil {
+		t.Fatal("NewSealerFromEnv(non-hex env) must fail loud")
+	}
+
+	// Wrong-length key → loud failure.
+	t.Setenv(env, "0102")
+	if _, err := NewSealerFromEnv(env); err == nil {
+		t.Fatal("NewSealerFromEnv(short env) must fail loud")
+	}
+
+	// Valid 32-byte hex KEK → a usable AES-256-GCM sealer.
+	t.Setenv(env, dummyKEKHex)
+	sealer, err := NewSealerFromEnv(env)
+	if err != nil {
+		t.Fatalf("NewSealerFromEnv(valid env): %v", err)
+	}
+	if sealer == nil {
+		t.Fatal("NewSealerFromEnv(valid env) returned nil")
+	}
+	sealed, err := sealer.Seal([]byte("proposal-token-plaintext"))
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	opened, err := sealer.Open(sealed)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if string(opened) != "proposal-token-plaintext" {
+		t.Fatalf("Open round-trip = %q, want the sealed plaintext", opened)
+	}
+	// The same authority opens tokens sealed earlier — restart-stability
+	// within one process; the AES-GCM key is the env-derived KEK.
+	if _, err := sealer.Open([]byte("not-a-real-ciphertext")); err == nil {
+		t.Fatal("Open of garbage must fail loud (AEAD authentication)")
+	}
+}

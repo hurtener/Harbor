@@ -66,13 +66,14 @@ func BuildProviders(ctx context.Context, cfg config.ToolsConfig, deps BuildDeps)
 	if len(cfg.OAuthProviders) == 0 {
 		return providers, nil
 	}
-	kek, err := resolveTokenKEK(cfg.OAuthTokenKEKEnv)
+	// The ONE shared KEK-backed sealer construction (NewSealerFromEnv):
+	// the OAuth token store, the pending-flow store, signed-capability
+	// admissions, HA-61 proposal tokens, and HA-56 render admissions all
+	// derive from the same restart-stable AES-256-GCM authority. No
+	// second sealer is ever constructed over the same key.
+	sealer, err := NewSealerFromEnv(cfg.OAuthTokenKEKEnv)
 	if err != nil {
 		return nil, err
-	}
-	sealer, err := NewAESGCMSealer(kek)
-	if err != nil {
-		return nil, fmt.Errorf("tools/oauth: sealer: %w", err)
 	}
 	tokenStore, err := NewTokenStore(deps.State, sealer)
 	if err != nil {
@@ -176,13 +177,13 @@ func NewProviderBuilder(ctx context.Context, cfg config.ToolsConfig, deps BuildD
 	if len(brokers) == 0 {
 		return pb, nil
 	}
-	kek, err := resolveTokenKEK(cfg.OAuthTokenKEKEnv)
+	// The shared crypto chain is built ONCE through the SAME generalized
+	// construction (NewSealerFromEnv) the OAuth providers use, so an
+	// installed provider shares the same token store AND the same
+	// restart-stable sealer — never a second instance over the same key.
+	sealer, err := NewSealerFromEnv(cfg.OAuthTokenKEKEnv)
 	if err != nil {
 		return nil, err
-	}
-	sealer, err := NewAESGCMSealer(kek)
-	if err != nil {
-		return nil, fmt.Errorf("tools/oauth: broker provider builder: sealer: %w", err)
 	}
 	tokenStore, err := NewTokenStore(deps.State, sealer)
 	if err != nil {
@@ -487,4 +488,31 @@ func resolveTokenKEK(envName string) ([]byte, error) {
 			envName, len(kek), KEKSizeBytes)
 	}
 	return kek, nil
+}
+
+// NewSealerFromEnv is the GENERALIZED restart-stable KEK-backed sealer
+// construction: it reads the 32-byte hex KEK named by envName and
+// builds the AES-256-GCM Sealer. This is the ONE construction shared by
+// every runtime authority that needs a restart-stable sealing key — the
+// OAuth token store, signed-capability admissions, HA-61 skill-import
+// proposal tokens, and HA-56 render admissions. The returned Sealer is
+// immutable and safe for concurrent reuse by N goroutines; a caller
+// MUST NOT construct a second sealer over the same key.
+//
+// Fail-loud: an empty env name, an unset/empty env value, non-hex
+// content, or a wrong-length key all return a wrapped error naming the
+// env var. The production composition calls this at boot whenever a
+// surface that requires the shared authority is enabled, so a missing
+// KEK fails readiness loud even when no OAuth provider or credential
+// broker is declared.
+func NewSealerFromEnv(envName string) (Sealer, error) {
+	kek, err := resolveTokenKEK(envName)
+	if err != nil {
+		return nil, err
+	}
+	sealer, err := NewAESGCMSealer(kek)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: shared KEK sealer: %w", err)
+	}
+	return sealer, nil
 }

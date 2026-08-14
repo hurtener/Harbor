@@ -56,18 +56,29 @@ func draftContentWithRequiredTools(required ...string) string {
 }
 
 func TestSkillCreateDraft_DisabledByDefault(t *testing.T) {
-	for _, name := range KnownNames() {
-		if name == drafter.ToolName {
-			t.Fatal("skill_create_draft must be absent from KnownNames until the composition owner wires it")
-		}
-	}
+	// The tool IS a known built-in now (the composition owner wired the
+	// carrier into the registry), but it stays DISABLED BY DEFAULT: it
+	// is never registered implicitly — an operator must list it in
+	// `tools.built_in` (like skill_propose), and registering it without
+	// the composed LLM client fails loud rather than silently skipping.
 	cat := tools.NewCatalog()
-	err := RegisterWith(RegistryContext{Catalog: cat}, []string{drafter.ToolName})
-	if !errors.Is(err, ErrUnknownBuiltIn) {
-		t.Fatalf("RegisterWith(skill_create_draft) err = %v, want ErrUnknownBuiltIn", err)
+	if err := RegisterWith(RegistryContext{Catalog: cat}, nil); err != nil {
+		t.Fatalf("RegisterWith(empty list): %v", err)
 	}
 	if _, ok := cat.Resolve(drafter.ToolName); ok {
-		t.Fatal("skill_create_draft resolved in the catalog without explicit registration")
+		t.Fatal("skill_create_draft resolved without being listed in tools.built_in")
+	}
+	// Listing it without an LLM client is a LOUD registration failure
+	// (the carrier's wiring-shaped check), never a silent no-op.
+	err := RegisterWith(RegistryContext{Catalog: cat}, []string{drafter.ToolName})
+	if !errors.Is(err, ErrRegisterFailed) {
+		t.Fatalf("RegisterWith(skill_create_draft, no LLM client) err = %v, want ErrRegisterFailed", err)
+	}
+	if !strings.Contains(err.Error(), "llm client is required") {
+		t.Fatalf("RegisterWith(skill_create_draft, no LLM client) error %q does not name the missing client", err)
+	}
+	if _, ok := cat.Resolve(drafter.ToolName); ok {
+		t.Fatal("skill_create_draft resolved despite the loud registration failure")
 	}
 }
 
