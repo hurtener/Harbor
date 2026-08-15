@@ -673,6 +673,7 @@ export interface AgentConfigNaming {
   max_repetitions?: number;
   max_title_len?: number;
   model?: string;
+  reasoning_mode?: string;
 }
 
 export interface AgentConfigNamingDiff {
@@ -694,6 +695,9 @@ export interface AgentConfigNamingDiff {
   model_changed: boolean;
   model_from?: string;
   model_to?: string;
+  reasoning_mode_changed: boolean;
+  reasoning_mode_from?: string;
+  reasoning_mode_to?: string;
 }
 
 export interface AgentConfigOAuthProviderDescriptor {

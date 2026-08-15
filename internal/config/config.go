@@ -614,6 +614,10 @@ type RuntimeNamingConfig struct {
 	// Model, when set, is the model the auto-naming call requests (empty =
 	// the run's effective model). Validated against ModelProfiles at boot.
 	Model string `yaml:"model,omitempty"`
+	// ReasoningMode controls reasoning only for the naming call: empty / off
+	// explicitly disables reasoning; provider_default omits provider controls
+	// without inheriting the model profile's planner default.
+	ReasoningMode string `yaml:"reasoning_mode,omitempty"`
 }
 
 // MemoryConfig is owned by the memory subsystem phases.

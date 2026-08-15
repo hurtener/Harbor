@@ -70,7 +70,23 @@ type NamingPolicy struct {
 	// MaxTitleLen bounds the auto title in runes (the trigger clamps the model
 	// output to it).
 	MaxTitleLen int
+	// ReasoningMode controls only the naming Complete request. Empty defaults
+	// to off; provider_default explicitly omits provider reasoning controls and
+	// suppresses model-profile reasoning inheritance.
+	ReasoningMode NamingReasoningMode
 }
+
+// NamingReasoningMode is the closed naming-only reasoning posture.
+type NamingReasoningMode string
+
+const (
+	// NamingReasoningOff explicitly disables reasoning for the bounded title
+	// extraction request and is the default.
+	NamingReasoningOff NamingReasoningMode = "off"
+	// NamingReasoningProviderDefault omits provider reasoning controls without
+	// inheriting the selected model profile's planner default.
+	NamingReasoningProviderDefault NamingReasoningMode = "provider_default"
+)
 
 // NamingCompleter is the narrow LLM seam the naming trigger calls — exactly
 // the run's already-wrapped llm.LLMClient (governance outermost, keying the
@@ -155,18 +171,22 @@ func steeringCaptureWanted(spec RunSpec) bool {
 }
 
 // WithDefaults fills the zero-valued policy fields with the session
-// auto-naming defaults: AfterTurns → 1, MaxTitleLen → 80 (clamped into
-// [8,200] when set), and — for a REPEATING policy (RepeatEvery > 0) whose cap
-// is unset — MaxRepetitions → 5, the documented default total (including the
-// first call). The default keeps the no-unlimited invariant intact for a
-// policy constructed programmatically (an embedder building a NamingSpec by
-// hand): a repeating policy always reaches the trigger with a concrete cap.
+// auto-naming defaults: ReasoningMode → off, AfterTurns → 1, MaxTitleLen → 80
+// (clamped into [8,200] when set), and — for a REPEATING policy
+// (RepeatEvery > 0) whose cap is unset — MaxRepetitions → 5, the documented
+// default total (including the first call). The default keeps the no-unlimited
+// invariant intact for a policy constructed programmatically (an embedder
+// building a NamingSpec by hand): a repeating policy always reaches the
+// trigger with a concrete cap.
 // The wire and yaml edges still REQUIRE an explicit cap ≥ 1 whenever
 // repeat_every > 0 (rejected at set/boot time), so the default is
 // defence-in-depth there, never a silent unlimited. The run-start projection
 // applies WithDefaults so the trigger consumes concrete values.
 func (p NamingPolicy) WithDefaults() NamingPolicy {
 	out := p
+	if out.ReasoningMode == "" {
+		out.ReasoningMode = NamingReasoningOff
+	}
 	if out.AfterTurns <= 0 {
 		out.AfterTurns = 1
 	}
@@ -274,7 +294,7 @@ func (rl *RunLoop) fireNaming(runCtx context.Context, spec RunSpec, q identity.Q
 	}
 
 	digest := buildNamingDigest(initialGoal, spec.Base.Trajectory, steering, fin, st.CurrentTitle)
-	req := namingCompleteRequest(ns.Model, ns.Policy.MaxTitleLen, digest, st.CurrentTitle != "")
+	req := namingCompleteRequest(ns.Model, ns.Policy.MaxTitleLen, digest, st.CurrentTitle != "", ns.Policy.ReasoningMode)
 
 	resp, err := ns.LLM.Complete(nctx, req)
 	if err != nil {
@@ -359,10 +379,10 @@ const namingSystemPromptf = "You name conversations. Read the conversation diges
 	"Reply with the title ONLY — no quotes, no preamble, no trailing punctuation, one line."
 
 // namingCompleteRequest builds the bounded naming Complete request: the fixed
-// system instruction + the digest as the user message, the resolved model, and
-// a small output-token cap. It carries no tools and no response format — a
-// plain text completion.
-func namingCompleteRequest(model string, maxTitleLen int, digest string, rename bool) llm.CompleteRequest {
+// system instruction + the digest as the user message, the resolved model, a
+// small output-token cap, and the naming-only reasoning posture. It carries no
+// tools and no response format — a plain text completion.
+func namingCompleteRequest(model string, maxTitleLen int, digest string, rename bool, reasoningMode NamingReasoningMode) llm.CompleteRequest {
 	sys := fmt.Sprintf(namingSystemPromptf, maxTitleLen)
 	if rename {
 		sys += " A working title already exists in the digest; refine it if the conversation has moved on, otherwise keep it."
@@ -370,15 +390,25 @@ func namingCompleteRequest(model string, maxTitleLen int, digest string, rename 
 	sysText := sys
 	userText := digest
 	maxTok := namingMaxOutputTokens
-	return llm.CompleteRequest{
-		Model:           model,
-		ReasoningEffort: llm.ReasoningOff,
+	req := llm.CompleteRequest{
+		Model: model,
 		Messages: []llm.ChatMessage{
 			{Role: llm.RoleSystem, Content: llm.Content{Text: &sysText}},
 			{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
 		},
 		MaxTokens: &maxTok,
 	}
+	if reasoningMode == NamingReasoningProviderDefault {
+		// Empty + explicit is distinct from ordinary empty: corrections must
+		// not inherit the model profile, and the driver must omit the control.
+		req.ReasoningEffortExplicit = true
+	} else {
+		// Unknown programmatic values fail safely to the documented default;
+		// yaml and durable wire inputs reject them before projection.
+		req.ReasoningEffort = llm.ReasoningOff
+		req.ReasoningEffortExplicit = true
+	}
+	return req
 }
 
 // buildNamingDigest assembles a deterministically bounded text digest of the

@@ -483,6 +483,10 @@ type AgentConfigNaming struct {
 	// Model, when set, is the model the auto-naming call requests (empty =
 	// the run's effective model).
 	Model string `json:"model,omitempty"`
+	// ReasoningMode controls reasoning only for the naming call. Empty / off
+	// disables it; provider_default omits provider controls without inheriting
+	// the selected model profile's planner default.
+	ReasoningMode string `json:"reasoning_mode,omitempty"`
 }
 
 // AgentConfigPayload is the wire projection of an agent-config envelope.
@@ -703,6 +707,10 @@ type AgentConfigNamingDiff struct {
 	ModelChanged bool   `json:"model_changed"`
 	ModelFrom    string `json:"model_from,omitempty"`
 	ModelTo      string `json:"model_to,omitempty"`
+
+	ReasoningModeChanged bool   `json:"reasoning_mode_changed"`
+	ReasoningModeFrom    string `json:"reasoning_mode_from,omitempty"`
+	ReasoningModeTo      string `json:"reasoning_mode_to,omitempty"`
 }
 
 // AgentConfigExtraSystemBlocksDiff is the wire projection of the

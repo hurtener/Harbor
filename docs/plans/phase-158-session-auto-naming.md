@@ -2,7 +2,7 @@
 
 ## Summary
 
-Phase 157 gives sessions a title and a manual verb; this phase makes the runtime produce titles automatically — **opt-in, default off**. A new `naming` agent-config section (riding `set_revision` like the `hooks` section — no new Protocol verb) plus a yaml `runtime.naming` default declare the policy: whether to auto-name, after how many completed turns, whether/how often to re-name, a hard cap on total re-names, which model to use (default: the run's effective model), and the title length bound. The mechanism is a sibling of the run-completion hook at the run loop's terminal boundary: when a run completes and the resolved policy says a title is due, the runtime makes ONE bounded `Complete` call on the run's already-wrapped LLM client (governance/safety apply automatically via ctx identity) over a deterministically bounded transcript digest, then writes the result through an internal auto-path that can never overwrite a manual title. A naming failure never alters the run's outcome and is never silent (`session.naming_failed`, error class only).
+Phase 157 gives sessions a title and a manual verb; this phase makes the runtime produce titles automatically — **opt-in, default off**. A new `naming` agent-config section (riding `set_revision` like the `hooks` section — no new Protocol verb) plus a yaml `runtime.naming` default declare the policy: whether to auto-name, after how many completed turns, whether/how often to re-name, a hard cap on total re-names, which model to use (default: the run's effective model), the naming-only reasoning posture, and the title length bound. The mechanism is a sibling of the run-completion hook at the run loop's terminal boundary: when a run completes and the resolved policy says a title is due, the runtime makes ONE bounded `Complete` call on the run's already-wrapped LLM client (governance/safety apply automatically via ctx identity) over a deterministically bounded transcript digest, then writes the result through an internal auto-path that can never overwrite a manual title. A naming failure never alters the run's outcome and is never silent (`session.naming_failed`, error class only).
 
 ## RFC anchor
 
@@ -33,7 +33,7 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
 ## Goals
 
 - **Opt-in, default off (binding).** With no `naming` section and no `runtime.naming` yaml block, the runtime's behavior is byte-identical to v1.11: no counters written, no LLM calls, no events. The zero-config golden path spends zero tokens on naming.
-- A per-agent, versioned `naming` policy: `auto` (bool, default false), `after_turns` (int ≥ 1, default 1 — fire on the Nth completed run), `repeat_every` (int ≥ 0, default 0 = name once only), `max_repetitions` (int ≥ 1 when `repeat_every` > 0, default 5 — total auto-naming calls including the first; **no unlimited value exists**, so unbounded periodic re-naming is unrepresentable), `model` (string, "" = the run's effective model; else validated against `ModelProfiles`), `max_title_len` (int, default 80, bounds [8, 200]).
+- A per-agent, versioned `naming` policy: `auto` (bool, default false), `after_turns` (int ≥ 1, default 1 — fire on the Nth completed run), `repeat_every` (int ≥ 0, default 0 = name once only), `max_repetitions` (int ≥ 1 when `repeat_every` > 0, default 5 — total auto-naming calls including the first; **no unlimited value exists**, so unbounded periodic re-naming is unrepresentable), `model` (string, "" = the run's effective model; else validated against `ModelProfiles`), `reasoning_mode` (`off` by default or `provider_default` to omit provider reasoning controls without inheriting the model profile), `max_title_len` (int, default 80, bounds [8, 200]).
 - Resolution precedence mirrors the hooks section exactly: agent-config `naming` › yaml `runtime.naming` › off — resolved ONCE at run start (next-turn projection, D-234); an in-flight run keeps its snapshot.
 - The titling call is governed: it carries the run's identity quadruple, flows through the wrapped client (a governance ceiling/rate block SKIPS naming with a classified event — the user's run is untouched), and its input is deterministically bounded far below the D-026 threshold.
 - Manual-wins, structurally: the auto write path refuses when `TitleSource == manual`; re-naming (`repeat_every`) only ever refreshes `unset`/`auto` titles. Clearing a manual title re-arms auto-naming.
@@ -53,7 +53,7 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
 - [ ] `agentcfg.NamingSection` on `ConfigPayload` (pointer-optional): normalization branch, `NamingDiff` + `DiffNaming` arm, accessor, wire type `AgentConfigNaming` + diff arm, the three generator `typeindex.go` registrations, `payloadToWire`/`payloadToDomain` branches, TS mirror + regenerated manifest + docs. NO new verb; `set_revision` round-trips it.
 - [ ] `validateNaming` in the agentcfg protocol service (+ `ErrInvalidNaming` sentinel): bounds above; `repeat_every > 0` with `max_repetitions < 1` → rejected; `model` validated via the existing `validateModel` path; invoked from `set_revision` beside `validateLLMParams`/`validateHooks`.
 - [ ] D-283 guard extended: the new section is carried forward by ALL existing section-scoped setters (`mcppolicy.go`, `addconnection.go`, `removeconnection.go`, `skills.go`, `promptlayers.go`, `llmparams.go`), `rcSeed` populates it, and the reflection guard passes — an omission fails `go test` naming the field.
-- [ ] Yaml `runtime.naming.{auto,after_turns,repeat_every,max_repetitions,model,max_title_len}`: config schema + `validate.go` checks (same bounds) + example configs updated (§10); `projection.ActiveNamingPolicy` resolves agentcfg › yaml › off and is twinned in `cmd/harbor` + `harbortest/devstack` (D-094/§17.6).
+- [ ] Yaml `runtime.naming.{auto,after_turns,repeat_every,max_repetitions,model,reasoning_mode,max_title_len}`: config schema + `validate.go` checks (same bounds plus the closed reasoning-mode enum) + example configs updated (§10); `projection.ActiveNamingPolicy` resolves agentcfg › yaml › off and is twinned in `cmd/harbor` + `harbortest/devstack` (D-094/§17.6). A present agent-config section is whole-section authoritative, so omitted `reasoning_mode` there defaults to `off` rather than inheriting yaml.
 - [ ] Session record counters: `TurnCount`, `AutoNameCount`, `LastAutoNamedTurn` (additive JSON). `SessionRegistry.RecordCompletedTurn(ctx, id, ident) (int, error)` increments and returns `TurnCount`; it is called from the terminal boundary ONLY when a naming policy is active for the run (documented consequence: enabling naming mid-session counts turns from enablement — no per-run write amplification for the naming-off fleet).
 - [ ] `SessionRegistry.SetTitleAuto(ctx, id, ident, title) error`: no-op-with-typed-refusal when `TitleSource == manual` (`ErrManualTitle`); clamps to the policy bound BEFORE the call (the trigger clamps; the registry re-validates length defensively); sets `TitleSource = auto`, bumps `AutoNameCount` + `LastAutoNamedTurn` in the SAME record save (never a torn two-write update); publishes `session.title_changed` (source=auto, content-free).
 - [ ] Terminal-boundary trigger (sibling to the completion hook's deferred region in the run loop): after `(fin, err)` settle — eligibility: policy active AND `TitleSource != manual` AND (`AutoNameCount == 0` AND `TurnCount ≥ after_turns`, OR `repeat_every > 0` AND `AutoNameCount < max_repetitions` AND `TurnCount ≥ LastAutoNamedTurn + repeat_every`). Fires under `context.WithTimeout(context.WithoutCancel(runCtx), DefaultNamingTimeout=10s)` — identity values preserved, cancelled runs still name.
@@ -79,7 +79,7 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
 
 ## Public API surface
 
-- `agentcfg.NamingSection{Auto bool; AfterTurns, RepeatEvery, MaxRepetitions, MaxTitleLen int; Model string}` (+ diff arm).
+- `agentcfg.NamingSection{Auto bool; AfterTurns, RepeatEvery, MaxRepetitions, MaxTitleLen int; Model, ReasoningMode string}` (+ diff arm).
 - `sessions.SessionRegistry.RecordCompletedTurn`, `sessions.SessionRegistry.SetTitleAuto`, `sessions.ErrManualTitle`.
 - Yaml: `runtime.naming.*`; wire: `AgentConfigNaming` (additive types only).
 
@@ -171,13 +171,17 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
   deferred region (not a spawned goroutine), so the goroutine-baseline
   guarantee holds trivially; the accepted concurrent-completion race is between
   DISTINCT runs' terminal boundaries, serialized by the registry writes.
-- **Reasoning disabled for naming (2026-08-15 correction).** The naming request
-  explicitly sets reasoning effort off so a selected model profile's reasoning
-  default cannot consume the fixed 64-token title allowance. Production
+- **Naming-only reasoning compatibility (2026-08-15 correction).** The naming
+  request defaults to reasoning effort off so a selected model profile's
+  reasoning default cannot consume the fixed 64-token title allowance. Production
   evidence showed a low-effort reasoning model consuming all 64 tokens
   privately and returning empty visible content. The 4 KiB digest, 10s timeout,
   one-call shape, 64-token output ceiling, and 200-rune persisted-title clamp
-  remain unchanged; reasoning is never used as title content.
+  remain unchanged; reasoning is never used as title content. The closed
+  naming-only `reasoning_mode` also permits `provider_default`, which omits
+  provider reasoning controls without inheriting the planner profile for
+  providers that reject such controls. A present durable naming section owns
+  the whole section, so an omitted mode there resolves to the default `off`.
 - **Governance E2E leg uses the rate-limit tier, not the budget ceiling.** The
   end-to-end governance-block leg
   (`TestE2E_SessionAutoNaming_GovernanceBlock_SkipsLoudly`) composes real

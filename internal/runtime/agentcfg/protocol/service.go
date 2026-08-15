@@ -964,6 +964,10 @@ func (s *Service) validateNaming(n *prototypes.AgentConfigNaming) error {
 	if n == nil {
 		return nil
 	}
+	reasoningMode := strings.TrimSpace(n.ReasoningMode)
+	if reasoningMode != "" && reasoningMode != "off" && reasoningMode != "provider_default" {
+		return fmt.Errorf("%w: reasoning_mode %q must be one of off, provider_default", ErrInvalidNaming, n.ReasoningMode)
+	}
 	if n.AfterTurns < 0 {
 		return fmt.Errorf("%w: after_turns %d must not be negative", ErrInvalidNaming, n.AfterTurns)
 	}
@@ -1460,6 +1464,7 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 			MaxRepetitions: p.Naming.MaxRepetitions,
 			MaxTitleLen:    p.Naming.MaxTitleLen,
 			Model:          p.Naming.Model,
+			ReasoningMode:  p.Naming.ReasoningMode,
 		}
 	}
 	if p.AgentPacks != nil {
@@ -1699,6 +1704,7 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 			MaxRepetitions: p.Naming.MaxRepetitions,
 			MaxTitleLen:    p.Naming.MaxTitleLen,
 			Model:          p.Naming.Model,
+			ReasoningMode:  p.Naming.ReasoningMode,
 		}
 	}
 	if p.AgentPacks != nil {
@@ -1797,6 +1803,10 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			ModelChanged: d.Naming.ModelChanged,
 			ModelFrom:    d.Naming.ModelFrom,
 			ModelTo:      d.Naming.ModelTo,
+
+			ReasoningModeChanged: d.Naming.ReasoningModeChanged,
+			ReasoningModeFrom:    d.Naming.ReasoningModeFrom,
+			ReasoningModeTo:      d.Naming.ReasoningModeTo,
 		},
 		ExtraSystemBlocks: prototypes.AgentConfigExtraSystemBlocksDiff{
 			Added:   append([]string(nil), d.ExtraSystemBlocks.Added...),

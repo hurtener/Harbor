@@ -17,6 +17,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Session auto-naming now exposes a naming-only `reasoning_mode` with the
+  compatibility values `off` (the default) and `provider_default`. The latter
+  omits provider reasoning controls without inheriting the selected model
+  profile's planner default, so providers that reject reasoning controls can
+  still produce titles while the 64-token bound remains unchanged (D-289).
+
 ## [1.28.5] — 2026-08-15
 
 ### Fixed

@@ -32,6 +32,15 @@ func TestContentHash_IncludesNaming(t *testing.T) {
 	if a == b {
 		t.Fatal("different max_repetitions hashed equal")
 	}
+	off := namingSection(true, 1, 0, 0, 80, "")
+	off.ReasoningMode = "off"
+	providerDefault := namingSection(true, 1, 0, 0, 80, "")
+	providerDefault.ReasoningMode = "provider_default"
+	hOff, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Naming: off})
+	hProvider, _ := agentcfg.ContentHash(agentcfg.ConfigPayload{Naming: providerDefault})
+	if hOff == hProvider {
+		t.Fatal("different naming reasoning modes hashed equal")
+	}
 }
 
 // TestNormalizePayload_Naming_PresenceIsPreserved proves any non-nil naming
@@ -72,6 +81,12 @@ func TestNormalizePayload_Naming_PresenceIsPreserved(t *testing.T) {
 	if gotTrim.Naming == nil || gotTrim.Naming.Model != "profile-a" {
 		t.Fatalf("model should be trimmed, got %+v", gotTrim.Naming)
 	}
+	withReasoning := namingSection(true, 1, 0, 0, 80, "")
+	withReasoning.ReasoningMode = "  provider_default  "
+	gotReasoning := agentcfg.NormalizePayload(agentcfg.ConfigPayload{Naming: withReasoning})
+	if gotReasoning.Naming == nil || gotReasoning.Naming.ReasoningMode != "provider_default" {
+		t.Fatalf("reasoning_mode should be trimmed, got %+v", gotReasoning.Naming)
+	}
 }
 
 // TestDiffNaming_PerFieldDelta proves each dimension reports its own delta,
@@ -96,6 +111,17 @@ func TestDiffNaming_PerFieldDelta(t *testing.T) {
 	}
 	if agentcfg.DiffNaming(from, from).Changed() {
 		t.Error("identical naming sections reported a change")
+	}
+	fromReasoning := namingSection(true, 1, 0, 0, 80, "m")
+	fromReasoning.ReasoningMode = "off"
+	toReasoning := namingSection(true, 1, 0, 0, 80, "m")
+	toReasoning.ReasoningMode = "provider_default"
+	d3 := agentcfg.DiffNaming(
+		agentcfg.ConfigPayload{Naming: fromReasoning},
+		agentcfg.ConfigPayload{Naming: toReasoning},
+	)
+	if !d3.Changed() || !d3.ReasoningModeChanged || d3.ReasoningModeFrom != "off" || d3.ReasoningModeTo != "provider_default" {
+		t.Errorf("reasoning_mode delta = %+v", d3)
 	}
 }
 

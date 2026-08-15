@@ -856,6 +856,7 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 						RepeatEvery:    n.RepeatEvery,
 						MaxRepetitions: n.MaxRepetitions,
 						MaxTitleLen:    n.MaxTitleLen,
+						ReasoningMode:  steering.NamingReasoningMode(n.ReasoningMode),
 					}.WithDefaults(),
 					Model: n.Model,
 				}, true, nil
@@ -870,6 +871,7 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 				RepeatEvery:    yamlDefault.RepeatEvery,
 				MaxRepetitions: yamlDefault.MaxRepetitions,
 				MaxTitleLen:    yamlDefault.MaxTitleLen,
+				ReasoningMode:  steering.NamingReasoningMode(yamlDefault.ReasoningMode),
 			}.WithDefaults(),
 			Model: yamlDefault.Model,
 		}, true, nil

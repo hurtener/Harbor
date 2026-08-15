@@ -26,6 +26,7 @@ func TestSetRevision_Naming_InvalidRejected(t *testing.T) {
 		{"max_title_len too small", &prototypes.AgentConfigNaming{Auto: true, MaxTitleLen: 5}},
 		{"max_title_len too large", &prototypes.AgentConfigNaming{Auto: true, MaxTitleLen: 500}},
 		{"unknown model", &prototypes.AgentConfigNaming{Auto: true, Model: "no-such"}},
+		{"unknown reasoning mode", &prototypes.AgentConfigNaming{Auto: true, ReasoningMode: "sometimes"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,7 +65,7 @@ func TestSetRevision_Naming_ValidRoundTrips(t *testing.T) {
 		Identity: scope(), AgentID: testAgentID,
 		Payload: prototypes.AgentConfigPayload{
 			Naming: &prototypes.AgentConfigNaming{
-				Auto: true, AfterTurns: 2, RepeatEvery: 3, MaxRepetitions: 5, MaxTitleLen: 100, Model: "good-model",
+				Auto: true, AfterTurns: 2, RepeatEvery: 3, MaxRepetitions: 5, MaxTitleLen: 100, Model: "good-model", ReasoningMode: "provider_default",
 			},
 		},
 	})
@@ -72,7 +73,7 @@ func TestSetRevision_Naming_ValidRoundTrips(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	n := resp.Revision.Payload.Naming
-	if n == nil || !n.Auto || n.AfterTurns != 2 || n.RepeatEvery != 3 || n.MaxRepetitions != 5 || n.MaxTitleLen != 100 || n.Model != "good-model" {
+	if n == nil || !n.Auto || n.AfterTurns != 2 || n.RepeatEvery != 3 || n.MaxRepetitions != 5 || n.MaxTitleLen != 100 || n.Model != "good-model" || n.ReasoningMode != "provider_default" {
 		t.Fatalf("naming section did not round-trip on the wire: %+v", n)
 	}
 	// A zero-cap once-only policy is valid (repeat_every == 0).
@@ -81,6 +82,39 @@ func TestSetRevision_Naming_ValidRoundTrips(t *testing.T) {
 		Payload: prototypes.AgentConfigPayload{Naming: &prototypes.AgentConfigNaming{Auto: true}},
 	}); err != nil {
 		t.Fatalf("set (once-only): %v", err)
+	}
+}
+
+func TestDiff_Naming_ReasoningModeVisible(t *testing.T) {
+	ctx := context.Background()
+	s, err := agentcfgprotocol.NewService(newRegistry(t))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	r1, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{Naming: &prototypes.AgentConfigNaming{Auto: true, ReasoningMode: "off"}},
+	})
+	if err != nil {
+		t.Fatalf("rev1: %v", err)
+	}
+	r2, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+		Identity: scope(), AgentID: testAgentID,
+		Payload: prototypes.AgentConfigPayload{Naming: &prototypes.AgentConfigNaming{Auto: true, ReasoningMode: "provider_default"}},
+	})
+	if err != nil {
+		t.Fatalf("rev2: %v", err)
+	}
+	d, err := s.Diff(ctx, prototypes.AgentConfigDiffRequest{
+		Identity: scope(), AgentID: testAgentID,
+		FromRevision: r1.Revision.RevisionID, ToRevision: r2.Revision.RevisionID,
+	})
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	n := d.Diff.Naming
+	if !n.ReasoningModeChanged || n.ReasoningModeFrom != "off" || n.ReasoningModeTo != "provider_default" {
+		t.Fatalf("reasoning_mode wire diff = %+v", n)
 	}
 }
 

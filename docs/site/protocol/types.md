@@ -503,6 +503,7 @@ Declared in `internal/protocol/types`.
 | `max_repetitions` | `int` | optional (`omitempty`) |
 | `max_title_len` | `int` | optional (`omitempty`) |
 | `model` | `string` | optional (`omitempty`) |
+| `reasoning_mode` | `string` | optional (`omitempty`) |
 
 ## AgentConfigNamingDiff
 
@@ -528,6 +529,9 @@ Declared in `internal/protocol/types`.
 | `model_changed` | `bool` |  |
 | `model_from` | `string` | optional (`omitempty`) |
 | `model_to` | `string` | optional (`omitempty`) |
+| `reasoning_mode_changed` | `bool` |  |
+| `reasoning_mode_from` | `string` | optional (`omitempty`) |
+| `reasoning_mode_to` | `string` | optional (`omitempty`) |
 
 ## AgentConfigOAuthProviderDescriptor
 

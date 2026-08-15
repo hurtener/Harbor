@@ -517,6 +517,27 @@ func TestTranslateRequest_ReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_ExplicitProviderDefaultOmitsReasoning(t *testing.T) {
+	txt := "name this"
+	max := 64
+	req := llm.CompleteRequest{
+		Model:                   "m",
+		Messages:                []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &txt}}},
+		MaxTokens:               &max,
+		ReasoningEffortExplicit: true,
+	}
+	bfReq, err := translateRequest(bfschemas.OpenAI, req)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if bfReq.Params == nil {
+		t.Fatal("Params nil, want max-token parameter")
+	}
+	if bfReq.Params.Reasoning != nil {
+		t.Fatalf("Reasoning = %+v, want provider control omitted", bfReq.Params.Reasoning)
+	}
+}
+
 // TestTranslateRequest_Sampler — Temperature / MaxTokens / Stops.
 func TestTranslateRequest_Sampler(t *testing.T) {
 	txt := "x"
