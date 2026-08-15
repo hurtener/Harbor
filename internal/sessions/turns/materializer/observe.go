@@ -358,21 +358,19 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 	parent := fieldString(payload, "ParentTaskID")
 	runID := runIDFromIdentity(ev.Identity)
 
-	if runID != "" {
-		sess.runs[runID] = taskID
-	}
-	sess.tasks[taskID] = parent
-
 	isRootForeground := kind == string(tasks.KindForeground) && parent == ""
 	if !isRootForeground {
+		// Child/background tasks enter the immutable parent index. Their
+		// run route is registered only when the event explicitly names it;
+		// the stock root-foreground TaskID-as-RunID derivation below is
+		// deliberately not generalized to other task executors.
+		if err := sess.validateTaskRoute(taskID, parent, runID, false); err != nil {
+			return false, err
+		}
+		sess.commitTaskRoute(taskID, parent, runID, false)
 		return false, nil
 	}
 	if hasPipe(taskID) {
-		return false, nil
-	}
-	if _, exists := sess.turns[turns.TurnID(taskID)]; exists {
-		// Idempotent re-append (a response-loss replay): the row
-		// already exists; leave it untouched.
 		return false, nil
 	}
 
@@ -397,6 +395,27 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 	runID, err = bindRunID(runID, "", snap.RunID)
 	if err != nil {
 		return false, err
+	}
+	// The stock Runtime starts one RunLoop per task and canonically uses
+	// TaskID as RunID. Its task.spawned envelope deliberately omits the
+	// run id, and the persisted task record therefore omits it too. This
+	// exact equality is a Runtime contract, not a legacy guess: deriving
+	// it here lets the later planner/tool/App events (which carry
+	// RunID=TaskID) route to their already-bound task without admitting an
+	// arbitrary run id. An explicit event/snapshot run id remains
+	// authoritative and is still mismatch-checked above.
+	derivedRunID := runID == ""
+	if derivedRunID {
+		runID = taskID
+	}
+	if err := sess.validateTaskRoute(taskID, parent, runID, derivedRunID); err != nil {
+		return false, err
+	}
+	if _, exists := sess.turns[turns.TurnID(taskID)]; exists {
+		// Idempotent re-append (a response-loss replay): the row already
+		// exists and the immutable routing identity agrees; leave it
+		// untouched.
+		return false, nil
 	}
 
 	// Transactional creation: the durable append lands BEFORE the
@@ -441,6 +460,7 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		}
 	}
 
+	sess.commitTaskRoute(taskID, parent, runID, derivedRunID)
 	ts := &turnState{taskID: taskID, runID: runID}
 	if snap.InputsPresent {
 		// Seed the in-memory input accumulator with the record's input

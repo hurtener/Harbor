@@ -13143,6 +13143,23 @@ following turns remain live. This rule does not equate the two events and does
 not rewrite terminal metadata. Same-sequence conflicts, unknown sequence
 ordering, and identity/task/run binding disagreements remain fail-closed.
 
+**Production correction (2026-08-15) — stock task/run routing.** The Runtime
+intentionally emits root `task.spawned` under the identity triple with an empty
+RunID, then starts that task's RunLoop under `RunID=TaskID`; planner decisions,
+tool lifecycle, usage, pause, and `mcp.app_available` therefore carry the task
+id as their run id. The materializer previously registered only an explicit
+spawn RunID, so it silently skipped every rich run-scoped event and later
+sealed an answer-only row from the task lifecycle. For a task already bound by
+its canonical spawn in the same session, the materializer now derives exactly
+the stock Runtime's TaskID-as-RunID relation when both spawn envelope and task
+snapshot omit RunID, persists it, and routes the rich events through the
+existing bounded/security-preserving component projectors. This is not an
+arbitrary missing-run fallback: explicit event/snapshot bindings remain
+canonical and mismatch fail-closed, unrelated runs remain unroutable, raw
+provider reasoning/tool arguments/results and App callback bindings remain
+structurally absent, and App ToolCallID remains correlation metadata for the
+separately authorized persisted tool-context replay.
+
 **Required acceptance (binding for the phase).** Once the owning runtime is
 selected, a persisted session with more than 100,000 events, at least 10,000
 turns, and one turn with more than 100 tool calls reopens its latest 20 turns

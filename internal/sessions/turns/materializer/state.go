@@ -2,10 +2,22 @@ package materializer
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 )
+
+// ErrRunRoutingConflict reports that the narrow derived
+// TaskID-as-RunID authority collides with another task's route. Legacy
+// explicit run reuse retains its established last-writer routing semantics;
+// the new derivation may neither steal nor be stolen by such a route.
+var ErrRunRoutingConflict = errors.New("materializer: run id is already bound to another task")
+
+// ErrTaskRoutingConflict reports that a repeated canonical task spawn changes
+// the task's parent relation. The task graph is immutable projection authority.
+var ErrTaskRoutingConflict = errors.New("materializer: task parent binding changed")
 
 // sessionState is the materializer's per-session in-memory working
 // state. It is NOT a second durable store and NOT a warehouse: the
@@ -52,6 +64,14 @@ type sessionState struct {
 	// planner / app / pause / usage events route through it to the
 	// owning turn; a child run's events fold into its parent's turn.
 	runs map[string]string
+	// derivedRuns marks the narrow stock root-foreground
+	// TaskID-as-RunID bindings. Unlike legacy explicit run reuse, a
+	// derived binding cannot be reassigned across tasks.
+	derivedRuns map[string]bool
+	// taskRuns is the immutable forward binding for each observed task.
+	// Empty may be filled by a later explicit binding; two nonempty
+	// different bindings for one task fail closed.
+	taskRuns map[string]string
 	// tasks maps a task id to its parent task id ("" = a root task).
 	// Task lifecycle events route through it to the root foreground
 	// turn; walking it folds child-task events into the root turn.
@@ -131,12 +151,43 @@ func (m *Materializer) newSessionState(ctx context.Context, id identity.Identity
 		return nil, err
 	}
 	return &sessionState{
-		id:         id,
-		checkpoint: cp,
-		runs:       map[string]string{},
-		tasks:      map[string]string{},
-		turns:      map[turns.TurnID]*turnState{},
+		id:          id,
+		checkpoint:  cp,
+		runs:        map[string]string{},
+		derivedRuns: map[string]bool{},
+		taskRuns:    map[string]string{},
+		tasks:       map[string]string{},
+		turns:       map[turns.TurnID]*turnState{},
 	}, nil
+}
+
+// validateTaskRoute checks the two immutable indexes without mutation. It is
+// deliberately separate from commitTaskRoute so a root append can validate,
+// durably append, and only then publish its in-memory routing state.
+func (s *sessionState) validateTaskRoute(taskID, parent, runID string, derived bool) error {
+	if boundParent, ok := s.tasks[taskID]; ok && boundParent != parent {
+		return fmt.Errorf("%w: task %q parent %q, event parent %q", ErrTaskRoutingConflict, taskID, boundParent, parent)
+	}
+	if boundRun, ok := s.taskRuns[taskID]; ok && boundRun != "" && runID != "" && boundRun != runID {
+		return fmt.Errorf("%w: task %q run %q, event run %q", ErrRunRoutingConflict, taskID, boundRun, runID)
+	}
+	if runID != "" {
+		if boundTask, ok := s.runs[runID]; ok && boundTask != taskID && (derived || s.derivedRuns[runID]) {
+			return fmt.Errorf("%w: run %q task %q, event task %q", ErrRunRoutingConflict, runID, boundTask, taskID)
+		}
+	}
+	return nil
+}
+
+func (s *sessionState) commitTaskRoute(taskID, parent, runID string, derived bool) {
+	s.tasks[taskID] = parent
+	if _, exists := s.taskRuns[taskID]; !exists || runID != "" {
+		s.taskRuns[taskID] = runID
+	}
+	if runID != "" {
+		s.runs[runID] = taskID
+		s.derivedRuns[runID] = derived
+	}
 }
 
 // rootTurn resolves the turn an event with the given run id folds

@@ -11,6 +11,16 @@ App authority itself. Together with Phase 245's lifecycle read, a persisted
 session reopens its latest turns in exactly two reads, independent of total
 history.
 
+**Production correction (v1.28.4).** The stock Runtime's root
+`task.spawned` event deliberately has no envelope RunID; its per-task RunLoop
+then emits planner/tool/App events under `RunID=TaskID`. The materializer must
+derive only that exact already-spawned task/run binding, persist the rich
+reasoning/activity/App components, and reproduce both the row and
+`sessions.turns.get` bytes unchanged after durable restart. Explicit run
+bindings and mismatches remain authoritative/fail-closed; raw reasoning, tool
+arguments/results, App callback authority, and tool-context contents remain
+absent from the turn row.
+
 ## RFC anchor
 
 - RFC §5.2

@@ -1320,6 +1320,21 @@ content-read/impersonation authority exists: admin/fleet observation implies
 no transcript access. `events.list` / `state.history` / `tasks.get` remain
 the raw drill-down and explicit task-detail surfaces.
 
+The stock Runtime's root-foreground task/run relationship is part of that
+projection source: the foreground RunLoop uses that TaskID as its canonical
+RunID. Root `task.spawned` intentionally carries only the identity triple,
+while the following planner, tool-lifecycle, usage, pause, and
+`mcp.app_available` events carry `RunID=TaskID`. The turn materializer
+therefore derives exactly that task-bound RunID when both the root spawn
+envelope and task snapshot omit it, registers it only against the
+already-observed task in the same session, and persists the derived run
+identity on the turn. This is not a generic missing-RunID fallback for child
+or background executors: an explicit event/snapshot RunID remains
+authoritative, disagreement fails closed, and an unrelated run id never
+routes merely because the session has one turn. This binding is what makes
+the canonical rich events survive restart in the same row as the task/result
+lifecycle.
+
 The persisted task lifecycle event is canonical for terminal status and its
 nonempty failure code. A task-record snapshot may fill a code only when a
 legacy event omitted one; if both carry nonempty, different codes, the

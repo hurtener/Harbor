@@ -19,6 +19,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- Durable conversation turns now retain their canonical planner-derived
+  reasoning, tool activity, and MCP App references when the stock Runtime's
+  `task.spawned` event omits RunID and its later run-scoped events use the
+  canonical `RunID=TaskID` binding. The exact task-bound relation is persisted
+  and replay/restart remains byte-identical; arbitrary run ids and explicit
+  binding mismatches remain fail-closed, and raw reasoning/tool content and App
+  callback authority remain absent (D-425).
 - Durable conversation-turn projection now acknowledges a strictly later
   contradictory terminal lifecycle event for an already-sealed legacy turn
   without rewriting the immutable first terminal row. Its session checkpoint
