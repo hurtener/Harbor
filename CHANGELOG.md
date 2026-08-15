@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28.5] — 2026-08-15
+
 ### Fixed
 
 - Session auto-naming now explicitly disables private reasoning so a selected
@@ -4597,7 +4599,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.4...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.5...HEAD
+[1.28.5]: https://github.com/hurtener/Harbor/compare/v1.28.4...v1.28.5
 [1.28.4]: https://github.com/hurtener/Harbor/compare/v1.28.3...v1.28.4
 [1.28.3]: https://github.com/hurtener/Harbor/compare/v1.28.2...v1.28.3
 [1.28.2]: https://github.com/hurtener/Harbor/compare/v1.28.1...v1.28.2
