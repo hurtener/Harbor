@@ -11,6 +11,9 @@ package sqlmigrate_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -24,6 +27,103 @@ import (
 )
 
 func mig(body string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(body)} }
+
+type verifyProbe struct {
+	mu       sync.Mutex
+	queryErr error
+	versions []int
+	queries  []string
+	execs    []string
+	prepares []string
+	begins   int
+}
+
+type verifyConnector struct{ probe *verifyProbe }
+
+func (c *verifyConnector) Connect(context.Context) (driver.Conn, error) {
+	return &verifyConn{probe: c.probe}, nil
+}
+
+func (*verifyConnector) Driver() driver.Driver { return verifyDriver{} }
+
+type verifyDriver struct{}
+
+func (verifyDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("verifyDriver.Open is unused; tests use sql.OpenDB")
+}
+
+type verifyConn struct{ probe *verifyProbe }
+
+func (c *verifyConn) Prepare(query string) (driver.Stmt, error) {
+	c.probe.mu.Lock()
+	c.probe.prepares = append(c.probe.prepares, query)
+	c.probe.mu.Unlock()
+	return nil, errors.New("verify probe rejects prepared statements")
+}
+
+func (*verifyConn) Close() error { return nil }
+
+func (c *verifyConn) Begin() (driver.Tx, error) {
+	c.probe.mu.Lock()
+	c.probe.begins++
+	c.probe.mu.Unlock()
+	return nil, errors.New("verify probe rejects transactions")
+}
+
+func (c *verifyConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return c.Begin()
+}
+
+func (c *verifyConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	c.probe.mu.Lock()
+	c.probe.execs = append(c.probe.execs, query)
+	c.probe.mu.Unlock()
+	return nil, errors.New("verify probe rejects writes")
+}
+
+func (c *verifyConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	c.probe.mu.Lock()
+	c.probe.queries = append(c.probe.queries, query)
+	queryErr := c.probe.queryErr
+	versions := append([]int(nil), c.probe.versions...)
+	c.probe.mu.Unlock()
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	return &verifyRows{versions: versions}, nil
+}
+
+type verifyRows struct {
+	versions []int
+	index    int
+}
+
+func (*verifyRows) Columns() []string { return []string{"version"} }
+func (*verifyRows) Close() error      { return nil }
+
+func (r *verifyRows) Next(dest []driver.Value) error {
+	if r.index >= len(r.versions) {
+		return io.EOF
+	}
+	dest[0] = int64(r.versions[r.index])
+	r.index++
+	return nil
+}
+
+func openVerifyProbe(t *testing.T, versions ...int) (*sql.DB, *verifyProbe) {
+	t.Helper()
+	probe := &verifyProbe{versions: append([]int(nil), versions...)}
+	db := sql.OpenDB(&verifyConnector{probe: probe})
+	t.Cleanup(func() { _ = db.Close() })
+	return db, probe
+}
+
+func postgresMigrations() fstest.MapFS {
+	return fstest.MapFS{
+		"migrations/0001_init.sql": mig(`SELECT 1;`),
+		"migrations/0002_more.sql": mig(`SELECT 2;`),
+	}
+}
 
 func openMem(t *testing.T) *sql.DB {
 	t.Helper()
@@ -143,6 +243,91 @@ func TestRunSQLite_PartialApplyRecovery(t *testing.T) {
 	}
 }
 
+func TestMode_Resolve_DefaultsToApply(t *testing.T) {
+	got, err := (sqlmigrate.Mode("")).Resolve()
+	if err != nil {
+		t.Fatalf("Resolve empty mode: %v", err)
+	}
+	if got != sqlmigrate.ModeApply {
+		t.Fatalf("Resolve empty mode = %q, want %q", got, sqlmigrate.ModeApply)
+	}
+	if _, err := sqlmigrate.Mode("future").Resolve(); err == nil {
+		t.Fatal("Resolve accepted unknown mode")
+	}
+}
+
+func TestRunPostgres_Verify_UsesOnlyReadOnlyLedgerQuery(t *testing.T) {
+	db, probe := openVerifyProbe(t, 1, 2)
+	if err := sqlmigrate.RunPostgres(context.Background(), db, postgresMigrations(), "test", "must-not-lock", sqlmigrate.ModeVerify); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if len(probe.queries) != 1 || strings.TrimSpace(probe.queries[0]) != "SELECT version FROM schema_migrations" {
+		t.Fatalf("queries = %q, want one schema_migrations SELECT", probe.queries)
+	}
+	if len(probe.execs) != 0 || len(probe.prepares) != 0 || probe.begins != 0 {
+		t.Fatalf("verify used write/session machinery: execs=%q prepares=%q begins=%d", probe.execs, probe.prepares, probe.begins)
+	}
+	if strings.Contains(strings.Join(probe.queries, " "), "pg_advisory") {
+		t.Fatalf("verify queried an advisory-lock function: %q", probe.queries)
+	}
+}
+
+func TestRunPostgres_Verify_FailsWhenEmbeddedVersionIsUnapplied(t *testing.T) {
+	db, _ := openVerifyProbe(t, 1)
+	err := sqlmigrate.RunPostgres(context.Background(), db, postgresMigrations(), "test", "must-not-lock", sqlmigrate.ModeVerify)
+	if err == nil || !strings.Contains(err.Error(), "unapplied embedded migrations: 0002_more.sql") {
+		t.Fatalf("verify missing version error = %v", err)
+	}
+}
+
+func TestRunPostgres_Verify_FailsWhenLedgerIsMissing(t *testing.T) {
+	db, probe := openVerifyProbe(t)
+	probe.queryErr = errors.New(`relation "schema_migrations" does not exist`)
+	err := sqlmigrate.RunPostgres(context.Background(), db, postgresMigrations(), "test", "must-not-lock", sqlmigrate.ModeVerify)
+	if err == nil || !strings.Contains(err.Error(), "verify migrations") || !strings.Contains(err.Error(), "schema_migrations") {
+		t.Fatalf("verify missing ledger error = %v", err)
+	}
+}
+
+func TestRunPostgres_Verify_FailsBeforeQueryOnMalformedEmbeddedSet(t *testing.T) {
+	cases := []struct {
+		name string
+		fsys fstest.MapFS
+		want string
+	}{
+		{
+			name: "malformed filename",
+			fsys: fstest.MapFS{"migrations/not-versioned.sql": mig(`SELECT 1;`)},
+			want: "malformed migration filename",
+		},
+		{
+			name: "duplicate version",
+			fsys: fstest.MapFS{
+				"migrations/0001_one.sql": mig(`SELECT 1;`),
+				"migrations/0001_two.sql": mig(`SELECT 2;`),
+			},
+			want: "duplicate migration version 0001",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, probe := openVerifyProbe(t, 1)
+			err := sqlmigrate.RunPostgres(context.Background(), db, tc.fsys, "test", "must-not-lock", sqlmigrate.ModeVerify)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			probe.mu.Lock()
+			defer probe.mu.Unlock()
+			if len(probe.queries) != 0 {
+				t.Fatalf("malformed embedded set reached database: queries=%q", probe.queries)
+			}
+		})
+	}
+}
+
 // TestRunPostgres_ConcurrentBootsSerialize exercises the advisory-lock
 // path: N concurrent RunPostgres calls against the same DB must all
 // succeed without racing on CREATE TABLE / version inserts. Env-gated —
@@ -168,7 +353,7 @@ func TestRunPostgres_ConcurrentBootsSerialize(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- sqlmigrate.RunPostgres(context.Background(), db, fsys, "test", "harbor-sqlmigrate-test")
+			errs <- sqlmigrate.RunPostgres(context.Background(), db, fsys, "test", "harbor-sqlmigrate-test", sqlmigrate.ModeApply)
 		}()
 	}
 	wg.Wait()
@@ -177,5 +362,8 @@ func TestRunPostgres_ConcurrentBootsSerialize(t *testing.T) {
 		if e != nil {
 			t.Errorf("concurrent RunPostgres failed (advisory lock did not serialise): %v", e)
 		}
+	}
+	if err := sqlmigrate.RunPostgres(context.Background(), db, fsys, "test", "harbor-sqlmigrate-test", sqlmigrate.ModeVerify); err != nil {
+		t.Fatalf("read-only verification after live migration apply: %v", err)
 	}
 }

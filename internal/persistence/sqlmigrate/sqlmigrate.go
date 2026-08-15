@@ -14,9 +14,10 @@
 // the migrations-table DDL (`TIMESTAMP`/`CURRENT_TIMESTAMP` vs
 // `TIMESTAMPTZ`/`NOW()`), in who records the applied version (the SQLite
 // runner inserts it; the Postgres migration body inserts its own row),
-// and in concurrency control (Postgres takes a session `pg_advisory_lock`,
-// SQLite needs none). Each driver passes its own embedded `migrations/`
-// FS and error prefix so wrapped errors read exactly as before.
+// and in concurrency control (Postgres apply mode takes a session
+// `pg_advisory_lock`, while Postgres verify mode and SQLite need none). Each
+// driver passes its own embedded `migrations/` FS and error prefix so wrapped
+// errors read exactly as before.
 package sqlmigrate
 
 import (
@@ -171,19 +172,28 @@ type migration struct {
 	version int
 }
 
-// RunPostgres applies any forward-only migrations in migrationsFS not yet
-// recorded in `schema_migrations` to db, wrapping the run in a
-// session-level `pg_advisory_lock` derived from advisoryLockName so
-// concurrent New() calls across replicas don't race. errPrefix is the
-// driver's error-wrap prefix (e.g. "postgres", "memory/postgres"). The
-// migration body records its own schema_migrations row.
-func RunPostgres(ctx context.Context, db *sql.DB, migrationsFS fs.FS, errPrefix, advisoryLockName string) error {
+// RunPostgres applies or verifies the forward-only migrations in migrationsFS.
+// Empty mode resolves to ModeApply, which wraps application in a session-level
+// `pg_advisory_lock` derived from advisoryLockName so concurrent New() calls
+// across replicas don't race. ModeVerify performs only a read-only query of
+// the existing `schema_migrations` ledger: it creates no table, begins no
+// transaction, takes no advisory lock, and fails when an embedded migration is
+// not recorded. errPrefix is the driver's error-wrap prefix (e.g. "postgres",
+// "memory/postgres"). Migration bodies record their own schema_migrations row.
+func RunPostgres(ctx context.Context, db *sql.DB, migrationsFS fs.FS, errPrefix, advisoryLockName string, mode Mode) error {
+	resolvedMode, err := mode.Resolve()
+	if err != nil {
+		return fmt.Errorf("%s: %w", errPrefix, err)
+	}
 	migs, err := loadPostgresMigrations(migrationsFS, errPrefix)
 	if err != nil {
 		return err
 	}
 	if len(migs) == 0 {
 		return fmt.Errorf("%s: no migrations found in embedded migrations/ — package mis-built", errPrefix)
+	}
+	if resolvedMode == ModeVerify {
+		return verifyPostgres(ctx, db, migs, errPrefix)
 	}
 
 	// Dedicated connection so the advisory lock stays bound to one session.
@@ -226,6 +236,28 @@ func RunPostgres(ctx context.Context, db *sql.DB, migrationsFS fs.FS, errPrefix,
 	return nil
 }
 
+// verifyPostgres proves every embedded migration is recorded in the existing
+// ledger. Querying through *sql.DB is deliberate: unlike apply mode, verify
+// mode needs no session affinity and is compatible with transaction-pooled
+// Postgres connections. A missing/malformed ledger fails through the SELECT or
+// Scan path; this function has no write-capable call site.
+func verifyPostgres(ctx context.Context, db *sql.DB, migs []migration, errPrefix string) error {
+	applied, err := loadAppliedPostgres(ctx, db, errPrefix)
+	if err != nil {
+		return fmt.Errorf("%s: verify migrations: %w", errPrefix, err)
+	}
+	missing := make([]string, 0)
+	for _, m := range migs {
+		if _, ok := applied[m.version]; !ok {
+			missing = append(missing, m.name)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("%s: verify migrations: unapplied embedded migrations: %s", errPrefix, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func loadPostgresMigrations(migrationsFS fs.FS, errPrefix string) ([]migration, error) {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
@@ -244,6 +276,9 @@ func loadPostgresMigrations(migrationsFS fs.FS, errPrefix string) ([]migration, 
 		if err != nil {
 			return nil, fmt.Errorf("%s: malformed migration version in %q: %w", errPrefix, e.Name(), err)
 		}
+		if v <= 0 {
+			return nil, fmt.Errorf("%s: malformed migration version in %q: must be greater than zero", errPrefix, e.Name())
+		}
 		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("%s: read migration %q: %w", errPrefix, e.Name(), err)
@@ -251,11 +286,20 @@ func loadPostgresMigrations(migrationsFS fs.FS, errPrefix string) ([]migration, 
 		out = append(out, migration{version: v, name: e.Name(), body: string(body)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	for i := 1; i < len(out); i++ {
+		if out[i-1].version == out[i].version {
+			return nil, fmt.Errorf("%s: duplicate migration version %04d in %q and %q", errPrefix, out[i].version, out[i-1].name, out[i].name)
+		}
+	}
 	return out, nil
 }
 
-func loadAppliedPostgres(ctx context.Context, conn *sql.Conn, errPrefix string) (map[int]struct{}, error) {
-	rows, err := conn.QueryContext(ctx, "SELECT version FROM schema_migrations")
+type postgresQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func loadAppliedPostgres(ctx context.Context, queryer postgresQueryer, errPrefix string) (map[int]struct{}, error) {
+	rows, err := queryer.QueryContext(ctx, "SELECT version FROM schema_migrations")
 	if err != nil {
 		return nil, fmt.Errorf("%s: select schema_migrations: %w", errPrefix, err)
 	}

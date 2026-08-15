@@ -99,6 +99,9 @@ llm:
 # memory:
 #   driver: sqlite
 #   dsn: ./{{.Name}}-memory.sqlite
+#   # Postgres only: apply on a direct endpoint; verify through a transaction
+#   # pool only after that apply succeeds.
+#   # migration_mode: apply
 #   strategy: rolling_summary
 #   budget_tokens: 8000
 #   # Semantic recall (requires embeddings block):
@@ -113,6 +116,7 @@ llm:
 # state:
 #   driver: sqlite
 #   dsn: ./{{.Name}}-state.sqlite
+#   # migration_mode: apply # Postgres only; empty also defaults to apply.
 
 # tools — built-in tools shipped with Harbor + external sources.
 # `built_in` opts into tools shipped in the harbor binary; remove the
@@ -139,6 +143,7 @@ llm:
 # skills:
 #   driver: localdb
 #   dsn: ./{{.Name}}-skills.sqlite
+#   # migration_mode: apply # Postgres only; verify after direct migration.
 #   directory:
 #     pinned: []                       # skill names anchored first
 #     max_entries: 10                  # 0 → planner.skills_context_max (default 5)

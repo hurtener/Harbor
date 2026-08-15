@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/observability/rollups/drivers/postgres"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // TestPostgres_Migrations_Idempotent pins the forward-only migration
@@ -70,6 +71,21 @@ func TestPostgres_Migrations_Idempotent(t *testing.T) {
 			t.Fatalf("table %s does not exist after migrations", tbl)
 		}
 	}
+}
+
+func TestPostgres_Migrations_VerifyMode_AfterApply(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	ctx := context.Background()
+	applyStore, err := postgres.New(postgres.Config{DSN: dsn})
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	_ = applyStore.Close(ctx)
+	verifyStore, err := postgres.New(postgres.Config{DSN: dsn, MigrationMode: sqlmigrate.ModeVerify})
+	if err != nil {
+		t.Fatalf("verify applied ledger: %v", err)
+	}
+	_ = verifyStore.Close(ctx)
 }
 
 // TestPostgres_Migrations_SeededCheckpoint pins that the migration seeds

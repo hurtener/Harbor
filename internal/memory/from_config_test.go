@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // TestSnapshotFromConfig_Golden pins the 1:1 projection.
@@ -13,6 +14,7 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 	snap := SnapshotFromConfig(config.MemoryConfig{
 		Driver:             "sqlite",
 		DSN:                "file:mem.db",
+		MigrationMode:      sqlmigrate.ModeVerify,
 		Strategy:           "rolling_summary",
 		BudgetTokens:       2048,
 		RecoveryBacklogMax: 32,
@@ -23,6 +25,7 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 	want := ConfigSnapshot{
 		Driver:             "sqlite",
 		DSN:                "file:mem.db",
+		MigrationMode:      sqlmigrate.ModeVerify,
 		Strategy:           StrategyRollingSummary,
 		BudgetTokens:       2048,
 		RecoveryBacklogMax: 32,
@@ -44,6 +47,7 @@ func TestSnapshotFromConfig_FieldParity_MemoryConfig(t *testing.T) {
 	projected := map[string]bool{
 		"Driver":             true,
 		"DSN":                true,
+		"MigrationMode":      true,
 		"Strategy":           true,
 		"BudgetTokens":       true,
 		"RecoveryBacklogMax": true,
@@ -120,6 +124,7 @@ func TestRecallFromConfig_FieldParity_RecallRelevant(t *testing.T) {
 	excluded := map[string]string{
 		"Driver":             "store config, not recall",
 		"DSN":                "store config, not recall",
+		"MigrationMode":      "store migration policy, not recall",
 		"Strategy":           "store config, not recall",
 		"BudgetTokens":       "store config, not recall",
 		"RecoveryBacklogMax": "store config, not recall",

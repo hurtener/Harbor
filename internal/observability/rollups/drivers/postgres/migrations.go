@@ -15,12 +15,9 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// applyMigrations runs every migration in migrationsFS not yet recorded in
-// `schema_migrations`, under a session `pg_advisory_lock` so concurrent
-// New() calls across replicas don't race. The shared runner lives in
-// internal/persistence/sqlmigrate; the advisory-lock name is stable per
-// subsystem so the FNV-derived key never collides with another subsystem's
-// migration lock.
-func applyMigrations(ctx context.Context, db *sql.DB) error {
-	return sqlmigrate.RunPostgres(ctx, db, migrationsFS, "rollups/postgres", "harbor-rollup-migrations")
+// runMigrations applies or read-only verifies the embedded migration ledger.
+// Apply mode takes the subsystem-stable session advisory lock; verify mode
+// performs no DDL, transaction, or lock and is safe through transaction pools.
+func runMigrations(ctx context.Context, db *sql.DB, mode sqlmigrate.Mode) error {
+	return sqlmigrate.RunPostgres(ctx, db, migrationsFS, "rollups/postgres", "harbor-rollup-migrations", mode)
 }

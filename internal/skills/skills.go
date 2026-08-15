@@ -36,6 +36,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
@@ -669,6 +670,9 @@ type ConfigSnapshot struct {
 	// honoured for tests. `secret:"true"` redaction lives at the
 	// config-package boundary.
 	DSN string
+	// MigrationMode controls Postgres migration handling at open. Empty
+	// preserves apply-at-boot; verify is read-only and pooler-compatible.
+	MigrationMode sqlmigrate.Mode
 	// Retrieval opts in to a `Search` ranking mode. The zero value
 	// keeps the FTS5 → regex → exact ladder; `RetrievalSemantic`
 	// ranks by embedding similarity (requires `Deps.Embedder`).

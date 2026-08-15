@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -74,6 +75,7 @@ type Deps struct {
 type ConfigSnapshot struct {
 	Driver             string
 	DSN                string
+	MigrationMode      sqlmigrate.Mode
 	Strategy           Strategy
 	BudgetTokens       int
 	RecoveryBacklogMax int

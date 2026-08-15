@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
@@ -310,6 +311,19 @@ func (c *Config) validateState() error {
 	if c.State.Driver != "inmem" && c.State.DSN == "" {
 		return fieldError("state.dsn",
 			fmt.Sprintf("must be set when driver=%q", c.State.Driver))
+	}
+	if err := validatePostgresMigrationMode("state.migration_mode", c.State.Driver, c.State.MigrationMode); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePostgresMigrationMode(field, driver string, mode sqlmigrate.Mode) error {
+	if _, err := mode.Resolve(); err != nil {
+		return fieldError(field, err.Error())
+	}
+	if mode != "" && driver != "postgres" {
+		return fieldError(field, fmt.Sprintf("must be empty unless driver=%q", "postgres"))
 	}
 	return nil
 }
@@ -765,6 +779,9 @@ func (c *Config) validateSessions() error {
 				fmt.Sprintf("must be set when driver=%q", t.Driver))
 		}
 	}
+	if err := validatePostgresMigrationMode("sessions.turns.migration_mode", c.Sessions.Turns.Driver, c.Sessions.Turns.MigrationMode); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -794,6 +811,9 @@ func (c *Config) validateObservability() error {
 			return fieldError("observability.rollups.dsn",
 				fmt.Sprintf("must be set when driver=%q", r.Driver))
 		}
+	}
+	if err := validatePostgresMigrationMode("observability.rollups.migration_mode", c.Observability.Rollups.Driver, c.Observability.Rollups.MigrationMode); err != nil {
+		return err
 	}
 	return nil
 }
@@ -872,6 +892,9 @@ func (c *Config) validateArtifacts() error {
 	if (c.Artifacts.Driver == "sqlite" || c.Artifacts.Driver == "postgres") && c.Artifacts.DSN == "" {
 		return fieldError("artifacts.dsn",
 			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
+	}
+	if err := validatePostgresMigrationMode("artifacts.migration_mode", c.Artifacts.Driver, c.Artifacts.MigrationMode); err != nil {
+		return err
 	}
 	if c.Artifacts.Driver == "s3" && c.Artifacts.S3Bucket == "" {
 		return fieldError("artifacts.s3_bucket",
@@ -1085,6 +1108,9 @@ func (c *Config) validateMemory() error {
 				fmt.Sprintf("must not be empty when driver=%q", c.Memory.Driver))
 		}
 	}
+	if err := validatePostgresMigrationMode("memory.migration_mode", c.Memory.Driver, c.Memory.MigrationMode); err != nil {
+		return err
+	}
 	if c.Memory.Strategy != "" {
 		if _, ok := allowedMemoryStrategies[c.Memory.Strategy]; !ok {
 			return fieldError("memory.strategy",
@@ -1158,6 +1184,9 @@ func (c *Config) validateSkills() error {
 	if _, ok := allowedRetrievalModes[c.Skills.Retrieval]; !ok {
 		return fieldError("skills.retrieval",
 			fmt.Sprintf("must be empty or %q, got %q", "semantic", c.Skills.Retrieval))
+	}
+	if err := validatePostgresMigrationMode("skills.migration_mode", c.Skills.Driver, c.Skills.MigrationMode); err != nil {
+		return err
 	}
 	if c.Skills.Driver == "" && c.Skills.DSN == "" {
 		if len(c.Skills.Directory.Pinned) > 0 ||

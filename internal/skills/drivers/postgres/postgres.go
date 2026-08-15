@@ -139,7 +139,7 @@ func New(cfg skills.ConfigSnapshot, deps skills.Deps) (skills.SkillStore, error)
 		return nil, fmt.Errorf("skills/postgres: ping: %w", err)
 	}
 
-	if err := applyMigrations(pingCtx, db); err != nil {
+	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

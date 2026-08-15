@@ -26,6 +26,10 @@ telemetry:
 
 state:
   driver: inmem
+  # Postgres only. Empty/omitted = apply (direct/session-capable endpoint).
+  # After a separate direct apply succeeds, point dsn at a transaction pool
+  # and set verify: startup reads the ledger only and fails if it is stale.
+  # migration_mode: verify
 
 llm:
   # `bifrost` (Phase 33 — pure-Go gateway against OpenAI / Anthropic /
@@ -349,6 +353,11 @@ artifacts:
   # key-value form. Override via HARBOR_ARTIFACTS_DSN in production;
   # never commit a real password.
   # dsn: /var/lib/harbor/artifacts.sqlite
+  # Postgres only; see state.migration_mode above. The same apply/verify
+  # rollout contract also exists at memory.migration_mode,
+  # skills.migration_mode, sessions.turns.migration_mode, and
+  # observability.rollups.migration_mode.
+  # migration_mode: apply
   # Heavy-output threshold: payloads at or above this byte size that
   # are bound for a MODEL'S CONTEXT WINDOW are mandatorily routed
   # through the ArtifactStore (D-022, D-358, RFC §6.5 / §6.10).
@@ -452,6 +461,7 @@ memory:
   # key-value form. Override via HARBOR_MEMORY_DSN in production;
   # never commit a real password.
   # dsn: /var/lib/harbor/memory.sqlite
+  # migration_mode: apply # Postgres only; verify after a separate direct apply.
   # Memory shape strategy:
   #   - `none`            — AddTurn is a no-op; GetLLMContext returns empty.
   #   - `truncation`      — recent-turn window + budget enforcement (drop-oldest).
@@ -638,6 +648,7 @@ planner:
 #   # sensitive metadata (the value is `secret:"true"` — redacted in
 #   # audit logs).
 #   dsn: /var/lib/harbor/skills.sqlite
+#   # migration_mode: apply # Postgres only; verify after a separate direct apply.
 #   # Postgres variant (durable / shared, multi-instance):
 #   #   driver: postgres
 #   #   dsn: postgres://harbor:${HARBOR_SKILLS_PG_PASSWORD}@db:5432/harbor?sslmode=require

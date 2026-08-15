@@ -6,17 +6,19 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // TestSnapshotFromConfig_Golden pins the 1:1 projection.
 func TestSnapshotFromConfig_Golden(t *testing.T) {
 	t.Parallel()
 	snap := SnapshotFromConfig(config.SkillsConfig{
-		Driver:    "localdb",
-		DSN:       "file:skills.db",
-		Retrieval: "semantic",
+		Driver:        "localdb",
+		DSN:           "file:skills.db",
+		MigrationMode: sqlmigrate.ModeVerify,
+		Retrieval:     "semantic",
 	})
-	want := ConfigSnapshot{Driver: "localdb", DSN: "file:skills.db", Retrieval: RetrievalSemantic}
+	want := ConfigSnapshot{Driver: "localdb", DSN: "file:skills.db", MigrationMode: sqlmigrate.ModeVerify, Retrieval: RetrievalSemantic}
 	if snap != want {
 		t.Errorf("SnapshotFromConfig = %+v, want %+v", snap, want)
 	}
@@ -29,9 +31,10 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 func TestSnapshotFromConfig_FieldParity_SkillsConfig(t *testing.T) {
 	t.Parallel()
 	projected := map[string]bool{
-		"Driver":    true,
-		"DSN":       true,
-		"Retrieval": true,
+		"Driver":        true,
+		"DSN":           true,
+		"MigrationMode": true,
+		"Retrieval":     true,
 	}
 	excluded := map[string]string{
 		// Phase 111d (D-201): the directory block feeds NewDirectory

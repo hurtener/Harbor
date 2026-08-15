@@ -87,6 +87,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // register the "pgx" database/sql driver
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 )
 
@@ -107,6 +108,8 @@ const (
 type Config struct {
 	// DSN is the Postgres connection string (pgx URI or keyword form).
 	DSN string
+	// MigrationMode controls apply-at-boot versus read-only verification.
+	MigrationMode sqlmigrate.Mode
 	// Retention bounds the number of turn rows a session retains
 	// (newest kept; the oldest are evicted and the session's explicit
 	// truncation flag is set). <= 0 means the documented default
@@ -142,7 +145,7 @@ func New(cfg Config) (turns.Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("turns/postgres: ping: %w", err)
 	}
-	if err := applyMigrations(pingCtx, db); err != nil {
+	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
