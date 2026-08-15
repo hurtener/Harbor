@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28.7] — 2026-08-15
+
 ### Added
 
 - Postgres-backed state, memory, artifact, skill, conversation-turn, and
@@ -4618,7 +4620,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.6...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.7...HEAD
+[1.28.7]: https://github.com/hurtener/Harbor/compare/v1.28.6...v1.28.7
 [1.28.6]: https://github.com/hurtener/Harbor/compare/v1.28.5...v1.28.6
 [1.28.5]: https://github.com/hurtener/Harbor/compare/v1.28.4...v1.28.5
 [1.28.4]: https://github.com/hurtener/Harbor/compare/v1.28.3...v1.28.4
