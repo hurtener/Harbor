@@ -13124,6 +13124,15 @@ per-component `unavailable` state operational at the legacy task-record seam:
 one incompatible record cannot prevent later sessions and fresh turns from
 advancing.
 
+**Production correction (2026-08-14).** "Optional historical terminal
+message" includes text that the projection cannot represent safely: invalid
+UTF-8, NUL/C0/DEL controls, and values over the rune bound. Any such advisory
+message is omitted wholesale as unavailable; it is never sanitized or
+truncated and cannot veto the already-authoritative lifecycle event. The
+earlier over-bound-only wording was too narrow. Identity, task-id, and run-id
+bindings, transient task-store failures, and every required snapshot field
+remain fail-closed.
+
 **Required acceptance (binding for the phase).** Once the owning runtime is
 selected, a persisted session with more than 100,000 events, at least 10,000
 turns, and one turn with more than 100 tool calls reopens its latest 20 turns

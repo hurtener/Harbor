@@ -198,9 +198,10 @@ history.
       task-record snapshot may fill a missing legacy event code, but a
       nonempty disagreement makes the snapshot's whole optional failure group
       unavailable and preserves the event-derived closed class. An optional
-      historical terminal message over the projection bound is unavailable,
-      never truncated, and cannot stall later projection. Identity/task/run
-      binding violations remain fail-closed.
+      historical terminal message that is invalid UTF-8, contains NUL/C0/DEL
+      controls, or exceeds the projection bound is unavailable wholesale,
+      never sanitized or truncated, and cannot stall later projection.
+      Identity/task/run binding violations remain fail-closed.
 - [ ] Durability and handoff: the projection is incrementally materialized with
       idempotent sequence checkpoints, reconciles after interruption, survives
       restart on durable drivers, and is erased/fenced with its session.

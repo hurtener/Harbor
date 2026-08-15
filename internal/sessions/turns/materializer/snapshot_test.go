@@ -641,18 +641,35 @@ func TestMaterialize_TaskSnapshot_LegacyFailureMetadataCannotStallProjection(t *
 	})
 }
 
-// TestMaterialize_TaskSnapshot_OverBoundFailureMessageCorruptionFailsClosed
-// pins the security ordering around the one size-tolerance exception. A
-// message that is over-bound AND structurally corrupt is not a pure size
-// overflow: invalid UTF-8 and prohibited controls still fail the pass before
-// omission, leaving the terminal event unapplied and the row mutable.
-func TestMaterialize_TaskSnapshot_OverBoundFailureMessageCorruptionFailsClosed(t *testing.T) {
+// TestMaterialize_TaskSnapshot_UnrepresentableFailureMessageCannotStallProjection
+// pins that optional task-record display text never vetoes the authoritative
+// lifecycle event. An unrepresentable message is omitted wholesale, while the
+// event-derived classification seals and a following fresh turn checkpoints in
+// the same pass. Required snapshot fields and identity/task/run bindings remain
+// independently fail-closed.
+func TestMaterialize_TaskSnapshot_UnrepresentableFailureMessageCannotStallProjection(t *testing.T) {
 	tests := []struct {
 		name    string
 		message string
 	}{
 		{
-			name:    "over-bound plus NUL control",
+			name:    "production newline control",
+			message: "line one\nline two",
+		},
+		{
+			name:    "NUL control",
+			message: "before\x00after",
+		},
+		{
+			name:    "DEL control",
+			message: "before\x7fafter",
+		},
+		{
+			name:    "invalid UTF-8",
+			message: "before" + string([]byte{0xff}) + "after",
+		},
+		{
+			name:    "over-bound plus control",
 			message: strings.Repeat("m", turns.MaxTerminalMessageRunes+1) + "\x00",
 		},
 		{
@@ -664,30 +681,37 @@ func TestMaterialize_TaskSnapshot_OverBoundFailureMessageCorruptionFailsClosed(t
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, "")
 			defer h.closeStore()
-			reader := newFakeTaskReader().set("task-corrupt-message", TaskSnapshot{
+			reader := newFakeTaskReader().set("task-unrepresentable-message", TaskSnapshot{
 				FailurePresent: true,
 				ErrorCode:      "timeout",
 				ErrorMessage:   tt.message,
 			})
 			m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
 
-			h.src.publish(t, spawnEv(h.id, "run-corrupt-message", "task-corrupt-message", tasks.KindForeground, ""))
-			h.src.publish(t, startedEv(h.id, "task-corrupt-message"))
-			last := h.src.publish(t, failedEv(h.id, "task-corrupt-message", "timeout"))
+			h.src.publish(t, spawnEv(h.id, "run-unrepresentable-message", "task-unrepresentable-message", tasks.KindForeground, ""))
+			h.src.publish(t, startedEv(h.id, "task-unrepresentable-message"))
+			h.src.publish(t, failedEv(h.id, "task-unrepresentable-message", "timeout"))
+			h.src.publish(t, spawnEv(h.id, "run-fresh-after-message", "task-fresh-after-message", tasks.KindForeground, ""))
+			h.src.publish(t, startedEv(h.id, "task-fresh-after-message"))
+			last := h.src.publish(t, failedEv(h.id, "task-fresh-after-message", "5xx"))
 
-			if _, err := m.Materialize(context.Background()); !errors.Is(err, turns.ErrInvalidInput) {
-				t.Fatalf("materialize corrupt over-bound message = %v, want ErrInvalidInput", err)
+			if _, err := m.Materialize(context.Background()); err != nil {
+				t.Fatalf("materialize unrepresentable message: %v", err)
 			}
-			row := mustGetRow(t, h, "task-corrupt-message")
-			if row.Sealed || row.Status != turns.StatusRunning {
-				t.Errorf("row = status %q sealed %v, want running/unsealed", row.Status, row.Sealed)
+			row := mustGetRow(t, h, "task-unrepresentable-message")
+			if !row.Sealed || row.Status != turns.StatusFailed || row.ErrorClass != turns.ErrorClassTimeout || row.ErrorMessage != "" {
+				t.Errorf("legacy row = status %q sealed %v class %q message %q, want failed/sealed/timeout/unavailable message", row.Status, row.Sealed, row.ErrorClass, row.ErrorMessage)
+			}
+			fresh := mustGetRow(t, h, "task-fresh-after-message")
+			if !fresh.Sealed || fresh.ErrorClass != turns.ErrorClass5xx {
+				t.Errorf("following fresh row = sealed %v class %q, want true/5xx", fresh.Sealed, fresh.ErrorClass)
 			}
 			cp, err := h.proj.Checkpoint(context.Background(), h.id)
 			if err != nil {
 				t.Fatalf("checkpoint: %v", err)
 			}
-			if cp != last.Sequence-1 {
-				t.Errorf("checkpoint = %d, want %d (corrupt terminal event unapplied)", cp, last.Sequence-1)
+			if cp != last.Sequence {
+				t.Errorf("checkpoint = %d, want final event %d", cp, last.Sequence)
 			}
 		})
 	}

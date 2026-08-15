@@ -628,10 +628,7 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 			code = snap.ErrorCode
 		}
 		if compatible {
-			message, err = snapshotFailureMessage(snap.ErrorMessage)
-			if err != nil {
-				return false, err
-			}
+			message = snapshotFailureMessage(snap.ErrorMessage)
 		}
 	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
@@ -1471,7 +1468,10 @@ func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *t
 // sealTurn applies one Seal observation. Same retry/guard semantics as
 // updateTurn, including the honest terminal-gap handling: a row the
 // store no longer retains retires the turn's routing state and skips
-// (never a hard pass failure, never a resurrected row).
+// (never a hard pass failure, never a resurrected row). When another
+// materializer seals between this method's read and conditional write, an
+// equivalent terminal winner converges as success; conflicting terminal
+// metadata remains a loud immutable-row error.
 func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *turnState, s turns.Seal) (turns.TurnRow, error) {
 	var lastErr error
 	for range 5 {
@@ -1484,11 +1484,13 @@ func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *tur
 			return turns.TurnRow{}, err
 		}
 		if current.Sealed {
-			ts.sealed = true
-			return current, nil
+			return convergeSealedWinner(ts, current, s)
 		}
 		row, err := m.proj.Seal(ctx, sess.id, turns.TurnID(ts.taskID), current.Version, s)
 		if err == nil {
+			if row.Sealed {
+				return convergeSealedWinner(ts, row, s)
+			}
 			return row, nil
 		}
 		if errors.Is(err, turns.ErrStaleVersion) {
@@ -1499,9 +1501,42 @@ func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *tur
 			ts.retired = true
 			return turns.TurnRow{}, nil
 		}
+		if errors.Is(err, turns.ErrTurnSealed) {
+			winner, getErr := m.proj.Get(ctx, sess.id, turns.TurnID(ts.taskID))
+			if getErr != nil {
+				if errors.Is(getErr, turns.ErrTurnNotFound) {
+					ts.retired = true
+					return turns.TurnRow{}, nil
+				}
+				return turns.TurnRow{}, getErr
+			}
+			return convergeSealedWinner(ts, winner, s)
+		}
 		return turns.TurnRow{}, err
 	}
 	return turns.TurnRow{}, fmt.Errorf("materializer: seal %s: %w", ts.taskID, lastErr)
+}
+
+// convergeSealedWinner accepts only the exact terminal meaning this
+// materializer attempted to persist. FinishedAt is compared only when the
+// observation supplied it (zero delegates stamping to the winning projector),
+// and EventSeq is compared only when the observation names one. This permits
+// response-loss/concurrent replay convergence without treating a same-status
+// but differently classified/message-bearing terminal row as equivalent.
+func convergeSealedWinner(ts *turnState, row turns.TurnRow, s turns.Seal) (turns.TurnRow, error) {
+	equivalent := row.Sealed &&
+		row.Status == s.Status &&
+		row.FinishReason == s.FinishReason &&
+		row.ErrorClass == s.ErrorClass &&
+		row.FinishMessage == s.FinishMessage &&
+		row.ErrorMessage == s.ErrorMessage &&
+		(s.FinishedAt.IsZero() || row.FinishedAt.Equal(s.FinishedAt)) &&
+		(s.EventSeq == 0 || row.LastAppliedEventSeq == s.EventSeq)
+	if !equivalent {
+		return turns.TurnRow{}, fmt.Errorf("%w: %q has conflicting terminal metadata", turns.ErrTurnSealed, ts.taskID)
+	}
+	ts.sealed = true
+	return row, nil
 }
 
 // attachReasoning applies one AttachReasoning observation (replay-safe

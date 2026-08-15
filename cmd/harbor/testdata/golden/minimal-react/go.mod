@@ -2,7 +2,7 @@ module github.com/example/acme-agent
 
 go 1.26
 
-require github.com/hurtener/Harbor v1.28.0
+require github.com/hurtener/Harbor v1.28.2
 
 // Harbor resolves from the module proxy — `go mod tidy && go build ./...`
 // works with no edit to this file.
