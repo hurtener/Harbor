@@ -228,6 +228,37 @@ func TestCorrections_ReasoningEffort_ThinkingRouting(t *testing.T) {
 	}
 }
 
+// TestCorrections_ReasoningEffort_OffStaysDriverVisible proves that a profile
+// using the thinking-model routing quirk cannot hide an explicit per-call
+// reasoning disable in opaque Extra. Naming relies on this generic guarantee.
+func TestCorrections_ReasoningEffort_OffStaysDriverVisible(t *testing.T) {
+	const model = "deepseek/deepseek-reasoner"
+	profile := llm.ModelProfile{
+		ContextWindowTokens: 128_000,
+		ReasoningEffort:     llm.ReasoningHigh,
+		Corrections: llm.CorrectionsProfile{
+			ReasoningEffortRouting: llm.ReasoningRouteThinking,
+		},
+	}
+	rec := newRecorder()
+	c := wrapRecorder(t, rec, snapshotWithProfile(model, profile))
+	req := makeRequest(model, []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: llm.Content{Text: strPtr("name this")}},
+	})
+	req.ReasoningEffort = llm.ReasoningOff
+
+	if _, err := c.Complete(testCtx(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	got, _ := rec.lastRequest()
+	if got.ReasoningEffort != llm.ReasoningOff {
+		t.Fatalf("ReasoningEffort = %q, want explicit driver-visible %q", got.ReasoningEffort, llm.ReasoningOff)
+	}
+	if _, ok := got.Extra["reasoning_effort"]; ok {
+		t.Fatal("explicit off was routed into opaque Extra instead of staying driver-visible")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Profile-level ReasoningEffort default (the v1.1 reasoning-wiring fix)
 // ---------------------------------------------------------------------------

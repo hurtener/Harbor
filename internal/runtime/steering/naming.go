@@ -35,8 +35,10 @@ const (
 	namingDigestMaxBytes      = 4096
 	namingDigestPerEntryBytes = 512
 	namingDigestTailEntries   = 4
-	// namingMaxOutputTokens caps the naming Complete call's output — a title
-	// is a single short line, so a small cap keeps the call cheap and bounded.
+	// namingMaxOutputTokens caps the naming Complete call's visible output — a
+	// title is a single short line, so a small cap keeps the call cheap and
+	// bounded. namingCompleteRequest explicitly disables private reasoning so a
+	// profile default cannot spend this allowance before emitting the title.
 	namingMaxOutputTokens = 64
 )
 
@@ -369,7 +371,8 @@ func namingCompleteRequest(model string, maxTitleLen int, digest string, rename 
 	userText := digest
 	maxTok := namingMaxOutputTokens
 	return llm.CompleteRequest{
-		Model: model,
+		Model:           model,
+		ReasoningEffort: llm.ReasoningOff,
 		Messages: []llm.ChatMessage{
 			{Role: llm.RoleSystem, Content: llm.Content{Text: &sysText}},
 			{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
