@@ -515,7 +515,7 @@ func (m *Materializer) applyTaskRunning(ctx context.Context, sess *sessionState,
 func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	ts, ok := sess.rootTaskTurn(taskID)
-	if !ok || ts.terminal() {
+	if !ok || ts.retired {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
@@ -592,7 +592,7 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	ts, ok := sess.rootTaskTurn(taskID)
-	if !ok || ts.terminal() {
+	if !ok || ts.retired {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
@@ -668,11 +668,18 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	ts, ok := sess.rootTaskTurn(taskID)
-	if !ok || ts.terminal() {
+	if !ok || ts.retired {
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
 		return true, nil
+	}
+	bound, err := bindRunID(runIDFromIdentity(ev.Identity), ts.runID, "")
+	if err != nil {
+		return false, err
+	}
+	if bound != ts.runID {
+		ts.runID = bound
 	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusCancelled,
@@ -1470,8 +1477,11 @@ func (m *Materializer) updateTurn(ctx context.Context, sess *sessionState, ts *t
 // store no longer retains retires the turn's routing state and skips
 // (never a hard pass failure, never a resurrected row). When another
 // materializer seals between this method's read and conditional write, an
-// equivalent terminal winner converges as success; conflicting terminal
-// metadata remains a loud immutable-row error.
+// equivalent terminal winner converges as success. A strictly later canonical
+// terminal event for the same already-sealed task/run is acknowledged without
+// rewriting the immutable row, so one incompatible legacy lifecycle tail
+// cannot wedge the global cursor. Same-event conflicts and binding mismatches
+// remain loud errors.
 func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *turnState, s turns.Seal) (turns.TurnRow, error) {
 	var lastErr error
 	for range 5 {
@@ -1517,13 +1527,28 @@ func (m *Materializer) sealTurn(ctx context.Context, sess *sessionState, ts *tur
 	return turns.TurnRow{}, fmt.Errorf("materializer: seal %s: %w", ts.taskID, lastErr)
 }
 
-// convergeSealedWinner accepts only the exact terminal meaning this
-// materializer attempted to persist. FinishedAt is compared only when the
-// observation supplied it (zero delegates stamping to the winning projector),
-// and EventSeq is compared only when the observation names one. This permits
-// response-loss/concurrent replay convergence without treating a same-status
-// but differently classified/message-bearing terminal row as equivalent.
+// convergeSealedWinner accepts the exact terminal meaning this materializer
+// attempted to persist. FinishedAt is compared only when the observation
+// supplied it (zero delegates stamping to the winning projector), and EventSeq
+// is compared only when the observation names one. This permits response-loss
+// and concurrent replay convergence without treating a same-event conflict as
+// equivalent.
+//
+// A historical source can also contain a second, strictly later canonical
+// terminal lifecycle event for a task whose first terminal event already
+// sealed the immutable row. That later event is acknowledged as a quarantined
+// no-op: the first terminal row stays canonical, while the caller may advance
+// the per-session checkpoint past the incompatible tail and keep projecting
+// later turns. Both sequences must be known and strictly ordered. A conflict at
+// the same/older sequence remains loud, as does any nonempty task/run binding
+// disagreement.
 func convergeSealedWinner(ts *turnState, row turns.TurnRow, s turns.Seal) (turns.TurnRow, error) {
+	if row.TaskID != "" && row.TaskID != ts.taskID {
+		return turns.TurnRow{}, fmt.Errorf("%w: %q has conflicting task binding %q", turns.ErrTurnSealed, ts.taskID, row.TaskID)
+	}
+	if row.RunID != "" && ts.runID != "" && row.RunID != ts.runID {
+		return turns.TurnRow{}, fmt.Errorf("%w: %q has conflicting run binding %q", turns.ErrTurnSealed, ts.taskID, row.RunID)
+	}
 	equivalent := row.Sealed &&
 		row.Status == s.Status &&
 		row.FinishReason == s.FinishReason &&
@@ -1532,11 +1557,15 @@ func convergeSealedWinner(ts *turnState, row turns.TurnRow, s turns.Seal) (turns
 		row.ErrorMessage == s.ErrorMessage &&
 		(s.FinishedAt.IsZero() || row.FinishedAt.Equal(s.FinishedAt)) &&
 		(s.EventSeq == 0 || row.LastAppliedEventSeq == s.EventSeq)
-	if !equivalent {
-		return turns.TurnRow{}, fmt.Errorf("%w: %q has conflicting terminal metadata", turns.ErrTurnSealed, ts.taskID)
+	if equivalent {
+		ts.sealed = true
+		return row, nil
 	}
-	ts.sealed = true
-	return row, nil
+	if row.Sealed && row.LastAppliedEventSeq > 0 && s.EventSeq > row.LastAppliedEventSeq {
+		ts.sealed = true
+		return row, nil
+	}
+	return turns.TurnRow{}, fmt.Errorf("%w: %q has conflicting terminal metadata", turns.ErrTurnSealed, ts.taskID)
 }
 
 // attachReasoning applies one AttachReasoning observation (replay-safe

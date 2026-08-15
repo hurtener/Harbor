@@ -243,6 +243,38 @@ func TestMaterialize_ConcurrentMaterializers_Converge(t *testing.T) {
 	if conflictingState.sealed {
 		t.Error("conflicting terminal observation marked local state sealed; retry would skip the loud conflict")
 	}
+
+	// A newer sequence is not sufficient to quarantine a row whose
+	// authoritative task/run binding disagrees with the event-derived state.
+	for name, tc := range map[string]struct {
+		state *turnState
+		row   turns.TurnRow
+	}{
+		"task binding": {
+			state: &turnState{taskID: "task-1", runID: "run-1"},
+			row: func() turns.TurnRow {
+				conflict := row
+				conflict.TaskID = "task-other"
+				return conflict
+			}(),
+		},
+		"run binding": {
+			state: &turnState{taskID: "task-1", runID: "run-other"},
+			row:   row,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := convergeSealedWinner(tc.state, tc.row, turns.Seal{
+				Status:   turns.StatusCancelled,
+				EventSeq: row.LastAppliedEventSeq + 1,
+			}); !errors.Is(err, turns.ErrTurnSealed) {
+				t.Fatalf("later terminal with conflicting binding = %v, want ErrTurnSealed", err)
+			}
+			if tc.state.sealed {
+				t.Error("binding conflict marked local state sealed")
+			}
+		})
+	}
 }
 
 // TestMaterialize_EraseDuringPass_NoResurrectionUnderRace pins the

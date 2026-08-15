@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Durable conversation-turn projection now acknowledges a strictly later
+  contradictory terminal lifecycle event for an already-sealed legacy turn
+  without rewriting the immutable first terminal row. Its session checkpoint
+  advances so one incompatible historical tail cannot stop later turns;
+  same-event conflicts and identity, task, and run binding mismatches remain
+  fail-closed (D-425).
+
 ## [1.28.3] — 2026-08-14
 
 ### Fixed

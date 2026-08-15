@@ -201,7 +201,11 @@ history.
       historical terminal message that is invalid UTF-8, contains NUL/C0/DEL
       controls, or exceeds the projection bound is unavailable wholesale,
       never sanitized or truncated, and cannot stall later projection.
-      Identity/task/run binding violations remain fail-closed.
+      When an already-sealed legacy row encounters a contradictory terminal
+      lifecycle event at a strictly newer known sequence, the immutable first
+      terminal row remains canonical while projection acknowledges the later
+      event and advances its checkpoint; same-sequence conflicts, unknown
+      ordering, and identity/task/run binding violations remain fail-closed.
 - [ ] Durability and handoff: the projection is incrementally materialized with
       idempotent sequence checkpoints, reconciles after interruption, survives
       restart on durable drivers, and is erased/fenced with its session.

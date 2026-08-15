@@ -13133,6 +13133,16 @@ earlier over-bound-only wording was too narrow. Identity, task-id, and run-id
 bindings, transient task-store failures, and every required snapshot field
 remain fail-closed.
 
+**Production correction (2026-08-15).** A retained historical source may
+contain two terminal lifecycle events for one task even though the projected
+turn is immutable after the first. A contradictory terminal event whose known
+sequence is strictly newer than the known event sequence on that already-sealed
+row is acknowledged as an immutable no-op: the first terminal row remains
+canonical, the per-session checkpoint advances past the incompatible tail, and
+following turns remain live. This rule does not equate the two events and does
+not rewrite terminal metadata. Same-sequence conflicts, unknown sequence
+ordering, and identity/task/run binding disagreements remain fail-closed.
+
 **Required acceptance (binding for the phase).** Once the owning runtime is
 selected, a persisted session with more than 100,000 events, at least 10,000
 turns, and one turn with more than 100 tool calls reopens its latest 20 turns

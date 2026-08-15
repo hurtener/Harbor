@@ -1331,6 +1331,15 @@ the session projector. The whole message is omitted; it is never sanitized,
 truncated, or reinterpreted. These compatibility rules never relax the
 fail-closed identity, task-id, or run-id bindings.
 
+An already-sealed turn also cannot be rewritten by a later contradictory
+terminal lifecycle event retained for the same task. When both event sequences
+are known and the contradictory terminal event is strictly newer than the
+event that sealed the row, projection acknowledges that later event as an
+immutable no-op and advances its checkpoint, preserving the first canonical
+terminal row and liveness for following turns. A same-sequence conflict is not
+historical tail compatibility: it remains a fail-closed projection error, as
+does any identity, task-id, or run-id disagreement.
+
 ### 6.10 Artifacts
 
 **MCP App callback and tool-context contracts (settled).** MCP discovery
