@@ -14,6 +14,40 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
+// sealBarrierStore deterministically places two projector instances after
+// their optimistic reads but before either conditional seal reaches the real
+// store. One wins; the other therefore observes ErrTurnSealed from the store,
+// reproducing the macOS CI interleaving without scheduler luck.
+type sealBarrierStore struct {
+	turns.Store
+
+	mu       sync.Mutex
+	arrivals int
+	release  chan struct{}
+}
+
+func newSealBarrierStore(store turns.Store) *sealBarrierStore {
+	return &sealBarrierStore{Store: store, release: make(chan struct{})}
+}
+
+func (s *sealBarrierStore) SealTurnIf(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow) (turns.TurnRow, error) {
+	s.mu.Lock()
+	s.arrivals++
+	if s.arrivals == 2 {
+		close(s.release)
+	}
+	s.mu.Unlock()
+
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return turns.TurnRow{}, ctx.Err()
+	case <-time.After(5 * time.Second):
+		return turns.TurnRow{}, errors.New("test seal barrier: second materializer did not reach the conditional seal")
+	}
+	return s.Store.SealTurnIf(ctx, id, turnID, expectedVersion, row)
+}
+
 // TestMaterialize_N100Identities_IsolatedUnderRace pins the mandatory
 // cross-session isolation gate at N>=100 mixed identities under the
 // race detector: one shared materializer + one shared projector/store,
@@ -140,10 +174,16 @@ func TestMaterialize_N100Identities_IsolatedUnderRace(t *testing.T) {
 func TestMaterialize_ConcurrentMaterializers_Converge(t *testing.T) {
 	h := newHarness(t, "")
 	defer h.closeStore()
+	barrier := newSealBarrierStore(h.store)
+	proj, err := turns.New(barrier)
+	if err != nil {
+		t.Fatalf("new barrier projector: %v", err)
+	}
+	h.proj = proj
 	m1 := h.newMaterializer(t)
 	m2 := h.newMaterializer(t)
 
-	h.lifecycle(t, testQuad(h.id, "run-1"), "task-1")
+	evs := h.lifecycle(t, testQuad(h.id, "run-1"), "task-1")
 
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -181,6 +221,27 @@ func TestMaterialize_ConcurrentMaterializers_Converge(t *testing.T) {
 	}
 	if usageValue(t, row.Usage.PromptTokens) != 100 {
 		t.Errorf("usage not converged: %+v", row.Usage.PromptTokens)
+	}
+	cp, err := h.proj.Checkpoint(ctx, h.id)
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if cp != evs[len(evs)-1].Sequence {
+		t.Errorf("checkpoint = %d, want terminal sequence %d", cp, evs[len(evs)-1].Sequence)
+	}
+
+	// Same status is not enough for convergence: a different closed error
+	// class is a genuinely conflicting immutable terminal row and stays loud.
+	conflictingState := &turnState{taskID: "task-1"}
+	if _, err := m1.sealTurn(ctx, &sessionState{id: h.id}, conflictingState, turns.Seal{
+		Status:     turns.StatusFailed,
+		ErrorClass: turns.ErrorClass5xx,
+		EventSeq:   row.LastAppliedEventSeq,
+	}); !errors.Is(err, turns.ErrTurnSealed) {
+		t.Fatalf("conflicting same-status seal = %v, want ErrTurnSealed", err)
+	}
+	if conflictingState.sealed {
+		t.Error("conflicting terminal observation marked local state sealed; retry would skip the loud conflict")
 	}
 }
 
