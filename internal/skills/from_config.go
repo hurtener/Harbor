@@ -30,9 +30,10 @@ import "github.com/hurtener/Harbor/internal/config"
 // state — the snapshot does not project, clone, or persist them.
 func SnapshotFromConfig(cfg config.SkillsConfig) ConfigSnapshot {
 	return ConfigSnapshot{
-		Driver:    cfg.Driver,
-		DSN:       cfg.DSN,
-		Retrieval: RetrievalMode(cfg.Retrieval),
+		Driver:        cfg.Driver,
+		DSN:           cfg.DSN,
+		MigrationMode: cfg.MigrationMode,
+		Retrieval:     RetrievalMode(cfg.Retrieval),
 	}
 }
 

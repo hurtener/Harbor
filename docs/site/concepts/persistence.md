@@ -55,6 +55,7 @@ The progression is the prescriptive default, not a mandate: you can run `sqlite`
 Schema evolution follows two non-negotiable rules:
 
 - **Forward-only, per-driver.** Each backend has its own migration directory; migrations are never edited after they merge — new schema is a new migration. There is no down-migration path. A clean database starts cleanly; an existing one runs only the migrations it has not seen.
+- **Apply directly; verify through a transaction pool.** Every Postgres-backed store defaults `migration_mode` to `apply`, which takes a session advisory lock and needs a direct/session-capable endpoint. After a separate apply succeeds, steady-state replicas may use a transaction-pooled DSN with `migration_mode: verify`; that mode only reads `schema_migrations`, performs no DDL/transaction/advisory lock, and fails loud if the ledger is missing or behind the binary's embedded migrations.
 - **SQLite uses WAL journal mode.** Write-Ahead Logging is the configured journal mode for the `sqlite` driver, chosen for concurrent-reader behavior under the Runtime's load. Changing it is an RFC decision, not a config knob.
 
 All queries across the SQL drivers are parameterized — no string concatenation into SQL, ever.
@@ -87,6 +88,11 @@ skills:
 state:
   driver: postgres
   dsn: postgres://harbor:***@db.internal:5432/harbor  # libpq URL
+  migration_mode: apply                              # default; direct endpoint
+
+# After the apply deployment succeeds, steady-state replicas can switch both:
+# dsn: postgres://harbor:***@pooler.internal:6432/harbor
+# migration_mode: verify
 ```
 
 The defaults are `inmem` everywhere (and the `skills` block is fully optional), so a fresh clone runs with zero storage configuration. A `dsn` is required the moment a driver is anything other than `inmem`, and `dsn` values are treated as secrets — redacted in logs and audit.

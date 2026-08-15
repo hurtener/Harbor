@@ -1647,6 +1647,17 @@ its docs-site stub, and example configuration.
 - **Generic key-value-of-typed-bytes surface.** `StateStore` is one mandatory interface keyed on `(identity.Quadruple, Kind string, Bytes []byte)`, with idempotency on a caller-provided `EventID` (ULID) and conditional save on exact current slot event IDs. Consuming subsystems (sessions, tasks, planner checkpoints, memory snapshots, steering events, distributed bindings, trajectories) land their **typed wrappers at their own layer** atop this surface — not inside `internal/state`. Example: `SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`. This keeps `internal/state` a leaf with no upstream Harbor deps beyond `internal/identity` and `internal/config`.
 - One mandatory interface, three V1 drivers (in-memory, SQLite, Postgres), one conformance suite. The predecessor's eight optional `Supports*` capability protocols + `hasattr` duck-typing are explicitly rejected — if all V1 drivers implement everything, optional capabilities are ceremony.
 - Forward-only migrations, per-driver migration directories. Each migration ends with `INSERT OR IGNORE INTO schema_migrations(version) VALUES (N);` (or driver equivalent).
+- Postgres store startup has two explicit migration modes (D-428). `apply` is the
+  backward-compatible default: it retains the session advisory lock and may
+  create or advance the schema, so it requires a direct or otherwise
+  session-affine endpoint. `verify` is the steady-state transaction-pool mode:
+  it validates the embedded migration set, reads the existing
+  `schema_migrations` ledger, and fails startup if the ledger is absent,
+  unreadable, or missing any embedded version. It performs no DDL, writes,
+  transaction, advisory lock, or pinned-connection acquisition. Deployment is
+  deliberately two-step: apply through a direct endpoint before switching the
+  store DSN to a transaction pooler with `verify`; Harbor never falls back from
+  one mode to the other.
 - WAL journal mode for SQLite.
 - Idempotency: `Save` keys on `EventID`; same-ID + same-bytes is a no-op, same-ID + different-bytes returns `ErrIdempotencyConflict` (caller-controlled retry semantics — the store never silently overwrites).
 - Identity-mandatory at the API boundary: empty tenant / user / session in the `Quadruple` rejected with `ErrIdentityRequired`. Empty `RunID` is acceptable for session-scoped state.

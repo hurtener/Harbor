@@ -23,6 +23,7 @@ func SnapshotFromConfig(cfg config.MemoryConfig) ConfigSnapshot {
 	return ConfigSnapshot{
 		Driver:             cfg.Driver,
 		DSN:                cfg.DSN,
+		MigrationMode:      cfg.MigrationMode,
 		Strategy:           Strategy(cfg.Strategy),
 		BudgetTokens:       cfg.BudgetTokens,
 		RecoveryBacklogMax: cfg.RecoveryBacklogMax,

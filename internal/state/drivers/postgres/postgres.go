@@ -104,7 +104,7 @@ func New(cfg config.StateConfig) (state.StateStore, error) {
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 
-	if err := applyMigrations(pingCtx, db); err != nil {
+	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/sessions/turns/drivers/postgres"
 )
@@ -61,6 +62,20 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if len(versions) != 1 || versions[0] != 1 {
 		t.Errorf("schema_migrations after second run = %v, want [1]", versions)
 	}
+}
+
+func TestMigrate_VerifyMode_AfterApply(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	applyStore, err := postgres.New(postgres.Config{DSN: dsn})
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	_ = applyStore.Close(context.Background())
+	verifyStore, err := postgres.New(postgres.Config{DSN: dsn, MigrationMode: sqlmigrate.ModeVerify})
+	if err != nil {
+		t.Fatalf("verify applied ledger: %v", err)
+	}
+	_ = verifyStore.Close(context.Background())
 }
 
 // TestMigrate_Concurrent_AdvisoryLockSerializes — N goroutines call

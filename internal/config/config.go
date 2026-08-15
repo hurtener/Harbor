@@ -24,6 +24,8 @@ package config
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // Config is the root configuration. It is immutable after Load.
@@ -147,8 +149,9 @@ type TelemetryConfig struct {
 
 // StateConfig selects the StateStore driver and its connection.
 type StateConfig struct {
-	Driver string `yaml:"driver"`
-	DSN    string `yaml:"dsn,omitempty" secret:"true"`
+	Driver        string          `yaml:"driver"`
+	DSN           string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
 }
 
 // LLMConfig is the default LLM client surface for the runtime
@@ -656,11 +659,12 @@ type RuntimeNamingConfig struct {
 //
 // Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
-	Driver             string `yaml:"driver"`
-	DSN                string `yaml:"dsn,omitempty" secret:"true"`
-	Strategy           string `yaml:"strategy,omitempty"`
-	BudgetTokens       int    `yaml:"budget_tokens,omitempty"`
-	RecoveryBacklogMax int    `yaml:"recovery_backlog_max,omitempty"`
+	Driver             string          `yaml:"driver"`
+	DSN                string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode      sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
+	Strategy           string          `yaml:"strategy,omitempty"`
+	BudgetTokens       int             `yaml:"budget_tokens,omitempty"`
+	RecoveryBacklogMax int             `yaml:"recovery_backlog_max,omitempty"`
 	// RecentTurns is the verbatim recent-window size for the
 	// `rolling_summary` strategy. 0 → strategy default (FullZoneTurns).
 	RecentTurns int `yaml:"recent_turns,omitempty"`
@@ -727,9 +731,10 @@ type MemorySummarizerConfig struct {
 // injects as the per-turn `<skills_context>` prompt block (
 // ). All fields optional; restart-required.
 type SkillsConfig struct {
-	Driver    string                `yaml:"driver,omitempty"`
-	DSN       string                `yaml:"dsn,omitempty" secret:"true"`
-	Directory SkillsDirectoryConfig `yaml:"directory,omitempty"`
+	Driver        string                `yaml:"driver,omitempty"`
+	DSN           string                `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode sqlmigrate.Mode       `yaml:"migration_mode,omitempty"`
+	Directory     SkillsDirectoryConfig `yaml:"directory,omitempty"`
 
 	// Retrieval is the opt-in retrieval mode for `Search` /
 	// `skill_search`. Empty (the default) keeps the token-savvy
@@ -950,9 +955,10 @@ type SessionsConfig struct {
 // `dsn`. `Retention` bounds the newest turn rows retained per session
 // (<= 0 applies the projection's documented default).
 type TurnsConfig struct {
-	Driver    string `yaml:"driver,omitempty"`
-	DSN       string `yaml:"dsn,omitempty" secret:"true"`
-	Retention int    `yaml:"retention,omitempty"`
+	Driver        string          `yaml:"driver,omitempty"`
+	DSN           string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
+	Retention     int             `yaml:"retention,omitempty"`
 }
 
 // ObservabilityConfig owns the observability-rollup projection block
@@ -967,8 +973,9 @@ type ObservabilityConfig struct {
 // RollupsConfig configures the HA-65 observability rollup store — the
 // same driver + dsn shape as the other driver-selecting blocks.
 type RollupsConfig struct {
-	Driver string `yaml:"driver,omitempty"`
-	DSN    string `yaml:"dsn,omitempty" secret:"true"`
+	Driver        string          `yaml:"driver,omitempty"`
+	DSN           string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
 }
 
 // PauseResumeConfig configures the pause lifecycle (RFC §3.3 + §6.3).
@@ -1069,19 +1076,20 @@ type PauseResumeConfig struct {
 // (AWS_*, IRSA, instance metadata, etc.). `S3UsePathStyle` defaults
 // to false (AWS native); flip on for MinIO / older R2 endpoints.
 type ArtifactsConfig struct {
-	Driver                    string `yaml:"driver"`
-	FSRoot                    string `yaml:"fs_root,omitempty"`
-	DSN                       string `yaml:"dsn,omitempty" secret:"true"`
-	HeavyOutputThresholdBytes int    `yaml:"heavy_output_threshold_bytes,omitempty"`
-	FetchDefaultMaxBytes      int    `yaml:"fetch_default_max_bytes,omitempty"`
-	FetchHardMaxBytes         int    `yaml:"fetch_hard_max_bytes,omitempty"`
-	S3Bucket                  string `yaml:"s3_bucket,omitempty"`
-	S3Endpoint                string `yaml:"s3_endpoint,omitempty"`
-	S3Region                  string `yaml:"s3_region,omitempty"`
-	S3Prefix                  string `yaml:"s3_prefix,omitempty"`
-	S3AccessKeyID             string `yaml:"s3_access_key_id,omitempty" secret:"true"`
-	S3SecretAccessKey         string `yaml:"s3_secret_access_key,omitempty" secret:"true"`
-	S3UsePathStyle            bool   `yaml:"s3_use_path_style,omitempty"`
+	Driver                    string          `yaml:"driver"`
+	FSRoot                    string          `yaml:"fs_root,omitempty"`
+	DSN                       string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode             sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
+	HeavyOutputThresholdBytes int             `yaml:"heavy_output_threshold_bytes,omitempty"`
+	FetchDefaultMaxBytes      int             `yaml:"fetch_default_max_bytes,omitempty"`
+	FetchHardMaxBytes         int             `yaml:"fetch_hard_max_bytes,omitempty"`
+	S3Bucket                  string          `yaml:"s3_bucket,omitempty"`
+	S3Endpoint                string          `yaml:"s3_endpoint,omitempty"`
+	S3Region                  string          `yaml:"s3_region,omitempty"`
+	S3Prefix                  string          `yaml:"s3_prefix,omitempty"`
+	S3AccessKeyID             string          `yaml:"s3_access_key_id,omitempty" secret:"true"`
+	S3SecretAccessKey         string          `yaml:"s3_secret_access_key,omitempty" secret:"true"`
+	S3UsePathStyle            bool            `yaml:"s3_use_path_style,omitempty"`
 }
 
 // EventsConfig configures the event bus driver and its in-process

@@ -14,10 +14,9 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// applyMigrations runs every migration not yet recorded in
-// `schema_migrations` under a session `pg_advisory_lock`, via the shared
-// runner (internal/persistence/sqlmigrate). The advisory-lock name is
-// stable + subsystem-specific so the FNV-derived key never collides.
-func applyMigrations(ctx context.Context, db *sql.DB) error {
-	return sqlmigrate.RunPostgres(ctx, db, migrationsFS, "memory/postgres", "harbor-memory-migrations")
+// runMigrations applies or read-only verifies the embedded migration ledger.
+// Apply mode takes the subsystem-stable session advisory lock; verify mode
+// performs no DDL, transaction, or lock and is safe through transaction pools.
+func runMigrations(ctx context.Context, db *sql.DB, mode sqlmigrate.Mode) error {
+	return sqlmigrate.RunPostgres(ctx, db, migrationsFS, "memory/postgres", "harbor-memory-migrations", mode)
 }

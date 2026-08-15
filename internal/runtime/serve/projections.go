@@ -208,10 +208,14 @@ func openTurnsStore(t config.TurnsConfig) (turns.Store, error) {
 		if t.DSN == "" {
 			return nil, errors.New("postgres driver requires sessions.turns.dsn (validated upstream — sanity check)")
 		}
-		return turnspg.New(turnspg.Config{DSN: t.DSN, Retention: t.Retention})
+		return turnspg.New(turnsPostgresConfig(t))
 	default:
 		return nil, fmt.Errorf("unknown sessions.turns.driver %q (known: inmem, sqlite, postgres)", t.Driver)
 	}
+}
+
+func turnsPostgresConfig(t config.TurnsConfig) turnspg.Config {
+	return turnspg.Config{DSN: t.DSN, MigrationMode: t.MigrationMode, Retention: t.Retention}
 }
 
 // taskSnapshotAdapter implements materializer.TaskSnapshotReader over
@@ -426,10 +430,14 @@ func openRollupsStore(r config.RollupsConfig) (rollups.Store, error) {
 		if r.DSN == "" {
 			return nil, errors.New("postgres driver requires observability.rollups.dsn (validated upstream — sanity check)")
 		}
-		return postgres.New(postgres.Config{DSN: r.DSN})
+		return postgres.New(rollupsPostgresConfig(r))
 	default:
 		return nil, fmt.Errorf("unknown observability.rollups.driver %q (known: inmem, sqlite, postgres)", r.Driver)
 	}
+}
+
+func rollupsPostgresConfig(r config.RollupsConfig) postgres.Config {
+	return postgres.Config{DSN: r.DSN, MigrationMode: r.MigrationMode}
 }
 
 // rollupWorker wraps the rollup projector worker's Quality surface,

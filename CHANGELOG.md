@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Postgres-backed state, memory, artifact, skill, conversation-turn, and
+  observability-rollup stores now accept `migration_mode: apply|verify`.
+  `apply` remains the default and retains direct-endpoint advisory-lock
+  migration semantics; `verify` performs read-only ledger validation for
+  transaction-pooled steady state and fails startup when any embedded
+  migration has not been applied (D-428).
+
 ## [1.28.6] — 2026-08-15
 
 ### Fixed

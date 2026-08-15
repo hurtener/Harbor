@@ -15,7 +15,27 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
+
+func TestProjectionPostgresConfig_MapsMigrationMode(t *testing.T) {
+	turnsCfg := turnsPostgresConfig(config.TurnsConfig{
+		DSN:           "postgres://turns",
+		MigrationMode: sqlmigrate.ModeVerify,
+		Retention:     17,
+	})
+	if turnsCfg.DSN != "postgres://turns" || turnsCfg.MigrationMode != sqlmigrate.ModeVerify || turnsCfg.Retention != 17 {
+		t.Fatalf("turns postgres config = %+v", turnsCfg)
+	}
+
+	rollupsCfg := rollupsPostgresConfig(config.RollupsConfig{
+		DSN:           "postgres://rollups",
+		MigrationMode: sqlmigrate.ModeVerify,
+	})
+	if rollupsCfg.DSN != "postgres://rollups" || rollupsCfg.MigrationMode != sqlmigrate.ModeVerify {
+		t.Fatalf("rollups postgres config = %+v", rollupsCfg)
+	}
+}
 
 func projectionsLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))

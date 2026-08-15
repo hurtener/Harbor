@@ -18,6 +18,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/memory"
 	memorydriverpostgres "github.com/hurtener/Harbor/internal/memory/drivers/postgres"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // TestPostgres_Migrations_AppliedOnFreshSchema asserts a clean schema
@@ -97,4 +98,21 @@ func TestPostgres_Migrations_IdempotentOnReopen(t *testing.T) {
 	if rows != 1 {
 		t.Errorf("schema_migrations row count after second New=%d, want 1", rows)
 	}
+}
+
+func TestPostgres_Migrations_VerifyMode_AfterApply(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	bus, store := buildDeps(t)
+	base := memory.ConfigSnapshot{Driver: "postgres", DSN: dsn, Strategy: memory.StrategyNone}
+	applyStore, err := memorydriverpostgres.New(base, memory.Deps{State: store, Bus: bus})
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	_ = applyStore.Close(context.Background())
+	base.MigrationMode = sqlmigrate.ModeVerify
+	verifyStore, err := memorydriverpostgres.New(base, memory.Deps{State: store, Bus: bus})
+	if err != nil {
+		t.Fatalf("verify applied ledger: %v", err)
+	}
+	_ = verifyStore.Close(context.Background())
 }

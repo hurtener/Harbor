@@ -13442,3 +13442,52 @@ boot-owned; edit the yaml and restart), D-311 (absence representable), D-351
 (never claim a property the mechanism lacks), D-025 (concurrent reuse), D-299
 (server-derived authority). RFC §6.7, §6.16, §5.2, §5.5, §7, §9. Plan:
 `docs/plans/phase-248-boot-operator-skill-baseline.md`.
+
+---
+
+## D-428 — Postgres store startup separates direct migration application from transaction-pool-safe ledger verification
+
+**Date:** 2026-08-15
+**Status:** Accepted (post-v1.28.6)
+
+**Context.** The shared Postgres migration runner uses a session advisory lock
+to serialize schema changes (D-253). That lock is correct only when lock,
+migration, and unlock share one backend session, which transaction-pooled
+PgBouncer deliberately does not guarantee. Keeping every steady-state runtime
+connection on the direct database endpoint preserves that guarantee but spends
+server connections even after migrations finish. The runtime needs an explicit
+two-stage deployment contract without weakening migration correctness or
+silently changing existing configurations.
+
+**Decision.** Every Postgres-backed store that uses the shared migration runner
+— state, memory, artifacts, skills, conversation turns, and observability
+rollups — accepts `migration_mode: apply|verify` in its existing config block.
+An omitted value is `apply`, preserving the existing behavior exactly.
+
+- `apply` loads and validates the embedded migration set, pins one database
+  session, acquires the existing advisory lock, creates the ledger when needed,
+  and applies missing migrations transactionally. It requires a direct or
+  otherwise session-affine endpoint.
+- `verify` loads and validates the same embedded migration set, then executes
+  only a read of the existing `schema_migrations` ledger through the ordinary
+  database pool. It acquires no pinned connection or advisory lock, opens no
+  transaction, and performs no DDL or write. A missing or unreadable ledger,
+  malformed embedded migration version, duplicate embedded version, or any
+  embedded version absent from the ledger fails startup loudly. Historical
+  ledger versions not known to the current binary are tolerated, preserving
+  forward compatibility for rollback inspection; verification requires the
+  embedded set to be a subset of the applied set, not an exact match.
+- Rollout is ordered: first boot `apply` against the direct endpoint; only
+  after that succeeds may operators switch the store DSN to a transaction
+  pooler and set `migration_mode: verify`. Every later release with new
+  migrations repeats that direct-apply step before pooled verification.
+- There is no automatic fallback between modes. `verify` never repairs an
+  incomplete schema, and `apply` never pretends transaction pooling can carry
+  a session-scoped lock.
+
+Search cache retains its distinct migration runner and ledger established by
+D-253; it is not a consumer of the shared runner and this decision does not
+silently change its contract.
+
+**Cross-references.** D-253 (shared migration runner and session advisory
+locking), D-351 (do not claim a property the mechanism lacks), RFC §9.

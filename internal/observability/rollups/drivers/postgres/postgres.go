@@ -54,6 +54,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/observability/rollups"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // pgxDriverName is the database/sql driver name registered by the pgx
@@ -73,6 +74,8 @@ const (
 type Config struct {
 	// DSN is the Postgres connection string (pgx URL or key-value form).
 	DSN string
+	// MigrationMode controls apply-at-boot versus read-only verification.
+	MigrationMode sqlmigrate.Mode
 }
 
 // New constructs a Postgres-backed rollups.Store against cfg.DSN,
@@ -105,7 +108,7 @@ func New(cfg Config) (rollups.Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("rollups/postgres: ping: %w", err)
 	}
-	if err := applyMigrations(pingCtx, db); err != nil {
+	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

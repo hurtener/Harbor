@@ -185,6 +185,7 @@ skills:
   # deployments (every replica sees the same skills catalog):
   #   driver: postgres
   #   dsn: postgres://harbor:${HARBOR_SKILLS_PG_PASSWORD}@db:5432/harbor?sslmode=require
+  #   migration_mode: apply # direct endpoint; switch to verify with pooled dsn after apply
   # retrieval: semantic            # optional — skill_search ranks by embedding
   #                                # similarity instead of the FTS5/regex/exact
   #                                # ladder (requires the embeddings: block; the
@@ -219,6 +220,8 @@ tools:
 | `postgres` | Durable, shared Postgres for multi-instance deployments — every replica sees the same skills catalog. Same conflict policy, identity scoping, and FTS → regex → exact ranking ladder as `localdb` (the full-text tier rides a `tsvector` + GIN index). |
 
 Switching backends is a `driver:` + `dsn:` change — the CLI verbs, meta-tools, directory, and semantic mode all behave identically (proven by the shared conformance suite). Identity scoping (`(tenant, user, session)` in the SQL `WHERE`) is enforced at the driver on both.
+
+For Postgres, empty/`apply` runs forward migrations under a session advisory lock and therefore needs a direct/session-capable endpoint. A transaction-pooled steady-state deployment first completes that apply separately, then switches BOTH the DSN to the pooler and `migration_mode` to `verify`. Verify mode reads the existing `schema_migrations` ledger only and refuses startup if any embedded version is missing; it never creates or repairs schema through the pool.
 
 ### Node-local boot agent packs (HA-66) — `skills.boot_agent_packs`
 

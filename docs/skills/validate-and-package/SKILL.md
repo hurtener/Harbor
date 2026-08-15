@@ -92,7 +92,7 @@ Beyond the gates above, before deploying to a non-dev environment:
 - [ ] `server.bind_addr` set (default `127.0.0.1:8080` only listens loopback).
 - [ ] `telemetry.log_format: json` (default) — for log aggregator ingestion.
 - [ ] `telemetry.log_level: info` (NOT `debug` — debug leaks prompt/completion content).
-- [ ] If using Postgres: migrations run, connection pool sized.
+- [ ] If using Postgres: migrations run on a direct/session-capable endpoint. For transaction-pooled steady state, every Postgres store uses the pooled DSN plus `migration_mode: verify`; a restart must pass the read-only ledger check. Empty/`apply` is not pooler-safe because it takes a session advisory lock.
 - [ ] If using SQLite: WAL mode confirmed, DSN on a fast disk.
 
 The v1.28 projection and boot-baseline blocks are deployment decisions, not defaults:

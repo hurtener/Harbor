@@ -115,7 +115,7 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		return nil, fmt.Errorf("memory/postgres: ping: %w", err)
 	}
 
-	if err := applyMigrations(pingCtx, db); err != nil {
+	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

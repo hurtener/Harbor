@@ -186,6 +186,18 @@ Validation: required when `driver` is `sqlite` or `postgres`; unused
 for `inmem`. SQLite: file path. Postgres: libpq URL. Secret: redacted
 in audit logs. Restart-required.
 
+### observability.rollups.migration_mode
+
+Postgres migration posture at store open. Default: `apply` when empty or
+omitted. Validation: `apply` or `verify`, and only valid when `driver` is
+`postgres`. `apply` takes Harbor's session advisory lock and applies missing
+migrations, so it requires a direct/session-capable Postgres endpoint.
+`verify` performs one read-only `schema_migrations` ledger query, takes no
+advisory lock, begins no transaction, executes no DDL/write, and fails loud if
+the ledger is missing, malformed, or lacks an embedded migration version. It
+is safe for transaction-pooled connections after a separate apply step has
+completed. Restart-required.
+
 ---
 
 ## State
@@ -200,6 +212,18 @@ in audit logs. Restart-required.
 Driver connection string. Default: empty. Validation: required when
 `driver != "inmem"`. SQLite: file path. Postgres: libpq URL.
 Secret: redacted in audit logs.
+
+### state.migration_mode
+
+Postgres migration posture at store open. Default: `apply` when empty or
+omitted. Validation: `apply` or `verify`, and only valid when `driver` is
+`postgres`. `apply` takes Harbor's session advisory lock and applies missing
+migrations, so it requires a direct/session-capable Postgres endpoint.
+`verify` performs one read-only `schema_migrations` ledger query, takes no
+advisory lock, begins no transaction, executes no DDL/write, and fails loud if
+the ledger is missing, malformed, or lacks an embedded migration version. It
+is safe for transaction-pooled connections after a separate apply step has
+completed. Restart-required.
 
 ---
 
@@ -560,6 +584,18 @@ memory driver with a SQL `memory.dsn` but an `inmem` `state.driver` is
 NOT durable across a restart. To make memory durable, set a SQL
 `state.driver`; `inmem` memory + a SQL StateStore is already durable.
 
+### memory.migration_mode
+
+Postgres migration posture at store open. Default: `apply` when empty or
+omitted. Validation: `apply` or `verify`, and only valid when `driver` is
+`postgres`. `apply` takes Harbor's session advisory lock and applies missing
+migrations, so it requires a direct/session-capable Postgres endpoint.
+`verify` performs one read-only `schema_migrations` ledger query, takes no
+advisory lock, begins no transaction, executes no DDL/write, and fails loud if
+the ledger is missing, malformed, or lacks an embedded migration version. It
+is safe for transaction-pooled connections after a separate apply step has
+completed. Restart-required.
+
 ### memory.strategy
 
 Memory shape. Default: `none`. Validation: `none` / `truncation` /
@@ -639,13 +675,25 @@ tier. Turns that fall below the floor are silently skipped. Default:
 ### skills.driver
 
 `SkillStore` driver. Default: empty (block fully optional; an empty
-block disables the subsystem). Validation: when set, `localdb`
-(V1).
+block disables the subsystem). Validation: when set, `localdb` /
+`postgres`.
 
 ### skills.dsn
 
 Driver connection string. Default: empty. Validation: required when
-`driver = "localdb"`. Secret: redacted.
+`driver` is `localdb` or `postgres`. Secret: redacted.
+
+### skills.migration_mode
+
+Postgres migration posture at store open. Default: `apply` when empty or
+omitted. Validation: `apply` or `verify`, and only valid when `driver` is
+`postgres`. `apply` takes Harbor's session advisory lock and applies missing
+migrations, so it requires a direct/session-capable Postgres endpoint.
+`verify` performs one read-only `schema_migrations` ledger query, takes no
+advisory lock, begins no transaction, executes no DDL/write, and fails loud if
+the ledger is missing, malformed, or lacks an embedded migration version. It
+is safe for transaction-pooled connections after a separate apply step has
+completed. Restart-required.
 
 ### skills.directory.pinned
 
@@ -900,6 +948,18 @@ Default: empty. Validation: required when `driver` is `sqlite` or
 `postgres`; unused for `inmem`. SQLite: file path. Postgres: libpq
 URL. Secret: redacted in audit logs. Restart-required.
 
+### sessions.turns.migration_mode
+
+Postgres migration posture at store open. Default: `apply` when empty or
+omitted. Validation: `apply` or `verify`, and only valid when `driver` is
+`postgres`. `apply` takes Harbor's session advisory lock and applies missing
+migrations, so it requires a direct/session-capable Postgres endpoint.
+`verify` performs one read-only `schema_migrations` ledger query, takes no
+advisory lock, begins no transaction, executes no DDL/write, and fails loud if
+the ledger is missing, malformed, or lacks an embedded migration version. It
+is safe for transaction-pooled connections after a separate apply step has
+completed. Restart-required.
+
 ### sessions.turns.retention
 
 Number of newest-turn rows the projection retains per session.
@@ -942,6 +1002,18 @@ required when `driver = "fs"`. Auto-created at driver `New`.
 
 SQL-driver connection string. Default: empty. Validation: required
 when `driver` is `sqlite` or `postgres`. Secret: redacted.
+
+### artifacts.migration_mode
+
+Postgres migration posture at store open. Default: `apply` when empty or
+omitted. Validation: `apply` or `verify`, and only valid when `driver` is
+`postgres`. `apply` takes Harbor's session advisory lock and applies missing
+migrations, so it requires a direct/session-capable Postgres endpoint.
+`verify` performs one read-only `schema_migrations` ledger query, takes no
+advisory lock, begins no transaction, executes no DDL/write, and fails loud if
+the ledger is missing, malformed, or lacks an embedded migration version. It
+is safe for transaction-pooled connections after a separate apply step has
+completed. Restart-required.
 
 ### artifacts.heavy_output_threshold_bytes
 

@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/artifacts/drivers/postgres"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
 // TestMigrate_CleanDB_StartsClean — fresh schema, run migrations,
@@ -55,6 +56,20 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if !equalVersions(versions, []int{1, 2}) {
 		t.Errorf("schema_migrations after second run = %v, want [1 2]", versions)
 	}
+}
+
+func TestMigrate_VerifyMode_AfterApply(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	applyStore, err := postgres.New(config.ArtifactsConfig{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	_ = applyStore.Close(context.Background())
+	verifyStore, err := postgres.New(config.ArtifactsConfig{Driver: "postgres", DSN: dsn, MigrationMode: sqlmigrate.ModeVerify})
+	if err != nil {
+		t.Fatalf("verify applied ledger: %v", err)
+	}
+	_ = verifyStore.Close(context.Background())
 }
 
 // equalVersions compares two ascending version slices.

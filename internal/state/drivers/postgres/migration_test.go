@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/state/drivers/postgres"
 )
 
@@ -54,6 +56,28 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if len(versions) != 1 || versions[0] != 1 {
 		t.Errorf("schema_migrations after second run = %v, want [1]", versions)
 	}
+}
+
+func TestMigrate_VerifyMode_RequiresPreappliedLedger(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	_, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn, MigrationMode: sqlmigrate.ModeVerify})
+	if err == nil {
+		t.Fatal("verify mode accepted a clean schema")
+	}
+	if !strings.Contains(err.Error(), "verify migrations") || !strings.Contains(err.Error(), "schema_migrations") {
+		t.Fatalf("verify clean-schema error = %v", err)
+	}
+
+	applyStore, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	_ = applyStore.Close(context.Background())
+	verifyStore, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn, MigrationMode: sqlmigrate.ModeVerify})
+	if err != nil {
+		t.Fatalf("verify applied ledger: %v", err)
+	}
+	_ = verifyStore.Close(context.Background())
 }
 
 // TestMigrate_Concurrent_AdvisoryLockSerializes — N goroutines call
