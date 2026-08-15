@@ -193,7 +193,14 @@ history.
 - [ ] Per-component exact/partial/unavailable state covers answer, reasoning,
       activity, Apps, and usage, plus projection version,
       `last_applied_event_sequence`, retention horizon, updated timestamp, and
-      mutable-versus-terminal-sealed state.
+      mutable-versus-terminal-sealed state. The persisted task lifecycle event
+      is canonical for terminal status and its nonempty failure code. A
+      task-record snapshot may fill a missing legacy event code, but a
+      nonempty disagreement makes the snapshot's whole optional failure group
+      unavailable and preserves the event-derived closed class. An optional
+      historical terminal message over the projection bound is unavailable,
+      never truncated, and cannot stall later projection. Identity/task/run
+      binding violations remain fail-closed.
 - [ ] Durability and handoff: the projection is incrementally materialized with
       idempotent sequence checkpoints, reconciles after interruption, survives
       restart on durable drivers, and is erased/fenced with its session.

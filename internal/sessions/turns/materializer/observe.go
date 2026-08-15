@@ -574,23 +574,21 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 //
 // When the runtime wires the TaskSnapshotReader seam, the projection
 // reads the already-redacted canonical task record under the EVENT
-// identity and captures the canonical classified code and the bounded
-// safe message, so the task event and the durable turn agree: the
-// closed error class derives from the agreed code and the bounded
-// redacted message rides the seal. The read is BOUND: a nonempty
+// identity and captures compatible optional failure metadata. The
+// persisted lifecycle event remains canonical: its nonempty code drives
+// the closed error class. A task-record code fills only a legacy event
+// whose code is empty; when both are nonempty and disagree, all snapshot
+// failure metadata is omitted rather than letting one legacy record stall
+// the global projector. A bounded redacted message rides the seal only
+// with compatible classification; an over-bound optional message is
+// honestly unavailable. The read is BOUND: a nonempty
 // returned TaskID must equal the event's canonical task id, the run id
 // must agree with the turn's established binding (a later snapshot can
-// never move it), and — when BOTH the event and the record carry a
-// nonempty error code — the codes MUST agree; a differing nonempty code
-// is a corrupt classification conflict (ErrTerminalCodeMismatch) and
-// fails the projection loudly instead of silently preferring either
-// source. A nil reader / legacy record leaves the message unavailable
-// ("") and derives the class from the event's code alone. The reader is
+// never move it). A nil reader / legacy record leaves the message
+// unavailable ("") and derives the class from the event's code alone. The reader is
 // invoked only while projecting this successfully persisted failure
 // event — never on a Protocol read. A transient snapshot error, a
-// binding mismatch, or a code conflict aborts the projection without
-// advancing the checkpoint; an over-bound message is refused loudly by
-// the projector, never truncated.
+// binding mismatch aborts the projection without advancing the checkpoint.
 func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	taskID := fieldString(payload, "TaskID")
 	ts, ok := sess.rootTaskTurn(taskID)
@@ -617,21 +615,24 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 	if bound != ts.runID {
 		ts.runID = bound
 	}
-	// Terminal error-code agreement: the canonical event and the task
-	// record must agree on the final typed code when BOTH are present —
-	// a differing nonempty code is rejected loudly rather than silently
-	// preferring either source (the durable row would otherwise publish
-	// an internally inconsistent final classification).
+	// The persisted lifecycle event is canonical. Snapshot failure fields
+	// are optional render metadata: they may fill an absent legacy event code,
+	// but a disagreement makes the whole snapshot failure group unavailable.
+	// That preserves one internally consistent classification without letting
+	// an incompatible historical task record wedge the global projector.
 	code := fieldString(payload, "ErrorCode")
 	message := ""
 	if snap.FailurePresent {
-		if code != "" && snap.ErrorCode != "" && code != snap.ErrorCode {
-			return false, fmt.Errorf("%w: task %s: event code %q, task record code %q", ErrTerminalCodeMismatch, taskID, code, snap.ErrorCode)
-		}
-		if snap.ErrorCode != "" {
+		compatible := code == "" || snap.ErrorCode == "" || code == snap.ErrorCode
+		if code == "" && snap.ErrorCode != "" {
 			code = snap.ErrorCode
 		}
-		message = snap.ErrorMessage
+		if compatible {
+			message, err = snapshotFailureMessage(snap.ErrorMessage)
+			if err != nil {
+				return false, err
+			}
+		}
 	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusFailed,

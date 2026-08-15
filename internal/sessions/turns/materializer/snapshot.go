@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
@@ -39,14 +40,6 @@ var ErrSnapshotTaskIDMismatch = errors.New("materializer: task snapshot task id 
 // mutating a turn.
 var ErrSnapshotRunIDMismatch = errors.New("materializer: task snapshot run id disagrees with the event-derived / established turn run id")
 
-// ErrTerminalCodeMismatch reports a terminal classification conflict: a
-// task.failed event and the canonical task record both carry a nonempty
-// error code and the codes differ. The materializer refuses to silently
-// prefer either source — the durable turn would publish an internally
-// inconsistent final row — so the projection aborts loudly without
-// advancing the checkpoint or sealing the turn.
-var ErrTerminalCodeMismatch = errors.New("materializer: terminal error code disagrees between the event and the task record")
-
 // TaskSnapshotReader is the injected, READ-ONLY seam over the runtime's
 // already-redacted canonical task records. It lets the materializer
 // converge the query / agent / input-attachment / answer / output-
@@ -60,12 +53,16 @@ var ErrTerminalCodeMismatch = errors.New("materializer: terminal error code disa
 //     run through the runtime's audit redactor (the same redaction the
 //     task record received before persistence). The materializer does
 //     not re-redact and cannot make hostile text safe.
-//   - BOUNDED — query, inline answer, terminal messages, and
+//   - BOUNDED — query, inline answer, and
 //     attachment / reference metadata must respect the turns
 //     projection's bounds (turns.MaxQueryRunes,
-//     turns.MaxInlineAnswerBytes, turns.MaxTerminalMessageRunes, ...).
+//     turns.MaxInlineAnswerBytes, ...).
 //     An over-bound value is REFUSED loudly by the projector — the
-//     seam never truncates, clamps, or silently omits.
+//     seam never truncates, clamps, or silently omits. The one optional
+//     legacy-tolerance exception is a terminal failure message: a value
+//     over turns.MaxTerminalMessageRunes is omitted as unavailable so
+//     historical task-record metadata cannot stall the canonical
+//     lifecycle projection.
 //   - STRUCTURALLY EXCLUDED — the snapshot DTO (TaskSnapshot) carries
 //     no byte fields, no raw arguments, no secrets, no caller memory,
 //     no provider reasoning, no tool results, no correlation/context
@@ -200,6 +197,28 @@ func snapshotOutputs(snap TaskSnapshot) []turns.Attachment {
 		return nil
 	}
 	return snap.Outputs
+}
+
+// snapshotFailureMessage returns the optional task-record failure message
+// only when it is structurally safe and fits the durable turn bound. A
+// historical record can predate that bound, and its advisory message must not
+// stop the global lifecycle projector: PURE size overflow is omitted as the
+// honest unavailable representation. Invalid UTF-8 and NUL/C0/DEL controls
+// remain fail-closed even when the same string is also over-bound; checking
+// those invariants first prevents size tolerance from masking corruption.
+func snapshotFailureMessage(message string) (string, error) {
+	if !utf8.ValidString(message) {
+		return "", fmt.Errorf("%w: task snapshot terminal error message is not valid UTF-8", turns.ErrInvalidInput)
+	}
+	for _, r := range message {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("%w: task snapshot terminal error message contains a NUL / control character (U+%04X) — rejected as ambiguous", turns.ErrInvalidInput, r)
+		}
+	}
+	if utf8.RuneCountInString(message) > turns.MaxTerminalMessageRunes {
+		return "", nil
+	}
+	return message, nil
 }
 
 // readTaskSnapshot reads the canonical task record through the
