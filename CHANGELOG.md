@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Session auto-naming now explicitly disables private reasoning so a selected
+  model profile cannot consume the fixed 64-token title allowance before
+  emitting visible content. The digest, timeout, one-call shape, output bound,
+  and persisted title clamp are unchanged (D-289).
+
 ## [1.28.4] — 2026-08-15
 
 ### Fixed

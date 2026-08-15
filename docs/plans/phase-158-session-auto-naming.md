@@ -171,6 +171,13 @@ Phase 157 gives sessions a title and a manual verb; this phase makes the runtime
   deferred region (not a spawned goroutine), so the goroutine-baseline
   guarantee holds trivially; the accepted concurrent-completion race is between
   DISTINCT runs' terminal boundaries, serialized by the registry writes.
+- **Reasoning disabled for naming (2026-08-15 correction).** The naming request
+  explicitly sets reasoning effort off so a selected model profile's reasoning
+  default cannot consume the fixed 64-token title allowance. Production
+  evidence showed a low-effort reasoning model consuming all 64 tokens
+  privately and returning empty visible content. The 4 KiB digest, 10s timeout,
+  one-call shape, 64-token output ceiling, and 200-rune persisted-title clamp
+  remain unchanged; reasoning is never used as title content.
 - **Governance E2E leg uses the rate-limit tier, not the budget ceiling.** The
   end-to-end governance-block leg
   (`TestE2E_SessionAutoNaming_GovernanceBlock_SkipsLoudly`) composes real

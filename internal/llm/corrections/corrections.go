@@ -222,10 +222,13 @@ func applyRequestCorrections(req llm.CompleteRequest, cp llm.CorrectionsProfile)
 		out.ResponseFormat = &rf
 	}
 
-	if cp.ReasoningEffortRouting == llm.ReasoningRouteThinking && req.ReasoningEffort != "" {
+	if cp.ReasoningEffortRouting == llm.ReasoningRouteThinking &&
+		req.ReasoningEffort != "" && req.ReasoningEffort != llm.ReasoningOff {
 		// Move the hint from the top-level field into Extra. Bifrost
 		// passes Extra opaquely; the per-provider converter (or a
-		// future hook) reads `reasoning_effort`.
+		// future hook) reads `reasoning_effort`. Explicit off stays in
+		// the canonical top-level field so every driver sees a real disable;
+		// routing it into opaque Extra would erase the cross-provider meaning.
 		out.Extra["reasoning_effort"] = string(req.ReasoningEffort)
 		out.ReasoningEffort = ""
 	}

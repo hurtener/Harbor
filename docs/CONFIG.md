@@ -471,6 +471,9 @@ presence is the signal; it is never dropped as inert). When on, the runtime
 titles a session itself at each run's terminal boundary via ONE governed
 `Complete` call over a bounded transcript digest; a naming failure never
 alters the run outcome (it emits `session.naming_failed` + a Warn log).
+The request explicitly disables model reasoning and keeps a fixed 64-token
+visible-output ceiling, so a model profile's reasoning default cannot consume
+the title allowance.
 
 The naming call is bounded by a FIXED runtime timeout (10s) — unlike the
 run-completion hook, whose timeout is per-section configurable, the naming

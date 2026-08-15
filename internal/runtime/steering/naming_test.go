@@ -235,6 +235,27 @@ func TestClampNamingTitle_Determinism(t *testing.T) {
 	}
 }
 
+// TestNamingCompleteRequest_DisablesReasoning pins the production regression
+// where the corrections layer inherited a profile's reasoning default and the
+// model spent all 64 output tokens privately, leaving no visible title. Naming
+// is a one-line extraction task: it explicitly disables reasoning and retains
+// the original small fixed visible-output bound.
+func TestNamingCompleteRequest_DisablesReasoning(t *testing.T) {
+	req := namingCompleteRequest("reasoning-model", 80, "USER: plan a calm onboarding flow", false)
+	if req.MaxTokens == nil {
+		t.Fatal("MaxTokens is nil — naming output must remain bounded")
+	}
+	if got := *req.MaxTokens; got != namingMaxOutputTokens {
+		t.Fatalf("MaxTokens = %d, want fixed naming bound %d", got, namingMaxOutputTokens)
+	}
+	if got := *req.MaxTokens; got != 64 {
+		t.Fatalf("MaxTokens = %d, want regression-pinned bounded allowance 64", got)
+	}
+	if got := req.ReasoningEffort; got != llm.ReasoningOff {
+		t.Fatalf("ReasoningEffort = %q, want explicit %q so profile defaults cannot consume the title allowance", got, llm.ReasoningOff)
+	}
+}
+
 func TestClassifyNamingErr(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -328,6 +349,33 @@ func TestFireNaming_FirstNameAtAfterTurns(t *testing.T) {
 	}
 	if n := bus.countType(EventTypeSessionNamingFailed); n != 0 {
 		t.Errorf("naming_failed count = %d, want 0 on success", n)
+	}
+}
+
+// TestFireNaming_ProfileReasoningDefaultCannotConsumeTitle reproduces the
+// hosted failure boundary: a profile-default reasoning request consumed the
+// whole 64-token naming allowance. The exact naming call must override that
+// default with reasoning off and commit the visible title.
+func TestFireNaming_ProfileReasoningDefaultCannotConsumeTitle(t *testing.T) {
+	bus := &fakeBus{}
+	rl, _, _ := newTestRunLoop(t, WithRunLoopBus(bus))
+	titler := newFakeTitler()
+	comp := &fakeCompleter{perCall: func(req llm.CompleteRequest) (string, error) {
+		if req.ReasoningEffort != llm.ReasoningOff {
+			return "", nil
+		}
+		return "Calm Mobile Onboarding", nil
+	}}
+	ns := &NamingSpec{Policy: activePolicy(1, 0, 0), Titler: titler, LLM: comp, Model: "reasoning-model"}
+
+	if _, err := rl.Run(context.Background(), namingRunSpec(runA, finishPlanner(), ns)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := titler.appliedTitle("session-a"); got != "Calm Mobile Onboarding" {
+		t.Fatalf("applied title = %q, want visible title after reasoning prelude", got)
+	}
+	if n := bus.countType(EventTypeSessionNamingFailed); n != 0 {
+		t.Fatalf("naming_failed count = %d, want 0", n)
 	}
 }
 
