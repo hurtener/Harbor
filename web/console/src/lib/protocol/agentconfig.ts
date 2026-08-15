@@ -244,7 +244,9 @@ export interface AgentConfigHooks {
  * `{auto: false}` is an explicit opt-out overriding a yaml-on default).
  * `after_turns` / `max_title_len` inherit the runtime defaults
  * (1, 80) when zero; `max_repetitions` is required >= 1 when `repeat_every` > 0
- * (no unlimited value). Mirrors `types.AgentConfigNaming`. */
+ * (no unlimited value). `reasoning_mode` is `off` (the default) or
+ * `provider_default` (omit provider reasoning controls without inheriting the
+ * selected model profile). Mirrors `types.AgentConfigNaming`. */
 export interface AgentConfigNaming {
 	auto?: boolean;
 	after_turns?: number;
@@ -252,6 +254,7 @@ export interface AgentConfigNaming {
 	max_repetitions?: number;
 	max_title_len?: number;
 	model?: string;
+	reasoning_mode?: string;
 }
 
 /** Closed MCP descriptor accepted only by D-401 signed capability registration.
@@ -450,6 +453,9 @@ export interface AgentConfigNamingDiff {
 	model_changed: boolean;
 	model_from?: string;
 	model_to?: string;
+	reasoning_mode_changed: boolean;
+	reasoning_mode_from?: string;
+	reasoning_mode_to?: string;
 }
 
 /** The structured additive-prompt-block delta across two revisions. `added` /

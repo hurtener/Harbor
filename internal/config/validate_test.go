@@ -679,6 +679,14 @@ func TestValidate_RuntimeNaming_Accepted(t *testing.T) {
 		func(c *config.Config) { c.Runtime.Naming.Auto = true },
 		func(c *config.Config) {
 			c.Runtime.Naming.Auto = true
+			c.Runtime.Naming.ReasoningMode = "off"
+		},
+		func(c *config.Config) {
+			c.Runtime.Naming.Auto = true
+			c.Runtime.Naming.ReasoningMode = "provider_default"
+		},
+		func(c *config.Config) {
+			c.Runtime.Naming.Auto = true
 			c.Runtime.Naming.AfterTurns = 2
 			c.Runtime.Naming.RepeatEvery = 3
 			c.Runtime.Naming.MaxRepetitions = 5
@@ -690,6 +698,17 @@ func TestValidate_RuntimeNaming_Accepted(t *testing.T) {
 		mutate(cfg)
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("case %d: Validate rejected a valid runtime.naming config: %v", i, err)
+		}
+	}
+}
+
+func TestValidate_RuntimeNaming_UnknownReasoningModeRejected(t *testing.T) {
+	for _, mode := range []string{"sometimes", " provider_default "} {
+		cfg := mustLoadValid(t)
+		cfg.Runtime.Naming.Auto = true
+		cfg.Runtime.Naming.ReasoningMode = mode
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runtime.naming.reasoning_mode") {
+			t.Fatalf("Validate reasoning mode %q error = %v, want runtime.naming.reasoning_mode rejection", mode, err)
 		}
 	}
 }

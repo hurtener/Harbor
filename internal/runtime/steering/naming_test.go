@@ -165,6 +165,12 @@ func TestNamingPolicy_WithDefaults(t *testing.T) {
 	if got.MaxTitleLen != 80 {
 		t.Errorf("MaxTitleLen default = %d, want 80", got.MaxTitleLen)
 	}
+	if got.ReasoningMode != NamingReasoningOff {
+		t.Errorf("ReasoningMode default = %q, want %q", got.ReasoningMode, NamingReasoningOff)
+	}
+	if explicit := (NamingPolicy{ReasoningMode: NamingReasoningProviderDefault}).WithDefaults(); explicit.ReasoningMode != NamingReasoningProviderDefault {
+		t.Errorf("explicit ReasoningMode = %q, want preserved %q", explicit.ReasoningMode, NamingReasoningProviderDefault)
+	}
 	if clamped := (NamingPolicy{MaxTitleLen: 5}).WithDefaults(); clamped.MaxTitleLen != 8 {
 		t.Errorf("MaxTitleLen 5 clamps to %d, want 8", clamped.MaxTitleLen)
 	}
@@ -241,7 +247,7 @@ func TestClampNamingTitle_Determinism(t *testing.T) {
 // is a one-line extraction task: it explicitly disables reasoning and retains
 // the original small fixed visible-output bound.
 func TestNamingCompleteRequest_DisablesReasoning(t *testing.T) {
-	req := namingCompleteRequest("reasoning-model", 80, "USER: plan a calm onboarding flow", false)
+	req := namingCompleteRequest("reasoning-model", 80, "USER: plan a calm onboarding flow", false, NamingReasoningOff)
 	if req.MaxTokens == nil {
 		t.Fatal("MaxTokens is nil — naming output must remain bounded")
 	}
@@ -253,6 +259,22 @@ func TestNamingCompleteRequest_DisablesReasoning(t *testing.T) {
 	}
 	if got := req.ReasoningEffort; got != llm.ReasoningOff {
 		t.Fatalf("ReasoningEffort = %q, want explicit %q so profile defaults cannot consume the title allowance", got, llm.ReasoningOff)
+	}
+	if !req.ReasoningEffortExplicit {
+		t.Fatal("ReasoningEffortExplicit = false, want true so the naming posture cannot inherit a profile default")
+	}
+}
+
+func TestNamingCompleteRequest_ProviderDefaultOmitsReasoningControl(t *testing.T) {
+	req := namingCompleteRequest("compat-model", 80, "USER: name this", false, NamingReasoningProviderDefault)
+	if req.ReasoningEffort != "" {
+		t.Fatalf("ReasoningEffort = %q, want omitted provider control", req.ReasoningEffort)
+	}
+	if !req.ReasoningEffortExplicit {
+		t.Fatal("ReasoningEffortExplicit = false, want true so profile defaults stay suppressed")
+	}
+	if req.MaxTokens == nil || *req.MaxTokens != namingMaxOutputTokens {
+		t.Fatalf("MaxTokens = %v, want fixed naming bound %d", req.MaxTokens, namingMaxOutputTokens)
 	}
 }
 
@@ -373,6 +395,31 @@ func TestFireNaming_ProfileReasoningDefaultCannotConsumeTitle(t *testing.T) {
 	}
 	if got := titler.appliedTitle("session-a"); got != "Calm Mobile Onboarding" {
 		t.Fatalf("applied title = %q, want visible title after reasoning prelude", got)
+	}
+	if n := bus.countType(EventTypeSessionNamingFailed); n != 0 {
+		t.Fatalf("naming_failed count = %d, want 0", n)
+	}
+}
+
+func TestFireNaming_ProviderDefaultSupportsProvidersRejectingReasoningControls(t *testing.T) {
+	bus := &fakeBus{}
+	rl, _, _ := newTestRunLoop(t, WithRunLoopBus(bus))
+	titler := newFakeTitler()
+	comp := &fakeCompleter{perCall: func(req llm.CompleteRequest) (string, error) {
+		if req.ReasoningEffort != "" || !req.ReasoningEffortExplicit {
+			return "", errors.New("provider rejects reasoning controls")
+		}
+		return "Portable Session Title", nil
+	}}
+	policy := activePolicy(1, 0, 0)
+	policy.ReasoningMode = NamingReasoningProviderDefault
+	ns := &NamingSpec{Policy: policy, Titler: titler, LLM: comp, Model: "compat-model"}
+
+	if _, err := rl.Run(context.Background(), namingRunSpec(runA, finishPlanner(), ns)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := titler.appliedTitle("session-a"); got != "Portable Session Title" {
+		t.Fatalf("applied title = %q, want provider-default success", got)
 	}
 	if n := bus.countType(EventTypeSessionNamingFailed); n != 0 {
 		t.Fatalf("naming_failed count = %d, want 0", n)

@@ -7,6 +7,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 )
 
 // TestActiveNamingPolicy_Precedence proves the D-289 resolution: agent-config
@@ -28,7 +29,7 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 
 	t.Run("yaml_default_when_no_section", func(t *testing.T) {
 		reg := newRegistry(t)
-		yaml := config.RuntimeNamingConfig{Auto: true, AfterTurns: 2, MaxTitleLen: 120}
+		yaml := config.RuntimeNamingConfig{Auto: true, AfterTurns: 2, MaxTitleLen: 120, ReasoningMode: "provider_default"}
 		res, active, err := projection.ActiveNamingPolicy(ctx, reg, projAgent, projID(), yaml)
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -39,12 +40,15 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 		if res.Policy.AfterTurns != 2 || res.Policy.MaxTitleLen != 120 {
 			t.Errorf("yaml policy = %+v, want after=2 maxlen=120", res.Policy)
 		}
+		if res.Policy.ReasoningMode != steering.NamingReasoningProviderDefault {
+			t.Errorf("yaml reasoning mode = %q, want provider_default", res.Policy.ReasoningMode)
+		}
 	})
 
 	t.Run("agentcfg_wins_over_yaml", func(t *testing.T) {
 		reg := newRegistry(t)
 		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
-			Naming: &agentcfg.NamingSection{Auto: true, AfterTurns: 5, Model: "agent-model"},
+			Naming: &agentcfg.NamingSection{Auto: true, AfterTurns: 5, Model: "agent-model", ReasoningMode: "provider_default"},
 		}, agentcfg.SetOptions{}); err != nil {
 			t.Fatalf("SetRevision: %v", err)
 		}
@@ -62,6 +66,29 @@ func TestActiveNamingPolicy_Precedence(t *testing.T) {
 		// Defaults applied: MaxTitleLen unset in the section resolves to 80.
 		if res.Policy.MaxTitleLen != 80 {
 			t.Errorf("MaxTitleLen = %d, want defaulted 80", res.Policy.MaxTitleLen)
+		}
+		if res.Policy.ReasoningMode != steering.NamingReasoningProviderDefault {
+			t.Errorf("agentcfg reasoning mode = %q, want provider_default", res.Policy.ReasoningMode)
+		}
+	})
+
+	t.Run("present_agentcfg_section_defaults_reasoning_off_instead_of_inheriting_yaml", func(t *testing.T) {
+		reg := newRegistry(t)
+		if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+			Naming: &agentcfg.NamingSection{Auto: true},
+		}, agentcfg.SetOptions{}); err != nil {
+			t.Fatalf("SetRevision: %v", err)
+		}
+		yaml := config.RuntimeNamingConfig{Auto: true, ReasoningMode: "provider_default"}
+		res, active, err := projection.ActiveNamingPolicy(ctx, reg, projAgent, projID(), yaml)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if !active {
+			t.Fatal("present agentcfg auto=true should be active")
+		}
+		if res.Policy.ReasoningMode != steering.NamingReasoningOff {
+			t.Fatalf("agentcfg omitted reasoning mode = %q, want whole-section default off", res.Policy.ReasoningMode)
 		}
 	})
 

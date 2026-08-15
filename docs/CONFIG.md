@@ -471,9 +471,11 @@ presence is the signal; it is never dropped as inert). When on, the runtime
 titles a session itself at each run's terminal boundary via ONE governed
 `Complete` call over a bounded transcript digest; a naming failure never
 alters the run outcome (it emits `session.naming_failed` + a Warn log).
-The request explicitly disables model reasoning and keeps a fixed 64-token
-visible-output ceiling, so a model profile's reasoning default cannot consume
-the title allowance.
+The request keeps a fixed 64-token visible-output ceiling. Its naming-only
+`reasoning_mode` defaults to `off`, so a model profile's reasoning default
+cannot consume that allowance. Providers that reject reasoning controls can
+use `provider_default`, which omits the provider control while still preventing
+inheritance from the selected model profile.
 
 The naming call is bounded by a FIXED runtime timeout (10s) — unlike the
 run-completion hook, whose timeout is per-section configurable, the naming
@@ -526,6 +528,16 @@ the run's effective model. A set value is validated against
 `llm.model_profiles` at boot; point it at a cheap profile to keep naming
 inexpensive (the naming call consumes the session identity's governance
 budget by design).
+
+### runtime.naming.reasoning_mode
+
+Controls reasoning only for the session auto-naming call. Empty (the default)
+and `off` explicitly disable reasoning so a model profile's planner reasoning
+default cannot consume the fixed title allowance. `provider_default` omits the
+provider reasoning control while still suppressing model-profile inheritance;
+use it only for a naming provider that rejects or does not implement an
+explicit disable. A durable per-agent `naming` section replaces the whole yaml
+section, so an omitted `reasoning_mode` there resolves to the default `off`.
 
 ---
 

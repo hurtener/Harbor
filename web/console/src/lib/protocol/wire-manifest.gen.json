@@ -1177,6 +1177,11 @@
           "key": "model",
           "type": "string",
           "optional": true
+        },
+        {
+          "key": "reasoning_mode",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -1264,6 +1269,20 @@
         },
         {
           "key": "model_to",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "reasoning_mode_changed",
+          "type": "boolean"
+        },
+        {
+          "key": "reasoning_mode_from",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "reasoning_mode_to",
           "type": "string",
           "optional": true
         }

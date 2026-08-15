@@ -148,6 +148,10 @@ func (c *Config) validateRuntime() error {
 // regardless so a mistake surfaces at boot rather than at first run.
 func (c *Config) validateRuntimeNaming() error {
 	n := c.Runtime.Naming
+	reasoningMode := strings.TrimSpace(n.ReasoningMode)
+	if n.ReasoningMode != reasoningMode || (reasoningMode != "" && reasoningMode != "off" && reasoningMode != "provider_default") {
+		return fieldError("runtime.naming.reasoning_mode", "must be one of off, provider_default")
+	}
 	if n.AfterTurns < 0 {
 		return fieldError("runtime.naming.after_turns", "must not be negative")
 	}

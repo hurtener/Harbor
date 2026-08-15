@@ -111,8 +111,9 @@ type Driver interface {
 // "unset (use provider default)" from "set to zero".
 //
 // `ReasoningEffort` is a request-level hint mapped to per-provider
-// reasoning controls (bifrost's `ChatReasoning`). `""` means "do not
-// touch the provider default."
+// reasoning controls (bifrost's `ChatReasoning`). `""` normally permits the
+// corrections layer to inherit the selected model profile; combine it with
+// `ReasoningEffortExplicit=true` to omit provider controls without inheriting.
 //
 // `Extra` is provider-passthrough sanitized by the correction
 // layer. Harbor stores the field but does not interpret it.
@@ -127,7 +128,12 @@ type CompleteRequest struct {
 	MaxTokens       *int
 	Stops           []string
 	ReasoningEffort ReasoningEffort
-	Extra           map[string]any
+	// ReasoningEffortExplicit distinguishes an explicitly omitted provider
+	// control from the ordinary empty value that inherits the selected model
+	// profile's default in the corrections layer. When true with an empty
+	// ReasoningEffort, the request reaches the driver with no reasoning control.
+	ReasoningEffortExplicit bool
+	Extra                   map[string]any
 	// Validator is the caller-supplied post-response
 	// validation hook. When non-nil, the retry wrapper invokes it
 	// after each successful `Complete`; a non-nil return triggers a
@@ -413,12 +419,13 @@ type ResponseFormat struct {
 	JSONSchema json.RawMessage
 }
 
-// ReasoningEffort hints at provider-side thinking budget. Empty
-// string means "use provider default" (DO NOT touch the request).
+// ReasoningEffort hints at provider-side thinking budget. Empty normally lets
+// the corrections layer apply the selected profile; with
+// CompleteRequest.ReasoningEffortExplicit it instead omits provider controls.
 type ReasoningEffort string
 
 // The ReasoningEffort levels, ascending. The empty string (not listed
-// here) means "use the provider default".
+// here) is resolved according to CompleteRequest.ReasoningEffortExplicit.
 const (
 	ReasoningOff    ReasoningEffort = "off"
 	ReasoningLow    ReasoningEffort = "low"
@@ -593,8 +600,9 @@ type ModelProfile struct {
 	DefaultMaxTokens *int
 	// ReasoningEffort — request-level default applied by the
 	// corrections layer (`corrections.Complete`) when the caller left
-	// `CompleteRequest.ReasoningEffort` empty; an explicit per-call
-	// value overrides it. Maps to the provider reasoning param (bifrost
+	// `CompleteRequest.ReasoningEffort` empty and did not mark that empty
+	// value explicit; an explicit value or explicit omission overrides it.
+	// Maps to the provider reasoning param (bifrost
 	// `ChatReasoning.Effort`, or `Extra["reasoning_effort"]` under
 	// `ReasoningRouteThinking`).
 	ReasoningEffort ReasoningEffort

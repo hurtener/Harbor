@@ -792,6 +792,10 @@ type NamingSection struct {
 	// (validated against ModelProfiles at set time); empty uses the run's
 	// effective model.
 	Model string `json:"model,omitempty"`
+	// ReasoningMode controls reasoning only for the naming call: empty / off
+	// explicitly disables reasoning; provider_default omits provider controls
+	// without inheriting the model profile's planner default.
+	ReasoningMode string `json:"reasoning_mode,omitempty"`
 }
 
 // ConfigPayload is the forward-compatible config envelope. Every section
@@ -1151,6 +1155,7 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 			MaxRepetitions: p.Naming.MaxRepetitions,
 			MaxTitleLen:    p.Naming.MaxTitleLen,
 			Model:          strings.TrimSpace(p.Naming.Model),
+			ReasoningMode:  strings.TrimSpace(p.Naming.ReasoningMode),
 		}
 	}
 	if p.VirtualAgents != nil {
@@ -2001,13 +2006,18 @@ type NamingDiff struct {
 	ModelChanged bool
 	ModelFrom    string
 	ModelTo      string
+
+	ReasoningModeChanged bool
+	ReasoningModeFrom    string
+	ReasoningModeTo      string
 }
 
 // Changed reports whether any auto-naming dimension differs between the two
 // revisions.
 func (d NamingDiff) Changed() bool {
 	return d.AutoChanged || d.AfterTurnsChanged || d.RepeatEveryChanged ||
-		d.MaxRepetitionsChanged || d.MaxTitleLenChanged || d.ModelChanged
+		d.MaxRepetitionsChanged || d.MaxTitleLenChanged || d.ModelChanged ||
+		d.ReasoningModeChanged
 }
 
 // DiffNaming computes the per-field delta of two session auto-naming states.
@@ -2017,8 +2027,8 @@ func (d NamingDiff) Changed() bool {
 // inverse register as changes even though every OTHER dimension is
 // zero-valued on both sides.
 func DiffNaming(from, to ConfigPayload) NamingDiff {
-	fa, faft, frep, fmax, fmtl, fmodel := namingStrings(from)
-	ta, taft, trep, tmax, tmtl, tmodel := namingStrings(to)
+	fa, faft, frep, fmax, fmtl, fmodel, freasoning := namingStrings(from)
+	ta, taft, trep, tmax, tmtl, tmodel, treasoning := namingStrings(to)
 	return NamingDiff{
 		AutoChanged: fa != ta,
 		AutoFrom:    fa,
@@ -2043,20 +2053,25 @@ func DiffNaming(from, to ConfigPayload) NamingDiff {
 		ModelChanged: fmodel != tmodel,
 		ModelFrom:    fmodel,
 		ModelTo:      tmodel,
+
+		ReasoningModeChanged: freasoning != treasoning,
+		ReasoningModeFrom:    freasoning,
+		ReasoningModeTo:      treasoning,
 	}
 }
 
 // namingStrings renders a payload's auto-naming section to its canonical
 // display values (auto, after_turns, repeat_every, max_repetitions,
-// max_title_len, model); an ABSENT section renders ("", "", "", "", "", "").
+// max_title_len, model, reasoning_mode); an ABSENT section renders empty
+// strings for every dimension.
 // Auto is the tri-state "" / "false" / "true" — a PRESENT section always
 // renders "false" or "true", so section presence itself is diffable (the
 // bare `{auto: false}` opt-out registers against an absent section). A
 // numeric zero renders "" so a set→unset transition registers as a change.
-func namingStrings(p ConfigPayload) (auto, afterTurns, repeatEvery, maxReps, maxTitleLen, model string) {
+func namingStrings(p ConfigPayload) (auto, afterTurns, repeatEvery, maxReps, maxTitleLen, model, reasoningMode string) {
 	n, ok := p.NamingView()
 	if !ok {
-		return "", "", "", "", "", ""
+		return "", "", "", "", "", "", ""
 	}
 	itoaOrEmpty := func(v int) string {
 		if v == 0 {
@@ -2065,7 +2080,7 @@ func namingStrings(p ConfigPayload) (auto, afterTurns, repeatEvery, maxReps, max
 		return strconv.Itoa(v)
 	}
 	return strconv.FormatBool(n.Auto), itoaOrEmpty(n.AfterTurns), itoaOrEmpty(n.RepeatEvery),
-		itoaOrEmpty(n.MaxRepetitions), itoaOrEmpty(n.MaxTitleLen), n.Model
+		itoaOrEmpty(n.MaxRepetitions), itoaOrEmpty(n.MaxTitleLen), n.Model, n.ReasoningMode
 }
 
 // LoadingModeChange is one entry in a loading-mode override diff: the

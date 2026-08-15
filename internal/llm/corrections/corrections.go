@@ -148,14 +148,16 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	// caller did not pin one. The react planner (and repair loop) build
 	// `CompleteRequest` without setting ReasoningEffort, so the operator's
 	// `model_profiles[<model>].reasoning_effort` is the natural default;
-	// an explicit per-call value (e.g. a run-time override) always wins.
+	// an explicit per-call value (e.g. a run-time override) always wins. An
+	// explicitly empty value also wins: naming uses it to omit provider controls
+	// without inheriting an ordinary planner profile's reasoning default.
 	// Without this, the profile knob was dead — the driver never received
 	// a reasoning param, and reasoning-capable models returned no
 	// reasoning (zero `Kind:"reasoning"` chunks, ReasoningTokens=0). The
 	// corrections layer is the right home: it is the one pass that already
 	// reads the full profile and owns reasoning routing (the
 	// ReasoningRouteThinking step below consumes the populated field).
-	if req.ReasoningEffort == "" && profile.ReasoningEffort != "" {
+	if req.ReasoningEffort == "" && !req.ReasoningEffortExplicit && profile.ReasoningEffort != "" {
 		req.ReasoningEffort = profile.ReasoningEffort
 	}
 

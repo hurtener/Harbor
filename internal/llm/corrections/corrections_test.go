@@ -303,6 +303,38 @@ func TestCorrections_ReasoningEffort_ProfileDefaultApplied(t *testing.T) {
 	}
 }
 
+// TestCorrections_ReasoningEffort_ExplicitProviderDefaultSkipsProfile proves
+// an explicit empty request remains empty instead of inheriting the model
+// profile. Naming's provider_default compatibility mode relies on this
+// distinction; ordinary planner requests keep the inheritance above.
+func TestCorrections_ReasoningEffort_ExplicitProviderDefaultSkipsProfile(t *testing.T) {
+	const model = "openai/gpt-5.4"
+	profile := llm.ModelProfile{
+		ContextWindowTokens: 400_000,
+		ReasoningEffort:     llm.ReasoningMedium,
+	}
+	rec := newRecorder()
+	c := wrapRecorder(t, rec, snapshotWithProfile(model, profile))
+	req := makeRequest(model, []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: llm.Content{Text: strPtr("name this")}},
+	})
+	req.ReasoningEffortExplicit = true
+
+	if _, err := c.Complete(testCtx(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	got, ok := rec.lastRequest()
+	if !ok {
+		t.Fatal("recorder did not receive a request")
+	}
+	if got.ReasoningEffort != "" {
+		t.Fatalf("ReasoningEffort = %q, want provider control omitted", got.ReasoningEffort)
+	}
+	if !got.ReasoningEffortExplicit {
+		t.Fatal("ReasoningEffortExplicit was lost in corrections")
+	}
+}
+
 // TestCorrections_EmptyModel_DefaultsFromSnapshot_ThenAppliesEffort is
 // the regression test for the v1.1 reasoning-wiring bug: the react
 // planner builds `CompleteRequest{Messages: ...}` with an EMPTY Model
