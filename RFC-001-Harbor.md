@@ -1325,10 +1325,11 @@ nonempty failure code. A task-record snapshot may fill a code only when a
 legacy event omitted one; if both carry nonempty, different codes, the
 snapshot's whole optional failure-metadata group is unavailable and the
 event-derived closed class stands. Likewise, an optional historical terminal
-message that exceeds the projection bound is unavailable rather than a reason
-to stop the session projector. These compatibility rules never relax the
-fail-closed identity, task-id, or run-id bindings, and never truncate or
-reinterpret content.
+message that cannot be represented safely (invalid UTF-8, NUL/C0/DEL controls,
+or exceeding the projection bound) is unavailable rather than a reason to stop
+the session projector. The whole message is omitted; it is never sanitized,
+truncated, or reinterpreted. These compatibility rules never relax the
+fail-closed identity, task-id, or run-id bindings.
 
 ### 6.10 Artifacts
 

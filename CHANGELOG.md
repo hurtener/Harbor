@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28.3] — 2026-08-14
+
+### Fixed
+
+- Durable conversation-turn projection now treats optional historical task
+  failure messages containing invalid UTF-8 or control characters as
+  unavailable instead of letting advisory display text stop the global
+  projector. The lifecycle event remains canonical; required snapshot fields
+  and identity, task, and run bindings remain fail-closed (D-425).
+
 ## [1.28.2] — 2026-08-14
 
 ### Fixed
@@ -4562,7 +4572,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.2...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.3...HEAD
+[1.28.3]: https://github.com/hurtener/Harbor/compare/v1.28.2...v1.28.3
 [1.28.2]: https://github.com/hurtener/Harbor/compare/v1.28.1...v1.28.2
 [1.28.1]: https://github.com/hurtener/Harbor/compare/v1.28.0...v1.28.1
 [1.28.0]: https://github.com/hurtener/Harbor/compare/v1.27.0...v1.28.0

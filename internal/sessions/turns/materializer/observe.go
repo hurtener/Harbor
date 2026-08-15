@@ -628,10 +628,7 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 			code = snap.ErrorCode
 		}
 		if compatible {
-			message, err = snapshotFailureMessage(snap.ErrorMessage)
-			if err != nil {
-				return false, err
-			}
+			message = snapshotFailureMessage(snap.ErrorMessage)
 		}
 	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
