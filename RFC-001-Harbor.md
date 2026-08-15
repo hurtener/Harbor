@@ -1320,6 +1320,21 @@ content-read/impersonation authority exists: admin/fleet observation implies
 no transcript access. `events.list` / `state.history` / `tasks.get` remain
 the raw drill-down and explicit task-detail surfaces.
 
+The stock Runtime's root-foreground task/run relationship is part of that
+projection source: the foreground RunLoop uses that TaskID as its canonical
+RunID. Root `task.spawned` intentionally carries only the identity triple,
+while the following planner, tool-lifecycle, usage, pause, and
+`mcp.app_available` events carry `RunID=TaskID`. The turn materializer
+therefore derives exactly that task-bound RunID when both the root spawn
+envelope and task snapshot omit it, registers it only against the
+already-observed task in the same session, and persists the derived run
+identity on the turn. This is not a generic missing-RunID fallback for child
+or background executors: an explicit event/snapshot RunID remains
+authoritative, disagreement fails closed, and an unrelated run id never
+routes merely because the session has one turn. This binding is what makes
+the canonical rich events survive restart in the same row as the task/result
+lifecycle.
+
 The persisted task lifecycle event is canonical for terminal status and its
 nonempty failure code. A task-record snapshot may fill a code only when a
 legacy event omitted one; if both carry nonempty, different codes, the
@@ -1330,6 +1345,15 @@ or exceeding the projection bound) is unavailable rather than a reason to stop
 the session projector. The whole message is omitted; it is never sanitized,
 truncated, or reinterpreted. These compatibility rules never relax the
 fail-closed identity, task-id, or run-id bindings.
+
+An already-sealed turn also cannot be rewritten by a later contradictory
+terminal lifecycle event retained for the same task. When both event sequences
+are known and the contradictory terminal event is strictly newer than the
+event that sealed the row, projection acknowledges that later event as an
+immutable no-op and advances its checkpoint, preserving the first canonical
+terminal row and liveness for following turns. A same-sequence conflict is not
+historical tail compatibility: it remains a fail-closed projection error, as
+does any identity, task-id, or run-id disagreement.
 
 ### 6.10 Artifacts
 

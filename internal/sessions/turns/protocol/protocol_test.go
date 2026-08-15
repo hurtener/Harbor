@@ -663,6 +663,46 @@ func TestService_Get_Conversation_HappyPath(t *testing.T) {
 	}
 }
 
+// TestService_Get_Conversation_PreservesRichComponents pins that the public
+// conversation lane carries the projector's consumer-safe reasoning,
+// content-free tool activity, and durable MCP App ref without a second
+// reduction or field loss. The App correlation id is metadata for resolving
+// already-persisted tool context; it is never callback authority.
+func TestService_Get_Conversation_PreservesRichComponents(t *testing.T) {
+	svc, st, _, _ := newTestService(t)
+	want := fullContentRow("turn-rich")
+	want.Status = turns.StatusComplete
+	want.Sealed = true
+	want.Pause = turns.Pause{Availability: turns.CompletenessUnavailable}
+	want.FinishedAt = want.UpdatedAt
+	want.Apps[0] = turns.AppRef{
+		EffectiveAgentID: "ux-prototype-agent",
+		ServerID:         "atrium",
+		ResourceURI:      "ui://atrium/dashboard",
+		DisplayMode:      "inline",
+		ToolCallID:       "call-atrium-01",
+		ToolName:         "atrium_create",
+		Availability:     turns.AppAvailable,
+		Complete:         turns.CompletenessComplete,
+	}
+	stored := mustSeedRow(t, st, fixtureID, want)
+	ctx := auth.WithAgentReach(verifiedCtx(t, fixtureID), []string{"agent-a"})
+
+	resp, err := svc.Get(ctx, GetRequest{SessionID: fixtureID.SessionID, TaskID: "turn-rich"})
+	if err != nil {
+		t.Fatalf("get rich turn: %v", err)
+	}
+	if !reflect.DeepEqual(resp.Turn.Reasoning, stored.Reasoning) {
+		t.Errorf("reasoning changed: got %+v want %+v", resp.Turn.Reasoning, stored.Reasoning)
+	}
+	if !reflect.DeepEqual(resp.Turn.Activity, stored.Activity) {
+		t.Errorf("activity changed: got %+v want %+v", resp.Turn.Activity, stored.Activity)
+	}
+	if !reflect.DeepEqual(resp.Turn.Apps, stored.Apps) {
+		t.Errorf("apps changed: got %+v want %+v", resp.Turn.Apps, stored.Apps)
+	}
+}
+
 func TestService_Get_Conversation_NotFoundPassthrough(t *testing.T) {
 	svc, _, _, _ := newTestService(t)
 	ctx := verifiedCtx(t, fixtureID)

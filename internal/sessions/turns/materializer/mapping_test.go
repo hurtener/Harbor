@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -323,13 +324,12 @@ func TestMaterialize_TaskIDWithReservedSeparatorIsSkipped(t *testing.T) {
 	}
 }
 
-// TestMaterialize_RootSpawnWithoutRunIDKeepsTaskRouting pins the
-// distinct TaskID/RunID honesty for a legacy spawn that carried no run
-// id: the task lifecycle still routes to the turn (task events name
-// their TaskID), while run-scoped events cannot route (the run id is
-// unavailable) and are skipped — the run id is never silently equated
-// with the task id.
-func TestMaterialize_RootSpawnWithoutRunIDKeepsTaskRouting(t *testing.T) {
+// TestMaterialize_RootSpawnWithoutRunIDUsesRuntimeTaskRunBinding pins the
+// stock Runtime contract: task.spawned deliberately carries no envelope
+// RunID because the task ID canonically doubles as the RunLoop's run ID.
+// Only that exact task-bound run routes; an unrelated run remains
+// unavailable and is skipped.
+func TestMaterialize_RootSpawnWithoutRunIDUsesRuntimeTaskRunBinding(t *testing.T) {
 	h := newHarness(t, "")
 	defer h.closeStore()
 	m := h.newMaterializer(t)
@@ -344,7 +344,7 @@ func TestMaterialize_RootSpawnWithoutRunIDKeepsTaskRouting(t *testing.T) {
 		t.Fatalf("materialize: %v", err)
 	}
 	row := mustGetRow(t, h, "task-nr")
-	if row.RunID != "" || row.Status != turns.StatusFailed || !row.Sealed {
+	if row.RunID != "task-nr" || row.Status != turns.StatusFailed || !row.Sealed {
 		t.Errorf("row = run %q status %q sealed %v", row.RunID, row.Status, row.Sealed)
 	}
 	if len(row.Activity.Rows) != 0 {
@@ -352,5 +352,153 @@ func TestMaterialize_RootSpawnWithoutRunIDKeepsTaskRouting(t *testing.T) {
 	}
 	if res.EventsSkipped == 0 {
 		t.Error("unroutable run event not reported as skipped")
+	}
+}
+
+// TestMaterialize_RunRoutingCollisionFailsClosed pins that the canonical
+// TaskID-as-RunID derivation cannot steal an explicit run binding (or be
+// stolen by one). The conflicting spawn leaves both routing indexes, durable
+// rows, and the checkpoint at the last non-conflicting event.
+func TestMaterialize_RunRoutingCollisionFailsClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		first   func(identity.Identity) events.Event
+		second  func(identity.Identity) events.Event
+		row     string
+		wantErr error
+	}{
+		{
+			name: "derived then explicit root",
+			first: func(id identity.Identity) events.Event {
+				return spawnEv(id, "", "task-a", tasks.KindForeground, "")
+			},
+			second: func(id identity.Identity) events.Event {
+				return spawnEv(id, "task-a", "task-b", tasks.KindForeground, "")
+			},
+			row:     "task-a",
+			wantErr: ErrRunRoutingConflict,
+		},
+		{
+			name: "explicit root then derived",
+			first: func(id identity.Identity) events.Event {
+				return spawnEv(id, "task-a", "task-b", tasks.KindForeground, "")
+			},
+			second: func(id identity.Identity) events.Event {
+				return spawnEv(id, "", "task-a", tasks.KindForeground, "")
+			},
+			row:     "task-b",
+			wantErr: ErrRunRoutingConflict,
+		},
+		{
+			name: "root then child",
+			first: func(id identity.Identity) events.Event {
+				return spawnEv(id, "", "task-root", tasks.KindForeground, "")
+			},
+			second: func(id identity.Identity) events.Event {
+				return spawnEv(id, "task-root", "task-child", tasks.KindBackground, "task-root")
+			},
+			row:     "task-root",
+			wantErr: ErrRunRoutingConflict,
+		},
+		{
+			name: "duplicate task changes parent",
+			first: func(id identity.Identity) events.Event {
+				return spawnEv(id, "run-a", "task-a", tasks.KindForeground, "")
+			},
+			second: func(id identity.Identity) events.Event {
+				return spawnEv(id, "run-a", "task-a", tasks.KindBackground, "task-other")
+			},
+			row:     "task-a",
+			wantErr: ErrTaskRoutingConflict,
+		},
+		{
+			name: "duplicate root changes explicit run",
+			first: func(id identity.Identity) events.Event {
+				return spawnEv(id, "run-a", "task-a", tasks.KindForeground, "")
+			},
+			second: func(id identity.Identity) events.Event {
+				return spawnEv(id, "run-b", "task-a", tasks.KindForeground, "")
+			},
+			row:     "task-a",
+			wantErr: ErrRunRoutingConflict,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			defer h.closeStore()
+			first := h.src.publish(t, tt.first(h.id))
+			h.src.publish(t, tt.second(h.id))
+
+			m := h.newMaterializer(t)
+			if _, err := m.Materialize(context.Background()); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("collision = %v, want %v", err, tt.wantErr)
+			}
+			row := mustGetRow(t, h, tt.row)
+			if row.LastAppliedEventSeq != first.Sequence {
+				t.Errorf("winning row sequence = %d, want %d", row.LastAppliedEventSeq, first.Sequence)
+			}
+			page, err := h.proj.List(context.Background(), h.id, turns.ListOptions{Limit: 20})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(page.Rows) != 1 {
+				t.Fatalf("rows = %d, want only the non-conflicting root", len(page.Rows))
+			}
+			cp, err := h.proj.Checkpoint(context.Background(), h.id)
+			if err != nil {
+				t.Fatalf("checkpoint: %v", err)
+			}
+			if cp != first.Sequence {
+				t.Errorf("checkpoint = %d, want %d", cp, first.Sequence)
+			}
+		})
+	}
+}
+
+func TestMaterialize_ChildSpawnWithoutRunIDDoesNotInventRoute(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	h.src.publish(t, spawnEv(h.id, "run-root", "task-root", tasks.KindForeground, ""))
+	h.src.publish(t, spawnEv(h.id, "", "task-child", tasks.KindBackground, "task-root"))
+	h.src.publish(t, toolInvokedEv(h.id, "task-child", "child.tool", time.Unix(1_700_000_300, 0)))
+	h.src.publish(t, failedEv(h.id, "task-root", "timeout"))
+
+	m := h.newMaterializer(t)
+	res, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	row := mustGetRow(t, h, "task-root")
+	if len(row.Activity.Rows) != 0 {
+		t.Fatalf("child activity routed through invented run: %+v", row.Activity)
+	}
+	if res.EventsSkipped == 0 {
+		t.Fatal("empty-run child activity was not reported as skipped")
+	}
+}
+
+func TestMaterialize_RepeatedChildCannotChangeExplicitRun(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	root := h.src.publish(t, spawnEv(h.id, "run-root", "task-root", tasks.KindForeground, ""))
+	h.src.publish(t, spawnEv(h.id, "run-child-a", "task-child", tasks.KindBackground, "task-root"))
+	h.src.publish(t, spawnEv(h.id, "run-child-b", "task-child", tasks.KindBackground, "task-root"))
+
+	m := h.newMaterializer(t)
+	if _, err := m.Materialize(context.Background()); !errors.Is(err, ErrRunRoutingConflict) {
+		t.Fatalf("child run rebind = %v, want ErrRunRoutingConflict", err)
+	}
+	row := mustGetRow(t, h, "task-root")
+	if row.RunID != "run-root" || row.LastAppliedEventSeq != root.Sequence {
+		t.Fatalf("root row changed by child rebind: %+v", row)
+	}
+	cp, err := h.proj.Checkpoint(context.Background(), h.id)
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if cp != root.Sequence {
+		t.Fatalf("checkpoint = %d, want last durably applied root spawn %d (child routing is in-memory only; conflicting child did not advance it past the root)", cp, root.Sequence)
 	}
 }

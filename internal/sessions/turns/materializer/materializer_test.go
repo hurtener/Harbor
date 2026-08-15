@@ -461,6 +461,120 @@ func TestMaterialize_ResponseLossReplayConverges(t *testing.T) {
 	}
 }
 
+// TestMaterialize_RestartQuarantinesLaterConflictingTerminal pins the
+// historical poison-record case: the durable checkpoint already names the
+// event that sealed a legacy turn, but the retained source later contains a
+// second contradictory terminal event for that task. A fresh materializer
+// must preserve the immutable first terminal row, advance the session
+// checkpoint past the later event, and materialize the following fresh turn.
+func TestMaterialize_RestartQuarantinesLaterConflictingTerminal(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+
+	h.src.publish(t, spawnEv(h.id, "run-legacy", "task-legacy", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-legacy"))
+	firstTerminal := h.src.publish(t, failedEv(h.id, "task-legacy", "runtime_restarted"))
+
+	m1 := h.newMaterializer(t)
+	if _, err := m1.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize initial terminal: %v", err)
+	}
+	legacy := mustGetRow(t, h, "task-legacy")
+	if !legacy.Sealed || legacy.Status != turns.StatusFailed || legacy.LastAppliedEventSeq != firstTerminal.Sequence {
+		t.Fatalf("initial legacy row = %+v", legacy)
+	}
+
+	// Exact hosted legacy shape: a later task.failed event disagrees with the
+	// first terminal event's code.
+	conflictingTerminal := h.src.publish(t, failedEv(h.id, "task-legacy", "cancelled"))
+
+	// Restart: local turn state is empty, while the durable row/checkpoint
+	// still reflect the first terminal event. Replaying that event at the
+	// checkpoint does not mark local state sealed; the strictly later conflict
+	// is therefore the event that exercises quarantine.
+	m2 := h.newMaterializer(t)
+	res, err := m2.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("materialize restarted source with later terminal conflict: %v", err)
+	}
+	if res.Cursor != conflictingTerminal.Sequence {
+		t.Errorf("cursor = %d, want quarantined terminal sequence %d", res.Cursor, conflictingTerminal.Sequence)
+	}
+
+	legacyAfter := mustGetRow(t, h, "task-legacy")
+	if !reflect.DeepEqual(legacyAfter, legacy) {
+		t.Errorf("later terminal event rewrote immutable legacy row:\nbefore: %+v\nafter:  %+v", legacy, legacyAfter)
+	}
+	if legacyAfter.LastAppliedEventSeq == conflictingTerminal.Sequence {
+		t.Error("quarantined event was stamped onto the immutable legacy row")
+	}
+	cp, err := h.proj.Checkpoint(context.Background(), h.id)
+	if err != nil {
+		t.Fatalf("checkpoint after quarantine: %v", err)
+	}
+	if cp != conflictingTerminal.Sequence {
+		t.Errorf("checkpoint after quarantine = %d, want %d", cp, conflictingTerminal.Sequence)
+	}
+
+	// A wholly new turn follows the quarantined record and reaches its final
+	// checkpoint in the same restarted materializer.
+	h.src.publish(t, spawnEv(h.id, "run-fresh", "task-fresh", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-fresh"))
+	freshTerminal := h.src.publish(t, failedEv(h.id, "task-fresh", "timeout"))
+	if _, err := m2.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize following fresh turn: %v", err)
+	}
+
+	fresh := mustGetRow(t, h, "task-fresh")
+	if !fresh.Sealed || fresh.Status != turns.StatusFailed || fresh.ErrorClass != turns.ErrorClassTimeout {
+		t.Fatalf("following fresh turn = %+v", fresh)
+	}
+	cp, err = h.proj.Checkpoint(context.Background(), h.id)
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if cp != freshTerminal.Sequence {
+		t.Errorf("checkpoint = %d, want final fresh sequence %d", cp, freshTerminal.Sequence)
+	}
+}
+
+// TestMaterialize_LaterCancelledForeignRunFailsClosed pins that sequence order
+// never grants quarantine across run authority. The row and checkpoint remain
+// on the first terminal event when a later cancellation names another run.
+func TestMaterialize_LaterCancelledForeignRunFailsClosed(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+
+	h.src.publish(t, spawnEv(h.id, "run-owned", "task-1", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-1"))
+	firstTerminal := h.src.publish(t, failedEv(h.id, "task-1", "timeout"))
+	m1 := h.newMaterializer(t)
+	if _, err := m1.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize initial terminal: %v", err)
+	}
+	before := mustGetRow(t, h, "task-1")
+
+	foreignCancel := cancelledEv(h.id, "task-1")
+	foreignCancel.Identity = testQuad(h.id, "run-foreign")
+	h.src.publish(t, foreignCancel)
+	m2 := h.newMaterializer(t)
+	if _, err := m2.Materialize(context.Background()); !errors.Is(err, ErrSnapshotRunIDMismatch) {
+		t.Fatalf("later foreign-run cancellation = %v, want ErrSnapshotRunIDMismatch", err)
+	}
+
+	after := mustGetRow(t, h, "task-1")
+	if !reflect.DeepEqual(after, before) {
+		t.Errorf("foreign-run cancellation mutated sealed row:\nbefore: %+v\nafter:  %+v", before, after)
+	}
+	cp, err := h.proj.Checkpoint(context.Background(), h.id)
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if cp != firstTerminal.Sequence {
+		t.Errorf("checkpoint = %d, want first terminal sequence %d", cp, firstTerminal.Sequence)
+	}
+}
+
 // TestMaterialize_RestartDurableStore pins the durable-driver restart
 // contract: a file-backed store retains rows AND the per-session
 // checkpoint across a store reopen; a fresh materializer re-pages the

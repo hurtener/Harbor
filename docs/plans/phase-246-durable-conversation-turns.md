@@ -11,6 +11,16 @@ App authority itself. Together with Phase 245's lifecycle read, a persisted
 session reopens its latest turns in exactly two reads, independent of total
 history.
 
+**Production correction (v1.28.4).** The stock Runtime's root
+`task.spawned` event deliberately has no envelope RunID; its per-task RunLoop
+then emits planner/tool/App events under `RunID=TaskID`. The materializer must
+derive only that exact already-spawned task/run binding, persist the rich
+reasoning/activity/App components, and reproduce both the row and
+`sessions.turns.get` bytes unchanged after durable restart. Explicit run
+bindings and mismatches remain authoritative/fail-closed; raw reasoning, tool
+arguments/results, App callback authority, and tool-context contents remain
+absent from the turn row.
+
 ## RFC anchor
 
 - RFC §5.2
@@ -201,7 +211,11 @@ history.
       historical terminal message that is invalid UTF-8, contains NUL/C0/DEL
       controls, or exceeds the projection bound is unavailable wholesale,
       never sanitized or truncated, and cannot stall later projection.
-      Identity/task/run binding violations remain fail-closed.
+      When an already-sealed legacy row encounters a contradictory terminal
+      lifecycle event at a strictly newer known sequence, the immutable first
+      terminal row remains canonical while projection acknowledges the later
+      event and advances its checkpoint; same-sequence conflicts, unknown
+      ordering, and identity/task/run binding violations remain fail-closed.
 - [ ] Durability and handoff: the projection is incrementally materialized with
       idempotent sequence checkpoints, reconciles after interruption, survives
       restart on durable drivers, and is erased/fenced with its session.

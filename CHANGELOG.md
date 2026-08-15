@@ -17,6 +17,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.28.4] — 2026-08-15
+
+### Fixed
+
+- Durable conversation turns now retain their canonical planner-derived
+  reasoning, tool activity, and MCP App references when the stock Runtime's
+  `task.spawned` event omits RunID and its later run-scoped events use the
+  canonical `RunID=TaskID` binding. The exact task-bound relation is persisted
+  and replay/restart remains byte-identical; arbitrary run ids and explicit
+  binding mismatches remain fail-closed, and raw reasoning/tool content and App
+  callback authority remain absent (D-425).
+- Durable conversation-turn projection now acknowledges a strictly later
+  contradictory terminal lifecycle event for an already-sealed legacy turn
+  without rewriting the immutable first terminal row. Its session checkpoint
+  advances so one incompatible historical tail cannot stop later turns;
+  same-event conflicts and identity, task, and run binding mismatches remain
+  fail-closed (D-425).
+
 ## [1.28.3] — 2026-08-14
 
 ### Fixed
@@ -4572,7 +4590,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.3...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.4...HEAD
+[1.28.4]: https://github.com/hurtener/Harbor/compare/v1.28.3...v1.28.4
 [1.28.3]: https://github.com/hurtener/Harbor/compare/v1.28.2...v1.28.3
 [1.28.2]: https://github.com/hurtener/Harbor/compare/v1.28.1...v1.28.2
 [1.28.1]: https://github.com/hurtener/Harbor/compare/v1.28.0...v1.28.1

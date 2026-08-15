@@ -217,8 +217,19 @@ func (m *Materializer) completeSealProjection(ctx context.Context, sess *session
 		return false, false, err
 	}
 	if current.Sealed {
-		ts.sealed = true
-		return true, false, nil
+		bound, bindErr := bindRunID(eventRunID, ts.runID, current.RunID)
+		if bindErr != nil {
+			return false, false, bindErr
+		}
+		if bound != ts.runID {
+			ts.runID = bound
+		}
+		row, convergeErr := convergeSealedWinner(ts, current, turns.Seal{
+			Status:       turns.StatusComplete,
+			FinishReason: turns.FinishGoal,
+			EventSeq:     attachSeq,
+		})
+		return row.Sealed, false, convergeErr
 	}
 	if current.TaskID != "" && current.TaskID != ts.taskID {
 		// The durable row under this turn id belongs to a DIFFERENT

@@ -403,9 +403,11 @@ type Result struct {
 //
 // Hard failures abort the pass with a wrapped error (fail loud — a
 // store failure, a transient snapshot error, or a binding mismatch is
-// never silently swallowed); per-event skips that are expected
-// (erasure fences, sealed turns, unclassifiable steps) are counted,
-// not raised.
+// never silently swallowed). A strictly later conflicting terminal event for
+// the same already-sealed task/run is acknowledged without mutating the row so
+// its session checkpoint and the global cursor can advance; same-event
+// conflicts remain hard failures. Per-event skips that are expected (erasure
+// fences, sealed turns, unclassifiable steps) are counted, not raised.
 func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 	var res Result
 	m.mu.Lock()
