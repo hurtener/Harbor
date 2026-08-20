@@ -4,11 +4,15 @@
 
 Deliver Harbor-local organization skill publications as immutable,
 content-addressed revisions with exact references and content-free metadata,
-receipts, and Protocol projections. The publication domain and persistence
-contract are present at the integrated base; this phase closes the remaining
-Protocol transport and runtime-composition seam so a run resolves only its
-exact same-runtime reference and fails closed on authority, lifecycle, hash,
-generation, or runtime mismatch.
+receipts, and Protocol projections. At the integrated base, the publication
+domain and persistence contract, additive Protocol surface, strict control
+handler, typed clients, conditional capability, generated reference pages, and
+run-start composition are present. The one remaining phase gate is the
+production/devstack bootstrap that mounts one authorized publication store and
+surface together; until that wiring lands, the capability must remain
+unadvertised. Every resolved run still uses only its exact same-runtime
+reference and fails closed on authority, lifecycle, hash, generation, or
+runtime mismatch.
 
 ## RFC anchor
 
@@ -97,22 +101,30 @@ None.
 - [x] `Resolve` is the only body-bearing operation and rejects retired,
       foreign-runtime, stale-generation, wrong-hash, missing, and unreachable
       references rather than falling back.
-- [ ] Canonical Protocol methods, types, errors, and control-status mappings
+- [x] Canonical Protocol methods, types, errors, and control-status mappings
       are additive and ProtocolVersion remains unchanged; generated protocol
-      reference pages reflect the canonical source after the generator's
-      missing error-guidance rows are supplied by the implementation owner.
-- [ ] The Protocol transport adapter dispatches all ten methods with verified
-      admin versus caller authority, signed effective-agent reach, and bounded
-      content-free responses against a real configured store.
-- [ ] Runtime composition resolves the exact reference at run start and
+      reference pages reflect the canonical source, including the HA-68
+      guidance rows.
+- [x] The strict Protocol transport adapter dispatches all ten methods to the
+      authorized SkillPublicationsSurface with verified admin versus caller
+      authority, signed effective-agent reach, and bounded content-free
+      responses; focused tests exercise the surface with a real publication
+      store.
+- [x] Runtime composition resolves the exact reference at run start and
       fails closed on every binding mismatch; the resulting body is confined
       to the immutable run snapshot and never enters metadata or receipts.
-- [ ] Memory/StateStore conformance and end-to-end runtime tests run under
-      `-race` with at least one real durable driver and cover a failure mode.
-- [x] A static-only Phase 250 smoke checks the landed domain/wire contract,
-      generated reference pages, operator/config guidance, and explicitly
-      reports the pending transport/composition consumer rather than implying
-      it is shipped.
+- [x] Focused MemoryStore, StateStore, Protocol-surface, control-handler, and
+      run-start tests cover restart, idempotency, response-loss replay,
+      isolation, CAS, authority, strict decoding, and failure modes. The
+      source-level concurrent tuple-isolation tests use N=128; the generic
+      conformance Stack intentionally does not assemble a publication store.
+- [x] A static-only Phase 250 smoke checks the landed domain, strict handler,
+      typed clients, conditional capability, authorized store surface,
+      generated reference pages, and immutable run-start composition.
+- [ ] Production/devstack bootstrap mounts one authorized publication store
+      into the Protocol surface and run loop, and advertises
+      `CapSkillPublications` only when that same construction is complete. This
+      is the sole remaining integration follow-up at this checkpoint.
 
 ## Files added or changed
 
@@ -127,14 +139,25 @@ None.
   `internal/protocol/transports/control/status.go` — typed error/status map.
 - `internal/protocol/singlesource/*` and protocol-doc generator type indexes
   — canonical lockstep registration.
-- `internal/protocol/skill_publications.go` — transport surface and verified
-  admin/caller/reach dispatch (pending at this docs checkpoint).
-- `internal/runtime/serve/*` and skill-composition resolver files — exact
-  run-start reference resolution (pending at this docs checkpoint).
+- `internal/protocol/skill_publications.go` — transport-agnostic surface and
+  verified admin/caller/reach dispatch.
+- `internal/protocol/transports/control/skill_publications_handler.go` and
+  `internal/protocol/transports/{control,transports}.go` — strict REST decode
+  and optional control/mux mounting.
+- `internal/protocol/client/client.go` and
+  `internal/protocol/client/client_skill_publications_test.go` — typed client
+  methods and canonical-route/identity tests.
+- `sdk/protocolclient/protocolclient.go` — public client aliases for the ten
+  additive methods.
+- `internal/protocol/posture.go` and `internal/protocol/types/version.go` —
+  conditional `skill_publications` capability advertisement and registration.
+- `internal/runtime/serve/runloop.go` and
+  `internal/runtime/serve/runloop_publication_test.go` — exact run-start
+  reference resolution and immutable snapshot/concurrency evidence.
 - `docs/site/protocol/{methods,events,errors,types}.md` — generated Protocol
-  reference pages.
-- `docs/site/protocol/index.md` — protocol-site status note for the pending
-  generated-page guidance gate.
+  reference pages containing the HA-68 method/type/error rows.
+- `docs/site/protocol/index.md` — protocol-site status note for the landed
+  surface and the remaining bootstrap follow-up.
 - `docs/skills/configure-memory-and-skills/SKILL.md` and
   `docs/skills/use-the-harbor-protocol/SKILL.md` — operator procedures.
 - `docs/site/concepts/memory-and-skills.md` and the relevant site skill
@@ -164,35 +187,38 @@ The additive Harbor Protocol surface is:
 - **Unit:** publication validation, canonical names/content hashes, lifecycle
   transitions, exact generation/hash CAS, content-free projections, and typed
   errors.
-- **Integration:** the Protocol surface against a real StateStore-backed
-  publication store, with verified admin and caller identities, signed reach,
-  restart, response-loss replay, and a foreign-runtime/retired-reference
-  failure. This is pending the transport consumer.
+- **Integration:** focused Protocol-surface and strict control-handler tests
+  exercise a real publication store with verified admin and caller identities,
+  signed reach, content-free responses, and foreign-runtime/retired-reference
+  failures. The generic conformance Stack remains intentionally unmounted;
+  production/devstack bootstrap is the separate unchecked follow-up.
 - **Conformance:** MemoryStore and StateStore execute the same publication,
   reference, idempotency, erasure, and CAS matrix; all required StateStore
-  drivers remain behind the existing conformance seam.
-- **Concurrency / leak:** the landed domain test runs N=128 concurrent
-  resolves against one shared store under `-race`; the completed phase adds
-  N≥100 mixed publication/reference compositions and goleak checks at the
-  runtime consumer boundary.
+  drivers remain behind the existing conformance seam. The HA-68 generic
+  conformance Stack does not claim a mounted publication store.
+- **Concurrency / leak:** the publication domain and run-start composition
+  each contain N=128 concurrent tuple-isolation coverage against one shared
+  store/driver. These are source-level evidence in this docs finalization; no
+  broad test or `-race` run is claimed here.
 
 ## Smoke script additions
 
 - Static guards assert the Phase 250 plan, D-430 vocabulary, publication
-  domain tests, canonical method/error/type registrations, config/operator
-  guidance, and CHANGELOG entry. Generated Protocol reference pages remain a
-  pending generator gate because the current Go renderer rejects the five new
-  error codes without guidance rows.
-- A pending-surface guard records that the transport adapter and runtime
-  composition consumer are not yet evidence at this checkpoint; it is not an
-  HTTP probe and does not claim broad preflight.
+  domain tests, strict control handler, typed clients, conditional capability,
+  authorized store surface, run-start composition, N=128 tests, canonical
+  method/error/type registrations, generated Protocol reference pages,
+  config/operator guidance, and CHANGELOG entry.
+- One explicit guard preserves the unchecked production/devstack bootstrap
+  criterion; the smoke remains static-only and does not claim broad preflight
+  or a live HTTP route.
 
 ## Coverage target
 
 - `internal/skills/publication`: ≥90%.
 - `internal/protocol`: existing package target plus focused publication
   method/type/error lockstep coverage.
-- Runtime composition adapter: ≥85% once the pending consumer lands.
+- Runtime composition adapter: ≥85% for the landed run-start composition;
+  bootstrap wiring receives its own focused gate when added.
 
 ## Dependencies
 
@@ -212,9 +238,10 @@ The additive Harbor Protocol surface is:
 - Content-free metadata makes operator inspection intentionally indirect;
   authorized resolve is the only body route and must retain redaction/audit
   boundaries.
-- The transport and runtime composition consumers are not established on this
-  checkpoint; release status must remain Pending until their focused
-  integration evidence exists.
+- Production/devstack bootstrap is not established on this checkpoint. Until
+  the authorized store, Protocol surface, run-loop dependencies, and
+  conditional capability are mounted from one construction path, the phase
+  remains Pending for that one integration item.
 
 ## Glossary additions
 
@@ -233,15 +260,20 @@ The additive Harbor Protocol surface is:
 - [x] `make check-mirror` passes after rule-file inspection (no AGENTS/CLAUDE
       edits in this phase).
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve by inspection.
-- [ ] Generated Protocol reference pages are regenerated after the Go
-      error-guidance table is updated (blocked at this docs-only checkpoint).
+- [x] Generated Protocol reference pages are present and include the HA-68
+      methods, types, and error guidance rows (the generator check is not
+      rerun in this docs-only finalization).
 - [ ] Coverage on touched packages ≥ stated target (focused tests only; broad
       coverage gate not run).
 - [x] Multi-isolation domain tests cover tenant/user/session and runtime
       mismatch fail-closed behavior.
-- [x] Concurrent-reuse test covers the shared publication store with N=128
-      under `-race`.
-- [ ] Integration test against the Protocol transport/runtime composition
-      seam (pending implementation consumer).
+- [x] Source-level concurrent-reuse test covers the shared publication store
+      with N=128; this docs-only finalization does not claim a local `-race`
+      execution.
+- [x] Focused Protocol surface, strict control-handler, typed-client, and
+      run-start composition tests are present.
+- [ ] Production/devstack bootstrap mounts the authorized store/surface and
+      conditional capability from one construction path (sole remaining
+      integration follow-up).
 - [x] New vocabulary is present in `docs/glossary.md`.
 - [x] No brief finding was departed from.

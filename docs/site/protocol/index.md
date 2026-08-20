@@ -37,9 +37,13 @@ Go-side wire change without regenerated docs fails the build):
 **HA-68 publication note.** The canonical source now contains the additive
 `skills.publications.*` method/type/error contract and the Phase 250 operator
 plan documents its identity, signed-reach, content-free, and same-runtime
-rules. The generated reference pages remain pending the renderer's guidance
-rows for the new error codes; a runtime must advertise the complete surface
-before a client treats those methods as live. See [Phase 250](../../plans/phase-250-same-runtime-skill-publications.md)
+rules. The generated reference pages include the HA-68 methods, types, and
+error guidance rows, and the strict control handler, typed clients,
+conditional capability, and run-start composition are represented by the
+landed surface. A runtime must advertise `skill_publications` only when the
+same construction path mounts the authorized publication store and Protocol
+transport; production/devstack bootstrap remains the one Phase 250
+integration follow-up. See [Phase 250](../../plans/phase-250-same-runtime-skill-publications.md)
 and D-430.
 
 ## The choreographies (sequence and intent)
