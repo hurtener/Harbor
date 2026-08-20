@@ -156,6 +156,19 @@ var requestSurfaces = map[string]Surface{
 	"SessionTurnsListRequest": SurfaceSessions,
 	"SessionTurnsGetRequest":  SurfaceSessions,
 
+	// same-runtime organization skill publications — every method binds the
+	// request scope to the verified caller; admin scope does not widen it.
+	"SkillPublicationPublishRequest":        SurfaceSkillPublications,
+	"SkillPublicationListRequest":           SurfaceSkillPublications,
+	"SkillPublicationGetRequest":            SurfaceSkillPublications,
+	"SkillPublicationSuccessorRequest":      SurfaceSkillPublications,
+	"SkillPublicationRetireRequest":         SurfaceSkillPublications,
+	"SkillPublicationAvailableRequest":      SurfaceSkillPublications,
+	"SkillPublicationInstallRequest":        SurfaceSkillPublications,
+	"SkillPublicationUpdateRequest":         SurfaceSkillPublications,
+	"SkillPublicationRemoveRequest":         SurfaceSkillPublications,
+	"SkillPublicationReferencesListRequest": SurfaceSkillPublications,
+
 	// observability — the one bounded administrative rollup query.
 	"ObservabilityQueryRequest": SurfaceObservability,
 

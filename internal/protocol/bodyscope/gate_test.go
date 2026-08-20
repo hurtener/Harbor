@@ -46,6 +46,7 @@ var elevationSiteAllowList = map[string]string{
 	filepath.Join("internal", "protocol", "transports", "control", "control.go"): "an accepted admin impersonation runs under the impersonated identity; the impersonation gate verified the admin claim and pinned the actor to the verified identity before this call, and the accepted path is audited",
 	filepath.Join("internal", "protocol", "control.go"):                          "a cross-tenant topology snapshot runs under the named tenant; the surface verified the admin claim and wrote the audit record before this call",
 	filepath.Join("internal", "protocol", "posture.go"):                          "a cross-tenant posture read runs under the named tenant; the surface verified the admin-tier claim before this call and writes the audit record on the way out",
+	filepath.Join("internal", "tasks", "agent_reach_admission.go"):               "a persisted Agent-reach receipt re-seats the verified task identity only after envelope, digest, identity, and task-binding checks pass; it cannot widen the signed authority",
 
 	// Per-ROW re-scopes behind an already-authorized fan-in. Each reads a
 	// row under that row's own identity; the listing or search that
