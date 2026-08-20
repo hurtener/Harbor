@@ -61,6 +61,57 @@ func TestSkillPublicationsSurface_BodyIdentityCannotGrantAdminAuthority(t *testi
 	}
 }
 
+func TestSkillPublicationsSurface_AdminCannotPublishNamelessPublication(t *testing.T) {
+	store := publication.NewMemoryStore("runtime-a")
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store})
+	if err != nil {
+		t.Fatalf("NewSkillPublicationsSurface: %v", err)
+	}
+	ctx := publicationTestContext(t, "tenant-a", "admin", "session-admin", []auth.Scope{auth.ScopeAdmin}, nil)
+	_, err = surface.Dispatch(ctx, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{
+		Identity:       types.IdentityScope{Tenant: "tenant-a", User: "admin", Session: "session-admin"},
+		Name:           "",
+		Skill:          publicationWireSkill(),
+		IdempotencyKey: "publish-nameless",
+		ExpectedAbsent: true,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) || perr.Code != protoerrors.CodeInvalidRequest {
+		t.Fatalf("nameless publish error = %v, want CodeInvalidRequest", err)
+	}
+	items, err := store.List(context.Background(), identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a", UserID: "admin", SessionID: "session-admin"}})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("nameless publish created %d publications", len(items))
+	}
+}
+
+func TestSkillPublicationsSurface_UsesVerifiedIdentityForStorageCaller(t *testing.T) {
+	store := publication.NewMemoryStore("runtime-a")
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store})
+	if err != nil {
+		t.Fatalf("NewSkillPublicationsSurface: %v", err)
+	}
+	ctx := publicationTestContext(t, "tenant-a", "user-a", "session-a", []auth.Scope{auth.ScopeAdmin}, nil)
+	ctx, err = identity.With(ctx, identity.Identity{TenantID: "tenant-a", UserID: "user-b", SessionID: "session-b"})
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	_, err = surface.Dispatch(ctx, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{
+		Identity:       types.IdentityScope{Tenant: "tenant-a", User: "user-b", Session: "session-b"},
+		Name:           "ops",
+		Skill:          publicationWireSkill(),
+		IdempotencyKey: "publish-rescoped",
+		ExpectedAbsent: true,
+	})
+	var perr *protoerrors.Error
+	if !errors.As(err, &perr) || perr.Code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("rescoped publish error = %v, want CodeScopeMismatch", err)
+	}
+}
+
 func TestSkillPublicationsSurface_AdminPublishAndSignedAgentReachInstall(t *testing.T) {
 	store := publication.NewMemoryStore("runtime-a")
 	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store})

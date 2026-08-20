@@ -626,12 +626,12 @@ func (m *MemoryStore) PublishSuccessor(ctx context.Context, caller identity.Quad
 	now := m.clock().UTC()
 	revisionID := newOpaqueID("rev", skill.ContentHash, p.Generation+1)
 	skill = stampOriginRef(skill, p.PublicationID, revisionID)
-	p.Revisions = append(p.Revisions, currentRevision(p))
 	p.RevisionID = revisionID
 	p.ContentHash = skill.ContentHash
 	p.Generation++
 	p.UpdatedAt = now
 	p.Skill = cloneSkill(skill)
+	p.Revisions = append(p.Revisions, currentRevision(p))
 	m.pubs[caller.TenantID][idx] = p
 	receipt := Receipt{OperationID: req.IdempotencyKey, Operation: "publish_successor", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, BeforeHash: req.ExpectedContentHash, AfterHash: p.ContentHash, UpdatedAt: now}
 	result := metadata(p)
@@ -976,6 +976,9 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 	if err := validateKey(r.IdempotencyKey); err != nil {
 		return Metadata{}, Receipt{}, err
 	}
+	if canonicalName(r.Name) == "" {
+		return Metadata{}, Receipt{}, fmt.Errorf("%w: create requires a publication name", ErrInvalidRequest)
+	}
 	skill, err := validateSkill(r.Skill, r.Name)
 	if err != nil {
 		return Metadata{}, Receipt{}, err
@@ -1195,12 +1198,12 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 	now := d.clock().UTC()
 	revisionID := newOpaqueID("rev", skill.ContentHash, p.Generation+1)
 	skill = stampOriginRef(skill, p.PublicationID, revisionID)
-	p.Revisions = append(p.Revisions, currentRevision(p))
 	p.RevisionID = revisionID
 	p.ContentHash = skill.ContentHash
 	p.Generation++
 	p.UpdatedAt = now
 	p.Skill = cloneSkill(skill)
+	p.Revisions = append(p.Revisions, currentRevision(p))
 	a.Publications[idx] = p
 	receipt := Receipt{OperationID: r.IdempotencyKey, Operation: "publish_successor", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, BeforeHash: r.ExpectedContentHash, AfterHash: p.ContentHash, UpdatedAt: now}
 	result := metadata(p)

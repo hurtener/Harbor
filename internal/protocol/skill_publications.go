@@ -266,15 +266,11 @@ func (s *SkillPublicationsSurface) caller(ctx context.Context, scope types.Ident
 	if !ok {
 		return identity.Quadruple{}, protoerrors.New(protoerrors.CodeIdentityRequired, "skill-publication caller identity is not verified")
 	}
-	working, ok := identity.From(ctx)
-	if !ok {
-		working = verified
-	}
 	requested := identity.Identity{TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session}
-	if requested != working {
+	if requested != verified {
 		return identity.Quadruple{}, protoerrors.New(protoerrors.CodeScopeMismatch, "skill-publication identity does not match the verified caller")
 	}
-	return identity.Quadruple{Identity: working, RunID: scope.Run}, nil
+	return identity.Quadruple{Identity: verified, RunID: scope.Run}, nil
 }
 
 func (s *SkillPublicationsSurface) requireAdmin(ctx context.Context, method methods.Method) *protoerrors.Error {

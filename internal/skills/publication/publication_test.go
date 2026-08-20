@@ -250,6 +250,105 @@ func TestStateStoreStore_RestartAndCAS(t *testing.T) {
 	_ = raw.Close(ctx)
 }
 
+func TestStateStoreStore_PublishRejectsEmptyOrMismatchedName(t *testing.T) {
+	ctx := context.Background()
+	id := publicationIdentity("tenant-a", "user-a", "session-a")
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStateStore(raw, "runtime-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = store.Close(ctx)
+		_ = raw.Close(ctx)
+	}()
+
+	for _, tc := range []struct {
+		name  string
+		skill string
+	}{
+		{name: "", skill: "ops"},
+		{name: "other", skill: "ops"},
+	} {
+		_, _, err := store.Publish(ctx, id, PublishRequest{
+			IdempotencyKey: "publish-" + tc.name,
+			Name:           tc.name,
+			Skill:          publicationSkill(tc.skill, "do"),
+			ExpectedAbsent: true,
+		})
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("publish name=%q skill=%q error=%v, want ErrInvalidRequest", tc.name, tc.skill, err)
+		}
+	}
+	items, err := store.List(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("invalid publishes persisted %d publications", len(items))
+	}
+}
+
+func TestPublicationStore_SuccessorsKeepOneImmutableRevisionEach(t *testing.T) {
+	ctx := context.Background()
+	id := publicationIdentity("tenant-a", "user-a", "session-a")
+
+	memory := NewMemoryStore("runtime-a")
+	first, _, err := memory.Publish(ctx, id, PublishRequest{IdempotencyKey: "memory-p", Name: "ops", Skill: publicationSkill("ops", "one"), ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := memory.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "memory-s1", PublicationID: first.PublicationID, ExpectedGeneration: first.Generation, ExpectedContentHash: first.ContentHash, Skill: publicationSkill("ops", "two")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := memory.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "memory-s2", PublicationID: first.PublicationID, ExpectedGeneration: second.Generation, ExpectedContentHash: second.ContentHash, Skill: publicationSkill("ops", "three")}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(memory.pubs[id.TenantID][0].Revisions); got != 3 {
+		t.Fatalf("memory revision count=%d, want 3", got)
+	}
+	_, old, err := memory.findRevision(id, first.PublicationID, first.RevisionID)
+	if err != nil || old.Skill.Steps[0] != "one" {
+		t.Fatalf("memory predecessor=%+v err=%v", old, err)
+	}
+
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, err := NewStateStore(raw, "runtime-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = durable.Close(ctx); _ = raw.Close(ctx) }()
+	first, _, err = durable.Publish(ctx, id, PublishRequest{IdempotencyKey: "state-p", Name: "ops", Skill: publicationSkill("ops", "one"), ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err = durable.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "state-s1", PublicationID: first.PublicationID, ExpectedGeneration: first.Generation, ExpectedContentHash: first.ContentHash, Skill: publicationSkill("ops", "two")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := durable.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "state-s2", PublicationID: first.PublicationID, ExpectedGeneration: second.Generation, ExpectedContentHash: second.ContentHash, Skill: publicationSkill("ops", "three")}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := raw.Load(ctx, orgIdentity(id.TenantID), publicationOrgKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate, err := decodeAggregate(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(aggregate.Publications[0].Revisions); got != 3 {
+		t.Fatalf("state revision count=%d, want 3", got)
+	}
+}
+
 func TestStateStoreStore_RemoveThenInstallAndConcurrentResolveN128(t *testing.T) {
 	ctx := context.Background()
 	id := publicationIdentity("tenant-a", "user-a", "session-a")
