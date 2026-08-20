@@ -76,6 +76,33 @@ assert_grep_present \
     'TestStateStoreStore_ResponseLossAndUserScopedReferences' \
     "internal/skills/publication/publication_test.go" \
     "phase 250 response-loss/reference test exists"
+assert_file \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 shared StateStore publication conformance harness exists"
+assert_grep_present \
+    'TestStateStorePublication_Conformance_InMemoryAndSQLite' \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 in-memory/SQLite publication conformance exists"
+assert_grep_present \
+    'TestStateStorePublication_Conformance_Postgres' \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 Postgres publication conformance exists"
+assert_grep_present \
+    'HARBOR_PG_DSN' \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 Postgres conformance is DSN-gated"
+assert_grep_present \
+    'stateinmem' \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 conformance imports in-memory StateStore driver"
+assert_grep_present \
+    'sqlitedriver' \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 conformance imports SQLite StateStore driver"
+assert_grep_present \
+    'postgresdriver' \
+    "internal/skills/publication/state_store_conformance_test.go" \
+    "phase 250 conformance imports Postgres StateStore driver"
 
 assert_grep_present \
     'NewSkillPublicationsSurface' \

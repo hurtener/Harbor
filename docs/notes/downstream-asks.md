@@ -78,11 +78,13 @@ agent without copying rows across user identities or returning bodies in
 metadata. Phase 250 / D-430 has the domain, StateStore, canonical wire
 contract, strict Protocol transport/client/capability/generated-doc lockstep,
 exact run-start composition, and shared production/devstack bootstrap at the
-reviewed base. Focused local evidence covers configured and unavailable wiring
-postures; broad preflight/full suites were not run locally and hosted CI
-remains pending. This register records Harbor implementation evidence only and
-does not claim downstream acceptance. Both asks are **framework-framed** and
-Harbor-local.
+ reviewed base. The shared publication StateStore conformance harness covers
+ in-memory and SQLite locally and Postgres under `HARBOR_PG_DSN`; with that DSN
+ unset, the local Postgres leg is skipped. Focused local evidence covers
+ configured and unavailable wiring postures; broad preflight/full suites were
+ not run locally and hosted CI evidence remains pending. This register records
+ Harbor implementation evidence only and does not claim downstream acceptance.
+ Both asks are **framework-framed** and Harbor-local.
 
 ---
 
@@ -1208,10 +1210,13 @@ no Protocol route, wire type, artifact resolver, or broad capability.
 **Priority:** High. **Size:** medium. **State:** Implemented as Phase 250 / D-430;
 publication domain, StateStore contract, canonical wire types/methods/errors,
 strict transport/client/capability/generated-doc lockstep, exact run-start
-composition, and shared production/devstack bootstrap are landed. Focused local
-evidence covers configured and unavailable wiring postures; broad
-preflight/full suites were not run locally and hosted CI remains pending. This
-register does not claim downstream acceptance.
+composition, shared production/devstack bootstrap, and the shared StateStore
+publication conformance harness are landed. The harness covers in-memory and
+SQLite locally and Postgres under `HARBOR_PG_DSN`; with that DSN unset, the
+local Postgres leg is skipped. Focused local evidence covers configured and
+unavailable wiring postures; broad preflight/full suites were not run locally
+and hosted CI evidence remains pending. This register does not claim
+downstream acceptance.
 
 **Observed Harbor gap.** Ordinary skill rows are identity-scoped to the
 caller. An organization needs one reviewed revision to be available to users

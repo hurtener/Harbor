@@ -937,9 +937,12 @@ real two-client race under `-race`.
   canonical wire types, method registry, errors, strict control handler,
   typed client methods, conditional capability, generated Protocol pages,
   authorized surface tests, run-start immutable composition tests (including
-  N=128 tuple isolation), and focused serve/devstack wiring tests are present
-  at the integrated base. Broad preflight/full test/lint/vet evidence is not
-  claimed locally; hosted CI remains pending.
+  N=128 tuple isolation), focused serve/devstack wiring tests, and the shared
+  StateStore publication conformance harness are present at the integrated
+  base. The harness covers in-memory and SQLite locally and Postgres under
+  `HARBOR_PG_DSN`; with that DSN unset, the local Postgres leg is skipped.
+  Broad preflight/full test/lint/vet evidence is not claimed locally; hosted CI
+  evidence remains pending.
 - **Decision:** D-430. **Status:** Shipped (unreleased candidate; focused
   evidence only).
 

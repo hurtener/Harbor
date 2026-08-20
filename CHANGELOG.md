@@ -29,9 +29,12 @@ Two versions move independently in Harbor (RFC §5.3):
   and errors. Phase 250 now also lands strict Protocol transport/client,
   conditional capability/generated-doc lockstep, exact run-start composition,
   and shared production/devstack bootstrap over one authorized StateStore-backed
-  store with an immutable runtime id (HA-68, D-430). Focused local evidence
-  covers the implementation and configured/unavailable wiring postures; broad
-  preflight/full suites were not run locally and hosted CI remains pending.
+  store with an immutable runtime id, plus shared StateStore publication
+  conformance over in-memory and SQLite locally and Postgres under
+  `HARBOR_PG_DSN` (HA-68, D-430). With that DSN unset, the local Postgres leg
+  is skipped; focused local evidence covers the implementation and
+  configured/unavailable wiring postures. Broad preflight/full suites were not
+  run locally and hosted CI evidence remains pending.
   This release-candidate note records Harbor implementation evidence only; no
   downstream acceptance is claimed.
 

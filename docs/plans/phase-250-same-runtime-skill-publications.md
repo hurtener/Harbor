@@ -116,8 +116,10 @@ None.
 - [x] Focused MemoryStore, StateStore, Protocol-surface, control-handler, and
       run-start tests cover restart, idempotency, response-loss replay,
       isolation, CAS, authority, strict decoding, and failure modes. The
-      source-level concurrent tuple-isolation tests use N=128; the generic
-      conformance Stack intentionally does not assemble a publication store.
+      shared publication conformance harness covers the in-memory and SQLite
+      StateStore drivers locally and the Postgres driver under `HARBOR_PG_DSN`;
+      the local Postgres execution is skipped when that DSN is unset. The
+      source-level concurrent tuple-isolation tests use N=128.
 - [x] A static-only Phase 250 smoke checks the landed domain, strict handler,
       typed clients, conditional capability, authorized store surface,
       generated reference pages, and immutable run-start composition.
@@ -206,12 +208,11 @@ The additive Harbor Protocol surface is:
   shared StateStore-backed store, immutable runtime id, Protocol route,
   conditional capability, signed reach, and unavailable posture in both
   assemblies.
-- **Conformance:** MemoryStore and StateStore execute the same publication,
-  reference, idempotency, erasure, and CAS matrix; all required StateStore
-  drivers remain behind the existing conformance seam. The HA-68 generic
-  conformance Stack does not claim a mounted publication store; an all-driver
-  publication conformance harness is not integrated at this reviewed SHA and
-  remains an explicit follow-up.
+- **Conformance:** The shared publication StateStore harness executes the same
+  publication, reference, idempotency, erasure, CAS, isolation, and restart
+  matrix against in-memory and SQLite locally, and against Postgres when
+  `HARBOR_PG_DSN` is provided. With that DSN unset, the local Postgres test
+  skips honestly; hosted CI evidence for the Postgres leg remains pending.
 - **Concurrency / leak:** the publication domain and run-start composition
   each contain N=128 concurrent tuple-isolation coverage against one shared
   store/driver; serve and devstack wiring tests add N=128 shared-store reads.
