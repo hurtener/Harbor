@@ -1298,7 +1298,7 @@ func (d *StateStoreStore) Install(ctx context.Context, c identity.Quadruple, r I
 	if p.State != StateActive {
 		return Reference{}, Receipt{}, ErrRetired
 	}
-	if present {
+	if present && ref.Reference.AgentID != "" {
 		return Reference{}, Receipt{}, ErrConflict
 	}
 	now := d.clock().UTC()
@@ -1355,7 +1355,7 @@ func (d *StateStoreStore) Update(ctx context.Context, c identity.Quadruple, r Up
 	if p.State != StateActive {
 		return Reference{}, Receipt{}, ErrRetired
 	}
-	if !present {
+	if !present || ref.Reference.AgentID == "" {
 		return Reference{}, Receipt{}, ErrReferenceNotFound
 	}
 	if ref.Reference.Generation != r.ExpectedGeneration || ref.Reference.ContentHash != r.ExpectedContentHash {
@@ -1407,7 +1407,7 @@ func (d *StateStoreStore) Remove(ctx context.Context, c identity.Quadruple, r Re
 		}
 		return prior.Receipt, nil
 	}
-	if !present {
+	if !present || ref.Reference.AgentID == "" {
 		return Receipt{}, ErrReferenceNotFound
 	}
 	if ref.Reference.Generation != r.ExpectedGeneration || ref.Reference.ContentHash != r.ExpectedContentHash {

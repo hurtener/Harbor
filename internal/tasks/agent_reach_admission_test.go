@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 )
 
 type testAdmissionSealer struct{ aead cipher.AEAD }
@@ -72,8 +73,17 @@ func TestAgentReachAdmission_SealedCaptureRestoreAndTamperDenial(t *testing.T) {
 	if err := json.Unmarshal(raw, &restarted); err != nil {
 		t.Fatal(err)
 	}
-	if _, got, admitted := authority.Restore(context.Background(), &restarted); !admitted || got != "agent-a" {
+	restoredCtx, got, admitted := authority.Restore(context.Background(), &restarted)
+	if !admitted || got != "agent-a" {
 		t.Fatalf("restart restore = (%q, %v), want (agent-a, true)", got, admitted)
+	}
+	verified, ok := identity.FromVerified(restoredCtx)
+	if !ok || verified != id {
+		t.Fatalf("restored verified identity=%+v present=%t, want %+v", verified, ok, id)
+	}
+	reach, ok := auth.AgentReachFrom(restoredCtx)
+	if !ok || len(reach) != 1 || reach[0] != "agent-a" {
+		t.Fatalf("restored signed reach=%v present=%t, want [agent-a]", reach, ok)
 	}
 
 	for _, mutate := range []func(*Task){

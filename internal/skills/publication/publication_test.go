@@ -229,6 +229,63 @@ func TestStateStoreStore_RestartAndCAS(t *testing.T) {
 	_ = raw.Close(ctx)
 }
 
+func TestStateStoreStore_RemoveThenInstallAndConcurrentResolveN128(t *testing.T) {
+	ctx := context.Background()
+	id := publicationIdentity("tenant-a", "user-a", "session-a")
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStateStore(raw, "runtime-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _, err := store.Publish(ctx, id, PublishRequest{IdempotencyKey: "p", Name: "ops", Skill: publicationSkill("ops", "do"), ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, _, err := store.Install(ctx, id, InstallRequest{IdempotencyKey: "i", AgentID: "agent-a", PublicationID: pub.PublicationID, RevisionID: pub.RevisionID, ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Remove(ctx, id, RemoveRequest{IdempotencyKey: "remove", AgentID: installed.AgentID, ExpectedGeneration: installed.Generation, ExpectedContentHash: installed.ContentHash}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Remove(ctx, id, RemoveRequest{IdempotencyKey: "remove-again", AgentID: installed.AgentID, ExpectedGeneration: installed.Generation, ExpectedContentHash: installed.ContentHash}); !errors.Is(err, ErrReferenceNotFound) {
+		t.Fatalf("remove after remove=%v want reference not found", err)
+	}
+	reinstalled, _, err := store.Install(ctx, id, InstallRequest{IdempotencyKey: "reinstall", AgentID: installed.AgentID, PublicationID: pub.PublicationID, RevisionID: pub.RevisionID, ExpectedAbsent: true})
+	if err != nil {
+		t.Fatalf("reinstall after remove: %v", err)
+	}
+	if reinstalled.RevisionID != installed.RevisionID {
+		t.Fatalf("reinstalled reference=%+v", reinstalled)
+	}
+	errCh := make(chan error, 128)
+	var wg sync.WaitGroup
+	for i := 0; i < 128; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, meta, resolveErr := store.Resolve(ctx, id, installed.AgentID)
+			if resolveErr != nil {
+				errCh <- resolveErr
+				return
+			}
+			if body.ContentHash != meta.ContentHash {
+				errCh <- ErrContentHashMismatch
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	_ = store.Close(ctx)
+	_ = raw.Close(ctx)
+}
+
 func TestPublicationValidation_IdentityAndRequiredCAS(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore("runtime-a")
@@ -303,8 +360,12 @@ func TestMemoryStore_IdempotencyReplayPreservesOriginalResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Update(ctx, id, UpdateRequest{IdempotencyKey: "u", AgentID: "agent-a", PublicationID: second.PublicationID, RevisionID: second.RevisionID, ExpectedGeneration: installed.Generation, ExpectedContentHash: installed.ContentHash}); err != nil {
+	updated, updateReceipt, err := store.Update(ctx, id, UpdateRequest{IdempotencyKey: "u", AgentID: "agent-a", PublicationID: second.PublicationID, RevisionID: second.RevisionID, ExpectedGeneration: installed.Generation, ExpectedContentHash: installed.ContentHash})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if updateReceipt.PublicationID != updated.PublicationID || updateReceipt.RevisionID != updated.RevisionID {
+		t.Fatalf("update receipt omitted exact target ids: ref=%+v receipt=%+v", updated, updateReceipt)
 	}
 	replayedRef, _, err := store.Install(ctx, id, InstallRequest{IdempotencyKey: "i", AgentID: "agent-a", PublicationID: first.PublicationID, RevisionID: first.RevisionID, ExpectedAbsent: true})
 	if err != nil {
