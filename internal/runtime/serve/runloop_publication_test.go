@@ -8,12 +8,22 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/publication"
 )
 
 func runPublicationSkill(name, step string) skills.Skill {
 	return skills.Skill{Name: name, Trigger: "when " + name, Steps: []string{step}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}
+}
+
+func publicationRunContext(t *testing.T, q identity.Quadruple, agentID string) context.Context {
+	t.Helper()
+	ctx, err := identity.WithVerified(context.Background(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return auth.WithAgentReach(ctx, []string{agentID})
 }
 
 func TestRunLoopDriver_PublicationSnapshotUsesOnePinnedReader(t *testing.T) {
@@ -32,7 +42,7 @@ func TestRunLoopDriver_PublicationSnapshotUsesOnePinnedReader(t *testing.T) {
 	}
 	driver.publicationStore = store
 	driver.publicationRuntimeID = "runtime-a"
-	snapshot, ok, err := driver.captureRunSkillSnapshot(context.Background(), "agent-a", q, nil)
+	snapshot, ok, err := driver.captureRunSkillSnapshot(publicationRunContext(t, q, "agent-a"), "agent-a", q, nil)
 	if err != nil || !ok {
 		t.Fatalf("capture publication snapshot ok=%t err=%v", ok, err)
 	}
@@ -69,7 +79,7 @@ func TestRunLoopDriver_PublicationSnapshotUsesOnePinnedReader(t *testing.T) {
 	// A runtime-binding change after publication must fail at the run-start
 	// resolution gate; the resolver is never built from a foreign body.
 	driver.publicationRuntimeID = "runtime-b"
-	if _, _, err := driver.captureRunSkillSnapshot(context.Background(), "agent-a", q, nil); !errors.Is(err, publication.ErrRuntimeMismatch) {
+	if _, _, err := driver.captureRunSkillSnapshot(publicationRunContext(t, q, "agent-a"), "agent-a", q, nil); !errors.Is(err, publication.ErrRuntimeMismatch) {
 		t.Fatalf("foreign runtime capture=%v want mismatch", err)
 	}
 }
@@ -83,7 +93,7 @@ func TestRunLoopDriver_PublicationSnapshot_FailsClosedOnRetireAndAllowsMissingRe
 	store := publication.NewMemoryStore("runtime-a")
 	driver.publicationStore = store
 	driver.publicationRuntimeID = "runtime-a"
-	missing, ok, err := driver.captureRunSkillSnapshot(context.Background(), "agent-without-reference", q, nil)
+	missing, ok, err := driver.captureRunSkillSnapshot(publicationRunContext(t, q, "agent-without-reference"), "agent-without-reference", q, nil)
 	if err != nil || !ok || missing.HasOperatorTier() {
 		t.Fatalf("missing reference capture snapshot=%+v ok=%t err=%v", missing, ok, err)
 	}
@@ -98,7 +108,7 @@ func TestRunLoopDriver_PublicationSnapshot_FailsClosedOnRetireAndAllowsMissingRe
 	if _, _, err := store.Retire(context.Background(), caller, publication.RetireRequest{IdempotencyKey: "retire", PublicationID: pub.PublicationID, ExpectedGeneration: pub.Generation, ExpectedContentHash: pub.ContentHash}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := driver.captureRunSkillSnapshot(context.Background(), "agent-retiring", q, nil); !errors.Is(err, publication.ErrRetired) {
+	if _, _, err := driver.captureRunSkillSnapshot(publicationRunContext(t, q, "agent-retiring"), "agent-retiring", q, nil); !errors.Is(err, publication.ErrRetired) {
 		t.Fatalf("retired capture=%v want retired", err)
 	}
 }
@@ -131,7 +141,7 @@ func TestRunLoopDriver_PublicationSnapshot_ConcurrentTupleIsolationN128(t *testi
 		wg.Add(1)
 		go func(q identity.Quadruple, agentID string) {
 			defer wg.Done()
-			snapshot, ok, captureErr := driver.captureRunSkillSnapshot(context.Background(), agentID, q, nil)
+			snapshot, ok, captureErr := driver.captureRunSkillSnapshot(publicationRunContext(t, q, agentID), agentID, q, nil)
 			if captureErr != nil || !ok {
 				errCh <- captureErr
 				if captureErr == nil {

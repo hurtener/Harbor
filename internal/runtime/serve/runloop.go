@@ -94,6 +94,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
@@ -498,6 +499,9 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 	if opts.PublicationStore != nil && snapshotDeps != 3 {
 		return nil, fmt.Errorf("%w: publication composition requires the complete run snapshot authority", ErrRunLoopDriverMisconfigured)
 	}
+	if opts.PublicationStore != nil && opts.AgentReachAdmissions == nil {
+		return nil, fmt.Errorf("%w: publication composition requires the sealed Agent reach admission authority", ErrRunLoopDriverMisconfigured)
+	}
 	if opts.SkillsDirectory != nil && snapshotDeps == 0 {
 		return nil, fmt.Errorf("%w: skills directory requires the complete run snapshot authority", ErrRunLoopDriverMisconfigured)
 	}
@@ -842,6 +846,13 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 		publicationCtx := ctx
 		if d.publicationRuntimeID != "" {
 			publicationCtx = publication.WithRuntimeID(publicationCtx, d.publicationRuntimeID)
+		}
+		verified, verifiedOK := identity.FromVerified(publicationCtx)
+		if !verifiedOK || verified != q.Identity {
+			return skills.RunSkillReaderSnapshot{}, false, publication.ErrVerifiedIdentityRequired
+		}
+		if err := auth.NewAgentReachAuthorizer().AuthorizeAgentReach(publicationCtx, effectiveAgentID); err != nil {
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("%w: %v", publication.ErrAgentReachDenied, err)
 		}
 		published, _, resolveErr := d.publicationStore.Resolve(publicationCtx, q, effectiveAgentID)
 		if resolveErr == nil {
