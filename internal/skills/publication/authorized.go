@@ -90,7 +90,7 @@ func (s *AuthorizedStore) agentCaller(ctx context.Context, caller identity.Quadr
 		return fmt.Errorf("%w: effective agent id is empty", ErrAgentReachDenied)
 	}
 	if err := s.reach.AuthorizeAgentReach(ctx, agentID); err != nil {
-		return fmt.Errorf("%w: %s", ErrAgentReachDenied, err)
+		return fmt.Errorf("%w: %w", ErrAgentReachDenied, err)
 	}
 	return nil
 }

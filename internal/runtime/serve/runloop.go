@@ -852,7 +852,7 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 			return skills.RunSkillReaderSnapshot{}, false, publication.ErrVerifiedIdentityRequired
 		}
 		if err := auth.NewAgentReachAuthorizer().AuthorizeAgentReach(publicationCtx, effectiveAgentID); err != nil {
-			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("%w: %v", publication.ErrAgentReachDenied, err)
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("%w: %w", publication.ErrAgentReachDenied, err)
 		}
 		published, _, resolveErr := d.publicationStore.Resolve(publicationCtx, q, effectiveAgentID)
 		if resolveErr == nil {

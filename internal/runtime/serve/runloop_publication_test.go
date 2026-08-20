@@ -131,7 +131,7 @@ func TestRunLoopDriver_PublicationSnapshot_ConcurrentTupleIsolationN128(t *testi
 	driver.publicationRuntimeID = "runtime-a"
 	errCh := make(chan error, runs)
 	var wg sync.WaitGroup
-	for i := 0; i < runs; i++ {
+	for i := range runs {
 		q := identity.Quadruple{Identity: identity.Identity{TenantID: owner.TenantID, UserID: owner.UserID, SessionID: "session-" + string(rune('A'+i))}, RunID: "run-" + string(rune('A'+i))}
 		agentID := "agent-shared-" + string(rune('A'+i))
 		activateRunSnapshotAgent(t, st, q, agentID)

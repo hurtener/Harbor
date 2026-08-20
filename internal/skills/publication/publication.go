@@ -930,7 +930,7 @@ func decodeAggregate(r state.StateRecord) (durableAggregate, error) {
 		return a, nil
 	}
 	if err := json.Unmarshal(r.Bytes, &a); err != nil {
-		return a, fmt.Errorf("%w: aggregate: %v", ErrInvalidRequest, err)
+		return a, fmt.Errorf("%w: aggregate: %w", ErrInvalidRequest, err)
 	}
 	if a.Operations == nil {
 		a.Operations = map[string]operation{}
@@ -940,7 +940,7 @@ func decodeAggregate(r state.StateRecord) (durableAggregate, error) {
 func encode(v any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("%w: encode: %v", ErrInvalidRequest, err)
+		return nil, fmt.Errorf("%w: encode: %w", ErrInvalidRequest, err)
 	}
 	return b, nil
 }
@@ -1120,7 +1120,7 @@ func (d *StateStoreStore) loadReference(ctx context.Context, caller identity.Qua
 	}
 	var ref durableReference
 	if err := json.Unmarshal(r.Bytes, &ref); err != nil {
-		return durableReference{}, state.StateRecord{}, false, fmt.Errorf("%w: reference: %v", ErrInvalidRequest, err)
+		return durableReference{}, state.StateRecord{}, false, fmt.Errorf("%w: reference: %w", ErrInvalidRequest, err)
 	}
 	if ref.Operations == nil {
 		ref.Operations = map[string]operation{}
@@ -1484,7 +1484,7 @@ func (d *StateStoreStore) ListReferences(ctx context.Context, c identity.Quadrup
 	for _, row := range rows {
 		var ref durableReference
 		if err := json.Unmarshal(row.Bytes, &ref); err != nil {
-			return nil, fmt.Errorf("%w: reference decode: %v", ErrInvalidRequest, err)
+			return nil, fmt.Errorf("%w: reference decode: %w", ErrInvalidRequest, err)
 		}
 		if ref.Reference.AgentID != "" {
 			out = append(out, ref.Reference)

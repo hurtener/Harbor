@@ -165,7 +165,7 @@ func TestBuildMux_PublicationWiring_ConcurrentReads(t *testing.T) {
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			defer wg.Done()
 			_, err := store.ListAvailable(ctx, caller)
