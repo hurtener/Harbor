@@ -118,6 +118,16 @@ func TestMemoryStore_SuccessorRetireCASAndResponseLossReplay(t *testing.T) {
 	if oldBody.Steps[0] != "first" || oldMeta.RevisionID != first.RevisionID {
 		t.Fatalf("predecessor mutated: body=%+v meta=%+v", oldBody, oldMeta)
 	}
+	updated, updateReceipt, err := store.Update(ctx, id, UpdateRequest{IdempotencyKey: "update-old", AgentID: "agent-old", PublicationID: first.PublicationID, RevisionID: second.RevisionID, ExpectedGeneration: first.Generation, ExpectedContentHash: first.ContentHash})
+	if err != nil {
+		t.Fatalf("update to exact successor: %v", err)
+	}
+	if updated.RevisionID != second.RevisionID || updateReceipt.RevisionID != second.RevisionID {
+		t.Fatalf("successor update ref=%+v receipt=%+v", updated, updateReceipt)
+	}
+	if _, _, err := store.Update(ctx, id, UpdateRequest{IdempotencyKey: "update-predecessor", AgentID: "agent-old", PublicationID: first.PublicationID, RevisionID: first.RevisionID, ExpectedGeneration: updated.Generation, ExpectedContentHash: updated.ContentHash}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("update to predecessor=%v want conflict", err)
+	}
 	if _, _, err := store.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "stale", PublicationID: first.PublicationID, ExpectedGeneration: first.Generation, ExpectedContentHash: first.ContentHash, Skill: publicationSkill("ops", "third")}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale successor=%v want conflict", err)
 	}
@@ -214,11 +224,22 @@ func TestStateStoreStore_RestartAndCAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	next, _, err := restarted.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "successor", PublicationID: pub.PublicationID, ExpectedGeneration: pub.Generation, ExpectedContentHash: pub.ContentHash, Skill: publicationSkill("ops", "new")})
+	if err != nil {
+		t.Fatalf("successor after restart: %v", err)
+	}
+	updated, updateReceipt, err := restarted.Update(ctx, id, UpdateRequest{IdempotencyKey: "update", AgentID: "agent-a", PublicationID: pub.PublicationID, RevisionID: next.RevisionID, ExpectedGeneration: pub.Generation, ExpectedContentHash: pub.ContentHash})
+	if err != nil {
+		t.Fatalf("update after restart: %v", err)
+	}
+	if updated.RevisionID != next.RevisionID || updateReceipt.PublicationID != pub.PublicationID || updateReceipt.RevisionID != next.RevisionID {
+		t.Fatalf("durable update ref=%+v receipt=%+v", updated, updateReceipt)
+	}
 	body, _, err := restarted.Resolve(ctx, id, "agent-a")
 	if err != nil {
 		t.Fatalf("resolve after restart: %v", err)
 	}
-	if body.Name != "ops" {
+	if body.Name != "ops" || body.Steps[0] != "new" {
 		t.Fatalf("body after restart=%+v", body)
 	}
 	if _, _, err := restarted.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "stale", PublicationID: pub.PublicationID, ExpectedGeneration: 99, ExpectedContentHash: pub.ContentHash, Skill: publicationSkill("ops", "new")}); !errors.Is(err, ErrConflict) {

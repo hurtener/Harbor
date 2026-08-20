@@ -750,6 +750,9 @@ func (m *MemoryStore) Update(ctx context.Context, caller identity.Quadruple, req
 	if r.Generation != req.ExpectedGeneration || r.ContentHash != req.ExpectedContentHash {
 		return Reference{}, Receipt{}, ErrConflict
 	}
+	if r.PublicationID != p.PublicationID || rev.Generation <= r.Generation {
+		return Reference{}, Receipt{}, ErrConflict
+	}
 	now := m.clock().UTC()
 	r.PublicationID = p.PublicationID
 	r.RevisionID = rev.RevisionID
@@ -1359,6 +1362,9 @@ func (d *StateStoreStore) Update(ctx context.Context, c identity.Quadruple, r Up
 		return Reference{}, Receipt{}, ErrReferenceNotFound
 	}
 	if ref.Reference.Generation != r.ExpectedGeneration || ref.Reference.ContentHash != r.ExpectedContentHash {
+		return Reference{}, Receipt{}, ErrConflict
+	}
+	if ref.Reference.PublicationID != p.PublicationID || rev.Generation <= ref.Reference.Generation {
 		return Reference{}, Receipt{}, ErrConflict
 	}
 	now := d.clock().UTC()
