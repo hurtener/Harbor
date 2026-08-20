@@ -44,6 +44,32 @@ export type {
   ArtifactsGetRefResponse
 } from './protocol/artifacts.js';
 
+export type {
+  SkillPublicationAvailableRequest,
+  SkillPublicationAvailableResponse,
+  SkillPublicationGetRequest,
+  SkillPublicationGetResponse,
+  SkillPublicationInstallRequest,
+  SkillPublicationInstallResponse,
+  SkillPublicationListRequest,
+  SkillPublicationListResponse,
+  SkillPublicationMetadata,
+  SkillPublicationPublishRequest,
+  SkillPublicationPublishResponse,
+  SkillPublicationReceipt,
+  SkillPublicationReference,
+  SkillPublicationReferencesListRequest,
+  SkillPublicationReferencesListResponse,
+  SkillPublicationRemoveRequest,
+  SkillPublicationRemoveResponse,
+  SkillPublicationRetireRequest,
+  SkillPublicationRetireResponse,
+  SkillPublicationSuccessorRequest,
+  SkillPublicationSuccessorResponse,
+  SkillPublicationUpdateRequest,
+  SkillPublicationUpdateResponse
+} from './protocol/skill-publications.js';
+
 /**
  * The Console's view of the operator identity carried by every Protocol
  * request. Hashed into the Console DB `operator_id` row-scope key — see
