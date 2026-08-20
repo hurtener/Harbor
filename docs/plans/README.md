@@ -393,7 +393,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC minute storage buckets (query may coarsen) with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only (`llm.cost.recorded` successful completions, exact cost, prompt/completion/reasoning/cache-read/cache-write/total tokens, latency count/sum/min/max, task completed/failed/cancelled), attempts/failed calls/retry-downgrade/task-spawned/user-message counts unsupported/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Shipped (v1.28) |
 |248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness (config-file-relative root, never CWD; one relative include directory with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free; traversal/recursive discovery/symlink/hardlink/special/duplicates/canonical-name collisions rejected under declaration/item/file/aggregate bounds; eager copy before readiness, restart-only); no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; boot baseline merged with the agent's active durable revision into ONE combined operator tier FIRST (same canonical name + same semantic hash dedupes `source=both`; differing hash fails; exactly 256 unique combined items), every declared tenant-agent active revision pre-read before readiness with run-start conflict defense retained, then applied LAST over base/user/session; boot-owned mutation/remove guards (upsert/proposal commits replay-prepared-publish/rollback-activation reject even equal hash; removal may delete an actual legacy durable revision shadow; boot-only remove is typed read-only refusal; `agent_packs.list` durable-revision authoring only; config removal next-deployment-only, legacy durable revision remains, in-flight snapshots retain bytes/hash); deterministic set hash in run snapshot/preview (`boot|revision|both` + `boot_pack_set_hash`); headless `RunOnce` explicitly unsupported and fail-loud; single prod/devstack path; ONE shared strict effective-composition resolver + preview (completes D-414 on the boot base) with read-only Protocol path, clients/manifest/docs, minimal Console+CLI consumers (D-415), config docs/example, operator skill, smoke; exact postgres + `${SKILLS_DSN}` + `boot_agent_packs` schema; `EnsureBootAgentLifecycle` separate and unchanged (may write a revision) | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Shipped (v1.28) |
 |249 | Optional per-parameter MCP artifact-egress mappings (HA-67, D-429): a trailing `?` marker is stripped at the shared compile boundary, schema/`ParamsFor` projections expose bare names, missing or `null` optional values skip substitution, and present values retain the required type/empty-id/resolver/digest/ceiling checks; no new wire shape or artifact resolver | tools/artifactegress + MCP driver | §6.4, §6.10, §7 | 214 | ≥90% artifactegress | Shipped (unreleased candidate; focused evidence only) |
-|250 | Same-runtime organization skill publications (HA-68, D-430): immutable content-addressed revisions, content-free metadata/references/receipts, StateStore-backed CAS and idempotency, admin/user Protocol methods, exact signed-agent reach and runtime binding; strict Protocol transport, typed clients/capability, generated reference pages, and run-start composition are landed; production/devstack bootstrap mount remains the closing integration item | skills/publication + state + protocol + runtime composition | §6.7, §6.10, §6.11, §6.16, §5.2, §5.5, §7, §9 | 37, 40, 202, 205, 232, 237, 240, 248 | 85–90% (target) | Pending (Protocol surface and composition landed; bootstrap wiring remains) |
+|250 | Same-runtime organization skill publications (HA-68, D-430): immutable content-addressed revisions, content-free metadata/references/receipts, StateStore-backed CAS and idempotency, admin/user Protocol methods, exact signed-agent reach and runtime binding; strict Protocol transport, typed clients/capability, generated reference pages, run-start composition, and shared production/devstack bootstrap with one authorized store/runtime id are landed | skills/publication + state + protocol + runtime composition | §6.7, §6.10, §6.11, §6.16, §5.2, §5.5, §7, §9 | 37, 40, 202, 205, 232, 237, 240, 248 | 85–90% (target) | Shipped (unreleased candidate; focused evidence only) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -928,20 +928,20 @@ real two-client race under `-race`.
   agent reach, StateStore-backed conditional persistence, idempotency, and
   the additive Protocol method/error/type contract. The strict control
   transport, typed clients, conditional capability, generated reference pages,
-  and run-start composition are also landed. The remaining gate is one
-  production/devstack bootstrap path that mounts the authorized store and
-  surface together and passes the exact runtime/reach dependencies to the run
-  loop.
+  run-start composition, and shared production/devstack bootstrap are also
+  landed. Both assemblies mount one authorized StateStore-backed publication
+  store, pass the immutable runtime/reach dependencies to the run loop and
+  Protocol surface, and advertise the capability only when that construction
+  is complete.
 - **Evidence:** the publication domain, in-memory/StateStore contracts,
   canonical wire types, method registry, errors, strict control handler,
   typed client methods, conditional capability, generated Protocol pages,
-  authorized in-memory surface tests, and run-start immutable composition
-  tests (including N=128 tuple isolation) are present at the integrated base.
-  Production/devstack bootstrap mounting is not established at this
-  checkpoint, so this row is not marked shipped. Broad preflight/full
-  test/lint/vet evidence is not claimed.
-- **Decision:** D-430. **Status:** Pending (Protocol surface and composition
-  landed; production/devstack bootstrap wiring remains).
+  authorized surface tests, run-start immutable composition tests (including
+  N=128 tuple isolation), and focused serve/devstack wiring tests are present
+  at the integrated base. Broad preflight/full test/lint/vet evidence is not
+  claimed.
+- **Decision:** D-430. **Status:** Shipped (unreleased candidate; focused
+  evidence only).
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

@@ -3,10 +3,9 @@
 #
 # Phase 250 smoke — same-runtime organization skill publications (HA-68).
 # The integrated checkpoint has the domain, persistence, canonical wire
-# contract, strict handler, clients/capability, generated pages, and run-start
-# composition. The production/devstack bootstrap mount remains one explicit
-# follow-up. These guards pin the evidence without implying a live route or
-# broad preflight.
+# contract, strict handler, clients/capability, generated pages, run-start
+# composition, and shared production/devstack bootstrap. These guards pin the
+# evidence without implying broad preflight.
 
 set -euo pipefail
 
@@ -43,6 +42,15 @@ assert_file \
 assert_file \
     "internal/runtime/serve/runloop_publication_test.go" \
     "phase 250 run-start composition tests exist"
+assert_file \
+    "internal/runtime/serve/publication_wiring.go" \
+    "phase 250 shared publication wiring exists"
+assert_file \
+    "internal/runtime/serve/publication_wiring_test.go" \
+    "phase 250 serve publication wiring tests exist"
+assert_file \
+    "harbortest/devstack/publication_wiring_test.go" \
+    "phase 250 devstack publication wiring tests exist"
 
 assert_grep_present \
     'type Store interface' \
@@ -179,6 +187,83 @@ assert_grep_present \
     "phase 250 run-start N=128 tuple-isolation test exists"
 
 assert_grep_present \
+    'NewSkillPublicationStore' \
+    "internal/runtime/serve/publication_wiring.go" \
+    "phase 250 shared publication store constructor exists"
+assert_grep_present \
+    'publication\.NewStateStore' \
+    "internal/runtime/serve/publication_wiring.go" \
+    "phase 250 wiring uses the StateStore publication driver"
+assert_grep_present \
+    'publication\.NewAuthorizedStore' \
+    "internal/runtime/serve/publication_wiring.go" \
+    "phase 250 wiring wraps the store with signed reach"
+assert_grep_present \
+    'PublicationStore' \
+    "internal/runtime/serve/mux.go" \
+    "phase 250 serve mux accepts the shared publication store"
+assert_grep_present \
+    'PublicationRuntimeID' \
+    "internal/runtime/serve/mux.go" \
+    "phase 250 serve mux carries the immutable runtime id"
+assert_grep_present \
+    'WithSkillPublicationsSurface' \
+    "internal/runtime/serve/mux.go" \
+    "phase 250 serve mux mounts the Protocol surface"
+assert_grep_present \
+    'SkillPublicationsAvailable: publicationAvailable' \
+    "internal/runtime/serve/mux.go" \
+    "phase 250 serve mux gates capability on the mount"
+assert_grep_present \
+    'publication\.NewRuntimeID' \
+    "internal/runtime/serve/serve.go" \
+    "phase 250 production boot binds a runtime id"
+assert_grep_present \
+    'NewSkillPublicationStore' \
+    "internal/runtime/serve/serve.go" \
+    "phase 250 production boot mounts the shared store"
+assert_grep_present \
+    'PublicationStore:[[:space:]]+publicationStore' \
+    "internal/runtime/serve/serve.go" \
+    "phase 250 production boot passes the store to runtime and mux"
+assert_grep_present \
+    'NewSkillPublicationStore' \
+    "harbortest/devstack/devstack.go" \
+    "phase 250 devstack mounts the shared store"
+assert_grep_present \
+    'PublicationStore:[[:space:]]+publicationStore' \
+    "harbortest/devstack/devstack.go" \
+    "phase 250 devstack passes the store to runtime and mux"
+assert_grep_present \
+    'TestBuildMux_PublicationWiring_MountsCapabilityAndSharesState' \
+    "internal/runtime/serve/publication_wiring_test.go" \
+    "phase 250 serve mux shared-store test exists"
+assert_grep_present \
+    'TestBuildMux_PublicationWiring_ConcurrentReads' \
+    "internal/runtime/serve/publication_wiring_test.go" \
+    "phase 250 serve wiring N=128 test exists"
+assert_grep_present \
+    'TestBoot_PublicationsConfigured_MountsSharedStoreAndCapability' \
+    "internal/runtime/serve/publication_wiring_test.go" \
+    "phase 250 production boot wiring test exists"
+assert_grep_present \
+    'TestBoot_PublicationsWithoutAdmissionAuthority_UnmountedAndUnadvertised' \
+    "internal/runtime/serve/publication_wiring_test.go" \
+    "phase 250 production unavailable posture test exists"
+assert_grep_present \
+    'TestAssemble_PublicationWiring_ConfiguredKekMountsSharedStateAndCapability' \
+    "harbortest/devstack/publication_wiring_test.go" \
+    "phase 250 devstack wiring test exists"
+assert_grep_present \
+    'TestAssemble_PublicationWiring_WithoutAdmissionAuthorityStaysUnavailable' \
+    "harbortest/devstack/publication_wiring_test.go" \
+    "phase 250 devstack unavailable posture test exists"
+assert_grep_present \
+    'const n = 128' \
+    "harbortest/devstack/publication_wiring_test.go" \
+    "phase 250 devstack wiring N=128 test exists"
+
+assert_grep_present \
     'skills.publications.publish' \
     "internal/protocol/methods/methods.go" \
     "phase 250 admin publish method is registered"
@@ -222,18 +307,6 @@ assert_grep_present \
 assert_grep_present \
     'HA-68 publication note' \
     "docs/site/protocol/index.md" \
-    "phase 250 protocol-site mirror records the bootstrap follow-up"
-
-# Production/devstack has not mounted the surface at this checkpoint. Keep the
-# one remaining item explicit in the plan instead of claiming a live route or
-# capability advertisement. If bootstrap wiring lands, replace this guard
-# with assertions against the actual cmd/harbor and harbortest/devstack
-# construction call sites.
-if grep -a -qE '^- \[ \] Production/devstack bootstrap mounts one authorized publication store' \
-    "docs/plans/phase-250-same-runtime-skill-publications.md"; then
-    skip "phase 250 production/devstack bootstrap mount remains the sole unchecked follow-up"
-else
-    fail "phase 250 plan must retain one explicit unchecked bootstrap wiring item"
-fi
+    "phase 250 protocol-site mirror records shared bootstrap"
 
 smoke_summary

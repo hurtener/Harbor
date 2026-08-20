@@ -6,13 +6,13 @@ Deliver Harbor-local organization skill publications as immutable,
 content-addressed revisions with exact references and content-free metadata,
 receipts, and Protocol projections. At the integrated base, the publication
 domain and persistence contract, additive Protocol surface, strict control
-handler, typed clients, conditional capability, generated reference pages, and
-run-start composition are present. The one remaining phase gate is the
-production/devstack bootstrap that mounts one authorized publication store and
-surface together; until that wiring lands, the capability must remain
-unadvertised. Every resolved run still uses only its exact same-runtime
-reference and fails closed on authority, lifecycle, hash, generation, or
-runtime mismatch.
+handler, typed clients, conditional capability, generated reference pages,
+run-start composition, and the shared production/devstack bootstrap are
+present. The bootstrap mounts one authorized StateStore-backed publication
+store, binds its immutable runtime id, and advertises the capability only when
+that construction is complete. Every resolved run still uses only its exact
+same-runtime reference and fails closed on authority, lifecycle, hash,
+generation, or runtime mismatch.
 
 ## RFC anchor
 
@@ -121,10 +121,11 @@ None.
 - [x] A static-only Phase 250 smoke checks the landed domain, strict handler,
       typed clients, conditional capability, authorized store surface,
       generated reference pages, and immutable run-start composition.
-- [ ] Production/devstack bootstrap mounts one authorized publication store
-      into the Protocol surface and run loop, and advertises
-      `CapSkillPublications` only when that same construction is complete. This
-      is the sole remaining integration follow-up at this checkpoint.
+- [x] Production/devstack bootstrap mounts one authorized StateStore-backed
+      publication store into the Protocol surface and run loop, binds the
+      immutable runtime/deployment id, and advertises `CapSkillPublications`
+      only when that same construction is complete. Focused serve and devstack
+      wiring tests cover configured and unavailable postures.
 
 ## Files added or changed
 
@@ -154,10 +155,21 @@ None.
 - `internal/runtime/serve/runloop.go` and
   `internal/runtime/serve/runloop_publication_test.go` — exact run-start
   reference resolution and immutable snapshot/concurrency evidence.
+- `internal/runtime/serve/publication_wiring.go` — one authorized
+  StateStore-backed publication store bound to the serve runtime id.
+- `internal/runtime/serve/serve.go` and `internal/runtime/serve/mux.go` —
+  production store/runtime-id injection, Protocol mounting, and conditional
+  capability advertisement.
+- `internal/runtime/serve/publication_wiring_test.go` — serve boot/mux shared
+  store, runtime-id, authority, unavailable-posture, and N=128 evidence.
+- `harbortest/devstack/devstack.go` and
+  `harbortest/devstack/publication_wiring_test.go` — the same shared store,
+  runtime-id, Protocol mount, capability, authority, and unavailable posture
+  for devstack.
 - `docs/site/protocol/{methods,events,errors,types}.md` — generated Protocol
   reference pages containing the HA-68 method/type/error rows.
 - `docs/site/protocol/index.md` — protocol-site status note for the landed
-  surface and the remaining bootstrap follow-up.
+  surface and shared bootstrap.
 - `docs/skills/configure-memory-and-skills/SKILL.md` and
   `docs/skills/use-the-harbor-protocol/SKILL.md` — operator procedures.
 - `docs/site/concepts/memory-and-skills.md` and the relevant site skill
@@ -190,27 +202,31 @@ The additive Harbor Protocol surface is:
 - **Integration:** focused Protocol-surface and strict control-handler tests
   exercise a real publication store with verified admin and caller identities,
   signed reach, content-free responses, and foreign-runtime/retired-reference
-  failures. The generic conformance Stack remains intentionally unmounted;
-  production/devstack bootstrap is the separate unchecked follow-up.
+  failures. Focused serve and devstack wiring tests additionally prove the
+  shared StateStore-backed store, immutable runtime id, Protocol route,
+  conditional capability, signed reach, and unavailable posture in both
+  assemblies.
 - **Conformance:** MemoryStore and StateStore execute the same publication,
   reference, idempotency, erasure, and CAS matrix; all required StateStore
   drivers remain behind the existing conformance seam. The HA-68 generic
   conformance Stack does not claim a mounted publication store.
 - **Concurrency / leak:** the publication domain and run-start composition
   each contain N=128 concurrent tuple-isolation coverage against one shared
-  store/driver. These are source-level evidence in this docs finalization; no
-  broad test or `-race` run is claimed here.
+  store/driver; serve and devstack wiring tests add N=128 shared-store reads.
+  These are source-level evidence in this docs finalization; no broad test or
+  `-race` run is claimed here.
 
 ## Smoke script additions
 
 - Static guards assert the Phase 250 plan, D-430 vocabulary, publication
   domain tests, strict control handler, typed clients, conditional capability,
-  authorized store surface, run-start composition, N=128 tests, canonical
-  method/error/type registrations, generated Protocol reference pages,
-  config/operator guidance, and CHANGELOG entry.
-- One explicit guard preserves the unchecked production/devstack bootstrap
-  criterion; the smoke remains static-only and does not claim broad preflight
-  or a live HTTP route.
+  authorized store surface, production/devstack shared store/runtime-id
+  wiring, run-start composition, N=128 tests, canonical method/error/type
+  registrations, generated Protocol reference pages, config/operator
+  guidance, and CHANGELOG entry.
+- The smoke remains static-only and does not claim broad preflight or a live
+  HTTP route; the focused wiring tests are evidence that the route/mount
+  construction is present.
 
 ## Coverage target
 
@@ -238,10 +254,11 @@ The additive Harbor Protocol surface is:
 - Content-free metadata makes operator inspection intentionally indirect;
   authorized resolve is the only body route and must retain redaction/audit
   boundaries.
-- Production/devstack bootstrap is not established on this checkpoint. Until
-  the authorized store, Protocol surface, run-loop dependencies, and
-  conditional capability are mounted from one construction path, the phase
-  remains Pending for that one integration item.
+- Production and devstack now share one authorized StateStore-backed store,
+  immutable runtime id, Protocol mount, run-loop dependencies, and conditional
+  capability posture. The remaining release evidence is intentionally limited
+  to the focused checks below; broad drift, preflight, coverage, and full test
+  gates are not claimed in this docs closure.
 
 ## Glossary additions
 
@@ -272,8 +289,8 @@ The additive Harbor Protocol surface is:
       execution.
 - [x] Focused Protocol surface, strict control-handler, typed-client, and
       run-start composition tests are present.
-- [ ] Production/devstack bootstrap mounts the authorized store/surface and
-      conditional capability from one construction path (sole remaining
-      integration follow-up).
+- [x] Production/devstack bootstrap mounts the authorized store/surface and
+      conditional capability from one construction path; focused serve and
+      devstack wiring tests cover configured and unavailable postures.
 - [x] New vocabulary is present in `docs/glossary.md`.
 - [x] No brief finding was departed from.
