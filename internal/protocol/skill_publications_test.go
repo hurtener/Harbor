@@ -14,10 +14,10 @@ import (
 	"github.com/hurtener/Harbor/internal/skills/publication"
 )
 
-func publicationTestContext(t *testing.T, tenant, user, session string, scopes []auth.Scope, reach []string) context.Context {
+func publicationTestContext(t *testing.T, user, session string, scopes []auth.Scope, reach []string) context.Context {
 	t.Helper()
 	ctx, err := identity.WithVerified(context.Background(), identity.Identity{
-		TenantID: tenant, UserID: user, SessionID: session,
+		TenantID: "tenant-a", UserID: user, SessionID: session,
 	})
 	if err != nil {
 		t.Fatalf("identity.WithVerified: %v", err)
@@ -40,7 +40,7 @@ func TestSkillPublicationsSurface_BodyIdentityCannotGrantAdminAuthority(t *testi
 	if err != nil {
 		t.Fatalf("NewSkillPublicationsSurface: %v", err)
 	}
-	ctx := publicationTestContext(t, "tenant-a", "user-a", "session-a", []auth.Scope{auth.ScopeAdmin}, nil)
+	ctx := publicationTestContext(t, "user-a", "session-a", []auth.Scope{auth.ScopeAdmin}, nil)
 	_, err = surface.Dispatch(ctx, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{
 		Identity:       types.IdentityScope{Tenant: "tenant-b", User: "attacker", Session: "session-b"},
 		Name:           "ops",
@@ -67,7 +67,7 @@ func TestSkillPublicationsSurface_AdminCannotPublishNamelessPublication(t *testi
 	if err != nil {
 		t.Fatalf("NewSkillPublicationsSurface: %v", err)
 	}
-	ctx := publicationTestContext(t, "tenant-a", "admin", "session-admin", []auth.Scope{auth.ScopeAdmin}, nil)
+	ctx := publicationTestContext(t, "admin", "session-admin", []auth.Scope{auth.ScopeAdmin}, nil)
 	_, err = surface.Dispatch(ctx, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{
 		Identity:       types.IdentityScope{Tenant: "tenant-a", User: "admin", Session: "session-admin"},
 		Name:           "",
@@ -94,7 +94,7 @@ func TestSkillPublicationsSurface_UsesVerifiedIdentityForStorageCaller(t *testin
 	if err != nil {
 		t.Fatalf("NewSkillPublicationsSurface: %v", err)
 	}
-	ctx := publicationTestContext(t, "tenant-a", "user-a", "session-a", []auth.Scope{auth.ScopeAdmin}, nil)
+	ctx := publicationTestContext(t, "user-a", "session-a", []auth.Scope{auth.ScopeAdmin}, nil)
 	ctx, err = identity.With(ctx, identity.Identity{TenantID: "tenant-a", UserID: "user-b", SessionID: "session-b"})
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
@@ -118,7 +118,7 @@ func TestSkillPublicationsSurface_AdminPublishAndSignedAgentReachInstall(t *test
 	if err != nil {
 		t.Fatalf("NewSkillPublicationsSurface: %v", err)
 	}
-	adminCtx := publicationTestContext(t, "tenant-a", "admin", "session-admin", []auth.Scope{auth.ScopeAdmin}, nil)
+	adminCtx := publicationTestContext(t, "admin", "session-admin", []auth.Scope{auth.ScopeAdmin}, nil)
 	publishResp, err := surface.Dispatch(adminCtx, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{
 		Identity:       types.IdentityScope{Tenant: "tenant-a", User: "admin", Session: "session-admin"},
 		Name:           "ops",
@@ -134,7 +134,7 @@ func TestSkillPublicationsSurface_AdminPublishAndSignedAgentReachInstall(t *test
 		t.Fatalf("publish response = %#v", publishResp)
 	}
 
-	userCtx := publicationTestContext(t, "tenant-a", "user-a", "session-a", nil, []string{"agent-a"})
+	userCtx := publicationTestContext(t, "user-a", "session-a", nil, []string{"agent-a"})
 	installResp, err := surface.Dispatch(userCtx, methods.MethodSkillsPublicationsInstall, &types.SkillPublicationInstallRequest{
 		Identity:       types.IdentityScope{Tenant: "tenant-a", User: "user-a", Session: "session-a"},
 		AgentID:        "agent-a",
@@ -151,7 +151,7 @@ func TestSkillPublicationsSurface_AdminPublishAndSignedAgentReachInstall(t *test
 		t.Fatalf("install response = %#v", installResp)
 	}
 
-	deniedCtx := publicationTestContext(t, "tenant-a", "user-a", "session-b", nil, []string{"agent-other"})
+	deniedCtx := publicationTestContext(t, "user-a", "session-b", nil, []string{"agent-other"})
 	_, err = surface.Dispatch(deniedCtx, methods.MethodSkillsPublicationsInstall, &types.SkillPublicationInstallRequest{
 		Identity:       types.IdentityScope{Tenant: "tenant-a", User: "user-a", Session: "session-b"},
 		AgentID:        "agent-a",

@@ -109,7 +109,7 @@ func runPublicationStateContract(t *testing.T, f publicationStateFixture) {
 	}
 	var wg sync.WaitGroup
 	errCh := make(chan error, 128)
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

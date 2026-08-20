@@ -481,7 +481,7 @@ func TestEncode_ConcurrentReuse_OptionalMapping(t *testing.T) {
 
 	const calls = 128
 	var wg sync.WaitGroup
-	for i := 0; i < calls; i++ {
+	for i := range calls {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

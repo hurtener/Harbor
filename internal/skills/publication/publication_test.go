@@ -180,7 +180,7 @@ func TestMemoryStore_ConcurrentResolveN128(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 128)
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -383,7 +383,7 @@ func TestStateStoreStore_RemoveThenInstallAndConcurrentResolveN128(t *testing.T)
 	}
 	errCh := make(chan error, 128)
 	var wg sync.WaitGroup
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

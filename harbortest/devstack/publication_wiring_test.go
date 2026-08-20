@@ -56,7 +56,7 @@ func TestAssemble_PublicationWiring_ConfiguredKekMountsSharedStateAndCapability(
 		t.Fatalf("publish through shared StateStore-backed store: %v", err)
 	}
 
-	code, body := devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/skills.publications.available", `{"identity":{"tenant":"dev","user":"dev","session":"dev"}}`)
+	code, body := devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/skills.publications.available")
 	if code != http.StatusOK {
 		t.Fatalf("available status = %d, body = %s", code, body)
 	}
@@ -68,7 +68,7 @@ func TestAssemble_PublicationWiring_ConfiguredKekMountsSharedStateAndCapability(
 		t.Fatalf("available publications = %+v, want shared publication %q", available.Publications, meta.PublicationID)
 	}
 
-	code, body = devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/runtime.info", `{"identity":{"tenant":"dev","user":"dev","session":"dev"}}`)
+	code, body = devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/runtime.info")
 	if code != http.StatusOK {
 		t.Fatalf("runtime.info status = %d, body = %s", code, body)
 	}
@@ -127,11 +127,11 @@ func TestAssemble_PublicationWiring_WithoutAdmissionAuthorityStaysUnavailable(t 
 		t.Fatalf("publication wiring without a restart-stable admission authority = (%v, %q), want (nil, empty)", stack.PublicationStore, stack.PublicationRuntimeID)
 	}
 
-	code, body := devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/skills.publications.available", `{"identity":{"tenant":"dev","user":"dev","session":"dev"}}`)
+	code, body := devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/skills.publications.available")
 	if code != http.StatusNotFound {
 		t.Fatalf("publication route without admission authority status = %d, body = %s; want 404", code, body)
 	}
-	code, body = devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/runtime.info", `{"identity":{"tenant":"dev","user":"dev","session":"dev"}}`)
+	code, body = devstackPublicationPOST(t, stack.Handler, stack.Token, "/v1/control/runtime.info")
 	if code != http.StatusOK {
 		t.Fatalf("runtime.info without admission authority status = %d, body = %s", code, body)
 	}
@@ -144,9 +144,9 @@ func TestAssemble_PublicationWiring_WithoutAdmissionAuthorityStaysUnavailable(t 
 	}
 }
 
-func devstackPublicationPOST(t *testing.T, h http.Handler, token, path, body string) (int, []byte) {
+func devstackPublicationPOST(t *testing.T, h http.Handler, token, path string) (int, []byte) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"identity":{"tenant":"dev","user":"dev","session":"dev"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
