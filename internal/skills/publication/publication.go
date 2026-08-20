@@ -759,7 +759,7 @@ func (m *MemoryStore) Update(ctx context.Context, caller identity.Quadruple, req
 	r.State = p.State
 	r.UpdatedAt = now
 	m.refs[key] = r
-	receipt := Receipt{OperationID: req.IdempotencyKey, Operation: "update", Generation: r.Generation, State: r.State, BeforeHash: req.ExpectedContentHash, AfterHash: r.ContentHash, UpdatedAt: now}
+	receipt := Receipt{OperationID: req.IdempotencyKey, Operation: "update", PublicationID: r.PublicationID, RevisionID: r.RevisionID, Generation: r.Generation, State: r.State, BeforeHash: req.ExpectedContentHash, AfterHash: r.ContentHash, UpdatedAt: now}
 	m.recordReferenceOp(opKey, fp, receipt, r)
 	return cloneReference(r), receipt, nil
 }
