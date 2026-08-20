@@ -100,7 +100,8 @@ func runPublicationStateContract(t *testing.T, f publicationStateFixture) {
 	if _, _, err := store.Update(ctx, other, UpdateRequest{IdempotencyKey: "cross", AgentID: "agent", PublicationID: first.PublicationID, RevisionID: second.RevisionID, ExpectedGeneration: second.Generation, ExpectedContentHash: second.ContentHash}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-tenant update=%v, want not found", err)
 	}
-	if _, _, err := store.Retire(ctx, id, RetireRequest{IdempotencyKey: "retire", PublicationID: first.PublicationID, ExpectedGeneration: second.Generation, ExpectedContentHash: second.ContentHash}); err != nil {
+	retired, _, err := store.Retire(ctx, id, RetireRequest{IdempotencyKey: "retire", PublicationID: first.PublicationID, ExpectedGeneration: second.Generation, ExpectedContentHash: second.ContentHash})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.PublishSuccessor(ctx, id, SuccessorRequest{IdempotencyKey: "retired-successor", PublicationID: first.PublicationID, ExpectedGeneration: second.Generation + 1, ExpectedContentHash: second.ContentHash, Skill: publicationSkill("ops", "three")}); !errors.Is(err, ErrRetired) && !errors.Is(err, ErrConflict) {
@@ -124,6 +125,17 @@ func runPublicationStateContract(t *testing.T, f publicationStateFixture) {
 		t.Fatal(e)
 	}
 
+	retired, err = store.Get(ctx, id, first.PublicationID)
+	if err != nil {
+		t.Fatalf("get retired publication: %v", err)
+	}
+	if retired.PublicationID != first.PublicationID || retired.RevisionID != second.RevisionID || retired.Generation != second.Generation+1 || retired.State != StateRetired || retired.ContentHash != second.ContentHash {
+		t.Fatalf("retired metadata=%+v, want exact successor metadata plus retirement state", retired)
+	}
+	refs, err := store.ListReferences(ctx, id)
+	if err != nil || len(refs) != 1 || refs[0].PublicationID != first.PublicationID || refs[0].RevisionID != first.RevisionID || refs[0].ContentHash != first.ContentHash || refs[0].Generation != first.Generation {
+		t.Fatalf("installed references=%+v err=%v, want pinned first revision", refs, err)
+	}
 	if err := store.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +153,34 @@ func runPublicationStateContract(t *testing.T, f publicationStateFixture) {
 			_ = reopenedRaw.Close(ctx)
 		}
 	}()
-	if _, err := reopened.List(ctx, id); err != nil {
-		t.Fatalf("list after restart: %v", err)
+	reopenedMeta, err := reopened.Get(ctx, id, first.PublicationID)
+	if err != nil {
+		t.Fatalf("get after restart: %v", err)
+	}
+	if reopenedMeta != retired {
+		t.Fatalf("reopened metadata=%+v, want exact retired metadata=%+v", reopenedMeta, retired)
+	}
+	items, err := reopened.List(ctx, id)
+	if err != nil || len(items) != 1 || items[0] != retired {
+		t.Fatalf("list after restart=%+v err=%v, want exact retired metadata", items, err)
+	}
+	reopenedRefs, err := reopened.ListReferences(ctx, id)
+	if err != nil || len(reopenedRefs) != 1 || reopenedRefs[0] != refs[0] {
+		t.Fatalf("references after restart=%+v err=%v, want exact pinned reference=%+v", reopenedRefs, err, refs[0])
+	}
+	if _, _, err := reopened.Resolve(ctx, id, "agent"); !errors.Is(err, ErrRetired) {
+		t.Fatalf("resolve after restart=%v, want ErrRetired", err)
+	}
+	record, err := reopenedRaw.Load(ctx, orgIdentity(id.TenantID), publicationOrgKind)
+	if err != nil {
+		t.Fatalf("load aggregate after restart: %v", err)
+	}
+	aggregate, err := decodeAggregate(record)
+	if err != nil || len(aggregate.Publications) != 1 || len(aggregate.Publications[0].Revisions) != 2 {
+		t.Fatalf("aggregate after restart=%+v err=%v, want two immutable revisions", aggregate, err)
+	}
+	revisions := aggregate.Publications[0].Revisions
+	if revisions[0].RevisionID != first.RevisionID || revisions[0].Generation != first.Generation || revisions[0].ContentHash != first.ContentHash || revisions[1].RevisionID != second.RevisionID || revisions[1].Generation != second.Generation || revisions[1].ContentHash != second.ContentHash {
+		t.Fatalf("revisions after restart=%+v, want exact first/successor revisions", revisions)
 	}
 }
