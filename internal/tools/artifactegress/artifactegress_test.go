@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/tools/artifactegress"
@@ -223,7 +224,9 @@ func TestCompileMapping_Refusals(t *testing.T) {
 		{"empty tool name", map[string][]string{"  ": {"doc"}}},
 		{"no parameter names", map[string][]string{"ingest": {}}},
 		{"empty parameter name", map[string][]string{"ingest": {"doc", " "}}},
+		{"empty optional parameter name", map[string][]string{"ingest": {"?"}}},
 		{"duplicate parameter", map[string][]string{"ingest": {"doc", "doc"}}},
+		{"required and optional duplicate parameter", map[string][]string{"ingest": {"doc", "doc?"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,6 +259,24 @@ func TestCompileMapping_EmptyIsInertAndDeterministic(t *testing.T) {
 	got[0] = "MUTATED"
 	if again := m.ParamsFor("ingest"); again[0] != "alpha" {
 		t.Fatalf("ParamsFor returned an aliased slice; the compiled mapping is mutable from outside")
+	}
+}
+
+func TestCompileMapping_OptionalMarkerIsStrippedForSchemaAndRecords(t *testing.T) {
+	m := mustMapping(t, map[string][]string{"ingest": {" zeta? ", "alpha"}})
+	got := m.ParamsFor("ingest")
+	if len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
+		t.Fatalf("ParamsFor = %v, want bare deterministic names [alpha zeta]", got)
+	}
+
+	ctx := resolverCtx(t, map[string][]byte{"art-alpha": []byte("a")})
+	args := map[string]any{"alpha": "art-alpha"}
+	records, err := artifactegress.Encode(ctx, args, m, "ingest", 1024)
+	if err != nil {
+		t.Fatalf("Encode with absent optional parameter: %v", err)
+	}
+	if len(records) != 1 || records[0].Param != "alpha" || args["zeta"] != nil {
+		t.Fatalf("absent optional parameter changed the call: records=%+v args=%v", records, args)
 	}
 }
 
@@ -347,6 +368,71 @@ func TestEncode_CeilingBoundary(t *testing.T) {
 	}
 }
 
+func TestEncode_OptionalParameters(t *testing.T) {
+	mapping := mustMapping(t, map[string][]string{"generate_image": {"required", "reference_image?"}})
+	seated := resolverCtx(t, map[string][]byte{"art-required": []byte("required"), "art-reference": []byte("reference")})
+
+	t.Run("missing optional parameter skips without resolver", func(t *testing.T) {
+		args := map[string]any{}
+		records, err := artifactegress.Encode(context.Background(), args, mustMapping(t, map[string][]string{"generate_image": {"reference_image?"}}), "generate_image", 0)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if records != nil {
+			t.Fatalf("records = %+v, want nil for an all-optional omission", records)
+		}
+	})
+
+	t.Run("nil optional parameter skips", func(t *testing.T) {
+		args := map[string]any{"required": "art-required", "reference_image": nil}
+		records, err := artifactegress.Encode(seated, args, mapping, "generate_image", 1024)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if len(records) != 1 || records[0].Param != "required" {
+			t.Fatalf("records = %+v, want only the required substitution", records)
+		}
+		if _, ok := args["reference_image"]; !ok || args["reference_image"] != nil {
+			t.Fatalf("nil optional argument was rewritten: %v", args["reference_image"])
+		}
+	})
+
+	t.Run("present optional parameter resolves", func(t *testing.T) {
+		args := map[string]any{"required": "art-required", "reference_image": "art-reference"}
+		records, err := artifactegress.Encode(seated, args, mapping, "generate_image", 1024)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if len(records) != 2 || records[0].Param != "reference_image" || records[1].Param != "required" {
+			t.Fatalf("records = %+v, want deterministic bare parameter names", records)
+		}
+		if _, ok := args["reference_image"].(artifactegress.Payload); !ok {
+			t.Fatalf("optional parameter was not substituted: %T", args["reference_image"])
+		}
+	})
+
+	t.Run("explicit empty optional parameter is refused", func(t *testing.T) {
+		_, err := artifactegress.Encode(seated, map[string]any{"required": "art-required", "reference_image": "  "}, mapping, "generate_image", 1024)
+		if !errors.Is(err, artifactegress.ErrEmptyArtifactID) {
+			t.Fatalf("err = %v, want ErrEmptyArtifactID", err)
+		}
+	})
+
+	t.Run("optional non-string parameter is refused", func(t *testing.T) {
+		_, err := artifactegress.Encode(seated, map[string]any{"required": "art-required", "reference_image": 42}, mapping, "generate_image", 1024)
+		if !errors.Is(err, artifactegress.ErrMappedArgumentNotString) {
+			t.Fatalf("err = %v, want ErrMappedArgumentNotString", err)
+		}
+	})
+
+	t.Run("required omission still fails", func(t *testing.T) {
+		_, err := artifactegress.Encode(seated, map[string]any{"reference_image": "art-reference"}, mapping, "generate_image", 1024)
+		if !errors.Is(err, artifactegress.ErrMappedArgumentMissing) {
+			t.Fatalf("err = %v, want ErrMappedArgumentMissing", err)
+		}
+	})
+}
+
 // TestEncode_UnmappedToolIsInert asserts the no-op guarantee at the
 // function boundary: a tool the mapping does not address is untouched,
 // resolver or no resolver, ceiling or no ceiling.
@@ -387,6 +473,45 @@ func TestEncode_WritesEveryMappedParameterInPlace(t *testing.T) {
 	if args["untouched"] != "plain" {
 		t.Fatalf("an unmapped key was rewritten: %v", args["untouched"])
 	}
+}
+
+func TestEncode_ConcurrentReuse_OptionalMapping(t *testing.T) {
+	mapping := mustMapping(t, map[string][]string{"generate_image": {"required", "reference_image?"}})
+	ctx := resolverCtx(t, map[string][]byte{"required-id": []byte("required"), "reference-id": []byte("reference")})
+
+	const calls = 128
+	var wg sync.WaitGroup
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := map[string]any{"required": "required-id"}
+			if i%2 == 0 {
+				args["reference_image"] = "reference-id"
+			}
+			records, err := artifactegress.Encode(ctx, args, mapping, "generate_image", 1024)
+			if err != nil {
+				t.Errorf("call %d: Encode: %v", i, err)
+				return
+			}
+			wantRecords := 1
+			if i%2 == 0 {
+				wantRecords = 2
+			}
+			if len(records) != wantRecords {
+				t.Errorf("call %d: records=%d, want %d", i, len(records), wantRecords)
+			}
+			if _, ok := args["required"].(artifactegress.Payload); !ok {
+				t.Errorf("call %d: required argument was not substituted: %T", i, args["required"])
+			}
+			if i%2 == 0 {
+				if _, ok := args["reference_image"].(artifactegress.Payload); !ok {
+					t.Errorf("call %d: optional argument was not substituted: %T", i, args["reference_image"])
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 // TestArtifactEgressPackage_ContainsOnlyTheEncoder bounds the residual

@@ -131,13 +131,12 @@ import (
 var ErrEgressTooLarge = errors.New("artifactegress: resolved value exceeds the egress ceiling")
 
 // ErrMappedArgumentMissing is returned when the arguments do not supply
-// a parameter the operator mapped as artifact-bearing.
+// a required parameter the operator mapped as artifact-bearing.
 //
 // It is a refusal rather than a skip: the operator declared that this
-// parameter carries artifact bytes, so an invocation that omits it is
-// outside the declared contract, and quietly dispatching a call with
-// the parameter absent is the silent-degradation shape. An operator who
-// wants a genuinely optional document does not map the parameter.
+// parameter carries artifact bytes, so an invocation that omits a
+// required parameter is outside the declared contract. A genuinely
+// optional parameter is marked with the trailing `?` mapping marker.
 var ErrMappedArgumentMissing = errors.New("artifactegress: mapped artifact parameter was not supplied")
 
 // ErrMappedArgumentNotString is returned when a mapped parameter is
@@ -154,7 +153,8 @@ var ErrEmptyArtifactID = errors.New("artifactegress: mapped artifact parameter c
 
 // ErrInvalidMapping is returned by [CompileMapping] for a mapping that
 // cannot be honoured: an empty tool name, an empty parameter name, or a
-// parameter named twice for one tool.
+// parameter named twice for one tool. A parameter's trailing `?` is an
+// optional marker and is not part of its wire name.
 var ErrInvalidMapping = errors.New("artifactegress: invalid artifact parameter mapping")
 
 // ErrInvalidCeiling is returned by [Encode] when it is handed a
@@ -262,7 +262,16 @@ type Record struct {
 // connection field has, and it is what keeps the driver a compiled
 // artifact with no mutable per-run state.
 type Mapping struct {
-	byTool map[string][]string
+	byTool map[string][]mappedParameter
+}
+
+// mappedParameter is the compiled form of one operator mapping entry. The
+// optional marker is deliberately kept out of the exposed parameter list and
+// out of the remote tool's schema name; it only changes missing-argument
+// handling at Encode.
+type mappedParameter struct {
+	name     string
+	optional bool
 }
 
 // CompileMapping validates and compiles an operator-declared mapping of
@@ -275,13 +284,15 @@ type Mapping struct {
 // server driving host-side privileged behaviour is exactly the
 // host-obligation inversion the MCP host rules forbid.
 //
-// An empty or nil input compiles to the empty mapping, which matches no
-// tool.
+// A parameter ending in `?` is optional: CompileMapping strips that marker
+// and records the bare parameter name. Required parameters retain today's
+// behavior. An empty or nil input compiles to the empty mapping, which
+// matches no tool.
 func CompileMapping(params map[string][]string) (Mapping, error) {
 	if len(params) == 0 {
 		return Mapping{}, nil
 	}
-	byTool := make(map[string][]string, len(params))
+	byTool := make(map[string][]mappedParameter, len(params))
 	for tool, names := range params {
 		trimmedTool := strings.TrimSpace(tool)
 		if trimmedTool == "" {
@@ -291,9 +302,13 @@ func CompileMapping(params map[string][]string) (Mapping, error) {
 			return Mapping{}, fmt.Errorf("%w: tool %q maps no parameter names", ErrInvalidMapping, trimmedTool)
 		}
 		seen := make(map[string]struct{}, len(names))
-		out := make([]string, 0, len(names))
+		out := make([]mappedParameter, 0, len(names))
 		for _, name := range names {
 			trimmed := strings.TrimSpace(name)
+			optional := strings.HasSuffix(trimmed, "?")
+			if optional {
+				trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, "?"))
+			}
 			if trimmed == "" {
 				return Mapping{}, fmt.Errorf("%w: tool %q maps an empty parameter name", ErrInvalidMapping, trimmedTool)
 			}
@@ -301,11 +316,11 @@ func CompileMapping(params map[string][]string) (Mapping, error) {
 				return Mapping{}, fmt.Errorf("%w: tool %q maps parameter %q twice", ErrInvalidMapping, trimmedTool, trimmed)
 			}
 			seen[trimmed] = struct{}{}
-			out = append(out, trimmed)
+			out = append(out, mappedParameter{name: trimmed, optional: optional})
 		}
 		// Deterministic order so the substitution records, the emitted
 		// event and the golden transcript do not depend on map iteration.
-		sort.Strings(out)
+		sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 		byTool[trimmedTool] = out
 	}
 	return Mapping{byTool: byTool}, nil
@@ -320,7 +335,11 @@ func (m Mapping) ParamsFor(tool string) []string {
 	if !ok || len(names) == 0 {
 		return nil
 	}
-	return append([]string(nil), names...)
+	out := make([]string, len(names))
+	for i, param := range names {
+		out[i] = param.name
+	}
+	return out
 }
 
 // Tools returns every tool name the mapping addresses, sorted. It backs
@@ -349,7 +368,10 @@ func (m Mapping) IsEmpty() bool { return len(m.byTool) == 0 }
 // artifact id from args, resolves it through the resolver seated on
 // ctx, and writes the resulting [Payload] back into args IN PLACE at
 // the same key. It returns one [Record] per substitution for the caller
-// to emit and to stamp on the observation.
+// to emit and to stamp on the observation. A parameter compiled from a
+// trailing `?` marker is optional: a missing key or nil value is skipped,
+// while a present value follows the same validation and resolution path as
+// a required parameter.
 //
 // args MUST be the DECODED argument map, never the raw argument JSON.
 // The raw JSON is what the trajectory persists, what the observation
@@ -363,7 +385,7 @@ func (m Mapping) IsEmpty() bool { return len(m.byTool) == 0 }
 //   - no resolver seated on ctx (artifactref.ErrNoResolver) — which is
 //     also what a browser-driven MCP-App tool callback hits, because
 //     that path has no run and therefore no seated resolver;
-//   - a mapped parameter the arguments did not supply
+//   - a required mapped parameter the arguments did not supply
 //     ([ErrMappedArgumentMissing]);
 //   - a mapped parameter supplied as something other than a string
 //     ([ErrMappedArgumentNotString]);
@@ -383,50 +405,59 @@ func (m Mapping) IsEmpty() bool { return len(m.byTool) == 0 }
 // artifactref.ScanEgressSites. Adding a second call site is a reviewed
 // decision, not an edit.
 func Encode(ctx context.Context, args map[string]any, m Mapping, tool string, maxBytes int) ([]Record, error) {
-	names := m.ParamsFor(tool)
-	if len(names) == 0 {
+	params := m.byTool[tool]
+	if len(params) == 0 {
 		return nil, nil
 	}
-	if maxBytes <= 0 {
-		return nil, fmt.Errorf("%w: tool %q got %d", ErrInvalidCeiling, tool, maxBytes)
-	}
-	if args == nil {
-		return nil, fmt.Errorf("%w: tool %q supplied no arguments at all", ErrMappedArgumentMissing, tool)
-	}
-	resolver, ok := artifactref.ResolverFrom(ctx)
-	if !ok {
-		return nil, fmt.Errorf("%w: tool %q maps %d artifact parameter(s) but this invocation has no run-scoped resolver",
-			artifactref.ErrNoResolver, tool, len(names))
-	}
-	records := make([]Record, 0, len(names))
-	for _, name := range names {
-		raw, present := args[name]
+	var resolver artifactref.Resolver
+	resolverSeated := false
+	records := make([]Record, 0, len(params))
+	for _, param := range params {
+		raw, present := args[param.name]
 		if !present || raw == nil {
-			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrMappedArgumentMissing, tool, name)
+			if param.optional {
+				continue
+			}
+			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrMappedArgumentMissing, tool, param.name)
+		}
+		if maxBytes <= 0 {
+			return nil, fmt.Errorf("%w: tool %q got %d", ErrInvalidCeiling, tool, maxBytes)
 		}
 		id, isString := raw.(string)
 		if !isString {
-			return nil, fmt.Errorf("%w: tool %q parameter %q is %T", ErrMappedArgumentNotString, tool, name, raw)
+			return nil, fmt.Errorf("%w: tool %q parameter %q is %T", ErrMappedArgumentNotString, tool, param.name, raw)
 		}
 		if strings.TrimSpace(id) == "" {
-			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrEmptyArtifactID, tool, name)
+			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrEmptyArtifactID, tool, param.name)
+		}
+		if !resolverSeated {
+			var ok bool
+			resolver, ok = artifactref.ResolverFrom(ctx)
+			if !ok {
+				return nil, fmt.Errorf("%w: tool %q maps %d artifact parameter(s) but this invocation has no run-scoped resolver",
+					artifactref.ErrNoResolver, tool, len(params))
+			}
+			resolverSeated = true
 		}
 		data, err := resolver.ResolveArtifact(ctx, id)
 		if err != nil {
-			return nil, fmt.Errorf("artifactegress: resolve %q for tool %q parameter %q: %w", id, tool, name, err)
+			return nil, fmt.Errorf("artifactegress: resolve %q for tool %q parameter %q: %w", id, tool, param.name, err)
 		}
 		if len(data) > maxBytes {
 			return nil, fmt.Errorf("%w: artifact %q for tool %q parameter %q is %d bytes, ceiling is %d — the value is refused rather than truncated, because a partial document delivered to a consumer is a corruption",
-				ErrEgressTooLarge, id, tool, name, len(data), maxBytes)
+				ErrEgressTooLarge, id, tool, param.name, len(data), maxBytes)
 		}
 		payload := newPayload(id, data)
-		args[name] = payload
+		args[param.name] = payload
 		records = append(records, Record{
 			ArtifactID: payload.ID(),
-			Param:      name,
+			Param:      param.name,
 			SizeBytes:  payload.Size(),
 			Digest:     payload.Digest(),
 		})
+	}
+	if len(records) == 0 {
+		return nil, nil
 	}
 	return records, nil
 }
