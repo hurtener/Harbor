@@ -22,7 +22,6 @@ import (
 type AuthorizedStore struct {
 	store Store
 	reach auth.AgentReachAuthorizer
-	admin func(context.Context) bool
 }
 
 // Sentinel errors returned by AuthorizedStore. Callers should use errors.Is;
@@ -43,24 +42,21 @@ var (
 )
 
 // NewAuthorizedStore wraps store with verified-identity, signed-agent-reach,
-// and admin-scope checks. A nil admin predicate uses auth.ScopeAdmin. The
-// predicate is intentionally injected only for tightly bounded tests; normal
-// production callers should rely on the verified scope set.
-func NewAuthorizedStore(store Store, reach auth.AgentReachAuthorizer, admin func(context.Context) bool) (*AuthorizedStore, error) {
+// and the canonical verified admin-scope checks. The privilege decision is
+// deliberately not injectable: construction cannot accidentally create a
+// broad admin bypass while wiring a test or an alternate runtime.
+func NewAuthorizedStore(store Store, reach auth.AgentReachAuthorizer) (*AuthorizedStore, error) {
 	if store == nil {
 		return nil, fmt.Errorf("%w: store is nil", ErrAuthorizedStoreMisconfigured)
 	}
 	if reach == nil {
 		return nil, fmt.Errorf("%w: agent reach authorizer is nil", ErrAuthorizedStoreMisconfigured)
 	}
-	if admin == nil {
-		admin = func(ctx context.Context) bool { return auth.HasScope(ctx, auth.ScopeAdmin) }
-	}
-	return &AuthorizedStore{store: store, reach: reach, admin: admin}, nil
+	return &AuthorizedStore{store: store, reach: reach}, nil
 }
 
 func (s *AuthorizedStore) caller(ctx context.Context, caller identity.Quadruple) error {
-	if s == nil || s.store == nil || s.reach == nil || s.admin == nil {
+	if s == nil || s.store == nil || s.reach == nil {
 		return ErrAuthorizedStoreMisconfigured
 	}
 	if err := ctx.Err(); err != nil {
@@ -80,7 +76,7 @@ func (s *AuthorizedStore) adminCaller(ctx context.Context, caller identity.Quadr
 	if err := s.caller(ctx, caller); err != nil {
 		return err
 	}
-	if !s.admin(ctx) {
+	if !auth.HasScope(ctx, auth.ScopeAdmin) {
 		return ErrAdminRequired
 	}
 	return nil

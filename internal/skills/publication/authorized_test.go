@@ -27,7 +27,7 @@ func authorizedContext(t *testing.T, id identity.Identity, reach []string, scope
 
 func TestAuthorizedStore_RequiresVerifiedCallerAdminAndSignedAgentReach(t *testing.T) {
 	caller := authorizedIdentity()
-	store, err := NewAuthorizedStore(NewMemoryStore("runtime-a"), auth.NewAgentReachAuthorizer(), nil)
+	store, err := NewAuthorizedStore(NewMemoryStore("runtime-a"), auth.NewAgentReachAuthorizer())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestAuthorizedStore_RequiresVerifiedCallerAdminAndSignedAgentReach(t *testi
 func TestAuthorizedStore_ConcurrentResolveN128(t *testing.T) {
 	caller := authorizedIdentity()
 	ctx := authorizedContext(t, caller.Identity, []string{"agent-a"}, auth.ScopeAdmin)
-	store, err := NewAuthorizedStore(NewMemoryStore("runtime-a"), auth.NewAgentReachAuthorizer(), nil)
+	store, err := NewAuthorizedStore(NewMemoryStore("runtime-a"), auth.NewAgentReachAuthorizer())
 	if err != nil {
 		t.Fatal(err)
 	}
