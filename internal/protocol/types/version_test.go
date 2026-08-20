@@ -477,6 +477,33 @@ func TestCapSessionLifecycle_Registered(t *testing.T) {
 	}
 }
 
+// TestCapSkillPublications_Registered pins the HA-68 same-runtime publication
+// capability in the canonical negotiation universe. Per-runtime posture
+// advertises it only when the publication store and transport are wired.
+func TestCapSkillPublications_Registered(t *testing.T) {
+	if string(types.CapSkillPublications) != "skill_publications" {
+		t.Fatalf("CapSkillPublications wire string = %q, want %q", string(types.CapSkillPublications), "skill_publications")
+	}
+	if !types.IsValidCapability(types.CapSkillPublications) {
+		t.Fatal("IsValidCapability(CapSkillPublications) = false, want true")
+	}
+	found := false
+	for _, c := range types.Capabilities() {
+		if c == types.CapSkillPublications {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Capabilities() = %v, missing CapSkillPublications", types.Capabilities())
+	}
+	if !types.CurrentHandshake().Accepts(types.CapSkillPublications) {
+		t.Fatal("CurrentHandshake().Accepts(CapSkillPublications) = false, want true")
+	}
+	if types.ProtocolVersion != "0.1.0" {
+		t.Fatalf("ProtocolVersion = %q, want unchanged 0.1.0", types.ProtocolVersion)
+	}
+}
+
 func TestVersionHandshake_CurrentAndAccepts(t *testing.T) {
 	h := types.CurrentHandshake()
 	if h.ProtocolVersion != types.ProtocolVersion {

@@ -470,37 +470,42 @@ func signAlgNone(t *testing.T, claims jwt.MapClaims) string {
 // status.go; this table mirrors it so a future status reshuffle would
 // surface as a conformance failure rather than landing silently.
 var expectedHTTPStatus = map[protoerrors.Code]int{
-	protoerrors.CodeInvalidRequest:             http.StatusBadRequest,
-	protoerrors.CodeIdentityRequired:           http.StatusUnauthorized,
-	protoerrors.CodeScopeMismatch:              http.StatusForbidden,
-	protoerrors.CodePayloadInvalid:             http.StatusUnprocessableEntity,
-	protoerrors.CodeUnknownMethod:              http.StatusNotFound,
-	protoerrors.CodeNotFound:                   http.StatusNotFound,
-	protoerrors.CodeRuntimeError:               http.StatusInternalServerError,
-	protoerrors.CodeAuthRejected:               http.StatusUnauthorized,
-	protoerrors.CodeIdentityScopeRequired:      http.StatusForbidden,
-	protoerrors.CodePresignUnsupported:         http.StatusNotImplemented,
-	protoerrors.CodeRequestTooLarge:            http.StatusRequestEntityTooLarge,
-	protoerrors.CodeSessionRunning:             http.StatusConflict,
-	protoerrors.CodeSessionErased:              http.StatusConflict,
-	protoerrors.CodeRevisionConflict:           http.StatusConflict,
-	protoerrors.CodeSessionSkillCutoverPending: http.StatusConflict,
-	protoerrors.CodeSessionSkillReadUnstable:   http.StatusConflict,
-	protoerrors.CodeAgentRetired:               http.StatusConflict,
-	protoerrors.CodeAgentRetirementConflict:    http.StatusConflict,
-	protoerrors.CodeRestartUnavailable:         http.StatusConflict,
-	protoerrors.CodeRenderAdmissionMissing:     http.StatusBadRequest,
-	protoerrors.CodeRenderAdmissionUnavailable: http.StatusBadRequest,
-	protoerrors.CodeRenderAdmissionInvalid:     http.StatusBadRequest,
-	protoerrors.CodeRenderAdmissionExpired:     http.StatusBadRequest,
-	protoerrors.CodeRenderAdmissionMismatch:    http.StatusBadRequest,
-	protoerrors.CodeRenderAuthorityAmbiguous:   http.StatusBadRequest,
-	protoerrors.CodeSkillImportProposalInvalid: http.StatusBadRequest,
-	protoerrors.CodeSkillImportProposalExpired: http.StatusBadRequest,
-	protoerrors.CodeSkillImportPackageInvalid:  http.StatusBadRequest,
-	protoerrors.CodeSkillImportReplaceRequired: http.StatusConflict,
-	protoerrors.CodeQueryBudgetExceeded:        http.StatusBadRequest,
-	protoerrors.CodeInvalidCursor:              http.StatusBadRequest,
+	protoerrors.CodeInvalidRequest:                      http.StatusBadRequest,
+	protoerrors.CodeIdentityRequired:                    http.StatusUnauthorized,
+	protoerrors.CodeScopeMismatch:                       http.StatusForbidden,
+	protoerrors.CodePayloadInvalid:                      http.StatusUnprocessableEntity,
+	protoerrors.CodeUnknownMethod:                       http.StatusNotFound,
+	protoerrors.CodeNotFound:                            http.StatusNotFound,
+	protoerrors.CodeRuntimeError:                        http.StatusInternalServerError,
+	protoerrors.CodeAuthRejected:                        http.StatusUnauthorized,
+	protoerrors.CodeIdentityScopeRequired:               http.StatusForbidden,
+	protoerrors.CodePresignUnsupported:                  http.StatusNotImplemented,
+	protoerrors.CodeRequestTooLarge:                     http.StatusRequestEntityTooLarge,
+	protoerrors.CodeSessionRunning:                      http.StatusConflict,
+	protoerrors.CodeSessionErased:                       http.StatusConflict,
+	protoerrors.CodeRevisionConflict:                    http.StatusConflict,
+	protoerrors.CodeSessionSkillCutoverPending:          http.StatusConflict,
+	protoerrors.CodeSessionSkillReadUnstable:            http.StatusConflict,
+	protoerrors.CodeAgentRetired:                        http.StatusConflict,
+	protoerrors.CodeAgentRetirementConflict:             http.StatusConflict,
+	protoerrors.CodeRestartUnavailable:                  http.StatusConflict,
+	protoerrors.CodeSkillPublicationConflict:            http.StatusConflict,
+	protoerrors.CodeSkillPublicationNotFound:            http.StatusNotFound,
+	protoerrors.CodeSkillPublicationRetired:             http.StatusConflict,
+	protoerrors.CodeSkillPublicationRuntimeMismatch:     http.StatusConflict,
+	protoerrors.CodeSkillPublicationIdempotencyConflict: http.StatusConflict,
+	protoerrors.CodeRenderAdmissionMissing:              http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionUnavailable:          http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionInvalid:              http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionExpired:              http.StatusBadRequest,
+	protoerrors.CodeRenderAdmissionMismatch:             http.StatusBadRequest,
+	protoerrors.CodeRenderAuthorityAmbiguous:            http.StatusBadRequest,
+	protoerrors.CodeSkillImportProposalInvalid:          http.StatusBadRequest,
+	protoerrors.CodeSkillImportProposalExpired:          http.StatusBadRequest,
+	protoerrors.CodeSkillImportPackageInvalid:           http.StatusBadRequest,
+	protoerrors.CodeSkillImportReplaceRequired:          http.StatusConflict,
+	protoerrors.CodeQueryBudgetExceeded:                 http.StatusBadRequest,
+	protoerrors.CodeInvalidCursor:                       http.StatusBadRequest,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -560,6 +565,15 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeAgentRetired,
 	protoerrors.CodeAgentRetirementConflict,
 	protoerrors.CodeRestartUnavailable,
+	// HA-68 same-runtime publication surface — these typed compare-and-swap,
+	// lifecycle, runtime-binding, and idempotency outcomes are exercised by
+	// the focused publication surface/transport tests. The generic
+	// conformance Stack intentionally does not assemble that store.
+	protoerrors.CodeSkillPublicationConflict,
+	protoerrors.CodeSkillPublicationNotFound,
+	protoerrors.CodeSkillPublicationRetired,
+	protoerrors.CodeSkillPublicationRuntimeMismatch,
+	protoerrors.CodeSkillPublicationIdempotencyConflict,
 	// MCP Apps render-admission surface — the five typed admission
 	// outcomes + the ambiguous-authority refusal, exercised end-to-end by
 	// the AppsSurface / control-transport unit tests (the generic
@@ -724,10 +738,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 137 methods; keep the explicit
+	// The canonical list currently contains 147 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 137 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 137 (including signed OAuth MCP capability registration, paired removal, and terminal retirement)", len(got))
+	if len(got) != 147 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 147 (including HA-68 skill publications)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -879,6 +893,16 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSessionTurnsList:                      {},
 		methods.MethodSessionTurnsGet:                       {},
 		methods.MethodObservabilityQuery:                    {},
+		methods.MethodSkillsPublicationsPublish:             {},
+		methods.MethodSkillsPublicationsList:                {},
+		methods.MethodSkillsPublicationsGet:                 {},
+		methods.MethodSkillsPublicationsSuccessor:           {},
+		methods.MethodSkillsPublicationsRetire:              {},
+		methods.MethodSkillsPublicationsAvailable:           {},
+		methods.MethodSkillsPublicationsInstall:             {},
+		methods.MethodSkillsPublicationsUpdate:              {},
+		methods.MethodSkillsPublicationsRemove:              {},
+		methods.MethodSkillsPublicationsReferencesList:      {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -1197,6 +1221,13 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsAgentConfigMethod(m) {
 				t.Skip("agent_config.* exercised by agentcfg/protocol tests + test/integration/agentcfg_control_plane_test.go; conformance-suite scenario lands with a later surface extension")
 			}
+			// HA-68 publication methods are dispatched by the dedicated
+			// SkillPublicationsSurface. The conformance Stack intentionally
+			// does not assemble a same-runtime publication store; focused
+			// surface/transport tests cover authority and persistence wiring.
+			if methods.IsSkillPublicationMethod(m) {
+				t.Skip("skills.publications.* exercised by the HA-68 surface and control-transport tests; conformance-suite scenario lands when the Stack wires the publication store")
+			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
 				defer st.Cleanup()
@@ -1423,6 +1454,13 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// covered by internal/protocol/transports/stream/events_list_handler_test.go.
 			if methods.IsEventsListMethod(m) {
 				t.Skip("events.list malformed-request paths covered by internal/protocol/transports/stream/events_list_handler_test.go")
+			}
+			// HA-68 publication methods route through the dedicated
+			// SkillPublicationsSurface, which is intentionally not assembled
+			// by the generic conformance Stack. Their strict wire decode and
+			// authority failures are covered by focused surface/transport tests.
+			if methods.IsSkillPublicationMethod(m) {
+				t.Skip("skills.publications.* malformed-request paths covered by the HA-68 surface and control-transport tests")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
@@ -1885,10 +1923,11 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	// task-control + streaming-events +
-	// runtime-posture + topology-snapshot + state-snapshots + agent-config +
-	// session-lifecycle
-	// = 7 capabilities at Protocol 0.1.0. (The capability constants live in
+	// task-control + streaming-events + runtime-posture + topology-snapshot +
+	// state-snapshots + agent-config + session-lifecycle + tool annotations +
+	// caller memory + skill publications
+	// = 10 canonical capabilities at Protocol 0.1.0. (The capability
+	// constants live in
 	// internal/protocol/types/version.go; a new capability is a new
 	// constant + a new entry in canonicalCapabilities. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
@@ -1899,19 +1938,20 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 9 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 9 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot + CapStateSnapshots + CapAgentConfig + CapSessionLifecycle + CapToolAnnotations + CapCallerMemory) at Protocol 0.1.0", len(caps))
+	if len(caps) != 10 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 10 (including CapSkillPublications) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
-		types.CapTaskControl:      {},
-		types.CapEventsSubscribe:  {},
-		types.CapRuntimePosture:   {},
-		types.CapTopologySnapshot: {},
-		types.CapStateSnapshots:   {},
-		types.CapAgentConfig:      {},
-		types.CapSessionLifecycle: {},
-		types.CapToolAnnotations:  {},
-		types.CapCallerMemory:     {},
+		types.CapTaskControl:       {},
+		types.CapEventsSubscribe:   {},
+		types.CapRuntimePosture:    {},
+		types.CapTopologySnapshot:  {},
+		types.CapStateSnapshots:    {},
+		types.CapAgentConfig:       {},
+		types.CapSessionLifecycle:  {},
+		types.CapToolAnnotations:   {},
+		types.CapCallerMemory:      {},
+		types.CapSkillPublications: {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

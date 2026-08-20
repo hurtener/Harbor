@@ -359,10 +359,8 @@ func Deprecations() []Deprecation {
 // Protocol method extends methods.canonicalMethods.
 type Capability string
 
-// The V1 Protocol capability set. At Protocol 0.1.0 exactly one surface
-// has shipped — the task control surface — so CapTaskControl
-// is the only capability. RFC §5.2's other surfaces add their
-// Capability constant here as their phase lands.
+// The V1 Protocol capability set. Each shipped Protocol surface adds one
+// capability here; per-runtime posture advertises the wired subset.
 const (
 	// CapTaskControl — the task control surface (RFC §5.2 "Task
 	// control" row): the `start` method plus the nine steering-control
@@ -469,6 +467,11 @@ const (
 	// it. There is no separate wiring to gate on. Backward-compatible
 	// (RFC §5.3 minor-class addition) — no version bump.
 	CapCallerMemory Capability = "caller_memory"
+	// CapSkillPublications is the same-runtime organization skill-publication
+	// surface. A runtime advertises it only when the publication store and
+	// Protocol transport are wired together; references never imply
+	// cross-runtime portability or authority.
+	CapSkillPublications Capability = "skill_publications"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -483,15 +486,16 @@ const (
 // `topology_snapshot` is in the canonical set, but only runtimes
 // hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
-	CapTaskControl:      {},
-	CapEventsSubscribe:  {},
-	CapRuntimePosture:   {},
-	CapTopologySnapshot: {},
-	CapStateSnapshots:   {},
-	CapAgentConfig:      {},
-	CapSessionLifecycle: {},
-	CapToolAnnotations:  {},
-	CapCallerMemory:     {},
+	CapTaskControl:       {},
+	CapEventsSubscribe:   {},
+	CapRuntimePosture:    {},
+	CapTopologySnapshot:  {},
+	CapStateSnapshots:    {},
+	CapAgentConfig:       {},
+	CapSessionLifecycle:  {},
+	CapToolAnnotations:   {},
+	CapCallerMemory:      {},
+	CapSkillPublications: {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

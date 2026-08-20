@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 137 canonical Harbor Protocol methods, generated from the single-source registry
+The 147 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -265,3 +265,18 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agent_config.user.skills.import_validate` | `POST /v1/agent_config/user/skills/import_validate` | agent config — user skills import | [`AgentConfigUserSkillsImportValidateRequest`](./types.md#agentconfiguserskillsimportvalidaterequest) | [`AgentConfigUserSkillsImportValidateResponse`](./types.md#agentconfiguserskillsimportvalidateresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.user.skills.list` | `POST /v1/agent_config/user/skills/list` | agent config — session | [`AgentConfigUserSkillsListRequest`](./types.md#agentconfiguserskillslistrequest) | [`AgentConfigUserSkillsListResponse`](./types.md#agentconfiguserskillslistresponse) | read-only; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
 | `agent_config.user.skills.upsert` | `POST /v1/agent_config/user/skills/upsert` | agent config — session | [`AgentConfigUserSkillsUpsertRequest`](./types.md#agentconfiguserskillsupsertrequest) | [`AgentConfigUserSkillsUpsertResponse`](./types.md#agentconfiguserskillsupsertresponse) | mutating; identity-mandatory; does NOT require the `admin` scope (the session-user safe subset) |
+
+## Skill publications
+
+| Method | Route | Classification | Request | Response | Auth (beyond identity) |
+|---|---|---|---|---|---|
+| `skills.publications.available` | `POST /v1/control/skills.publications.available` | skill publications | [`SkillPublicationAvailableRequest`](./types.md#skillpublicationavailablerequest) | [`SkillPublicationAvailableResponse`](./types.md#skillpublicationavailableresponse) | read-only; requires a verified caller identity; target-Agent mutations additionally require signed effective-Agent reach |
+| `skills.publications.get` | `POST /v1/control/skills.publications.get` | skill publications | [`SkillPublicationGetRequest`](./types.md#skillpublicationgetrequest) | [`SkillPublicationGetResponse`](./types.md#skillpublicationgetresponse) | read-only; requires the verified `admin` scope claim |
+| `skills.publications.install` | `POST /v1/control/skills.publications.install` | skill publications | [`SkillPublicationInstallRequest`](./types.md#skillpublicationinstallrequest) | [`SkillPublicationInstallResponse`](./types.md#skillpublicationinstallresponse) | mutating; requires a verified caller identity; target-Agent mutations additionally require signed effective-Agent reach |
+| `skills.publications.list` | `POST /v1/control/skills.publications.list` | skill publications | [`SkillPublicationListRequest`](./types.md#skillpublicationlistrequest) | [`SkillPublicationListResponse`](./types.md#skillpublicationlistresponse) | read-only; requires the verified `admin` scope claim |
+| `skills.publications.publish` | `POST /v1/control/skills.publications.publish` | skill publications | [`SkillPublicationPublishRequest`](./types.md#skillpublicationpublishrequest) | [`SkillPublicationPublishResponse`](./types.md#skillpublicationpublishresponse) | mutating; requires the verified `admin` scope claim |
+| `skills.publications.publish_successor` | `POST /v1/control/skills.publications.publish_successor` | skill publications | [`SkillPublicationSuccessorRequest`](./types.md#skillpublicationsuccessorrequest) | [`SkillPublicationSuccessorResponse`](./types.md#skillpublicationsuccessorresponse) | mutating; requires the verified `admin` scope claim |
+| `skills.publications.references.list` | `POST /v1/control/skills.publications.references.list` | skill publications | [`SkillPublicationReferencesListRequest`](./types.md#skillpublicationreferenceslistrequest) | [`SkillPublicationReferencesListResponse`](./types.md#skillpublicationreferenceslistresponse) | read-only; requires a verified caller identity; target-Agent mutations additionally require signed effective-Agent reach |
+| `skills.publications.remove` | `POST /v1/control/skills.publications.remove` | skill publications | [`SkillPublicationRemoveRequest`](./types.md#skillpublicationremoverequest) | [`SkillPublicationRemoveResponse`](./types.md#skillpublicationremoveresponse) | mutating; requires a verified caller identity; target-Agent mutations additionally require signed effective-Agent reach |
+| `skills.publications.retire` | `POST /v1/control/skills.publications.retire` | skill publications | [`SkillPublicationRetireRequest`](./types.md#skillpublicationretirerequest) | [`SkillPublicationRetireResponse`](./types.md#skillpublicationretireresponse) | mutating; requires the verified `admin` scope claim |
+| `skills.publications.update` | `POST /v1/control/skills.publications.update` | skill publications | [`SkillPublicationUpdateRequest`](./types.md#skillpublicationupdaterequest) | [`SkillPublicationUpdateResponse`](./types.md#skillpublicationupdateresponse) | mutating; requires a verified caller identity; target-Agent mutations additionally require signed effective-Agent reach |

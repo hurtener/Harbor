@@ -184,6 +184,16 @@ type RuntimeClient interface {
 	MetricsSnapshot(context.Context) (types.MetricsSnapshot, error)
 	GovernancePosture(context.Context) (types.GovernancePostureResponse, error)
 	LLMPosture(context.Context) (types.LLMPostureResponse, error)
+	SkillPublicationsPublish(context.Context, types.SkillPublicationPublishRequest) (types.SkillPublicationPublishResponse, error)
+	SkillPublicationsList(context.Context, types.SkillPublicationListRequest) (types.SkillPublicationListResponse, error)
+	SkillPublicationsGet(context.Context, types.SkillPublicationGetRequest) (types.SkillPublicationGetResponse, error)
+	SkillPublicationsSuccessor(context.Context, types.SkillPublicationSuccessorRequest) (types.SkillPublicationSuccessorResponse, error)
+	SkillPublicationsRetire(context.Context, types.SkillPublicationRetireRequest) (types.SkillPublicationRetireResponse, error)
+	SkillPublicationsAvailable(context.Context, types.SkillPublicationAvailableRequest) (types.SkillPublicationAvailableResponse, error)
+	SkillPublicationsInstall(context.Context, types.SkillPublicationInstallRequest) (types.SkillPublicationInstallResponse, error)
+	SkillPublicationsUpdate(context.Context, types.SkillPublicationUpdateRequest) (types.SkillPublicationUpdateResponse, error)
+	SkillPublicationsRemove(context.Context, types.SkillPublicationRemoveRequest) (types.SkillPublicationRemoveResponse, error)
+	SkillPublicationsReferencesList(context.Context, types.SkillPublicationReferencesListRequest) (types.SkillPublicationReferencesListResponse, error)
 }
 
 type client struct {
@@ -765,6 +775,94 @@ func (c *client) GovernancePosture(ctx context.Context) (types.GovernancePosture
 func (c *client) LLMPosture(ctx context.Context) (types.LLMPostureResponse, error) {
 	var out types.LLMPostureResponse
 	err := c.callMethod(ctx, methods.MethodLLMPosture, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// SkillPublicationsPublish publishes a reviewed organization skill revision.
+// The client's verified identity is always stamped into the request envelope;
+// callers cannot use a body identity to widen authority.
+func (c *client) SkillPublicationsPublish(ctx context.Context, request types.SkillPublicationPublishRequest) (types.SkillPublicationPublishResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationPublishResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsPublish, request, &out)
+	return out, err
+}
+
+// SkillPublicationsList lists organization publications visible to the admin.
+func (c *client) SkillPublicationsList(ctx context.Context, request types.SkillPublicationListRequest) (types.SkillPublicationListResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationListResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsList, request, &out)
+	return out, err
+}
+
+// SkillPublicationsGet reads one organization publication metadata record.
+func (c *client) SkillPublicationsGet(ctx context.Context, request types.SkillPublicationGetRequest) (types.SkillPublicationGetResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationGetResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsGet, request, &out)
+	return out, err
+}
+
+// SkillPublicationsSuccessor publishes a successor revision under an exact
+// generation and content-hash compare-and-swap.
+func (c *client) SkillPublicationsSuccessor(ctx context.Context, request types.SkillPublicationSuccessorRequest) (types.SkillPublicationSuccessorResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationSuccessorResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsSuccessor, request, &out)
+	return out, err
+}
+
+// SkillPublicationsRetire retires a publication under an exact compare-and-
+// swap precondition.
+func (c *client) SkillPublicationsRetire(ctx context.Context, request types.SkillPublicationRetireRequest) (types.SkillPublicationRetireResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationRetireResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsRetire, request, &out)
+	return out, err
+}
+
+// SkillPublicationsAvailable lists active publications available to a
+// verified caller in the same runtime.
+func (c *client) SkillPublicationsAvailable(ctx context.Context, request types.SkillPublicationAvailableRequest) (types.SkillPublicationAvailableResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationAvailableResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsAvailable, request, &out)
+	return out, err
+}
+
+// SkillPublicationsInstall pins an exact publication revision to one Agent.
+func (c *client) SkillPublicationsInstall(ctx context.Context, request types.SkillPublicationInstallRequest) (types.SkillPublicationInstallResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationInstallResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsInstall, request, &out)
+	return out, err
+}
+
+// SkillPublicationsUpdate moves one Agent reference under an exact
+// generation/hash compare-and-swap precondition.
+func (c *client) SkillPublicationsUpdate(ctx context.Context, request types.SkillPublicationUpdateRequest) (types.SkillPublicationUpdateResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationUpdateResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsUpdate, request, &out)
+	return out, err
+}
+
+// SkillPublicationsRemove removes one Agent reference under an exact
+// generation/hash compare-and-swap precondition.
+func (c *client) SkillPublicationsRemove(ctx context.Context, request types.SkillPublicationRemoveRequest) (types.SkillPublicationRemoveResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationRemoveResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsRemove, request, &out)
+	return out, err
+}
+
+// SkillPublicationsReferencesList lists exact same-runtime references for the
+// verified caller's effective Agent reach.
+func (c *client) SkillPublicationsReferencesList(ctx context.Context, request types.SkillPublicationReferencesListRequest) (types.SkillPublicationReferencesListResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationReferencesListResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsReferencesList, request, &out)
 	return out, err
 }
 

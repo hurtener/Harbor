@@ -12,6 +12,9 @@ import (
 type (
 	// Client is the curated concurrent-safe REST/SSE Protocol client interface.
 	Client = internal.Client
+	// RuntimeClient is the additive Runtime inspection/control client,
+	// including HA-68 skill-publication methods.
+	RuntimeClient = internal.RuntimeClient
 	// Connection describes one authenticated Runtime attachment.
 	Connection = internal.Connection
 	// TokenSource resolves a bearer token for each request.
@@ -86,6 +89,34 @@ type (
 	ArtifactsListRequest = types.ArtifactsListRequest
 	// ArtifactsListResponse is the artifacts.list response.
 	ArtifactsListResponse = types.ArtifactsListResponse
+	// SkillPublicationSkill is the reviewed publication body.
+	SkillPublicationSkill = types.SkillPublicationSkill
+	// SkillPublicationMetadata is the content-free publication projection.
+	SkillPublicationMetadata = types.SkillPublicationMetadata
+	// SkillPublicationReference is an exact Agent publication pin.
+	SkillPublicationReference = types.SkillPublicationReference
+	// SkillPublicationReceipt is a replay-safe mutation receipt.
+	SkillPublicationReceipt                = types.SkillPublicationReceipt
+	SkillPublicationPublishRequest         = types.SkillPublicationPublishRequest
+	SkillPublicationPublishResponse        = types.SkillPublicationPublishResponse
+	SkillPublicationListRequest            = types.SkillPublicationListRequest
+	SkillPublicationListResponse           = types.SkillPublicationListResponse
+	SkillPublicationGetRequest             = types.SkillPublicationGetRequest
+	SkillPublicationGetResponse            = types.SkillPublicationGetResponse
+	SkillPublicationSuccessorRequest       = types.SkillPublicationSuccessorRequest
+	SkillPublicationSuccessorResponse      = types.SkillPublicationSuccessorResponse
+	SkillPublicationRetireRequest          = types.SkillPublicationRetireRequest
+	SkillPublicationRetireResponse         = types.SkillPublicationRetireResponse
+	SkillPublicationAvailableRequest       = types.SkillPublicationAvailableRequest
+	SkillPublicationAvailableResponse      = types.SkillPublicationAvailableResponse
+	SkillPublicationInstallRequest         = types.SkillPublicationInstallRequest
+	SkillPublicationInstallResponse        = types.SkillPublicationInstallResponse
+	SkillPublicationUpdateRequest          = types.SkillPublicationUpdateRequest
+	SkillPublicationUpdateResponse         = types.SkillPublicationUpdateResponse
+	SkillPublicationRemoveRequest          = types.SkillPublicationRemoveRequest
+	SkillPublicationRemoveResponse         = types.SkillPublicationRemoveResponse
+	SkillPublicationReferencesListRequest  = types.SkillPublicationReferencesListRequest
+	SkillPublicationReferencesListResponse = types.SkillPublicationReferencesListResponse
 )
 
 const (

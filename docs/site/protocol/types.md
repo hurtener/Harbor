@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 404 canonical Harbor Protocol wire types, generated from the single-source
+The 427 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -4010,6 +4010,253 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `min_bytes` | `*int64` | optional (`omitempty`) |
 | `max_bytes` | `*int64` | optional (`omitempty`) |
+
+## SkillPublicationAvailableRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+
+## SkillPublicationAvailableResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publications` | `[]types.SkillPublicationMetadata` — see [`SkillPublicationMetadata`](./types.md#skillpublicationmetadata) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationGetRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `publication_id` | `string` |  |
+
+## SkillPublicationGetResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publication` | `types.SkillPublicationMetadata` — see [`SkillPublicationMetadata`](./types.md#skillpublicationmetadata) |  |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationInstallRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `publication_id` | `string` |  |
+| `revision_id` | `string` |  |
+| `expected_absent` | `bool` |  |
+| `idempotency_key` | `string` |  |
+
+## SkillPublicationInstallResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `reference` | `types.SkillPublicationReference` — see [`SkillPublicationReference`](./types.md#skillpublicationreference) |  |
+| `receipt` | `types.SkillPublicationReceipt` — see [`SkillPublicationReceipt`](./types.md#skillpublicationreceipt) |  |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+
+## SkillPublicationListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publications` | `[]types.SkillPublicationMetadata` — see [`SkillPublicationMetadata`](./types.md#skillpublicationmetadata) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationMetadata
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publication_id` | `string` |  |
+| `revision_id` | `string` |  |
+| `name` | `string` |  |
+| `content_hash` | `string` |  |
+| `state` | `string` |  |
+| `generation` | `uint64` |  |
+| `runtime_id` | `string` |  |
+
+## SkillPublicationPublishRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `name` | `string` |  |
+| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
+| `idempotency_key` | `string` |  |
+| `expected_absent` | `bool` |  |
+
+## SkillPublicationPublishResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publication` | `types.SkillPublicationMetadata` — see [`SkillPublicationMetadata`](./types.md#skillpublicationmetadata) |  |
+| `receipt` | `types.SkillPublicationReceipt` — see [`SkillPublicationReceipt`](./types.md#skillpublicationreceipt) |  |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationReceipt
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `operation_id` | `string` |  |
+| `operation` | `string` |  |
+| `publication_id` | `string` | optional (`omitempty`) |
+| `revision_id` | `string` | optional (`omitempty`) |
+| `generation` | `uint64` |  |
+| `state` | `string` |  |
+| `before_hash` | `string` | optional (`omitempty`) |
+| `after_hash` | `string` | optional (`omitempty`) |
+
+## SkillPublicationReference
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `agent_id` | `string` |  |
+| `publication_id` | `string` |  |
+| `revision_id` | `string` |  |
+| `content_hash` | `string` |  |
+| `generation` | `uint64` |  |
+| `runtime_id` | `string` |  |
+| `state` | `string` |  |
+
+## SkillPublicationReferencesListRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+
+## SkillPublicationReferencesListResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `references` | `[]types.SkillPublicationReference` — see [`SkillPublicationReference`](./types.md#skillpublicationreference) | optional (`omitempty`) |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationRemoveRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `expected_generation` | `uint64` |  |
+| `expected_content_hash` | `string` |  |
+| `idempotency_key` | `string` |  |
+
+## SkillPublicationRemoveResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `receipt` | `types.SkillPublicationReceipt` — see [`SkillPublicationReceipt`](./types.md#skillpublicationreceipt) |  |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationRetireRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `publication_id` | `string` |  |
+| `expected_generation` | `uint64` |  |
+| `expected_content_hash` | `string` |  |
+| `idempotency_key` | `string` |  |
+
+## SkillPublicationRetireResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publication` | `types.SkillPublicationMetadata` — see [`SkillPublicationMetadata`](./types.md#skillpublicationmetadata) |  |
+| `receipt` | `types.SkillPublicationReceipt` — see [`SkillPublicationReceipt`](./types.md#skillpublicationreceipt) |  |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationSuccessorRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `publication_id` | `string` |  |
+| `expected_generation` | `uint64` |  |
+| `expected_content_hash` | `string` |  |
+| `skill` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
+| `idempotency_key` | `string` |  |
+
+## SkillPublicationSuccessorResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `publication` | `types.SkillPublicationMetadata` — see [`SkillPublicationMetadata`](./types.md#skillpublicationmetadata) |  |
+| `receipt` | `types.SkillPublicationReceipt` — see [`SkillPublicationReceipt`](./types.md#skillpublicationreceipt) |  |
+| `protocol_version` | `string` |  |
+
+## SkillPublicationUpdateRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `publication_id` | `string` |  |
+| `revision_id` | `string` |  |
+| `expected_generation` | `uint64` |  |
+| `expected_content_hash` | `string` |  |
+| `idempotency_key` | `string` |  |
+
+## SkillPublicationUpdateResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `reference` | `types.SkillPublicationReference` — see [`SkillPublicationReference`](./types.md#skillpublicationreference) |  |
+| `receipt` | `types.SkillPublicationReceipt` — see [`SkillPublicationReceipt`](./types.md#skillpublicationreceipt) |  |
+| `protocol_version` | `string` |  |
 
 ## StartRequest
 

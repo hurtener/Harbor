@@ -94,10 +94,11 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 	// session-skill cutover-pending and unstable-read codes + terminal agent
 	// retirement and retirement-replay conflict + restart-unavailable + the
 	// MCP Apps render-admission five + the ambiguous-authority refusal + the
-	// user-skill-import four + the observability budget/cursor two = 31
+	// user-skill-import four + the observability budget/cursor two + the
+	// HA-68 skill-publication five = 36
 	// canonical codes at Protocol 0.1.0.
-	if len(errorCodeMatrix) != 31 {
-		t.Errorf("errorCodeMatrix size = %d, want 31 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
+	if len(errorCodeMatrix) != 36 {
+		t.Errorf("errorCodeMatrix size = %d, want 36 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

@@ -211,6 +211,11 @@ type PostureDeps struct {
 	// *advertised* projection of that wiring decision. Optional — defaults
 	// false (a catalog stack that did not wire the annotator).
 	ToolAnnotationsAvailable bool
+	// SkillPublicationsAvailable indicates this Runtime mounted the
+	// same-runtime organization skill-publication store and Protocol
+	// transport. It is derived from the same construction condition as the
+	// transport option; an unattached publication store must not be advertised.
+	SkillPublicationsAvailable bool
 }
 
 // ErrPostureMisconfigured — NewPostureSurface was called with a missing
@@ -274,7 +279,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
-		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable),
+		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable),
 	}, nil
 }
 
@@ -287,7 +292,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -313,6 +318,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 	}
 	if toolAnnotationsAvailable {
 		caps = append(caps, types.CapToolAnnotations)
+	}
+	if skillPublicationsAvailable {
+		caps = append(caps, types.CapSkillPublications)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps
