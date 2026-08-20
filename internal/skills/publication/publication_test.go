@@ -307,6 +307,47 @@ func TestStateStoreStore_RemoveThenInstallAndConcurrentResolveN128(t *testing.T)
 	_ = raw.Close(ctx)
 }
 
+func TestStateStoreStore_ResolveRejectsTamperedRevisionBody(t *testing.T) {
+	ctx := context.Background()
+	id := publicationIdentity("tenant-a", "user-a", "session-a")
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStateStore(raw, "runtime-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _, err := store.Publish(ctx, id, PublishRequest{IdempotencyKey: "p", Name: "ops", Skill: publicationSkill("ops", "do"), ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Install(ctx, id, InstallRequest{IdempotencyKey: "i", AgentID: "agent-a", PublicationID: pub.PublicationID, RevisionID: pub.RevisionID, ExpectedAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := raw.Load(ctx, orgIdentity(id.TenantID), publicationOrgKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate, err := decodeAggregate(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate.Publications[0].Skill.Steps[0] = "tampered"
+	bytes, err := encode(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.SaveIf(ctx, []state.SlotExpectation{{Identity: record.Identity, Kind: record.Kind, ExpectedEventID: record.ID}}, state.StateRecord{ID: state.NewEventID(), Identity: record.Identity, Kind: record.Kind, Bytes: bytes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Resolve(ctx, id, "agent-a"); !errors.Is(err, ErrContentHashMismatch) {
+		t.Fatalf("tampered resolve=%v want content hash mismatch", err)
+	}
+	_ = store.Close(ctx)
+	_ = raw.Close(ctx)
+}
+
 func TestPublicationValidation_IdentityAndRequiredCAS(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore("runtime-a")

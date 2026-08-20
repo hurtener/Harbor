@@ -370,6 +370,24 @@ func revisionMetadata(p Publication, rev Revision) Metadata {
 	return Metadata{PublicationID: p.PublicationID, RevisionID: rev.RevisionID, Name: p.Name, ContentHash: rev.ContentHash, State: p.State, Generation: rev.Generation, RuntimeID: rev.RuntimeID, CreatedAt: rev.CreatedAt, UpdatedAt: rev.UpdatedAt}
 }
 
+// validateRevisionIntegrity re-checks the durable body against the immutable
+// hash and Harbor-owned origin reference before a body-bearing operation can
+// install or compose it. StateStore bytes are durable input, not authority;
+// a hand-edited body or caller-minted origin must fail closed.
+func validateRevisionIntegrity(p Publication, rev Revision) error {
+	if p.RuntimeID != rev.RuntimeID {
+		return ErrRuntimeMismatch
+	}
+	if rev.Skill.ContentHash == "" || rev.Skill.ContentHash != rev.ContentHash || skills.CanonicalContentHash(rev.Skill) != rev.ContentHash {
+		return ErrContentHashMismatch
+	}
+	expectedOrigin := publicationOriginPrefix + p.PublicationID + "." + rev.RevisionID
+	if rev.Skill.OriginRef != expectedOrigin {
+		return ErrContentHashMismatch
+	}
+	return nil
+}
+
 func cloneReference(r Reference) Reference { return r }
 
 func newOpaqueID(prefix string, key string, generation uint64) string {
@@ -704,6 +722,9 @@ func (m *MemoryStore) Install(ctx context.Context, caller identity.Quadruple, re
 	if err != nil {
 		return Reference{}, Receipt{}, err
 	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
+		return Reference{}, Receipt{}, err
+	}
 	if p.State != StateActive {
 		return Reference{}, Receipt{}, ErrRetired
 	}
@@ -737,6 +758,9 @@ func (m *MemoryStore) Update(ctx context.Context, caller identity.Quadruple, req
 	}
 	p, rev, err := m.findRevision(caller, req.PublicationID, req.RevisionID)
 	if err != nil {
+		return Reference{}, Receipt{}, err
+	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
 		return Reference{}, Receipt{}, err
 	}
 	if p.State != StateActive {
@@ -838,6 +862,9 @@ func (m *MemoryStore) Resolve(ctx context.Context, caller identity.Quadruple, ag
 	}
 	p, rev, err := m.findRevision(caller, r.PublicationID, r.RevisionID)
 	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
 		return skills.Skill{}, Metadata{}, err
 	}
 	if p.State != StateActive || r.State != StateActive {
@@ -1298,6 +1325,9 @@ func (d *StateStoreStore) Install(ctx context.Context, c identity.Quadruple, r I
 	if err != nil {
 		return Reference{}, Receipt{}, err
 	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
+		return Reference{}, Receipt{}, err
+	}
 	if p.State != StateActive {
 		return Reference{}, Receipt{}, ErrRetired
 	}
@@ -1353,6 +1383,9 @@ func (d *StateStoreStore) Update(ctx context.Context, c identity.Quadruple, r Up
 	}
 	p, rev, err := d.findPublicationRevision(a, r.PublicationID, r.RevisionID)
 	if err != nil {
+		return Reference{}, Receipt{}, err
+	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
 		return Reference{}, Receipt{}, err
 	}
 	if p.State != StateActive {
@@ -1482,6 +1515,9 @@ func (d *StateStoreStore) Resolve(ctx context.Context, c identity.Quadruple, age
 	}
 	p, rev, err := d.findPublicationRevision(a, ref.Reference.PublicationID, ref.Reference.RevisionID)
 	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
 		return skills.Skill{}, Metadata{}, err
 	}
 	if p.State != StateActive || ref.Reference.State != StateActive {
