@@ -848,7 +848,11 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				return stack, fmt.Errorf("devstack agent reach admission authority: %w", admissionErr)
 			}
 		}
-		if agentReachAdmissions != nil {
+		// Publication composition is mounted only when the run-start snapshot
+		// authority is complete as well as the sealed Agent-reach authority.
+		// A broker/sealer alone must not force a publication store into a
+		// deliberately minimal devstack that cannot compose its run snapshot.
+		if agentReachAdmissions != nil && stack.Skills != nil && stack.SessionPersonalSkillAuthority != nil {
 			publicationRuntimeID = publication.NewRuntimeID("harbor-devstack")
 			publicationStore, err = serve.NewSkillPublicationStore(core.State, publicationRuntimeID, stack.AgentReach)
 			if err != nil {

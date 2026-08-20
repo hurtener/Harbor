@@ -184,6 +184,10 @@ func TestTryAssemble_AdmissionDisabled_WithBroker_StaysUnwired(t *testing.T) {
 		stack.Close()
 		t.Fatalf("TryAssemble with a broker and the admission flag OFF must assemble cleanly: %v", err)
 	}
+	if stack.PublicationStore != nil || stack.PublicationRuntimeID != "" {
+		stack.Close()
+		t.Fatalf("broker sealer without run snapshot authority mounted publication composition: (%v, %q)", stack.PublicationStore, stack.PublicationRuntimeID)
+	}
 	stack.Close()
 
 	// The devstack's exact constructor seam: the broker's shared sealer
