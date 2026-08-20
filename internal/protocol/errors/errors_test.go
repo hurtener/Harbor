@@ -51,6 +51,11 @@ var wantCodes = []protoerrors.Code{
 	// refusals.
 	protoerrors.CodeQueryBudgetExceeded,
 	protoerrors.CodeInvalidCursor,
+	protoerrors.CodeSkillPublicationConflict,
+	protoerrors.CodeSkillPublicationNotFound,
+	protoerrors.CodeSkillPublicationRetired,
+	protoerrors.CodeSkillPublicationRuntimeMismatch,
+	protoerrors.CodeSkillPublicationIdempotencyConflict,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -89,6 +94,12 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodeSkillImportReplaceRequired: "skill_import_replace_required",
 		protoerrors.CodeQueryBudgetExceeded:        "query_budget_exceeded",
 		protoerrors.CodeInvalidCursor:              "invalid_cursor",
+
+		protoerrors.CodeSkillPublicationConflict:            "skill_publication_conflict",
+		protoerrors.CodeSkillPublicationNotFound:            "skill_publication_not_found",
+		protoerrors.CodeSkillPublicationRetired:             "skill_publication_retired",
+		protoerrors.CodeSkillPublicationRuntimeMismatch:     "skill_publication_runtime_mismatch",
+		protoerrors.CodeSkillPublicationIdempotencyConflict: "skill_publication_idempotency_conflict",
 	}
 	for code, want := range wire {
 		if string(code) != want {

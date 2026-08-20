@@ -424,3 +424,35 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"VersionHandshake":                              reflect.TypeOf(types.VersionHandshake{}),
 	"Window":                                        reflect.TypeOf(types.Window{}),
 }
+
+var skillPublicationTypeInstanceIndex = map[string]reflect.Type{
+	"SkillPublicationMetadata":               reflect.TypeOf(types.SkillPublicationMetadata{}),
+	"SkillPublicationReference":              reflect.TypeOf(types.SkillPublicationReference{}),
+	"SkillPublicationReceipt":                reflect.TypeOf(types.SkillPublicationReceipt{}),
+	"SkillPublicationPublishRequest":         reflect.TypeOf(types.SkillPublicationPublishRequest{}),
+	"SkillPublicationPublishResponse":        reflect.TypeOf(types.SkillPublicationPublishResponse{}),
+	"SkillPublicationListRequest":            reflect.TypeOf(types.SkillPublicationListRequest{}),
+	"SkillPublicationListResponse":           reflect.TypeOf(types.SkillPublicationListResponse{}),
+	"SkillPublicationGetRequest":             reflect.TypeOf(types.SkillPublicationGetRequest{}),
+	"SkillPublicationGetResponse":            reflect.TypeOf(types.SkillPublicationGetResponse{}),
+	"SkillPublicationSuccessorRequest":       reflect.TypeOf(types.SkillPublicationSuccessorRequest{}),
+	"SkillPublicationSuccessorResponse":      reflect.TypeOf(types.SkillPublicationSuccessorResponse{}),
+	"SkillPublicationRetireRequest":          reflect.TypeOf(types.SkillPublicationRetireRequest{}),
+	"SkillPublicationRetireResponse":         reflect.TypeOf(types.SkillPublicationRetireResponse{}),
+	"SkillPublicationAvailableRequest":       reflect.TypeOf(types.SkillPublicationAvailableRequest{}),
+	"SkillPublicationAvailableResponse":      reflect.TypeOf(types.SkillPublicationAvailableResponse{}),
+	"SkillPublicationInstallRequest":         reflect.TypeOf(types.SkillPublicationInstallRequest{}),
+	"SkillPublicationInstallResponse":        reflect.TypeOf(types.SkillPublicationInstallResponse{}),
+	"SkillPublicationUpdateRequest":          reflect.TypeOf(types.SkillPublicationUpdateRequest{}),
+	"SkillPublicationUpdateResponse":         reflect.TypeOf(types.SkillPublicationUpdateResponse{}),
+	"SkillPublicationRemoveRequest":          reflect.TypeOf(types.SkillPublicationRemoveRequest{}),
+	"SkillPublicationRemoveResponse":         reflect.TypeOf(types.SkillPublicationRemoveResponse{}),
+	"SkillPublicationReferencesListRequest":  reflect.TypeOf(types.SkillPublicationReferencesListRequest{}),
+	"SkillPublicationReferencesListResponse": reflect.TypeOf(types.SkillPublicationReferencesListResponse{}),
+}
+
+func init() {
+	for name, typ := range skillPublicationTypeInstanceIndex {
+		typeInstanceIndex[name] = typ
+	}
+}

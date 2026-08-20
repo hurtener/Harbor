@@ -127,6 +127,13 @@ func HTTPStatus(code protoerrors.Code) int {
 		return http.StatusConflict // 409
 	case protoerrors.CodeAgentRetired, protoerrors.CodeAgentRetirementConflict:
 		return http.StatusConflict // 409
+	case protoerrors.CodeSkillPublicationConflict,
+		protoerrors.CodeSkillPublicationRetired,
+		protoerrors.CodeSkillPublicationRuntimeMismatch,
+		protoerrors.CodeSkillPublicationIdempotencyConflict:
+		return http.StatusConflict // 409
+	case protoerrors.CodeSkillPublicationNotFound:
+		return http.StatusNotFound // 404
 	case protoerrors.CodeRenderAdmissionMissing:
 		// MCP Apps: an app-tool-call request referenced a render
 		// admission but supplied none. The request is malformed — the

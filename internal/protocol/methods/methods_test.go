@@ -152,6 +152,16 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionTurnsList,
 	methods.MethodSessionTurnsGet,
 	methods.MethodObservabilityQuery,
+	methods.MethodSkillsPublicationsPublish,
+	methods.MethodSkillsPublicationsList,
+	methods.MethodSkillsPublicationsGet,
+	methods.MethodSkillsPublicationsSuccessor,
+	methods.MethodSkillsPublicationsRetire,
+	methods.MethodSkillsPublicationsAvailable,
+	methods.MethodSkillsPublicationsInstall,
+	methods.MethodSkillsPublicationsUpdate,
+	methods.MethodSkillsPublicationsRemove,
+	methods.MethodSkillsPublicationsReferencesList,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -206,9 +216,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// plus the read-only composition preview
 	// (agent_config.composition.preview) = 134, plus the session-turns
 	// read pair (sessions.turns.list + sessions.turns.get) = 136, plus the
-	// observability administrative read (observability.query) = 137.
-	if len(got) != 137 {
-		t.Fatalf("Methods() returned %d methods, want 137", len(got))
+	// observability administrative read (observability.query) = 137, plus
+	// HA-68 same-runtime skill publications ten = 147.
+	if len(got) != 147 {
+		t.Fatalf("Methods() returned %d methods, want 147", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -507,6 +518,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
 			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
 			methods.IsGovernanceAdminMethod(m) || methods.IsAgentConfigMethod(m) ||
+			methods.IsSkillPublicationMethod(m) ||
 			methods.IsAuthMethod(m) || methods.IsStateMethod(m) ||
 			methods.IsEventsListMethod(m) || methods.IsSessionTurnsMethod(m) ||
 			methods.IsObservabilityMethod(m) {
