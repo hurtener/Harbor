@@ -26,8 +26,14 @@ Two versions move independently in Harbor (RFC §5.3):
 - Same-runtime organization skill publication foundations add immutable,
   content-addressed revisions, content-free references/receipts, StateStore
   CAS/idempotency contracts, and additive canonical Protocol methods, types,
-  and errors. Runtime composition and transport integration remain pending in
-  Phase 250; no shipped end-to-end route is implied (HA-68, D-430).
+  and errors. Phase 250 now also lands strict Protocol transport/client,
+  conditional capability/generated-doc lockstep, exact run-start composition,
+  and shared production/devstack bootstrap over one authorized StateStore-backed
+  store with an immutable runtime id (HA-68, D-430). Focused local evidence
+  covers the implementation and configured/unavailable wiring postures; broad
+  preflight/full suites were not run locally and hosted CI remains pending.
+  This release-candidate note records Harbor implementation evidence only; no
+  downstream acceptance is claimed.
 
 ## [1.28.7] — 2026-08-15
 

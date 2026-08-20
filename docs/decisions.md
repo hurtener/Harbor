@@ -13542,9 +13542,13 @@ resolution), D-025 (concurrent reuse), D-351 (honest representation), RFC
 
 **Date:** 2026-08-20
 
-**Status:** Accepted for Phase 250; contract/domain/wire foundations landed at
-the integrated base. Runtime composition and Protocol transport integration
-remain pending and are not claimed shipped.
+**Status:** Accepted for Phase 250; the contract/domain/wire foundations,
+strict Protocol transport/client/capability/generated-doc lockstep, exact
+run-start composition, and shared production/devstack bootstrap are landed.
+Focused local evidence covers the implementation and configured/unavailable
+wiring postures; broad preflight/full suites were not run locally and hosted
+CI remains pending. This decision records Harbor implementation truth only; no
+downstream acceptance is claimed.
 
 **Context.** Harbor's ordinary skill rows are identity-scoped to the caller,
 while an organization needs one reviewed skill revision to be available to

@@ -209,7 +209,9 @@ The additive Harbor Protocol surface is:
 - **Conformance:** MemoryStore and StateStore execute the same publication,
   reference, idempotency, erasure, and CAS matrix; all required StateStore
   drivers remain behind the existing conformance seam. The HA-68 generic
-  conformance Stack does not claim a mounted publication store.
+  conformance Stack does not claim a mounted publication store; an all-driver
+  publication conformance harness is not integrated at this reviewed SHA and
+  remains an explicit follow-up.
 - **Concurrency / leak:** the publication domain and run-start composition
   each contain N=128 concurrent tuple-isolation coverage against one shared
   store/driver; serve and devstack wiring tests add N=128 shared-store reads.

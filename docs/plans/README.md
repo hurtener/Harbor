@@ -939,7 +939,7 @@ real two-client race under `-race`.
   authorized surface tests, run-start immutable composition tests (including
   N=128 tuple isolation), and focused serve/devstack wiring tests are present
   at the integrated base. Broad preflight/full test/lint/vet evidence is not
-  claimed.
+  claimed locally; hosted CI remains pending.
 - **Decision:** D-430. **Status:** Shipped (unreleased candidate; focused
   evidence only).
 

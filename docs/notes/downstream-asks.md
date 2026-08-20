@@ -42,7 +42,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Shipped (v1.28) — phase 247 / D-426 |
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
-| HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Planned — phase 250 / D-430; contract foundations landed, transport/composition pending |
+| HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -76,9 +76,13 @@ not the broad preflight gate. HA-68 records the organization publication gap:
 one reviewed skill revision must be available to users with signed reach to an
 agent without copying rows across user identities or returning bodies in
 metadata. Phase 250 / D-430 has the domain, StateStore, canonical wire
-contract, and focused tests at the integrated base; the Protocol transport and
-runtime-composition consumer remain pending. Both asks are **framework-framed**
-and Harbor-local.
+contract, strict Protocol transport/client/capability/generated-doc lockstep,
+exact run-start composition, and shared production/devstack bootstrap at the
+reviewed base. Focused local evidence covers configured and unavailable wiring
+postures; broad preflight/full suites were not run locally and hosted CI
+remains pending. This register records Harbor implementation evidence only and
+does not claim downstream acceptance. Both asks are **framework-framed** and
+Harbor-local.
 
 ---
 
@@ -1201,10 +1205,13 @@ no Protocol route, wire type, artifact resolver, or broad capability.
 
 ## HA-68 — same-runtime organization skill publications
 
-**Priority:** High. **Size:** medium. **State:** Planned as Phase 250 / D-430;
+**Priority:** High. **Size:** medium. **State:** Implemented as Phase 250 / D-430;
 publication domain, StateStore contract, canonical wire types/methods/errors,
-and focused domain evidence are landed, while transport and runtime
-composition integration remain pending.
+strict transport/client/capability/generated-doc lockstep, exact run-start
+composition, and shared production/devstack bootstrap are landed. Focused local
+evidence covers configured and unavailable wiring postures; broad
+preflight/full suites were not run locally and hosted CI remains pending. This
+register does not claim downstream acceptance.
 
 **Observed Harbor gap.** Ordinary skill rows are identity-scoped to the
 caller. An organization needs one reviewed revision to be available to users
@@ -1226,9 +1233,11 @@ transitions and response-loss replay. Retired, stale, foreign-runtime,
 wrong-hash, and unreachable references fail closed. Publication bodies never
 appear in metadata, receipts, events, audit payloads, logs, or model-visible
 discovery. The phase adds no new driver, migration, global catalog, portable
-reference, isolation principal, or Protocol-version bump. The pending
-transport/composition consumer must prove exact run-start resolution and
-runtime failure behavior before this ask can be marked shipped.
+reference, isolation principal, or Protocol-version bump. Focused Phase 250
+implementation tests cover exact run-start resolution, runtime binding,
+configured/unavailable production and devstack mounts, and failure behavior.
+Broad release gates remain outside this local evidence and hosted CI is
+pending; this ask's register entry does not claim downstream acceptance.
 
 ---
 
