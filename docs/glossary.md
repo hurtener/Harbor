@@ -2094,3 +2094,30 @@ preview that composes base/user/session skills and the combined operator tier
 baseline) into the run snapshot and the operator-verifiable composition
 preview for the resolved boot/default agent; boot preflight, run, and preview
 all use it. D-427.
+
+**Optional artifact-egress parameter** — a mapping parameter written with one
+trailing `?` at the shared `artifactegress.CompileMapping` boundary. The marker
+is removed from the remote schema and `ParamsFor` projections; absent or
+`null` values skip substitution, while supplied values retain the existing
+type, non-empty-id, resolver, digest, and byte-ceiling checks. D-429.
+
+**Organization skill publication** — a tenant-owned, immutable,
+content-addressed skill revision made available to callers through signed
+effective-agent reach. Its list/get/reference/receipt projections carry
+metadata only; the body is returned only by an authorized same-runtime
+resolve operation. D-430.
+
+**Publication revision reference** — the exact content-free pin carried by a
+durable user/agent reference: publication id, revision id, generation, content
+hash, runtime/deployment id, and lifecycle state. It is not a portable body or
+a request to resolve the latest revision. D-430.
+
+**Same-runtime publication binding** — the requirement that a publication
+reference's runtime/deployment id match the runtime resolving it. A mismatch
+fails closed; Harbor does not treat organization publications as a
+cross-runtime catalog. D-430.
+
+**Content-free publication receipt** — the bounded mutation result for a
+publication operation. It carries operation and exact revision/state metadata
+but never the skill body or an unbounded content projection; idempotent replay
+returns the same metadata outcome. D-430.

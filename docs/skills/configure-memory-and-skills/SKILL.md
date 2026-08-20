@@ -236,6 +236,42 @@ An operator may declare a **node-local, resource-free operator skill baseline** 
 - **Config removal affects new runtime/new runs only.** Removing a `boot_agent_packs` declaration removes the boot contribution on the NEXT deployment/run; already-captured in-flight snapshots retain their bytes and hash, and an independently persisted durable revision remains revision-only (no tombstone, no erasure). A name with both contributions absent stays non-oracularly unavailable.
 - **Headless `RunOnce` against a boot-pack agent is unsupported and fails loud** — it never silently runs without the packs. Production `harbor serve` and the devstack resolve the SAME loader path.
 
+### Organization skill publications (HA-68 / D-430)
+
+Organization publications are a Protocol-managed, same-runtime source for
+reviewed skill revisions. They are not another `skills:` YAML block and they
+do not turn the ordinary identity-scoped catalog into a tenant-wide search.
+Configure the existing skills store and StateStore first; the publication
+domain uses that StateStore's conditional-save and idempotency contract.
+
+The verified organization administrator path is:
+
+1. `skills.publications.publish` creates the first immutable,
+   content-addressed revision.
+2. `skills.publications.list` and `.get` inspect bounded metadata only.
+3. `skills.publications.publish_successor` advances an exact generation/hash
+   compare-and-set; `skills.publications.retire` closes the revision lifecycle.
+
+The caller path is available only after the request's verified identity and
+signed effective-agent reach are checked:
+`skills.publications.available`, `.install`, `.update`, `.remove`, and
+`.references.list`. A reference pins the exact publication/revision id,
+generation, content hash, lifecycle state, and runtime/deployment id for the
+durable tenant/user/agent state. List results, references, and receipts never
+contain the body. Only the authorized runtime resolver returns a body, and it
+fails closed on a retired, stale, foreign-runtime, wrong-hash, or unreachable
+reference.
+
+Do not copy a publication into each user's skill triple, use a shared service
+identity, or treat `ScopeTenant`/`ScopeGlobal` as an implemented publication
+visibility shortcut. Do not place publication bodies in logs, events, audit
+payloads, metadata, or model-visible discovery. At this checkpoint the
+publication domain, persistence contract, and canonical wire registration are
+landed; do not claim an end-to-end route until the Protocol transport and
+runtime-composition consumer are present and their focused integration tests
+pass. See [Phase 250](../../plans/phase-250-same-runtime-skill-publications.md)
+and D-430.
+
 ### LLM-side discovery via meta-tools
 
 The React planner runs on native provider tool-calling: the LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in when it needs one. The meta-tools are the rich skills handlers (capability filter + redaction + token budgeter) over the SAME store your `harbor skill import` populated — one source of truth, identity-scoping carries through:

@@ -715,6 +715,14 @@ planner:
 #         - workbench-prototype-authoring
 #         - workbench-brand-identity
 #         - workbench-deck-authoring
+#   Phase 250 (D-430) — organization skill publications are managed through
+#   the additive `skills.publications.*` Protocol methods, not this YAML block.
+#   Publication metadata, exact references, and receipts are content-free;
+#   only the same-runtime composition resolver may return a body after signed
+#   effective-agent reach, lifecycle, hash, generation, and runtime checks.
+#   Configure the existing `skills` store and `state` store before enabling the
+#   surface. Do not copy publication rows between user triples or treat a
+#   scope label as a cross-user visibility shortcut.
 
 tools:
   # Phase 27 HTTP tool driver manifests — loaded at boot by the

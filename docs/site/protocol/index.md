@@ -34,6 +34,14 @@ Go-side wire change without regenerated docs fails the build):
 | [Errors](./errors.md) | Every error code: HTTP binding, when it fires, retry guidance. |
 | [Types](./types.md) | Every wire struct, field-level, with the snake_case JSON keys. |
 
+**HA-68 publication note.** The canonical source now contains the additive
+`skills.publications.*` method/type/error contract and the Phase 250 operator
+plan documents its identity, signed-reach, content-free, and same-runtime
+rules. The generated reference pages remain pending the renderer's guidance
+rows for the new error codes; a runtime must advertise the complete surface
+before a client treats those methods as live. See [Phase 250](../../plans/phase-250-same-runtime-skill-publications.md)
+and D-430.
+
 ## The choreographies (sequence and intent)
 
 What a reference cannot teach — how the calls compose:

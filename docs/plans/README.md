@@ -392,6 +392,8 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |246 | Durable tail-paged conversation turns (HA-64, D-425): `sessions.turns.list`/`.get` as the two named public methods; dedicated runtime-owned projection with idempotent sequence checkpoints, indexed keyset tail paging (work ∝ page size), root-foreground-turn rows, renderable answer/reasoning/Activity/usage/App content with per-component availability, Activity inline at least the configured budget (a named activity method is not a v1.28 method or acceptance; any future named fallback is a deferred follow-up), restart/erasure fences, two-read chat open with 245; Protocol-only consumer; no generic projection framework/warehouse/impersonation authority/operator analytics/live-cursor redesign/overflow analytics; page-before-subscribe snapshot-to-live handoff (fold the durable page and establish bounded running/paused membership BEFORE opening the SSE stream with `live_resume_seq` as the initial `resume_seq`; server replays events strictly newer than the snapshot; browser reconnect `Last-Event-ID` takes precedence; one terminal event causes one `sessions.turns.get`; a page retry clears stale live membership and rebuilds it from freshly read authoritative running/pending/paused rows without duplicating bubbles or re-admitting a terminal row) | turns projection + sessions/protocol + protocol + console | §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9 | 130, 162, 204, 205, 232, 242, 245 | 85–90% (target) | Shipped (v1.28) |
 |247 | Durable observability rollups (HA-65, D-426): indexed triad projection of best-effort aggregates over successfully persisted canonical events (never billing-exact); existing local durable sequence, no outbox/new canonical event ID/active-active exactly-once, fail-loud LLM publication unchanged and projection failures best-effort; fixed UTC minute storage buckets (query may coarsen) with exactly the authoritative tenant/user/session/model dimensions (no agent_id even conditionally), existing source-backed measures only (`llm.cost.recorded` successful completions, exact cost, prompt/completion/reasoning/cache-read/cache-write/total tokens, latency count/sum/min/max, task completed/failed/cancelled), attempts/failed calls/retry-downgrade/task-spawned/user-message counts unsupported/unavailable; current/catching_up/unavailable + watermark/retention quality; projection-backed session counters with honest fallback; erasure fence; ONE bounded Protocol query `observability.query` and minimal Console consumer; narrow D-296 amendment (general TSDB + identity-labelled OTel metrics still rejected) | observability rollup + events + sessions enricher + protocol + console | §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9 | 36a, 57, 120, 130, 163, 171, 174, 205 | 85–90% (target) | Shipped (v1.28) |
 |248 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent (HA-66, D-427): config-file-relative strict eager immutable loader before readiness (config-file-relative root, never CWD; one relative include directory with one case-sensitive top-level regular UTF-8 `SKILL.md`, resource-free; traversal/recursive discovery/symlink/hardlink/special/duplicates/canonical-name collisions rejected under declaration/item/file/aggregate bounds; eager copy before readiness, restart-only); no loader persistence/admin verbs/config revisions/lifecycle materialization; exact tenant+boot-agent binding with no invented boot identity; boot baseline merged with the agent's active durable revision into ONE combined operator tier FIRST (same canonical name + same semantic hash dedupes `source=both`; differing hash fails; exactly 256 unique combined items), every declared tenant-agent active revision pre-read before readiness with run-start conflict defense retained, then applied LAST over base/user/session; boot-owned mutation/remove guards (upsert/proposal commits replay-prepared-publish/rollback-activation reject even equal hash; removal may delete an actual legacy durable revision shadow; boot-only remove is typed read-only refusal; `agent_packs.list` durable-revision authoring only; config removal next-deployment-only, legacy durable revision remains, in-flight snapshots retain bytes/hash); deterministic set hash in run snapshot/preview (`boot|revision|both` + `boot_pack_set_hash`); headless `RunOnce` explicitly unsupported and fail-loud; single prod/devstack path; ONE shared strict effective-composition resolver + preview (completes D-414 on the boot base) with read-only Protocol path, clients/manifest/docs, minimal Console+CLI consumers (D-415), config docs/example, operator skill, smoke; exact postgres + `${SKILLS_DSN}` + `boot_agent_packs` schema; `EnsureBootAgentLifecycle` separate and unchanged (may write a revision) | skills + config + runtime/serve + devstack | §6.7, §6.16, §5.2, §5.5, §7, §9 | 2, 40, 232, 237, 240 | 85–90% (target) | Shipped (v1.28) |
+|249 | Optional per-parameter MCP artifact-egress mappings (HA-67, D-429): a trailing `?` marker is stripped at the shared compile boundary, schema/`ParamsFor` projections expose bare names, missing or `null` optional values skip substitution, and present values retain the required type/empty-id/resolver/digest/ceiling checks; no new wire shape or artifact resolver | tools/artifactegress + MCP driver | §6.4, §6.10, §7 | 214 | ≥90% artifactegress | Shipped (unreleased candidate; focused evidence only) |
+|250 | Same-runtime organization skill publications (HA-68, D-430): immutable content-addressed revisions, content-free metadata/references/receipts, StateStore-backed CAS and idempotency, admin/user Protocol methods, exact signed-agent reach and runtime binding; runtime composition and transport consumer remain the closing integration gate | skills/publication + state + protocol + runtime composition | §6.7, §6.10, §6.11, §6.16, §5.2, §5.5, §7, §9 | 37, 40, 202, 205, 232, 237, 240, 248 | 85–90% (target) | Pending (contract foundations landed; composition/transport integration pending) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -897,6 +899,44 @@ real two-client race under `-race`.
   signed agent reach (232), operator skill packs (237), and the composition
   preview (240); gates no later phase in this wave.
 - **Decision:** D-427. **Status:** Shipped (v1.28).
+
+### Phase 249 — Optional MCP artifact-egress mapping parameters (HA-67)
+
+- **Subsystem:** tools/artifactegress and the MCP driver.
+- **RFC:** §6.4, §6.10, §7. **Deps:** 214.
+- **What it delivers:** D-429 — one trailing `?` marker in the existing
+  flat mapping input, stripped before the remote schema and `ParamsFor`
+  projections; absent or `null` optional values skip substitution while
+  supplied values retain the existing strict resolver, digest, and byte
+  ceiling path. No new Protocol method, wire type, or resolver is introduced.
+- **Evidence:** the focused unit and MCP adapter tests cover parsing,
+  omission, supplied values, refusal cases, and concurrent reuse. The
+  repository's broad preflight gate is not claimed in this docs-only
+  integration because the handoff forbids it; see the phase plan checklist.
+- **Decision:** D-429. **Status:** Shipped (unreleased candidate; focused
+  evidence only).
+
+### Phase 250 — Same-runtime organization skill publications (HA-68)
+
+- **Subsystem:** organization skill publication domain and StateStore
+  persistence, Protocol wire/dispatch, and runtime skill composition.
+- **RFC:** §6.7, §6.10, §6.11, §6.16, §5.2, §5.5, §7, §9. **Deps:** 37, 40,
+  202, 205, 232, 237, 240, and 248.
+- **What it delivers:** D-430 — immutable organization-owned skill
+  publications with exact revision references, content-free metadata and
+  receipts, same-runtime binding, mandatory identity and signed effective
+  agent reach, StateStore-backed conditional persistence, idempotency, and
+  the additive Protocol method/error/type contract. The remaining gate is
+  the runtime composition consumer: it must resolve the exact reference at
+  run start and fail closed on runtime, hash, generation, retirement, or
+  reach mismatch.
+- **Evidence:** the publication domain, in-memory/StateStore contracts,
+  canonical wire types, method registry, errors, and focused domain tests are
+  present at the integrated base. The Protocol transport adapter and runtime
+  composition consumer are explicitly pending; this row is not marked
+  shipped. Broad preflight/full test/lint/vet evidence is not claimed.
+- **Decision:** D-430. **Status:** Pending (contract foundations landed;
+  composition/transport integration pending).
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

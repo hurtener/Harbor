@@ -13491,3 +13491,108 @@ silently change its contract.
 
 **Cross-references.** D-253 (shared migration runner and session advisory
 locking), D-351 (do not claim a property the mechanism lacks), RFC §9.
+
+---
+
+## D-429 — Optional MCP artifact-egress parameters use one trailing marker at the shared compile boundary (HA-67)
+
+**Date:** 2026-08-20
+
+**Status:** Accepted for Phase 249; shipped in the unreleased candidate with
+focused evidence only.
+
+**Context.** MCP artifact-egress mappings already resolve a declared remote
+parameter from an artifact reference, but every mapping was required. A
+caller that intentionally omits one image or file had no way to distinguish
+"not supplied" from an invalid supplied value without inventing another wire
+shape or weakening the existing resolver checks.
+
+**Decision.** A mapping parameter ending in one trailing `?` is optional. The
+shared `artifactegress.CompileMapping` boundary strips the marker and stores
+the bare remote property name plus the optional bit. Schema validation and
+`ParamsFor` expose only the bare name, so the marker never becomes a remote
+property. Empty parameters, a lone `?`, duplicate bare names (`x` and `x?`),
+and more than one trailing marker remain invalid.
+
+An absent or JSON `null` optional value skips substitution and does not require
+a resolver. A supplied value takes the unchanged strict path: it must be a
+string, a non-empty artifact id, and a reference the run-scoped resolver can
+read under the verified identity; digest, content-free record, encoding, and
+byte-ceiling behavior remain unchanged. Required parameters retain their
+existing missing/null refusal. The compiled mapping remains immutable and
+safe for concurrent reuse.
+
+This is an internal mapping/config contract, not a new Protocol method, wire
+type, transport capability, or artifact-store policy. The operator-facing
+example and tool skill document the marker and the missing-versus-empty
+distinction.
+
+**Required acceptance.** The phase must cover marker stripping and duplicate
+rejection, bare schema projection, required/optional missing/null behavior,
+strict supplied-value behavior, a real MCP adapter call, and N≥100 shared
+mapping invocations under `-race`.
+
+**Cross-references.** D-022/D-347 (artifact references and dispatch-local
+resolution), D-025 (concurrent reuse), D-351 (honest representation), RFC
+§6.4, §6.10, §7. Plan: `docs/plans/phase-249-optional-artifact-egress-params.md`.
+
+---
+
+## D-430 — Same-runtime organization skill publications are immutable exact references, not a portable catalog (HA-68)
+
+**Date:** 2026-08-20
+
+**Status:** Accepted for Phase 250; contract/domain/wire foundations landed at
+the integrated base. Runtime composition and Protocol transport integration
+remain pending and are not claimed shipped.
+
+**Context.** Harbor's ordinary skill rows are identity-scoped to the caller,
+while an organization needs one reviewed skill revision to be available to
+users who have signed reach to a selected agent. Copying rows across user
+triples, treating a scope label as broad visibility, or using a shared
+principal would weaken isolation and make revocation ambiguous. Returning
+skill bodies in list results or mutation receipts would also turn a metadata
+surface into an unbounded content channel.
+
+**Decision.** The runtime owns an organization publication store keyed by the
+tenant and publication identity. A publication has immutable, content-addressed
+revisions with explicit generation and `active|retired` state. `Publish`
+creates the first revision; `PublishSuccessor` advances it through exact
+generation/hash compare-and-set; `Retire` is an explicit state transition.
+Admin methods (`Publish`, `List`, `Get`, `PublishSuccessor`, `Retire`) require
+the verified admin scope. Caller methods (`Available`, `Install`, `Update`,
+`Remove`, `ReferencesList`) require verified identity plus signed effective
+agent reach; request bodies never select a tenant, user, or authority.
+
+An installed reference is pinned to the exact publication id, revision id,
+generation, content hash, and runtime/deployment id, and is stored for the
+durable `(tenant, user, agent)` user reference state. Metadata, references,
+and receipts are content-free. Only the runtime's authorized `Resolve`
+operation may return the body, after identity, reach, active-state, runtime,
+generation, and hash checks. A retired, foreign, stale, or mismatched
+reference fails closed; there is no fallback to another revision or
+principal. Idempotency keys replay the original content-free outcome and
+reject conflicting requests.
+
+The store uses the existing `StateStore` and its mandatory `SaveIf`/idempotent
+contracts; no new persistence driver, migration, global catalog, cross-runtime
+federation, or Protocol-version bump is introduced. Wire methods, types, and
+typed errors are additive. Runtime composition must resolve the exact pinned
+reference at run start and keep the resolved body inside the immutable run
+snapshot only; it must not place publication bodies in metadata, receipts,
+events, audit payloads, logs, or model-visible discovery.
+
+**Required acceptance.** The phase must prove admin versus caller authority,
+tenant/user/session isolation, signed effective-agent reach, immutable
+successor/retirement CAS, content-free projections, exact runtime/hash/state
+checks, response-loss/idempotency replay, Memory/StateStore restart parity,
+N≥100 concurrent resolution without context bleed, additive Protocol method
+and error lockstep, and an end-to-end runtime composition consumer. The
+consumer must fail closed when its transport surface or exact runtime binding
+is absent.
+
+**Cross-references.** D-025 (concurrent reuse), D-059 (agent identity is not
+an isolation principal), D-204 (curated SDK boundary), D-301 (tenant/admin
+authority), D-411/D-414/D-427 (skill composition and operator reach), D-398
+(StateStore CAS), D-400 (durable identity-scoped state), RFC §5.2, §5.5, §6.7,
+§6.10, §6.11, §6.16, §7, §9. Plan: `docs/plans/phase-250-same-runtime-skill-publications.md`.

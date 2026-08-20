@@ -17,6 +17,18 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Optional per-parameter MCP artifact-egress mappings now use a trailing `?`
+  marker: absent or `null` values omit substitution while supplied references
+  retain the existing strict resolver, digest, and byte-ceiling behavior
+  (HA-67, D-429).
+- Same-runtime organization skill publication foundations add immutable,
+  content-addressed revisions, content-free references/receipts, StateStore
+  CAS/idempotency contracts, and additive canonical Protocol methods, types,
+  and errors. Runtime composition and transport integration remain pending in
+  Phase 250; no shipped end-to-end route is implied (HA-68, D-430).
+
 ## [1.28.7] — 2026-08-15
 
 ### Added
