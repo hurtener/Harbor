@@ -68,6 +68,7 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 	turnsprotocol "github.com/hurtener/Harbor/internal/sessions/turns/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/publication"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
@@ -192,6 +193,11 @@ type MuxInput struct {
 	// AgentReach is the gate shared with the control surface by runtime
 	// assembly. Nil still builds fail-closed stream projections.
 	AgentReach auth.AgentReachAuthorizer
+	// PublicationStore is the one authorized StateStore-backed store shared by
+	// the Protocol surface and the run-loop driver's exact-reference resolver.
+	// Nil leaves the publication surface unmounted.
+	PublicationStore     publication.Store
+	PublicationRuntimeID string
 
 	// Posture stamps.
 	DisplayName      string
@@ -314,6 +320,24 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	toolAnnotationsAvailable := in.Catalog != nil && in.State != nil
 	stateSnapshotsAvailable := in.Tasks != nil && in.Sessions != nil &&
 		in.Coordinator != nil && in.Artifacts != nil
+	publicationAvailable := in.PublicationStore != nil
+	if publicationAvailable {
+		if in.AgentReach == nil {
+			return nil, wrapErr("skill publications", fmt.Errorf("%w: signed Agent-reach authorizer is nil", ErrPublicationWiringMisconfigured))
+		}
+		if strings.TrimSpace(in.PublicationRuntimeID) == "" {
+			return nil, wrapErr("skill publications", fmt.Errorf("%w: runtime/deployment ID is empty", ErrPublicationWiringMisconfigured))
+		}
+		skillPublications, pErr := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{
+			Store:      in.PublicationStore,
+			AgentReach: in.AgentReach,
+			RuntimeID:  in.PublicationRuntimeID,
+		})
+		if pErr != nil {
+			return nil, wrapErr("skill publications surface", pErr)
+		}
+		muxOpts = append(muxOpts, transports.WithSkillPublicationsSurface(skillPublications))
+	}
 
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
@@ -334,18 +358,19 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
-		Metrics:                   runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
-		LLM:                       llm.NewPostureProvider(in.LLMSnapshot),
-		Redactor:                  red,
-		Bus:                       bus,
-		DisplayName:               in.DisplayName,
-		InstanceID:                in.InstanceID,
-		TopologyAvailable:         in.TopologyAvailable,
-		AgentConfigAvailable:      in.AgentConfig != nil,
-		StateSnapshotsAvailable:   stateSnapshotsAvailable,
-		SessionLifecycleAvailable: sessionLifecycleAvailable,
-		ToolAnnotationsAvailable:  toolAnnotationsAvailable,
+		Metrics:                    runtimeposture.MetricsProvider(in.Metrics, logger),
+		Governance:                 governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
+		LLM:                        llm.NewPostureProvider(in.LLMSnapshot),
+		Redactor:                   red,
+		Bus:                        bus,
+		DisplayName:                in.DisplayName,
+		InstanceID:                 in.InstanceID,
+		TopologyAvailable:          in.TopologyAvailable,
+		AgentConfigAvailable:       in.AgentConfig != nil,
+		StateSnapshotsAvailable:    stateSnapshotsAvailable,
+		SessionLifecycleAvailable:  sessionLifecycleAvailable,
+		ToolAnnotationsAvailable:   toolAnnotationsAvailable,
+		SkillPublicationsAvailable: publicationAvailable,
 	})
 	if err != nil {
 		return nil, wrapErr("posture surface", err)

@@ -72,6 +72,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/bootpacks"
 	"github.com/hurtener/Harbor/internal/skills/importer"
+	"github.com/hurtener/Harbor/internal/skills/publication"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -529,6 +530,22 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			return nil, fmt.Errorf("agent reach admission authority: %w", err)
 		}
 	}
+	// The publication store is mounted only when the same restart-stable
+	// admission authority that authenticates control.start is available. This
+	// keeps Protocol and run-start composition on one wrapped StateStore store;
+	// a stack without that authority must not advertise a body-bearing surface
+	// it cannot compose with verified reach after restart.
+	var publicationStore publication.Store
+	publicationRuntimeID := ""
+	if agentReachAdmissions != nil && skillStore != nil && sessionPersonalStore != nil && sessionPersonalCutover != nil {
+		publicationRuntimeID = publication.NewRuntimeID(opts.InstanceID)
+		publicationStore, err = NewSkillPublicationStore(stack.State, publicationRuntimeID, agentReach)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("skill publication store: %w", err)
+		}
+		closers = append(closers, publicationStore.Close)
+	}
 
 	// The HA-66 boot baseline: the eager immutable index loaded from
 	// `skills.boot_agent_packs` (all files read before readiness), every
@@ -899,6 +916,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,
+		PublicationStore:         publicationStore,
+		PublicationRuntimeID:     publicationRuntimeID,
 		SessionOverlay:           sessionOverlayStore,
 		BootPackReader:           runLoopBootReader,
 		RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
@@ -1003,6 +1022,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Validator:                      validator,
 		AuthSurface:                    authSurface,
 		AgentReach:                     agentReach,
+		PublicationStore:               publicationStore,
+		PublicationRuntimeID:           publicationRuntimeID,
 		DisplayName:                    opts.DisplayName,
 		InstanceID:                     opts.InstanceID,
 		BuildVersion:                   opts.BuildVersion,
