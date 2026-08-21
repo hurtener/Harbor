@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.29.0] — 2026-08-20
+
 ### Added
 
 - Optional per-parameter MCP artifact-egress mappings now use a trailing `?`
@@ -34,7 +36,8 @@ Two versions move independently in Harbor (RFC §5.3):
   `HARBOR_PG_DSN` (HA-68, D-430). With that DSN unset, the local Postgres leg
   is skipped; focused local evidence covers the implementation and
   configured/unavailable wiring postures. Broad preflight/full suites were not
-  run locally and hosted CI evidence remains pending.
+  run locally; hosted CI is green, including full Ubuntu/macOS, State/Postgres
+  publication conformance, and live preflight.
   This release-candidate note records Harbor implementation evidence only; no
   downstream acceptance is claimed.
 
@@ -4641,7 +4644,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.28.7...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/hurtener/Harbor/compare/v1.28.7...v1.29.0
 [1.28.7]: https://github.com/hurtener/Harbor/compare/v1.28.6...v1.28.7
 [1.28.6]: https://github.com/hurtener/Harbor/compare/v1.28.5...v1.28.6
 [1.28.5]: https://github.com/hurtener/Harbor/compare/v1.28.4...v1.28.5
