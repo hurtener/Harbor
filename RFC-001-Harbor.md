@@ -1134,6 +1134,29 @@ type SkillProvider interface {
 
 **Skills.md attachments — Settled.** Stored as `ArtifactRef`s via the artifact subsystem (option (b) in brief 04 Q-5). Clean separation, survives machine moves, integrates with mandatory-artifact policy.
 
+**Same-runtime organization skill publications (HA-68, settled by D-430).**
+An organization-owned skill is published as an immutable, content-addressed
+revision inside the Harbor runtime that owns it. The publication metadata,
+revision list, agent reference, and mutation receipt are content-free: they
+carry the exact publication/revision ids, generation, content hash, lifecycle
+state, and runtime binding, never the body. Organization administrators use
+the verified admin Protocol methods to publish, list, inspect, publish a
+successor, and retire. A caller may list available revisions, install or
+update an exact reference, remove its reference, and list its references only
+after the verified identity and signed effective-agent reach checks pass.
+
+The durable reference is pinned to `(tenant, user, agent)` and the exact
+`(publication_id, revision_id, generation, content_hash, runtime_id)`. The
+runtime's `Resolve` path is the sole body-bearing operation and must recheck
+identity, signed reach, active state, runtime id, generation, and content hash
+before placing the body in the immutable next-run composition snapshot.
+Retired, stale, foreign, or mismatched references fail closed; there is no
+latest-revision fallback, shared principal, global catalog, or cross-runtime
+portability. Persistence uses the existing StateStore `SaveIf` and idempotency
+contract, with no new driver or Protocol-version bump. The runtime composition
+consumer is a required phase gate, not an implied property of the metadata
+methods.
+
 **Conflict policy — Settled.** Refuse to import (Portico-distributed cannot overwrite Generated). `existing_origin != "pack"` short-circuit pattern. (Resolves brief 04 Q-2.)
 
 **Generator scope default — Settled.** `project` scope by default when `skill_propose(persist=true)` is invoked mid-session. (Resolves brief 04 Q-4.)
@@ -1477,6 +1500,16 @@ type Store interface {
 A window is a *contract*, not a cost claim. The `Store` read above returns whole bytes, so a window is correct before it is cheap; a **ranged read** — a range-aware driver method that serves an offset without materialising the blob — is a separate, conformance-parity change across every driver (§9), and no claim about which drivers serve it incrementally belongs in the interface's godoc until each has earned it.
 
 **Pass-by-reference routing keeps bytes out of the model.** A tool may declare an artifact-reference parameter; the model supplies an id, and the runtime resolves the ref at dispatch so the bytes flow store → consumer. The resolution is performed under the **dispatching run's identity**, which descends from the transport-verified triple (§4) — a tool reaches exactly the bytes its own run reaches, and tool drivers hold no identity logic. **A resolved value is dispatch-local**: it does not re-enter the message history, the trajectory, an observation, a canonical event payload, an audit payload, or a log. The model authored an id and continues to see an id.
+
+**Optional MCP artifact-egress parameters (HA-67, settled by D-429).** The
+existing flat artifact-egress mapping accepts one trailing `?` marker on a
+parameter name. The shared compiler strips it before schema validation and
+`ParamsFor`, preserving the bare remote property name. Missing or `null`
+optional values omit substitution without requiring a resolver; a supplied
+value follows the existing strict type, non-empty-id, identity-scoped
+resolution, digest, encoding, and byte-ceiling checks. Required parameters are
+unchanged. The marker is a local config/mapping concern, not a new Protocol
+shape or a remote capability, and resolved bytes remain dispatch-local.
 
 **Bytes are stored as authored; the redactor governs what is *emitted*.** An `ArtifactRef` passes the redactor unredacted precisely because it is a reference (D-022), and an artifact exists to hold the content the event stream and the prompt must not carry. The redactor's role on the upload path is admission — it may refuse a payload — not rewriting. The read surface inherits that boundary and does not relax it: bytes are returned to the identity that already reaches them, and are placed nowhere the redactor governs.
 

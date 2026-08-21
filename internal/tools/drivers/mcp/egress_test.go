@@ -820,6 +820,48 @@ func TestEgress_MissingMappedParameterFailsLoud(t *testing.T) {
 	}
 }
 
+func TestEgress_OptionalMappedParameterSkipsWhenAbsent(t *testing.T) {
+	bus := newRecordingBus(t)
+	p, fixture := newEgressProvider(t, Config{
+		Bus:            bus,
+		DefaultPolicy:  tools.DefaultPolicy(),
+		ArtifactEgress: egressMapping(t, map[string][]string{"ingest": {"doc?"}}),
+	})
+	desc := resolveTool(t, p, "egress-server_ingest")
+
+	// An omitted optional parameter is inert even on a callback-shaped context
+	// with identity but no run-scoped resolver: there is no substitution to
+	// authorize, record, or resolve.
+	ctx := egressRunCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}, "run-optional")
+	if _, err := desc.Invoke(ctx, json.RawMessage(`{"note":"only"}`)); err != nil {
+		t.Fatalf("an omitted optional mapping failed: %v", err)
+	}
+	got := fixture.last(t)
+	var received map[string]any
+	if err := json.Unmarshal(got.Args, &received); err != nil {
+		t.Fatalf("decode received args: %v", err)
+	}
+	if received["note"] != "only" || len(received) != 1 {
+		t.Fatalf("received args = %v, want the unmapped note only", received)
+	}
+	if evs := bus.egressRecords(); len(evs) != 0 {
+		t.Fatalf("an omitted optional parameter emitted substitution records: %d", len(evs))
+	}
+
+	// Supplying the same optional parameter still takes the normal resolver,
+	// payload, audit-record and wire-base64 path.
+	if _, err := desc.Invoke(egressCtx(t, map[string][]byte{"art-1": []byte("x")}, nil), json.RawMessage(`{"doc":"art-1"}`)); err != nil {
+		t.Fatalf("a supplied optional mapping failed: %v", err)
+	}
+	got = fixture.last(t)
+	if !strings.Contains(string(got.Args), `"doc":"eA=="`) {
+		t.Fatalf("supplied optional mapping did not reach the wire as base64: %s", got.Args)
+	}
+	if evs := bus.egressRecords(); len(evs) != 1 {
+		t.Fatalf("a supplied optional parameter emitted %d records, want 1", len(evs))
+	}
+}
+
 // ---------------------------------------------------------------------
 // The attach-time schema check.
 // ---------------------------------------------------------------------

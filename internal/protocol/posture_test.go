@@ -874,3 +874,36 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		}
 	})
 }
+
+// TestPostureSurface_Info_SkillPublicationsCapability verifies that HA-68 is
+// advertised only when the same-runtime publication store/transport posture
+// is explicitly wired, and that the capability remains deterministic.
+func TestPostureSurface_Info_SkillPublicationsCapability(t *testing.T) {
+	deps := basePostureDeps(t)
+	deps.SkillPublicationsAvailable = true
+	surface, err := protocol.NewPostureSurface(deps)
+	if err != nil {
+		t.Fatalf("NewPostureSurface: %v", err)
+	}
+	resp, err := surface.Dispatch(mustCtx(t, identity.Identity{
+		TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a",
+	}), methods.MethodRuntimeInfo, validRequest())
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	info, ok := resp.(*types.RuntimeInfo)
+	if !ok {
+		t.Fatalf("response type = %T, want *types.RuntimeInfo", resp)
+	}
+	want := []types.Capability{
+		types.CapCallerMemory,
+		types.CapEventsSubscribe,
+		types.CapRuntimePosture,
+		types.CapSkillPublications,
+		types.CapStateSnapshots,
+		types.CapTaskControl,
+	}
+	if !reflect.DeepEqual(info.Capabilities, want) {
+		t.Fatalf("capabilities = %v, want %v", info.Capabilities, want)
+	}
+}

@@ -38,23 +38,24 @@ const (
 	// name, and a per-method key here could not even be spelled (a
 	// Protocol method string outside internal/protocol/methods is a
 	// single-source violation the build scan rejects).
-	SurfaceArtifactsRef  Surface = "artifacts.ref"
-	SurfaceAuth          Surface = "auth"
-	SurfaceControlTask   Surface = "task"
-	SurfaceEvents        Surface = "events"
-	SurfaceFlows         Surface = "flows"
-	SurfaceGovernance    Surface = "governance"
-	SurfaceMCP           Surface = "mcp.servers"
-	SurfaceMemory        Surface = "memory"
-	SurfaceObservability Surface = "observability"
-	SurfacePause         Surface = "pause_page"
-	SurfacePosture       Surface = "runtime"
-	SurfaceRuns          Surface = "runs"
-	SurfaceSessions      Surface = "sessions"
-	SurfaceStateHistory  Surface = "state_history"
-	SurfaceTasks         Surface = "tasks"
-	SurfaceTools         Surface = "tools"
-	SurfaceTopology      Surface = "topology"
+	SurfaceArtifactsRef      Surface = "artifacts.ref"
+	SurfaceAuth              Surface = "auth"
+	SurfaceControlTask       Surface = "task"
+	SurfaceEvents            Surface = "events"
+	SurfaceFlows             Surface = "flows"
+	SurfaceGovernance        Surface = "governance"
+	SurfaceMCP               Surface = "mcp.servers"
+	SurfaceMemory            Surface = "memory"
+	SurfaceObservability     Surface = "observability"
+	SurfacePause             Surface = "pause_page"
+	SurfacePosture           Surface = "runtime"
+	SurfaceRuns              Surface = "runs"
+	SurfaceSessions          Surface = "sessions"
+	SurfaceSkillPublications Surface = "skill_publications"
+	SurfaceStateHistory      Surface = "state_history"
+	SurfaceTasks             Surface = "tasks"
+	SurfaceTools             Surface = "tools"
+	SurfaceTopology          Surface = "topology"
 )
 
 // policies is the closed declaration table: one row per Surface, each
@@ -168,6 +169,11 @@ var policies = map[Surface]Policy{
 		Surface: SurfaceSessions, Wire: "sessions",
 		Tenant: PinnedOrEmpty, User: PinnedOrEmpty, Session: PinnedOrEmpty,
 		Reason: "A cross-tenant session listing is expressed by the list filter's tenant set and gated on the verified claim; the body triple stays the caller's own.",
+	},
+	SurfaceSkillPublications: {
+		Surface: SurfaceSkillPublications, Wire: "skill_publications",
+		Tenant: Pinned, User: Pinned, Session: Pinned,
+		Reason: "Same-runtime skill-publication methods reconcile the body triple with the verified caller; organization-admin scope governs the verb but never widens the caller identity.",
 	},
 	SurfaceStateHistory: {
 		Surface: SurfaceStateHistory, Wire: "state.history read",

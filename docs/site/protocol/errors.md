@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 31 canonical Harbor Protocol error codes, generated from the single-source
+The 36 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -47,4 +47,9 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `skill_import_proposal_expired` | 400 | The echoed import proposal token's review window elapsed before the explicit commit. | Yes — re-run `agent_config.user.skills.import_validate` for a fresh proposal. |
 | `skill_import_proposal_invalid` | 400 | An `agent_config.user.skills.import_commit` echoed a proposal token that is unknown, consumed, foreign, or stale (oversize, malformed base64, failed authentication, unknown schema, malformed claims, or bound to different server-side inputs). | Yes — re-run `agent_config.user.skills.import_validate` for a fresh proposal and echo it exactly. |
 | `skill_import_replace_required` | 409 | A different package already wins the target canonical key and the commit did not carry explicit replacement consent. | Yes — re-review the existing winner and commit again with `replace: true`. |
+| `skill_publication_conflict` | 409 | An HA-68 publication or Agent reference mutation used a stale exact generation/content-hash precondition. | Yes, after re-reading the current publication or reference and resubmitting the reviewed change with fresh exact preconditions. |
+| `skill_publication_idempotency_conflict` | 409 | An HA-68 idempotency key was reused with a different mutation request. | No — use the original request for replay or choose a new idempotency key for a distinct mutation. |
+| `skill_publication_not_found` | 404 | An HA-68 publication or exact Agent reference was not found in the caller's same-runtime scope. | No — re-read the same-runtime metadata and use an existing exact identifier. |
+| `skill_publication_retired` | 409 | An HA-68 request attempted to use a terminally retired publication revision. | No — choose an active publication; retirement is terminal. |
+| `skill_publication_runtime_mismatch` | 409 | An HA-68 publication or reference belongs to another Harbor runtime/deployment binding. | No — same-runtime publication references are not portable; discover a reference on this Runtime. |
 | `unknown_method` | 404 | The method name is not in the canonical registry ([methods.md](./methods.md)). | No — check the method name and this Runtime's advertised capabilities (`runtime.info`). |

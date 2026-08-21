@@ -48,6 +48,12 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodeSkillImportReplaceRequired: http.StatusConflict,
 		protoerrors.CodeQueryBudgetExceeded:        http.StatusBadRequest,
 		protoerrors.CodeInvalidCursor:              http.StatusBadRequest,
+
+		protoerrors.CodeSkillPublicationConflict:            http.StatusConflict,
+		protoerrors.CodeSkillPublicationNotFound:            http.StatusNotFound,
+		protoerrors.CodeSkillPublicationRetired:             http.StatusConflict,
+		protoerrors.CodeSkillPublicationRuntimeMismatch:     http.StatusConflict,
+		protoerrors.CodeSkillPublicationIdempotencyConflict: http.StatusConflict,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {
@@ -94,6 +100,12 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodeSkillImportReplaceRequired: {},
 		protoerrors.CodeQueryBudgetExceeded:        {},
 		protoerrors.CodeInvalidCursor:              {},
+
+		protoerrors.CodeSkillPublicationConflict:            {},
+		protoerrors.CodeSkillPublicationNotFound:            {},
+		protoerrors.CodeSkillPublicationRetired:             {},
+		protoerrors.CodeSkillPublicationRuntimeMismatch:     {},
+		protoerrors.CodeSkillPublicationIdempotencyConflict: {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {

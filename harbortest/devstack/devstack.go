@@ -132,6 +132,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/bootpacks"
 	"github.com/hurtener/Harbor/internal/skills/importer"
+	"github.com/hurtener/Harbor/internal/skills/publication"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
@@ -416,6 +417,10 @@ type DevStack struct {
 	// AgentReach is the shared effective-agent gate used by this stack's
 	// control and stream projections.
 	AgentReach auth.AgentReachAuthorizer
+	// PublicationStore is the one authorized StateStore-backed store shared by
+	// the mounted Protocol publication surface and run-loop composition.
+	PublicationStore     publication.Store
+	PublicationRuntimeID string
 
 	// SessionOverlay is the SESSION-scoped safe-subset overlay store (the
 	// non-admin lower tier of the authorization matrix) shared by the mounted
@@ -749,6 +754,9 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	// also consumed by the mux builder further down, so it is declared here.
 	var attacher agentcfgprotocol.ConnectionAttacher
 	var agentResolver protocol.AgentResolver
+	var publicationStore publication.Store
+	var publicationRuntimeID string
+	var sharedSealer toolauth.Sealer
 
 	// The HA-66 boot baseline — the SAME eager loader/composer production
 	// serve.Boot runs (CLAUDE.md §17.6 parity). The immutable index is
@@ -787,6 +795,15 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	// below depends on the surface, so SkipSteering implies
 	// SkipTransports even if the caller did not set both flags.
 	if !opts.SkipSteering {
+		// Resolve the one shared KEK-backed sealer before constructing the
+		// control surface and run-loop driver. This lets config-only KEK
+		// deployments use the same restart-stable Agent-reach admission
+		// authority as broker-backed deployments, without a second sealer.
+		var sealerErr error
+		sharedSealer, sealerErr = serve.ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
+		if sealerErr != nil {
+			return stack, sealerErr
+		}
 		// Phase 74 (D-114): wire the optional topology accessor + scope
 		// checker. Production `harbor dev` passes neither (no engine-
 		// graph); the Phase 74 integration test passes a real engine
@@ -823,6 +840,27 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			if admissionErr != nil {
 				return stack, fmt.Errorf("devstack agent reach admission authority: %w", admissionErr)
 			}
+		}
+		if agentReachAdmissions == nil && sharedSealer != nil {
+			var admissionErr error
+			agentReachAdmissions, admissionErr = tasks.NewAgentReachAdmissionAuthority(sharedSealer)
+			if admissionErr != nil {
+				return stack, fmt.Errorf("devstack agent reach admission authority: %w", admissionErr)
+			}
+		}
+		// Publication composition is mounted only when the run-start snapshot
+		// authority is complete as well as the sealed Agent-reach authority.
+		// A broker/sealer alone must not force a publication store into a
+		// deliberately minimal devstack that cannot compose its run snapshot.
+		if agentReachAdmissions != nil && stack.Skills != nil && stack.SessionPersonalSkillAuthority != nil {
+			publicationRuntimeID = publication.NewRuntimeID("harbor-devstack")
+			publicationStore, err = serve.NewSkillPublicationStore(core.State, publicationRuntimeID, stack.AgentReach)
+			if err != nil {
+				return stack, fmt.Errorf("devstack skill publication store: %w", err)
+			}
+			stack.PublicationStore = publicationStore
+			stack.PublicationRuntimeID = publicationRuntimeID
+			stack.closeFns = append(stack.closeFns, publicationStore.Close)
 		}
 		agentResolver = serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID, serve.WithBootLifecycleEnsurer(bootLifecycleEnsurer))
 		surfaceOpts = append(surfaceOpts,
@@ -954,6 +992,8 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 				RunSnapshots:             runSnapshots,
 				AgentReachAdmissions:     agentReachAdmissions,
+				PublicationStore:         publicationStore,
+				PublicationRuntimeID:     publicationRuntimeID,
 				SessionOverlay:           stack.SessionOverlay,
 				BootPackReader:           devBootReader,
 				RunCompletionHook:        projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion),
@@ -1105,10 +1145,6 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// composes, so devstack exercises the exact loader/composer path
 		// (CLAUDE.md §17.6). The shared sealer / boot index / projection
 		// loops close through the stack's closer chain.
-		sharedSealer, sealerErr := serve.ResolveSharedKEKSealer(cfg, stack.OAuthProviderBuilder)
-		if sealerErr != nil {
-			return stack, sealerErr
-		}
 		turnsProj, turnsSvc, turnsCloser, tErr := serve.OpenTurnsProjection(ctx, cfg, serve.TurnsProjectionDeps{
 			Bus: bus, Sessions: stack.Sessions, Tasks: stack.Tasks, Artifacts: stack.Artifacts, Logger: lg,
 		})
@@ -1251,6 +1287,8 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			Validator:                      stack.Validator,
 			AuthSurface:                    rotateSurface,
 			AgentReach:                     stack.AgentReach,
+			PublicationStore:               publicationStore,
+			PublicationRuntimeID:           publicationRuntimeID,
 			DisplayName:                    "harbor devstack",
 			InstanceID:                     "harbor-devstack",
 			BuildVersion:                   "devstack",

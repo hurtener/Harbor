@@ -384,9 +384,12 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapCallerMemory) {
 		t.Fatal("handshake.Accepts(CapCallerMemory) = false; the caller-memory admission must appear in the canonical capability set")
 	}
+	if !h.Accepts(types.CapSkillPublications) {
+		t.Fatal("handshake.Accepts(CapSkillPublications) = false; the same-runtime skill-publications surface must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 9 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle, tool_annotations, caller_memory}", caps)
+	if len(caps) != 10 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot, state_snapshots, agent_config, session_lifecycle, tool_annotations, caller_memory, skill_publications}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

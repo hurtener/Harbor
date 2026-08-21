@@ -129,6 +129,11 @@ const adminNote = "requires the verified `admin` scope claim"
 // agent-config tier (the middle tier of the authorization matrix).
 const userTierNote = "identity-mandatory; requires the verified `agent_config:user` scope claim (NOT admin — the durable per-user variant tier)"
 
+// publicationCallerNote documents HA-68's caller-side authorization. The
+// signed effective-Agent reach gate is applied only to methods that carry a
+// target Agent; the request body never grants either identity or reach.
+const publicationCallerNote = "requires a verified caller identity; target-Agent mutations additionally require signed effective-Agent reach"
+
 // sessionSafeNote is the shared auth-posture string for the session-user
 // safe-subset methods (the non-admin lower tier): identity-mandatory but NOT
 // admin-gated.
@@ -720,6 +725,54 @@ func methodTable() map[methods.Method]methodEntry {
 		Route: stream.ObservabilityRoutePattern, Mutates: false,
 		Request: "ObservabilityQueryRequest", Response: "ObservabilityQueryResponse",
 	}
+	// HA-68 same-runtime organization publication surface. Organization
+	// catalog mutations are admin-only; caller-side reference mutations use
+	// the verified identity plus the signed effective-Agent reach gate.
+	publicationEntries := map[methods.Method]methodEntry{
+		methods.MethodSkillsPublicationsPublish: {
+			Route: controlRoute(methods.MethodSkillsPublicationsPublish), Mutates: true,
+			Request: "SkillPublicationPublishRequest", Response: "SkillPublicationPublishResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsList: {
+			Route: controlRoute(methods.MethodSkillsPublicationsList), Mutates: false,
+			Request: "SkillPublicationListRequest", Response: "SkillPublicationListResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsGet: {
+			Route: controlRoute(methods.MethodSkillsPublicationsGet), Mutates: false,
+			Request: "SkillPublicationGetRequest", Response: "SkillPublicationGetResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsSuccessor: {
+			Route: controlRoute(methods.MethodSkillsPublicationsSuccessor), Mutates: true,
+			Request: "SkillPublicationSuccessorRequest", Response: "SkillPublicationSuccessorResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsRetire: {
+			Route: controlRoute(methods.MethodSkillsPublicationsRetire), Mutates: true,
+			Request: "SkillPublicationRetireRequest", Response: "SkillPublicationRetireResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsAvailable: {
+			Route: controlRoute(methods.MethodSkillsPublicationsAvailable), Mutates: false,
+			Request: "SkillPublicationAvailableRequest", Response: "SkillPublicationAvailableResponse", Auth: publicationCallerNote,
+		},
+		methods.MethodSkillsPublicationsInstall: {
+			Route: controlRoute(methods.MethodSkillsPublicationsInstall), Mutates: true,
+			Request: "SkillPublicationInstallRequest", Response: "SkillPublicationInstallResponse", Auth: publicationCallerNote,
+		},
+		methods.MethodSkillsPublicationsUpdate: {
+			Route: controlRoute(methods.MethodSkillsPublicationsUpdate), Mutates: true,
+			Request: "SkillPublicationUpdateRequest", Response: "SkillPublicationUpdateResponse", Auth: publicationCallerNote,
+		},
+		methods.MethodSkillsPublicationsRemove: {
+			Route: controlRoute(methods.MethodSkillsPublicationsRemove), Mutates: true,
+			Request: "SkillPublicationRemoveRequest", Response: "SkillPublicationRemoveResponse", Auth: publicationCallerNote,
+		},
+		methods.MethodSkillsPublicationsReferencesList: {
+			Route: controlRoute(methods.MethodSkillsPublicationsReferencesList), Mutates: false,
+			Request: "SkillPublicationReferencesListRequest", Response: "SkillPublicationReferencesListResponse", Auth: publicationCallerNote,
+		},
+	}
+	for m, entry := range publicationEntries {
+		t[m] = entry
+	}
 
 	// The nine steering controls share one wire shape; their per-control
 	// minimum steering scope comes from steering.RequiredScope so the
@@ -863,6 +916,8 @@ func classify(m methods.Method) string {
 		return "sessions turns (read-only)"
 	case methods.IsObservabilityMethod(m):
 		return "observability (read-only)"
+	case methods.IsSkillPublicationMethod(m):
+		return "skill publications"
 	default:
 		return "unclassified"
 	}
@@ -900,6 +955,7 @@ var methodClusters = []struct {
 	{"Auth", methods.IsAuthMethod, "auth"},
 	{"Governance admin", methods.IsGovernanceAdminMethod, "governance-admin"},
 	{"Agent config", methods.IsAgentConfigMethod, "agent-config"},
+	{"Skill publications", methods.IsSkillPublicationMethod, "skill-publications"},
 }
 
 // renderMethodsPage emits methods.md: every methods.Methods() entry,

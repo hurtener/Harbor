@@ -363,6 +363,22 @@ const (
 	// one revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/agent_packs/commit`.
 	MethodAgentConfigAgentPacksCommit Method = "agent_config.agent_packs.commit"
+
+	// Same-runtime organization skill-publication contract (HA-68). The
+	// organization verbs require the verified admin scope; the available,
+	// install, update, remove, and references.list verbs use the caller's
+	// verified identity and signed effective-agent reach. Bodies are never
+	// returned by these metadata/receipt methods.
+	MethodSkillsPublicationsPublish        Method = "skills.publications.publish"
+	MethodSkillsPublicationsList           Method = "skills.publications.list"
+	MethodSkillsPublicationsGet            Method = "skills.publications.get"
+	MethodSkillsPublicationsSuccessor      Method = "skills.publications.publish_successor"
+	MethodSkillsPublicationsRetire         Method = "skills.publications.retire"
+	MethodSkillsPublicationsAvailable      Method = "skills.publications.available"
+	MethodSkillsPublicationsInstall        Method = "skills.publications.install"
+	MethodSkillsPublicationsUpdate         Method = "skills.publications.update"
+	MethodSkillsPublicationsRemove         Method = "skills.publications.remove"
+	MethodSkillsPublicationsReferencesList Method = "skills.publications.references.list"
 	// MethodAgentConfigSetToolExposure — admin verb: sets the agent's
 	// MCP-exposure / per-tool policy (paused servers + disabled tools) as a
 	// desired-state replace of the tool-exposure section and records the
@@ -1225,6 +1241,16 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigAgentPacksRemove:           {},
 	MethodAgentConfigAgentPacksPropose:          {},
 	MethodAgentConfigAgentPacksCommit:           {},
+	MethodSkillsPublicationsPublish:             {},
+	MethodSkillsPublicationsList:                {},
+	MethodSkillsPublicationsGet:                 {},
+	MethodSkillsPublicationsSuccessor:           {},
+	MethodSkillsPublicationsRetire:              {},
+	MethodSkillsPublicationsAvailable:           {},
+	MethodSkillsPublicationsInstall:             {},
+	MethodSkillsPublicationsUpdate:              {},
+	MethodSkillsPublicationsRemove:              {},
+	MethodSkillsPublicationsReferencesList:      {},
 	MethodAgentConfigSetToolExposure:            {},
 	MethodAgentConfigSetPromptLayers:            {},
 	MethodAgentConfigSetExtraSystemBlocks:       {},
@@ -1685,6 +1711,53 @@ func IsAgentConfigAdminMethod(m Method) bool {
 // `agent_config.*` method requires the admin scope.
 func IsAgentConfigSessionMethod(m Method) bool {
 	_, ok := canonicalAgentConfigSessionMethods[m]
+	return ok
+}
+
+var canonicalSkillPublicationMethods = map[Method]struct{}{
+	MethodSkillsPublicationsPublish:        {},
+	MethodSkillsPublicationsList:           {},
+	MethodSkillsPublicationsGet:            {},
+	MethodSkillsPublicationsSuccessor:      {},
+	MethodSkillsPublicationsRetire:         {},
+	MethodSkillsPublicationsAvailable:      {},
+	MethodSkillsPublicationsInstall:        {},
+	MethodSkillsPublicationsUpdate:         {},
+	MethodSkillsPublicationsRemove:         {},
+	MethodSkillsPublicationsReferencesList: {},
+}
+
+var canonicalSkillPublicationAdminMethods = map[Method]struct{}{
+	MethodSkillsPublicationsPublish:   {},
+	MethodSkillsPublicationsList:      {},
+	MethodSkillsPublicationsGet:       {},
+	MethodSkillsPublicationsSuccessor: {},
+	MethodSkillsPublicationsRetire:    {},
+}
+
+var canonicalSkillPublicationUserMethods = map[Method]struct{}{
+	MethodSkillsPublicationsAvailable:      {},
+	MethodSkillsPublicationsInstall:        {},
+	MethodSkillsPublicationsUpdate:         {},
+	MethodSkillsPublicationsRemove:         {},
+	MethodSkillsPublicationsReferencesList: {},
+}
+
+// IsSkillPublicationMethod reports whether m belongs to HA-68's
+// same-runtime organization skill-publication surface.
+func IsSkillPublicationMethod(m Method) bool { _, ok := canonicalSkillPublicationMethods[m]; return ok }
+
+// IsSkillPublicationAdminMethod reports whether m is an organization-side
+// publication mutation or metadata read requiring admin authorization.
+func IsSkillPublicationAdminMethod(m Method) bool {
+	_, ok := canonicalSkillPublicationAdminMethods[m]
+	return ok
+}
+
+// IsSkillPublicationUserMethod reports whether m is a caller-scoped
+// publication discovery or reference mutation/read.
+func IsSkillPublicationUserMethod(m Method) bool {
+	_, ok := canonicalSkillPublicationUserMethods[m]
 	return ok
 }
 
@@ -2196,6 +2269,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsAgentConfigMethod(m) {
+		return false
+	}
+	if IsSkillPublicationMethod(m) {
 		return false
 	}
 	if IsAuthMethod(m) {

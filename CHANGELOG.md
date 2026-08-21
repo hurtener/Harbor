@@ -17,6 +17,27 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Optional per-parameter MCP artifact-egress mappings now use a trailing `?`
+  marker: absent or `null` values omit substitution while supplied references
+  retain the existing strict resolver, digest, and byte-ceiling behavior
+  (HA-67, D-429).
+- Same-runtime organization skill publication foundations add immutable,
+  content-addressed revisions, content-free references/receipts, StateStore
+  CAS/idempotency contracts, and additive canonical Protocol methods, types,
+  and errors. The same release also lands strict Protocol transport/client,
+  conditional capability/generated-doc lockstep, exact run-start composition,
+  and shared production/devstack bootstrap over one authorized StateStore-backed
+  store with an immutable runtime id, plus shared StateStore publication
+  conformance over in-memory and SQLite locally and Postgres under
+  `HARBOR_PG_DSN` (HA-68, D-430). With that DSN unset, the local Postgres leg
+  is skipped; focused local evidence covers the implementation and
+  configured/unavailable wiring postures. Broad preflight/full suites were not
+  run locally and hosted CI evidence remains pending.
+  This release-candidate note records Harbor implementation evidence only; no
+  downstream acceptance is claimed.
+
 ## [1.28.7] — 2026-08-15
 
 ### Added

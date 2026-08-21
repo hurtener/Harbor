@@ -94,6 +94,26 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "A persisted tranche pause has no live in-process run loop capable of exact restart redrive. Harbor fails closed rather than pretending to continue the run as a new task.",
 		Retry: "No — exact restart redrive is unavailable; start a new run instead.",
 	},
+	protoerrors.CodeSkillPublicationConflict: {
+		When:  "An HA-68 publication or Agent reference mutation used a stale exact generation/content-hash precondition.",
+		Retry: "Yes, after re-reading the current publication or reference and resubmitting the reviewed change with fresh exact preconditions.",
+	},
+	protoerrors.CodeSkillPublicationNotFound: {
+		When:  "An HA-68 publication or exact Agent reference was not found in the caller's same-runtime scope.",
+		Retry: "No — re-read the same-runtime metadata and use an existing exact identifier.",
+	},
+	protoerrors.CodeSkillPublicationRetired: {
+		When:  "An HA-68 request attempted to use a terminally retired publication revision.",
+		Retry: "No — choose an active publication; retirement is terminal.",
+	},
+	protoerrors.CodeSkillPublicationRuntimeMismatch: {
+		When:  "An HA-68 publication or reference belongs to another Harbor runtime/deployment binding.",
+		Retry: "No — same-runtime publication references are not portable; discover a reference on this Runtime.",
+	},
+	protoerrors.CodeSkillPublicationIdempotencyConflict: {
+		When:  "An HA-68 idempotency key was reused with a different mutation request.",
+		Retry: "No — use the original request for replay or choose a new idempotency key for a distinct mutation.",
+	},
 	protoerrors.CodeSessionRunning: {
 		When:  "A `sessions.delete` erasure was refused because the target session has a RUNNING task, mirroring the GC never-reap-running invariant. No store is touched on refusal — a session with in-flight work is durable execution state, not a cache entry.",
 		Retry: "Yes — re-issue after the session's task finishes (or cancel it first).",

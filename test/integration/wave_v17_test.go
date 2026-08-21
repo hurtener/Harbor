@@ -83,6 +83,7 @@ import (
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	localdb "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
+	"github.com/hurtener/Harbor/internal/skills/publication"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -272,6 +273,14 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 	if err != nil {
 		t.Fatalf("agentcfgprotocol.NewService: %v", err)
 	}
+	publicationStore, err := publication.NewStateStore(store, "wave-v17")
+	if err != nil {
+		t.Fatalf("publication.NewStateStore: %v", err)
+	}
+	publicationSurface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: publicationStore, RuntimeID: "wave-v17"})
+	if err != nil {
+		t.Fatalf("NewSkillPublicationsSurface: %v", err)
+	}
 
 	// --- the real PostureSurface, with BOTH conditional flags wired true so
 	// runtime.info honestly advertises agent_config AND session_lifecycle. ---
@@ -304,14 +313,15 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 		Metrics: func(_ context.Context) prototypes.MetricsSnapshot {
 			return prototypes.MetricsSnapshot{}
 		},
-		Governance:                governance.NewPostureProvider(governance.Config{}),
-		LLM:                       llm.NewPostureProvider(llm.ConfigSnapshot{Driver: "mock"}),
-		Redactor:                  red,
-		Bus:                       bus,
-		DisplayName:               "harbor-wave-v17-test",
-		InstanceID:                "inst-wave-v17-test",
-		AgentConfigAvailable:      true,
-		SessionLifecycleAvailable: true,
+		Governance:                 governance.NewPostureProvider(governance.Config{}),
+		LLM:                        llm.NewPostureProvider(llm.ConfigSnapshot{Driver: "mock"}),
+		Redactor:                   red,
+		Bus:                        bus,
+		DisplayName:                "harbor-wave-v17-test",
+		InstanceID:                 "inst-wave-v17-test",
+		AgentConfigAvailable:       true,
+		SessionLifecycleAvailable:  true,
+		SkillPublicationsAvailable: true,
 	})
 	if err != nil {
 		t.Fatalf("NewPostureSurface: %v", err)
@@ -341,6 +351,7 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 		transports.WithPostureSurface(posture),
 		transports.WithSessionsService(sessionsSvc),
 		transports.WithAgentConfigService(agentCfgSvc),
+		transports.WithSkillPublicationsSurface(publicationSurface),
 	)
 	if err != nil {
 		t.Fatalf("transports.NewMux: %v", err)
@@ -364,6 +375,7 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 			func() { _ = reg.CloseRegistry(ctx) },
 			func() { _ = acReg.Close(ctx) },
 			func() { _ = skillStore.Close(ctx) },
+			func() { _ = publicationStore.Close(ctx) },
 			func() { _ = legacySkillStore.Close(ctx) },
 			func() { _ = acState.Close(ctx) },
 			func() { _ = taskReg.Close(ctx) },
@@ -540,7 +552,7 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 	// ===================================================================
 	// (1) Both capabilities coexist — runtime.info advertises agent_config
 	//     (128) AND session_lifecycle (130) in one capabilities projection,
-	//     and the canonical universe is internally consistent (7 caps).
+	//     and the canonical universe is internally consistent (10 caps).
 	// ===================================================================
 	t.Run("BothCapabilitiesCoexist", func(t *testing.T) {
 		id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-info"}
@@ -553,17 +565,20 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 			!waveV17HasCap(info.Capabilities, prototypes.CapSessionLifecycle) {
 			t.Fatalf("runtime.info Capabilities %v must advertise BOTH agent_config AND session_lifecycle", info.Capabilities)
 		}
+		if !waveV17HasCap(info.Capabilities, prototypes.CapSkillPublications) {
+			t.Fatalf("runtime.info Capabilities %v must advertise skill_publications", info.Capabilities)
+		}
 		// The conformance universe is internally consistent: every
-		// advertised capability is canonical, and the canonical set is 9
+		// advertised capability is canonical, and the canonical set is 10
 		// (Phase 177 / D-313 added tool_annotations; D-374 added
-		// caller_memory — both additive).
+		// caller_memory; HA-68 added skill_publications — all additive).
 		for _, c := range info.Capabilities {
 			if !prototypes.IsValidCapability(c) {
 				t.Errorf("advertised capability %q is not in the canonical universe", c)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 9 {
-			t.Errorf("canonical capability universe has %d entries, want 9", n)
+		if n := len(prototypes.Capabilities()); n != 10 {
+			t.Errorf("canonical capability universe has %d entries, want 10", n)
 		}
 	})
 

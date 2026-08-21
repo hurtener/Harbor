@@ -126,6 +126,10 @@ type muxConfig struct {
 	// unsupplied, the control transport rejects MCP Apps calls with
 	// CodeUnknownMethod (the 404 → SKIP path the smoke script relies on).
 	appsSurface control.AppsSurface
+	// skillPublicationsSurface is the HA-68 publication dispatcher. Optional:
+	// an unassembled same-runtime publication store leaves these methods
+	// unmounted rather than advertising an inert surface.
+	skillPublicationsSurface control.SkillPublicationsSurface
 	// pauseCoordinator + artifactStore + heavyThreshold feed the
 	// `pause.list` snapshot handler. All three are OPTIONAL in the
 	// mux config so existing call-sites compile unchanged — when the
@@ -436,6 +440,18 @@ func WithAppsSurface(s control.AppsSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {
 			c.appsSurface = s
+		}
+	}
+}
+
+// WithSkillPublicationsSurface wires the HA-68 publication dispatcher into
+// the control transport. The option is optional so a Runtime that has not
+// assembled its same-runtime publication store does not mount an inert
+// surface.
+func WithSkillPublicationsSurface(s control.SkillPublicationsSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.skillPublicationsSurface = s
 		}
 	}
 }
@@ -978,6 +994,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 	if cfg.appsSurface != nil {
 		controlOpts = append(controlOpts, control.WithAppsSurface(cfg.appsSurface))
+	}
+	if cfg.skillPublicationsSurface != nil {
+		controlOpts = append(controlOpts, control.WithSkillPublicationsSurface(cfg.skillPublicationsSurface))
 	}
 	controlHandler, err := control.NewHandler(cs, controlOpts...)
 	if err != nil {

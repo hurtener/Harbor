@@ -95,6 +95,26 @@ Injection is governed, not raw: **capability filtering and PII redaction happen
 at injection time**, and a **tiered budgeter** keeps injected skill text inside
 the token budget so a fat skill never blows out the prompt.
 
+### Organization publications stay exact and runtime-local
+
+Harbor also supports organization-owned skill publications as immutable,
+content-addressed revisions. An administrator publishes and retires a
+revision; a caller with verified identity and signed effective-agent reach can
+install or update an exact reference. The reference pins publication id,
+revision id, generation, content hash, lifecycle state, and runtime/deployment
+id for durable tenant/user/agent state. Lists, references, and receipts are
+metadata-only. The body is returned only by the authorized same-runtime
+composition resolver, after it rechecks reach, lifecycle, hash, generation,
+and runtime binding. Retired, stale, foreign-runtime, and unreachable refs
+fail closed; there is no latest-revision fallback or cross-runtime catalog.
+
+This surface uses the existing StateStore conditional-save/idempotency
+contract and does not create a new isolation principal, driver, migration, or
+Protocol version. The canonical wire contract may be present before the
+transport and run-composition consumer are complete, so clients must follow
+capability discovery and the Phase 250 acceptance evidence rather than infer
+availability from a type or metadata page alone.
+
 ## Planner-facing skill tools
 
 The planner does not reach into the skill store directly. It consults skills

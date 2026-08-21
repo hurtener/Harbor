@@ -101,16 +101,17 @@ const maxBodyBytes = 64 << 10
 // with CodeUnknownMethod (the 404 → SKIP path the smoke script relies
 // on).
 type Handler struct {
-	surface          *protocol.ControlSurface
-	searchSurface    SearchSurface
-	postureSurface   PostureSurface
-	artifactsSurface ArtifactsSurface
-	mcpSurface       MCPSurface
-	appsSurface      AppsSurface
-	logger           *slog.Logger
-	bus              events.EventBus // nil ⇒ impersonation accepted-path refused
-	redactor         audit.Redactor  // nil ⇒ impersonation accepted-path refused
-	now              func() time.Time
+	surface                  *protocol.ControlSurface
+	searchSurface            SearchSurface
+	postureSurface           PostureSurface
+	artifactsSurface         ArtifactsSurface
+	mcpSurface               MCPSurface
+	appsSurface              AppsSurface
+	skillPublicationsSurface SkillPublicationsSurface
+	logger                   *slog.Logger
+	bus                      events.EventBus // nil ⇒ impersonation accepted-path refused
+	redactor                 audit.Redactor  // nil ⇒ impersonation accepted-path refused
+	now                      func() time.Time
 	// bodyScopeAuditor is the sink the shared body-identity gate records
 	// a granted identity crossing on. Built once, after the options have
 	// been applied, so it sees the wired bus and redactor.
@@ -192,6 +193,19 @@ type ArtifactsSurface interface {
 	// Returns either a *types.ArtifactsListResponse /
 	// *types.ArtifactsPutResponse / *types.ArtifactsGetRefResponse, or
 	// a *errors.Error.
+	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
+}
+
+// SkillPublicationsSurface is the narrow contract the control transport calls
+// into for HA-68's organization publication and verified-caller Agent reach
+// methods. The production implementation is
+// *protocol.SkillPublicationsSurface; tests may inject a deterministic
+// dispatcher. A nil surface leaves the methods unavailable (HTTP 404), which
+// is the partial-build posture used by the other optional Protocol surfaces.
+type SkillPublicationsSurface interface {
+	// Dispatch handles one of the ten canonical skills.publications.* methods.
+	// Authority is derived from the verified request context; the request body
+	// is data only and must never grant admin or Agent reach.
 	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
 }
 
@@ -313,6 +327,17 @@ func WithMCPSurface(s MCPSurface) Option {
 func WithAppsSurface(s AppsSurface) Option {
 	return func(h *Handler) {
 		h.appsSurface = s
+	}
+}
+
+// WithSkillPublicationsSurface wires the HA-68 publication dispatcher into
+// the control handler. When unsupplied, publication methods return the normal
+// unknown-method response instead of reaching the task-control surface.
+func WithSkillPublicationsSurface(s SkillPublicationsSurface) Option {
+	return func(h *Handler) {
+		if s != nil {
+			h.skillPublicationsSurface = s
+		}
 	}
 }
 
@@ -451,6 +476,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveApps(w, r, method)
+		return
+	}
+
+	// HA-68 publication methods have their own wire envelopes and
+	// fail-closed authority checks. In particular, do not run the generic
+	// body-identity reconciliation here: a publication body must never grant
+	// authority, and the surface compares it to the verified ctx identity.
+	if methods.IsSkillPublicationMethod(method) {
+		if h.skillPublicationsSurface == nil {
+			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: skill-publications surface is not configured on this Runtime", string(method)))
+			return
+		}
+		h.serveSkillPublications(w, r, method)
 		return
 	}
 

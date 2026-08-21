@@ -12,6 +12,34 @@ metadata:
 
 ## Operator-managed agent packs
 
+## Same-runtime organization skill publications (HA-68 / D-430)
+
+Organization publications are a separate, additive Protocol surface from the
+per-agent pack verbs below. Administrators use
+`skills.publications.publish`, `.list`, `.get`, `.publish_successor`, and
+`.retire`; callers use `.available`, `.install`, `.update`, `.remove`, and
+`.references.list`. Every request still carries the verified identity triple.
+Admin methods require the verified admin scope. Caller methods additionally
+require signed reach to the effective agent; the request body cannot choose a
+tenant, user, agent, or authority.
+
+The publication is immutable and content-addressed. A successor or retirement
+uses the exact expected generation/hash, and idempotency keys replay the same
+bounded result. List/get/reference/receipt responses are metadata-only: they
+carry the publication and revision ids, generation, content hash, lifecycle
+state, and same-runtime binding, never the skill body. The body is resolved
+only by the authorized runtime composition path after rechecking identity,
+reach, active state, runtime id, generation, and hash. A retired, stale,
+foreign-runtime, or unreachable reference is a typed failure; there is no
+latest-revision fallback or cross-runtime catalog.
+
+Use the generated [methods](../../protocol/methods.md), [errors](../../protocol/errors.md),
+and [types](../../protocol/types.md) pages as the wire reference. The
+publication domain and canonical wire registration may exist before a runtime
+advertises the complete surface; a client must follow capability discovery and
+must not claim the route is live until the transport/composition integration
+gate is present. See the Phase 250 plan for the exact acceptance matrix.
+
 The admin-scoped `agent_config.agent_packs.list|upsert|remove|propose|commit`
 methods manage a per-agent skill pack. Direct writes use the dedicated verbs;
 `agent_config.set_revision` rejects the pack section. Governed authoring requires

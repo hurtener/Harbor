@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:aee6aa5c66d282f0cf00c90ebf973af65c0400aa618ef86b0d5d5de27e6e23d4";
+export const WIRE_SURFACE_DIGEST = "sha256:add9cb68d186f75af2c5b9c988c8c1374c905527e0465210f7dc190ce6526769";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -145,6 +145,16 @@ export type HarborMethod =
   | "sessions.set_title"
   | "sessions.turns.get"
   | "sessions.turns.list"
+  | "skills.publications.available"
+  | "skills.publications.get"
+  | "skills.publications.install"
+  | "skills.publications.list"
+  | "skills.publications.publish"
+  | "skills.publications.publish_successor"
+  | "skills.publications.references.list"
+  | "skills.publications.remove"
+  | "skills.publications.retire"
+  | "skills.publications.update"
   | "start"
   | "state.history"
   | "tasks.get"
@@ -191,6 +201,11 @@ export type HarborErrorCode =
   | "skill_import_proposal_expired"
   | "skill_import_proposal_invalid"
   | "skill_import_replace_required"
+  | "skill_publication_conflict"
+  | "skill_publication_idempotency_conflict"
+  | "skill_publication_not_found"
+  | "skill_publication_retired"
+  | "skill_publication_runtime_mismatch"
   | "unknown_method";
 
 /** Every canonical Harbor event-type wire string. */
@@ -2940,6 +2955,161 @@ export interface SignedOAuthMCPConnectionDescriptor {
 export interface SizeRange {
   min_bytes?: number;
   max_bytes?: number;
+}
+
+export interface SkillPublicationAvailableRequest {
+  identity: IdentityScope;
+}
+
+export interface SkillPublicationAvailableResponse {
+  publications?: SkillPublicationMetadata[];
+  protocol_version: string;
+}
+
+export interface SkillPublicationGetRequest {
+  identity: IdentityScope;
+  publication_id: string;
+}
+
+export interface SkillPublicationGetResponse {
+  publication: SkillPublicationMetadata;
+  protocol_version: string;
+}
+
+export interface SkillPublicationInstallRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  publication_id: string;
+  revision_id: string;
+  expected_absent: boolean;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationInstallResponse {
+  reference: SkillPublicationReference;
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationListRequest {
+  identity: IdentityScope;
+}
+
+export interface SkillPublicationListResponse {
+  publications?: SkillPublicationMetadata[];
+  protocol_version: string;
+}
+
+export interface SkillPublicationMetadata {
+  publication_id: string;
+  revision_id: string;
+  name: string;
+  content_hash: string;
+  state: string;
+  generation: number;
+  runtime_id: string;
+}
+
+export interface SkillPublicationPublishRequest {
+  identity: IdentityScope;
+  name: string;
+  skill: AgentConfigAgentPackItem;
+  idempotency_key: string;
+  expected_absent: boolean;
+}
+
+export interface SkillPublicationPublishResponse {
+  publication: SkillPublicationMetadata;
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationReceipt {
+  operation_id: string;
+  operation: string;
+  publication_id?: string;
+  revision_id?: string;
+  generation: number;
+  state: string;
+  before_hash?: string;
+  after_hash?: string;
+}
+
+export interface SkillPublicationReference {
+  agent_id: string;
+  publication_id: string;
+  revision_id: string;
+  content_hash: string;
+  generation: number;
+  runtime_id: string;
+  state: string;
+}
+
+export interface SkillPublicationReferencesListRequest {
+  identity: IdentityScope;
+}
+
+export interface SkillPublicationReferencesListResponse {
+  references?: SkillPublicationReference[];
+  protocol_version: string;
+}
+
+export interface SkillPublicationRemoveRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  expected_generation: number;
+  expected_content_hash: string;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationRemoveResponse {
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationRetireRequest {
+  identity: IdentityScope;
+  publication_id: string;
+  expected_generation: number;
+  expected_content_hash: string;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationRetireResponse {
+  publication: SkillPublicationMetadata;
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationSuccessorRequest {
+  identity: IdentityScope;
+  publication_id: string;
+  expected_generation: number;
+  expected_content_hash: string;
+  skill: AgentConfigAgentPackItem;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationSuccessorResponse {
+  publication: SkillPublicationMetadata;
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationUpdateRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  publication_id: string;
+  revision_id: string;
+  expected_generation: number;
+  expected_content_hash: string;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationUpdateResponse {
+  reference: SkillPublicationReference;
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
 }
 
 export interface StartRequest {

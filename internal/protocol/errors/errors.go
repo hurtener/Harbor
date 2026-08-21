@@ -280,6 +280,23 @@ const (
 	// a different identity scope). The caller must restart from the
 	// first page.
 	CodeInvalidCursor Code = "invalid_cursor"
+	// CodeSkillPublicationConflict marks an HA-68 exact generation/hash
+	// compare-and-swap refusal. The caller must re-read metadata and retry
+	// with a fresh precondition; no mutation was committed.
+	CodeSkillPublicationConflict Code = "skill_publication_conflict"
+	// CodeSkillPublicationNotFound marks an HA-68 publication or pinned
+	// reference that is not visible in the caller's tenant/user boundary.
+	CodeSkillPublicationNotFound Code = "skill_publication_not_found"
+	// CodeSkillPublicationRetired is the terminal fail-closed composition
+	// result for a retired publication.
+	CodeSkillPublicationRetired Code = "skill_publication_retired"
+	// CodeSkillPublicationRuntimeMismatch marks a reference resolved against
+	// a different Harbor runtime/deployment; publication bodies are never
+	// portable across that boundary.
+	CodeSkillPublicationRuntimeMismatch Code = "skill_publication_runtime_mismatch"
+	// CodeSkillPublicationIdempotencyConflict marks reuse of one caller key
+	// with a divergent mutation fingerprint.
+	CodeSkillPublicationIdempotencyConflict Code = "skill_publication_idempotency_conflict"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -317,6 +334,12 @@ var canonicalCodes = map[Code]struct{}{
 	CodeSkillImportReplaceRequired: {},
 	CodeQueryBudgetExceeded:        {},
 	CodeInvalidCursor:              {},
+
+	CodeSkillPublicationConflict:            {},
+	CodeSkillPublicationNotFound:            {},
+	CodeSkillPublicationRetired:             {},
+	CodeSkillPublicationRuntimeMismatch:     {},
+	CodeSkillPublicationIdempotencyConflict: {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

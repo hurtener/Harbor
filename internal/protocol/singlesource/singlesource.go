@@ -157,6 +157,17 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.remove_oauth_mcp_capability":   {},
 	"agent_config.remove_oauth_provider":         {},
 	"agent_config.set_llm_provider":              {},
+	// HA-68 same-runtime organization skill-publication contract.
+	"skills.publications.publish":           {},
+	"skills.publications.list":              {},
+	"skills.publications.get":               {},
+	"skills.publications.publish_successor": {},
+	"skills.publications.retire":            {},
+	"skills.publications.available":         {},
+	"skills.publications.install":           {},
+	"skills.publications.update":            {},
+	"skills.publications.remove":            {},
+	"skills.publications.references.list":   {},
 	// Session-user safe subset (the non-admin lower tier).
 	"agent_config.session.set_user_prompt":     {},
 	"agent_config.session.set_source_disables": {},
@@ -768,6 +779,38 @@ var CanonicalWireTypes = map[string]string{
 	// (internal/protocol/types/events.go).
 	"EventsListRequest":  "types",
 	"EventsListResponse": "types",
+}
+
+var skillPublicationCanonicalWireTypes = map[string]string{
+	"SkillPublicationMetadata":               "types",
+	"SkillPublicationReference":              "types",
+	"SkillPublicationReceipt":                "types",
+	"SkillPublicationPublishRequest":         "types",
+	"SkillPublicationPublishResponse":        "types",
+	"SkillPublicationListRequest":            "types",
+	"SkillPublicationListResponse":           "types",
+	"SkillPublicationGetRequest":             "types",
+	"SkillPublicationGetResponse":            "types",
+	"SkillPublicationSuccessorRequest":       "types",
+	"SkillPublicationSuccessorResponse":      "types",
+	"SkillPublicationRetireRequest":          "types",
+	"SkillPublicationRetireResponse":         "types",
+	"SkillPublicationAvailableRequest":       "types",
+	"SkillPublicationAvailableResponse":      "types",
+	"SkillPublicationInstallRequest":         "types",
+	"SkillPublicationInstallResponse":        "types",
+	"SkillPublicationUpdateRequest":          "types",
+	"SkillPublicationUpdateResponse":         "types",
+	"SkillPublicationRemoveRequest":          "types",
+	"SkillPublicationRemoveResponse":         "types",
+	"SkillPublicationReferencesListRequest":  "types",
+	"SkillPublicationReferencesListResponse": "types",
+}
+
+func init() {
+	for name, home := range skillPublicationCanonicalWireTypes {
+		CanonicalWireTypes[name] = home
+	}
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

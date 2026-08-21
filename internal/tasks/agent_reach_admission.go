@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 )
 
 const agentReachAdmissionSchema = "control.start/reach/v2"
@@ -137,7 +138,17 @@ func (a *AgentReachAdmissionAuthority) Restore(ctx context.Context, task *Task) 
 		Envelope:      append([]byte(nil), task.AgentReachAdmission.Envelope...),
 		BindingDigest: append([]byte(nil), task.AgentReachAdmission.BindingDigest...),
 	}
-	return context.WithValue(ctx, agentReachAdmissionContextKey{}, admittedAgentReach{receipt: receipt, claims: claims}), claims.EffectiveAgentID, true
+	// The sealed receipt is the restart-stable proof that the canonical
+	// control.start edge already verified this exact target. Re-seat both
+	// verified identity and the signed reach carrier only after all envelope,
+	// digest, identity, and task binding checks pass. A rewritten durable task
+	// therefore cannot manufacture either authorization input.
+	verified, err := identity.WithVerified(ctx, task.Identity.Identity)
+	if err != nil {
+		return ctx, "", false
+	}
+	verified = auth.WithAgentReach(verified, []string{claims.EffectiveAgentID})
+	return context.WithValue(verified, agentReachAdmissionContextKey{}, admittedAgentReach{receipt: receipt, claims: claims}), claims.EffectiveAgentID, true
 }
 
 // AgentReachAdmissionsEqual compares optional opaque durable receipts by the

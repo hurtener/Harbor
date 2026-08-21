@@ -41,6 +41,8 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Shipped (v1.28) — phase 246 / D-425 |
 | HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Shipped (v1.28) — phase 247 / D-426 |
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
+| HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
+| HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -65,6 +67,24 @@ projection), and the boot-declared operator skill baseline — each
 phase 246 / D-425, phase 247 / D-426, and phase 248 / D-427, and each
 **framework-framed**: they name Harbor-side surfaces that were absent or
 read-shape-mismatched against the Protocol surface.
+
+**HA-67 and HA-68 are the next Harbor-local filings.** HA-67 records the
+small artifact-egress mapping gap: callers need an explicit optional marker
+without changing the wire shape or weakening supplied-reference checks. It is
+implemented as Phase 249 / D-429; this register records focused evidence only,
+not the broad preflight gate. HA-68 records the organization publication gap:
+one reviewed skill revision must be available to users with signed reach to an
+agent without copying rows across user identities or returning bodies in
+metadata. Phase 250 / D-430 has the domain, StateStore, canonical wire
+contract, strict Protocol transport/client/capability/generated-doc lockstep,
+exact run-start composition, and shared production/devstack bootstrap at the
+ reviewed base. The shared publication StateStore conformance harness covers
+ in-memory and SQLite locally and Postgres under `HARBOR_PG_DSN`; with that DSN
+ unset, the local Postgres leg is skipped. Focused local evidence covers
+ configured and unavailable wiring postures; broad preflight/full suites were
+ not run locally and hosted CI evidence remains pending. This register records
+ Harbor implementation evidence only and does not claim downstream acceptance.
+ Both asks are **framework-framed** and Harbor-local.
 
 ---
 
@@ -1157,6 +1177,72 @@ phase never claims startup performs no revision writes whatsoever.
     resolver show no context bleed, no cancellation cross-talk, no goroutine
     leak, and byte-identical snapshots for identical inputs, with identity,
     reach, and retirement gates included.
+
+---
+
+## HA-67 — optional MCP artifact-egress mapping parameters
+
+**Priority:** Medium. **Size:** small. **State:** Shipped as Phase 249 / D-429
+in the unreleased candidate; focused evidence is recorded, while broad local
+preflight is intentionally not claimed.
+
+**Observed Harbor gap.** The existing MCP artifact-egress mapping required an
+artifact reference for every mapped remote property. A caller that legitimately
+omits one image or file could not express that omission without either sending
+a placeholder or weakening the supplied-reference validation path.
+
+**Required shape.** One trailing `?` marks a mapping parameter optional at the
+shared compiler boundary. The compiler strips it before remote schema checks
+and `ParamsFor`, so a server sees the bare property name. Missing or JSON
+`null` optional values skip substitution; present values still require a
+string, a non-empty id, and successful identity-scoped resolution with the
+existing digest/encoding/ceiling behavior. Required mappings remain unchanged.
+
+**Evidence and guardrails.** Unit and MCP adapter tests cover marker parsing,
+duplicate rejection, missing/null skip, present-value refusal/success, and
+N=128 concurrent reuse. This is an internal mapping/config contract: it adds
+no Protocol route, wire type, artifact resolver, or broad capability.
+
+---
+
+## HA-68 — same-runtime organization skill publications
+
+**Priority:** High. **Size:** medium. **State:** Implemented as Phase 250 / D-430;
+publication domain, StateStore contract, canonical wire types/methods/errors,
+strict transport/client/capability/generated-doc lockstep, exact run-start
+composition, shared production/devstack bootstrap, and the shared StateStore
+publication conformance harness are landed. The harness covers in-memory and
+SQLite locally and Postgres under `HARBOR_PG_DSN`; with that DSN unset, the
+local Postgres leg is skipped. Focused local evidence covers configured and
+unavailable wiring postures; broad preflight/full suites were not run locally
+and hosted CI evidence remains pending. This register does not claim
+downstream acceptance.
+
+**Observed Harbor gap.** Ordinary skill rows are identity-scoped to the
+caller. An organization needs one reviewed revision to be available to users
+with signed reach to a selected agent, but copying rows across user triples,
+using a shared principal, or interpreting a broad scope label would weaken
+isolation and make revocation ambiguous.
+
+**Required shape.** Organization publications are immutable,
+content-addressed revisions with `active|retired` lifecycle, exact generation
+and hash CAS, and content-free metadata, references, and receipts. Admin
+methods publish/list/get/publish-successor/retire. Caller methods
+available/install/update/remove/references.list require verified identity and
+signed effective-agent reach. A durable reference pins publication id,
+revision id, generation, content hash, and runtime/deployment id for the
+tenant/user/agent; only the authorized same-runtime resolver returns the body.
+
+**Required guardrails.** StateStore `SaveIf` and idempotency provide one-winner
+transitions and response-loss replay. Retired, stale, foreign-runtime,
+wrong-hash, and unreachable references fail closed. Publication bodies never
+appear in metadata, receipts, events, audit payloads, logs, or model-visible
+discovery. The phase adds no new driver, migration, global catalog, portable
+reference, isolation principal, or Protocol-version bump. Focused Phase 250
+implementation tests cover exact run-start resolution, runtime binding,
+configured/unavailable production and devstack mounts, and failure behavior.
+Broad release gates remain outside this local evidence and hosted CI is
+pending; this ask's register entry does not claim downstream acceptance.
 
 ---
 

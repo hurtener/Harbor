@@ -134,6 +134,11 @@ CANONICAL_ERROR_CODES=(
     CodeSkillImportReplaceRequired
     CodeQueryBudgetExceeded
     CodeInvalidCursor
+    CodeSkillPublicationConflict
+    CodeSkillPublicationNotFound
+    CodeSkillPublicationRetired
+    CodeSkillPublicationRuntimeMismatch
+    CodeSkillPublicationIdempotencyConflict
 )
 for code in "${CANONICAL_ERROR_CODES[@]}"; do
     assert_grep_present "^[[:space:]]*${code}[[:space:]]+Code[[:space:]]*=" \

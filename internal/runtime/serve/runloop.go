@@ -94,6 +94,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
@@ -102,6 +103,7 @@ import (
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/publication"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/virtualagent"
@@ -151,6 +153,14 @@ type RunLoopDriverOptions struct {
 	SkillStore            skills.SkillStore
 	SessionPersonalSkills *sessionoverlay.DurableStore
 	SessionSkillCutover   sessionoverlay.CutoverModeReader
+
+	// PublicationStore resolves an exact, same-runtime Agent reference at
+	// every run start. A missing store means this optional composition rung is
+	// absent; when configured, every non-missing reference error is terminal.
+	// PublicationRuntimeID is the immutable deployment binding used for the
+	// resolution context (empty lets the store's construction binding win).
+	PublicationStore     publication.Store
+	PublicationRuntimeID string
 
 	// tool dispatch + Catalog projection +
 	// Trajectory. The tool catalog is the shared catalog the rest of
@@ -363,6 +373,8 @@ type RunLoopDriver struct {
 	skillStore            skills.SkillStore
 	sessionPersonalSkills *sessionoverlay.DurableStore
 	sessionSkillCutover   sessionoverlay.CutoverModeReader
+	publicationStore      publication.Store
+	publicationRuntimeID  string
 
 	// tool dispatch + Catalog projection.
 	catalog         tools.ToolCatalog
@@ -484,6 +496,12 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 	if snapshotDeps != 0 && snapshotDeps != 3 {
 		return nil, fmt.Errorf("%w: skill snapshot dependencies must be wired together", ErrRunLoopDriverMisconfigured)
 	}
+	if opts.PublicationStore != nil && snapshotDeps != 3 {
+		return nil, fmt.Errorf("%w: publication composition requires the complete run snapshot authority", ErrRunLoopDriverMisconfigured)
+	}
+	if opts.PublicationStore != nil && opts.AgentReachAdmissions == nil {
+		return nil, fmt.Errorf("%w: publication composition requires the sealed Agent reach admission authority", ErrRunLoopDriverMisconfigured)
+	}
 	if opts.SkillsDirectory != nil && snapshotDeps == 0 {
 		return nil, fmt.Errorf("%w: skills directory requires the complete run snapshot authority", ErrRunLoopDriverMisconfigured)
 	}
@@ -508,6 +526,8 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		skillStore:            opts.SkillStore,
 		sessionPersonalSkills: opts.SessionPersonalSkills,
 		sessionSkillCutover:   opts.SessionSkillCutover,
+		publicationStore:      opts.PublicationStore,
+		publicationRuntimeID:  opts.PublicationRuntimeID,
 		catalog:               opts.Catalog,
 		executor:              opts.Executor,
 		maxStepsRunLoop:       opts.MaxStepsRunLoop,
@@ -813,6 +833,32 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	if d.bootPackReader != nil {
 		if bootEntries, ok := d.bootPackReader.Lookup(q.TenantID, effectiveAgentID); ok {
 			membership.Boot = bootEntries
+		}
+	}
+	// Resolve the target Agent's exact Harbor-owned publication reference
+	// BEFORE constructing the immutable effective resolver. The resolver is
+	// then the sole authority used by directory/search/get/list and all tool
+	// consumers for this run, so no read surface can observe a different
+	// publication revision. A missing reference is the compatible no-op; every
+	// other outcome (retired, missing publication, runtime/hash mismatch, or
+	// authorization failure) fails closed at run start.
+	if d.publicationStore != nil {
+		publicationCtx := ctx
+		if d.publicationRuntimeID != "" {
+			publicationCtx = publication.WithRuntimeID(publicationCtx, d.publicationRuntimeID)
+		}
+		verified, verifiedOK := identity.FromVerified(publicationCtx)
+		if !verifiedOK || verified != q.Identity {
+			return skills.RunSkillReaderSnapshot{}, false, publication.ErrVerifiedIdentityRequired
+		}
+		if err := auth.NewAgentReachAuthorizer().AuthorizeAgentReach(publicationCtx, effectiveAgentID); err != nil {
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("%w: %w", publication.ErrAgentReachDenied, err)
+		}
+		published, _, resolveErr := d.publicationStore.Resolve(publicationCtx, q, effectiveAgentID)
+		if resolveErr == nil {
+			membership.Packs = append(membership.Packs, published)
+		} else if !errors.Is(resolveErr, publication.ErrReferenceNotFound) {
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("resolve publication: %w", resolveErr)
 		}
 	}
 	var resolver *sessionoverlay.SessionSkillResolver
@@ -1175,6 +1221,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		admissionCtx, admittedAgentID, agentReachAdmitted = d.agentReachAdmissions.Restore(taskCtx, task)
 	}
 	if agentReachAdmitted {
+		taskCtx = admissionCtx
 		effectiveAgentID = admittedAgentID
 	}
 	// A virtual child is admitted only through the verified reach receipt and
