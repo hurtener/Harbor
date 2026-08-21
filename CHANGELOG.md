@@ -26,7 +26,7 @@ Two versions move independently in Harbor (RFC §5.3):
 - Same-runtime organization skill publication foundations add immutable,
   content-addressed revisions, content-free references/receipts, StateStore
   CAS/idempotency contracts, and additive canonical Protocol methods, types,
-  and errors. Phase 250 now also lands strict Protocol transport/client,
+  and errors. The same release also lands strict Protocol transport/client,
   conditional capability/generated-doc lockstep, exact run-start composition,
   and shared production/devstack bootstrap over one authorized StateStore-backed
   store with an immutable runtime id, plus shared StateStore publication
