@@ -423,6 +423,46 @@ func (d *driver) ListKind(_ context.Context, scope state.ListScope, kindPrefix s
 	return out, nil
 }
 
+// ListKindBounded implements StateStore's storage-side bounded maintenance
+// scan. Map iteration cannot push a predicate into a database, but it stops
+// copying as soon as the caller's bound is reached.
+func (d *driver) ListKindBounded(ctx context.Context, scope state.ListScope, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKindBounded(scope, kindPrefix, limit); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	keys := make([]indexKey, 0, len(d.records))
+	for key := range d.records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(key.Kind, kindPrefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return indexKeyLess(keys[i], keys[j]) })
+	out := make([]state.StateRecord, 0, limit)
+	for _, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rec := d.records[key]
+		rec.Bytes = cloneBytes(rec.Bytes)
+		out = append(out, rec)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // ListKindForIdentity implements state.StateStore's non-elevated
 // identity-scoped enumeration surface.
 func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
@@ -543,6 +583,24 @@ func afterScanCursor(key indexKey, cursor state.StateScanCursor) bool {
 
 func scanRecordLess(left, right state.StateRecord) bool {
 	return tupleCompare(left.Identity.UserID, left.Identity.SessionID, left.Identity.RunID, left.Kind, right.Identity.UserID, right.Identity.SessionID, right.Identity.RunID, right.Kind) < 0
+}
+
+func indexKeyLess(left, right indexKey) bool {
+	for _, pair := range [][2]string{
+		{left.Tenant, right.Tenant},
+		{left.User, right.User},
+		{left.Session, right.Session},
+		{left.Run, right.Run},
+		{left.Kind, right.Kind},
+	} {
+		if pair[0] < pair[1] {
+			return true
+		}
+		if pair[0] > pair[1] {
+			return false
+		}
+	}
+	return false
 }
 
 func tupleCompare(leftUser, leftSession, leftRun, leftKind, rightUser, rightSession, rightRun, rightKind string) int {

@@ -1038,6 +1038,57 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("ListKindBounded_StorageBoundAndFailClosed", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		for i, rec := range []state.StateRecord{
+			{ID: "01HABXXX00000030BL", Identity: tripleA(), Kind: "bounded.match.a", Bytes: []byte("a")},
+			{ID: "01HABXXX00000031BL", Identity: tripleB(), Kind: "bounded.match.b", Bytes: []byte("b")},
+			{ID: "01HABXXX00000032BL", Identity: tripleA(), Kind: "bounded.match.c", Bytes: []byte("c")},
+			{ID: "01HABXXX00000033BL", Identity: tripleA(), Kind: "bounded.other", Bytes: []byte("d")},
+		} {
+			if err := s.Save(ctx, rec); err != nil {
+				t.Fatalf("Save(%d): %v", i, err)
+			}
+		}
+		got, err := s.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, "bounded.match.", 2)
+		if err != nil {
+			t.Fatalf("ListKindBounded: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("ListKindBounded returned %d records, want storage-side bound 2: %+v", len(got), got)
+		}
+		for _, rec := range got {
+			if !strings.HasPrefix(rec.Kind, "bounded.match.") {
+				t.Fatalf("ListKindBounded returned nonmatching record %+v", rec)
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			scope  state.ListScope
+			prefix string
+			limit  int
+			want   error
+		}{
+			{name: "scope", scope: state.ListScope{}, prefix: "bounded.", limit: 1, want: state.ErrMaintenanceScopeRequired},
+			{name: "prefix", scope: state.ListScope{MaintenanceScoped: true}, prefix: "", limit: 1, want: state.ErrInvalidRecord},
+			{name: "zero limit", scope: state.ListScope{MaintenanceScoped: true}, prefix: "bounded.", limit: 0, want: state.ErrInvalidRecord},
+			{name: "oversized limit", scope: state.ListScope{MaintenanceScoped: true}, prefix: "bounded.", limit: state.MaxStateMaintenanceListLimit + 1, want: state.ErrInvalidRecord},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := s.ListKindBounded(ctx, tc.scope, tc.prefix, tc.limit); !errors.Is(err, tc.want) {
+					t.Fatalf("ListKindBounded err=%v, want errors.Is %v", err, tc.want)
+				}
+			})
+		}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := s.ListKindBounded(cancelled, state.ListScope{MaintenanceScoped: true}, "bounded.", 1); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled ListKindBounded err=%v, want context.Canceled", err)
+		}
+	})
+
 	t.Run("ListKind_MetacharactersMatchLiterally", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()

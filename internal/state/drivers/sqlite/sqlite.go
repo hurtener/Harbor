@@ -889,6 +889,57 @@ func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix
 	return out, nil
 }
 
+// ListKindBounded implements StateStore's storage-side bounded maintenance
+// scan. LIMIT is part of the SQL query so rows beyond the admission bound are
+// never materialized in the driver.
+func (d *driver) ListKindBounded(ctx context.Context, scope state.ListScope, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateListKindBounded(scope, kindPrefix, limit); err != nil {
+		return nil, err
+	}
+
+	const sel = `
+        SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
+        FROM state_records
+        WHERE substr(kind, 1, length(?)) = ? COLLATE BINARY
+        ORDER BY tenant COLLATE BINARY, user COLLATE BINARY, session COLLATE BINARY,
+                 run COLLATE BINARY, kind COLLATE BINARY
+        LIMIT ?`
+	rows, err := d.db.QueryContext(ctx, sel, kindPrefix, kindPrefix, limit)
+	if err != nil {
+		return nil, fmt.Errorf("state/sqlite: list kind bounded: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]state.StateRecord, 0, limit)
+	for rows.Next() {
+		var tenant, user, session, run, kind, eventID string
+		var version int
+		var data []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenant, &user, &session, &run, &kind, &eventID, &version, &data, &updatedAt); err != nil {
+			return nil, fmt.Errorf("state/sqlite: list kind bounded scan: %w", err)
+		}
+		out = append(out, state.StateRecord{
+			ID: state.EventID(eventID),
+			Identity: identity.Quadruple{
+				Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session},
+				RunID:    run,
+			},
+			Kind:      kind,
+			Version:   version,
+			Bytes:     data,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state/sqlite: list kind bounded rows: %w", err)
+	}
+	return out, nil
+}
+
 // ListKindForIdentity implements StateStore's identity-scoped enumeration.
 func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
 	if d.closed.Load() {

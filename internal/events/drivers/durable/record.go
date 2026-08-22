@@ -1,6 +1,7 @@
 package durable
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -201,6 +202,9 @@ func encodeHead(h headRecord) ([]byte, error) {
 func decodeHead(b []byte) (headRecord, error) {
 	if len(b) == 0 {
 		return headRecord{}, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
+		return headRecord{}, fmt.Errorf("durable: head record is null")
 	}
 	var h headRecord
 	if err := json.Unmarshal(b, &h); err != nil {

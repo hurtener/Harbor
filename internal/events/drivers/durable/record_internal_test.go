@@ -119,6 +119,9 @@ func TestDecodeHead_Corrupt(t *testing.T) {
 	if _, err := decodeHead([]byte("{not json")); err == nil {
 		t.Fatalf("expected error for corrupt head bytes")
 	}
+	if _, err := decodeHead([]byte("null")); err == nil {
+		t.Fatalf("expected error for null head bytes")
+	}
 }
 
 func TestDecodeEvent_Corrupt(t *testing.T) {

@@ -65,6 +65,10 @@ func (failingStateStore) ListKind(_ context.Context, _ state.ListScope, _ string
 	return nil, errStateProbe
 }
 
+func (failingStateStore) ListKindBounded(_ context.Context, _ state.ListScope, _ string, _ int) ([]state.StateRecord, error) {
+	return nil, errStateProbe
+}
+
 func (failingStateStore) ListKindForIdentity(_ context.Context, _ identity.Quadruple, _ string) ([]state.StateRecord, error) {
 	return nil, errStateProbe
 }

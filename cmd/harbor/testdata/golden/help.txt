@@ -4,6 +4,7 @@ Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
   Production          serve, token, postgres
+  Persistence repair  events repair-legacy-heads
   Run inspection      inspect-events, inspect-runs, inspect-topology,
                       composition-preview, tui
   Build information   version
@@ -20,6 +21,7 @@ Available Commands:
   composition-preview preview the effective composition a Runtime would compose for an agent
   console             serve the Harbor Console (static build + Protocol surface)
   dev                 boot the local Runtime + Protocol server
+  events              inspect and repair durable event persistence
   help                Help about any command
   init                drop a tiered harbor.yaml + AGENTS.md/CLAUDE.md/README.md into a directory
   inspect-events      tail or filter the event bus of a running Runtime
