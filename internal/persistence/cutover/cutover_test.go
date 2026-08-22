@@ -152,6 +152,8 @@ func TestValidateApplyDSN_RejectsTransactionPool(t *testing.T) {
 		"postgres://u:p@example:6432/harbor",
 		"postgres://u:p@example:6432/harbor?direct=true",
 		"host=example port=6432 dbname=harbor",
+		"host=example port = 6432 dbname=harbor",
+		"host=example\tport\t=\t6432 dbname=harbor",
 	} {
 		if err := cutover.ValidateApplyDSN(dsn); err == nil {
 			t.Errorf("ValidateApplyDSN(%q) succeeded", dsn)
