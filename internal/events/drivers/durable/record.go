@@ -218,7 +218,7 @@ func decodeEvent(b []byte) (events.Event, error) {
 	}
 	data := pe.Payload
 	if data == nil {
-		data = map[string]any{}
+		return events.Event{}, fmt.Errorf("durable: persisted event payload is missing or null")
 	}
 	return events.Event{
 		Type: pe.Type,

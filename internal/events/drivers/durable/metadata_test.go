@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,6 +62,23 @@ var errInjectedHeadSave = errors.New("injected durable head save failure")
 type headFailureStore struct {
 	state.StateStore
 	failHead atomic.Bool
+}
+
+type wrongStorageRecordStore struct {
+	state.StateStore
+	wrong     identity.Quadruple
+	wrongKind bool
+}
+
+func (s *wrongStorageRecordStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
+	rec, err := s.StateStore.Load(ctx, id, kind)
+	if err == nil && len(kind) >= len(kindEntryPrefix) && kind[:len(kindEntryPrefix)] == kindEntryPrefix {
+		rec.Identity = s.wrong
+		if s.wrongKind {
+			rec.Kind = kindEntryPrefix + "wrong-kind"
+		}
+	}
+	return rec, err
 }
 
 func (s *headFailureStore) Save(ctx context.Context, rec state.StateRecord) error {
@@ -207,6 +225,75 @@ func seedLegacyHistory(t *testing.T, store state.StateStore, n int, at time.Time
 		ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headBytes,
 	}); err != nil {
 		t.Fatalf("seed head: %v", err)
+	}
+}
+
+// seedLegacyHistoryWithRunIDs mirrors the v1.29.0 persisted shape: the
+// session head and entry storage records use the session-scoped identity with
+// RunID="", while each event body retains the run that produced it.
+func seedLegacyHistoryWithRunIDs(t *testing.T, store state.StateStore, runIDs []string, at time.Time) {
+	t.Helper()
+	id := metadataIdentity()
+	seqs := make([]uint64, 0, len(runIDs))
+	for i, runID := range runIDs {
+		seq := uint64(i + 1)
+		ev := events.Event{
+			Type: events.EventTypeRuntimeWarning,
+			Identity: identity.Quadruple{
+				Identity: id.Identity,
+				RunID:    runID,
+			},
+			OccurredAt: at.Add(time.Duration(i) * time.Millisecond),
+			Sequence:   seq,
+			Payload: events.BusDroppedPayload{
+				FromSeq: seq, ToSeq: seq, DroppedCount: 0, SubscriberID: uint64(i + 1),
+			},
+		}
+		entryBytes, err := encodeEvent(ev)
+		if err != nil {
+			t.Fatalf("encode run event %d: %v", i, err)
+		}
+		if err := store.Save(context.Background(), state.StateRecord{
+			ID: state.NewEventID(), Identity: id, Kind: kindEntryPrefix + seqToken(seq), Bytes: entryBytes,
+		}); err != nil {
+			t.Fatalf("save run entry %d: %v", i, err)
+		}
+		seqs = append(seqs, seq)
+	}
+	headBytes, err := encodeHead(headRecord{Sequences: seqs})
+	if err != nil {
+		t.Fatalf("encode run head: %v", err)
+	}
+	if err := store.Save(context.Background(), state.StateRecord{
+		ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headBytes,
+	}); err != nil {
+		t.Fatalf("save run head: %v", err)
+	}
+}
+
+func seedLegacyEvent(t *testing.T, store state.StateStore, storageID identity.Quadruple, ev events.Event, headSequences []uint64) {
+	t.Helper()
+	entryBytes, err := encodeEvent(ev)
+	if err != nil {
+		t.Fatalf("encode adversarial event: %v", err)
+	}
+	entrySequence := ev.Sequence
+	if len(headSequences) > 0 {
+		entrySequence = headSequences[0]
+	}
+	if err := store.Save(context.Background(), state.StateRecord{
+		ID: state.NewEventID(), Identity: storageID, Kind: kindEntryPrefix + seqToken(entrySequence), Bytes: entryBytes,
+	}); err != nil {
+		t.Fatalf("save adversarial entry: %v", err)
+	}
+	headBytes, err := encodeHead(headRecord{Sequences: headSequences})
+	if err != nil {
+		t.Fatalf("encode adversarial head: %v", err)
+	}
+	if err := store.Save(context.Background(), state.StateRecord{
+		ID: state.NewEventID(), Identity: storageID, Kind: kindHead, Bytes: headBytes,
+	}); err != nil {
+		t.Fatalf("save adversarial head: %v", err)
 	}
 }
 
@@ -365,6 +452,223 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 	}
 	if _, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store); err == nil {
 		t.Fatal("New accepted metadata with an unknown event type")
+	}
+}
+
+func TestDurable_MetadataIndex_LegacySessionHeadPreservesPayloadRunIDs(t *testing.T) {
+	base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	store := &countingStore{StateStore: inner}
+	runIDs := []string{"run-alpha", "run-beta", "run-gamma"}
+	seedLegacyHistoryWithRunIDs(t, store, runIDs, base)
+
+	first := metadataBus(t, store)
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	// Simulate a stale but structurally valid projection. The previous
+	// checksum is intentionally retained so restart must revalidate from the
+	// canonical event bodies rather than trusting the stale metadata row.
+	rec, err := store.Load(context.Background(), metadataIdentity(), kindHead)
+	if err != nil {
+		t.Fatalf("load adopted head: %v", err)
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		t.Fatalf("decode adopted head: %v", err)
+	}
+	head.Metadata[1].RunID = "stale-run-id"
+	staleBytes, err := encodeHead(head)
+	if err != nil {
+		t.Fatalf("encode stale head: %v", err)
+	}
+	if err := store.Save(context.Background(), state.StateRecord{
+		ID: state.NewEventID(), Identity: metadataIdentity(), Kind: kindHead, Bytes: staleBytes,
+	}); err != nil {
+		t.Fatalf("save stale head: %v", err)
+	}
+
+	second, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("restart legacy session head: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close(context.Background()) })
+
+	stored, err := store.Load(context.Background(), metadataIdentity(), kindHead)
+	if err != nil {
+		t.Fatalf("load restarted head: %v", err)
+	}
+	adopted, err := decodeHead(stored.Bytes)
+	if err != nil {
+		t.Fatalf("decode restarted head: %v", err)
+	}
+	if !headMetadataReady(adopted) {
+		t.Fatalf("restarted head is not checksum-authenticated: %+v", adopted)
+	}
+	if got := adopted.MetadataIntegrityChecksum; got != metadataIntegrityChecksum(adopted.Sequences, adopted.Metadata) {
+		t.Fatalf("metadata checksum = %q, want canonical checksum", got)
+	}
+	for i, want := range runIDs {
+		if got := adopted.Metadata[i].RunID; got != want {
+			t.Fatalf("metadata[%d].RunID = %q, want canonical payload RunID %q", i, got, want)
+		}
+	}
+
+	filter := eventsWireFilter(metadataIdentity(), nil)
+	filter.RunIDs = []string{runIDs[1]}
+	metadataPage, err := second.(events.EventMetadataReplayer).ListWindowMetadata(context.Background(), events.EventListQuery{
+		Filter: filter,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("metadata list by RunID: %v", err)
+	}
+	if len(metadataPage.Events) != 1 || metadataPage.Events[0].Identity.RunID != runIDs[1] || metadataPage.Events[0].Sequence != 2 {
+		t.Fatalf("metadata list by RunID = %+v, want seq=2 run=%q", metadataPage.Events, runIDs[1])
+	}
+
+	eventPage, err := second.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
+		Filter: filter,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("event list by RunID: %v", err)
+	}
+	if len(eventPage.Events) != 1 || eventPage.Events[0].Identity.RunID != runIDs[1] || eventPage.Events[0].Sequence != 2 {
+		t.Fatalf("event list by RunID = %+v, want seq=2 run=%q", eventPage.Events, runIDs[1])
+	}
+}
+
+func TestDurable_MetadataIndex_LegacyBackfillRejectsIdentitySequenceAndMalformedBody(t *testing.T) {
+	base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	storageID := metadataIdentity()
+	tests := []struct {
+		name  string
+		event events.Event
+		want  string
+	}{
+		{
+			name: "tenant mismatch",
+			event: events.Event{
+				Type: events.EventTypeRuntimeWarning,
+				Identity: identity.Quadruple{Identity: identity.Identity{
+					TenantID: "other-tenant", UserID: storageID.UserID, SessionID: storageID.SessionID,
+				}},
+				OccurredAt: base, Sequence: 1, Payload: events.BusDroppedPayload{},
+			},
+			want: "payload identity/sequence mismatch",
+		},
+		{
+			name: "unknown event type",
+			event: events.Event{
+				Type: events.EventType("events.unknown.v1292"), Identity: storageID,
+				OccurredAt: base, Sequence: 1, Payload: events.BusDroppedPayload{},
+			},
+			want: "unknown event type",
+		},
+		{
+			name: "user mismatch",
+			event: events.Event{
+				Type: events.EventTypeRuntimeWarning,
+				Identity: identity.Quadruple{Identity: identity.Identity{
+					TenantID: storageID.TenantID, UserID: "other-user", SessionID: storageID.SessionID,
+				}},
+				OccurredAt: base, Sequence: 1, Payload: events.BusDroppedPayload{},
+			},
+			want: "payload identity/sequence mismatch",
+		},
+		{
+			name: "session mismatch",
+			event: events.Event{
+				Type: events.EventTypeRuntimeWarning,
+				Identity: identity.Quadruple{Identity: identity.Identity{
+					TenantID: storageID.TenantID, UserID: storageID.UserID, SessionID: "other-session",
+				}},
+				OccurredAt: base, Sequence: 1, Payload: events.BusDroppedPayload{},
+			},
+			want: "payload identity/sequence mismatch",
+		},
+		{
+			name: "sequence mismatch",
+			event: events.Event{
+				Type: events.EventTypeRuntimeWarning, Identity: storageID,
+				OccurredAt: base, Sequence: 2, Payload: events.BusDroppedPayload{},
+			},
+			want: "payload identity/sequence mismatch",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatalf("stateinmem.New: %v", err)
+			}
+			store := &countingStore{StateStore: inner}
+			seedLegacyEvent(t, store, storageID, tc.event, []uint64{1})
+			_, err = New(context.Background(), metadataCfg(), auditpatterns.New(), store)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("New error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("malformed JSON", func(t *testing.T) {
+		inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+		if err != nil {
+			t.Fatalf("stateinmem.New: %v", err)
+		}
+		store := &countingStore{StateStore: inner}
+		if err := store.Save(context.Background(), state.StateRecord{
+			ID: state.NewEventID(), Identity: storageID, Kind: kindEntryPrefix + seqToken(1), Bytes: []byte("{not-json"),
+		}); err != nil {
+			t.Fatalf("save malformed entry: %v", err)
+		}
+		headBytes, err := encodeHead(headRecord{Sequences: []uint64{1}})
+		if err != nil {
+			t.Fatalf("encode malformed head: %v", err)
+		}
+		if err := store.Save(context.Background(), state.StateRecord{
+			ID: state.NewEventID(), Identity: storageID, Kind: kindHead, Bytes: headBytes,
+		}); err != nil {
+			t.Fatalf("save malformed head: %v", err)
+		}
+		if _, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store); err == nil {
+			t.Fatal("New accepted malformed persisted body")
+		}
+	})
+}
+
+func TestDurable_MetadataIndex_LegacyBackfillRejectsWrongStorageRecordIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		wrong     identity.Quadruple
+		wrongKind bool
+	}{
+		{
+			name:  "identity",
+			wrong: identity.Quadruple{Identity: identity.Identity{TenantID: "wrong", UserID: "wrong", SessionID: "wrong"}, RunID: "unexpected-run"},
+		},
+		{
+			name:      "kind",
+			wrong:     metadataIdentity(),
+			wrongKind: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatalf("stateinmem.New: %v", err)
+			}
+			seedLegacyHistoryWithRunIDs(t, inner, []string{"run-1"}, time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC))
+			store := &wrongStorageRecordStore{StateStore: inner, wrong: tc.wrong, wrongKind: tc.wrongKind}
+			if _, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store); err == nil || !strings.Contains(err.Error(), "storage identity/kind mismatch") {
+				t.Fatalf("New error = %v, want storage identity/kind mismatch", err)
+			}
+		})
 	}
 }
 

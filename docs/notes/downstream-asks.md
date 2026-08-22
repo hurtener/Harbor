@@ -1345,6 +1345,31 @@ exact fields, commands, compatibility notes, tag commit, and checksums. Local
 preflight is deferred to hosted CI by emergency instruction and must not be
 reported as passed.
 
+### HA-69 v1.29.2 compatibility extension — Phase 252 / D-432
+
+**State:** Planned — release-blocking v1.29.2 hotfix. This extends the
+existing HA-69 handle; no new Harbor ask identifier is allocated.
+
+The first drained upgrade canary exposed a v1.29.1 legacy-backfill
+compatibility defect. Durable heads and entries are keyed by the session
+triple with `RunID=""`, while ordinary persisted event bodies retain their
+real, non-empty RunIDs. The backfill check must validate exact storage
+identity/kind, sequence, and tenant/user/session identity, but must not compare
+the body RunID with the intentionally empty storage-key RunID.
+
+The v1.29.2 extension keeps canonical event bodies authoritative and preserves
+RunIDs in metadata, `events.list` metadata reads, and full event reads. It
+refuses malformed/unknown bodies, sequence or tenant/user/session mismatches,
+wrong returned StateRecord identity/kind, stale metadata/body divergence, and
+checksum failures. Its regression fixture uses a v1.29.0-shaped multi-run
+session head, proves restart/checksum repair and RunID filters, and runs
+through the real PostgreSQL StateStore driver under `HARBOR_PG_DSN`.
+The existing hosted `state-postgres` job selects the exact test and rejects
+skip/no-test output; local absence of the DSN is an honest skip. Harbor does
+not mutate the downstream fleet or its databases. The immutable annotated
+v1.29.2 tag, hosted release/provenance evidence, checksums, and post-tag
+cleanup are required before this extension is reported complete.
+
 ## Posture signals from the downstream team
 
 Recorded so a future phase does not "helpfully" relax something the consumer explicitly wants kept:

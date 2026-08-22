@@ -1057,6 +1057,9 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 	if err := ctx.Err(); err != nil {
 		return headRecord{}, err
 	}
+	if id.RunID != "" {
+		return headRecord{}, fmt.Errorf("metadata backfill requires session-scoped storage identity with empty RunID")
+	}
 	if len(head.Sequences) == 0 {
 		if len(head.Metadata) != 0 || head.MetadataReady || head.MetadataValidatedCount != 0 || head.MetadataIntegrityChecksum != "" {
 			return headRecord{}, fmt.Errorf("metadata exists for empty head")
@@ -1168,8 +1171,14 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 		if err != nil {
 			return headRecord{}, fmt.Errorf("backfill sequence=%d: decode payload: %w", seq, err)
 		}
-		if ev.Sequence != seq || ev.Identity.Identity != id.Identity || (ev.Identity.RunID != id.RunID && ev.Identity.RunID != "") {
+		if rec.Identity != id || rec.Kind != kindEntryPrefix+seqToken(seq) {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: storage identity/kind mismatch", seq)
+		}
+		if ev.Sequence != seq || ev.Identity.Identity != id.Identity {
 			return headRecord{}, fmt.Errorf("backfill sequence=%d: payload identity/sequence mismatch", seq)
+		}
+		if !events.IsValidEventType(ev.Type) {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: unknown event type %q", seq, ev.Type)
 		}
 		canonical, err := metadataRecordFromEvent(ev)
 		if err != nil {
