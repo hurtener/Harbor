@@ -132,7 +132,10 @@ Repeat for each source DSN or run the six-source orchestration wrapper used by
 the deployment system. The tool copies raw `BYTEA` bodies and typed columns,
 preserves identity keys, revisions, receipts, turn ordering/cursors,
 activity/usage payloads, and rollup watermarks/fences. Inserts are resumable
-with `ON CONFLICT DO NOTHING`; a cancellation or interruption returns a
+with `ON CONFLICT DO NOTHING`; each bounded destination batch runs in a direct
+PostgreSQL transaction with transaction-local `statement_timeout = 2min` and
+`lock_timeout = 10s`. The source stream is read in a read-only transaction
+with the same server-side bounds. A cancellation or interruption returns a
 failure and never emits a successful manifest.
 
 Then verify the destination through read-only traffic. This may use PgBouncer

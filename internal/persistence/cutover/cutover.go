@@ -277,13 +277,16 @@ func Classify(sub Subsystem, snapshot SchemaSnapshot) (Classification, error) {
 }
 
 func validateIdentity(sub Subsystem, snapshot SchemaSnapshot) error {
+	if len(snapshot.Namespaced) > 0 && len(snapshot.Identities) == 0 {
+		return fmt.Errorf("expected subsystem %s, observed %s migration rows but no %s store identity; apply the direct 5432 namespaced migration runner", sub, LedgerTable, IdentityTable)
+	}
 	matchedLedger := false
 	for _, identity := range snapshot.Namespaced {
 		if identity.Subsystem != string(sub) {
 			continue
 		}
 		matchedLedger = true
-		if identity.Version <= 0 || identity.Filename == "" || !isSHA256(identity.Checksum) {
+		if identity.Version <= 0 || identity.Filename == "" || !isLowerSHA256(identity.Checksum) {
 			return fmt.Errorf("expected subsystem %s, observed incomplete migration identity in %s (filename=%q version=%d checksum=%q); apply the direct 5432 namespaced migration runner", sub, LedgerTable, identity.Filename, identity.Version, identity.Checksum)
 		}
 	}
@@ -295,7 +298,7 @@ func validateIdentity(sub Subsystem, snapshot SchemaSnapshot) error {
 		for _, identity := range snapshot.Identities {
 			if identity.Subsystem == string(sub) {
 				found = true
-				if identity.SchemaVersion <= 0 || !isSHA256(identity.Contract) {
+				if identity.SchemaVersion <= 0 || !isLowerSHA256(identity.Contract) {
 					return fmt.Errorf("expected subsystem %s, observed incomplete store identity in %s (schema_version=%d contract_checksum_sha256=%q); apply the direct 5432 namespaced migration runner", sub, IdentityTable, identity.SchemaVersion, identity.Contract)
 				}
 			}
@@ -313,6 +316,10 @@ func isSHA256(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func isLowerSHA256(value string) bool {
+	return isSHA256(value) && value == strings.ToLower(value)
 }
 
 func knownTable(table string) bool {

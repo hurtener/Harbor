@@ -28,6 +28,19 @@ type SQLExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+// sqlTxBeginner is the database/sql transaction boundary required by the
+// copier. A plain SQLExecutor is sufficient for read-only inspection, but a
+// copy must be able to apply transaction-local PostgreSQL timeouts on both
+// sides of the transfer.
+type sqlTxBeginner interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}
+
+const (
+	copyStatementTimeout = "2min"
+	copyLockTimeout      = "10s"
+)
+
 // InspectSQL discovers tables and ledgers from information_schema, then
 // streams each projection table once to produce a deterministic count/hash
 // snapshot. It deliberately retains no row bodies. The operation is read-only
@@ -217,7 +230,27 @@ func inspectRowsFingerprint(ctx context.Context, db SQLQuerier, table TableSpec,
 	if err != nil {
 		return TableManifest{}, fmt.Errorf("cutover: read %s: %w", table.Name, err)
 	}
-	defer func() { _ = rows.Close() }()
+	return inspectRowsFingerprintIterator(ctx, rows, table, columns)
+}
+
+// rowIterator is the small common subset of *sql.Rows used by the streaming
+// fingerprint loop. Keeping the loop on this interface makes its bounded
+// retention and cancellation behavior directly testable without materializing
+// a database result set in a fixture.
+type rowIterator interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+	Close() error
+}
+
+func inspectRowsFingerprintIterator(ctx context.Context, rows rowIterator, table TableSpec, columns []string) (TableManifest, error) {
+	closed := false
+	defer func() {
+		if !closed {
+			_ = rows.Close()
+		}
+	}()
 	orderedColumns := append([]string(nil), columns...)
 	sort.Strings(orderedColumns)
 	hash := sha256.New()
@@ -227,7 +260,18 @@ func inspectRowsFingerprint(ctx context.Context, db SQLQuerier, table TableSpec,
 		writeLengthPrefixed(hash, []byte(column))
 	}
 	var count int64
-	for rows.Next() {
+	for {
+		// Check before calling Next so cancellation never asks the driver for
+		// another row after the caller has stopped the operation.
+		if err := ctx.Err(); err != nil {
+			return TableManifest{}, fmt.Errorf("cutover: fingerprint %s interrupted: %w", table.Name, err)
+		}
+		if !rows.Next() {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return TableManifest{}, fmt.Errorf("cutover: fingerprint %s interrupted: %w", table.Name, err)
+		}
 		values := make([]any, len(columns))
 		pointers := make([]any, len(values))
 		for i := range values {
@@ -250,6 +294,11 @@ func inspectRowsFingerprint(ctx context.Context, db SQLQuerier, table TableSpec,
 	if err := rows.Err(); err != nil {
 		return TableManifest{}, fmt.Errorf("cutover: iterate %s: %w", table.Name, err)
 	}
+	if err := rows.Close(); err != nil {
+		closed = true
+		return TableManifest{}, fmt.Errorf("cutover: close %s stream: %w", table.Name, err)
+	}
+	closed = true
 	digest := hash.Sum(nil)
 	return TableManifest{Table: table.Name, Columns: append([]string(nil), columns...), RowCount: count, ContentSHA256: hex.EncodeToString(digest)}, nil
 }
@@ -434,17 +483,43 @@ func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subs
 	if batchSize <= 0 {
 		batchSize = 256
 	}
+	sourceBeginner, ok := source.(sqlTxBeginner)
+	if !ok {
+		return fmt.Errorf("cutover: copy %s.%s requires a transaction-capable direct PostgreSQL source", sub, table.Name)
+	}
+	destinationBeginner, ok := destination.(sqlTxBeginner)
+	if !ok {
+		return fmt.Errorf("cutover: copy %s.%s requires a transaction-capable direct PostgreSQL destination", sub, table.Name)
+	}
 	selectQuery, err := tableSelectQuery(table, columns)
 	if err != nil {
 		return err
 	}
 	readCtx, cancel := boundedSQLContext(ctx)
 	defer cancel()
-	rows, err := source.QueryContext(readCtx, selectQuery)
+	sourceTx, err := sourceBeginner.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("cutover: begin source %s.%s snapshot: %w", sub, table.Name, err)
+	}
+	rolledBack := false
+	defer func() {
+		if !rolledBack {
+			_ = sourceTx.Rollback()
+		}
+	}()
+	if err := setCopyTimeouts(readCtx, sourceTx); err != nil {
+		return fmt.Errorf("cutover: configure source %s.%s timeouts: %w", sub, table.Name, err)
+	}
+	rows, err := sourceTx.QueryContext(readCtx, selectQuery)
 	if err != nil {
 		return fmt.Errorf("cutover: stream source %s.%s: %w", sub, table.Name, err)
 	}
-	defer func() { _ = rows.Close() }()
+	rowsClosed := false
+	defer func() {
+		if !rowsClosed {
+			_ = rows.Close()
+		}
+	}()
 
 	placeholders := make([]string, len(columns))
 	quotedColumns := make([]string, len(columns))
@@ -453,8 +528,15 @@ func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subs
 		quotedColumns[i] = quoteIdentifier(column)
 	}
 	insertQuery := "INSERT INTO " + quoteIdentifier(table.Name) + " (" + strings.Join(quotedColumns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ") ON CONFLICT DO NOTHING"
+	batch := make([]Row, 0, batchSize)
 	var copied int64
-	for rows.Next() {
+	for {
+		if err := readCtx.Err(); err != nil {
+			return fmt.Errorf("cutover: copy %s.%s interrupted after %d rows: %w", sub, table.Name, copied, err)
+		}
+		if !rows.Next() {
+			break
+		}
 		values := make([]any, len(columns))
 		pointers := make([]any, len(values))
 		for i := range values {
@@ -466,16 +548,17 @@ func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subs
 		if err := readCtx.Err(); err != nil {
 			return fmt.Errorf("cutover: copy %s.%s interrupted after %d rows: %w", sub, table.Name, copied, err)
 		}
-		if _, err := destination.ExecContext(readCtx, insertQuery, values...); err != nil {
-			return fmt.Errorf("cutover: copy %s.%s row %d: %w", sub, table.Name, copied, err)
+		row := make(Row, len(columns))
+		for i, column := range columns {
+			row[column] = cloneValue(values[i])
 		}
+		batch = append(batch, row)
 		copied++
-		// The SQL writer commits each row. BatchSize bounds the amount of
-		// work between observable progress points without retaining payloads.
-		if copied%int64(batchSize) == 0 {
-			if err := readCtx.Err(); err != nil {
-				return fmt.Errorf("cutover: copy %s.%s interrupted after %d rows: %w", sub, table.Name, copied, err)
+		if len(batch) == batchSize {
+			if err := insertCopyBatch(readCtx, destinationBeginner, table, columns, insertQuery, batch); err != nil {
+				return fmt.Errorf("cutover: copy %s.%s batch ending at row %d: %w", sub, table.Name, copied, err)
 			}
+			batch = batch[:0]
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -484,9 +567,68 @@ func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subs
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("cutover: close source %s.%s stream: %w", sub, table.Name, err)
 	}
+	rowsClosed = true
+	if len(batch) > 0 {
+		if err := insertCopyBatch(readCtx, destinationBeginner, table, columns, insertQuery, batch); err != nil {
+			return fmt.Errorf("cutover: copy %s.%s final batch ending at row %d: %w", sub, table.Name, copied, err)
+		}
+	}
 	if expectedRows != copied {
 		return fmt.Errorf("cutover: source %s.%s changed during frozen copy: manifest rows=%d streamed rows=%d", sub, table.Name, expectedRows, copied)
 	}
+	if err := sourceTx.Commit(); err != nil {
+		return fmt.Errorf("cutover: close source %s.%s snapshot: %w", sub, table.Name, err)
+	}
+	rolledBack = true
+	return nil
+}
+
+func setCopyTimeouts(ctx context.Context, tx *sql.Tx) error {
+	var statementTimeout, lockTimeout string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT set_config('statement_timeout', $1, true),
+		       set_config('lock_timeout', $2, true)`, copyStatementTimeout, copyLockTimeout).Scan(&statementTimeout, &lockTimeout); err != nil {
+		return err
+	}
+	if statementTimeout == "" || lockTimeout == "" {
+		return fmt.Errorf("postgresql returned empty transaction-local timeout settings")
+	}
+	return nil
+}
+
+func insertCopyBatch(ctx context.Context, beginner sqlTxBeginner, table TableSpec, columns []string, insertQuery string, batch []Row) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	tx, err := beginner.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin destination transaction for %s: %w", table.Name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := setCopyTimeouts(ctx, tx); err != nil {
+		return fmt.Errorf("configure destination %s timeouts: %w", table.Name, err)
+	}
+	for _, row := range batch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		values := make([]any, len(columns))
+		for i, column := range columns {
+			values[i] = row[column]
+		}
+		if _, err := tx.ExecContext(ctx, insertQuery, values...); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
