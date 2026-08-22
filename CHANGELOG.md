@@ -17,6 +17,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- v1.29.1 cutover tooling now classifies PostgreSQL sources from observed
+  schemas across state, memory, artifacts, skills, sessions/turns, and
+  observability/rollups; copies are bounded, resumable, non-destructive, and
+  cannot succeed until per-table row counts and canonical SHA-256 manifests
+  reconcile. Migration apply remains direct/session-affine on PostgreSQL 5432;
+  read-only verify may use transaction-pooled 6432. Existing split DSNs remain
+  supported during the first rollout, with same-DSN consolidation optional per
+  runtime. The exact wrong-ledger shape (legacy version 1 plus state records
+  presented as memory) is refused rather than treated as readiness.
+- Release-blocking production evidence on 2026-08-22 03:20–03:25Z showed
+  repeated per-session durable counter scans loading sequences 1,586–10,403,
+  transitioning from cancellation to PostgreSQL/PgBouncer `53300`; at
+  03:31–03:32Z artifacts/state health pings crash-looped during the same
+  connection exhaustion. The v1.29.1 pool budget and cutover procedure keep
+  those paths bounded without requiring a Render plan upgrade.
+
 ## [1.29.0] — 2026-08-20
 
 ### Added

@@ -126,7 +126,7 @@ func NewRootCmd() *cobra.Command {
 Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
-  Production          serve, token
+  Production          serve, token, postgres
   Run inspection      inspect-events, inspect-runs, inspect-topology,
                       composition-preview, tui
   Build information   version
@@ -168,6 +168,7 @@ docs/plans/README.md for the implementation schedule.`,
 	root.AddCommand(newInspectTopologyCmd())
 	root.AddCommand(newCompositionPreviewCmd())
 	root.AddCommand(newTUICmd())
+	root.AddCommand(newPostgresCmd())
 
 	return root
 }

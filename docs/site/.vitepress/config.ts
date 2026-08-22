@@ -248,6 +248,7 @@ export default defineConfig({
             { text: "Control attachment disposition", link: "/recipes/control-attachment-disposition" },
             { text: "Provider-native attachments", link: "/recipes/provider-native-attachments" },
             { text: "Embed and retrieve", link: "/recipes/embed-and-retrieve" },
+            { text: "Consolidate split PostgreSQL projections", link: "/recipes/postgres-split-to-unified-cutover" },
           ],
         },
       ],

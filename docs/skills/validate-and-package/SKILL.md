@@ -93,6 +93,7 @@ Beyond the gates above, before deploying to a non-dev environment:
 - [ ] `telemetry.log_format: json` (default) — for log aggregator ingestion.
 - [ ] `telemetry.log_level: info` (NOT `debug` — debug leaks prompt/completion content).
 - [ ] If using Postgres: migrations run on a direct/session-capable endpoint. For transaction-pooled steady state, every Postgres store uses the pooled DSN plus `migration_mode: verify`; a restart must pass the read-only ledger check. Empty/`apply` is not pooler-safe because it takes a session advisory lock.
+- [ ] For a v1.29.1 split-to-unified rollout, keep distinct subsystem DSNs on the first boot under the aggregate `postgres.pool.max_open` budget. Use `harbor postgres cutover --mode inspect` before a freeze/drain, then `--mode copy --freeze-ack` to a destination prepared through direct PostgreSQL `5432`; use `--mode verify` through `6432` only after the copy. The command never removes source databases and refuses the wrong `schema_migrations(version=1)+state_records` shape as memory.
 - [ ] If using SQLite: WAL mode confirmed, DSN on a fast disk.
 
 The v1.28 projection and boot-baseline blocks are deployment decisions, not defaults:

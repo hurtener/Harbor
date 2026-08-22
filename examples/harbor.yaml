@@ -24,8 +24,9 @@ telemetry:
   log_level: info
   service_name: harbor
 
-# Runtime-wide PostgreSQL budget. Equal subsystem DSNs share one pool;
-# distinct legacy DSNs still share this aggregate cap.
+# v1.29.1 runtime-wide PostgreSQL budget. Equal subsystem DSNs share one pool;
+# distinct legacy DSNs still share this aggregate cap during the staged first
+# boot. All fields are restart-required.
 postgres:
   pool:
     max_open: 3

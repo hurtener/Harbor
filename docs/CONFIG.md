@@ -17,6 +17,47 @@ Conventions used throughout:
 For the tiered yaml template used by `harbor init`, see
 `cmd/harbor/init/templates/default/harbor.yaml.tmpl`.
 
+## Runtime-wide PostgreSQL budget (v1.29.1)
+
+These restart-required fields are one aggregate budget for every compatible
+PostgreSQL projection in one Harbor runtime: state, memory, artifacts, skills,
+sessions/turns, and observability/rollups. They are not six per-store
+allowances. Equal canonical DSNs share one runtime-owned `*sql.DB`; distinct
+DSNs remain supported and charge every acquisition to the same runtime-wide
+budget.
+
+```yaml
+postgres:
+  pool:
+    max_open: 3
+    max_idle: 1
+    conn_max_lifetime: 5m
+    conn_max_idle_time: 30s
+  migration:
+    max_concurrent: 6
+```
+
+`postgres.pool.max_open` must be positive and is the aggregate open-permit
+ceiling. `postgres.pool.max_idle` must be non-negative and is the aggregate
+idle target. `conn_max_lifetime` and `conn_max_idle_time` are finite; the
+production default idle lifetime is 30 seconds. `postgres.migration.max_concurrent`
+is the maximum number of direct migration sessions across an operator rollout.
+
+The Basic-4GB connection proof is nine runtimes × two generations × three
+open permits = 54, plus six direct migration sessions, 12 reserved
+Pengui/capabilities connections, and a 25-connection operator reserve = 97 of
+the live `max_connections=103`, leaving six below the hard cap. Steady state is
+70. No plan upgrade is required by this posture.
+
+Migration `apply` must use a direct/session-affine PostgreSQL endpoint,
+normally port `5432`, because the runner takes a session advisory lock.
+Migration `verify` is read-only and may use transaction-pooled PgBouncer
+`6432` after direct apply. An unproven transaction-pooled apply endpoint fails
+closed.
+
+For the staged split-to-unified procedure and machine-readable row/hash
+manifests, see [Consolidate split PostgreSQL projections](recipes/postgres-split-to-unified-cutover.md).
+
 ---
 
 ## Server

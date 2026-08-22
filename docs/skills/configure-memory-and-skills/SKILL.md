@@ -221,7 +221,7 @@ tools:
 
 Switching backends is a `driver:` + `dsn:` change — the CLI verbs, meta-tools, directory, and semantic mode all behave identically (proven by the shared conformance suite). Identity scoping (`(tenant, user, session)` in the SQL `WHERE`) is enforced at the driver on both.
 
-For Postgres, empty/`apply` runs forward migrations under a session advisory lock and therefore needs a direct/session-capable endpoint. A transaction-pooled steady-state deployment first completes that apply separately, then switches BOTH the DSN to the pooler and `migration_mode` to `verify`. Verify mode reads the subsystem's namespaced `harbor_schema_migrations` and `harbor_store_identity` plus required physical schema, refuses startup if identity/checksums/schema or any embedded version is missing, and never creates or repairs schema through the pool.
+For Postgres, empty/`apply` runs forward migrations under a session advisory lock and therefore needs a direct/session-capable endpoint. A transaction-pooled steady-state deployment first completes that apply separately, then switches BOTH the DSN to the pooler and `migration_mode` to `verify`. Verify mode proves the subsystem's namespaced `harbor_schema_migrations` and `harbor_store_identity` rows plus required physical schema; a state ledger or `state_records` table never satisfies memory. It refuses startup if identity, checksums, schema, or any embedded version is missing and never creates or repairs schema through the pool. During a staged v1.29.1 rollout, use `harbor postgres cutover --mode inspect` and the non-destructive `--mode copy --freeze-ack` procedure from the PostgreSQL cutover recipe before switching one runtime to a unified DSN.
 
 ### Node-local boot agent packs (HA-66) — `skills.boot_agent_packs`
 
