@@ -390,6 +390,7 @@ func TestCounterEnricher_DurableReplay_RealEncoder(t *testing.T) {
 		SubscriberBufferSize:     8,
 		DropWindow:               50 * time.Millisecond,
 		ReplayBufferSize:         0, // durable mode: ListWindow reads the log, not a ring
+		LegacyWritersDrained:     true,
 	}
 	bus, err := durable.New(context.Background(), cfg, passRedactor{}, st)
 	if err != nil {

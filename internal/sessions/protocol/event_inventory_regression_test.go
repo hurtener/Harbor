@@ -111,6 +111,7 @@ func TestService_SessionsList_DurableInventoryBoundsLoadsAndJoinsCancellation(t 
 		IdleTimeout:              time.Minute,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}
 	bus, err := durable.New(context.Background(), cfg, passRedactor{}, store)
 	if err != nil {

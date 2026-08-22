@@ -344,8 +344,9 @@ events:
   # is required whenever state_driver is sqlite or postgres.
   #   state_driver: sqlite
   #   state_dsn: /var/lib/harbor/events.db
-  # v1.29.0 -> v1.29.1 durable upgrade only: set true only after every old
-  # event-writing Runtime sharing this StateStore has stopped. Ordinary
+  # Required whenever a durable store has no v1.29.1 authority, even when its
+  # scan is empty: set true only after every old event-writing Runtime sharing
+  # this StateStore has stopped. Ordinary
   # rolling replacement is unsafe; use stop-before-start/suspend-resume.
   # Migration-only processes are not event writers.
   #   legacy_writers_drained: true

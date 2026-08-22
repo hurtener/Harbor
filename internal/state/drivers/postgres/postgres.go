@@ -419,13 +419,20 @@ func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpec
 			return d.translateUpsertErr(err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return d.translateErr(err, "postgres: commit conditional batch")
-		}
-		return fmt.Errorf("postgres: commit conditional batch: %w: %v", state.ErrCommitOutcomeUnknown, err)
+	if err := commitConditionalBatch(ctx, tx.Commit); err != nil {
+		return err
 	}
 	committed = true
+	return nil
+}
+
+func commitConditionalBatch(ctx context.Context, commit func() error) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("postgres: conditional batch cancelled before commit: %w", err)
+	}
+	if err := commit(); err != nil {
+		return fmt.Errorf("postgres: commit conditional batch: %w: %v", state.ErrCommitOutcomeUnknown, err)
+	}
 	return nil
 }
 
@@ -681,12 +688,13 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 		return 0, err
 	}
 
-	const q1 = `
-		DELETE FROM state_records
-		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
-		  AND left(kind, char_length($4)) COLLATE "C" <> $4 COLLATE "C"
-	`
-	res, err := d.db.ExecContext(ctx, q1, id.TenantID, id.UserID, id.SessionID, state.InternalKindPrefix)
+	q1 := `DELETE FROM state_records WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3`
+	args := []any{id.TenantID, id.UserID, id.SessionID}
+	if identity.IsInternalCoordination(id) {
+		q1 += ` AND left(kind, char_length($4)) COLLATE "C" <> $4 COLLATE "C"`
+		args = append(args, state.InternalKindPrefix)
+	}
+	res, err := d.db.ExecContext(ctx, q1, args...)
 	if err != nil {
 		return 0, d.translateErr(err, "postgres: delete scope")
 	}

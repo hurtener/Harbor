@@ -126,15 +126,15 @@ func TestDurable_TwoIndependentBuses_ShareSessionFence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
 	assertAllReadsFenced(t, restarted, id)
-	if err := left.(events.Fencer).Unfence(context.Background(), id.Identity); err != nil {
+	if err := right.(events.Fencer).Unfence(context.Background(), id.Identity); err != nil {
 		t.Fatalf("Unfence: %v", err)
 	}
-	if err := right.Publish(context.Background(), events.Event{
+	if err := left.Publish(context.Background(), events.Event{
 		Type: events.EventTypeRuntimeWarning, Identity: id, Payload: runtimeWarn("after-unfence"),
 	}); err != nil {
 		t.Fatalf("Publish after remote unfence: %v", err)
 	}
-	got, err := restarted.(events.Replayer).Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, filterFor(id))
+	got, err := left.(events.Replayer).Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, filterFor(id))
 	if err != nil || len(got) != 2 {
 		t.Fatalf("Replay after Unfence = %+v, %v; want two events", got, err)
 	}

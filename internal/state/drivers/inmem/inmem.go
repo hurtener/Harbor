@@ -388,7 +388,7 @@ func (d *driver) DeleteScope(_ context.Context, id identity.Identity) (int, erro
 		if key.Tenant != id.TenantID || key.User != id.UserID || key.Session != id.SessionID {
 			continue
 		}
-		if state.IsInternalKind(key.Kind) {
+		if identity.IsInternalCoordination(id) && state.IsInternalKind(key.Kind) {
 			continue
 		}
 		delete(d.records, key)

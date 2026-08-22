@@ -34,6 +34,7 @@ func stateHistCfg() config.EventsConfig {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}
 }
 

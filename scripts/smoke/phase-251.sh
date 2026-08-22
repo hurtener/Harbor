@@ -97,6 +97,10 @@ assert_grep_present \
     'Migration-only processes that cannot publish events' \
     "docs/recipes/postgres-split-to-unified-cutover.md" \
     "migration-only overlap is distinguished from event writers"
+assert_grep_present \
+    'An empty store still requires acknowledgement' \
+    "docs/recipes/postgres-split-to-unified-cutover.md" \
+    "empty authority-absent stores fail closed"
 # ----------------------------------------------------------------------------
 
 smoke_summary

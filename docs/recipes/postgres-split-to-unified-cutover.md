@@ -13,7 +13,7 @@ after the release has been observed and the rollback window has closed.
 
 ## Stop legacy event writers before the first v1.29.1 writer
 
-For a non-empty v1.29.0 durable event store, stop every old process capable of
+Before creating v1.29.1 authority in any durable event store, stop every old process capable of
 publishing events to the same StateStore scope, then set:
 
 The exact acknowledgement key is `events.legacy_writers_drained: true`.
@@ -27,9 +27,10 @@ An ordinary rolling or zero-downtime deployment is **not compliant**: it
 starts a v1.29.1 event writer before the v1.29.0 writer has stopped. Use true
 stop-before-start, suspend-then-resume, or an equivalent platform guarantee.
 Migration-only processes that cannot publish events may overlap; they are not
-event writers. Fresh empty stores and stores whose v1.29.1 authority has
-already been adopted do not require this legacy acknowledgement. Do not set
-the key merely because a migration command has completed.
+event writers. An empty store still requires acknowledgement because its scan
+cannot prove a silent legacy writer is absent. Stores whose v1.29.1 authority
+has already been adopted do not require it on restart. Do not set the key
+merely because a migration command has completed.
 
 ## Connection budget
 

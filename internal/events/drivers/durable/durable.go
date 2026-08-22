@@ -100,9 +100,7 @@ const (
 	publishCASMaxAttempts = 256
 )
 
-var sequenceAuthorityIdentity = identity.Quadruple{Identity: identity.Identity{
-	TenantID: "__harbor_internal__", UserID: "events", SessionID: "global_sequence_authority",
-}}
+var sequenceAuthorityIdentity = identity.InternalCoordinationQuadruple()
 
 type sequenceAuthorityRecord struct {
 	Sequence uint64 `json:"sequence"`
@@ -255,8 +253,8 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 			if authorityErr != nil {
 				return fmt.Errorf("durable: inspect sequence authority: %w", authorityErr)
 			}
-			if current.maxSeq > 0 && authorityExpectation.ExpectedEventID == "" && !b.cfg.LegacyWritersDrained {
-				return fmt.Errorf("durable: legacy event history requires events.legacy_writers_drained=true after every v1.29.0 event writer sharing this StateStore has stopped; rolling writer overlap is unsafe")
+			if authorityExpectation.ExpectedEventID == "" && !b.cfg.LegacyWritersDrained {
+				return fmt.Errorf("durable: sequence authority is absent; events.legacy_writers_drained=true is required after every v1.29.0 event writer sharing this StateStore has stopped, even when the head scan is empty; rolling writer overlap is unsafe")
 			}
 			authoritySeq, err := b.adoptSequenceAuthority(ctx, current.maxSeq)
 			if err != nil {
@@ -298,7 +296,7 @@ func (b *bus) adoptSequenceAuthority(ctx context.Context, floor uint64) (uint64,
 		if err != nil {
 			return 0, err
 		}
-		if current >= floor {
+		if expected.ExpectedEventID != "" && current >= floor {
 			return current, nil
 		}
 		payload, err := json.Marshal(sequenceAuthorityRecord{Sequence: floor})
@@ -600,17 +598,29 @@ func durableFenceKind(id identity.Identity) string {
 }
 
 func (b *bus) isDurablyFenced(ctx context.Context, id identity.Quadruple) (bool, error) {
-	if b.isFenced(id) {
-		return true, nil
-	}
 	_, err := b.store.Load(ctx, sequenceAuthorityIdentity, durableFenceKind(id.Identity))
 	if err == nil {
+		b.setFenceCache(id.Identity, true)
 		return true, nil
 	}
 	if errors.Is(err, state.ErrNotFound) {
+		b.setFenceCache(id.Identity, false)
 		return false, nil
 	}
 	return false, fmt.Errorf("load durable session fence: %w", err)
+}
+
+func (b *bus) setFenceCache(id identity.Identity, fenced bool) {
+	b.fenceMu.Lock()
+	defer b.fenceMu.Unlock()
+	if fenced {
+		if b.fenced == nil {
+			b.fenced = map[string]struct{}{}
+		}
+		b.fenced[fenceKey(id)] = struct{}{}
+		return
+	}
+	delete(b.fenced, fenceKey(id))
 }
 
 type durableFenceSnapshot map[string]struct{}
@@ -829,11 +839,10 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 	// Fenced-session drop. Checked under publishMu (the same lock Fence
 	// acquires) so the fence and the persist never disagree: an event that
 	// reaches here after Fence took hold is dropped and never retained.
-	if b.isFenced(ev.Identity) {
-		return errEventFenced
-	}
-
 	if b.bestEffort {
+		if b.isFenced(ev.Identity) {
+			return errEventFenced
+		}
 		seq := b.nextSeq + 1
 		ev.Sequence = seq
 		if b.ringCap > 0 {
@@ -841,6 +850,13 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 		}
 		b.nextSeq = seq
 		return nil
+	}
+	fenced, err := b.isDurablyFenced(ctx, ev.Identity)
+	if err != nil {
+		return err
+	}
+	if fenced {
+		return errEventFenced
 	}
 
 	seq, err := b.persistAtomic(ctx, ev)
@@ -1695,9 +1711,6 @@ func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (
 			UserID:    events.WireFilterFirst(q.Filter.UserIDs),
 			SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
 		}}
-		if b.isFenced(id) {
-			return events.MetadataListPage{}, nil
-		}
 		hd, err := b.loadHead(ctx, id)
 		if err != nil {
 			return events.MetadataListPage{}, fmt.Errorf("durable: events.list metadata load head: %w", err)
@@ -1716,7 +1729,7 @@ func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (
 			if err := ctx.Err(); err != nil {
 				return events.MetadataListPage{}, err
 			}
-			if rec.Kind != kindHead || !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) || b.isFenced(rec.Identity) || adminFences.contains(rec.Identity) {
+			if rec.Kind != kindHead || !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) || adminFences.contains(rec.Identity) {
 				continue
 			}
 			hd, err := decodeHead(rec.Bytes)
@@ -1808,9 +1821,6 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 			UserID:    events.WireFilterFirst(q.Filter.UserIDs),
 			SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
 		}}
-		if b.isFenced(quad) {
-			return events.EventListPage{}, nil
-		}
 		hd, err := b.loadHead(ctx, quad)
 		if err != nil {
 			return events.EventListPage{}, fmt.Errorf("durable: events.list load head: %w", err)
@@ -1841,7 +1851,7 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 			if !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) {
 				continue
 			}
-			if b.isFenced(rec.Identity) || adminFences.contains(rec.Identity) {
+			if adminFences.contains(rec.Identity) {
 				continue
 			}
 			hd, err := decodeHead(rec.Bytes)

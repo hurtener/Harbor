@@ -23,8 +23,8 @@ Two versions move independently in Harbor (RFC §5.3):
   sequence authority, body, and session head across runtimes. Persisted fences
   hide pre-existing history from other and restarted runtimes, including list,
   metadata, bounds, replay, and projection consumers; only an explicitly
-  ambiguous commit acknowledgement poisons a bus. Upgrading a non-empty
-  v1.29.0 durable event store requires
+  ambiguous commit acknowledgement poisons a bus. Any authority-absent durable
+  event store, including an empty scan, requires
   `events.legacy_writers_drained: true` after all old event writers stop.
   Ordinary rolling/zero-downtime replacement is not compliant; use true
   stop-before-start or suspend-then-resume. Migration-only non-writers may

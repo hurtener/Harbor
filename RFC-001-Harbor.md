@@ -1579,15 +1579,19 @@ present slots. Durable event publication uses this operation to advance the
 shared sequence authority and commit the immutable body and conditional
 session head together, preserving gap-free visibility across runtimes.
 The authority and durable session fences occupy a StateStore-reserved internal
-Kind namespace which external records and scope deletion cannot reach. Every
+Kind namespace at one exact coordination identity which external records and
+scope deletion cannot reach. Prefix-shaped legacy rows at ordinary identities
+remain ordinary erasable session data. Every
 durable history/index/projection reader observes the persisted fence and
 rechecks before exposing results. Drivers report only genuinely ambiguous
 transaction commit acknowledgement as `ErrCommitOutcomeUnknown`; callers do
 not poison themselves on definite conflicts, cancellation, validation, or
-known rollback. Legacy non-empty stores require the explicit
+known rollback. Every authority-absent durable store, including an empty one,
+requires the explicit
 `events.legacy_writers_drained` adoption acknowledgement after every old event
 writer sharing the scope has stopped; an ordinary rolling/zero-downtime
 upgrade is not compliant, while migration-only non-writers may overlap.
+Already-authority restarts require no repeated acknowledgement.
 
 **Session-owned records and fence composition (D-400).** `SaveIf` compares
 many slots but writes exactly one `next` slot. `SaveBatchIf` is reserved for

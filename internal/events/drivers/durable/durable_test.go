@@ -320,48 +320,28 @@ func TestDurable_NoStateStore_DegradesLoudly(t *testing.T) {
 // failingStore is a state.StateStore whose Save always fails. Used to
 // prove the durable driver surfaces a persistence failure loudly
 // rather than silently dropping the event.
-type failingStore struct{ saveErr error }
+type failingStore struct {
+	state.StateStore
+	saveErr          error
+	authorityAdopted bool
+}
 
-func (f *failingStore) Save(context.Context, state.StateRecord) error { return f.saveErr }
-func (f *failingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
+func (f *failingStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if !f.authorityAdopted {
+		f.authorityAdopted = true
+		return f.StateStore.SaveBatchIf(ctx, expectations, writes)
+	}
 	return f.saveErr
 }
-func (f *failingStore) SaveBatchIf(context.Context, []state.SlotExpectation, []state.StateRecord) error {
-	return f.saveErr
-}
-func (f *failingStore) FenceIf(context.Context, state.SlotExpectation, func() error) error {
-	return f.saveErr
-}
-func (f *failingStore) DeleteIf(context.Context, state.SlotExpectation) (bool, error) {
-	return false, f.saveErr
-}
-func (f *failingStore) Load(context.Context, identity.Quadruple, string) (state.StateRecord, error) {
-	return state.StateRecord{}, state.ErrNotFound
-}
-func (f *failingStore) LoadByEventID(context.Context, state.EventID) (state.StateRecord, error) {
-	return state.StateRecord{}, state.ErrNotFound
-}
-func (f *failingStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
-func (f *failingStore) DeleteScope(context.Context, identity.Identity) (int, error) {
-	return 0, nil
-}
-func (f *failingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
-	return nil, nil
-}
-func (f *failingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
-	return nil, nil
-}
-func (f *failingStore) ListKindForIdentityBounded(context.Context, identity.Quadruple, string, int) ([]state.StateRecord, error) {
-	return nil, nil
-}
-func (f *failingStore) ScanKindForTenant(context.Context, state.ListScope, string, string, int, string) (state.StateScanPage, error) {
-	return state.StateScanPage{}, f.saveErr
-}
-func (f *failingStore) Close(context.Context) error { return nil }
 
 func TestDurable_PersistFailure_SurfacesLoudly(t *testing.T) {
 	sentinel := errors.New("disk on fire")
-	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), &failingStore{saveErr: sentinel})
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failingStore{StateStore: inner, saveErr: sentinel}
+	bus, err := durable.New(context.Background(), durableCfg(), auditpatterns.New(), failing)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)
 	}

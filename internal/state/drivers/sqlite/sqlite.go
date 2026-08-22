@@ -588,13 +588,20 @@ func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpec
 			return fmt.Errorf("state/sqlite: conditional batch upsert: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("state/sqlite: commit conditional batch: %w", err)
-		}
-		return fmt.Errorf("state/sqlite: commit conditional batch: %w: %v", state.ErrCommitOutcomeUnknown, err)
+	if err := commitConditionalBatch(ctx, tx.Commit); err != nil {
+		return err
 	}
 	committed = true
+	return nil
+}
+
+func commitConditionalBatch(ctx context.Context, commit func() error) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("state/sqlite: conditional batch cancelled before commit: %w", err)
+	}
+	if err := commit(); err != nil {
+		return fmt.Errorf("state/sqlite: commit conditional batch: %w: %v", state.ErrCommitOutcomeUnknown, err)
+	}
 	return nil
 }
 
@@ -817,11 +824,13 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 		return 0, err
 	}
 
-	const del = `
-        DELETE FROM state_records
-        WHERE tenant = ? AND user = ? AND session = ?
-          AND substr(kind, 1, length(?)) <> ? COLLATE BINARY`
-	res, err := d.db.ExecContext(ctx, del, id.TenantID, id.UserID, id.SessionID, state.InternalKindPrefix, state.InternalKindPrefix)
+	del := `DELETE FROM state_records WHERE tenant = ? AND user = ? AND session = ?`
+	args := []any{id.TenantID, id.UserID, id.SessionID}
+	if identity.IsInternalCoordination(id) {
+		del += ` AND substr(kind, 1, length(?)) <> ? COLLATE BINARY`
+		args = append(args, state.InternalKindPrefix, state.InternalKindPrefix)
+	}
+	res, err := d.db.ExecContext(ctx, del, args...)
 	if err != nil {
 		return 0, fmt.Errorf("state/sqlite: delete scope: %w", err)
 	}

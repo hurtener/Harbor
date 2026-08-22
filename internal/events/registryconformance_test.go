@@ -76,6 +76,7 @@ func registryEventsCfg() config.EventsConfig {
 		IdleTimeout:              time.Second,
 		DropWindow:               50 * time.Millisecond,
 		ReplayBufferSize:         512,
+		LegacyWritersDrained:     true,
 	}
 }
 

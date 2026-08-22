@@ -76,6 +76,7 @@ func newP161Stack(t *testing.T) *p161Stack {
 		IdleTimeout:              time.Minute,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         256,
+		LegacyWritersDrained:     true,
 	}, red, st)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

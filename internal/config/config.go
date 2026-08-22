@@ -1140,9 +1140,9 @@ type EventsConfig struct {
 	ReplayBufferSize         int           `yaml:"replay_buffer_size"`
 	StateDriver              string        `yaml:"state_driver,omitempty"`
 	StateDSN                 string        `yaml:"state_dsn,omitempty" secret:"true"`
-	// LegacyWritersDrained acknowledges a stop-before-start v1.29.0 to
-	// v1.29.1 durable-event cutover. It is required when legacy heads exist
-	// but the shared sequence authority has not yet been adopted.
+	// LegacyWritersDrained acknowledges a stop-before-start writer drain before
+	// creating durable sequence authority. Authority absence requires it even
+	// when the current head scan is empty.
 	LegacyWritersDrained bool `yaml:"legacy_writers_drained,omitempty"`
 }
 

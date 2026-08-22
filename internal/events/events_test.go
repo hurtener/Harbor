@@ -94,6 +94,11 @@ func TestValidateEvent_Cases(t *testing.T) {
 			events.ErrIdentityRequired,
 		},
 		{
+			"reserved coordination identity",
+			events.Event{Type: events.EventTypeRuntimeError, Identity: identity.InternalCoordinationQuadruple(), Payload: events.BusDroppedPayload{}},
+			events.ErrIdentityRequired,
+		},
+		{
 			"sequence pre-filled",
 			events.Event{Type: events.EventTypeRuntimeError, Identity: id, Sequence: 42, Payload: events.BusDroppedPayload{}},
 			events.ErrSequenceProvided,

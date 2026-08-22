@@ -129,7 +129,7 @@ func Run(t *testing.T, factory Factory) {
 		s, cleanup := factory()
 		defer cleanup()
 		ctx := context.Background()
-		q := tripleA()
+		q := identity.InternalCoordinationQuadruple()
 		kind := state.InternalKindPrefix + "conformance/authority"
 		internal := state.NewInternalRecord("01HABXXX00000000BI", q, kind, []byte("authority"))
 		if err := s.Save(ctx, internal); err != nil {
@@ -137,6 +137,9 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000000BJ", Identity: q, Kind: kind, Bytes: []byte("collision")}); !errors.Is(err, state.ErrReservedKind) {
 			t.Fatalf("external internal-kind Save = %v, want ErrReservedKind", err)
+		}
+		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000000BK", Identity: q, Kind: "ordinary", Bytes: []byte("collision")}); !errors.Is(err, state.ErrReservedIdentity) {
+			t.Fatalf("external sentinel-identity Save = %v, want ErrReservedIdentity", err)
 		}
 		if _, err := s.DeleteScope(ctx, q.Identity); err != nil {
 			t.Fatalf("DeleteScope sentinel identity: %v", err)
@@ -151,6 +154,18 @@ func Run(t *testing.T, factory Factory) {
 		deleted, err := s.DeleteIf(ctx, state.InternalSlotExpectation(q, kind, internal.ID))
 		if err != nil || !deleted {
 			t.Fatalf("authorized internal DeleteIf = %v, %v", deleted, err)
+		}
+
+		ordinary := tripleA()
+		legacy := state.NewInternalRecord("01HABXXX00000000BL", ordinary, kind, []byte("legacy ordinary scope"))
+		if err := s.Save(ctx, legacy); err != nil {
+			t.Fatalf("seed legacy ordinary internal-kind row: %v", err)
+		}
+		if n, err := s.DeleteScope(ctx, ordinary.Identity); err != nil || n != 1 {
+			t.Fatalf("DeleteScope legacy ordinary row = %d, %v; want 1", n, err)
+		}
+		if _, err := s.Load(ctx, ordinary, kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("legacy ordinary internal-kind row survived erasure: %v", err)
 		}
 	})
 

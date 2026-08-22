@@ -13638,8 +13638,10 @@ driver reports that ambiguity only as `state.ErrCommitOutcomeUnknown` at the
 transaction commit boundary. Definite conflicts, validation failures,
 cancellation, encoding failures, and known rollbacks do not poison the bus.
 The authority and session-fence slots use the protected `harbor.internal/`
-StateStore Kind namespace: external writes/deletes are rejected and session
-`DeleteScope` never reaches it. Durable history reads consult the shared
+StateStore Kind namespace at one exact coordination identity: external
+writes/deletes are rejected and session `DeleteScope` never reaches those
+slots. Prefix-shaped legacy rows at ordinary identities remain erasable.
+Durable history reads consult the shared
 persisted fence, then recheck it before exposure; fleet reads use two bounded
 fence snapshots rather than one acquisition per event. A
 complete index never points at a missing body, a committed body is not omitted
@@ -13652,15 +13654,16 @@ fails loudly or exposes an honest incomplete/partial state. The rollup
 projection remains D-426's rebuildable, best-effort derived state over the
 canonical sequence, not a billing ledger or general-purpose TSDB.
 
-**Mixed-version writer barrier.** Before adopting a legacy durable event store,
+**Mixed-version writer barrier.** Before creating authority in any durable event store,
 v1.29.1 requires the explicit `events.legacy_writers_drained: true`
 acknowledgement. Set it only after every v1.29.0 event writer sharing that
 StateStore scope has stopped. An ordinary rolling or zero-downtime deployment
 is not compliant because the new writer starts before the old writer stops;
 use true stop-before-start, suspend-then-resume, or an equivalent platform
 guarantee. Migration-only processes that cannot publish events are not event
-writers. Fresh empty stores and already-adopted stores do not require the
-legacy acknowledgement.
+writers. An empty scan is not proof that a silent legacy writer is absent, so
+an authority-absent empty store also requires acknowledgement. Once authority
+exists, restarts do not require the acknowledgement.
 
 **PostgreSQL ownership and budget decision.** The six compatible Harbor
 PostgreSQL projections are state, memory, artifacts, skills, sessions/turns,

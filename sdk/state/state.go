@@ -39,6 +39,8 @@ var (
 	ErrInvalidRecord = internal.ErrInvalidRecord
 	// ErrReservedKind — an ordinary caller targeted Harbor coordination state.
 	ErrReservedKind = internal.ErrReservedKind
+	// ErrReservedIdentity — an ordinary caller targeted Harbor's coordination principal.
+	ErrReservedIdentity = internal.ErrReservedIdentity
 	// ErrCommitOutcomeUnknown — a transaction commit acknowledgement was ambiguous.
 	ErrCommitOutcomeUnknown = internal.ErrCommitOutcomeUnknown
 	// ErrUnknownDriver — the named state driver is not registered.

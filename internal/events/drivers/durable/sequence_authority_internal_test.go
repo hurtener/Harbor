@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,8 +26,11 @@ type authorityConflictStore struct {
 
 type unknownCommitStore struct{ state.StateStore }
 
-func (s *unknownCommitStore) SaveBatchIf(context.Context, []state.SlotExpectation, []state.StateRecord) error {
-	return state.ErrCommitOutcomeUnknown
+func (s *unknownCommitStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if err := s.StateStore.SaveBatchIf(ctx, expectations, writes); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %v", state.ErrCommitOutcomeUnknown, context.Canceled)
 }
 
 func (s *authorityConflictStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
@@ -81,6 +85,9 @@ func TestSequenceAuthority_UnknownCommitPoisonsUntilRestart(t *testing.T) {
 	b.store = &unknownCommitStore{StateStore: inner}
 	if err := b.Publish(context.Background(), authorityTestEvent()); !errors.Is(err, state.ErrCommitOutcomeUnknown) {
 		t.Fatalf("Publish = %v, want ErrCommitOutcomeUnknown", err)
+	}
+	if seq, _, err := b.loadSequenceAuthority(context.Background()); err != nil || seq != 1 {
+		t.Fatalf("ambiguous applied commit authority = %d, %v; want 1", seq, err)
 	}
 	b.store = inner
 	if err := b.Publish(context.Background(), authorityTestEvent()); err == nil {
@@ -147,11 +154,24 @@ func TestSequenceAuthority_LegacyWriterDrainBarrier(t *testing.T) {
 	}
 	cfg := metadataCfg()
 	cfg.LegacyWritersDrained = false
+	if _, err := New(context.Background(), cfg, auditpatterns.New(), empty); err == nil || !strings.Contains(err.Error(), "events.legacy_writers_drained=true") {
+		t.Fatalf("authority-absent boot without acknowledgement = %v", err)
+	}
+	if _, err := empty.Load(context.Background(), sequenceAuthorityIdentity, kindSequenceAuthority); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("failed admission published authority: %v", err)
+	}
+	cfg.LegacyWritersDrained = true
 	fresh, err := New(context.Background(), cfg, auditpatterns.New(), empty)
 	if err != nil {
-		t.Fatalf("fresh empty durable store required acknowledgement: %v", err)
+		t.Fatalf("acknowledged empty-store boot: %v", err)
 	}
 	_ = fresh.Close(context.Background())
+	cfg.LegacyWritersDrained = false
+	restarted, err := New(context.Background(), cfg, auditpatterns.New(), empty)
+	if err != nil {
+		t.Fatalf("already-authority restart required acknowledgement: %v", err)
+	}
+	_ = restarted.Close(context.Background())
 
 	legacy, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {

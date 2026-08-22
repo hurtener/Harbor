@@ -99,7 +99,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		// Erased (fenced) session — exclude its history from the page
 		// (events.Fencer): an erasure that landed before this read must
 		// never be re-exposed.
-		if b.isFenced(rec.Identity) || fences.contains(rec.Identity) {
+		if fences.contains(rec.Identity) {
 			continue
 		}
 		hd, err := decodeHead(rec.Bytes)

@@ -598,7 +598,7 @@ func newWaveV126PostgresEraser(t *testing.T, dsn string) (*sessions.CascadeErase
 	redactor := auditpatterns.New()
 	bus, err := eventsdurable.New(ctx, config.EventsConfig{
 		Driver: "durable", MaxSubscribersPerSession: 16, SubscriberBufferSize: 64,
-		IdleTimeout: time.Minute, DropWindow: time.Second, ReplayBufferSize: 64,
+		IdleTimeout: time.Minute, DropWindow: time.Second, ReplayBufferSize: 64, LegacyWritersDrained: true,
 	}, redactor, store)
 	if err != nil {
 		_ = store.Close(ctx)

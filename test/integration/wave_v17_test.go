@@ -193,6 +193,7 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         256,
+		LegacyWritersDrained:     true,
 	}, red, store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

@@ -216,7 +216,9 @@ type StateStore interface {
 	//
 	// It is idempotent: an absent scope returns (0, nil), never an error,
 	// so a cascade interrupted mid-flight is safe to re-invoke to
-	// convergence. Returns the number of records deleted.
+	// convergence. Only reserved internal Kinds at the exact coordination
+	// identity survive; prefix-shaped legacy rows under ordinary identities are
+	// ordinary session data and are deleted. Returns the number of records deleted.
 	DeleteScope(ctx context.Context, id identity.Identity) (int, error)
 
 	// ListKind enumerates every record whose Kind starts with
@@ -327,6 +329,9 @@ var (
 	ErrInvalidRecord = errors.New("state: invalid record")
 	// ErrReservedKind rejects external mutation of Harbor coordination state.
 	ErrReservedKind = errors.New("state: reserved internal kind")
+	// ErrReservedIdentity rejects external mutation at Harbor's coordination
+	// principal, preventing caller-controlled identity aliasing.
+	ErrReservedIdentity = errors.New("state: reserved internal identity")
 	// ErrCommitOutcomeUnknown means Commit was attempted but the driver could
 	// not prove whether the server made the transaction durable.
 	ErrCommitOutcomeUnknown = errors.New("state: commit outcome unknown")
@@ -378,6 +383,9 @@ func ValidateRecord(r StateRecord) error {
 	if IsInternalKind(r.Kind) && !r.internal {
 		return ErrReservedKind
 	}
+	if identity.IsInternalCoordination(r.Identity.Identity) && !r.internal {
+		return ErrReservedIdentity
+	}
 	return nil
 }
 
@@ -408,6 +416,9 @@ func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
 		}
 		if IsInternalKind(expectation.Kind) && !expectation.internal {
 			return ErrReservedKind
+		}
+		if identity.IsInternalCoordination(expectation.Identity.Identity) && !expectation.internal {
+			return ErrReservedIdentity
 		}
 		s := slot{q: expectation.Identity, kind: expectation.Kind}
 		if _, ok := seen[s]; ok {
@@ -443,6 +454,9 @@ func ValidateSaveBatchIf(expectations []SlotExpectation, writes []StateRecord) e
 		}
 		if IsInternalKind(expectation.Kind) && !expectation.internal {
 			return ErrReservedKind
+		}
+		if identity.IsInternalCoordination(expectation.Identity.Identity) && !expectation.internal {
+			return ErrReservedIdentity
 		}
 		s := slot{q: expectation.Identity, kind: expectation.Kind}
 		if _, duplicate := expected[s]; duplicate {
@@ -484,6 +498,9 @@ func ValidateDeleteIf(expectation SlotExpectation) error {
 	}
 	if IsInternalKind(expectation.Kind) && !expectation.internal {
 		return ErrReservedKind
+	}
+	if identity.IsInternalCoordination(expectation.Identity.Identity) && !expectation.internal {
+		return ErrReservedIdentity
 	}
 	return nil
 }
