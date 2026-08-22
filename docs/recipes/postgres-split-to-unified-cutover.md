@@ -40,7 +40,9 @@ runtime-owned pool. Do not mitigate this incident by requiring a plan upgrade.
 ## 1. Inspect actual source schemas
 
 Use the DSN that currently serves a subsystem. The tool classifies from
-`information_schema`, not from an environment-variable name:
+`information_schema`, not from an environment-variable name. Inspect each
+source before starting any migration session and retain the JSON manifests as
+the source-classification evidence:
 
 ```bash
 harbor postgres cutover \
@@ -48,9 +50,21 @@ harbor postgres cutover \
   --subsystem state \
   --mode inspect \
   --manifest state-source.json
+
+harbor postgres cutover --source "$HARBOR_MEMORY_DSN" \
+  --subsystem memory --mode inspect --manifest memory-source.json
+harbor postgres cutover --source "$HARBOR_ARTIFACTS_DSN" \
+  --subsystem artifacts --mode inspect --manifest artifacts-source.json
+harbor postgres cutover --source "$HARBOR_SKILLS_DSN" \
+  --subsystem skills --mode inspect --manifest skills-source.json
+harbor postgres cutover --source "$HARBOR_TURNS_DSN" \
+  --subsystem sessions.turns --mode inspect --manifest turns-source.json
+harbor postgres cutover --source "$HARBOR_ROLLUPS_DSN" \
+  --subsystem observability.rollups --mode inspect --manifest rollups-source.json
 ```
 
-Inspect all six projections and retain the JSON as the pre-copy evidence:
+The equivalent all-source inspection is available for an operator that has
+already confirmed each variable maps to the intended source:
 
 ```bash
 harbor postgres cutover \
@@ -77,7 +91,93 @@ The exact v1.29.0 false-readiness shape (`schema_migrations(version=1)` plus
 only after the operator verifies that no stronger source exists; state rows
 are never copied as memory rows.
 
-## 2. Prepare the destination through direct PostgreSQL
+## 2. Directly apply/adopt each correctly classified split source
+
+Existing v1.29.0 split databases must be adopted before a pooled `verify`
+boot. A `verify` boot cannot create the namespaced ledger, identity, or legacy
+mirror, and a transaction-pooled connection cannot safely hold Harbor's
+session advisory lock. For every source whose inspect manifest is
+`legacy_adoptable` (or `empty`), run the normal Harbor boot once with the
+corresponding direct `5432` DSNs and `migration_mode: apply`:
+
+```yaml
+# /etc/harbor/v1291-direct-apply.yaml
+# Merge these blocks into the otherwise normal, non-public migration config.
+# Each *_DIRECT_DSN must resolve to the session-capable PostgreSQL endpoint
+# on port 5432; replace placeholders through the deployment secret manager.
+state:
+  driver: postgres
+  dsn: ${HARBOR_STATE_DIRECT_DSN}
+  migration_mode: apply
+memory:
+  driver: postgres
+  dsn: ${HARBOR_MEMORY_DIRECT_DSN}
+  migration_mode: apply
+artifacts:
+  driver: postgres
+  dsn: ${HARBOR_ARTIFACTS_DIRECT_DSN}
+  migration_mode: apply
+skills:
+  driver: postgres
+  dsn: ${HARBOR_SKILLS_DIRECT_DSN}
+  migration_mode: apply
+sessions:
+  turns:
+    driver: postgres
+    dsn: ${HARBOR_TURNS_DIRECT_DSN}
+    migration_mode: apply
+observability:
+  rollups:
+    driver: postgres
+    dsn: ${HARBOR_ROLLUPS_DIRECT_DSN}
+    migration_mode: apply
+```
+
+Run this as an isolated, drained Harbor process using the deployment's normal
+boot command, keep it bound to loopback, and terminate it after all configured
+store migration success lines have been observed:
+
+```bash
+harbor serve --config /etc/harbor/v1291-direct-apply.yaml \
+  --bind 127.0.0.1:8689
+# After state, memory, artifacts, skills, sessions.turns, and (when enabled)
+# observability.rollups each report apply/adoption success, send SIGTERM and
+# wait for the process to exit cleanly.
+```
+
+This one isolated boot runs no more than one migration runner per configured
+subsystem (six direct PostgreSQL sessions at most); do not run overlapping
+apply boots against the same runtime. The runner adopts a legacy database
+only when its observed required tables/columns and generic ledger match the
+expected subsystem, then records the canonical ledger, store identity, and
+legacy mirror in one transaction. An interruption rolls all three back and a
+restart retries the adoption. If any manifest is `misprovisioned` or
+`unknown`—including `schema_migrations(version=1)` plus `state_records` when
+the requested subsystem is memory—stop. Do not point apply at that source,
+do not switch it to verify, and do not copy it; remediate the DSN or perform
+an audited cutover from the actual owning database.
+
+After each direct apply/adoption boot succeeds, switch the steady-state DSNs
+to their transaction-pooled `6432` endpoints and set `migration_mode: verify`.
+The six stores may remain distinct during the first hotfix deployment:
+
+```yaml
+state:     { driver: postgres, dsn: ${HARBOR_STATE_POOLED_DSN},     migration_mode: verify }
+memory:    { driver: postgres, dsn: ${HARBOR_MEMORY_POOLED_DSN},    migration_mode: verify }
+artifacts: { driver: postgres, dsn: ${HARBOR_ARTIFACTS_POOLED_DSN}, migration_mode: verify }
+skills:    { driver: postgres, dsn: ${HARBOR_SKILLS_POOLED_DSN},    migration_mode: verify }
+sessions:
+  turns:   { driver: postgres, dsn: ${HARBOR_TURNS_POOLED_DSN},    migration_mode: verify }
+observability:
+  rollups: { driver: postgres, dsn: ${HARBOR_ROLLUPS_POOLED_DSN},  migration_mode: verify }
+```
+
+`verify` is read-only and may use `6432` only after the direct apply/adoption
+step. Keep the six DSNs distinct for this first boot if desired; the runtime
+still enforces one aggregate pool budget. Same-DSN consolidation is optional
+until the source/destination reconciliation below completes.
+
+## 3. Prepare the destination through direct PostgreSQL
 
 Create the destination database and point all six compatible stores for this
 runtime at its one canonical DSN. Run migration apply/bootstrap through a
@@ -89,29 +189,14 @@ runner creates and verifies the namespaced ledgers:
 - `harbor_store_identity(subsystem, schema_version,
   contract_checksum_sha256, created_at, updated_at)`.
 
-Do not apply advisory-lock migrations through transaction-pooled PgBouncer
-`6432`. The runtime can use `6432` for ordinary traffic and read-only verify
-after direct apply has completed. If the endpoint is not provably direct or
-session-affine, fail closed and obtain the `5432` DSN.
+Use the same isolated direct-apply boot above with all six compatible
+destination DSNs set to the one `HARBOR_UNIFIED_DIRECT_DSN` on `5432`, then
+terminate it after all six runners succeed. Do not apply advisory-lock
+migrations through transaction-pooled PgBouncer `6432`; if the endpoint is
+not provably direct or session-affine, fail closed and obtain the `5432` DSN.
+The cutover tool itself never applies migrations.
 
-The first stage can retain distinct DSNs:
-
-```yaml
-state:     { driver: postgres, dsn: ${HARBOR_STATE_DSN},     migration_mode: verify }
-memory:    { driver: postgres, dsn: ${HARBOR_MEMORY_DSN},    migration_mode: verify }
-artifacts: { driver: postgres, dsn: ${HARBOR_ARTIFACTS_DSN}, migration_mode: verify }
-skills:    { driver: postgres, dsn: ${HARBOR_SKILLS_DSN},    migration_mode: verify }
-sessions:
-  turns:   { driver: postgres, dsn: ${HARBOR_TURNS_DSN},    migration_mode: verify }
-observability:
-  rollups: { driver: postgres, dsn: ${HARBOR_ROLLUPS_DSN},  migration_mode: verify }
-```
-
-After consolidation, all six `dsn` values may be the same canonical DSN. This
-is optional at first boot; same-DSN reuse is a runtime-owned pool optimization,
-not a prerequisite for safely deploying the hotfix.
-
-## 3. Copy and reconcile one runtime
+## 4. Copy and reconcile one runtime
 
 Freeze/drain the runtime so no source writes can race the copy. The command
 requires an explicit acknowledgement and rejects a destination that resolves

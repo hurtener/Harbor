@@ -842,15 +842,34 @@ func sortedVersions(values map[int]struct{}) []int {
 }
 
 func recordNamedMigration(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, prefix string) error {
-	if _, err := conn.ExecContext(ctx, `INSERT INTO harbor_schema_migrations (subsystem, version, filename, checksum_sha256) VALUES ($1, $2, $3, $4) ON CONFLICT (subsystem, version) DO NOTHING`, subsystem, m.version, m.name, checksum); err != nil {
+	// Legacy adoption is bookkeeping-only, but it still changes three pieces
+	// of migration authority. Keep the transaction on the conn that already
+	// owns the subsystem advisory lock: a restart must observe either all
+	// adoption records or none of them, never a canonical row with a stale
+	// identity/mirror.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%s: begin legacy migration adoption %s: %w", prefix, m.name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // rollback is best-effort; original error is returned
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO harbor_schema_migrations (subsystem, version, filename, checksum_sha256) VALUES ($1, $2, $3, $4) ON CONFLICT (subsystem, version) DO NOTHING`, subsystem, m.version, m.name, checksum); err != nil {
 		return fmt.Errorf("%s: record namespaced migration %s: %w", prefix, m.name, err)
 	}
-	if _, err := conn.ExecContext(ctx, `UPDATE harbor_store_identity SET schema_version = $2, updated_at = NOW() WHERE subsystem = $1`, subsystem, m.version); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE harbor_store_identity SET schema_version = $2, updated_at = NOW() WHERE subsystem = $1`, subsystem, m.version); err != nil {
 		return fmt.Errorf("%s: update harbor_store_identity for %q: %w", prefix, subsystem, err)
 	}
-	if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, m.version); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, m.version); err != nil {
 		return fmt.Errorf("%s: retain legacy migration mirror %s: %w", prefix, m.name, err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit legacy migration adoption %s: %w", prefix, m.name, err)
+	}
+	committed = true
 	return nil
 }
 
