@@ -36,7 +36,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release evidence
 
-- Phase 252 / D-432 implementation candidate. Hosted CI, two independent Terra
+- D-432 / HA-69 implementation candidate. Hosted CI, two independent Terra
   High reviews, immutable annotated tag/release provenance, checksums, and
   post-tag cleanup are recorded here when the release lifecycle completes.
 
