@@ -43,7 +43,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
-| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | Planned — phase 251 / D-431; HA-13 historical collision recorded |
+| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | Shipped (v1.29.2) — phases 251/252, D-431/D-432; HA-13 historical collision recorded |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1347,8 +1347,8 @@ reported as passed.
 
 ### HA-69 v1.29.2 compatibility extension — Phase 252 / D-432
 
-**State:** Planned — release-blocking v1.29.2 hotfix. This extends the
-existing HA-69 handle; no new Harbor ask identifier is allocated.
+**State:** Shipped in v1.29.2. This extends the existing HA-69 handle; no new
+Harbor ask identifier was allocated.
 
 The first drained upgrade canary exposed a v1.29.1 legacy-backfill
 compatibility defect. Durable heads and entries are keyed by the session
@@ -1366,9 +1366,17 @@ session head, proves restart/checksum repair and RunID filters, and runs
 through the real PostgreSQL StateStore driver under `HARBOR_PG_DSN`.
 The existing hosted `state-postgres` job selects the exact test and rejects
 skip/no-test output; local absence of the DSN is an honest skip. Harbor does
-not mutate the downstream fleet or its databases. The immutable annotated
-v1.29.2 tag, hosted release/provenance evidence, checksums, and post-tag
-cleanup are required before this extension is reported complete.
+not mutate the downstream fleet or its databases. Implementation PR #728
+merged as `bbc058e6dcfa30b0903f5546d394bcf2860ba836`; hosted candidate run
+`32582607218` completed successfully, including exact real PostgreSQL
+StateStore acceptance and live preflight. The immutable annotated `v1.29.2`
+tag object is `ebe0a907b92a745887fa469bb6e62cd018c53062` and peels to
+`bbc058e6dcfa30b0903f5546d394bcf2860ba836`; release workflow `32584633258`
+succeeded, publishing 13 assets with verified aggregate/sidecar checksums and
+six attestations at the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.2).
+Post-tag scaffold
+pin/golden cleanup is complete. Local `make preflight` was never run and no
+downstream fleet cutover is claimed.
 
 ## Posture signals from the downstream team
 

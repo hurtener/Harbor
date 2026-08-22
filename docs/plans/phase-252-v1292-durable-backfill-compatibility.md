@@ -68,25 +68,41 @@ None.
 - Running local `make preflight`; the hosted workflow owns the live preflight
   gate.
 
+## Release evidence (2026-08-22)
+
+Implementation PR #728 merged as `bbc058e6dcfa30b0903f5546d394bcf2860ba836`.
+Focused durable race/vet checks, phase-251/252 smoke checks, drift audit,
+documentation build, mirror, and diff checks passed. Two independent Terra
+High reviews report P0/P1 clear. Hosted candidate run `32582607218` completed
+successfully, including Go on Ubuntu/macOS, exact real PostgreSQL StateStore
+acceptance, Playwright, and corrected live preflight. The immutable annotated
+`v1.29.2` tag object is `ebe0a907b92a745887fa469bb6e62cd018c53062` and peels to
+`bbc058e6dcfa30b0903f5546d394bcf2860ba836`; release workflow `32584633258`
+succeeded, publishing 13 assets with verified aggregate/sidecar checksums and
+six attestations at
+`https://github.com/hurtener/Harbor/releases/tag/v1.29.2`. The native
+darwin/arm64 artifact reports v1.29.2, Protocol 0.1.0, build `bbc058e6`.
+The scaffold fallback pin and golden fixtures were updated after the tag.
+Local `make preflight` was never run; no downstream fleet cutover is claimed.
+
 ## Acceptance criteria
 
-- [ ] A v1.29.0-shaped head with `RunID=""` and multiple entries with distinct
+- [x] A v1.29.0-shaped head with `RunID=""` and multiple entries with distinct
       non-empty payload RunIDs opens successfully and adopts metadata.
-- [ ] Restart preserves each payload RunID in `EventMetadata` and full event
+- [x] Restart preserves each payload RunID in `EventMetadata` and full event
       reads; metadata and event list RunID filters select the correct event.
-- [ ] The adopted head is marked ready only with the canonical ordered
+- [x] The adopted head is marked ready only with the canonical ordered
       metadata SHA-256 checksum; a stale projection is repaired from bodies.
-- [ ] A returned StateRecord with the wrong storage identity or entry kind is
+- [x] A returned StateRecord with the wrong storage identity or entry kind is
       refused during backfill.
-- [ ] Tenant, user, session, sequence, malformed-body, and unknown-type
+- [x] Tenant, user, session, sequence, malformed-body, and unknown-type
       adversarial fixtures fail boot loudly.
-- [ ] Existing metadata/body validation still refuses a divergent projection.
-- [ ] The real PostgreSQL regression is DSN-gated locally and selected with a
+- [x] Existing metadata/body validation still refuses a divergent projection.
+- [x] The real PostgreSQL regression is DSN-gated locally and selected with a
       non-vacuous PASS-line assertion in the hosted `state-postgres` job.
-- [ ] Focused durable race tests, focused vet, phase-252 smoke, relevant
+- [x] Focused durable race tests, focused vet, phase-252 smoke, relevant
       phase-251 smoke, hosted CI, two Terra High reviews, immutable annotated
-      v1.29.2 release provenance, and post-tag cleanup are recorded by the
-      coordinator.
+      v1.29.2 release provenance, and post-tag cleanup are complete.
 
 ## Files added or changed
 
@@ -158,11 +174,11 @@ contacts a database.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] Hosted preflight/CI passes (local `make preflight` intentionally not run)
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages meets the stated target
+- [x] `make drift-audit` passes
+- [x] Hosted preflight/CI passes (local `make preflight` intentionally not run)
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages meets the stated target
 - [x] Multi-isolation backfill tests cover tenant/user/session and RunID
 - [x] No reusable artifact or new goroutine path is introduced; existing
       durable `-race` reuse/leak coverage remains the gate

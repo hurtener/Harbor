@@ -13743,7 +13743,7 @@ Plan: `docs/plans/phase-251-v1291-events-postgres-fleet-safety.md`.
 
 **Date:** 2026-08-22
 
-**Status:** Accepted for Phase 252; release-blocking v1.29.2 hotfix work.
+**Status:** Accepted and shipped in v1.29.2.
 
 The durable StateStore key for a head and its entries is the session triple
 with `RunID=""`. That empty RunID is an intentional storage scope, not an
@@ -13772,3 +13772,15 @@ hosted state-postgres job.
 read contract), D-305 (metadata projection substrate), D-431 (HA-69 durable
 index and PostgreSQL fleet safety), RFC §6.11, §6.13, §4.3, §12. Plan:
 `docs/plans/phase-252-v1292-durable-backfill-compatibility.md`.
+
+**Release evidence:** implementation PR #728 merged as
+`bbc058e6dcfa30b0903f5546d394bcf2860ba836`; hosted candidate run
+`32582607218` completed successfully, including exact real PostgreSQL
+StateStore acceptance and live preflight. The immutable annotated `v1.29.2`
+tag object is `ebe0a907b92a745887fa469bb6e62cd018c53062` and peels to
+`bbc058e6dcfa30b0903f5546d394bcf2860ba836`; release workflow `32584633258`
+succeeded at
+`https://github.com/hurtener/Harbor/releases/tag/v1.29.2` with 13 assets,
+verified checksums, and six attestations. The post-tag scaffold pin/goldens
+are complete. Local `make preflight` was never run and no downstream fleet
+cutover is claimed.
