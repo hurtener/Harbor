@@ -74,6 +74,10 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	if err != nil {
 		return events.ProjectionPage{}, fmt.Errorf("durable: projection page: load sequence authority: %w", err)
 	}
+	fences, err := b.loadDurableFenceSnapshot(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", err)
+	}
 
 	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
 	if err != nil {
@@ -95,7 +99,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		// Erased (fenced) session — exclude its history from the page
 		// (events.Fencer): an erasure that landed before this read must
 		// never be re-exposed.
-		if b.isFenced(rec.Identity) {
+		if b.isFenced(rec.Identity) || fences.contains(rec.Identity) {
 			continue
 		}
 		hd, err := decodeHead(rec.Bytes)
@@ -149,6 +153,17 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 			break
 		}
 	}
+	currentFences, err := b.loadDurableFenceSnapshot(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: projection page final fence check: %w", err)
+	}
+	kept := matches[:0]
+	for _, ev := range matches {
+		if !currentFences.contains(ev.Identity) {
+			kept = append(kept, ev)
+		}
+	}
+	matches = kept
 
 	quality := events.ProjectionCurrent
 	if len(matches) > limit {

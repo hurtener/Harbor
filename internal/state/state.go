@@ -87,6 +87,7 @@ type StateRecord struct {
 	Version   int
 	Bytes     []byte
 	UpdatedAt time.Time
+	internal  bool
 }
 
 // SlotExpectation is one exact generation predicate for SaveIf. The complete
@@ -98,6 +99,42 @@ type SlotExpectation struct {
 	Identity        identity.Quadruple
 	Kind            string
 	ExpectedEventID EventID
+	internal        bool
+}
+
+// InternalKindPrefix reserves Harbor-owned coordination records.
+const InternalKindPrefix = "harbor.internal/"
+
+// NewInternalRecord authorizes a Harbor-owned internal record mutation.
+func NewInternalRecord(id EventID, q identity.Quadruple, kind string, bytes []byte) StateRecord {
+	return StateRecord{ID: id, Identity: q, Kind: kind, Bytes: bytes, internal: true}
+}
+
+// StoredRecord strips mutation authorization before a driver retains or
+// returns a record, preventing an SDK caller from replaying an internal token.
+func StoredRecord(r StateRecord) StateRecord {
+	r.internal = false
+	return r
+}
+
+// InternalSlotExpectation authorizes a condition/delete on an internal slot.
+func InternalSlotExpectation(q identity.Quadruple, kind string, expected EventID) SlotExpectation {
+	return SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: expected, internal: true}
+}
+
+// IsInternalKind reports whether kind belongs to Harbor coordination state.
+func IsInternalKind(kind string) bool { return strings.HasPrefix(kind, InternalKindPrefix) }
+
+// ValidateExternalKind rejects ordinary mutations of internal coordination
+// slots. Internal callers use the authorized conditional constructors above.
+func ValidateExternalKind(kind string) error {
+	if kind == "" {
+		return ErrInvalidRecord
+	}
+	if IsInternalKind(kind) {
+		return ErrReservedKind
+	}
+	return nil
 }
 
 // StateStore is Harbor's persistence interface — single mandatory
@@ -288,6 +325,11 @@ var (
 	// ErrInvalidRecord — record fails structural validation
 	// (empty Kind, empty EventID).
 	ErrInvalidRecord = errors.New("state: invalid record")
+	// ErrReservedKind rejects external mutation of Harbor coordination state.
+	ErrReservedKind = errors.New("state: reserved internal kind")
+	// ErrCommitOutcomeUnknown means Commit was attempted but the driver could
+	// not prove whether the server made the transaction durable.
+	ErrCommitOutcomeUnknown = errors.New("state: commit outcome unknown")
 	// ErrUnknownDriver — Open was asked for a driver name no
 	// registered factory handles.
 	ErrUnknownDriver = errors.New("state: unknown driver")
@@ -333,6 +375,9 @@ func ValidateRecord(r StateRecord) error {
 	if r.Kind == "" {
 		return ErrInvalidRecord
 	}
+	if IsInternalKind(r.Kind) && !r.internal {
+		return ErrReservedKind
+	}
 	return nil
 }
 
@@ -360,6 +405,9 @@ func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
 		}
 		if expectation.Kind == "" {
 			return ErrInvalidRecord
+		}
+		if IsInternalKind(expectation.Kind) && !expectation.internal {
+			return ErrReservedKind
 		}
 		s := slot{q: expectation.Identity, kind: expectation.Kind}
 		if _, ok := seen[s]; ok {
@@ -392,6 +440,9 @@ func ValidateSaveBatchIf(expectations []SlotExpectation, writes []StateRecord) e
 		}
 		if expectation.Kind == "" {
 			return ErrInvalidRecord
+		}
+		if IsInternalKind(expectation.Kind) && !expectation.internal {
+			return ErrReservedKind
 		}
 		s := slot{q: expectation.Identity, kind: expectation.Kind}
 		if _, duplicate := expected[s]; duplicate {
@@ -430,6 +481,9 @@ func ValidateDeleteIf(expectation SlotExpectation) error {
 	}
 	if expectation.Kind == "" || expectation.ExpectedEventID == "" {
 		return ErrInvalidRecord
+	}
+	if IsInternalKind(expectation.Kind) && !expectation.internal {
+		return ErrReservedKind
 	}
 	return nil
 }

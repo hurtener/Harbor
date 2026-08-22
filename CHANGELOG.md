@@ -19,6 +19,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- Durable event publication now atomically commits its protected global
+  sequence authority, body, and session head across runtimes. Persisted fences
+  hide pre-existing history from other and restarted runtimes, including list,
+  metadata, bounds, replay, and projection consumers; only an explicitly
+  ambiguous commit acknowledgement poisons a bus. Upgrading a non-empty
+  v1.29.0 durable event store requires
+  `events.legacy_writers_drained: true` after all old event writers stop.
+  Ordinary rolling/zero-downtime replacement is not compliant; use true
+  stop-before-start or suspend-then-resume. Migration-only non-writers may
+  overlap.
 - v1.29.1 cutover tooling now classifies PostgreSQL sources from observed
   schemas across state, memory, artifacts, skills, sessions/turns, and
   observability/rollups; copies are bounded, resumable, non-destructive, and

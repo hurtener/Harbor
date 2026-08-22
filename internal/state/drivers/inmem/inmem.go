@@ -129,7 +129,7 @@ func (d *driver) Save(_ context.Context, r state.StateRecord) error {
 		}
 	}
 
-	stored := r
+	stored := state.StoredRecord(r)
 	stored.Bytes = cloneBytes(r.Bytes)
 	if stored.UpdatedAt.IsZero() {
 		stored.UpdatedAt = time.Now()
@@ -285,7 +285,7 @@ func (d *driver) saveLocked(r state.StateRecord) error {
 	if existing, ok := d.records[key]; ok && existing.ID != r.ID {
 		delete(d.eventIdx, existing.ID)
 	}
-	stored := r
+	stored := state.StoredRecord(r)
 	stored.Bytes = cloneBytes(r.Bytes)
 	if stored.UpdatedAt.IsZero() {
 		stored.UpdatedAt = time.Now()
@@ -352,8 +352,8 @@ func (d *driver) Delete(_ context.Context, q identity.Quadruple, kind string) er
 	if err := state.ValidateIdentity(q); err != nil {
 		return err
 	}
-	if kind == "" {
-		return state.ErrInvalidRecord
+	if err := state.ValidateExternalKind(kind); err != nil {
+		return err
 	}
 
 	d.mu.Lock()
@@ -386,6 +386,9 @@ func (d *driver) DeleteScope(_ context.Context, id identity.Identity) (int, erro
 	deleted := 0
 	for key, rec := range d.records {
 		if key.Tenant != id.TenantID || key.User != id.UserID || key.Session != id.SessionID {
+			continue
+		}
+		if state.IsInternalKind(key.Kind) {
 			continue
 		}
 		delete(d.records, key)

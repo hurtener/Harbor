@@ -87,6 +87,7 @@ func metadataCfg() config.EventsConfig {
 		IdleTimeout:              time.Minute,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}
 }
 
@@ -300,8 +301,8 @@ func TestDurable_MetadataIndex_BoundsPayloadLoadsForSparseAndZeroMatches(t *test
 	if len(page.Events) != 1 || page.Events[0].Type != events.EventTypeRuntimeError {
 		t.Fatalf("sparse page = %d events, want one runtime.error", len(page.Events))
 	}
-	if got := store.loads.Load(); got > 2 {
-		t.Fatalf("sparse ListWindow loaded %d StateStore records, want head + one payload", got)
+	if got := store.payloadLoads.Load(); got > 1 {
+		t.Fatalf("sparse ListWindow loaded %d payload records, want one", got)
 	}
 
 	store.resetCounters()
@@ -314,8 +315,8 @@ func TestDurable_MetadataIndex_BoundsPayloadLoadsForSparseAndZeroMatches(t *test
 	if len(page.Events) != 0 || page.HasMore {
 		t.Fatalf("zero page = %+v, want empty exact page", page)
 	}
-	if got := store.loads.Load(); got > 1 {
-		t.Fatalf("zero ListWindow loaded %d StateStore records, want head only", got)
+	if got := store.payloadLoads.Load(); got != 0 {
+		t.Fatalf("zero ListWindow loaded %d payload records, want zero", got)
 	}
 }
 
@@ -336,8 +337,8 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 	if err != nil {
 		t.Fatalf("restart with indexed head: %v", err)
 	}
-	if got := store.loads.Load(); got > 2 {
-		t.Fatalf("restart loaded %d payload records, want head + retention seed only", got)
+	if got := store.payloadLoads.Load(); got > 1 {
+		t.Fatalf("restart loaded %d payload records, want retention seed only", got)
 	}
 	if got := store.listKinds.Load(); got != 2 {
 		t.Fatalf("restart ListKind calls = %d, want two scans proving a stable recovery view", got)
@@ -672,7 +673,7 @@ func TestDurable_Recovery_StableViewWaitHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestDurable_AtomicBatchFailureRollsBackAndRetryIsGapFree(t *testing.T) {
+func TestDurable_DefiniteBatchFailureRollsBackAndRetryIsGapFree(t *testing.T) {
 	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatalf("stateinmem.New: %v", err)
@@ -707,8 +708,8 @@ func TestDurable_AtomicBatchFailureRollsBackAndRetryIsGapFree(t *testing.T) {
 	if _, err := inner.Load(context.Background(), id, kindEntryPrefix+seqToken(2)); !errors.Is(err, state.ErrNotFound) {
 		t.Fatalf("faulted batch left entry visible: %v", err)
 	}
-	if err := publish("retry-before-restart"); err == nil {
-		t.Fatal("retry after ambiguous transaction acknowledgement succeeded without restart")
+	if err := publish("retry-after-definite-failure"); err != nil {
+		t.Fatalf("retry after definite rollback: %v", err)
 	}
 	page, err := bus.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
 		Filter: eventsWireFilter(id, nil), Limit: 10,
@@ -716,8 +717,8 @@ func TestDurable_AtomicBatchFailureRollsBackAndRetryIsGapFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read before restart: %v", err)
 	}
-	if len(page.Events) != 1 || page.Events[0].Sequence != 1 {
-		t.Fatalf("pre-restart history = %+v, want only first committed event", page.Events)
+	if len(page.Events) != 2 || page.Events[1].Sequence != 2 {
+		t.Fatalf("pre-restart history = %+v, want contiguous successful retry", page.Events)
 	}
 	if err := bus.Close(context.Background()); err != nil {
 		t.Fatalf("close bus: %v", err)
@@ -743,7 +744,7 @@ func TestDurable_AtomicBatchFailureRollsBackAndRetryIsGapFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read after restart: %v", err)
 	}
-	if len(page.Events) != 2 || page.Events[1].Sequence != 2 || page.Events[1].Extra["marker"] != "committed-after-restart" {
+	if len(page.Events) != 3 || page.Events[2].Sequence != 3 || page.Events[2].Extra["marker"] != "committed-after-restart" {
 		t.Fatalf("post-restart history = %+v, want contiguous committed events", page.Events)
 	}
 }

@@ -420,7 +420,10 @@ func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpec
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return d.translateErr(err, "postgres: commit conditional batch")
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return d.translateErr(err, "postgres: commit conditional batch")
+		}
+		return fmt.Errorf("postgres: commit conditional batch: %w: %v", state.ErrCommitOutcomeUnknown, err)
 	}
 	committed = true
 	return nil
@@ -648,8 +651,8 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 	if err := state.ValidateIdentity(q); err != nil {
 		return err
 	}
-	if kind == "" {
-		return state.ErrInvalidRecord
+	if err := state.ValidateExternalKind(kind); err != nil {
+		return err
 	}
 
 	const q1 = `
@@ -681,8 +684,9 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 	const q1 = `
 		DELETE FROM state_records
 		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+		  AND left(kind, char_length($4)) COLLATE "C" <> $4 COLLATE "C"
 	`
-	res, err := d.db.ExecContext(ctx, q1, id.TenantID, id.UserID, id.SessionID)
+	res, err := d.db.ExecContext(ctx, q1, id.TenantID, id.UserID, id.SessionID, state.InternalKindPrefix)
 	if err != nil {
 		return 0, d.translateErr(err, "postgres: delete scope")
 	}

@@ -11,6 +11,26 @@ This procedure is non-destructive. Harbor never drops, truncates, or deletes
 the source databases. Removing an old database is a separate operator action
 after the release has been observed and the rollback window has closed.
 
+## Stop legacy event writers before the first v1.29.1 writer
+
+For a non-empty v1.29.0 durable event store, stop every old process capable of
+publishing events to the same StateStore scope, then set:
+
+The exact acknowledgement key is `events.legacy_writers_drained: true`.
+
+```yaml
+events:
+  legacy_writers_drained: true
+```
+
+An ordinary rolling or zero-downtime deployment is **not compliant**: it
+starts a v1.29.1 event writer before the v1.29.0 writer has stopped. Use true
+stop-before-start, suspend-then-resume, or an equivalent platform guarantee.
+Migration-only processes that cannot publish events may overlap; they are not
+event writers. Fresh empty stores and stores whose v1.29.1 authority has
+already been adopted do not require this legacy acknowledgement. Do not set
+the key merely because a migration command has completed.
+
 ## Connection budget
 
 The supported Render Basic-4GB ceiling is `max_connections=103` (the live

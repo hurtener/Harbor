@@ -85,6 +85,18 @@ assert_grep_present \
     '03:20–03:25Z' \
     "CHANGELOG.md" \
     "live causal exhaustion evidence is release-noted"
+assert_grep_present \
+    'events\.legacy_writers_drained: true' \
+    "docs/recipes/postgres-split-to-unified-cutover.md" \
+    "legacy event-writer acknowledgement is documented"
+assert_grep_present \
+    'rolling or zero-downtime deployment is \*\*not compliant\*\*' \
+    "docs/recipes/postgres-split-to-unified-cutover.md" \
+    "rolling upgrade is explicitly refused"
+assert_grep_present \
+    'Migration-only processes that cannot publish events' \
+    "docs/recipes/postgres-split-to-unified-cutover.md" \
+    "migration-only overlap is distinguished from event writers"
 # ----------------------------------------------------------------------------
 
 smoke_summary

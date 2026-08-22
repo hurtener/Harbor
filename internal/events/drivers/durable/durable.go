@@ -80,7 +80,8 @@ const (
 	// the global durable event sequence. Its identity is deliberately outside
 	// normal session identities and its kind cannot collide with event heads or
 	// bodies.
-	kindSequenceAuthority = "events.durable.internal/global-sequence-authority"
+	kindSequenceAuthority = state.InternalKindPrefix + "events/global-sequence-authority"
+	kindFencePrefix       = state.InternalKindPrefix + "events/session-fence/"
 	// metadataValidationBatchSize bounds canonical payload validation before
 	// a durable checkpoint is written. A cancelled/restarted runtime resumes
 	// after the validated prefix instead of repeating the whole head scan.
@@ -250,6 +251,13 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 				return err
 			}
 		} else if previous.generations != nil && recoveryViewsEqual(previous.generations, current.generations) {
+			_, authorityExpectation, authorityErr := b.loadSequenceAuthority(ctx)
+			if authorityErr != nil {
+				return fmt.Errorf("durable: inspect sequence authority: %w", authorityErr)
+			}
+			if current.maxSeq > 0 && authorityExpectation.ExpectedEventID == "" && !b.cfg.LegacyWritersDrained {
+				return fmt.Errorf("durable: legacy event history requires events.legacy_writers_drained=true after every v1.29.0 event writer sharing this StateStore has stopped; rolling writer overlap is unsafe")
+			}
 			authoritySeq, err := b.adoptSequenceAuthority(ctx, current.maxSeq)
 			if err != nil {
 				return fmt.Errorf("durable: recover sequence authority: %w", err)
@@ -297,7 +305,7 @@ func (b *bus) adoptSequenceAuthority(ctx context.Context, floor uint64) (uint64,
 		if err != nil {
 			return 0, err
 		}
-		next := state.StateRecord{ID: state.NewEventID(), Identity: sequenceAuthorityIdentity, Kind: kindSequenceAuthority, Bytes: payload}
+		next := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kindSequenceAuthority, payload)
 		if err := b.store.SaveBatchIf(ctx, []state.SlotExpectation{expected}, []state.StateRecord{next}); err != nil {
 			if errors.Is(err, state.ErrConditionFailed) {
 				continue
@@ -310,7 +318,7 @@ func (b *bus) adoptSequenceAuthority(ctx context.Context, floor uint64) (uint64,
 }
 
 func (b *bus) loadSequenceAuthority(ctx context.Context) (uint64, state.SlotExpectation, error) {
-	expect := state.SlotExpectation{Identity: sequenceAuthorityIdentity, Kind: kindSequenceAuthority}
+	expect := state.InternalSlotExpectation(sequenceAuthorityIdentity, kindSequenceAuthority, "")
 	rec, err := b.store.Load(ctx, sequenceAuthorityIdentity, kindSequenceAuthority)
 	if errors.Is(err, state.ErrNotFound) {
 		return 0, expect, nil
@@ -588,7 +596,42 @@ func fenceKey(id identity.Identity) string {
 
 func durableFenceKind(id identity.Identity) string {
 	sum := sha256.Sum256([]byte(fenceKey(id)))
-	return fmt.Sprintf("events.durable.internal/session-fence/%x", sum[:])
+	return fmt.Sprintf("%s%x", kindFencePrefix, sum[:])
+}
+
+func (b *bus) isDurablyFenced(ctx context.Context, id identity.Quadruple) (bool, error) {
+	if b.isFenced(id) {
+		return true, nil
+	}
+	_, err := b.store.Load(ctx, sequenceAuthorityIdentity, durableFenceKind(id.Identity))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, state.ErrNotFound) {
+		return false, nil
+	}
+	return false, fmt.Errorf("load durable session fence: %w", err)
+}
+
+type durableFenceSnapshot map[string]struct{}
+
+func (s durableFenceSnapshot) contains(id identity.Quadruple) bool {
+	_, ok := s[durableFenceKind(id.Identity)]
+	return ok
+}
+
+func (b *bus) loadDurableFenceSnapshot(ctx context.Context) (durableFenceSnapshot, error) {
+	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindFencePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("scan durable session fences: %w", err)
+	}
+	out := make(durableFenceSnapshot, len(recs))
+	for _, rec := range recs {
+		if rec.Kind != "" && state.IsInternalKind(rec.Kind) && len(rec.Kind) >= len(kindFencePrefix) && rec.Kind[:len(kindFencePrefix)] == kindFencePrefix {
+			out[rec.Kind] = struct{}{}
+		}
+	}
+	return out, nil
 }
 
 // isFenced reports whether the event's session triple is fenced (erased).
@@ -625,8 +668,8 @@ func (b *bus) Fence(ctx context.Context, id identity.Identity) error {
 			if marshalErr != nil {
 				return fmt.Errorf("durable: encode session fence: %w", marshalErr)
 			}
-			next := state.StateRecord{ID: state.NewEventID(), Identity: sequenceAuthorityIdentity, Kind: kind, Bytes: payload}
-			if saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: sequenceAuthorityIdentity, Kind: kind}}, next); saveErr != nil {
+			next := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kind, payload)
+			if saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(sequenceAuthorityIdentity, kind, "")}, next); saveErr != nil {
 				if !errors.Is(saveErr, state.ErrConditionFailed) {
 					return fmt.Errorf("durable: persist session fence: %w", saveErr)
 				}
@@ -661,7 +704,7 @@ func (b *bus) Unfence(ctx context.Context, id identity.Identity) error {
 			return fmt.Errorf("durable: load session fence for removal: %w", err)
 		}
 		if err == nil {
-			deleted, deleteErr := b.store.DeleteIf(ctx, state.SlotExpectation{Identity: sequenceAuthorityIdentity, Kind: kind, ExpectedEventID: rec.ID})
+			deleted, deleteErr := b.store.DeleteIf(ctx, state.InternalSlotExpectation(sequenceAuthorityIdentity, kind, rec.ID))
 			if deleteErr != nil {
 				return fmt.Errorf("durable: remove session fence: %w", deleteErr)
 			}
@@ -805,15 +848,16 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 		if errors.Is(err, errEventFenced) {
 			return err
 		}
-		// A driver transaction guarantees all-or-nothing visibility, but an
-		// error returned at commit can still be an acknowledgement loss. Poison
-		// this process until restart so it never guesses whether publication
-		// committed; recovery reads the shared authority authoritatively.
-		b.persistenceBroken = true
-		// nextSeq is NOT advanced. The bus is poisoned on a StateStore
-		// write failure because the write may have committed remotely;
-		// reusing the sequence could overwrite a committed payload that is
-		// not yet represented by the head/index. Restart performs recovery.
+		// Only an explicit commit-acknowledgement ambiguity poisons the bus.
+		// Validation, reads, cancellation, CAS exhaustion, and known rollback
+		// errors definitely did not commit and leave the next Publish usable.
+		if errors.Is(err, state.ErrCommitOutcomeUnknown) {
+			b.persistenceBroken = true
+		}
+		// nextSeq is NOT advanced. Definite no-commit outcomes retry from shared
+		// authority on the next Publish. An ambiguous outcome stays poisoned:
+		// reusing its sequence could overwrite a commit not yet represented by
+		// the head/index, so restart must perform recovery.
 		return fmt.Errorf("durable: persist event: %w", err)
 	}
 	b.nextSeq = seq
@@ -865,7 +909,7 @@ func (b *bus) persistAtomicAttempt(ctx context.Context, ev events.Event, authori
 		return fmt.Errorf("build event metadata: %w", err)
 	}
 	sessionID := sessionKey(ev.Identity)
-	fenceExpectation := state.SlotExpectation{Identity: sequenceAuthorityIdentity, Kind: durableFenceKind(ev.Identity.Identity)}
+	fenceExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, durableFenceKind(ev.Identity.Identity), "")
 	if _, err := b.store.Load(ctx, fenceExpectation.Identity, fenceExpectation.Kind); err == nil {
 		return errEventFenced
 	} else if !errors.Is(err, state.ErrNotFound) {
@@ -920,7 +964,7 @@ func (b *bus) persistAtomicAttempt(ctx context.Context, ev events.Event, authori
 	if err != nil {
 		return fmt.Errorf("encode sequence authority: %w", err)
 	}
-	authorityRec := state.StateRecord{ID: state.NewEventID(), Identity: sequenceAuthorityIdentity, Kind: kindSequenceAuthority, Bytes: authorityBytes}
+	authorityRec := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kindSequenceAuthority, authorityBytes)
 	entryExpectation := state.SlotExpectation{Identity: sessionID, Kind: entryRec.Kind}
 	return b.store.SaveBatchIf(ctx,
 		[]state.SlotExpectation{authorityExpectation, entryExpectation, headExpectation, fenceExpectation},
@@ -1236,7 +1280,7 @@ func (b *bus) Replay(ctx context.Context, from events.Cursor, f events.Filter) (
 // The cursor's SessionID selects which session's head record to read;
 // when f is admin and from.SessionID is empty there is no single
 // session to scan, so admin replay requires a SessionID on the cursor.
-func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Filter) ([]events.Event, error) {
+func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Filter) (out []events.Event, retErr error) {
 	session := from.SessionID
 	if session == "" {
 		session = f.Session
@@ -1262,10 +1306,22 @@ func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Fi
 		return nil, fmt.Errorf("%w: durable replay requires the full identity triple on the filter",
 			events.ErrIdentityScopeRequired)
 	}
-	if b.isFenced(sessionID) {
+	fenced, err := b.isDurablyFenced(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if fenced {
 		// Erased session — no history to replay (events.Fencer).
 		return nil, nil
 	}
+	defer func() {
+		fenced, err := b.isDurablyFenced(ctx, sessionID)
+		if err != nil {
+			out, retErr = nil, err
+		} else if fenced {
+			out, retErr = nil, nil
+		}
+	}()
 
 	head, err := b.loadHead(ctx, sessionID)
 	if err != nil {
@@ -1278,7 +1334,7 @@ func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Fi
 	seqs := append([]uint64(nil), head.Sequences...)
 	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
 
-	out := make([]events.Event, 0, len(seqs))
+	out = make([]events.Event, 0, len(seqs))
 	for _, seq := range seqs {
 		if seq <= from.Sequence {
 			continue
@@ -1368,10 +1424,22 @@ func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, t
 	if err != nil {
 		return 0, 0, false, err
 	}
-	if b.isFenced(sessionID) {
+	fenced, err := b.isDurablyFenced(ctx, sessionID)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if fenced {
 		// Erased session — reads as no retained history (events.Fencer).
 		return 0, 0, false, events.ErrNoHistory
 	}
+	defer func() {
+		fenced, fenceErr := b.isDurablyFenced(ctx, sessionID)
+		if fenceErr != nil {
+			head, tail, truncated, err = 0, 0, false, fenceErr
+		} else if fenced {
+			head, tail, truncated, err = 0, 0, false, events.ErrNoHistory
+		}
+	}()
 	hd, err := b.loadHead(ctx, sessionID)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("durable: bounds load head: %w", err)
@@ -1395,7 +1463,7 @@ func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, t
 // Window does NOT emit audit.admin_scope_used: the handler always calls
 // Bounds first, which emits it once per state.history request (a paired
 // Bounds+Window must not double-audit a single read).
-func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Filter) ([]events.Event, error) {
+func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Filter) (out []events.Event, retErr error) {
 	if b.closed.Load() {
 		return nil, events.ErrBusClosed
 	}
@@ -1412,10 +1480,22 @@ func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Fil
 	if err != nil {
 		return nil, err
 	}
-	if b.isFenced(sessionID) {
+	fenced, err := b.isDurablyFenced(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if fenced {
 		// Erased session — no retained history window (events.Fencer).
 		return nil, nil
 	}
+	defer func() {
+		fenced, err := b.isDurablyFenced(ctx, sessionID)
+		if err != nil {
+			out, retErr = nil, err
+		} else if fenced {
+			out, retErr = nil, nil
+		}
+	}()
 	head, err := b.loadHead(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("durable: window load head: %w", err)
@@ -1432,7 +1512,7 @@ func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Fil
 
 	// Walk newest-first, skip sequences at/above `before`, collect up to
 	// `limit` MATCHING events, then reverse to oldest-first.
-	out := make([]events.Event, 0, limit)
+	out = make([]events.Event, 0, limit)
 	for _, meta := range metadata {
 		if before != 0 && meta.Sequence >= before {
 			continue
@@ -1513,13 +1593,34 @@ func (b *bus) ListWindow(ctx context.Context, q events.EventListQuery) (events.E
 		page.Truncated = evicted
 		return page, nil
 	}
+	if !q.Admin {
+		id := identity.Quadruple{Identity: identity.Identity{
+			TenantID: events.WireFilterFirst(q.Filter.TenantIDs), UserID: events.WireFilterFirst(q.Filter.UserIDs), SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
+		}}
+		fenced, err := b.isDurablyFenced(ctx, id)
+		if err != nil {
+			return events.EventListPage{}, err
+		}
+		if fenced {
+			return events.EventListPage{}, nil
+		}
+		page, readErr := b.listWindowDurable(ctx, q)
+		fenced, fenceErr := b.isDurablyFenced(ctx, id)
+		if fenceErr != nil {
+			return events.EventListPage{}, fenceErr
+		}
+		if fenced {
+			return events.EventListPage{}, nil
+		}
+		return page, readErr
+	}
 	return b.listWindowDurable(ctx, q)
 }
 
 // ListWindowMetadata serves the same page as ListWindow using only the
 // durable typed metadata projection. It is the read path for aggregate and
 // session-counter consumers: payload bodies are never loaded.
-func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (events.MetadataListPage, error) {
+func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (page events.MetadataListPage, retErr error) {
 	if b.closed.Load() {
 		return events.MetadataListPage{}, events.ErrBusClosed
 	}
@@ -1554,12 +1655,40 @@ func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (
 		page.Truncated = evicted
 		return page, nil
 	}
+	if !q.Admin {
+		id := identity.Quadruple{Identity: identity.Identity{
+			TenantID: events.WireFilterFirst(q.Filter.TenantIDs), UserID: events.WireFilterFirst(q.Filter.UserIDs), SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
+		}}
+		fenced, err := b.isDurablyFenced(ctx, id)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+		if fenced {
+			return events.MetadataListPage{}, nil
+		}
+		defer func() {
+			fenced, err := b.isDurablyFenced(ctx, id)
+			if err != nil {
+				page, retErr = events.MetadataListPage{}, err
+			} else if fenced {
+				page, retErr = events.MetadataListPage{}, nil
+			}
+		}()
+	}
 
 	type sessionHead struct {
 		id       identity.Quadruple
 		metadata []events.EventMetadata
 	}
 	var heads []sessionHead
+	var adminFences durableFenceSnapshot
+	if q.Admin {
+		var err error
+		adminFences, err = b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+	}
 	if !q.Admin {
 		id := identity.Quadruple{Identity: identity.Identity{
 			TenantID:  events.WireFilterFirst(q.Filter.TenantIDs),
@@ -1587,7 +1716,7 @@ func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (
 			if err := ctx.Err(); err != nil {
 				return events.MetadataListPage{}, err
 			}
-			if rec.Kind != kindHead || !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) || b.isFenced(rec.Identity) {
+			if rec.Kind != kindHead || !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) || b.isFenced(rec.Identity) || adminFences.contains(rec.Identity) {
 				continue
 			}
 			hd, err := decodeHead(rec.Bytes)
@@ -1620,8 +1749,21 @@ func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (
 			matches = append(matches, m)
 		}
 	}
+	if q.Admin {
+		currentFences, err := b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+		kept := matches[:0]
+		for _, meta := range matches {
+			if !currentFences.contains(meta.Identity) {
+				kept = append(kept, meta)
+			}
+		}
+		matches = kept
+	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Sequence > matches[j].Sequence })
-	var page events.MetadataListPage
+	page = events.MetadataListPage{}
 	if len(matches) > q.Limit {
 		page.HasMore = true
 		matches = matches[:q.Limit]
@@ -1648,6 +1790,14 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 		metadata []events.EventMetadata
 	}
 	var heads []sessionHead
+	var adminFences durableFenceSnapshot
+	if q.Admin {
+		var err error
+		adminFences, err = b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.EventListPage{}, err
+		}
+	}
 
 	if !q.Admin {
 		// The handler folded the caller's triple; the filter names exactly
@@ -1691,7 +1841,7 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 			if !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) {
 				continue
 			}
-			if b.isFenced(rec.Identity) {
+			if b.isFenced(rec.Identity) || adminFences.contains(rec.Identity) {
 				continue
 			}
 			hd, err := decodeHead(rec.Bytes)
@@ -1759,6 +1909,20 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 		if len(matches) > q.Limit {
 			break
 		}
+	}
+
+	if q.Admin {
+		currentFences, err := b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.EventListPage{}, err
+		}
+		kept := matches[:0]
+		for _, ev := range matches {
+			if !currentFences.contains(ev.Identity) {
+				kept = append(kept, ev)
+			}
+		}
+		matches = kept
 	}
 
 	var page events.EventListPage

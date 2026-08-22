@@ -125,6 +125,35 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("InternalNamespace_ProtectedFromExternalMutationAndDeleteScope", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		q := tripleA()
+		kind := state.InternalKindPrefix + "conformance/authority"
+		internal := state.NewInternalRecord("01HABXXX00000000BI", q, kind, []byte("authority"))
+		if err := s.Save(ctx, internal); err != nil {
+			t.Fatalf("seed internal: %v", err)
+		}
+		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000000BJ", Identity: q, Kind: kind, Bytes: []byte("collision")}); !errors.Is(err, state.ErrReservedKind) {
+			t.Fatalf("external internal-kind Save = %v, want ErrReservedKind", err)
+		}
+		if _, err := s.DeleteScope(ctx, q.Identity); err != nil {
+			t.Fatalf("DeleteScope sentinel identity: %v", err)
+		}
+		got, err := s.Load(ctx, q, kind)
+		if err != nil || got.ID != internal.ID {
+			t.Fatalf("internal authority after DeleteScope = %+v, %v", got, err)
+		}
+		if err := s.Delete(ctx, q, kind); !errors.Is(err, state.ErrReservedKind) {
+			t.Fatalf("external Delete internal kind = %v, want ErrReservedKind", err)
+		}
+		deleted, err := s.DeleteIf(ctx, state.InternalSlotExpectation(q, kind, internal.ID))
+		if err != nil || !deleted {
+			t.Fatalf("authorized internal DeleteIf = %v, %v", deleted, err)
+		}
+	})
+
 	t.Run("SaveIf_MatchingStaleAbsentAndMultiSlot", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()

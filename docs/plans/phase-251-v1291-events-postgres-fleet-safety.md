@@ -163,6 +163,21 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       floors but never lowers authority; restart, bounded conflict retry, and
       cancellation are covered. No index row references a missing body; no
       complete read omits a committed body; backfill/replay is idempotent.
+- [ ] **Mixed-version event-writer barrier:** adopting a non-empty legacy
+      durable event store fails closed until the operator sets
+      `events.legacy_writers_drained: true` after every v1.29.0 event writer
+      sharing that StateStore scope has stopped. Ordinary rolling or
+      zero-downtime deployment is explicitly non-compliant; use true
+      stop-before-start, suspend-then-resume, or an equivalent guarantee.
+      Migration-only processes that cannot publish events are not writers;
+      fresh empty and already-adopted stores remain restart-compatible.
+- [ ] **Fence and commit integrity:** every durable history/index/projection
+      read observes persisted cross-runtime fences and rechecks before
+      exposure, using bounded fleet snapshots rather than per-event loads.
+      Internal authority/fence Kinds cannot be written or erased externally
+      and survive session `DeleteScope`. Only an explicit
+      `state.ErrCommitOutcomeUnknown` poisons a bus; definite conflicts,
+      cancellation, validation errors, and known rollbacks leave it usable.
 - [ ] **Backfill, erasure, cursor:** existing v1.29.0 rows backfill by
       sequence in bounded, restart-safe batches; concurrent writes catch up
       before the index is marked complete; restart resumes without duplicates;

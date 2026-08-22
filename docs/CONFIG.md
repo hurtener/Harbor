@@ -1231,6 +1231,18 @@ DSN for the durable event log's StateStore. Default: empty.
 Validation: required when `state_driver` is non-empty AND
 non-inmem. Secret: redacted.
 
+### events.legacy_writers_drained
+
+Explicit durable-event upgrade acknowledgement. Default: `false`. A v1.29.1
+Runtime finding legacy event heads without the shared sequence authority fails
+boot until this is `true`. Set it only after every v1.29.0 process that can
+publish events to the same StateStore has stopped. An ordinary zero-downtime or
+rolling deploy is not compliant because it starts the new writer before the old
+writer stops; use a true stop-before-start, suspend-then-resume, or an equivalent
+platform guarantee. Migration-only processes that never publish events are not
+event writers. Fresh empty durable stores and already-adopted v1.29.1 stores do
+not require the acknowledgement.
+
 ---
 
 ## Audit (reserved)

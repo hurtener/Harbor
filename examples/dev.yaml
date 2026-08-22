@@ -164,6 +164,8 @@ events:
   idle_timeout: 60s
   drop_window: 1s
   replay_buffer_size: 10000
+  # legacy_writers_drained is only for an acknowledged durable v1.29.0
+  # stop-before-start upgrade; inmem development does not set it.
 
 sessions:
   idle_ttl: 24h
