@@ -2,6 +2,7 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,20 @@ type countingStore struct {
 	state.StateStore
 	loads     atomic.Int64
 	listKinds atomic.Int64
+}
+
+var errInjectedHeadSave = errors.New("injected durable head save failure")
+
+type headFailureStore struct {
+	state.StateStore
+	failHead atomic.Bool
+}
+
+func (s *headFailureStore) Save(ctx context.Context, rec state.StateRecord) error {
+	if rec.Kind == kindHead && s.failHead.CompareAndSwap(true, false) {
+		return errInjectedHeadSave
+	}
+	return s.StateStore.Save(ctx, rec)
 }
 
 func metadataCfg() config.EventsConfig {
@@ -230,6 +245,87 @@ func TestDurable_MetadataIndex_ValidButStalePayloadFailsOnRead(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("ListWindow accepted metadata that disagrees with its payload")
+	}
+}
+
+func TestDurable_HeadSaveFailure_PoisonsRetryAndRestartMakesOmissionExplicit(t *testing.T) {
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	store := &headFailureStore{StateStore: inner}
+	bus, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("initial durable.New: %v", err)
+	}
+	id := metadataIdentity()
+	publish := func(marker string) error {
+		return bus.Publish(context.Background(), events.Event{
+			Type:       events.EventTypeRuntimeWarning,
+			Identity:   id,
+			OccurredAt: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC),
+			Payload: events.BusDroppedPayload{
+				FromSeq: 1, ToSeq: 1, SubscriberID: 1,
+			},
+			Extra: map[string]string{"marker": marker},
+		})
+	}
+	if err := publish("committed-before-fault"); err != nil {
+		t.Fatalf("publish before fault: %v", err)
+	}
+	store.failHead.Store(true)
+	if err := publish("entry-only-fault"); !errors.Is(err, errInjectedHeadSave) {
+		t.Fatalf("faulted publish error = %v, want injected head-save failure", err)
+	}
+
+	// The entry write succeeded before the head write was rejected. It is
+	// intentionally orphaned: the index never exposes it as a committed
+	// event, and recovery must not infer publication from an entry alone.
+	// This is the concrete two-write atomicity boundary: the failed event may
+	// be lost, but no caller-visible Publish success can be omitted; a
+	// transaction/atomic journal would be needed for all-or-nothing failure
+	// semantics across both records.
+	if _, err := inner.Load(context.Background(), id, kindEntryPrefix+seqToken(2)); err != nil {
+		t.Fatalf("faulted entry was not persisted before head failure: %v", err)
+	}
+	if err := publish("retry-before-restart"); err == nil {
+		t.Fatal("retry on poisoned bus succeeded; ambiguous persistence must require restart")
+	}
+	page, err := bus.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
+		Filter: eventsWireFilter(id, nil), Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("read before restart: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Extra["marker"] != "committed-before-fault" {
+		t.Fatalf("pre-restart history = %+v, want only the successfully committed event", page.Events)
+	}
+	if err := bus.Close(context.Background()); err != nil {
+		t.Fatalf("close poisoned bus: %v", err)
+	}
+
+	restarted, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("restart after ambiguous head write: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	if err := restarted.Publish(context.Background(), events.Event{
+		Type:       events.EventTypeRuntimeWarning,
+		Identity:   id,
+		OccurredAt: time.Date(2026, 8, 22, 0, 0, 1, 0, time.UTC),
+		Payload:    events.BusDroppedPayload{FromSeq: 2, ToSeq: 2, SubscriberID: 2},
+		Extra:      map[string]string{"marker": "committed-after-restart"},
+	}); err != nil {
+		t.Fatalf("publish after restart: %v", err)
+	}
+	page, err = restarted.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
+		Filter: eventsWireFilter(id, nil), Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("read after restart: %v", err)
+	}
+	if len(page.Events) != 2 || page.Events[0].Extra["marker"] != "committed-before-fault" || page.Events[1].Extra["marker"] != "committed-after-restart" {
+		t.Fatalf("post-restart history = %+v, want committed event plus explicit retry", page.Events)
 	}
 }
 
