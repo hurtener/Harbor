@@ -343,6 +343,24 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/state/drivers/postgres/...
+      - name: Run v1.29.1 six-store shared Postgres runtime acceptance
+        # Phase 251: the local path is DSN-gated, so select the exact test and
+        # assert its PASS line to prevent a renamed filter or SKIP from
+        # satisfying the hosted real-Postgres gate vacuously.
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/phase-251-postgres-runtime.XXXXXX.log")"
+          trap 'rm -f "${test_log}"' EXIT
+          go test -v -race -count=1 -timeout 240s \
+            ./internal/persistence/postgresruntime \
+            -run '^TestPostgresRuntime_SixStoresOneSharedDatabase$' | tee "${test_log}"
+          if grep -qE -- 'no tests to run|^[[:space:]]*--- SKIP:.*TestPostgresRuntime_SixStoresOneSharedDatabase' "${test_log}"; then
+            echo 'Phase 251 six-store Postgres runtime acceptance skipped or did not execute' >&2
+            exit 1
+          fi
+          grep -qE -- '^[[:space:]]*--- PASS: TestPostgresRuntime_SixStoresOneSharedDatabase([[:space:]]|$)' "${test_log}"
       - name: Run exact-generation state mutation conformance against postgres:16
         # D-403: exercise both conditional deletion and the publication fence
         # through explicit DSN-backed selectors so neither can pass by skip.
