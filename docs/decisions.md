@@ -13791,7 +13791,7 @@ cutover is claimed.
 
 **Date:** 2026-08-22
 
-**Status:** Accepted; implementation is the v1.29.3 release gate.
+**Status:** Accepted and shipped in v1.29.3.
 
 The v1.29.2 durable recovery path correctly fails closed when a legacy head
 contains duplicate sequence references, but it previously offered no Harbor
@@ -13845,3 +13845,21 @@ read contract), D-305 (metadata projection substrate), D-398 (conditional
 StateStore writes), D-431 (HA-69 fleet safety), D-432 (session-scoped legacy
 backfill), RFC §4.3, §6.11, §6.13, §8, §12, briefs 05 and 06. Plan:
 `docs/plans/phase-253-v1293-legacy-head-repair.md`.
+
+**Release evidence:** implementation PR #730 merged at
+`dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`; hosted candidate run
+`32600083120` and documentation run `32600083113` completed successfully.
+The immutable annotated `v1.29.3` tag object is
+`eeae1f44f4fb7d862f581f9cbbabb40a7827146a` and peels to
+`dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`; release workflow
+`32602553267` succeeded at
+`https://github.com/hurtener/Harbor/releases/tag/v1.29.3` with 13 assets,
+verified aggregate and six sidecar checksums, and six attestations. The
+native darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build
+`dabbcff4`; module provenance records
+`Sum=h1:uRya1FQV+hu4YKH5jzQDVP0z0wqOnH6DnsOe8M7oxog=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`, and
+`Origin.Ref=refs/tags/v1.29.3`. Post-tag scaffold pin/golden cleanup is
+complete. Local `make preflight` was never run and no downstream fleet repair
+or cutover is claimed.

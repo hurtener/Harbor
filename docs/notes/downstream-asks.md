@@ -43,7 +43,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
-| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.2 shipped; v1.29.3 legacy-head repair extension in progress — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
+| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1380,8 +1380,8 @@ downstream fleet cutover is claimed.
 
 ### HA-69 v1.29.3 compatibility extension — Phase 253 / D-433
 
-**State:** Release-blocking implementation for v1.29.3. This extends the
-existing HA-69 handle; no new Harbor ask identifier is allocated.
+**State:** Shipped in v1.29.3; the compatibility extension is closed. This
+extends the existing HA-69 handle; no new Harbor ask identifier was allocated.
 
 The next legacy-head audit found a portable integrity condition that v1.29.2
 must continue to reject at boot but did not yet expose a Harbor-owned repair
@@ -1420,6 +1420,22 @@ contract covers in-memory, SQLite, and PostgreSQL drivers, cancellation, and
 concurrent attempts. Operators must stop/backup, inspect, apply, verify, and
 repair all affected heads before admitting any v1.29.2+ event writer; Harbor
 does not mutate downstream databases or platform configuration.
+
+Implementation PR #730 merged at `dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`;
+hosted candidate run `32600083120` and documentation run `32600083113`
+completed successfully. The immutable annotated `v1.29.3` tag object is
+`eeae1f44f4fb7d862f581f9cbbabb40a7827146a` and peels to
+`dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`; release workflow `32602553267`
+succeeded, publishing 13 assets with verified aggregate and six sidecar
+checksums and six attestations at the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.3).
+The native darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build
+`dabbcff4`; module provenance records
+`Sum=h1:uRya1FQV+hu4YKH5jzQDVP0z0wqOnH6DnsOe8M7oxog=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`, and
+`Origin.Ref=refs/tags/v1.29.3`. Post-tag scaffold pin/golden cleanup is
+complete. Local `make preflight` was never run and no downstream fleet repair
+or cutover is claimed.
 
 ## Posture signals from the downstream team
 
