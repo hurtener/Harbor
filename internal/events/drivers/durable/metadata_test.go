@@ -18,8 +18,16 @@ import (
 
 type countingStore struct {
 	state.StateStore
-	loads     atomic.Int64
-	listKinds atomic.Int64
+	loads        atomic.Int64
+	payloadLoads atomic.Int64
+	listKinds    atomic.Int64
+}
+
+type cancelAfterPayloadLoadsStore struct {
+	state.StateStore
+	cancel       context.CancelFunc
+	threshold    int64
+	payloadLoads atomic.Int64
 }
 
 var errInjectedHeadSave = errors.New("injected durable head save failure")
@@ -49,6 +57,18 @@ func metadataCfg() config.EventsConfig {
 
 func (s *countingStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
 	s.loads.Add(1)
+	if len(kind) >= len(kindEntryPrefix) && kind[:len(kindEntryPrefix)] == kindEntryPrefix {
+		s.payloadLoads.Add(1)
+	}
+	return s.StateStore.Load(ctx, id, kind)
+}
+
+func (s *cancelAfterPayloadLoadsStore) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
+	if len(kind) >= len(kindEntryPrefix) && kind[:len(kindEntryPrefix)] == kindEntryPrefix {
+		if s.payloadLoads.Add(1) == s.threshold {
+			s.cancel()
+		}
+	}
 	return s.StateStore.Load(ctx, id, kind)
 }
 
@@ -59,6 +79,7 @@ func (s *countingStore) ListKind(ctx context.Context, scope state.ListScope, pre
 
 func (s *countingStore) resetCounters() {
 	s.loads.Store(0)
+	s.payloadLoads.Store(0)
 	s.listKinds.Store(0)
 }
 
@@ -207,7 +228,7 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 	}
 }
 
-func TestDurable_MetadataIndex_ValidButStalePayloadFailsOnRead(t *testing.T) {
+func TestDurable_MetadataIndex_ValidButStalePayloadRepairsFromCanonicalBody(t *testing.T) {
 	base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
 	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
@@ -240,11 +261,167 @@ func TestDurable_MetadataIndex_ValidButStalePayloadFailsOnRead(t *testing.T) {
 		t.Fatalf("New with structurally valid stale metadata: %v", err)
 	}
 	t.Cleanup(func() { _ = readBus.Close(context.Background()) })
-	_, err = readBus.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
+	page, err := readBus.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
 		Filter: eventsWireFilter(metadataIdentity(), nil), Limit: 1,
 	})
-	if err == nil {
-		t.Fatal("ListWindow accepted metadata that disagrees with its payload")
+	if err != nil {
+		t.Fatalf("ListWindow after stale metadata repair: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Type != events.EventTypeRuntimeError {
+		t.Fatalf("ListWindow after stale metadata repair = %+v, want canonical runtime.error", page.Events)
+	}
+}
+
+func TestDurable_MetadataIndex_StaleValidRowsRepairMetadataOnlyConsumers(t *testing.T) {
+	mutations := map[string]func(*eventMetadataRecord){
+		"type": func(m *eventMetadataRecord) {
+			m.Type = events.EventTypeGovernanceRateLimited
+		},
+		"cost": func(m *eventMetadataRecord) {
+			m.CostSummary = true
+			m.CostDollars = 42.5
+			m.TotalTokens = 999
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+			inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatalf("stateinmem.New: %v", err)
+			}
+			store := &countingStore{StateStore: inner}
+			seedLegacyHistory(t, store, 1, base)
+			bus := metadataBus(t, store)
+
+			rec, err := store.StateStore.Load(context.Background(), metadataIdentity(), kindHead)
+			if err != nil {
+				t.Fatalf("load head: %v", err)
+			}
+			head, err := decodeHead(rec.Bytes)
+			if err != nil {
+				t.Fatalf("decode head: %v", err)
+			}
+			mutate(&head.Metadata[0])
+			bytes, err := encodeHead(head)
+			if err != nil {
+				t.Fatalf("encode stale head: %v", err)
+			}
+			if err := store.StateStore.Save(context.Background(), state.StateRecord{
+				ID: state.NewEventID(), Identity: metadataIdentity(), Kind: kindHead, Bytes: bytes,
+			}); err != nil {
+				t.Fatalf("save stale head: %v", err)
+			}
+
+			store.resetCounters()
+			mr := bus.(events.EventMetadataReplayer)
+			page, err := mr.ListWindowMetadata(context.Background(), events.EventListQuery{
+				Filter: eventsWireFilter(metadataIdentity(), nil), Limit: 1,
+			})
+			if err != nil {
+				t.Fatalf("ListWindowMetadata: %v", err)
+			}
+			if len(page.Events) != 1 || page.Events[0].Type != events.EventTypeRuntimeError {
+				t.Fatalf("metadata page = %+v, want canonical runtime.error", page.Events)
+			}
+			if got := store.payloadLoads.Load(); got != 1 {
+				t.Fatalf("stale metadata repair loaded %d payloads, want exactly one canonical body", got)
+			}
+
+			// The repaired head is now ready. A second metadata-only read must
+			// return the same exact result without rescanning/loading bodies.
+			store.resetCounters()
+			page, err = mr.ListWindowMetadata(context.Background(), events.EventListQuery{
+				Filter: eventsWireFilter(metadataIdentity(), nil), Limit: 1,
+			})
+			if err != nil {
+				t.Fatalf("ListWindowMetadata after repair: %v", err)
+			}
+			if len(page.Events) != 1 || page.Events[0].Type != events.EventTypeRuntimeError {
+				t.Fatalf("metadata page after repair = %+v, want canonical runtime.error", page.Events)
+			}
+			if got := store.payloadLoads.Load(); got != 0 {
+				t.Fatalf("ready metadata read loaded %d payloads, want zero", got)
+			}
+		})
+	}
+}
+
+func TestDurable_MetadataIndex_BackfillCancellationCheckpointsAndResumes(t *testing.T) {
+	const total = metadataValidationBatchSize*2 + 17
+	base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	seedLegacyHistory(t, inner, total, base)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := &cancelAfterPayloadLoadsStore{
+		StateStore: inner,
+		cancel:     cancel,
+		// The first 128-row checkpoint must commit before interruption;
+		// cancel while the next batch is being read.
+		threshold: metadataValidationBatchSize + 2,
+	}
+	if _, err := New(ctx, metadataCfg(), auditpatterns.New(), canceling); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted New = %v, want context.Canceled", err)
+	}
+
+	checkpointRec, err := inner.Load(context.Background(), metadataIdentity(), kindHead)
+	if err != nil {
+		t.Fatalf("load checkpoint head: %v", err)
+	}
+	checkpoint, err := decodeHead(checkpointRec.Bytes)
+	if err != nil {
+		t.Fatalf("decode checkpoint head: %v", err)
+	}
+	if checkpoint.MetadataReady {
+		t.Fatal("interrupted adoption marked metadata ready before validation completed")
+	}
+	if checkpoint.MetadataValidatedCount != metadataValidationBatchSize || len(checkpoint.Metadata) != metadataValidationBatchSize {
+		t.Fatalf("checkpoint validated count=%d metadata=%d, want %d rows", checkpoint.MetadataValidatedCount, len(checkpoint.Metadata), metadataValidationBatchSize)
+	}
+
+	resumed := &countingStore{StateStore: inner}
+	bus, err := New(context.Background(), metadataCfg(), auditpatterns.New(), resumed)
+	if err != nil {
+		t.Fatalf("resumed New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	if got := resumed.payloadLoads.Load(); got >= total {
+		t.Fatalf("resumed adoption loaded %d payloads, want fewer than full %d-row scan", got, total)
+	}
+	if got := resumed.payloadLoads.Load(); got != total-metadataValidationBatchSize+1 {
+		t.Fatalf("resumed adoption loaded %d payloads, want remaining %d plus retention seed", got, total-metadataValidationBatchSize+1)
+	}
+
+	resumed.resetCounters()
+	page, err := bus.(events.EventMetadataReplayer).ListWindowMetadata(context.Background(), events.EventListQuery{
+		Filter: eventsWireFilter(metadataIdentity(), []string{string(events.EventTypeRuntimeError)}), Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("ready metadata read: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Type != events.EventTypeRuntimeError {
+		t.Fatalf("ready metadata page = %+v, want one runtime.error", page.Events)
+	}
+	if got := resumed.payloadLoads.Load(); got != 0 {
+		t.Fatalf("ready metadata read loaded %d payloads, want zero", got)
+	}
+}
+
+func TestDurable_OpenWith_UsesCallerStartupContextForRecovery(t *testing.T) {
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	seedLegacyHistory(t, inner, metadataValidationBatchSize+1, time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = events.OpenWith(ctx, metadataCfg(), auditpatterns.New(), events.Deps{State: inner})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("OpenWith cancelled recovery = %v, want context.Canceled", err)
 	}
 }
 

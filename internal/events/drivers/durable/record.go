@@ -1,6 +1,8 @@
 package durable
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -97,8 +99,33 @@ func marshalPayload(p events.EventPayload) (map[string]any, error) {
 // StateStore has no list/scan method, so this record IS the index —
 // Replay reads it to learn which entry records exist for a session.
 type headRecord struct {
+	Sequences                 []uint64              `json:"sequences"`
+	Metadata                  []eventMetadataRecord `json:"metadata,omitempty"`
+	MetadataReady             bool                  `json:"metadata_ready,omitempty"`
+	MetadataValidatedCount    int                   `json:"metadata_validated_count,omitempty"`
+	MetadataIntegrityChecksum string                `json:"metadata_integrity_checksum,omitempty"`
+}
+
+// headMetadataDigest is the canonical input to the persisted integrity
+// marker. The readiness/checkpoint fields themselves are deliberately not
+// included: a marker authenticates the ordered sequence/metadata projection,
+// not its bookkeeping.
+type headMetadataDigest struct {
 	Sequences []uint64              `json:"sequences"`
-	Metadata  []eventMetadataRecord `json:"metadata,omitempty"`
+	Metadata  []eventMetadataRecord `json:"metadata"`
+}
+
+// metadataIntegrityChecksum returns a stable lowercase SHA-256 for the
+// ordered head projection. JSON is used only for the private, fixed-shape
+// record above; encoding/json emits struct fields in declaration order, so
+// the digest is stable across restarts and drivers.
+func metadataIntegrityChecksum(sequences []uint64, metadata []eventMetadataRecord) string {
+	digest, _ := json.Marshal(headMetadataDigest{
+		Sequences: sequences,
+		Metadata:  metadata,
+	})
+	sum := sha256.Sum256(digest)
+	return hex.EncodeToString(sum[:])
 }
 
 // eventMetadataRecord is the durable wire shape of events.EventMetadata.

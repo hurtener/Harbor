@@ -34,6 +34,13 @@ import (
 // (the durable driver fails loud when it can neither share a store nor
 // open its own; see drivers/durable).
 type Deps struct {
+	// StartupContext carries the caller's construction lifetime into
+	// deps-aware drivers that perform boot-time I/O. OpenWith fills it from
+	// its ctx argument when the caller leaves it nil; the field exists so a
+	// shared-store durable driver never has to recover under an unbounded
+	// context.Background().
+	StartupContext context.Context
+
 	// State is the runtime's already-open StateStore. A deps-aware
 	// driver that persists (the durable log) uses it INSTEAD of opening
 	// a private store, so the event log and the rest of the runtime
@@ -76,13 +83,16 @@ func RegisterWithDeps(name string, factory DepsFactory) {
 // passing the runtime Deps through. Drivers that registered no
 // deps-aware factory fall back to their plain Factory — so OpenWith
 // is a strict superset of Open and callers can use it unconditionally.
-func OpenWith(_ context.Context, cfg config.EventsConfig, r audit.Redactor, deps Deps) (EventBus, error) {
+func OpenWith(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, deps Deps) (EventBus, error) {
 	name := cfg.Driver
 	if name == "" {
 		name = DefaultDriver
 	}
 	if r == nil {
 		return nil, fmt.Errorf("events: OpenWith requires an audit.Redactor (got nil)")
+	}
+	if deps.StartupContext == nil {
+		deps.StartupContext = ctx
 	}
 	depsFactoriesMu.RLock()
 	df, ok := depsFactories[name]

@@ -78,6 +78,10 @@ const (
 	// kindEntryPrefix is the StateStore Kind prefix of a per-event
 	// entry record; the bus sequence is appended.
 	kindEntryPrefix = "events.durable.entry/"
+	// metadataValidationBatchSize bounds canonical payload validation before
+	// a durable checkpoint is written. A cancelled/restarted runtime resumes
+	// after the validated prefix instead of repeating the whole head scan.
+	metadataValidationBatchSize = 128
 )
 
 // errEventFenced is the internal sentinel sequenceAndStore returns when
@@ -200,9 +204,10 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 // §6.11), decodes each, and floors nextSeq at the GLOBAL maximum sequence
 // across every record's Sequences list (0 for an empty log). It is
 // another maintenance-scan consumer alongside the pause sweeper's
-// crash-orphan rescan: it reads sequence numbers only, mutates nothing,
-// and records the cross-identity scan via structured slog rather than a
-// dedicated audit event (the sweeper's posture).
+// crash-orphan rescan. In addition to the sequence floor it adopts legacy
+// metadata heads through bounded, conditional checkpoints; the cross-
+// identity scan is recorded via structured slog rather than a dedicated
+// audit event (the sweeper's posture).
 //
 // Fail-loud (CLAUDE.md §13): a scan error or an undecodable head record
 // returns a wrapped error so New fails the boot; the counter is never
@@ -330,12 +335,14 @@ func init() {
 			return newWithOwnedStore(cfg, r)
 		}
 		if deps.State != nil {
-			// The events.RegisterWithDeps factory contract is ctx-free, so
-			// the recovery ctx bridges with context.Background() — the §5
-			// unmanaged-async-boundary case, matching newWithOwnedStore's
-			// state.Open precedent. Threading a real boot ctx through the
-			// factory contract is the tracked follow-up.
-			return New(context.Background(), cfg, r, deps.State)
+			ctx := deps.StartupContext
+			if ctx == nil {
+				// Direct callers of a deps factory cannot reach this branch
+				// through events.OpenWith, which always supplies its ctx. Keep
+				// the defensive fallback for an explicitly hand-built Deps.
+				ctx = context.Background()
+			}
+			return New(ctx, cfg, r, deps.State)
 		}
 		return nil, fmt.Errorf("durable: no StateStore available — set events.state_driver (dedicated event-log store) or call events.OpenWith with Deps.State (share the runtime's store), or pick events.driver=inmem")
 	})
@@ -658,11 +665,12 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 		b.persistenceBroken = true
 		return fmt.Errorf("load head record: %w", err)
 	}
-	// The steady-state path already has one metadata row per sequence. Avoid
-	// rebuilding a map over the entire session head on every publish (which
-	// would turn a long-lived session into O(n²) write work). Legacy or
-	// partially-written heads take the validating/backfill path once.
-	if len(head.Metadata) != len(head.Sequences) {
+	// The steady-state path already has one integrity-authenticated metadata
+	// row per sequence. Avoid rebuilding a map over the entire session head on
+	// every publish (which would turn a long-lived session into O(n²) write
+	// work), but force legacy/unchecked heads through bounded canonical
+	// validation before appending a new row.
+	if !headMetadataReady(head) {
 		head, err = b.ensureHeadMetadata(ctx, sessionID, head)
 		if err != nil {
 			b.persistenceBroken = true
@@ -671,6 +679,9 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 	}
 	head.Sequences = append(head.Sequences, ev.Sequence)
 	head.Metadata = append(head.Metadata, metadata)
+	head.MetadataValidatedCount = len(head.Sequences)
+	head.MetadataReady = true
+	head.MetadataIntegrityChecksum = metadataIntegrityChecksum(head.Sequences, head.Metadata)
 	headBytes, err := encodeHead(head)
 	if err != nil {
 		b.persistenceBroken = true
@@ -702,26 +713,78 @@ func (b *bus) loadHeadLocked(ctx context.Context, sessionID identity.Quadruple) 
 	return decodeHead(rec.Bytes)
 }
 
+// headMetadataReady reports whether the projection has been validated against
+// canonical event bodies and its persisted digest still authenticates the
+// ordered sequence/metadata pair. A length match alone is intentionally not
+// sufficient: a valid event type/cost/identity can still belong to another
+// payload.
+func headMetadataReady(head headRecord) bool {
+	return len(head.Sequences) > 0 &&
+		head.MetadataReady &&
+		head.MetadataValidatedCount == len(head.Sequences) &&
+		len(head.Metadata) == len(head.Sequences) &&
+		head.MetadataIntegrityChecksum == metadataIntegrityChecksum(head.Sequences, head.Metadata)
+}
+
+// saveHeadCheckpoint conditionally persists a bounded metadata adoption
+// checkpoint. The expected bytes are advanced after each successful save, so
+// another runtime cannot be overwritten silently while a large legacy head is
+// being adopted.
+func (b *bus) saveHeadCheckpoint(ctx context.Context, id identity.Quadruple, expectedBytes []byte, head headRecord) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	headBytes, err := encodeHead(head)
+	if err != nil {
+		return nil, err
+	}
+	current, err := b.store.Load(ctx, id, kindHead)
+	if err != nil {
+		return nil, fmt.Errorf("reload head before metadata checkpoint: %w", err)
+	}
+	if !bytes.Equal(current.Bytes, expectedBytes) {
+		return nil, fmt.Errorf("metadata checkpoint raced with a newer head: %w", state.ErrConditionFailed)
+	}
+	if err := b.store.SaveIf(ctx, []state.SlotExpectation{{
+		Identity: id, Kind: kindHead, ExpectedEventID: current.ID,
+	}}, state.StateRecord{
+		ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headBytes,
+	}); err != nil {
+		return nil, fmt.Errorf("save metadata checkpoint: %w", err)
+	}
+	return headBytes, nil
+}
+
 // ensureHeadMetadata upgrades a v1.29 head (which only carried sequence
-// numbers) to the typed metadata projection. It is idempotent and safe to
-// call on every read. The payload is written before the head/index during
-// Publish, so a successfully persisted metadata row always has a payload;
-// a missing payload is treated as corruption and fails loudly.
+// numbers) to the typed metadata projection. It also authenticates heads
+// whose metadata already has the right length: the event body is canonical,
+// while the persisted ready+checksum marker permits metadata-only consumers
+// to remain O(1) after one successful validation. Legacy/adoption work is
+// bounded by metadataValidationBatchSize and checkpoints a validated prefix,
+// making cancellation and restart resumable rather than a repeated whole-head
+// scan. A stale but structurally-valid row is repaired from its body.
 func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, head headRecord) (headRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return headRecord{}, err
+	}
 	if len(head.Sequences) == 0 {
-		if len(head.Metadata) != 0 {
+		if len(head.Metadata) != 0 || head.MetadataReady || head.MetadataValidatedCount != 0 || head.MetadataIntegrityChecksum != "" {
 			return headRecord{}, fmt.Errorf("metadata exists for empty head")
 		}
 		return head, nil
 	}
-	var originalHeadBytes []byte
-	if len(head.Metadata) != len(head.Sequences) {
-		var err error
-		originalHeadBytes, err = encodeHead(head)
-		if err != nil {
-			return headRecord{}, fmt.Errorf("encode legacy head before backfill: %w", err)
+
+	seqSet := make(map[uint64]struct{}, len(head.Sequences))
+	for _, seq := range head.Sequences {
+		if seq == 0 {
+			return headRecord{}, fmt.Errorf("invalid zero sequence in head")
 		}
+		if _, duplicate := seqSet[seq]; duplicate {
+			return headRecord{}, fmt.Errorf("duplicate sequence=%d in head", seq)
+		}
+		seqSet[seq] = struct{}{}
 	}
+
 	bySeq := make(map[uint64]eventMetadataRecord, len(head.Metadata))
 	for _, m := range head.Metadata {
 		if m.Sequence == 0 || m.Type == "" {
@@ -736,6 +799,9 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 		if math.IsNaN(m.CostDollars) || math.IsInf(m.CostDollars, 0) {
 			return headRecord{}, fmt.Errorf("metadata sequence=%d has non-finite cost", m.Sequence)
 		}
+		if _, ok := seqSet[m.Sequence]; !ok {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d is not present in head", m.Sequence)
+		}
 		if _, duplicate := bySeq[m.Sequence]; duplicate {
 			return headRecord{}, fmt.Errorf("duplicate metadata sequence=%d", m.Sequence)
 		}
@@ -744,62 +810,96 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 		}
 		bySeq[m.Sequence] = m
 	}
-	changed := len(head.Metadata) != len(head.Sequences)
-	metadata := make([]eventMetadataRecord, 0, len(head.Sequences))
-	for _, seq := range head.Sequences {
-		if seq == 0 {
-			return headRecord{}, fmt.Errorf("invalid zero sequence in head")
-		}
-		m, ok := bySeq[seq]
-		if !ok {
-			// Legacy or partially-written metadata: rebuild this one row from
-			// the immutable event body. Never fabricate an index row.
-			rec, err := b.store.Load(ctx, id, kindEntryPrefix+seqToken(seq))
-			if err != nil {
-				return headRecord{}, fmt.Errorf("backfill sequence=%d: load payload: %w", seq, err)
-			}
-			ev, err := decodeEvent(rec.Bytes)
-			if err != nil {
-				return headRecord{}, fmt.Errorf("backfill sequence=%d: decode payload: %w", seq, err)
-			}
-			if ev.Sequence != seq || ev.Identity.Identity != id.Identity || ev.Identity.RunID != id.RunID && ev.Identity.RunID != "" {
-				return headRecord{}, fmt.Errorf("backfill sequence=%d: payload identity/sequence mismatch", seq)
-			}
-			m, err = metadataRecordFromEvent(ev)
-			if err != nil {
-				return headRecord{}, fmt.Errorf("backfill sequence=%d: %w", seq, err)
-			}
-			changed = true
-		} else if m.Sequence != seq {
-			return headRecord{}, fmt.Errorf("metadata sequence=%d does not match head sequence=%d", m.Sequence, seq)
-		}
-		metadata = append(metadata, m)
+	if len(head.Metadata) > len(head.Sequences) {
+		return headRecord{}, fmt.Errorf("metadata rows=%d exceed head sequences=%d", len(head.Metadata), len(head.Sequences))
 	}
-	if !changed {
+
+	// A complete, authenticated head is the normal steady-state path. This is
+	// the only path that avoids loading payload bodies, and the checksum makes
+	// an externally mutated stale-valid row fall back to canonical validation.
+	if headMetadataReady(head) {
 		return head, nil
 	}
-	head.Metadata = metadata
-	headBytes, err := encodeHead(head)
+
+	originalHeadBytes, err := encodeHead(head)
 	if err != nil {
-		return headRecord{}, fmt.Errorf("encode backfilled head: %w", err)
+		return headRecord{}, fmt.Errorf("encode head before metadata adoption: %w", err)
 	}
-	current, err := b.store.Load(ctx, id, kindHead)
-	if err != nil {
-		return headRecord{}, fmt.Errorf("reload head before backfill save: %w", err)
+
+	// A checkpoint contains only the validated sequence prefix. Its checksum
+	// authenticates that prefix so an interrupted adoption never resumes from
+	// a structurally-valid but untrusted row.
+	resumeCount := 0
+	if head.MetadataValidatedCount > 0 && head.MetadataValidatedCount <= len(head.Sequences) &&
+		head.MetadataValidatedCount == len(head.Metadata) &&
+		head.MetadataIntegrityChecksum == metadataIntegrityChecksum(
+			head.Sequences[:head.MetadataValidatedCount], head.Metadata) {
+		resumeCount = head.MetadataValidatedCount
+		for i, m := range head.Metadata {
+			if m.Sequence != head.Sequences[i] {
+				resumeCount = 0
+				break
+			}
+		}
 	}
-	// A query can race a publisher (or another runtime) while upgrading a
-	// legacy head. Never overwrite a newer sequence list: compare the exact
-	// generation and use SaveIf so the index either commits atomically or
-	// fails loudly for the caller to retry.
-	if !bytes.Equal(current.Bytes, originalHeadBytes) {
-		return headRecord{}, fmt.Errorf("backfill raced with a newer head: %w", state.ErrConditionFailed)
+	metadata := make([]eventMetadataRecord, resumeCount, len(head.Sequences))
+	copy(metadata, head.Metadata[:resumeCount])
+	expectedBytes := originalHeadBytes
+
+	checkpoint := func(final bool) error {
+		checkpointHead := head
+		checkpointHead.Metadata = append([]eventMetadataRecord(nil), metadata...)
+		checkpointHead.MetadataValidatedCount = len(metadata)
+		checkpointHead.MetadataReady = final
+		if final {
+			checkpointHead.MetadataIntegrityChecksum = metadataIntegrityChecksum(checkpointHead.Sequences, checkpointHead.Metadata)
+		} else {
+			checkpointHead.MetadataIntegrityChecksum = metadataIntegrityChecksum(checkpointHead.Sequences[:len(metadata)], checkpointHead.Metadata)
+		}
+		var saveErr error
+		expectedBytes, saveErr = b.saveHeadCheckpoint(ctx, id, expectedBytes, checkpointHead)
+		if saveErr != nil {
+			return saveErr
+		}
+		head = checkpointHead
+		return nil
 	}
-	if err := b.store.SaveIf(ctx, []state.SlotExpectation{{
-		Identity: id, Kind: kindHead, ExpectedEventID: current.ID,
-	}}, state.StateRecord{
-		ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headBytes,
-	}); err != nil {
-		return headRecord{}, fmt.Errorf("save backfilled head: %w", err)
+
+	for i := resumeCount; i < len(head.Sequences); i++ {
+		if err := ctx.Err(); err != nil {
+			return headRecord{}, fmt.Errorf("metadata adoption cancelled after %d/%d rows: %w", len(metadata), len(head.Sequences), err)
+		}
+		seq := head.Sequences[i]
+		rec, err := b.store.Load(ctx, id, kindEntryPrefix+seqToken(seq))
+		if err != nil {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: load payload: %w", seq, err)
+		}
+		ev, err := decodeEvent(rec.Bytes)
+		if err != nil {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: decode payload: %w", seq, err)
+		}
+		if ev.Sequence != seq || ev.Identity.Identity != id.Identity || (ev.Identity.RunID != id.RunID && ev.Identity.RunID != "") {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: payload identity/sequence mismatch", seq)
+		}
+		canonical, err := metadataRecordFromEvent(ev)
+		if err != nil {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: %w", seq, err)
+		}
+		// The body is authoritative. A stale but valid existing row is
+		// replaced, while malformed rows were rejected by the structural
+		// checks above.
+		metadata = append(metadata, canonical)
+
+		if len(metadata)%metadataValidationBatchSize == 0 || i == len(head.Sequences)-1 {
+			if err := checkpoint(i == len(head.Sequences)-1); err != nil {
+				return headRecord{}, fmt.Errorf("metadata adoption checkpoint after %d/%d rows: %w", len(metadata), len(head.Sequences), err)
+			}
+		}
+	}
+	if resumeCount == len(head.Sequences) {
+		if err := checkpoint(true); err != nil {
+			return headRecord{}, fmt.Errorf("finalize metadata adoption: %w", err)
+		}
 	}
 	return head, nil
 }
@@ -813,7 +913,7 @@ func metadataFromHead(head headRecord) []events.EventMetadata {
 }
 
 func validateMetadataEvent(meta events.EventMetadata, ev events.Event) error {
-	if meta.Sequence != ev.Sequence || meta.Type != ev.Type || meta.Identity != ev.Identity || !meta.OccurredAt.Equal(ev.OccurredAt) {
+	if meta.Sequence != ev.Sequence || meta.Type != ev.Type || meta.Identity != ev.Identity || !meta.OccurredAt.Equal(ev.OccurredAt) || meta.Internal != events.IsBusInternalNotice(ev.Type) {
 		return fmt.Errorf("projection differs from payload (metadata=%+v payload seq=%d type=%q)", meta, ev.Sequence, ev.Type)
 	}
 	rebuilt, err := events.NewEventMetadata(ev)
