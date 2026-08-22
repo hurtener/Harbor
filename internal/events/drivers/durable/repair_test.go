@@ -56,11 +56,11 @@ type repairCASRaceStore struct {
 
 func (s *repairCASRaceStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
 	if s.once.CompareAndSwap(false, true) {
-		head, err := s.StateStore.Load(ctx, s.identity, kindHead)
+		head, err := s.Load(ctx, s.identity, kindHead)
 		if err != nil {
 			return err
 		}
-		if err := s.StateStore.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: head.Identity, Kind: head.Kind, Bytes: append([]byte(nil), head.Bytes...)}); err != nil {
+		if err := s.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: head.Identity, Kind: head.Kind, Bytes: append([]byte(nil), head.Bytes...)}); err != nil {
 			return err
 		}
 	}
@@ -99,11 +99,11 @@ type repairBatchConflictStore struct {
 func (s *repairBatchConflictStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
 	s.recordBatch(len(expectations), len(writes))
 	if s.once.CompareAndSwap(false, true) {
-		head, err := s.StateStore.Load(ctx, s.identity, kindHead)
+		head, err := s.Load(ctx, s.identity, kindHead)
 		if err != nil {
 			return err
 		}
-		if err := s.StateStore.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: head.Identity, Kind: kindHead, Bytes: append([]byte(nil), head.Bytes...)}); err != nil {
+		if err := s.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: head.Identity, Kind: kindHead, Bytes: append([]byte(nil), head.Bytes...)}); err != nil {
 			return err
 		}
 	}
@@ -659,8 +659,9 @@ func TestLegacyRepair_RefusesAmbiguousOrCorruptHeads(t *testing.T) {
 	}
 }
 
-func rewriteRepairEntry(t *testing.T, store state.StateStore, id identity.Quadruple, sequence uint64, mutate func(*events.Event), raw []byte) {
+func rewriteRepairEntry(t *testing.T, store state.StateStore, id identity.Quadruple, mutate func(*events.Event), raw []byte) {
 	t.Helper()
+	const sequence = uint64(40)
 	kind := kindEntryPrefix + seqToken(sequence)
 	rec, err := store.Load(context.Background(), id, kind)
 	if err != nil {
@@ -725,27 +726,27 @@ func TestLegacyRepair_RefusesEntryAndMetadataAmbiguityWithoutWrites(t *testing.T
 			}}
 		}},
 		{name: "payload tenant mismatch", mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
-			rewriteRepairEntry(t, base, id, 40, func(ev *events.Event) { ev.Identity.TenantID = "wrong-tenant" }, nil)
+			rewriteRepairEntry(t, base, id, func(ev *events.Event) { ev.Identity.TenantID = "wrong-tenant" }, nil)
 			return base
 		}},
 		{name: "payload user mismatch", mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
-			rewriteRepairEntry(t, base, id, 40, func(ev *events.Event) { ev.Identity.UserID = "wrong-user" }, nil)
+			rewriteRepairEntry(t, base, id, func(ev *events.Event) { ev.Identity.UserID = "wrong-user" }, nil)
 			return base
 		}},
 		{name: "payload session mismatch", mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
-			rewriteRepairEntry(t, base, id, 40, func(ev *events.Event) { ev.Identity.SessionID = "wrong-session" }, nil)
+			rewriteRepairEntry(t, base, id, func(ev *events.Event) { ev.Identity.SessionID = "wrong-session" }, nil)
 			return base
 		}},
 		{name: "payload sequence mismatch", mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
-			rewriteRepairEntry(t, base, id, 40, func(ev *events.Event) { ev.Sequence = 999 }, nil)
+			rewriteRepairEntry(t, base, id, func(ev *events.Event) { ev.Sequence = 999 }, nil)
 			return base
 		}},
 		{name: "malformed payload JSON", mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
-			rewriteRepairEntry(t, base, id, 40, nil, []byte(`{"malformed"`))
+			rewriteRepairEntry(t, base, id, nil, []byte(`{"malformed"`))
 			return base
 		}},
 		{name: "invalid payload event type", mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
-			rewriteRepairEntry(t, base, id, 40, func(ev *events.Event) { ev.Type = events.EventType("unknown.invalid") }, nil)
+			rewriteRepairEntry(t, base, id, func(ev *events.Event) { ev.Type = events.EventType("unknown.invalid") }, nil)
 			return base
 		}},
 		{name: "conflicting duplicate metadata", metadata: true, mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
@@ -867,7 +868,7 @@ func TestLegacyRepair_ConcurrentApplyHasOneReceipt(t *testing.T) {
 
 func TestLegacyRepair_ScansFleetScaleWithoutPayloadMaterialization(t *testing.T) {
 	store := newRepairInmem(t)
-	for i := 0; i < 4500; i++ {
+	for i := range 4500 {
 		session := "scale-" + string(rune('a'+(i/26)%26)) + "-" + padRepairNumber(i)
 		id := repairIdentity(session)
 		sequences := []uint64(nil)

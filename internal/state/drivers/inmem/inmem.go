@@ -476,7 +476,14 @@ func (h indexKeyMaxHeap) Less(i, j int) bool { return indexKeyLess(h[j], h[i]) }
 
 func (h indexKeyMaxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
-func (h *indexKeyMaxHeap) Push(value any) { *h = append(*h, value.(indexKey)) }
+func (h *indexKeyMaxHeap) Push(value any) {
+	key, ok := value.(indexKey)
+	if !ok {
+		// selectBoundedIndexKeys is the only caller and always supplies indexKey.
+		panic("inmem: indexKeyMaxHeap received unexpected value")
+	}
+	*h = append(*h, key)
+}
 
 func (h *indexKeyMaxHeap) Pop() any {
 	old := *h

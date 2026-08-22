@@ -11,7 +11,7 @@ import (
 
 func TestSelectBoundedIndexKeys_RetainsOnlyLimitAndOrdersDeterministically(t *testing.T) {
 	records := make(map[indexKey]state.StateRecord, 1001)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		key := indexKey{
 			Tenant:  "tenant",
 			User:    "user",

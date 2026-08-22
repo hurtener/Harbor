@@ -10,6 +10,7 @@ package durable
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -812,14 +813,7 @@ func headIdentityHash(id identity.Quadruple) string {
 	h := sha256.New()
 	for _, part := range []string{id.TenantID, id.UserID, id.SessionID, id.RunID} {
 		var length [8]byte
-		length[0] = byte(len(part) >> 56)
-		length[1] = byte(len(part) >> 48)
-		length[2] = byte(len(part) >> 40)
-		length[3] = byte(len(part) >> 32)
-		length[4] = byte(len(part) >> 24)
-		length[5] = byte(len(part) >> 16)
-		length[6] = byte(len(part) >> 8)
-		length[7] = byte(len(part))
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
 		_, _ = h.Write(length[:])
 		_, _ = h.Write([]byte(part))
 	}
