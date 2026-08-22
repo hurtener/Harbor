@@ -47,12 +47,12 @@ Two versions move independently in Harbor (RFC §5.3):
   connection exhaustion. The v1.29.1 pool budget and cutover procedure keep
   those paths bounded without requiring a Render plan upgrade.
 - Release-candidate evidence includes focused implementation and race tests,
-  phase-122 (`OK 37`, `FAIL 0`), phase-110d (`OK 30`, `FAIL 0`), and phase-53
-  (`OK 7`, `SKIP 1`, `FAIL 0`) smoke checks at implementation head
+  plus three focused smoke checks reporting `OK 37 / FAIL 0`,
+  `OK 30 / FAIL 0`, and `OK 7 / SKIP 1 / FAIL 0`, respectively, at implementation head
   `479119fa43f97d8b59800d2d9a5cea688f1130d7`; two independent Terra High
   reviews are P0/P1 clear. Replacement hosted candidate run `32564052955`
   attempt 2 completed successfully, including live preflight, on that same
-  SHA. Attempt 1's phase-39 generic skills race was transient; the exact
+  SHA. Attempt 1's generic skills race was transient; the exact
   focused local smoke/race checks were green and the same-SHA rerun was green.
   Immutable tag/release/provenance/checksums and post-tag version pin remain
   pending. This ledger claims neither local `make preflight` nor downstream
