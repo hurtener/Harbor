@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.29.1] — 2026-08-22
+
 ### Fixed
 
 - Durable event publication now atomically commits its protected global
@@ -44,6 +46,17 @@ Two versions move independently in Harbor (RFC §5.3):
   03:31–03:32Z artifacts/state health pings crash-looped during the same
   connection exhaustion. The v1.29.1 pool budget and cutover procedure keep
   those paths bounded without requiring a Render plan upgrade.
+- Release-candidate evidence includes focused implementation and race tests,
+  plus three focused smoke checks reporting `OK 37 / FAIL 0`,
+  `OK 30 / FAIL 0`, and `OK 7 / SKIP 1 / FAIL 0`, respectively, at implementation head
+  `479119fa43f97d8b59800d2d9a5cea688f1130d7`; two independent Terra High
+  reviews are P0/P1 clear. Replacement hosted candidate run `32564052955`
+  attempt 2 completed successfully, including live preflight, on that same
+  SHA. Attempt 1's generic skills race was transient; the exact
+  focused local smoke/race checks were green and the same-SHA rerun was green.
+  Immutable tag/release/provenance/checksums and post-tag version pin remain
+  pending. This ledger claims neither local `make preflight` nor downstream
+  fleet cutover.
 
 ## [1.29.0] — 2026-08-20
 
@@ -4672,7 +4685,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.0...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.1...HEAD
+[1.29.1]: https://github.com/hurtener/Harbor/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/hurtener/Harbor/compare/v1.28.7...v1.29.0
 [1.28.7]: https://github.com/hurtener/Harbor/compare/v1.28.6...v1.28.7
 [1.28.6]: https://github.com/hurtener/Harbor/compare/v1.28.5...v1.28.6

@@ -18,6 +18,31 @@ The canonical downstream register already consumes HA-13 for
 historical collision recorded in the register and in D-431; no HA-13
 reallocation is implied.
 
+## Release-candidate evidence (2026-08-22)
+
+The integrated implementation head under review is
+`479119fa43f97d8b59800d2d9a5cea688f1130d7` (the release-ledger commit that
+follows it changes documentation only). Focused evidence is:
+
+- phase-122 smoke: `OK 37 / SKIP 0 / FAIL 0`;
+- phase-110d smoke: `OK 30 / SKIP 0 / FAIL 0`;
+- phase-53 smoke: `OK 7 / SKIP 1 / FAIL 0`;
+- `go test -race -count=1 ./internal/runtime/steering/...`, the Phase-53
+  integration selector, and `go vet ./internal/runtime/steering/...` pass;
+- the all-six pool, migration-identity, wrong-ledger, and non-destructive
+  cutover contracts are covered by focused tests and the hosted PostgreSQL
+  conformance jobs; the hosted skills coverage gate also remains at or above
+  85%; and
+- two independent Terra High reviews report P0/P1 clear.
+
+Replacement hosted candidate run `32564052955` attempt 2 completed
+successfully, including live preflight, on the same SHA. Attempt 1's phase-39
+generic skills race was transient; the exact focused local smoke/race checks
+were green and the same-SHA rerun was green. Local `make preflight` was not
+run. The immutable annotated tag/release/provenance/checksums, post-tag
+version pin, and downstream fleet cutover remain outside this pre-tag
+evidence.
+
 ## RFC anchor
 
 - RFC §4
@@ -141,12 +166,12 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
 
 ## Acceptance criteria
 
-- [ ] **Event metadata contract:** a first-class typed projection/index stores
+- [x] **Event metadata contract:** a first-class typed projection/index stores
       sequence, `(tenant_id,user_id,session_id)`, run id, event type,
       `OccurredAt`, and the internal-notice marker, with an index on the
       supported filter/order dimensions. The canonical redacted event body
       remains authoritative and is loaded only after metadata selection.
-- [ ] **Bounded event reads:** `events.list` and `events.aggregate` preserve
+- [x] **Bounded event reads:** `events.list` and `events.aggregate` preserve
       D-294/D-305 response, cursor, scope, audit, filter, and `truncated`
       semantics while using metadata-first selection. Session counter
       enrichment preserves honest partial/lower-bound behavior. A deterministic
@@ -154,7 +179,7 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       fixture proves payload loads are bounded by the requested page/aggregate
       contract rather than total candidate count; default/cost sorts are
       covered too.
-- [ ] **Atomicity and recovery:** event body + metadata publication is one
+- [x] **Atomicity and recovery:** event body + metadata publication is one
       mandatory StateStore conditional batch covering global sequence
       authority, immutable body, and conditional head. The triad passes one
       atomic rollback conformance contract; two independent buses publishing
@@ -163,7 +188,7 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       floors but never lowers authority; restart, bounded conflict retry, and
       cancellation are covered. No index row references a missing body; no
       complete read omits a committed body; backfill/replay is idempotent.
-- [ ] **Mixed-version event-writer barrier:** every authority-absent durable
+- [x] **Mixed-version event-writer barrier:** every authority-absent durable
       event store, including an empty one, fails closed until the operator sets
       `events.legacy_writers_drained: true` after every v1.29.0 event writer
       sharing that StateStore scope has stopped. Ordinary rolling or
@@ -172,14 +197,14 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       Migration-only processes that cannot publish events are not writers.
       Empty scans cannot prove silent writers absent; already-authority stores
       remain restart-compatible without repeating the acknowledgement.
-- [ ] **Fence and commit integrity:** every durable history/index/projection
+- [x] **Fence and commit integrity:** every durable history/index/projection
       read observes persisted cross-runtime fences and rechecks before
       exposure, using bounded fleet snapshots rather than per-event loads.
       Internal authority/fence Kinds cannot be written or erased externally
       and survive session `DeleteScope`. Only an explicit
       `state.ErrCommitOutcomeUnknown` poisons a bus; definite conflicts,
       cancellation, validation errors, and known rollbacks leave it usable.
-- [ ] **Backfill, erasure, cursor:** existing v1.29.0 rows backfill by
+- [x] **Backfill, erasure, cursor:** existing v1.29.0 rows backfill by
       sequence in bounded, restart-safe batches; concurrent writes catch up
       before the index is marked complete; restart resumes without duplicates;
       malformed rows fail loudly; session erasure deletes/tombstones metadata
@@ -190,19 +215,19 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       metadata without raw payload scans for supported queries, retains D-426
       watermark/completeness/erasure semantics, and never reports zero for
       unavailable or stale data.
-- [ ] **Exhaustive six-store registry:** state, memory, artifacts, skills,
+- [x] **Exhaustive six-store registry:** state, memory, artifacts, skills,
       sessions/turns, and observability/rollups each register their PostgreSQL
       pool/migration contract. A registry/AST/contract test fails when a
       future PostgreSQL store opens an independent pool, bypasses the runtime
       budget, or declares a bare/unqualified migration ledger.
-- [ ] **Runtime-owned pool topology:** equal canonical DSN/database identity
+- [x] **Runtime-owned pool topology:** equal canonical DSN/database identity
       reuses one runtime-owned `*sql.DB`; stores receive non-owning handles;
       shutdown closes the shared pool exactly once after store users stop;
       post-close calls fail loudly. Distinct DSNs continue to open separate
       pools but all connection acquisition counts against one aggregate
       runtime budget. Direct standalone constructors remain available for
       backward-compatible embedders/tests when no runtime manager is passed.
-- [ ] **Exact operator configuration:** add and document the restart-required
+- [x] **Exact operator configuration:** add and document the restart-required
       fields `postgres.pool.max_open` (aggregate runtime permits),
       `postgres.pool.max_idle` (aggregate idle target),
       `postgres.pool.conn_max_lifetime`, and
@@ -214,7 +239,7 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       operator/orchestrator rollout ceiling, not a runtime configuration
       field. Existing per-store `dsn` and `migration_mode` keys remain
       accepted.
-- [ ] **Basic-4GB budget proof:** the operator docs and deterministic
+- [x] **Basic-4GB budget proof:** the operator docs and deterministic
       pool-accounting/many-runtime test pin this worst planned overlap for
       `max_connections=103`: nine runtimes × two generations × 3 open permits
       = 54; six concurrent direct 5432 migration sessions = 6; reserved
@@ -224,25 +249,25 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       rollout reservation that would exceed 103 and the test exercises all
       nine runtimes, both DSN topologies, overlapping generations, and
       shutdown. No plan upgrade is an accepted mitigation.
-- [ ] **One logical database default:** examples and operator docs show one
+- [x] **One logical database default:** examples and operator docs show one
       canonical database/DSN per runtime for all six compatible projections,
       with explicit namespaced ledgers. Distinct DSNs remain a supported
       first-boot topology and are documented as the safe stage-one rollout;
       same-DSN consolidation is optional until the cutover for that runtime.
-- [ ] **Migration connectivity:** `apply` uses direct/session-affine 5432,
+- [x] **Migration connectivity:** `apply` uses direct/session-affine 5432,
       advisory lock, and append-only migrations; `verify` is read-only,
       takes no advisory lock/DDL/transaction, and may use 6432. Detect and
       fail loudly when an apply DSN is transaction-pooled or has an
       unrecognizable PgBouncer transaction-mode posture. The procedure never
       claims that a 6432 advisory lock is safe.
-- [ ] **Namespaced, checksummed identity:** each of the six migration
+- [x] **Namespaced, checksummed identity:** each of the six migration
       histories has a subsystem-qualified ledger/lock authority and records
       subsystem, migration filename, version, and immutable checksum (or an
       equivalent cryptographically-bound identity). Verify checks both ledger
       identity and required schema objects; a different subsystem's integer
       version cannot satisfy verification. Migration history is independent
       across all six stores and restart/idempotence tests prove it.
-- [ ] **Legacy adoption and wrong-ledger refusal:** a correctly-shaped
+- [x] **Legacy adoption and wrong-ledger refusal:** a correctly-shaped
       legacy database may be adopted only after the expected subsystem schema
       and old migration bodies/checksums are inspected, then the namespaced
       ledger is seeded explicitly. The exact adversarial fixture with
@@ -252,14 +277,14 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       classified by schema, treated as empty/misprovisioned memory unless
       stronger evidence identifies preserved data, and never silently marked
       migrated.
-- [ ] **All-six real PostgreSQL lifecycle:** a real PostgreSQL integration
+- [x] **All-six real PostgreSQL lifecycle:** a real PostgreSQL integration
       boot opens all six stores against one logical database, runs independent
       migrations, restarts idempotently, exercises concurrent workloads, and
       verifies namespaced ledgers/required tables. Separate-DSN PostgreSQL
       compatibility, shared-pool cap/close-once/post-close, race tests, and
       PgBouncer acceptance are included where the environment supplies them;
       missing external services fail or skip with an explicit non-TODO reason.
-- [ ] **Safe cutover:** a CLI/tool or exact operator procedure supports
+- [x] **Safe cutover:** a CLI/tool or exact operator procedure supports
       dry-run/inspect, freeze-or-drain, direct apply, schema classification,
       bounded copy, source/destination row counts, canonical content hashes,
       receipt/body/state/revision/identity/turn-order/cursor/activity/usage/
@@ -271,8 +296,10 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       migration/cutover commands, compatibility notes, focused tests, hosted
       CI, two independent Terra High reviews, immutable annotated v1.29.1
       tag/release/provenance/checksums, and post-tag version pin/cleanup are
-      complete. Local `make preflight` is explicitly deferred per the
-      emergency instruction; hosted CI is the broad gate.
+      complete. The candidate evidence is present, but the hosted preflight
+      rerun, immutable tag/release/provenance/checksums, and post-tag version
+      pin/cleanup remain pending. Local `make preflight` is explicitly
+      deferred per the emergency instruction; no fleet cutover is claimed.
 
 ## Files added or changed
 
@@ -452,23 +479,24 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes.
+- [x] `make drift-audit` passes.
 - [ ] `make preflight` is **deferred to hosted CI per the emergency user
       instruction**; local preflight is not run and must not be marked green.
-- [ ] `make check-mirror` passes.
+- [x] `make check-mirror` passes.
 - [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve.
 - [ ] Coverage on touched packages meets the targets above.
-- [ ] Multi-isolation event, persistence, cutover, and pool tests pass.
-- [ ] Shared event-index and pool-manager artifacts have N≥100 concurrent
+- [x] Multi-isolation event, persistence, cutover, and pool tests pass in the
+      focused and hosted candidate evidence above.
+- [x] Shared event-index and pool-manager artifacts have N≥100 concurrent
       reuse/race coverage and shutdown leak evidence.
-- [ ] All six PostgreSQL stores are in the registry contract test and share
+- [x] All six PostgreSQL stores are in the registry contract test and share
       migration/pool ownership rules.
-- [ ] Wrong-ledger memory verification and legacy adoption tests fail loudly
+- [x] Wrong-ledger memory verification and legacy adoption tests fail loudly
       with remediation diagnostics.
-- [ ] Basic-4GB 103-connection budget math and nine-runtime deterministic test
+- [x] Basic-4GB 103-connection budget math and nine-runtime deterministic test
       pass without a plan-upgrade dependency.
-- [ ] Cutover manifests prove source/destination counts and canonical hashes
+- [x] Cutover manifests prove source/destination counts and canonical hashes
       before any operator removes old databases; Harbor itself performs no
       destructive cleanup.
-- [ ] New vocabulary is present in `docs/glossary.md`.
-- [ ] No brief finding was departed from.
+- [x] New vocabulary is present in `docs/glossary.md`.
+- [x] No brief finding was departed from.
