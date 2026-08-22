@@ -127,6 +127,7 @@ Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
   Production          serve, token, postgres
+  Persistence repair  events repair-legacy-heads
   Run inspection      inspect-events, inspect-runs, inspect-topology,
                       composition-preview, tui
   Build information   version
@@ -163,6 +164,7 @@ docs/plans/README.md for the implementation schedule.`,
 	root.AddCommand(newScaffoldCmd())
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newSkillCmd())
+	root.AddCommand(newEventsCmd())
 	root.AddCommand(newInspectEventsCmd())
 	root.AddCommand(newInspectRunsCmd())
 	root.AddCommand(newInspectTopologyCmd())

@@ -13784,3 +13784,64 @@ succeeded at
 verified checksums, and six attestations. The post-tag scaffold pin/goldens
 are complete. Local `make preflight` was never run and no downstream fleet
 cutover is claimed.
+
+---
+
+## D-433 — v1.29.3 offline repair for redundant legacy durable-head references (HA-69 compatibility extension)
+
+**Date:** 2026-08-22
+
+**Status:** Accepted; implementation is the v1.29.3 release gate.
+
+The v1.29.2 durable recovery path correctly fails closed when a legacy head
+contains duplicate sequence references, but it previously offered no Harbor
+operator surface to inspect or repair an otherwise precisely attributable
+duplicate. A generic fleet inventory now reports approximately 4,500 legacy
+heads and 89 distinct duplicated sequence values / redundant references, so a
+manual or implicit best-effort rewrite is not an acceptable contract.
+
+Harbor therefore provides an offline `harbor events repair-legacy-heads`
+command. It defaults to inspect/dry-run, requires the event writer to be
+stopped plus an explicit freeze/drain acknowledgement for apply, and does not
+assemble or boot the runtime. PostgreSQL mutation is permitted only through a
+direct, session-affine `5432` endpoint; URL/keyword forms identifying
+transaction-pooled PgBouncer or `6432` are refused before a write handle is
+opened. Read-only verify may use a pooled endpoint after direct preparation.
+
+Inspection and receipts are content-free. They may contain aggregate counts,
+stable record identifiers or hashes, duplicate positions and sequences,
+generations, immutable entry hashes, tool/version, and outcome, but never raw
+payloads, identity values, or body bytes. Whole-store enumeration uses the
+StateStore bounded-enumeration contract and reads at most `max-heads+1` records
+before refusing an oversized inventory; it is cancellable, and a driver must
+not materialize all head bodies merely to preflight a hash.
+
+A duplicate is repairable only when every occurrence in one head resolves to
+the same immutable entry slot and validates exact padded kind, decoded
+sequence, storage identity, event identity triple, and event type. Existing
+metadata must agree one-to-one with the canonical body. The v1.29.2
+session-scoped exception remains in force: a storage key with `RunID=""` may
+contain a body with a non-empty authoritative RunID, which is preserved rather
+than compared to the empty key. Missing entries, mismatches, malformed data,
+conflicting metadata, non-canonical ordering, or any ambiguity fail closed
+with no write.
+
+Apply retains the first occurrence of each validated duplicate and removes
+only redundant references and their duplicate metadata projection. Immutable
+entry bodies are never changed or deleted. The canonical head and a durable
+content-free receipt are committed through the shared StateStore conditional
+write contract; changed generations retry only after a clean bounded reread.
+Response loss and repeated apply are idempotent and produce the same receipt.
+In-memory, SQLite, and PostgreSQL drivers share the contract and adversarial
+tests, including concurrent repair attempts and cancellation.
+
+The rollout procedure is stop-before-repair, backup/rollback, inspect, apply,
+then verify. A v1.29.2+ event writer must not be admitted until legacy heads
+are verified repaired; ordinary runtime boot remains fail-closed. Harbor does
+not mutate downstream databases or platform configuration.
+
+**Cross-references.** D-025 (concurrent reuse), D-294 (event-list cursor and
+read contract), D-305 (metadata projection substrate), D-398 (conditional
+StateStore writes), D-431 (HA-69 fleet safety), D-432 (session-scoped legacy
+backfill), RFC §4.3, §6.11, §6.13, §8, §12, briefs 05 and 06. Plan:
+`docs/plans/phase-253-v1293-legacy-head-repair.md`.

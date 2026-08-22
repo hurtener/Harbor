@@ -57,6 +57,44 @@ closed.
 For the staged split-to-unified procedure and machine-readable row/hash
 manifests, see [Consolidate split PostgreSQL projections](/recipes/postgres-split-to-unified-cutover).
 
+## Offline legacy durable-head repair
+
+Legacy durable-head repair is deliberately not a runtime configuration field.
+It is an offline administrative command because a corrupt head can prevent a
+normal runtime from booting. Select the StateStore driver and DSN directly;
+the command does not assemble the Runtime:
+
+```bash
+harbor events repair-legacy-heads \
+  --driver postgres \
+  --dsn "$HARBOR_STATE_DSN" \
+  --mode inspect \
+  --json > /var/lib/harbor/legacy-heads.inspect.json
+```
+
+`inspect` is the default and performs no writes. Apply requires the event
+writer to be stopped and an explicit freeze/drain acknowledgement:
+
+```bash
+harbor events repair-legacy-heads \
+  --driver postgres \
+  --dsn "$HARBOR_STATE_DIRECT_DSN" \
+  --mode apply \
+  --freeze-ack \
+  --json > /var/lib/harbor/legacy-heads.apply.json
+```
+
+The command reports and stores only content-free evidence: counts, positions,
+stable identifiers or hashes, generations, immutable entry hashes, tool
+version, and outcome. It never logs or writes payload bytes or identity values.
+Use `--max-heads` and `--max-duplicates` to set explicit operator bounds; the
+StateStore scan reads at most one item beyond each bound before refusing an
+oversized inventory.
+It refuses every detectable PgBouncer/transaction-pooled or `6432` mutation
+DSN before opening a write handle; PostgreSQL apply requires a direct,
+session-affine `5432` endpoint. See [Repair legacy durable heads](/recipes/repair-legacy-durable-heads)
+for the stop-before-repair, backup/rollback, inspect/apply/verify procedure.
+
 ---
 
 ## Server

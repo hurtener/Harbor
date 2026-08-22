@@ -358,6 +358,10 @@ func (s *phase145SaveFailStore) ListKind(ctx context.Context, scope state.ListSc
 	return s.inner.ListKind(ctx, scope, kind)
 }
 
+func (s *phase145SaveFailStore) ListKindBounded(ctx context.Context, scope state.ListScope, kind string, limit int) ([]state.StateRecord, error) {
+	return s.inner.ListKindBounded(ctx, scope, kind, limit)
+}
+
 func (s *phase145SaveFailStore) ListKindForIdentity(ctx context.Context, q identity.Quadruple, kind string) ([]state.StateRecord, error) {
 	return s.inner.ListKindForIdentity(ctx, q, kind)
 }

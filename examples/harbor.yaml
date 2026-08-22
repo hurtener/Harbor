@@ -34,6 +34,12 @@ postgres:
     conn_max_lifetime: 5m
     conn_max_idle_time: 30s
 
+# Legacy durable-head repair is offline and is not enabled by a runtime key.
+# Stop all event writers, then inspect with:
+#   harbor events repair-legacy-heads --driver postgres --dsn "$HARBOR_STATE_DSN" --mode inspect --json
+# Apply only after reviewing the content-free receipt, with a direct 5432 DSN
+# and explicit freeze acknowledgement; see docs/recipes/repair-legacy-durable-heads.md.
+
 state:
   driver: inmem
   # Postgres only. Empty/omitted = apply (direct/session-capable endpoint).

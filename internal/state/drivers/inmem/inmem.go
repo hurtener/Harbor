@@ -22,6 +22,7 @@ package inmem
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"fmt"
 	"sort"
@@ -423,6 +424,99 @@ func (d *driver) ListKind(_ context.Context, scope state.ListScope, kindPrefix s
 	return out, nil
 }
 
+// ListKindBounded implements StateStore's storage-side bounded maintenance
+// scan. Map iteration cannot push a predicate into a database, so it retains
+// only the deterministic smallest limit matching keys while it inspects the
+// map; neither the key selection nor the returned records grows with the
+// number of matching rows.
+func (d *driver) ListKindBounded(ctx context.Context, scope state.ListScope, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKindBounded(scope, kindPrefix, limit); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	selection, err := selectBoundedIndexKeys(ctx, d.records, kindPrefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]state.StateRecord, 0, len(selection.keys))
+	for _, key := range selection.keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rec := d.records[key]
+		rec.Bytes = cloneBytes(rec.Bytes)
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// boundedIndexKeySelection is intentionally observable to the in-memory
+// driver's focused tests: maxRetained proves the map scan never accumulates
+// more than the caller's bound even when every record matches.
+type boundedIndexKeySelection struct {
+	keys        []indexKey
+	maxRetained int
+}
+
+// indexKeyMaxHeap keeps the lexicographically greatest retained key at its
+// root. Replacing that root when a smaller key is found leaves exactly the
+// deterministic smallest limit keys in O(limit) space.
+type indexKeyMaxHeap []indexKey
+
+func (h indexKeyMaxHeap) Len() int { return len(h) }
+
+func (h indexKeyMaxHeap) Less(i, j int) bool { return indexKeyLess(h[j], h[i]) }
+
+func (h indexKeyMaxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *indexKeyMaxHeap) Push(value any) {
+	key, ok := value.(indexKey)
+	if !ok {
+		// selectBoundedIndexKeys is the only caller and always supplies indexKey.
+		panic("inmem: indexKeyMaxHeap received unexpected value")
+	}
+	*h = append(*h, key)
+}
+
+func (h *indexKeyMaxHeap) Pop() any {
+	old := *h
+	n := len(old)
+	value := old[n-1]
+	*h = old[:n-1]
+	return value
+}
+
+func selectBoundedIndexKeys(ctx context.Context, records map[indexKey]state.StateRecord, kindPrefix string, limit int) (boundedIndexKeySelection, error) {
+	selected := make(indexKeyMaxHeap, 0, limit)
+	maxRetained := 0
+	for key := range records {
+		if err := ctx.Err(); err != nil {
+			return boundedIndexKeySelection{}, err
+		}
+		if !strings.HasPrefix(key.Kind, kindPrefix) {
+			continue
+		}
+		if len(selected) < limit {
+			heap.Push(&selected, key)
+		} else if indexKeyLess(key, selected[0]) {
+			selected[0] = key
+			heap.Fix(&selected, 0)
+		}
+		if len(selected) > maxRetained {
+			maxRetained = len(selected)
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool { return indexKeyLess(selected[i], selected[j]) })
+	return boundedIndexKeySelection{keys: []indexKey(selected), maxRetained: maxRetained}, nil
+}
+
 // ListKindForIdentity implements state.StateStore's non-elevated
 // identity-scoped enumeration surface.
 func (d *driver) ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
@@ -543,6 +637,24 @@ func afterScanCursor(key indexKey, cursor state.StateScanCursor) bool {
 
 func scanRecordLess(left, right state.StateRecord) bool {
 	return tupleCompare(left.Identity.UserID, left.Identity.SessionID, left.Identity.RunID, left.Kind, right.Identity.UserID, right.Identity.SessionID, right.Identity.RunID, right.Kind) < 0
+}
+
+func indexKeyLess(left, right indexKey) bool {
+	for _, pair := range [][2]string{
+		{left.Tenant, right.Tenant},
+		{left.User, right.User},
+		{left.Session, right.Session},
+		{left.Run, right.Run},
+		{left.Kind, right.Kind},
+	} {
+		if pair[0] < pair[1] {
+			return true
+		}
+		if pair[0] > pair[1] {
+			return false
+		}
+	}
+	return false
 }
 
 func tupleCompare(leftUser, leftSession, leftRun, leftKind, rightUser, rightSession, rightRun, rightKind string) int {

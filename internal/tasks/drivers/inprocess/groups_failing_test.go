@@ -78,6 +78,10 @@ func (f *failingStateStore) ListKind(ctx context.Context, scope state.ListScope,
 	return f.inner.ListKind(ctx, scope, kindPrefix)
 }
 
+func (f *failingStateStore) ListKindBounded(ctx context.Context, scope state.ListScope, kindPrefix string, limit int) ([]state.StateRecord, error) {
+	return f.inner.ListKindBounded(ctx, scope, kindPrefix, limit)
+}
+
 func (f *failingStateStore) ListKindForIdentity(ctx context.Context, id identity.Quadruple, kindPrefix string) ([]state.StateRecord, error) {
 	return f.inner.ListKindForIdentity(ctx, id, kindPrefix)
 }

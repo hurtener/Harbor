@@ -368,6 +368,9 @@ func (s *listFailingStore) DeleteScope(context.Context, identity.Identity) (int,
 func (s *listFailingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
 	return nil, s.listErr
 }
+func (s *listFailingStore) ListKindBounded(context.Context, state.ListScope, string, int) ([]state.StateRecord, error) {
+	return nil, s.listErr
+}
 func (s *listFailingStore) ListKindForIdentity(context.Context, identity.Quadruple, string) ([]state.StateRecord, error) {
 	return nil, s.listErr
 }
@@ -409,6 +412,13 @@ func (s *scopeRecordingStore) DeleteScope(context.Context, identity.Identity) (i
 	return 0, nil
 }
 func (s *scopeRecordingStore) ListKind(_ context.Context, scope state.ListScope, _ string) ([]state.StateRecord, error) {
+	if !scope.MaintenanceScoped {
+		return nil, state.ErrMaintenanceScopeRequired
+	}
+	s.sawMaintenanceScope = true
+	return nil, nil
+}
+func (s *scopeRecordingStore) ListKindBounded(_ context.Context, scope state.ListScope, _ string, _ int) ([]state.StateRecord, error) {
 	if !scope.MaintenanceScoped {
 		return nil, state.ErrMaintenanceScopeRequired
 	}

@@ -43,7 +43,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
-| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | Shipped (v1.29.2) — phases 251/252, D-431/D-432; HA-13 historical collision recorded |
+| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.2 shipped; v1.29.3 legacy-head repair extension in progress — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1377,6 +1377,49 @@ six attestations at the [GitHub release](https://github.com/hurtener/Harbor/rele
 Post-tag scaffold
 pin/golden cleanup is complete. Local `make preflight` was never run and no
 downstream fleet cutover is claimed.
+
+### HA-69 v1.29.3 compatibility extension — Phase 253 / D-433
+
+**State:** Release-blocking implementation for v1.29.3. This extends the
+existing HA-69 handle; no new Harbor ask identifier is allocated.
+
+The next legacy-head audit found a portable integrity condition that v1.29.2
+must continue to reject at boot but did not yet expose a Harbor-owned repair
+path for: redundant sequence references in an otherwise attributable durable
+head. Generic inventory reports approximately 4,500 legacy heads and 89
+duplicated sequence values / redundant references. The scale makes manual
+rewrites, payload logging, or implicit best-effort healing unsafe.
+
+The required surface is an offline `harbor events repair-legacy-heads`
+command. Inspect/dry-run is the default and is content-free: only affected
+head counts, duplicate counts and positions, stable record identifiers or
+hashes, generations, immutable entry hashes, and outcome may be printed or
+persisted. Apply requires the event writer to be stopped and an explicit
+freeze/drain acknowledgement. PostgreSQL mutation requires a direct,
+session-affine `5432` endpoint and refuses URL/keyword PgBouncer or `6432`
+transaction-pool forms before opening a write handle.
+
+The scan uses the StateStore bounded-enumeration contract and reads at most
+`max-heads+1` records before refusing an oversized inventory; it is
+cancellable and never materializes all head bodies solely to hash them.
+
+Only exact, unambiguous duplicates are repairable. Every occurrence must point
+to the same immutable entry slot and validate kind, decoded sequence, storage
+tenant/user/session identity, event identity triple, and event type; existing
+metadata must agree exactly. The v1.29.2 storage-key exception remains valid:
+`RunID=""` on a session-scoped key does not conflict with a non-empty payload
+RunID, which remains authoritative. Missing entries, body/metadata mismatch,
+identity or sequence mismatch, malformed data, non-canonical ordering, or
+changed generations fail closed with no partial write.
+
+Apply retains the first validated occurrence, removes only redundant head
+references and duplicate metadata, never mutates/deletes immutable entries,
+and atomically records a content-free receipt through StateStore CAS. A second
+apply and response-loss replay are no-ops with the same receipt. The shared
+contract covers in-memory, SQLite, and PostgreSQL drivers, cancellation, and
+concurrent attempts. Operators must stop/backup, inspect, apply, verify, and
+repair all affected heads before admitting any v1.29.2+ event writer; Harbor
+does not mutate downstream databases or platform configuration.
 
 ## Posture signals from the downstream team
 

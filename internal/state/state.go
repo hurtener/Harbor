@@ -247,6 +247,14 @@ type StateStore interface {
 	// never an error.
 	ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error)
 
+	// ListKindBounded is the storage-side bounded counterpart to ListKind.
+	// Implementations MUST stop materializing after limit records and SHOULD
+	// push the bound into the storage query. Callers that need to reject
+	// overflow ask for their accepted bound plus one. The result order is
+	// deterministic by the driver's maintenance key ordering, but callers
+	// must not rely on it for correctness.
+	ListKindBounded(ctx context.Context, scope ListScope, kindPrefix string, limit int) ([]StateRecord, error)
+
 	// ListKindForIdentity enumerates records for one complete identity whose
 	// Kind starts with kindPrefix. Unlike ListKind, this is not an elevated
 	// maintenance scan: the supplied triple is the complete read boundary.
@@ -351,6 +359,10 @@ const (
 	// MaxStateScanLimit bounds one maintenance page so no caller can turn the
 	// tenant scan into an accidental unbounded read.
 	MaxStateScanLimit = 256
+	// MaxStateMaintenanceListLimit bounds one cross-identity maintenance list.
+	// The extra slot lets repair/admission callers ask for their accepted
+	// maximum plus one without retaining an unbounded store-wide result.
+	MaxStateMaintenanceListLimit = 10001
 	// MaxStateIdentityListLimit bounds one identity-local admission read. It
 	// prevents a caller from using the bounded surface as an unbounded dump.
 	MaxStateIdentityListLimit = 1000
@@ -526,6 +538,18 @@ func ValidateListKind(scope ListScope, kindPrefix string) error {
 		return ErrMaintenanceScopeRequired
 	}
 	if kindPrefix == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateListKindBounded checks the explicit maintenance scope, literal
+// prefix, and hard storage-side materialization bound shared by every driver.
+func ValidateListKindBounded(scope ListScope, kindPrefix string, limit int) error {
+	if err := ValidateListKind(scope, kindPrefix); err != nil {
+		return err
+	}
+	if limit < 1 || limit > MaxStateMaintenanceListLimit {
 		return ErrInvalidRecord
 	}
 	return nil
