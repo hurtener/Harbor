@@ -480,9 +480,9 @@ func Reconcile(source, destination SubsystemManifest) error {
 }
 
 // ValidateApplyDSN rejects the known transaction-pooled posture for any
-// operation that can apply/bootstrap migrations. Unknown endpoints must carry
-// an explicit direct=true query parameter so an operator cannot accidentally
-// put an advisory lock on PgBouncer 6432.
+// operation that can apply/bootstrap migrations. Destination copy/bootstrap
+// is direct-PostgreSQL-only: an operator cannot override a detected PgBouncer
+// 6432 endpoint with a query parameter.
 func ValidateApplyDSN(dsn string) error {
 	trimmed := strings.TrimSpace(dsn)
 	if trimmed == "" {
@@ -491,8 +491,8 @@ func ValidateApplyDSN(dsn string) error {
 	if strings.Contains(trimmed, "pgbouncer_mode=transaction") || strings.Contains(trimmed, "pool_mode=transaction") {
 		return fmt.Errorf("cutover: migration apply refuses transaction-pooled DSN; use direct PostgreSQL 5432, never PgBouncer 6432")
 	}
-	if strings.Contains(trimmed, ":6432") && !strings.Contains(trimmed, "direct=true") {
-		return fmt.Errorf("cutover: migration apply DSN %q resolves to PgBouncer 6432; use a direct 5432 endpoint (or an explicitly proven session-affine endpoint with direct=true)", redactedDSN(trimmed))
+	if strings.Contains(trimmed, ":6432") {
+		return fmt.Errorf("cutover: migration apply DSN %q resolves to PgBouncer 6432; use a direct PostgreSQL 5432 endpoint", redactedDSN(trimmed))
 	}
 	return nil
 }

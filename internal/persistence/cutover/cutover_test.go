@@ -150,6 +150,7 @@ func TestValidateApplyDSN_RejectsTransactionPool(t *testing.T) {
 	for _, dsn := range []string{
 		"postgres://u:p@example/harbor?pgbouncer_mode=transaction",
 		"postgres://u:p@example:6432/harbor",
+		"postgres://u:p@example:6432/harbor?direct=true",
 	} {
 		if err := cutover.ValidateApplyDSN(dsn); err == nil {
 			t.Errorf("ValidateApplyDSN(%q) succeeded", dsn)
