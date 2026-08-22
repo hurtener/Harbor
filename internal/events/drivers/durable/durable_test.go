@@ -325,6 +325,9 @@ func (f *failingStore) Save(context.Context, state.StateRecord) error { return f
 func (f *failingStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
 	return f.saveErr
 }
+func (f *failingStore) SaveBatchIf(context.Context, []state.SlotExpectation, []state.StateRecord) error {
+	return f.saveErr
+}
 func (f *failingStore) FenceIf(context.Context, state.SlotExpectation, func() error) error {
 	return f.saveErr
 }

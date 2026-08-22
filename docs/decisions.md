@@ -13626,10 +13626,17 @@ tail-first candidate page before payload loading; aggregate counts that can
 be answered from metadata do so without materializing bodies. Payloads remain
 redacted canonical rows, and the index is not a second source of truth.
 
-The body and metadata publication is atomic or guarded by a durable readiness
-watermark that gives the same result: a complete index never points at a
-missing body, a committed body is not omitted from a complete read, and an
-erased session cannot be resurrected by backfill. Existing rows are populated
+The body and metadata publication is atomic through the mandatory StateStore
+`SaveBatchIf` contract. One transaction conditionally advances a reserved
+global sequence-authority slot and writes the immutable body plus the
+session-head metadata generation. Every write slot is conditioned; duplicate
+slots, unconditioned writes, and partial commits are rejected across in-memory,
+SQLite, and PostgreSQL. Independent runtimes allocate one unique monotonic,
+gap-free sequence through bounded context-aware CAS; an ambiguous transaction
+acknowledgement poisons the local bus until restart rather than guessing. A
+complete index never points at a missing body, a committed body is not omitted
+from a complete read, and an erased session cannot be resurrected by backfill.
+Existing rows are populated
 by bounded, idempotent, restart-safe sequence backfill; concurrent writes
 catch up before complete readiness. Out-of-order occurrence timestamps are
 metadata predicates, not cursor keys. Corruption or an incomplete watermark

@@ -27,6 +27,9 @@ func (f *fakeStore) Save(context.Context, state.StateRecord) error { return nil 
 func (f *fakeStore) SaveIf(context.Context, []state.SlotExpectation, state.StateRecord) error {
 	return nil
 }
+func (f *fakeStore) SaveBatchIf(context.Context, []state.SlotExpectation, []state.StateRecord) error {
+	return nil
+}
 func (f *fakeStore) FenceIf(_ context.Context, _ state.SlotExpectation, fn func() error) error {
 	return fn()
 }

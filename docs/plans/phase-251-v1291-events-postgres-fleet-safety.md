@@ -155,10 +155,14 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       contract rather than total candidate count; default/cost sorts are
       covered too.
 - [ ] **Atomicity and recovery:** event body + metadata publication is one
-      transaction/batch or is guarded by a durable readiness/watermark
-      protocol whose invariants are tested under crash between each write
-      step. No index row references a missing body; no complete read omits a
-      committed body; backfill/replay is idempotent.
+      mandatory StateStore conditional batch covering global sequence
+      authority, immutable body, and conditional head. The triad passes one
+      atomic rollback conformance contract; two independent buses publishing
+      N=100+ events produce exact unique contiguous sequences, and injected
+      failures at every write position expose no partial state. Legacy adoption
+      floors but never lowers authority; restart, bounded conflict retry, and
+      cancellation are covered. No index row references a missing body; no
+      complete read omits a committed body; backfill/replay is idempotent.
 - [ ] **Backfill, erasure, cursor:** existing v1.29.0 rows backfill by
       sequence in bounded, restart-safe batches; concurrent writes catch up
       before the index is marked complete; restart resumes without duplicates;

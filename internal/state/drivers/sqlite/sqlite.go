@@ -527,6 +527,74 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return nil
 }
 
+// SaveBatchIf atomically verifies all generations and writes every record in
+// one serialized SQLite transaction.
+func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if d.closed.Load() {
+		return fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("state/sqlite: begin conditional batch tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // caller receives the original error
+		}
+	}()
+	for _, expectation := range expectations {
+		var actual string
+		err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant=? AND user=? AND session=? AND run=? AND kind=?`,
+			expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+		if expectation.ExpectedEventID == "" {
+			if err == nil {
+				return fmt.Errorf("state/sqlite: %w: expected absent slot is present", state.ErrConditionFailed)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("state/sqlite: conditional batch read: %w", err)
+			}
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+			return fmt.Errorf("state/sqlite: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		if err != nil {
+			return fmt.Errorf("state/sqlite: conditional batch read: %w", err)
+		}
+	}
+	for _, write := range writes {
+		prevSlot, prevBytes, prevVersion, ok, err := lookupByEventID(ctx, tx, write.ID)
+		if err != nil {
+			return err
+		}
+		want := slotKey{Tenant: write.Identity.TenantID, User: write.Identity.UserID, Session: write.Identity.SessionID, Run: write.Identity.RunID, Kind: write.Kind}
+		if ok && (prevSlot != want || !bytes.Equal(prevBytes, write.Bytes) || prevVersion != write.Version) {
+			return fmt.Errorf("state/sqlite: %w: batch EventID %q conflicts", state.ErrIdempotencyConflict, write.ID)
+		}
+	}
+	const upsert = `INSERT INTO state_records (tenant, user, session, run, kind, event_id, version, bytes, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant, user, session, run, kind) DO UPDATE SET event_id=excluded.event_id, version=excluded.version, bytes=excluded.bytes, updated_at=excluded.updated_at`
+	for _, write := range writes {
+		updatedAt := write.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
+		if _, err := tx.ExecContext(ctx, upsert, write.Identity.TenantID, write.Identity.UserID, write.Identity.SessionID, write.Identity.RunID, write.Kind, string(write.ID), write.Version, write.Bytes, updatedAt); err != nil {
+			return fmt.Errorf("state/sqlite: conditional batch upsert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state/sqlite: commit conditional batch: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // DeleteIf atomically removes only the exact EventID generation named by the
 // caller. The generation predicate is part of the DELETE statement, so a
 // concurrent replacement is never removed.

@@ -41,6 +41,15 @@ func (f *failingStateStore) SaveIf(ctx context.Context, expectations []state.Slo
 	return f.inner.SaveIf(ctx, expectations, rec)
 }
 
+func (f *failingStateStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, records []state.StateRecord) error {
+	for _, rec := range records {
+		if f.saveErr != nil && (f.failOnKind == "" || rec.Kind == f.failOnKind) {
+			return f.saveErr
+		}
+	}
+	return f.inner.SaveBatchIf(ctx, expectations, records)
+}
+
 func (f *failingStateStore) FenceIf(ctx context.Context, expectation state.SlotExpectation, fn func() error) error {
 	return f.inner.FenceIf(ctx, expectation, fn)
 }

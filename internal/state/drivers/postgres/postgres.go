@@ -345,6 +345,87 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return nil
 }
 
+// SaveBatchIf atomically verifies all generations and writes every record in
+// one transaction. Ordered advisory locks serialize absent and present slots
+// across independent driver instances.
+func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return d.translateErr(err, "postgres: begin conditional batch tx")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // caller receives the original error
+		}
+	}()
+	lockIDs, err := conditionalAdvisoryLockIDs(ctx, tx, expectations, postgresAdvisoryLockID)
+	if err != nil {
+		return d.translateErr(err, "postgres: conditional batch advisory lock ID")
+	}
+	for _, lockID := range lockIDs {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID); err != nil {
+			return d.translateErr(err, "postgres: conditional batch advisory lock")
+		}
+	}
+	for _, expectation := range expectations {
+		var actual string
+		err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant_id=$1 AND user_id=$2 AND session_id=$3 AND run_id=$4 AND kind=$5`,
+			expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+		if expectation.ExpectedEventID == "" {
+			if err == nil {
+				return fmt.Errorf("postgres: %w: expected absent slot is present", state.ErrConditionFailed)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return d.translateErr(err, "postgres: conditional batch read")
+			}
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+			return fmt.Errorf("postgres: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		if err != nil {
+			return d.translateErr(err, "postgres: conditional batch read")
+		}
+	}
+	for _, write := range writes {
+		prev, ok, err := loadByEventIDTx(ctx, tx, write.ID)
+		if err != nil {
+			return err
+		}
+		if ok && (prev.Identity != write.Identity || prev.Kind != write.Kind || !bytesEqual(prev.Bytes, write.Bytes) || prev.Version != write.Version) {
+			return fmt.Errorf("postgres: %w: batch EventID %q conflicts", state.ErrIdempotencyConflict, write.ID)
+		}
+	}
+	const upsert = `INSERT INTO state_records (tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (tenant_id, user_id, session_id, run_id, kind) DO UPDATE SET event_id=EXCLUDED.event_id, version=EXCLUDED.version, bytes=EXCLUDED.bytes, updated_at=EXCLUDED.updated_at`
+	for _, write := range writes {
+		payload := write.Bytes
+		if payload == nil {
+			payload = []byte{}
+		}
+		updatedAt := write.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
+		if _, err := tx.ExecContext(ctx, upsert, write.Identity.TenantID, write.Identity.UserID, write.Identity.SessionID, write.Identity.RunID, write.Kind, string(write.ID), write.Version, payload, updatedAt); err != nil {
+			return d.translateUpsertErr(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return d.translateErr(err, "postgres: commit conditional batch")
+	}
+	committed = true
+	return nil
+}
+
 // DeleteIf atomically removes only the exact EventID generation named by the
 // caller. Keeping the generation predicate in the DELETE statement makes it
 // linearizable with concurrent UPSERTs without relying on process-local locks.

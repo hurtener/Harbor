@@ -70,9 +70,10 @@ func (b *bus) Page(ctx context.Context, after uint64, limit int) (events.Project
 // watermark) is served as-is — it is a real persisted event, and its
 // wake notification lets the reader re-check.
 func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.ProjectionPage, error) {
-	b.publishMu.Lock()
-	wm := b.nextSeq
-	b.publishMu.Unlock()
+	wm, _, err := b.loadSequenceAuthority(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: projection page: load sequence authority: %w", err)
+	}
 
 	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
 	if err != nil {
@@ -166,23 +167,27 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 // and head records completed persistence, rehydrated across restarts
 // from the log. In best-effort mode it returns the fallback ring's
 // assigned counter.
-func (b *bus) Watermark(_ context.Context) (uint64, error) {
+func (b *bus) Watermark(ctx context.Context) (uint64, error) {
 	if b.closed.Load() {
 		return 0, events.ErrBusClosed
 	}
 	if b.bestEffort && b.ringCap == 0 {
 		return 0, events.ErrProjectionUnavailable
 	}
-	b.publishMu.Lock()
-	defer b.publishMu.Unlock()
-	return b.nextSeq, nil
+	if b.bestEffort {
+		b.publishMu.Lock()
+		defer b.publishMu.Unlock()
+		return b.nextSeq, nil
+	}
+	wm, _, err := b.loadSequenceAuthority(ctx)
+	return wm, err
 }
 
 // Watch implements events.ProjectionSource. It registers wake on the
 // shared best-effort hub, seeds the sink with the current watermark
 // (so a projector that missed wakes — or restarted — catches up
 // immediately), and returns an unsubscribe handle.
-func (b *bus) Watch(_ context.Context, wake chan<- uint64) (events.ProjectionWatch, error) {
+func (b *bus) Watch(ctx context.Context, wake chan<- uint64) (events.ProjectionWatch, error) {
 	if b.closed.Load() {
 		return nil, events.ErrBusClosed
 	}
@@ -190,9 +195,11 @@ func (b *bus) Watch(_ context.Context, wake chan<- uint64) (events.ProjectionWat
 		return nil, events.ErrProjectionUnavailable
 	}
 	unsub := b.wake.Register(wake)
-	b.publishMu.Lock()
-	wm := b.nextSeq
-	b.publishMu.Unlock()
+	wm, err := b.Watermark(ctx)
+	if err != nil {
+		unsub()
+		return nil, err
+	}
 	if wm > 0 {
 		b.wake.NotifyWatermark(wm)
 	}

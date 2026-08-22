@@ -171,6 +171,52 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	return d.saveLocked(next)
 }
 
+// SaveBatchIf atomically verifies all predicates and writes under one mutex.
+func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, expectation := range expectations {
+		rec, ok := d.records[keyFor(expectation.Identity, expectation.Kind)]
+		if expectation.ExpectedEventID == "" {
+			if ok {
+				return fmt.Errorf("%w: slot is present", state.ErrConditionFailed)
+			}
+			continue
+		}
+		if !ok || rec.ID != expectation.ExpectedEventID {
+			return fmt.Errorf("%w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+	}
+	// Preflight all globally unique EventIDs before the first mutation so an
+	// idempotency conflict cannot partially apply the batch.
+	for _, write := range writes {
+		if prevKey, seen := d.eventIdx[write.ID]; seen {
+			prev := d.records[prevKey]
+			if prevKey != keyFor(write.Identity, write.Kind) || !bytes.Equal(prev.Bytes, write.Bytes) || prev.Version != write.Version {
+				return fmt.Errorf("%w: EventID %q conflicts", state.ErrIdempotencyConflict, write.ID)
+			}
+		}
+	}
+	for _, write := range writes {
+		if err := d.saveLocked(write); err != nil {
+			return err // unreachable after the complete preflight above
+		}
+	}
+	return nil
+}
+
 // DeleteIf implements StateStore's exact-generation conditional delete. The
 // reference driver's mutex makes the generation check and removal one atomic
 // operation across both the primary slot and EventID index.

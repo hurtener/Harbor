@@ -90,6 +90,41 @@ type Factory func() (state.StateStore, func())
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
+	t.Run("SaveBatchIf_AtomicValidationAndRollback", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		a := state.StateRecord{ID: "01HABXXX00000000BA", Identity: tripleA(), Kind: "batch.a", Bytes: []byte("a")}
+		b := state.StateRecord{ID: "01HABXXX00000000BB", Identity: tripleA(), Kind: "batch.b", Bytes: []byte("b")}
+		expect := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind}, {Identity: b.Identity, Kind: b.Kind}}
+		if err := s.SaveBatchIf(ctx, expect, []state.StateRecord{a, b}); err != nil {
+			t.Fatalf("SaveBatchIf initial: %v", err)
+		}
+		for _, rec := range []state.StateRecord{a, b} {
+			got, err := s.Load(ctx, rec.Identity, rec.Kind)
+			if err != nil || got.ID != rec.ID {
+				t.Fatalf("Load(%s) = %+v, %v", rec.Kind, got, err)
+			}
+		}
+		nextA := state.StateRecord{ID: "01HABXXX00000000BC", Identity: a.Identity, Kind: a.Kind, Bytes: []byte("next-a")}
+		nextB := state.StateRecord{ID: "01HABXXX00000000BD", Identity: b.Identity, Kind: b.Kind, Bytes: []byte("next-b")}
+		stale := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}, {Identity: b.Identity, Kind: b.Kind, ExpectedEventID: "stale"}}
+		if err := s.SaveBatchIf(ctx, stale, []state.StateRecord{nextA, nextB}); !errors.Is(err, state.ErrConditionFailed) {
+			t.Fatalf("stale batch = %v, want ErrConditionFailed", err)
+		}
+		got, err := s.Load(ctx, a.Identity, a.Kind)
+		if err != nil || got.ID != a.ID {
+			t.Fatalf("partial write after failed batch = %+v, %v", got, err)
+		}
+		duplicate := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}, {Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}}
+		if err := s.SaveBatchIf(ctx, duplicate, []state.StateRecord{nextA}); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("duplicate expectations validation = %v", err)
+		}
+		if err := s.SaveBatchIf(ctx, []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}}, []state.StateRecord{nextB}); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("unconditioned write = %v, want ErrInvalidRecord", err)
+		}
+	})
+
 	t.Run("SaveIf_MatchingStaleAbsentAndMultiSlot", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()

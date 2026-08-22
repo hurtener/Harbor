@@ -15,12 +15,10 @@
 //   - Replay reads from the StateStore — not an in-memory ring — so a
 //     late subscriber that connects after the Runtime was rebuilt
 //     against the same StateStore sees the full, gap-free history.
-//   - At construction (durable mode) the monotonic sequence counter is
-//     rehydrated from the persisted head records (recoverNextSeq, via the
-//     StateStore.ListKind maintenance scan) so a Runtime rebuilt against
-//     the same StateStore issues sequences strictly greater than any
-//     pre-restart token — a client reconnecting at a high Last-Event-ID
-//     is never silently skipped.
+//   - In durable mode a reserved StateStore authority record allocates the
+//     global sequence across independent Runtime processes. Construction
+//     adopts/floors that authority from legacy head records, so restart and
+//     rolling overlap never reuse a token.
 //   - When NO StateStore is configured the driver auto-degrades to a
 //     best-effort in-memory ring buffer AND emits a loud runtime.warning
 //     event plus an slog.Warn (CLAUDE.md §13 "no silent
@@ -40,13 +38,11 @@
 //   - Entry record: Kind = "events.durable.entry/<seq>" — holds the
 //     JSON-encoded event for bus-sequence <seq>.
 //
-// On Publish: assign the next bus sequence, write the opaque entry record,
-// then read-modify-write the head record's sequence list and metadata — all
-// under publishMu so the metadata index is never committed before its body.
-// A torn write (entry persisted, head not yet advanced) never produces a GAP
-// in a served replay: reads only return metadata the head lists, and an
-// ambiguous write poisons the process until restart. A restart backfills
-// legacy/partial heads with a compare-and-save generation check.
+// On Publish, one mandatory StateStore SaveBatchIf transaction conditionally
+// advances the global authority and commits the opaque body plus conditional
+// session head. No partial body/head/authority state is visible. An ambiguous
+// transaction acknowledgement poisons the process until restart; restart reads
+// the authority and backfills legacy metadata with generation checks.
 //
 // The driver is registered under name "durable" via init(); cmd/harbor
 // blank-imports this package so the registration fires at process
@@ -56,6 +52,8 @@ package durable
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -78,6 +76,11 @@ const (
 	// kindEntryPrefix is the StateStore Kind prefix of a per-event
 	// entry record; the bus sequence is appended.
 	kindEntryPrefix = "events.durable.entry/"
+	// kindSequenceAuthority is a reserved internal StateStore slot containing
+	// the global durable event sequence. Its identity is deliberately outside
+	// normal session identities and its kind cannot collide with event heads or
+	// bodies.
+	kindSequenceAuthority = "events.durable.internal/global-sequence-authority"
 	// metadataValidationBatchSize bounds canonical payload validation before
 	// a durable checkpoint is written. A cancelled/restarted runtime resumes
 	// after the validated prefix instead of repeating the whole head scan.
@@ -90,7 +93,19 @@ const (
 	// recoveryRetryDelay prevents a conflicting writer from turning boot
 	// catch-up into a tight retry loop while remaining negligible normally.
 	recoveryRetryDelay = time.Millisecond
+	// publishCASMaxAttempts bounds cross-runtime contention. The ceiling admits
+	// the required N=100 concurrent publishers while failing loudly under
+	// sustained churn instead of spinning forever.
+	publishCASMaxAttempts = 256
 )
+
+var sequenceAuthorityIdentity = identity.Quadruple{Identity: identity.Identity{
+	TenantID: "__harbor_internal__", UserID: "events", SessionID: "global_sequence_authority",
+}}
+
+type sequenceAuthorityRecord struct {
+	Sequence uint64 `json:"sequence"`
+}
 
 // errEventFenced is the internal sentinel sequenceAndStore returns when
 // an event's session triple is fenced (erased) — Publish maps it to a
@@ -235,7 +250,11 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 				return err
 			}
 		} else if previous.generations != nil && recoveryViewsEqual(previous.generations, current.generations) {
-			b.nextSeq = current.maxSeq
+			authoritySeq, err := b.adoptSequenceAuthority(ctx, current.maxSeq)
+			if err != nil {
+				return fmt.Errorf("durable: recover sequence authority: %w", err)
+			}
+			b.nextSeq = authoritySeq
 			if current.minSeq > 0 {
 				if err := b.recoverOldestRetained(ctx, current.minSeqOwner, current.minSeq); err != nil {
 					return err
@@ -257,6 +276,54 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("durable: recover sequence counter: head view did not stabilize after %d bounded attempts", recoveryStableViewMaxAttempts)
+}
+
+// adoptSequenceAuthority initializes or floors the shared authority from the
+// canonical legacy heads. It never lowers an existing value and is safe when
+// several new runtimes adopt the same database concurrently.
+func (b *bus) adoptSequenceAuthority(ctx context.Context, floor uint64) (uint64, error) {
+	for attempt := 1; attempt <= publishCASMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		current, expected, err := b.loadSequenceAuthority(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if current >= floor {
+			return current, nil
+		}
+		payload, err := json.Marshal(sequenceAuthorityRecord{Sequence: floor})
+		if err != nil {
+			return 0, err
+		}
+		next := state.StateRecord{ID: state.NewEventID(), Identity: sequenceAuthorityIdentity, Kind: kindSequenceAuthority, Bytes: payload}
+		if err := b.store.SaveBatchIf(ctx, []state.SlotExpectation{expected}, []state.StateRecord{next}); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return 0, err
+		}
+		return floor, nil
+	}
+	return 0, fmt.Errorf("authority adoption exceeded %d CAS attempts", publishCASMaxAttempts)
+}
+
+func (b *bus) loadSequenceAuthority(ctx context.Context) (uint64, state.SlotExpectation, error) {
+	expect := state.SlotExpectation{Identity: sequenceAuthorityIdentity, Kind: kindSequenceAuthority}
+	rec, err := b.store.Load(ctx, sequenceAuthorityIdentity, kindSequenceAuthority)
+	if errors.Is(err, state.ErrNotFound) {
+		return 0, expect, nil
+	}
+	if err != nil {
+		return 0, expect, err
+	}
+	var authority sequenceAuthorityRecord
+	if err := json.Unmarshal(rec.Bytes, &authority); err != nil {
+		return 0, expect, fmt.Errorf("decode authority event_id=%s: %w", rec.ID, err)
+	}
+	expect.ExpectedEventID = rec.ID
+	return authority.Sequence, expect, nil
 }
 
 type recoveryHeadView struct {
@@ -455,11 +522,9 @@ type bus struct {
 	bestEffort bool // true when store == nil
 	ownStore   bool // true when this bus opened the StateStore (registry path)
 
-	// publishMu serialises sequence assignment + persistence (or ring
-	// append). Holding it across the StateStore writes guarantees the
-	// head record's sequence list and the sequence counter never
-	// disagree, and that the persisted log is in strict sequence
-	// order.
+	// publishMu serialises this process's publication and best-effort ring. In
+	// durable mode the StateStore authority CAS, not this mutex, is the
+	// cross-process sequence source of truth.
 	publishMu sync.Mutex
 	nextSeq   uint64
 	// oldestRetainedAt is the observed retention horizon for durable
@@ -521,6 +586,11 @@ func fenceKey(id identity.Identity) string {
 	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
 }
 
+func durableFenceKind(id identity.Identity) string {
+	sum := sha256.Sum256([]byte(fenceKey(id)))
+	return fmt.Sprintf("events.durable.internal/session-fence/%x", sum[:])
+}
+
 // isFenced reports whether the event's session triple is fenced (erased).
 func (b *bus) isFenced(id identity.Quadruple) bool {
 	b.fenceMu.RLock()
@@ -538,12 +608,37 @@ func (b *bus) isFenced(id identity.Quadruple) bool {
 // finished persisting before Fence returns — the cascade's DeleteScope
 // then sweeps that just-persisted event; nothing is retained past the
 // fence.
-func (b *bus) Fence(_ context.Context, id identity.Identity) error {
+func (b *bus) Fence(ctx context.Context, id identity.Identity) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
 	}
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
+	if !b.bestEffort {
+		kind := durableFenceKind(id)
+		existing, err := b.store.Load(ctx, sequenceAuthorityIdentity, kind)
+		if err != nil && !errors.Is(err, state.ErrNotFound) {
+			return fmt.Errorf("durable: load session fence: %w", err)
+		}
+		if errors.Is(err, state.ErrNotFound) {
+			payload, marshalErr := json.Marshal(id)
+			if marshalErr != nil {
+				return fmt.Errorf("durable: encode session fence: %w", marshalErr)
+			}
+			next := state.StateRecord{ID: state.NewEventID(), Identity: sequenceAuthorityIdentity, Kind: kind, Bytes: payload}
+			if saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: sequenceAuthorityIdentity, Kind: kind}}, next); saveErr != nil {
+				if !errors.Is(saveErr, state.ErrConditionFailed) {
+					return fmt.Errorf("durable: persist session fence: %w", saveErr)
+				}
+				// A concurrent fencer won; the persisted outcome is equivalent.
+				if _, loadErr := b.store.Load(ctx, sequenceAuthorityIdentity, kind); loadErr != nil {
+					return fmt.Errorf("durable: confirm concurrent session fence: %w", loadErr)
+				}
+			}
+		} else if existing.ID == "" {
+			return fmt.Errorf("durable: invalid persisted session fence")
+		}
+	}
 	b.fenceMu.Lock()
 	defer b.fenceMu.Unlock()
 	if b.fenced == nil {
@@ -555,9 +650,25 @@ func (b *bus) Fence(_ context.Context, id identity.Identity) error {
 
 // Unfence implements events.Fencer. It lifts a fence so a reused session
 // id opened afresh retains events normally. Idempotent.
-func (b *bus) Unfence(_ context.Context, id identity.Identity) error {
+func (b *bus) Unfence(ctx context.Context, id identity.Identity) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
+	}
+	if !b.bestEffort {
+		kind := durableFenceKind(id)
+		rec, err := b.store.Load(ctx, sequenceAuthorityIdentity, kind)
+		if err != nil && !errors.Is(err, state.ErrNotFound) {
+			return fmt.Errorf("durable: load session fence for removal: %w", err)
+		}
+		if err == nil {
+			deleted, deleteErr := b.store.DeleteIf(ctx, state.SlotExpectation{Identity: sequenceAuthorityIdentity, Kind: kind, ExpectedEventID: rec.ID})
+			if deleteErr != nil {
+				return fmt.Errorf("durable: remove session fence: %w", deleteErr)
+			}
+			if !deleted {
+				return fmt.Errorf("durable: session fence changed during removal: %w", state.ErrConditionFailed)
+			}
+		}
 	}
 	b.fenceMu.Lock()
 	defer b.fenceMu.Unlock()
@@ -679,10 +790,9 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 		return errEventFenced
 	}
 
-	seq := b.nextSeq + 1
-	ev.Sequence = seq
-
 	if b.bestEffort {
+		seq := b.nextSeq + 1
+		ev.Sequence = seq
 		if b.ringCap > 0 {
 			b.ringAppendLocked(*ev)
 		}
@@ -690,12 +800,21 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 		return nil
 	}
 
-	if err := b.persistLocked(ctx, *ev); err != nil {
+	seq, err := b.persistAtomic(ctx, ev)
+	if err != nil {
+		if errors.Is(err, errEventFenced) {
+			return err
+		}
+		// A driver transaction guarantees all-or-nothing visibility, but an
+		// error returned at commit can still be an acknowledgement loss. Poison
+		// this process until restart so it never guesses whether publication
+		// committed; recovery reads the shared authority authoritatively.
+		b.persistenceBroken = true
 		// nextSeq is NOT advanced. The bus is poisoned on a StateStore
 		// write failure because the write may have committed remotely;
 		// reusing the sequence could overwrite a committed payload that is
 		// not yet represented by the head/index. Restart performs recovery.
-		return fmt.Errorf("durable: persist event seq=%d: %w", seq, err)
+		return fmt.Errorf("durable: persist event: %w", err)
 	}
 	b.nextSeq = seq
 	// Floor the observed retention horizon at the oldest persisted event.
@@ -708,9 +827,35 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 	return nil
 }
 
-// persistLocked writes the entry record and advances the per-session
-// head record. Caller holds publishMu.
-func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
+// persistAtomic allocates through the shared authority and atomically commits
+// authority, immutable body, and conditional session head. Caller holds this
+// bus's publishMu; SaveBatchIf provides cross-process serialization.
+func (b *bus) persistAtomic(ctx context.Context, ev *events.Event) (uint64, error) {
+	for attempt := 1; attempt <= publishCASMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		currentSeq, authorityExpectation, err := b.loadSequenceAuthority(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("load sequence authority: %w", err)
+		}
+		seq := currentSeq + 1
+		if seq == 0 {
+			return 0, fmt.Errorf("global sequence exhausted")
+		}
+		ev.Sequence = seq
+		if err := b.persistAtomicAttempt(ctx, *ev, authorityExpectation); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return 0, err
+		}
+		return seq, nil
+	}
+	return 0, fmt.Errorf("global sequence allocation exceeded %d CAS attempts: %w", publishCASMaxAttempts, state.ErrConditionFailed)
+}
+
+func (b *bus) persistAtomicAttempt(ctx context.Context, ev events.Event, authorityExpectation state.SlotExpectation) error {
 	entryBytes, err := encodeEvent(ev)
 	if err != nil {
 		return err
@@ -720,23 +865,21 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 		return fmt.Errorf("build event metadata: %w", err)
 	}
 	sessionID := sessionKey(ev.Identity)
+	fenceExpectation := state.SlotExpectation{Identity: sequenceAuthorityIdentity, Kind: durableFenceKind(ev.Identity.Identity)}
+	if _, err := b.store.Load(ctx, fenceExpectation.Identity, fenceExpectation.Kind); err == nil {
+		return errEventFenced
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return fmt.Errorf("load durable session fence: %w", err)
+	}
 
-	// 1. Write the immutable entry record.
 	entryRec := state.StateRecord{
 		ID:       state.NewEventID(),
 		Identity: sessionID,
 		Kind:     kindEntryPrefix + seqToken(ev.Sequence),
 		Bytes:    entryBytes,
 	}
-	if err := b.store.Save(ctx, entryRec); err != nil {
-		b.persistenceBroken = true
-		return fmt.Errorf("save entry record: %w", err)
-	}
-
-	// 2. Read-modify-write the head record's sequence list.
-	head, err := b.loadHeadLocked(ctx, sessionID)
+	head, headExpectation, err := b.loadHeadForBatch(ctx, sessionID)
 	if err != nil {
-		b.persistenceBroken = true
 		return fmt.Errorf("load head record: %w", err)
 	}
 	// The steady-state path already has one integrity-authenticated metadata
@@ -747,8 +890,15 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 	if !headMetadataReady(head) {
 		head, err = b.ensureHeadMetadata(ctx, sessionID, head)
 		if err != nil {
-			b.persistenceBroken = true
 			return fmt.Errorf("upgrade head index: %w", err)
+		}
+		// Adoption may have replaced the head generation.
+		head, headExpectation, err = b.loadHeadForBatch(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("reload adopted head record: %w", err)
+		}
+		if len(head.Sequences) > 0 && !headMetadataReady(head) {
+			return fmt.Errorf("adopted head changed before publication: %w", state.ErrConditionFailed)
 		}
 	}
 	head.Sequences = append(head.Sequences, ev.Sequence)
@@ -758,7 +908,6 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 	head.MetadataIntegrityChecksum = metadataIntegrityChecksum(head.Sequences, head.Metadata)
 	headBytes, err := encodeHead(head)
 	if err != nil {
-		b.persistenceBroken = true
 		return fmt.Errorf("encode head record: %w", err)
 	}
 	headRec := state.StateRecord{
@@ -767,11 +916,32 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 		Kind:     kindHead,
 		Bytes:    headBytes,
 	}
-	if err := b.store.Save(ctx, headRec); err != nil {
-		b.persistenceBroken = true
-		return fmt.Errorf("save head record: %w", err)
+	authorityBytes, err := json.Marshal(sequenceAuthorityRecord{Sequence: ev.Sequence})
+	if err != nil {
+		return fmt.Errorf("encode sequence authority: %w", err)
 	}
-	return nil
+	authorityRec := state.StateRecord{ID: state.NewEventID(), Identity: sequenceAuthorityIdentity, Kind: kindSequenceAuthority, Bytes: authorityBytes}
+	entryExpectation := state.SlotExpectation{Identity: sessionID, Kind: entryRec.Kind}
+	return b.store.SaveBatchIf(ctx,
+		[]state.SlotExpectation{authorityExpectation, entryExpectation, headExpectation, fenceExpectation},
+		[]state.StateRecord{authorityRec, entryRec, headRec})
+}
+
+func (b *bus) loadHeadForBatch(ctx context.Context, sessionID identity.Quadruple) (headRecord, state.SlotExpectation, error) {
+	expect := state.SlotExpectation{Identity: sessionID, Kind: kindHead}
+	rec, err := b.store.Load(ctx, sessionID, kindHead)
+	if errors.Is(err, state.ErrNotFound) {
+		return headRecord{}, expect, nil
+	}
+	if err != nil {
+		return headRecord{}, expect, err
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		return headRecord{}, expect, err
+	}
+	expect.ExpectedEventID = rec.ID
+	return head, expect, nil
 }
 
 // loadHeadLocked returns the per-session head record, or a fresh empty

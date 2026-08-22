@@ -126,6 +126,13 @@ type StateStore interface {
 	// all predicates match; it never bypasses a failed predicate.
 	SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error
 
+	// SaveBatchIf atomically verifies every expectation and persists every
+	// record in writes. Both sets are non-empty and contain no duplicate slots;
+	// every write slot must have an expectation, so no mutation is
+	// unconditioned. A predicate, validation, idempotency, cancellation, or
+	// storage failure leaves every slot unchanged.
+	SaveBatchIf(ctx context.Context, expectations []SlotExpectation, writes []StateRecord) error
+
 	// DeleteIf atomically removes exactly one present slot generation. A
 	// different or absent generation is a normal concurrent-state outcome and
 	// returns (false, nil); only an exact EventID match may be deleted. This is
@@ -365,6 +372,51 @@ func ValidateSaveIf(expectations []SlotExpectation, next StateRecord) error {
 	}
 	if !foundNext {
 		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateSaveBatchIf validates the mandatory atomic multi-record save.
+func ValidateSaveBatchIf(expectations []SlotExpectation, writes []StateRecord) error {
+	if len(expectations) == 0 || len(writes) == 0 {
+		return ErrInvalidRecord
+	}
+	type slot struct {
+		q    identity.Quadruple
+		kind string
+	}
+	expected := make(map[slot]struct{}, len(expectations))
+	for _, expectation := range expectations {
+		if err := ValidateIdentity(expectation.Identity); err != nil {
+			return err
+		}
+		if expectation.Kind == "" {
+			return ErrInvalidRecord
+		}
+		s := slot{q: expectation.Identity, kind: expectation.Kind}
+		if _, duplicate := expected[s]; duplicate {
+			return ErrInvalidRecord
+		}
+		expected[s] = struct{}{}
+	}
+	written := make(map[slot]struct{}, len(writes))
+	eventIDs := make(map[EventID]struct{}, len(writes))
+	for _, write := range writes {
+		if err := ValidateRecord(write); err != nil {
+			return err
+		}
+		s := slot{q: write.Identity, kind: write.Kind}
+		if _, duplicate := written[s]; duplicate {
+			return ErrInvalidRecord
+		}
+		if _, conditioned := expected[s]; !conditioned {
+			return ErrInvalidRecord
+		}
+		if _, duplicate := eventIDs[write.ID]; duplicate {
+			return ErrInvalidRecord
+		}
+		written[s] = struct{}{}
+		eventIDs[write.ID] = struct{}{}
 	}
 	return nil
 }

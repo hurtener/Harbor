@@ -70,6 +70,15 @@ func (s *headFailureStore) Save(ctx context.Context, rec state.StateRecord) erro
 	return s.StateStore.Save(ctx, rec)
 }
 
+func (s *headFailureStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	for _, rec := range writes {
+		if rec.Kind == kindHead && s.failHead.CompareAndSwap(true, false) {
+			return errInjectedHeadSave
+		}
+	}
+	return s.StateStore.SaveBatchIf(ctx, expectations, writes)
+}
+
 func metadataCfg() config.EventsConfig {
 	return config.EventsConfig{
 		Driver:                   "durable",
@@ -663,7 +672,7 @@ func TestDurable_Recovery_StableViewWaitHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestDurable_HeadSaveFailure_PoisonsRetryAndRestartMakesOmissionExplicit(t *testing.T) {
+func TestDurable_AtomicBatchFailureRollsBackAndRetryIsGapFree(t *testing.T) {
 	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatalf("stateinmem.New: %v", err)
@@ -693,18 +702,13 @@ func TestDurable_HeadSaveFailure_PoisonsRetryAndRestartMakesOmissionExplicit(t *
 		t.Fatalf("faulted publish error = %v, want injected head-save failure", err)
 	}
 
-	// The entry write succeeded before the head write was rejected. It is
-	// intentionally orphaned: the index never exposes it as a committed
-	// event, and recovery must not infer publication from an entry alone.
-	// This is the concrete two-write atomicity boundary: the failed event may
-	// be lost, but no caller-visible Publish success can be omitted; a
-	// transaction/atomic journal would be needed for all-or-nothing failure
-	// semantics across both records.
-	if _, err := inner.Load(context.Background(), id, kindEntryPrefix+seqToken(2)); err != nil {
-		t.Fatalf("faulted entry was not persisted before head failure: %v", err)
+	// Authority, body, and head are one transaction: an injected failure makes
+	// none visible and the same next sequence remains available.
+	if _, err := inner.Load(context.Background(), id, kindEntryPrefix+seqToken(2)); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("faulted batch left entry visible: %v", err)
 	}
 	if err := publish("retry-before-restart"); err == nil {
-		t.Fatal("retry on poisoned bus succeeded; ambiguous persistence must require restart")
+		t.Fatal("retry after ambiguous transaction acknowledgement succeeded without restart")
 	}
 	page, err := bus.(events.HistoryReplayer).ListWindow(context.Background(), events.EventListQuery{
 		Filter: eventsWireFilter(id, nil), Limit: 10,
@@ -712,11 +716,11 @@ func TestDurable_HeadSaveFailure_PoisonsRetryAndRestartMakesOmissionExplicit(t *
 	if err != nil {
 		t.Fatalf("read before restart: %v", err)
 	}
-	if len(page.Events) != 1 || page.Events[0].Extra["marker"] != "committed-before-fault" {
-		t.Fatalf("pre-restart history = %+v, want only the successfully committed event", page.Events)
+	if len(page.Events) != 1 || page.Events[0].Sequence != 1 {
+		t.Fatalf("pre-restart history = %+v, want only first committed event", page.Events)
 	}
 	if err := bus.Close(context.Background()); err != nil {
-		t.Fatalf("close poisoned bus: %v", err)
+		t.Fatalf("close bus: %v", err)
 	}
 
 	restarted, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store)
@@ -739,8 +743,8 @@ func TestDurable_HeadSaveFailure_PoisonsRetryAndRestartMakesOmissionExplicit(t *
 	if err != nil {
 		t.Fatalf("read after restart: %v", err)
 	}
-	if len(page.Events) != 2 || page.Events[0].Extra["marker"] != "committed-before-fault" || page.Events[1].Extra["marker"] != "committed-after-restart" {
-		t.Fatalf("post-restart history = %+v, want committed event plus explicit retry", page.Events)
+	if len(page.Events) != 2 || page.Events[1].Sequence != 2 || page.Events[1].Extra["marker"] != "committed-after-restart" {
+		t.Fatalf("post-restart history = %+v, want contiguous committed events", page.Events)
 	}
 }
 
