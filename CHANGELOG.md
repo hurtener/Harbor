@@ -17,6 +17,29 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.29.2] — 2026-08-22
+
+### Fixed
+
+- Durable legacy metadata backfill now honors the documented session-scoped
+  StateStore key: heads and entries use `RunID=""`, while each persisted
+  event body retains its authoritative non-empty RunID. Backfill validates the
+  returned storage identity/kind, sequence, and exact tenant/user/session
+  triple without comparing that body RunID to the empty storage key. Restart
+  adoption preserves RunIDs in the checksummed metadata projection and in
+  `events.list` metadata/full-event RunID filters.
+- Malformed or unknown event bodies, wrong StateRecord identity/kind, sequence
+  mismatches, tenant/user/session mismatches, and metadata/body divergence
+  continue to fail closed. A real PostgreSQL StateStore regression is wired
+  into the hosted `state-postgres` job with a non-vacuous exact PASS-line
+  assertion; local runs without `HARBOR_PG_DSN` skip honestly.
+
+### Release evidence
+
+- D-432 / HA-69 implementation candidate. Hosted CI, two independent Terra
+  High reviews, immutable annotated tag/release provenance, checksums, and
+  post-tag cleanup are recorded here when the release lifecycle completes.
+
 ## [1.29.1] — 2026-08-22
 
 ### Fixed
@@ -4689,7 +4712,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.1...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.2...HEAD
+[1.29.2]: https://github.com/hurtener/Harbor/compare/v1.29.1...v1.29.2
 [1.29.1]: https://github.com/hurtener/Harbor/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/hurtener/Harbor/compare/v1.28.7...v1.29.0
 [1.28.7]: https://github.com/hurtener/Harbor/compare/v1.28.6...v1.28.7

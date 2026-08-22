@@ -987,6 +987,29 @@ real two-client race under `-race`.
 - **Decision:** D-431. **Status:** Shipped (v1.29.1; immutable tag, release,
   provenance, checksums, hosted gates, and post-tag scaffold pin verified).
 
+### Phase 252 — v1.29.2 durable-event backfill compatibility (HA-69 extension)
+
+- **Subsystem:** durable event recovery, metadata projection, and the hosted
+  PostgreSQL StateStore acceptance gate.
+- **RFC:** §4.3, §6.11, §6.13, §12. **Deps:** 16, 57, 251; D-294, D-305,
+  and D-431.
+- **What it delivers:** D-432 — a narrow v1.29.2 compatibility correction for
+  v1.29.0 session-scoped durable heads. Head and entry StateRecord keys use
+  `RunID=""`, while each persisted body keeps its authoritative non-empty
+  RunID. Backfill validates exact storage identity/kind, sequence, and
+  tenant/user/session identity without comparing that body RunID to the empty
+  storage-key value. It retains canonical-body projection, checksum repair,
+  metadata/body integrity checks, and fail-closed malformed/wrong-scope
+  behavior.
+- **Evidence:** The phase adds a realistic multi-run in-memory fixture and a
+  real PostgreSQL StateStore fixture under `HARBOR_PG_DSN`. Hosted CI selects
+  the exact Postgres test and requires its PASS line; a missing selector or
+  SKIP fails the `state-postgres` job. Release and provenance evidence are
+  recorded here when the immutable v1.29.2 tag is cut; local `make preflight`
+  is not claimed.
+- **Decision:** D-432. **Status:** Planned — release-blocking v1.29.2
+  candidate; extends HA-69 without allocating a new ask identifier.
+
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
 ---

@@ -13736,3 +13736,39 @@ cursor/read contract), D-305 (aggregate substrate and driver gate), D-426
 (rebuildable rollups), D-428 (direct apply and pooled verify), RFC §4, §5.2,
 §6.6, §6.7, §6.9, §6.10, §6.11, §6.13, §6.14, §6.15, §9, briefs 04, 05, 06.
 Plan: `docs/plans/phase-251-v1291-events-postgres-fleet-safety.md`.
+
+---
+
+## D-432 — v1.29.2 accepts session-scoped durable heads while preserving body-owned RunIDs (HA-69 extension)
+
+**Date:** 2026-08-22
+
+**Status:** Accepted for Phase 252; release-blocking v1.29.2 hotfix work.
+
+The durable StateStore key for a head and its entries is the session triple
+with `RunID=""`. That empty RunID is an intentional storage scope, not an
+assertion that the event was emitted outside a run. The persisted event body
+remains authoritative for the event's actual RunID, which may be non-empty and
+differs across events in one session.
+
+During legacy metadata backfill, the driver therefore validates the returned
+StateRecord's exact session-scoped storage identity and expected entry kind,
+then validates the payload's sequence and exact tenant/user/session triple.
+It deliberately does not compare the payload RunID with the storage-key
+RunID. Metadata is projected from the body, so metadata and both metadata/full
+event RunID filters preserve the body-owned value.
+
+This is a narrow compatibility exception, not a relaxation of integrity. JSON
+decoding, required payload shape, canonical event type, sequence, storage
+identity, tenant/user/session identity, checksum, and metadata/body
+validation continue to fail closed. A stale projection is repaired from the
+canonical body; an unknown, malformed, wrong-scope, or sequence-mismatched
+body refuses boot. The regression fixture covers a v1.29.0-shaped head with
+multiple distinct non-empty RunIDs, restart/checksum repair, adversarial
+identity/sequence cases, and a real PostgreSQL StateStore acceptance in the
+hosted state-postgres job.
+
+**Cross-references.** D-025 (concurrent reuse), D-294 (event-list cursor and
+read contract), D-305 (metadata projection substrate), D-431 (HA-69 durable
+index and PostgreSQL fleet safety), RFC §6.11, §6.13, §4.3, §12. Plan:
+`docs/plans/phase-252-v1292-durable-backfill-compatibility.md`.

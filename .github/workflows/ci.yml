@@ -361,6 +361,25 @@ jobs:
             exit 1
           fi
           grep -qE -- '^[[:space:]]*--- PASS: TestPostgresRuntime_SixStoresOneSharedDatabase([[:space:]]|$)' "${test_log}"
+      - name: Run v1.29.2 durable legacy backfill acceptance against postgres:16
+        # The durable regression is DSN-gated for local development; this
+        # hosted step supplies the real StateStore/Postgres driver and asserts
+        # the exact PASS line so a renamed selector, no-test match, or SKIP
+        # cannot satisfy the release gate vacuously.
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/v1292-durable-backfill-postgres.XXXXXX.log")"
+          trap 'rm -f "${test_log}"' EXIT
+          go test -v -race -count=1 -timeout 240s \
+            ./internal/events/drivers/durable \
+            -run '^TestDurable_Postgres_LegacyBackfillPreservesPayloadRunIDs$' | tee "${test_log}"
+          if grep -qE -- 'no tests to run|^[[:space:]]*--- SKIP:.*TestDurable_Postgres_LegacyBackfillPreservesPayloadRunIDs' "${test_log}"; then
+            echo 'v1.29.2 durable Postgres backfill acceptance skipped or did not execute' >&2
+            exit 1
+          fi
+          grep -qE -- '^[[:space:]]*--- PASS: TestDurable_Postgres_LegacyBackfillPreservesPayloadRunIDs([[:space:]]|$)' "${test_log}"
       - name: Run exact-generation state mutation conformance against postgres:16
         # D-403: exercise both conditional deletion and the publication fence
         # through explicit DSN-backed selectors so neither can pass by skip.
