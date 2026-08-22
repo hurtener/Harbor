@@ -80,8 +80,8 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	}
 
 	type candidate struct {
-		id  identity.Quadruple
-		seq uint64
+		id   identity.Quadruple
+		meta events.EventMetadata
 	}
 	var cands []candidate
 	for _, rec := range recs {
@@ -101,34 +101,44 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		if err != nil {
 			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: decode head (id=%s): %w", rec.ID, err)
 		}
-		for _, seq := range hd.Sequences {
-			if seq <= after {
+		hd, err = b.ensureHeadMetadata(ctx, rec.Identity, hd)
+		if err != nil {
+			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: index head (id=%s): %w", rec.ID, err)
+		}
+		for _, meta := range metadataFromHead(hd) {
+			if meta.Sequence <= after {
 				continue
 			}
-			cands = append(cands, candidate{id: rec.Identity, seq: seq})
+			if meta.Internal {
+				continue
+			}
+			cands = append(cands, candidate{id: rec.Identity, meta: meta})
 		}
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].seq < cands[j].seq })
+	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence < cands[j].meta.Sequence })
 
 	matches := make([]events.Event, 0, limit+1)
 	for _, c := range cands {
 		if err := ctx.Err(); err != nil {
 			return events.ProjectionPage{}, err
 		}
-		rec, err := b.store.Load(ctx, c.id, kindEntryPrefix+seqToken(c.seq))
+		rec, err := b.store.Load(ctx, c.id, kindEntryPrefix+seqToken(c.meta.Sequence))
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				// The head lists a sequence whose entry record is missing —
 				// a torn write or a storage bug. Fail loudly rather than
 				// serving a gap (the durable log's gap-free contract).
-				return events.ProjectionPage{}, fmt.Errorf("durable: projection page gap — head lists seq=%d but entry record is missing: %w",
-					c.seq, err)
+				return events.ProjectionPage{}, fmt.Errorf("durable: projection page gap — index lists seq=%d but entry record is missing: %w",
+					c.meta.Sequence, err)
 			}
-			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: load entry seq=%d: %w", c.seq, err)
+			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: load entry seq=%d: %w", c.meta.Sequence, err)
 		}
 		ev, err := decodeEvent(rec.Bytes)
 		if err != nil {
-			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: decode entry seq=%d: %w", c.seq, err)
+			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: decode entry seq=%d: %w", c.meta.Sequence, err)
+		}
+		if err := validateMetadataEvent(c.meta, ev); err != nil {
+			return events.ProjectionPage{}, fmt.Errorf("durable: projection page metadata mismatch seq=%d: %w", c.meta.Sequence, err)
 		}
 		if events.IsBusInternalNotice(ev.Type) {
 			continue

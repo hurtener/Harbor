@@ -92,12 +92,66 @@ func marshalPayload(p events.EventPayload) (map[string]any, error) {
 	return m, nil
 }
 
-// headRecord is the per-session index the durable driver maintains:
-// the ordered list of bus-sequences persisted for that session.
+// headRecord is the per-session index the durable driver maintains: the
+// ordered list of bus-sequences plus their payload-free routing metadata.
 // StateStore has no list/scan method, so this record IS the index —
 // Replay reads it to learn which entry records exist for a session.
 type headRecord struct {
-	Sequences []uint64 `json:"sequences"`
+	Sequences []uint64              `json:"sequences"`
+	Metadata  []eventMetadataRecord `json:"metadata,omitempty"`
+}
+
+// eventMetadataRecord is the durable wire shape of events.EventMetadata.
+// Keeping the shape private prevents the StateStore's opaque bytes from
+// becoming a second public event contract while allowing old v1.29 heads
+// (which only contain Sequences) to be upgraded idempotently.
+type eventMetadataRecord struct {
+	Type        events.EventType `json:"type"`
+	TenantID    string           `json:"tenant_id"`
+	UserID      string           `json:"user_id"`
+	SessionID   string           `json:"session_id"`
+	RunID       string           `json:"run_id,omitempty"`
+	OccurredAt  int64            `json:"occurred_at"`
+	Sequence    uint64           `json:"sequence"`
+	Internal    bool             `json:"internal,omitempty"`
+	CostSummary bool             `json:"cost_summary,omitempty"`
+	CostDollars float64          `json:"cost_dollars,omitempty"`
+	TotalTokens int64            `json:"total_tokens,omitempty"`
+}
+
+func metadataRecordFromEvent(ev events.Event) (eventMetadataRecord, error) {
+	m, err := events.NewEventMetadata(ev)
+	if err != nil {
+		return eventMetadataRecord{}, err
+	}
+	return eventMetadataRecord{
+		Type:        m.Type,
+		TenantID:    m.Identity.TenantID,
+		UserID:      m.Identity.UserID,
+		SessionID:   m.Identity.SessionID,
+		RunID:       m.Identity.RunID,
+		OccurredAt:  m.OccurredAt.UnixNano(),
+		Sequence:    m.Sequence,
+		Internal:    m.Internal,
+		CostSummary: m.CostSummary,
+		CostDollars: m.CostDollars,
+		TotalTokens: m.TotalTokens,
+	}, nil
+}
+
+func (m eventMetadataRecord) metadata() events.EventMetadata {
+	return events.EventMetadata{
+		Type: m.Type,
+		Identity: identity.Quadruple{Identity: identity.Identity{
+			TenantID: m.TenantID, UserID: m.UserID, SessionID: m.SessionID,
+		}, RunID: m.RunID},
+		OccurredAt:  unixNanoToTime(m.OccurredAt),
+		Sequence:    m.Sequence,
+		Internal:    m.Internal,
+		CostSummary: m.CostSummary,
+		CostDollars: m.CostDollars,
+		TotalTokens: m.TotalTokens,
+	}
 }
 
 // encodeHead serialises a headRecord into opaque StateStore bytes.

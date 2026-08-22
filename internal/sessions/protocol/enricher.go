@@ -312,7 +312,7 @@ func (e *CounterEnricher) eventCounters(ctx context.Context, id identity.Identit
 			slog.String("session_id", id.SessionID))
 		return 0, 0, 0, true
 	}
-	page, err := hr.ListWindow(ctx, events.EventListQuery{
+	query := events.EventListQuery{
 		Filter: prototypes.EventFilter{
 			TenantIDs:  []string{id.TenantID},
 			UserIDs:    []string{id.UserID},
@@ -321,7 +321,38 @@ func (e *CounterEnricher) eventCounters(ctx context.Context, id identity.Identit
 		Before: 0,
 		Limit:  e.scanBound,
 		Admin:  false,
-	})
+	}
+	if mr, ok := e.bus.(events.EventMetadataReplayer); ok {
+		metadataPage, err := mr.ListWindowMetadata(ctx, query)
+		if err != nil {
+			if errors.Is(err, events.ErrReplayUnavailable) {
+				e.logger.WarnContext(ctx, "sessions/protocol: metadata windowed read unavailable; counters partial",
+					slog.String("session_id", id.SessionID))
+			} else {
+				e.logger.WarnContext(ctx, "sessions/protocol: metadata event scan failed; counters partial",
+					slog.String("session_id", id.SessionID), slog.Any("error", err))
+			}
+			return 0, 0, 0, true
+		}
+		var costDollars float64
+		for _, meta := range metadataPage.Events {
+			if meta.CostSummary {
+				costDollars += meta.CostDollars
+				tokens += meta.TotalTokens
+			}
+		}
+		count = len(metadataPage.Events)
+		partial = metadataPage.HasMore || metadataPage.Truncated
+		if partial {
+			e.logger.WarnContext(ctx, "sessions/protocol: metadata event scan truncated; counters are a lower bound",
+				slog.String("session_id", id.SessionID),
+				slog.Int("scan_bound", e.scanBound),
+				slog.Bool("has_more", metadataPage.HasMore),
+				slog.Bool("retention_gap", metadataPage.Truncated))
+		}
+		return dollarsToCents(costDollars), tokens, count, partial
+	}
+	page, err := hr.ListWindow(ctx, query)
 	if err != nil {
 		// ErrReplayUnavailable and any other read error leave the bounded
 		// counts unknown — honest partial, logged, never a silent zero.
