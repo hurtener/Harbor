@@ -27,11 +27,11 @@ telemetry:
 # Runtime-wide PostgreSQL budget. Equal subsystem DSNs share one pool;
 # distinct legacy DSNs still share this aggregate cap.
 postgres:
-  max_open_conns: 3
-  max_idle_conns: 1
-  conn_max_lifetime: 5m
-  conn_max_idle_time: 30s
-  migration_max_concurrent: 6
+  pool:
+    max_open: 3
+    max_idle: 1
+    conn_max_lifetime: 5m
+    conn_max_idle_time: 30s
 
 state:
   driver: inmem

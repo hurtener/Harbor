@@ -96,11 +96,11 @@ llm:
 # distinct subsystem DSNs share this aggregate cap during staged rollout.
 #
 # postgres:
-#   max_open_conns: 3
-#   max_idle_conns: 1
-#   conn_max_lifetime: 5m
-#   conn_max_idle_time: 30s
-#   migration_max_concurrent: 6
+#   pool:
+#     max_open: 3
+#     max_idle: 1
+#     conn_max_lifetime: 5m
+#     conn_max_idle_time: 30s
 
 # memory — multi-turn context across runs in a session.
 # Strategies: none (default), truncation, rolling_summary.

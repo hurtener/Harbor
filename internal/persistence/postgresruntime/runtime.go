@@ -114,10 +114,10 @@ func Open(ctx context.Context, cfg *config.Config) (*Runtime, error) {
 	}
 	p := cfg.Postgres
 	manager, err := postgrespool.Open(ctx, postgrespool.Config{
-		MaxOpenConns:    p.MaxOpenConns,
-		MaxIdleConns:    p.MaxIdleConns,
-		ConnMaxLifetime: p.ConnMaxLifetime,
-		ConnMaxIdleTime: p.ConnMaxIdleTime,
+		MaxOpenConns:    p.Pool.MaxOpen,
+		MaxIdleConns:    p.Pool.MaxIdle,
+		ConnMaxLifetime: p.Pool.ConnMaxLifetime,
+		ConnMaxIdleTime: p.Pool.ConnMaxIdleTime,
 	}, PoolSpecs(cfg))
 	if err != nil {
 		return nil, err

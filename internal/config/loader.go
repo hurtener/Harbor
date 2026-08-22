@@ -409,11 +409,12 @@ func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 func Defaults() *Config {
 	return &Config{
 		Postgres: PostgresConfig{
-			MaxOpenConns:           3,
-			MaxIdleConns:           1,
-			ConnMaxLifetime:        5 * time.Minute,
-			ConnMaxIdleTime:        30 * time.Second,
-			MigrationMaxConcurrent: 6,
+			Pool: PostgresPoolConfig{
+				MaxOpen:         3,
+				MaxIdle:         1,
+				ConnMaxLifetime: 5 * time.Minute,
+				ConnMaxIdleTime: 30 * time.Second,
+			},
 		},
 		Server: ServerConfig{
 			BindAddr:            "127.0.0.1:8080",

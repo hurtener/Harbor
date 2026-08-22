@@ -117,32 +117,29 @@ func (c *Config) runValidators(includeIdentity bool) error {
 }
 
 func (c *Config) validatePostgres() error {
-	p := c.Postgres
-	if p.MaxOpenConns < 0 {
-		return fieldError("postgres.max_open_conns", "must be zero (default) or at least 1")
+	p := c.Postgres.Pool
+	if p.MaxOpen < 0 {
+		return fieldError("postgres.pool.max_open", "must be zero (default) or at least 1")
 	}
-	if p.MaxIdleConns < 0 {
-		return fieldError("postgres.max_idle_conns", "must be zero (default) or non-negative")
+	if p.MaxIdle < 0 {
+		return fieldError("postgres.pool.max_idle", "must be zero (default) or non-negative")
 	}
-	maxOpen := p.MaxOpenConns
+	maxOpen := p.MaxOpen
 	if maxOpen == 0 {
 		maxOpen = postgrespool.DefaultMaxOpenConns
 	}
-	maxIdle := p.MaxIdleConns
+	maxIdle := p.MaxIdle
 	if maxIdle == 0 {
 		maxIdle = postgrespool.DefaultMaxIdleConns
 	}
 	if maxIdle > maxOpen {
-		return fieldError("postgres.max_idle_conns", fmt.Sprintf("must be <= postgres.max_open_conns (%d)", maxOpen))
+		return fieldError("postgres.pool.max_idle", fmt.Sprintf("must be <= postgres.pool.max_open (%d)", maxOpen))
 	}
 	if p.ConnMaxLifetime < 0 {
-		return fieldError("postgres.conn_max_lifetime", "must be zero (default) or non-negative")
+		return fieldError("postgres.pool.conn_max_lifetime", "must be zero (default) or non-negative")
 	}
 	if p.ConnMaxIdleTime < 0 {
-		return fieldError("postgres.conn_max_idle_time", "must be zero (default) or non-negative")
-	}
-	if p.MigrationMaxConcurrent < 0 {
-		return fieldError("postgres.migration_max_concurrent", "must be zero (default) or at least 1")
+		return fieldError("postgres.pool.conn_max_idle_time", "must be zero (default) or non-negative")
 	}
 	return nil
 }

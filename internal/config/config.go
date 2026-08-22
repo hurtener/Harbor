@@ -148,17 +148,21 @@ type TelemetryConfig struct {
 	ServiceName  string `yaml:"service_name"`
 }
 
-// PostgresConfig is the runtime-wide connection budget shared by every
-// Harbor-owned PostgreSQL projection. It applies across equal-DSN shared
-// pools and distinct-DSN compatibility pools alike. Zero fields select the
-// conservative Basic-4GB fleet defaults: 3 open, 1 idle, 5m lifetime, and
-// 30s idle lifetime. Restart-required.
+// PostgresConfig contains the runtime-wide connection-pool settings shared
+// by every Harbor-owned PostgreSQL projection. The pool applies across
+// equal-DSN shared pools and distinct-DSN compatibility pools alike.
 type PostgresConfig struct {
-	MaxOpenConns           int           `yaml:"max_open_conns,omitempty"`
-	MaxIdleConns           int           `yaml:"max_idle_conns,omitempty"`
-	ConnMaxLifetime        time.Duration `yaml:"conn_max_lifetime,omitempty"`
-	ConnMaxIdleTime        time.Duration `yaml:"conn_max_idle_time,omitempty"`
-	MigrationMaxConcurrent int           `yaml:"migration_max_concurrent,omitempty"`
+	Pool PostgresPoolConfig `yaml:"pool,omitempty"`
+}
+
+// PostgresPoolConfig is the aggregate runtime-wide PostgreSQL pool budget.
+// Zero fields select the conservative Basic-4GB fleet defaults: 3 open, 1
+// idle, 5m lifetime, and 30s idle lifetime. Restart-required.
+type PostgresPoolConfig struct {
+	MaxOpen         int           `yaml:"max_open,omitempty"`
+	MaxIdle         int           `yaml:"max_idle,omitempty"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime,omitempty"`
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time,omitempty"`
 }
 
 // StateConfig selects the StateStore driver and its connection.

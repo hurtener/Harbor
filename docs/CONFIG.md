@@ -204,7 +204,7 @@ completed. Restart-required.
 
 ## PostgreSQL runtime budget
 
-### postgres.max_open_conns
+### postgres.pool.max_open
 
 Aggregate maximum open backend connections for one Harbor runtime across
 all six PostgreSQL stores. Equal DSNs reuse one pool; distinct DSNs share
@@ -216,30 +216,26 @@ Harbor runtime with state, memory, artifacts, skills, `sessions.turns`, and
 subsystem remains supported for the first hotfix rollout, but all such pools
 still consume this same aggregate budget; consolidate one runtime at a time.
 
-### postgres.max_idle_conns
+### postgres.pool.max_idle
 
 Aggregate idle allowance distributed across the runtime's physical pools.
 Default: `1`.
 
-### postgres.conn_max_lifetime
+### postgres.pool.conn_max_lifetime
 
 Maximum connection generation lifetime. Default: `5m`; zero selects the
 default. Restart-required.
 
-### postgres.conn_max_idle_time
+### postgres.pool.conn_max_idle_time
 
 Maximum idle connection lifetime. Default: `30s`; zero selects the default,
 never an unbounded idle lifetime. Restart-required.
 
-### postgres.migration_max_concurrent
-
-Operator-declared direct PostgreSQL migration-session budget used by rollout
-planning and accounting. Default: `6`; migrations still use direct port
-`5432`, while ordinary verify traffic may use transaction-pooled `6432`.
-
 The Basic-4GB acceptance math is 18 overlapping runtimes × 3 open = 54,
-plus 6 migration sessions + 12 Pengui/capabilities connections + a 25
-connection operator reserve = 97, below the observed `max_connections=103`.
+plus 6 direct migration sessions reserved by the operator/orchestrator,
+12 Pengui/capabilities connections, and a 25-connection operator reserve =
+97, below the observed `max_connections=103`. The six migration sessions are
+rollout accounting, not a Harbor runtime configuration key.
 
 ## State
 
