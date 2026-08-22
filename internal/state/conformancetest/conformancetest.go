@@ -1059,6 +1059,15 @@ func Run(t *testing.T, factory Factory) {
 		if len(got) != 2 {
 			t.Fatalf("ListKindBounded returned %d records, want storage-side bound 2: %+v", len(got), got)
 		}
+		repeated, err := s.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, "bounded.match.", 2)
+		if err != nil {
+			t.Fatalf("repeat ListKindBounded: %v", err)
+		}
+		for i := range got {
+			if got[i].Identity != repeated[i].Identity || got[i].Kind != repeated[i].Kind || got[i].ID != repeated[i].ID {
+				t.Fatalf("ListKindBounded order is not deterministic: first=%+v repeat=%+v", got, repeated)
+			}
+		}
 		for _, rec := range got {
 			if !strings.HasPrefix(rec.Kind, "bounded.match.") {
 				t.Fatalf("ListKindBounded returned nonmatching record %+v", rec)

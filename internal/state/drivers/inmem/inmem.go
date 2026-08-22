@@ -22,6 +22,7 @@ package inmem
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"fmt"
 	"sort"
@@ -424,8 +425,10 @@ func (d *driver) ListKind(_ context.Context, scope state.ListScope, kindPrefix s
 }
 
 // ListKindBounded implements StateStore's storage-side bounded maintenance
-// scan. Map iteration cannot push a predicate into a database, but it stops
-// copying as soon as the caller's bound is reached.
+// scan. Map iteration cannot push a predicate into a database, so it retains
+// only the deterministic smallest limit matching keys while it inspects the
+// map; neither the key selection nor the returned records grows with the
+// number of matching rows.
 func (d *driver) ListKindBounded(ctx context.Context, scope state.ListScope, kindPrefix string, limit int) ([]state.StateRecord, error) {
 	if d.closed.Load() {
 		return nil, state.ErrStoreClosed
@@ -438,29 +441,73 @@ func (d *driver) ListKindBounded(ctx context.Context, scope state.ListScope, kin
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	keys := make([]indexKey, 0, len(d.records))
-	for key := range d.records {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if strings.HasPrefix(key.Kind, kindPrefix) {
-			keys = append(keys, key)
-		}
+	selection, err := selectBoundedIndexKeys(ctx, d.records, kindPrefix, limit)
+	if err != nil {
+		return nil, err
 	}
-	sort.Slice(keys, func(i, j int) bool { return indexKeyLess(keys[i], keys[j]) })
-	out := make([]state.StateRecord, 0, limit)
-	for _, key := range keys {
+	out := make([]state.StateRecord, 0, len(selection.keys))
+	for _, key := range selection.keys {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		rec := d.records[key]
 		rec.Bytes = cloneBytes(rec.Bytes)
 		out = append(out, rec)
-		if len(out) == limit {
-			break
-		}
 	}
 	return out, nil
+}
+
+// boundedIndexKeySelection is intentionally observable to the in-memory
+// driver's focused tests: maxRetained proves the map scan never accumulates
+// more than the caller's bound even when every record matches.
+type boundedIndexKeySelection struct {
+	keys        []indexKey
+	maxRetained int
+}
+
+// indexKeyMaxHeap keeps the lexicographically greatest retained key at its
+// root. Replacing that root when a smaller key is found leaves exactly the
+// deterministic smallest limit keys in O(limit) space.
+type indexKeyMaxHeap []indexKey
+
+func (h indexKeyMaxHeap) Len() int { return len(h) }
+
+func (h indexKeyMaxHeap) Less(i, j int) bool { return indexKeyLess(h[j], h[i]) }
+
+func (h indexKeyMaxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *indexKeyMaxHeap) Push(value any) { *h = append(*h, value.(indexKey)) }
+
+func (h *indexKeyMaxHeap) Pop() any {
+	old := *h
+	n := len(old)
+	value := old[n-1]
+	*h = old[:n-1]
+	return value
+}
+
+func selectBoundedIndexKeys(ctx context.Context, records map[indexKey]state.StateRecord, kindPrefix string, limit int) (boundedIndexKeySelection, error) {
+	selected := make(indexKeyMaxHeap, 0, limit)
+	maxRetained := 0
+	for key := range records {
+		if err := ctx.Err(); err != nil {
+			return boundedIndexKeySelection{}, err
+		}
+		if !strings.HasPrefix(key.Kind, kindPrefix) {
+			continue
+		}
+		if len(selected) < limit {
+			heap.Push(&selected, key)
+		} else if indexKeyLess(key, selected[0]) {
+			selected[0] = key
+			heap.Fix(&selected, 0)
+		}
+		if len(selected) > maxRetained {
+			maxRetained = len(selected)
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool { return indexKeyLess(selected[i], selected[j]) })
+	return boundedIndexKeySelection{keys: []indexKey(selected), maxRetained: maxRetained}, nil
 }
 
 // ListKindForIdentity implements state.StateStore's non-elevated

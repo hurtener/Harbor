@@ -129,6 +129,13 @@ func ValidateLegacyRepairApplyDSN(dsn string) error {
 	}
 	lower := strings.ToLower(trimmed)
 	compact := strings.Join(strings.Fields(lower), "")
+	// A PgBouncer endpoint is not safe for the session-affine conditional
+	// writes used by repair, even when its advertised port is 5432.  Reject a
+	// detectable marker before URL/key-value parsing so both DSN forms fail
+	// closed and ordinary whitespace/case variations cannot evade the check.
+	if strings.Contains(compact, "pgbouncer") {
+		return errors.New("legacy head repair: apply refuses PgBouncer; use a direct PostgreSQL 5432 endpoint")
+	}
 	if strings.Contains(compact, "pgbouncer_mode=transaction") || strings.Contains(compact, "pool_mode=transaction") {
 		return errors.New("legacy head repair: apply refuses transaction-pooled DSN; use direct PostgreSQL 5432, never PgBouncer 6432")
 	}
@@ -221,14 +228,17 @@ func runLegacyRepair(ctx context.Context, store state.StateStore, opts LegacyRep
 
 	// The full preflight scan above completes before any write. This prevents a
 	// known ambiguous head later in the store from being discovered after an
-	// earlier head was already changed.
+	// earlier head was already changed. Every affected head is then staged into
+	// one conditional batch so a generation conflict or cancellation cannot
+	// leave a multi-head repair partially applied.
+	affected := make([]legacyRepairHeadView, 0, report.AffectedHeadCount)
 	for _, view := range views {
-		if len(view.duplicates) == 0 {
-			continue
+		if len(view.duplicates) > 0 {
+			affected = append(affected, view)
 		}
-		if err := applyLegacyRepairHead(ctx, store, view, opts); err != nil {
-			return report, err
-		}
+	}
+	if err := applyLegacyRepairHeads(ctx, store, affected, opts); err != nil {
+		return report, err
 	}
 	// Re-scan after all CAS operations. This proves no duplicate remains and
 	// returns the exact persisted receipt on response-loss/idempotent replay.
@@ -343,9 +353,20 @@ func inspectLegacyRepairHead(ctx context.Context, store state.StateStore, rec st
 		return refuse("head metadata bookkeeping is inconsistent")
 	}
 
+	// Preserve the head's canonical order instead of ranging over the map.  A
+	// complete metadata projection must be checked against every immutable
+	// entry, while a legacy sequence-only head only needs body validation for
+	// duplicated sequences before it can be repaired.
+	orderedSequences := make([]uint64, 0, len(positions))
+	for _, seq := range head.Sequences {
+		if len(orderedSequences) == 0 || orderedSequences[len(orderedSequences)-1] != seq {
+			orderedSequences = append(orderedSequences, seq)
+		}
+	}
 	duplicates := make([]LegacyRepairDuplicate, 0)
-	for seq, pos := range positions {
-		if len(pos) < 2 {
+	for _, seq := range orderedSequences {
+		pos := positions[seq]
+		if len(pos) < 2 && len(head.Metadata) == 0 {
 			continue
 		}
 		for i := 1; i < len(pos); i++ {
@@ -381,9 +402,12 @@ func inspectLegacyRepairHead(ctx context.Context, store state.StateStore, rec st
 		if len(head.Metadata) > 0 {
 			for _, index := range pos {
 				if head.Metadata[index] != canonical {
-					return refuse(fmt.Sprintf("sequence=%d duplicate metadata projection conflicts with immutable body", seq))
+					return refuse(fmt.Sprintf("sequence=%d metadata projection conflicts with immutable body", seq))
 				}
 			}
+		}
+		if len(pos) < 2 {
+			continue
 		}
 		duplicates = append(duplicates, LegacyRepairDuplicate{
 			Sequence:     seq,
@@ -414,88 +438,88 @@ func validateLegacyRepairMetadata(m eventMetadataRecord, id identity.Quadruple, 
 	return nil
 }
 
-func applyLegacyRepairHead(ctx context.Context, store state.StateStore, view legacyRepairHeadView, opts LegacyRepairOptions) error {
+// legacyRepairBatchPlan contains one head replacement and its content-free
+// receipt. Plans are assembled entirely before SaveBatchIf is called; the
+// StateStore contract then makes all affected head/receipt replacements one
+// operation rather than a sequence of independently visible repairs.
+type legacyRepairBatchPlan struct {
+	nextHead    state.StateRecord
+	nextReceipt state.StateRecord
+}
+
+func applyLegacyRepairHeads(ctx context.Context, store state.StateStore, views []legacyRepairHeadView, opts LegacyRepairOptions) error {
+	if len(views) == 0 {
+		return nil
+	}
 	for attempt := 1; attempt <= opts.MaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		current, err := store.Load(ctx, view.record.Identity, kindHead)
-		if err != nil {
-			if isLegacyRepairContextError(err) {
+		expectations := make([]state.SlotExpectation, 0, len(views)*2)
+		writes := make([]state.StateRecord, 0, len(views)*2)
+		staged := 0
+		for _, view := range views {
+			current, err := store.Load(ctx, view.record.Identity, kindHead)
+			if err != nil {
+				if isLegacyRepairContextError(err) {
+					return err
+				}
+				return fmt.Errorf("%w: head=%s: clean re-read failed", ErrLegacyRepairRefused, headIdentityHash(view.record.Identity))
+			}
+			fresh, err := inspectLegacyRepairHead(ctx, store, current)
+			if err != nil {
 				return err
 			}
-			return fmt.Errorf("%w: head=%s: clean re-read failed", ErrLegacyRepairRefused, headIdentityHash(view.record.Identity))
-		}
-		fresh, err := inspectLegacyRepairHead(ctx, store, current)
-		if err != nil {
-			return err
-		}
-		_, ok, receiptErr := loadLegacyRepairReceipt(ctx, store, current, opts.ToolVersion)
-		if receiptErr != nil {
-			// A concurrent repair may have committed the head and receipt
-			// between the clean head read above and this receipt read. Re-read
-			// both slots before refusing; a malformed or stale receipt that
-			// persists on the current head still fails closed below.
-			latest, latestErr := store.Load(ctx, view.record.Identity, kindHead)
-			if latestErr == nil {
-				latestView, latestViewErr := inspectLegacyRepairHead(ctx, store, latest)
-				if latestViewErr == nil && len(latestView.duplicates) == 0 {
-					if _, latestOK, latestReceiptErr := loadLegacyRepairReceipt(ctx, store, latest, opts.ToolVersion); latestReceiptErr == nil && latestOK {
-						return nil
+			_, found, receiptErr := loadLegacyRepairReceipt(ctx, store, current, opts.ToolVersion)
+			if receiptErr != nil {
+				// A concurrent repair may have committed the head and receipt
+				// between the clean head read above and this receipt read. Re-read
+				// both slots before refusing; a malformed or stale receipt that
+				// persists on the current head still fails closed below.
+				latest, latestErr := store.Load(ctx, view.record.Identity, kindHead)
+				if latestErr == nil {
+					latestView, latestViewErr := inspectLegacyRepairHead(ctx, store, latest)
+					if latestViewErr != nil {
+						if isLegacyRepairContextError(latestViewErr) {
+							return latestViewErr
+						}
+					} else if len(latestView.duplicates) == 0 {
+						if _, latestFound, latestReceiptErr := loadLegacyRepairReceipt(ctx, store, latest, opts.ToolVersion); latestReceiptErr == nil && latestFound {
+							continue
+						} else if isLegacyRepairContextError(latestReceiptErr) {
+							return latestReceiptErr
+						}
 					}
+				} else if isLegacyRepairContextError(latestErr) {
+					return latestErr
 				}
+				return receiptErr
 			}
-			return receiptErr
-		}
-		if ok {
+			if found {
+				if len(fresh.duplicates) == 0 {
+					continue
+				}
+				return fmt.Errorf("%w: head=%s: persisted receipt is stale while duplicate references remain", ErrLegacyRepairRefused, headIdentityHash(current.Identity))
+			}
 			if len(fresh.duplicates) == 0 {
-				return nil
+				return fmt.Errorf("%w: head=%s: canonical head has no valid repair receipt", ErrLegacyRepairRefused, headIdentityHash(current.Identity))
 			}
-			return fmt.Errorf("%w: head=%s: persisted receipt is stale while duplicate references remain", ErrLegacyRepairRefused, headIdentityHash(current.Identity))
+
+			plan, err := prepareLegacyRepairBatchPlan(current, fresh, opts.ToolVersion)
+			if err != nil {
+				return err
+			}
+			expectations = append(expectations,
+				state.SlotExpectation{Identity: current.Identity, Kind: kindHead, ExpectedEventID: current.ID},
+				state.InternalSlotExpectation(current.Identity, legacyRepairReceiptKind(current.Identity), ""),
+			)
+			writes = append(writes, plan.nextHead, plan.nextReceipt)
+			staged++
 		}
-		if len(fresh.duplicates) == 0 {
+		if staged == 0 {
 			return nil
 		}
-		newHead := fresh.head
-		newHead.Sequences = removeLegacyDuplicateReferences(newHead.Sequences, fresh.duplicates)
-		if len(newHead.Metadata) > 0 {
-			newHead.Metadata = removeLegacyDuplicateMetadata(newHead.Metadata, fresh.duplicates)
-			newHead.MetadataValidatedCount = len(newHead.Metadata)
-			newHead.MetadataIntegrityChecksum = metadataIntegrityChecksum(newHead.Sequences, newHead.Metadata)
-			if newHead.MetadataReady {
-				newHead.MetadataValidatedCount = len(newHead.Sequences)
-			}
-		}
-		newHeadBytes, encodeErr := encodeHead(newHead)
-		if encodeErr != nil {
-			return fmt.Errorf("%w: head=%s: repaired head encoding failed", ErrLegacyRepairRefused, headIdentityHash(current.Identity))
-		}
-		nextHeadID := state.NewEventID()
-		receiptID := state.NewEventID()
-		repairReceipt := LegacyRepairReceipt{
-			ReceiptVersion:     1,
-			ReceiptID:          string(receiptID),
-			ToolVersion:        opts.ToolVersion,
-			HeadIdentityHash:   headIdentityHash(current.Identity),
-			BeforeHeadHash:     sha256Hex(current.Bytes),
-			AfterHeadHash:      sha256Hex(newHeadBytes),
-			ExpectedGeneration: string(current.ID),
-			AppliedGeneration:  string(nextHeadID),
-			Duplicates:         cloneLegacyRepairDuplicates(fresh.duplicates),
-			Outcome:            "applied",
-		}
-		receiptBytes, marshalErr := json.Marshal(repairReceipt)
-		if marshalErr != nil {
-			return fmt.Errorf("%w: head=%s: receipt encoding failed", ErrLegacyRepairRefused, headIdentityHash(current.Identity))
-		}
-		nextHead := state.StateRecord{ID: nextHeadID, Identity: current.Identity, Kind: kindHead, Bytes: newHeadBytes}
-		nextReceipt := state.NewInternalRecord(receiptID, current.Identity, legacyRepairReceiptKind(current.Identity), receiptBytes)
-		err = store.SaveBatchIf(ctx,
-			[]state.SlotExpectation{
-				{Identity: current.Identity, Kind: kindHead, ExpectedEventID: current.ID},
-				state.InternalSlotExpectation(current.Identity, legacyRepairReceiptKind(current.Identity), ""),
-			},
-			[]state.StateRecord{nextHead, nextReceipt})
+		err := store.SaveBatchIf(ctx, expectations, writes)
 		if err == nil {
 			return nil
 		}
@@ -505,11 +529,51 @@ func applyLegacyRepairHead(ctx context.Context, store state.StateStore, view leg
 		if !errors.Is(err, state.ErrConditionFailed) {
 			// A commit acknowledgement may be unknown. The receipt is the
 			// recovery mechanism; the caller can rerun safely, but no body is
-			// ever rewritten here.
-			return fmt.Errorf("%w: head=%s: conditional repair write failed: %w", ErrLegacyRepairRefused, headIdentityHash(current.Identity), err)
+			// ever rewritten here. The batch contract ensures that every staged
+			// head either committed with its receipt or none did.
+			return fmt.Errorf("%w: conditional repair batch failed: %w", ErrLegacyRepairRefused, err)
 		}
 	}
-	return fmt.Errorf("%w: head=%s: generation changed repeatedly", ErrLegacyRepairRefused, headIdentityHash(view.record.Identity))
+	return fmt.Errorf("%w: generation changed repeatedly across repair batch", ErrLegacyRepairRefused)
+}
+
+func prepareLegacyRepairBatchPlan(current state.StateRecord, fresh legacyRepairHeadView, toolVersion string) (legacyRepairBatchPlan, error) {
+	identityHash := headIdentityHash(current.Identity)
+	newHead := fresh.head
+	newHead.Sequences = removeLegacyDuplicateReferences(newHead.Sequences, fresh.duplicates)
+	if len(newHead.Metadata) > 0 {
+		newHead.Metadata = removeLegacyDuplicateMetadata(newHead.Metadata, fresh.duplicates)
+		newHead.MetadataValidatedCount = len(newHead.Metadata)
+		newHead.MetadataIntegrityChecksum = metadataIntegrityChecksum(newHead.Sequences, newHead.Metadata)
+		if newHead.MetadataReady {
+			newHead.MetadataValidatedCount = len(newHead.Sequences)
+		}
+	}
+	newHeadBytes, err := encodeHead(newHead)
+	if err != nil {
+		return legacyRepairBatchPlan{}, fmt.Errorf("%w: head=%s: repaired head encoding failed", ErrLegacyRepairRefused, identityHash)
+	}
+	nextHeadID := state.NewEventID()
+	receiptID := state.NewEventID()
+	repairReceipt := LegacyRepairReceipt{
+		ReceiptVersion:     1,
+		ReceiptID:          string(receiptID),
+		ToolVersion:        toolVersion,
+		HeadIdentityHash:   identityHash,
+		BeforeHeadHash:     sha256Hex(current.Bytes),
+		AfterHeadHash:      sha256Hex(newHeadBytes),
+		ExpectedGeneration: string(current.ID),
+		AppliedGeneration:  string(nextHeadID),
+		Duplicates:         cloneLegacyRepairDuplicates(fresh.duplicates),
+		Outcome:            "applied",
+	}
+	receiptBytes, err := json.Marshal(repairReceipt)
+	if err != nil {
+		return legacyRepairBatchPlan{}, fmt.Errorf("%w: head=%s: receipt encoding failed", ErrLegacyRepairRefused, identityHash)
+	}
+	nextHead := state.StateRecord{ID: nextHeadID, Identity: current.Identity, Kind: kindHead, Bytes: newHeadBytes}
+	nextReceipt := state.NewInternalRecord(receiptID, current.Identity, legacyRepairReceiptKind(current.Identity), receiptBytes)
+	return legacyRepairBatchPlan{nextHead: nextHead, nextReceipt: nextReceipt}, nil
 }
 
 func removeLegacyDuplicateReferences(sequences []uint64, duplicates []LegacyRepairDuplicate) []uint64 {

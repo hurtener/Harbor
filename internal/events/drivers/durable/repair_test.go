@@ -67,6 +67,80 @@ func (s *repairCASRaceStore) SaveBatchIf(ctx context.Context, expectations []sta
 	return s.StateStore.SaveBatchIf(ctx, expectations, writes)
 }
 
+type repairBatchCall struct {
+	expectations int
+	writes       int
+}
+
+type repairBatchMetrics struct {
+	mu    sync.Mutex
+	calls []repairBatchCall
+}
+
+func (m *repairBatchMetrics) recordBatch(expectations, writes int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, repairBatchCall{expectations: expectations, writes: writes})
+}
+
+func (m *repairBatchMetrics) batchCalls() []repairBatchCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]repairBatchCall(nil), m.calls...)
+}
+
+type repairBatchConflictStore struct {
+	state.StateStore
+	repairBatchMetrics
+	identity identity.Quadruple
+	once     atomic.Bool
+}
+
+func (s *repairBatchConflictStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	s.recordBatch(len(expectations), len(writes))
+	if s.once.CompareAndSwap(false, true) {
+		head, err := s.StateStore.Load(ctx, s.identity, kindHead)
+		if err != nil {
+			return err
+		}
+		if err := s.StateStore.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: head.Identity, Kind: kindHead, Bytes: append([]byte(nil), head.Bytes...)}); err != nil {
+			return err
+		}
+	}
+	return s.StateStore.SaveBatchIf(ctx, expectations, writes)
+}
+
+type repairBatchCancelStore struct {
+	state.StateStore
+	repairBatchMetrics
+	cancel context.CancelFunc
+	once   atomic.Bool
+}
+
+func (s *repairBatchCancelStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	s.recordBatch(len(expectations), len(writes))
+	if s.once.CompareAndSwap(false, true) {
+		s.cancel()
+		return ctx.Err()
+	}
+	return s.StateStore.SaveBatchIf(ctx, expectations, writes)
+}
+
+type repairBatchUnknownStore struct {
+	state.StateStore
+	repairBatchMetrics
+	once atomic.Bool
+}
+
+func (s *repairBatchUnknownStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	s.recordBatch(len(expectations), len(writes))
+	err := s.StateStore.SaveBatchIf(ctx, expectations, writes)
+	if err == nil && s.once.CompareAndSwap(false, true) {
+		return errors.Join(state.ErrCommitOutcomeUnknown, errRepairResponseLoss)
+	}
+	return err
+}
+
 type repairCancelAfterListStore struct {
 	state.StateStore
 	cancel context.CancelFunc
@@ -403,6 +477,114 @@ func TestLegacyRepair_CASRace_RereadsAndRepairsCurrentGeneration(t *testing.T) {
 	}
 }
 
+func assertCanonicalRepairHead(t *testing.T, store state.StateStore, id identity.Quadruple, want []uint64) {
+	t.Helper()
+	head, err := store.Load(context.Background(), id, kindHead)
+	if err != nil {
+		t.Fatalf("load repaired head: %v", err)
+	}
+	decoded, err := decodeHead(head.Bytes)
+	if err != nil {
+		t.Fatalf("decode repaired head: %v", err)
+	}
+	if !reflect.DeepEqual(decoded.Sequences, want) {
+		t.Fatalf("repaired sequences = %v, want %v", decoded.Sequences, want)
+	}
+	if _, found, err := loadLegacyRepairReceipt(context.Background(), store, head, LegacyRepairToolVersion); err != nil || !found {
+		t.Fatalf("repaired head receipt found=%v err=%v", found, err)
+	}
+}
+
+func TestLegacyRepair_MultiHeadApply_IsAtomicAcrossConflictCancellationAndUnknownAck(t *testing.T) {
+	seedTwo := func(t *testing.T) (state.StateStore, identity.Quadruple, identity.Quadruple) {
+		t.Helper()
+		base := newRepairInmem(t)
+		first := seedRepairHead(t, base, "batch-first", []uint64{10, 10, 11}, false)
+		second := seedRepairHead(t, base, "batch-second", []uint64{20, 20, 21}, false)
+		return base, first, second
+	}
+
+	t.Run("generation conflict retries the complete batch", func(t *testing.T) {
+		base, first, second := seedTwo(t)
+		store := &repairBatchConflictStore{StateStore: base, identity: first}
+		report, err := RepairLegacyHeads(context.Background(), store, LegacyRepairOptions{Mode: LegacyRepairApply, WriterDrained: true})
+		if err != nil {
+			t.Fatalf("generation-conflict batch apply: %v", err)
+		}
+		if report.AffectedHeadCount != 2 || report.RedundantReferenceCount != 2 {
+			t.Fatalf("generation-conflict report = %+v", report)
+		}
+		calls := store.batchCalls()
+		if !reflect.DeepEqual(calls, []repairBatchCall{{expectations: 4, writes: 4}, {expectations: 4, writes: 4}}) {
+			t.Fatalf("generation-conflict batch calls = %+v, want two complete 4-slot batches", calls)
+		}
+		assertCanonicalRepairHead(t, base, first, []uint64{10, 11})
+		assertCanonicalRepairHead(t, base, second, []uint64{20, 21})
+	})
+
+	t.Run("cancellation leaves every head and receipt untouched", func(t *testing.T) {
+		base, first, second := seedTwo(t)
+		beforeFirst, err := base.Load(context.Background(), first, kindHead)
+		if err != nil {
+			t.Fatalf("load first head before cancellation: %v", err)
+		}
+		beforeSecond, err := base.Load(context.Background(), second, kindHead)
+		if err != nil {
+			t.Fatalf("load second head before cancellation: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store := &repairBatchCancelStore{StateStore: base, cancel: cancel}
+		if _, err := RepairLegacyHeads(ctx, store, LegacyRepairOptions{Mode: LegacyRepairApply, WriterDrained: true}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled batch apply error=%v, want context.Canceled", err)
+		}
+		calls := store.batchCalls()
+		if !reflect.DeepEqual(calls, []repairBatchCall{{expectations: 4, writes: 4}}) {
+			t.Fatalf("cancelled batch calls = %+v, want one complete attempted batch", calls)
+		}
+		afterFirst, err := base.Load(context.Background(), first, kindHead)
+		if err != nil {
+			t.Fatalf("load first head after cancellation: %v", err)
+		}
+		afterSecond, err := base.Load(context.Background(), second, kindHead)
+		if err != nil {
+			t.Fatalf("load second head after cancellation: %v", err)
+		}
+		if beforeFirst.ID != afterFirst.ID || !bytes.Equal(beforeFirst.Bytes, afterFirst.Bytes) || beforeSecond.ID != afterSecond.ID || !bytes.Equal(beforeSecond.Bytes, afterSecond.Bytes) {
+			t.Fatal("cancellation left a partial head mutation")
+		}
+		for _, id := range []identity.Quadruple{first, second} {
+			if _, err := base.Load(context.Background(), id, legacyRepairReceiptKind(id)); !errors.Is(err, state.ErrNotFound) {
+				t.Fatalf("cancellation left receipt for %s: %v", id.SessionID, err)
+			}
+		}
+	})
+
+	t.Run("unknown acknowledgement commits or replays the complete batch", func(t *testing.T) {
+		base, first, second := seedTwo(t)
+		store := &repairBatchUnknownStore{StateStore: base}
+		if _, err := RepairLegacyHeads(context.Background(), store, LegacyRepairOptions{Mode: LegacyRepairApply, WriterDrained: true}); !errors.Is(err, ErrLegacyRepairRefused) || !errors.Is(err, state.ErrCommitOutcomeUnknown) {
+			t.Fatalf("unknown-ack batch apply error=%v, want refusal plus ErrCommitOutcomeUnknown", err)
+		}
+		calls := store.batchCalls()
+		if !reflect.DeepEqual(calls, []repairBatchCall{{expectations: 4, writes: 4}}) {
+			t.Fatalf("unknown-ack batch calls = %+v, want one complete batch", calls)
+		}
+		assertCanonicalRepairHead(t, base, first, []uint64{10, 11})
+		assertCanonicalRepairHead(t, base, second, []uint64{20, 21})
+		replayed, err := RepairLegacyHeads(context.Background(), store, LegacyRepairOptions{Mode: LegacyRepairApply, WriterDrained: true})
+		if err != nil {
+			t.Fatalf("unknown-ack batch replay: %v", err)
+		}
+		if replayed.AffectedHeadCount != 2 || replayed.RedundantReferenceCount != 2 {
+			t.Fatalf("unknown-ack replay report = %+v", replayed)
+		}
+		if calls := store.batchCalls(); !reflect.DeepEqual(calls, []repairBatchCall{{expectations: 4, writes: 4}}) {
+			t.Fatalf("unknown-ack replay unexpectedly wrote another batch: %+v", calls)
+		}
+	})
+}
+
 func TestLegacyRepair_CancellationAfterBoundedScanBegins(t *testing.T) {
 	base := newRepairInmem(t)
 	seedRepairHead(t, base, "cancel-after-list", []uint64{30, 30}, false)
@@ -587,6 +769,29 @@ func TestLegacyRepair_RefusesEntryAndMetadataAmbiguityWithoutWrites(t *testing.T
 			}
 			return base
 		}},
+		{name: "conflicting nonduplicate metadata", metadata: true, mutate: func(t *testing.T, base state.StateStore, id identity.Quadruple) state.StateStore {
+			head, err := base.Load(context.Background(), id, kindHead)
+			if err != nil {
+				t.Fatalf("load metadata head: %v", err)
+			}
+			decoded, err := decodeHead(head.Bytes)
+			if err != nil {
+				t.Fatalf("decode metadata head: %v", err)
+			}
+			// Sequence 41 occurs once, so a structurally valid but forged
+			// projection here would evade duplicate-only validation.
+			decoded.Metadata[2].RunID = "conflicting-nonduplicate-run"
+			decoded.MetadataIntegrityChecksum = metadataIntegrityChecksum(decoded.Sequences, decoded.Metadata)
+			head.Bytes, err = encodeHead(decoded)
+			if err != nil {
+				t.Fatalf("encode conflicting nonduplicate metadata head: %v", err)
+			}
+			head.ID = state.NewEventID()
+			if err := base.Save(context.Background(), head); err != nil {
+				t.Fatalf("save conflicting nonduplicate metadata head: %v", err)
+			}
+			return base
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -706,6 +911,11 @@ func TestLegacyRepair_ApplyDSNRejectsPooledEndpoints(t *testing.T) {
 		"host=example port=6432 dbname=harbor",
 		"host=example\tport\t=\t6432 dbname=harbor",
 		"postgres://u:p@example/harbor?pool_mode=transaction",
+		"postgres://u:p@pgbouncer.example:5432/harbor",
+		"postgres://u:p@PGBOUNCER.example:5432/harbor",
+		"host=PgBouncer port=5432 dbname=harbor",
+		"host = pgbouncer port = 5432 dbname=harbor",
+		"host=pooler-pgbouncer.internal port=5432 dbname=harbor",
 	} {
 		if err := ValidateLegacyRepairApplyDSN(dsn); err == nil {
 			t.Errorf("ValidateLegacyRepairApplyDSN(%q) accepted pooled endpoint", dsn)
