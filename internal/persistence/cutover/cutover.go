@@ -162,6 +162,10 @@ type SchemaSnapshot struct {
 	Identities   []StoreIdentity     `json:"store_identities,omitempty"`
 	TableRows    map[string][]Row    `json:"-"`
 	TableColumns map[string][]string `json:"-"`
+	// TableFingerprints is populated by InspectSQL. It contains only row
+	// counts/hashes, never bodies, so a large production source is not retained
+	// in memory while it is being classified or copied.
+	TableFingerprints map[string]TableManifest `json:"-"`
 }
 
 // StoreIdentity is the subsystem-level contract proof stored alongside the

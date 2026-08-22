@@ -2,11 +2,18 @@ package cutover
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
+
+const sqlOperationTimeout = 2 * time.Minute
 
 // SQLQuerier is the read-only part of the database/sql surface. It makes the
 // classifier testable without a live database while keeping production code on
@@ -21,15 +28,18 @@ type SQLExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-// InspectSQL discovers tables and ledgers from information_schema, then loads
-// the six projection tables into a deterministic snapshot. The operation is
-// read-only and is safe through transaction-pooled PgBouncer 6432.
+// InspectSQL discovers tables and ledgers from information_schema, then
+// streams each projection table once to produce a deterministic count/hash
+// snapshot. It deliberately retains no row bodies. The operation is read-only
+// and is safe through transaction-pooled PgBouncer 6432.
 func InspectSQL(ctx context.Context, db SQLQuerier, sub Subsystem) (SchemaSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return SchemaSnapshot{}, err
 	}
-	snapshot := SchemaSnapshot{TableRows: map[string][]Row{}, TableColumns: map[string][]string{}}
-	rows, err := db.QueryContext(ctx, `
+	snapshot := SchemaSnapshot{TableRows: map[string][]Row{}, TableColumns: map[string][]string{}, TableFingerprints: map[string]TableManifest{}}
+	queryCtx, cancel := boundedSQLContext(ctx)
+	defer cancel()
+	rows, err := db.QueryContext(queryCtx, `
 		SELECT table_name
 		FROM information_schema.tables
 		WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
@@ -54,21 +64,21 @@ func InspectSQL(ctx context.Context, db SQLQuerier, sub Subsystem) (SchemaSnapsh
 	}
 
 	if contains(snapshot.Tables, LedgerTable) {
-		ledger, err := inspectNamespacedLedger(ctx, db)
+		ledger, err := inspectNamespacedLedger(queryCtx, db)
 		if err != nil {
 			return SchemaSnapshot{}, err
 		}
 		snapshot.Namespaced = ledger
 	}
 	if contains(snapshot.Tables, LegacyLedgerTable) {
-		legacy, err := inspectLegacyLedger(ctx, db)
+		legacy, err := inspectLegacyLedger(queryCtx, db)
 		if err != nil {
 			return SchemaSnapshot{}, err
 		}
 		snapshot.Legacy = legacy
 	}
 	if contains(snapshot.Tables, IdentityTable) {
-		identities, err := inspectStoreIdentity(ctx, db)
+		identities, err := inspectStoreIdentity(queryCtx, db)
 		if err != nil {
 			return SchemaSnapshot{}, err
 		}
@@ -83,16 +93,16 @@ func InspectSQL(ctx context.Context, db SQLQuerier, sub Subsystem) (SchemaSnapsh
 		if !contains(snapshot.Tables, table.Name) {
 			continue
 		}
-		columns, err := inspectColumns(ctx, db, table.Name)
+		columns, err := inspectColumns(queryCtx, db, table.Name)
 		if err != nil {
 			return SchemaSnapshot{}, err
 		}
 		snapshot.TableColumns[table.Name] = columns
-		data, err := inspectRows(ctx, db, table, columns)
+		fingerprint, err := inspectRowsFingerprint(queryCtx, db, table, columns)
 		if err != nil {
 			return SchemaSnapshot{}, err
 		}
-		snapshot.TableRows[table.Name] = data
+		snapshot.TableFingerprints[table.Name] = fingerprint
 	}
 	return snapshot, nil
 }
@@ -198,7 +208,53 @@ func inspectColumns(ctx context.Context, db SQLQuerier, table string) ([]string,
 	return columns, nil
 }
 
-func inspectRows(ctx context.Context, db SQLQuerier, table TableSpec, columns []string) ([]Row, error) {
+func inspectRowsFingerprint(ctx context.Context, db SQLQuerier, table TableSpec, columns []string) (TableManifest, error) {
+	query, err := tableSelectQuery(table, columns)
+	if err != nil {
+		return TableManifest{}, err
+	}
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return TableManifest{}, fmt.Errorf("cutover: read %s: %w", table.Name, err)
+	}
+	defer func() { _ = rows.Close() }()
+	orderedColumns := append([]string(nil), columns...)
+	sort.Strings(orderedColumns)
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("harbor-cutover-table-v1\x00"))
+	writeLengthPrefixed(hash, []byte(table.Name))
+	for _, column := range orderedColumns {
+		writeLengthPrefixed(hash, []byte(column))
+	}
+	var count int64
+	for rows.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(values))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return TableManifest{}, fmt.Errorf("cutover: scan %s: %w", table.Name, err)
+		}
+		row := make(Row, len(columns))
+		for i, column := range columns {
+			row[column] = cloneValue(values[i])
+		}
+		buf, err := json.Marshal(row)
+		if err != nil {
+			return TableManifest{}, fmt.Errorf("cutover: marshal %s row: %w", table.Name, err)
+		}
+		writeLengthPrefixed(hash, buf)
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return TableManifest{}, fmt.Errorf("cutover: iterate %s: %w", table.Name, err)
+	}
+	digest := hash.Sum(nil)
+	return TableManifest{Table: table.Name, Columns: append([]string(nil), columns...), RowCount: count, ContentSHA256: hex.EncodeToString(digest)}, nil
+}
+
+func tableSelectQuery(table TableSpec, columns []string) (string, error) {
 	quoted := make([]string, len(columns))
 	for i, column := range columns {
 		quoted[i] = quoteIdentifier(column)
@@ -213,31 +269,21 @@ func inspectRows(ctx context.Context, db SQLQuerier, table TableSpec, columns []
 	if len(order) > 0 {
 		query += " ORDER BY " + strings.Join(order, ", ")
 	}
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("cutover: read %s: %w", table.Name, err)
+	return query, nil
+}
+
+func boundedSQLContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []Row
-	for rows.Next() {
-		values := make([]any, len(columns))
-		pointers := make([]any, len(values))
-		for i := range values {
-			pointers[i] = &values[i]
-		}
-		if err := rows.Scan(pointers...); err != nil {
-			return nil, fmt.Errorf("cutover: scan %s: %w", table.Name, err)
-		}
-		row := make(Row, len(columns))
-		for i, column := range columns {
-			row[column] = cloneValue(values[i])
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("cutover: iterate %s: %w", table.Name, err)
-	}
-	return out, nil
+	return context.WithTimeout(ctx, sqlOperationTimeout)
+}
+
+func writeLengthPrefixed(hash interface{ Write([]byte) (int, error) }, data []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(data)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write(data)
 }
 
 func cloneValue(value any) any {
@@ -265,6 +311,11 @@ func BuildSubsystemManifest(sub Subsystem, snapshot SchemaSnapshot) (SubsystemMa
 	}
 	manifest := SubsystemManifest{Subsystem: sub, Classification: classification}
 	for _, table := range spec.tables {
+		if fingerprint, ok := snapshot.TableFingerprints[table.Name]; ok {
+			manifest.Tables = append(manifest.Tables, fingerprint)
+			manifest.RowCount += fingerprint.RowCount
+			continue
+		}
 		rows := snapshot.TableRows[table.Name]
 		columns := snapshot.TableColumns[table.Name]
 		if len(columns) == 0 {
@@ -335,7 +386,7 @@ func CopySubsystem(ctx context.Context, source, destination SQLExecutor, sub Sub
 		return Manifest{}, fmt.Errorf("cutover: destination %s is not namespaced/verified: %s; apply migrations over direct 5432 before copy", sub, destinationManifest.Classification.Diagnostic)
 	}
 	if sourceManifest.Classification.Class != ClassEmpty {
-		if err := copySnapshotRows(ctx, destination, sourceSnapshot, sub, opts.BatchSize); err != nil {
+		if err := copySQLTables(ctx, source, destination, sourceSnapshot, sub, opts.BatchSize); err != nil {
 			return Manifest{}, err
 		}
 	}
@@ -358,24 +409,85 @@ func CopySubsystem(ctx context.Context, source, destination SQLExecutor, sub Sub
 	return manifest, nil
 }
 
-func copySnapshotRows(ctx context.Context, destination SQLExecutor, snapshot SchemaSnapshot, sub Subsystem, batchSize int) error {
-	return CopyRows(ctx, sub, snapshot, batchSize, func(ctx context.Context, table string, columns []string, row Row) error {
-		placeholders := make([]string, len(columns))
-		quotedColumns := make([]string, len(columns))
-		for i, column := range columns {
-			placeholders[i] = fmt.Sprintf("$%d", i+1)
-			quotedColumns[i] = quoteIdentifier(column)
+func copySQLTables(ctx context.Context, source, destination SQLExecutor, snapshot SchemaSnapshot, sub Subsystem, batchSize int) error {
+	spec, err := Spec(sub)
+	if err != nil {
+		return err
+	}
+	for _, table := range spec.tables {
+		columns := snapshot.TableColumns[table.Name]
+		if len(columns) == 0 {
+			continue
 		}
-		query := "INSERT INTO " + quoteIdentifier(table) + " (" + strings.Join(quotedColumns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ") ON CONFLICT DO NOTHING"
+		expected := snapshot.TableFingerprints[table.Name]
+		if expected.Table == "" && len(snapshot.TableRows[table.Name]) == 0 {
+			continue
+		}
+		if err := copySQLTable(ctx, source, destination, sub, table, columns, expected.RowCount, batchSize); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subsystem, table TableSpec, columns []string, expectedRows int64, batchSize int) error {
+	if batchSize <= 0 {
+		batchSize = 256
+	}
+	selectQuery, err := tableSelectQuery(table, columns)
+	if err != nil {
+		return err
+	}
+	readCtx, cancel := boundedSQLContext(ctx)
+	defer cancel()
+	rows, err := source.QueryContext(readCtx, selectQuery)
+	if err != nil {
+		return fmt.Errorf("cutover: stream source %s.%s: %w", sub, table.Name, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	placeholders := make([]string, len(columns))
+	quotedColumns := make([]string, len(columns))
+	for i, column := range columns {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		quotedColumns[i] = quoteIdentifier(column)
+	}
+	insertQuery := "INSERT INTO " + quoteIdentifier(table.Name) + " (" + strings.Join(quotedColumns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ") ON CONFLICT DO NOTHING"
+	var copied int64
+	for rows.Next() {
 		values := make([]any, len(columns))
-		for i, column := range columns {
-			values[i] = row[column]
+		pointers := make([]any, len(values))
+		for i := range values {
+			pointers[i] = &values[i]
 		}
-		if _, err := destination.ExecContext(ctx, query, values...); err != nil {
-			return fmt.Errorf("cutover: copy %s.%s row: %w", sub, table, err)
+		if err := rows.Scan(pointers...); err != nil {
+			return fmt.Errorf("cutover: scan source %s.%s row %d: %w", sub, table.Name, copied, err)
 		}
-		return nil
-	})
+		if err := readCtx.Err(); err != nil {
+			return fmt.Errorf("cutover: copy %s.%s interrupted after %d rows: %w", sub, table.Name, copied, err)
+		}
+		if _, err := destination.ExecContext(readCtx, insertQuery, values...); err != nil {
+			return fmt.Errorf("cutover: copy %s.%s row %d: %w", sub, table.Name, copied, err)
+		}
+		copied++
+		// The SQL writer commits each row. BatchSize bounds the amount of
+		// work between observable progress points without retaining payloads.
+		if copied%int64(batchSize) == 0 {
+			if err := readCtx.Err(); err != nil {
+				return fmt.Errorf("cutover: copy %s.%s interrupted after %d rows: %w", sub, table.Name, copied, err)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("cutover: stream source %s.%s: %w", sub, table.Name, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("cutover: close source %s.%s stream: %w", sub, table.Name, err)
+	}
+	if expectedRows != copied {
+		return fmt.Errorf("cutover: source %s.%s changed during frozen copy: manifest rows=%d streamed rows=%d", sub, table.Name, expectedRows, copied)
+	}
+	return nil
 }
 
 // RowWriter receives one exact source row. CopyRows is exported so a

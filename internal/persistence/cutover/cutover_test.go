@@ -207,3 +207,36 @@ func TestCopyRows_InterruptionIsResumableWithIdempotentWriter(t *testing.T) {
 		t.Fatalf("destination rows after resume=%d, want 3", len(destination))
 	}
 }
+
+func TestCopyRows_BoundedWriterSeesOnePayloadAtATime(t *testing.T) {
+	const rowCount = 2000
+	const payloadSize = 4096
+	rows := make([]cutover.Row, rowCount)
+	for i := range rows {
+		rows[i] = cutover.Row{"id": fmt.Sprintf("row-%04d", i), "body": strings.Repeat("x", payloadSize)}
+	}
+	snapshot := cutover.SchemaSnapshot{
+		TableRows:    map[string][]cutover.Row{"state_records": rows},
+		TableColumns: map[string][]string{"state_records": {"id", "body"}},
+	}
+	active := 0
+	peak := 0
+	seen := 0
+	if err := cutover.CopyRows(context.Background(), cutover.SubsystemState, snapshot, 64, func(_ context.Context, _ string, _ []string, row cutover.Row) error {
+		active++
+		if active > peak {
+			peak = active
+		}
+		if len(row["body"].(string)) != payloadSize {
+			t.Fatalf("payload length=%d, want %d", len(row["body"].(string)), payloadSize)
+		}
+		seen++
+		active--
+		return nil
+	}); err != nil {
+		t.Fatalf("CopyRows: %v", err)
+	}
+	if seen != rowCount || peak != 1 {
+		t.Fatalf("seen=%d peak=%d, want seen=%d peak=1", seen, peak, rowCount)
+	}
+}
