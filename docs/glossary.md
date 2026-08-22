@@ -2121,3 +2121,34 @@ cross-runtime catalog. D-430.
 publication operation. It carries operation and exact revision/state metadata
 but never the skill body or an unbounded content projection; idempotent replay
 returns the same metadata outcome. D-430.
+
+**Event metadata index** — the first-class, typed projection of canonical
+event routing metadata used to select sequence-ordered rows before loading
+redacted payload bodies. It carries identity, run, type, occurrence time, and
+internal-notice metadata; the canonical event log remains the source of truth,
+and readiness/backfill/erasure rules prevent a stale index from masquerading
+as a complete or empty history. D-431.
+
+**Runtime-wide PostgreSQL pool budget** — the aggregate connection permit
+budget owned by one Harbor runtime across every compatible PostgreSQL store
+and every distinct DSN. Equal canonical DSNs share one runtime-owned pool;
+distinct DSNs remain supported but cannot each receive the full budget. D-431.
+
+**Namespaced checksummed migration ledger** — a migration history whose
+identity binds the Harbor subsystem, migration filename, version, and
+immutable checksum, with a subsystem-qualified advisory-lock authority and
+required-schema verification. A legacy bare ledger is adoptable only after
+schema proof; an integer version from another subsystem never satisfies it.
+D-431.
+
+**Split-to-unified PostgreSQL cutover** — the non-destructive, freeze-or-drain
+procedure that classifies split source databases by observed schema, copies
+compatible Harbor projections into one runtime database, and proves row-count
+and canonical-content-hash equality before a DSN switch. Harbor does not
+delete source databases. D-431.
+
+**Direct-apply / pooled-verify migration posture** — the deployment contract
+where advisory-lock migrations run through a direct/session-affine PostgreSQL
+endpoint (normally 5432), while read-only verification and ordinary traffic
+may use transaction-pooled PgBouncer (6432). Applying through an unproven
+transaction pool fails loudly. D-428, D-431.

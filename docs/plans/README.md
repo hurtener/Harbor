@@ -946,6 +946,34 @@ real two-client race under `-race`.
 - **Decision:** D-430. **Status:** Shipped (unreleased candidate; focused
   evidence only).
 
+### Phase 251 — v1.29.1 event-index and PostgreSQL fleet safety (HA-69)
+
+- **Subsystem:** durable events/index and sessions counter reads; shared
+  PostgreSQL pool/migration ownership for state, memory, artifacts, skills,
+  sessions/turns, and observability/rollups; cutover tooling and operator
+  documentation.
+- **RFC:** §4, §5.2, §6.6, §6.7, §6.9, §6.10, §6.11, §6.13, §6.14, §6.15,
+  §9. **Deps:** 57, 162, 163, 171, 174, 201, 246, and 247; D-428 is the
+  direct-apply/pooled-verify predecessor.
+- **What it delivers:** D-431 — one emergency v1.29.1 release slice with
+  (A) an exact first-class event metadata index and safe atomicity/backfill/
+  erasure semantics that bound sparse/no-match `events.list`,
+  `events.aggregate`, and session-counter reads, and (B) an exhaustive
+  runtime-wide PostgreSQL pool budget and namespaced/checksummed migration
+  identity across all six Harbor stores. Equal DSNs share one runtime-owned
+  pool closed once; distinct DSNs remain backward-compatible under one
+  aggregate budget; one logical database per runtime is the documented
+  default, with staged consolidation optional. Direct 5432 migration apply,
+  6432 pooled verify, wrong-ledger refusal, schema-classified non-destructive
+  cutover, Basic-4GB `max_connections=103` math, and parent handoff evidence
+  are binding.
+- **Evidence:** Planned. Focused implementation tests, real PostgreSQL
+  all-six lifecycle, separate-DSN and shared-pool accounting, cutover
+  reconciliation, hosted CI, independent Terra reviews, and release/tag
+  provenance are required. Local `make preflight` is deferred to hosted CI
+  per the emergency instruction and is not claimed here.
+- **Decision:** D-431. **Status:** Pending (release-blocking v1.29.1).
+
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
 ---
