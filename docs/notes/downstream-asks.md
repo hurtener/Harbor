@@ -1302,9 +1302,10 @@ documented default is one logical database per runtime, with consolidation
 optional at first hotfix boot and performed one runtime at a time.
 
 The operator fields are `postgres.pool.max_open`, `postgres.pool.max_idle`,
-`postgres.pool.conn_max_lifetime`, `postgres.pool.conn_max_idle_time`, and
-`postgres.migration.max_concurrent`. Defaults are 3 aggregate opens, 1 idle,
-5m lifetime, 30s finite idle-time, and 6 direct migration sessions. The
+`postgres.pool.conn_max_lifetime`, and `postgres.pool.conn_max_idle_time`.
+Defaults are 3 aggregate opens, 1 idle, 5m lifetime, and 30s finite idle-time.
+The six direct migration sessions in the budget are an operator/orchestrator
+rollout ceiling, not a Harbor runtime configuration field. The
 worst planned overlap is 9 runtimes × 2 generations × 3 = 54, plus 6 direct
 5432 apply sessions, 12 reserved for Pengui/capabilities, and a 25-connection
 operator reserve: 97 of 103, leaving 6 below the hard cap. Steady state is

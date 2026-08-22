@@ -33,15 +33,14 @@ postgres:
     max_idle: 1
     conn_max_lifetime: 5m
     conn_max_idle_time: 30s
-  migration:
-    max_concurrent: 6
 ```
 
 `postgres.pool.max_open` must be positive and is the aggregate open-permit
 ceiling. `postgres.pool.max_idle` must be non-negative and is the aggregate
 idle target. `conn_max_lifetime` and `conn_max_idle_time` are finite; the
-production default idle lifetime is 30 seconds. `postgres.migration.max_concurrent`
-is the maximum number of direct migration sessions across an operator rollout.
+production default idle lifetime is 30 seconds. The six direct migration
+sessions in the budget below are an operator/orchestrator rollout ceiling,
+not a Harbor runtime configuration key.
 
 The Basic-4GB connection proof is nine runtimes × two generations × three
 open permits = 54, plus six direct migration sessions, 12 reserved

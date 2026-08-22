@@ -187,12 +187,13 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       `postgres.pool.max_idle` (aggregate idle target),
       `postgres.pool.conn_max_lifetime`, and
       `postgres.pool.conn_max_idle_time` (finite, non-zero production
-      default), plus `postgres.migration.max_concurrent` for bounded direct
-      apply sessions. Defaults are max-open `3`, max-idle `1`, lifetime `5m`,
-      idle-time `30s`, and migration concurrency `6`; values are validated,
-      observable, and cannot be negative, zero where forbidden, or silently
-      expanded per store. Existing per-store `dsn` and `migration_mode` keys
-      remain accepted.
+      default). Defaults are max-open `3`, max-idle `1`, lifetime `5m`, and
+      idle-time `30s`; values are validated, observable, and cannot be
+      negative, zero where forbidden, or silently expanded per store. The
+      six direct 5432 migration sessions in the budget below are an
+      operator/orchestrator rollout ceiling, not a runtime configuration
+      field. Existing per-store `dsn` and `migration_mode` keys remain
+      accepted.
 - [ ] **Basic-4GB budget proof:** the operator docs and deterministic
       pool-accounting/many-runtime test pin this worst planned overlap for
       `max_connections=103`: nine runtimes × two generations × 3 open permits
@@ -302,8 +303,6 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       max_idle: 1
       conn_max_lifetime: 5m
       conn_max_idle_time: 30s
-    migration:
-      max_concurrent: 6
   ```
 
   All fields are restart-required. `max_open` and `max_idle` are aggregate

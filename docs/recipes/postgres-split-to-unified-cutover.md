@@ -26,11 +26,11 @@ postgres:
     max_idle: 1
     conn_max_lifetime: 5m
     conn_max_idle_time: 30s
-  migration:
-    max_concurrent: 6
 ```
 
-The planned worst overlap is nine runtimes × two generations × three open
+The six direct migration sessions below are an operator/orchestrator rollout
+ceiling, not a Harbor runtime configuration field. The planned worst overlap
+is nine runtimes × two generations × three open
 permits = 54, plus six direct migration sessions, 12 connections reserved for
 Pengui/capabilities, and a 25-connection operator reserve: 97 total. Six
 connections remain below the hard cap. Steady state is 70. `max_open` is not

@@ -13650,10 +13650,11 @@ independent pool or a bare migration ledger.
 
 The additive restart-required operator fields are
 `postgres.pool.max_open`, `postgres.pool.max_idle`,
-`postgres.pool.conn_max_lifetime`, `postgres.pool.conn_max_idle_time`, and
-`postgres.migration.max_concurrent`. Safe defaults are 3 aggregate open
-permits, 1 aggregate idle target, 5m maximum lifetime, 30s finite idle time,
-and 6 direct migration sessions. For the existing Render Basic-4GB
+`postgres.pool.conn_max_lifetime`, and `postgres.pool.conn_max_idle_time`.
+Safe defaults are 3 aggregate open permits, 1 aggregate idle target, 5m
+maximum lifetime, and 30s finite idle time. The six direct migration sessions
+in the following budget are an operator/orchestrator rollout ceiling, not a
+Harbor runtime configuration field. For the existing Render Basic-4GB
 `max_connections=103` ceiling, the worst planned overlap is nine runtimes ×
 two generations × 3 = 54, plus six direct 5432 migration sessions, a fixed
 12-connection Pengui/capabilities allowance, and a 25-connection operator
