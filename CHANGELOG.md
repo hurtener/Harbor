@@ -36,9 +36,20 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release evidence
 
-- D-432 / HA-69 implementation candidate. Hosted CI, two independent Terra
-  High reviews, immutable annotated tag/release provenance, checksums, and
-  post-tag cleanup are recorded here when the release lifecycle completes.
+- D-432 / HA-69 release evidence: implementation PR #728 merged as
+  `bbc058e6dcfa30b0903f5546d394bcf2860ba836`; two independent Terra High
+  reviews are P0/P1 clear. Hosted candidate run `32582607218` completed
+  successfully, including Go on Ubuntu/macOS, exact real PostgreSQL
+  StateStore acceptance, Playwright, and the corrected live preflight gate.
+  The immutable annotated `v1.29.2` tag object
+  `ebe0a907b92a745887fa469bb6e62cd018c53062` peels to
+  `bbc058e6dcfa30b0903f5546d394bcf2860ba836`; release workflow
+  `32584633258` succeeded and the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.2)
+  carries 13 assets, verified aggregate and six sidecar checksums, and six
+  verified GitHub attestations. The native darwin/arm64 artifact reports
+  v1.29.2, Protocol 0.1.0, build `bbc058e6`; the post-tag scaffold pin and
+  golden fixtures are complete. Local `make preflight` was never run, and
+  downstream fleet cutover is not claimed.
 
 ## [1.29.1] — 2026-08-22
 

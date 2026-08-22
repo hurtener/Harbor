@@ -1002,13 +1002,24 @@ real two-client race under `-race`.
   metadata/body integrity checks, and fail-closed malformed/wrong-scope
   behavior.
 - **Evidence:** The phase adds a realistic multi-run in-memory fixture and a
-  real PostgreSQL StateStore fixture under `HARBOR_PG_DSN`. Hosted CI selects
-  the exact Postgres test and requires its PASS line; a missing selector or
-  SKIP fails the `state-postgres` job. Release and provenance evidence are
-  recorded here when the immutable v1.29.2 tag is cut; local `make preflight`
-  is not claimed.
-- **Decision:** D-432. **Status:** Planned — release-blocking v1.29.2
-  candidate; extends HA-69 without allocating a new ask identifier.
+  real PostgreSQL StateStore fixture under `HARBOR_PG_DSN`. Focused durable
+  race/vet checks and phase-251/252 smoke checks pass; two independent Terra
+  High reviews report P0/P1 clear. Implementation PR #728 merged as
+  `bbc058e6dcfa30b0903f5546d394bcf2860ba836`. Hosted candidate run
+  `32582607218` completed successfully, including Go on Ubuntu/macOS, the
+  exact PostgreSQL StateStore acceptance, Playwright, and corrected live
+  preflight; the job requires the exact Postgres PASS line and rejects skips.
+  The immutable annotated `v1.29.2` tag object is
+  `ebe0a907b92a745887fa469bb6e62cd018c53062` and peels to
+  `bbc058e6dcfa30b0903f5546d394bcf2860ba836`; release workflow
+  `32584633258` succeeded, publishing [13 release assets](https://github.com/hurtener/Harbor/releases/tag/v1.29.2)
+  with verified checksums and six attestations. The native darwin/arm64
+  artifact reports v1.29.2, Protocol 0.1.0, build `bbc058e6`; the post-tag
+  scaffold pin/golden cleanup is complete. Local `make preflight` was never
+  run and no downstream fleet cutover is claimed.
+- **Decision:** D-432. **Status:** Shipped (v1.29.2; immutable tag, release,
+  provenance, checksums, hosted gates, and post-tag scaffold pin verified);
+  extends HA-69 without allocating a new ask identifier.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
