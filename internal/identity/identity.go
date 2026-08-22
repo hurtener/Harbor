@@ -61,6 +61,26 @@ type Quadruple struct {
 	RunID string
 }
 
+const (
+	internalCoordinationTenant  = "__harbor_internal__"
+	internalCoordinationUser    = "events"
+	internalCoordinationSession = "global_sequence_authority"
+)
+
+// IsInternalCoordination reports whether id is the exact reserved principal.
+func IsInternalCoordination(id Identity) bool {
+	return id.TenantID == internalCoordinationTenant &&
+		id.UserID == internalCoordinationUser &&
+		id.SessionID == internalCoordinationSession
+}
+
+// InternalCoordinationQuadruple returns the reserved principal with no run.
+func InternalCoordinationQuadruple() Quadruple {
+	return Quadruple{Identity: Identity{
+		TenantID: internalCoordinationTenant, UserID: internalCoordinationUser, SessionID: internalCoordinationSession,
+	}}
+}
+
 var (
 	// ErrIdentityMissing — the context carries no Identity AND no
 	// Quadruple. Both MustFrom and MustQuadrupleFrom panic with

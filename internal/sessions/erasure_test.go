@@ -60,6 +60,7 @@ func newErasureFixture(t *testing.T, probe sessions.RunningProbe) erasureFixture
 		Driver:                   "durable",
 		MaxSubscribersPerSession: 16,
 		SubscriberBufferSize:     256,
+		LegacyWritersDrained:     true,
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,

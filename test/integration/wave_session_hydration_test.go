@@ -91,6 +91,7 @@ func waveDurableCfg() config.EventsConfig {
 		IdleTimeout:              time.Minute,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}
 }
 

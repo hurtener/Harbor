@@ -3,7 +3,7 @@ harbor is the command-line entry point for the Harbor agent runtime SDK.
 Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
-  Production          serve, token
+  Production          serve, token, postgres
   Run inspection      inspect-events, inspect-runs, inspect-topology,
                       composition-preview, tui
   Build information   version
@@ -25,6 +25,7 @@ Available Commands:
   inspect-events      tail or filter the event bus of a running Runtime
   inspect-runs        list recent runs and inspect a run's trajectory
   inspect-topology    render a run's node graph as ASCII
+  postgres            inspect and operate PostgreSQL persistence
   scaffold            generate a new agent skeleton from a template
   serve               serve the headless Runtime + Protocol surface behind a production JWKS verifier
   skill               manage the runtime skill catalog (import / rm)

@@ -68,6 +68,8 @@ events:
   idle_timeout: 60s
   drop_window: 1s
   replay_buffer_size: 10000
+  # Durable authority creation (even an empty scan) requires writer drain plus:
+  # legacy_writers_drained: true
 
 sessions:
   idle_ttl: 24h

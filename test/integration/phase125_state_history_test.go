@@ -67,6 +67,7 @@ func newStateHistoryStack(t *testing.T) *stateHistoryStack {
 		IdleTimeout:              time.Minute,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}, red, st)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

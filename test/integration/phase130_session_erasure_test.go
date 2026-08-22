@@ -94,6 +94,7 @@ func newPhase130DepsWithRegistry(t *testing.T) (*phase130Deps, *sessions.Registr
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         256,
+		LegacyWritersDrained:     true,
 	}, red, store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

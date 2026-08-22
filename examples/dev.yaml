@@ -164,6 +164,8 @@ events:
   idle_timeout: 60s
   drop_window: 1s
   replay_buffer_size: 10000
+  # Durable authority creation requires an acknowledged stop-before-start
+  # drain even for an empty scan; inmem development does not set it.
 
 sessions:
   idle_ttl: 24h

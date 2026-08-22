@@ -64,8 +64,14 @@ func TestMigrate_VerifyMode_RequiresPreappliedLedger(t *testing.T) {
 	if err == nil {
 		t.Fatal("verify mode accepted a clean schema")
 	}
-	if !strings.Contains(err.Error(), "verify migrations") || !strings.Contains(err.Error(), "schema_migrations") {
-		t.Fatalf("verify clean-schema error = %v", err)
+	message := err.Error()
+	for _, want := range []string{
+		`verify requires namespaced harbor_schema_migrations for subsystem "state"`,
+		"direct PostgreSQL 5432",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("verify clean-schema error = %v, missing %q", err, want)
+		}
 	}
 
 	applyStore, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})

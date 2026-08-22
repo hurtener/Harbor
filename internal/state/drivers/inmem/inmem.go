@@ -129,7 +129,7 @@ func (d *driver) Save(_ context.Context, r state.StateRecord) error {
 		}
 	}
 
-	stored := r
+	stored := state.StoredRecord(r)
 	stored.Bytes = cloneBytes(r.Bytes)
 	if stored.UpdatedAt.IsZero() {
 		stored.UpdatedAt = time.Now()
@@ -169,6 +169,52 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 		}
 	}
 	return d.saveLocked(next)
+}
+
+// SaveBatchIf atomically verifies all predicates and writes under one mutex.
+func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, expectation := range expectations {
+		rec, ok := d.records[keyFor(expectation.Identity, expectation.Kind)]
+		if expectation.ExpectedEventID == "" {
+			if ok {
+				return fmt.Errorf("%w: slot is present", state.ErrConditionFailed)
+			}
+			continue
+		}
+		if !ok || rec.ID != expectation.ExpectedEventID {
+			return fmt.Errorf("%w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+	}
+	// Preflight all globally unique EventIDs before the first mutation so an
+	// idempotency conflict cannot partially apply the batch.
+	for _, write := range writes {
+		if prevKey, seen := d.eventIdx[write.ID]; seen {
+			prev := d.records[prevKey]
+			if prevKey != keyFor(write.Identity, write.Kind) || !bytes.Equal(prev.Bytes, write.Bytes) || prev.Version != write.Version {
+				return fmt.Errorf("%w: EventID %q conflicts", state.ErrIdempotencyConflict, write.ID)
+			}
+		}
+	}
+	for _, write := range writes {
+		if err := d.saveLocked(write); err != nil {
+			return err // unreachable after the complete preflight above
+		}
+	}
+	return nil
 }
 
 // DeleteIf implements StateStore's exact-generation conditional delete. The
@@ -239,7 +285,7 @@ func (d *driver) saveLocked(r state.StateRecord) error {
 	if existing, ok := d.records[key]; ok && existing.ID != r.ID {
 		delete(d.eventIdx, existing.ID)
 	}
-	stored := r
+	stored := state.StoredRecord(r)
 	stored.Bytes = cloneBytes(r.Bytes)
 	if stored.UpdatedAt.IsZero() {
 		stored.UpdatedAt = time.Now()
@@ -306,8 +352,8 @@ func (d *driver) Delete(_ context.Context, q identity.Quadruple, kind string) er
 	if err := state.ValidateIdentity(q); err != nil {
 		return err
 	}
-	if kind == "" {
-		return state.ErrInvalidRecord
+	if err := state.ValidateExternalKind(kind); err != nil {
+		return err
 	}
 
 	d.mu.Lock()
@@ -340,6 +386,9 @@ func (d *driver) DeleteScope(_ context.Context, id identity.Identity) (int, erro
 	deleted := 0
 	for key, rec := range d.records {
 		if key.Tenant != id.TenantID || key.User != id.UserID || key.Session != id.SessionID {
+			continue
+		}
+		if identity.IsInternalCoordination(id) && state.IsInternalKind(key.Kind) {
 			continue
 		}
 		delete(d.records, key)

@@ -70,6 +70,7 @@ func newPhase162Stack(t *testing.T) *phase162Stack {
 		IdleTimeout:              time.Minute,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}, red, st)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

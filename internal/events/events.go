@@ -836,6 +836,9 @@ func ValidateEvent(ev Event) error {
 	if ev.Identity.TenantID == "" || ev.Identity.UserID == "" || ev.Identity.SessionID == "" {
 		return wrap(ErrIdentityRequired, "type=%q", string(ev.Type))
 	}
+	if identity.IsInternalCoordination(ev.Identity.Identity) {
+		return wrap(ErrIdentityRequired, "type=%q: reserved internal coordination identity", string(ev.Type))
+	}
 	if ev.Sequence != 0 {
 		return wrap(ErrSequenceProvided, "type=%q sequence=%d", string(ev.Type), ev.Sequence)
 	}

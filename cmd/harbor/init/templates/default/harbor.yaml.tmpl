@@ -92,6 +92,16 @@ llm:
 #     Voice/tone rules, hard negatives, safety notes.
 #   reasoning_replay: never   # or `text` to round-trip the trace
 
+# Runtime-wide PostgreSQL connection budget. Equal DSNs share one pool;
+# distinct subsystem DSNs share this aggregate cap during staged rollout.
+#
+# postgres:
+#   pool:
+#     max_open: 3
+#     max_idle: 1
+#     conn_max_lifetime: 5m
+#     conn_max_idle_time: 30s
+
 # memory — multi-turn context across runs in a session.
 # Strategies: none (default), truncation, rolling_summary.
 # Backends: inmem (default), sqlite, postgres (need `dsn:`).

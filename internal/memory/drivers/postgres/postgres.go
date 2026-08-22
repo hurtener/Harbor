@@ -49,6 +49,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/memory/strategy"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 )
 
 // driverName is the name under which this driver self-registers with
@@ -63,9 +64,10 @@ const pgxDriverName = "pgx"
 // lives in a future config knob, not here. Values mirror the
 // StateStore + ArtifactStore drivers for consistency.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // New constructs a Postgres-backed `memory.MemoryStore` against
@@ -93,11 +95,6 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		return nil, errors.New("memory/postgres: cfg.DSN is required")
 	}
 
-	strategyName := cfg.Strategy
-	if strategyName == "" {
-		strategyName = memory.StrategyNone
-	}
-
 	db, err := sql.Open(pgxDriverName, cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("memory/postgres: sql.Open: %w", err)
@@ -105,18 +102,49 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, deps, db, true)
+}
+
+// NewWithDB constructs a memory store over a runtime-owned PostgreSQL pool.
+// The returned store borrows db; the runtime pool manager closes it.
+func NewWithDB(cfg memory.ConfigSnapshot, deps memory.Deps, db *sql.DB) (memory.MemoryStore, error) {
+	if db == nil {
+		return nil, errors.New("memory/postgres: injected db is required")
+	}
+	return newWithDB(cfg, deps, db, false)
+}
+
+func newWithDB(cfg memory.ConfigSnapshot, deps memory.Deps, db *sql.DB, ownsDB bool) (memory.MemoryStore, error) {
+	if deps.Bus == nil {
+		return nil, fmt.Errorf("memory/postgres: deps.Bus is required")
+	}
+	if deps.State == nil {
+		return nil, fmt.Errorf("memory/postgres: deps.State is required (strategy executor persists through it)")
+	}
+	if cfg.DSN == "" {
+		return nil, errors.New("memory/postgres: cfg.DSN is required")
+	}
+	strategyName := cfg.Strategy
+	if strategyName == "" {
+		strategyName = memory.StrategyNone
+	}
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
 	// loudly at boot, not on the first AddTurn.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("memory/postgres: ping: %w", err)
 	}
 
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
 
@@ -135,13 +163,16 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		RetrievalTopK:      cfg.RetrievalTopK,
 	})
 	if err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
 
 	return &driver{
 		strategy: strategyName,
 		db:       db,
+		ownsDB:   ownsDB,
 		bus:      deps.Bus,
 		exec:     exec,
 	}, nil
@@ -158,6 +189,7 @@ func init() {
 type driver struct {
 	strategy memory.Strategy
 	db       *sql.DB
+	ownsDB   bool
 	bus      events.EventBus
 	exec     strategy.StrategyExecutor
 
@@ -270,7 +302,10 @@ func (d *driver) Close(ctx context.Context) error {
 		return nil
 	}
 	execErr := d.exec.Close(ctx)
-	dbErr := d.db.Close()
+	var dbErr error
+	if d.ownsDB {
+		dbErr = d.db.Close()
+	}
 	if dbErr != nil {
 		dbErr = fmt.Errorf("memory/postgres: db.Close: %w", dbErr)
 	}

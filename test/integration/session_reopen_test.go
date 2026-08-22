@@ -96,6 +96,7 @@ func newReopenStack(t *testing.T, opts ...sessions.Option) *reopenStack {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         256,
+		LegacyWritersDrained:     true,
 	}, red, store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

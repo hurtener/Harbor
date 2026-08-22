@@ -90,6 +90,85 @@ type Factory func() (state.StateStore, func())
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
+	t.Run("SaveBatchIf_AtomicValidationAndRollback", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		a := state.StateRecord{ID: "01HABXXX00000000BA", Identity: tripleA(), Kind: "batch.a", Bytes: []byte("a")}
+		b := state.StateRecord{ID: "01HABXXX00000000BB", Identity: tripleA(), Kind: "batch.b", Bytes: []byte("b")}
+		expect := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind}, {Identity: b.Identity, Kind: b.Kind}}
+		if err := s.SaveBatchIf(ctx, expect, []state.StateRecord{a, b}); err != nil {
+			t.Fatalf("SaveBatchIf initial: %v", err)
+		}
+		for _, rec := range []state.StateRecord{a, b} {
+			got, err := s.Load(ctx, rec.Identity, rec.Kind)
+			if err != nil || got.ID != rec.ID {
+				t.Fatalf("Load(%s) = %+v, %v", rec.Kind, got, err)
+			}
+		}
+		nextA := state.StateRecord{ID: "01HABXXX00000000BC", Identity: a.Identity, Kind: a.Kind, Bytes: []byte("next-a")}
+		nextB := state.StateRecord{ID: "01HABXXX00000000BD", Identity: b.Identity, Kind: b.Kind, Bytes: []byte("next-b")}
+		stale := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}, {Identity: b.Identity, Kind: b.Kind, ExpectedEventID: "stale"}}
+		if err := s.SaveBatchIf(ctx, stale, []state.StateRecord{nextA, nextB}); !errors.Is(err, state.ErrConditionFailed) {
+			t.Fatalf("stale batch = %v, want ErrConditionFailed", err)
+		}
+		got, err := s.Load(ctx, a.Identity, a.Kind)
+		if err != nil || got.ID != a.ID {
+			t.Fatalf("partial write after failed batch = %+v, %v", got, err)
+		}
+		duplicate := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}, {Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}}
+		if err := s.SaveBatchIf(ctx, duplicate, []state.StateRecord{nextA}); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("duplicate expectations validation = %v", err)
+		}
+		if err := s.SaveBatchIf(ctx, []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}}, []state.StateRecord{nextB}); !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("unconditioned write = %v, want ErrInvalidRecord", err)
+		}
+	})
+
+	t.Run("InternalNamespace_ProtectedFromExternalMutationAndDeleteScope", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		q := identity.InternalCoordinationQuadruple()
+		kind := state.InternalKindPrefix + "conformance/authority"
+		internal := state.NewInternalRecord("01HABXXX00000000BI", q, kind, []byte("authority"))
+		if err := s.Save(ctx, internal); err != nil {
+			t.Fatalf("seed internal: %v", err)
+		}
+		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000000BJ", Identity: q, Kind: kind, Bytes: []byte("collision")}); !errors.Is(err, state.ErrReservedKind) {
+			t.Fatalf("external internal-kind Save = %v, want ErrReservedKind", err)
+		}
+		if err := s.Save(ctx, state.StateRecord{ID: "01HABXXX00000000BK", Identity: q, Kind: "ordinary", Bytes: []byte("collision")}); !errors.Is(err, state.ErrReservedIdentity) {
+			t.Fatalf("external sentinel-identity Save = %v, want ErrReservedIdentity", err)
+		}
+		if _, err := s.DeleteScope(ctx, q.Identity); err != nil {
+			t.Fatalf("DeleteScope sentinel identity: %v", err)
+		}
+		got, err := s.Load(ctx, q, kind)
+		if err != nil || got.ID != internal.ID {
+			t.Fatalf("internal authority after DeleteScope = %+v, %v", got, err)
+		}
+		if err := s.Delete(ctx, q, kind); !errors.Is(err, state.ErrReservedKind) {
+			t.Fatalf("external Delete internal kind = %v, want ErrReservedKind", err)
+		}
+		deleted, err := s.DeleteIf(ctx, state.InternalSlotExpectation(q, kind, internal.ID))
+		if err != nil || !deleted {
+			t.Fatalf("authorized internal DeleteIf = %v, %v", deleted, err)
+		}
+
+		ordinary := tripleA()
+		legacy := state.NewInternalRecord("01HABXXX00000000BL", ordinary, kind, []byte("legacy ordinary scope"))
+		if err := s.Save(ctx, legacy); err != nil {
+			t.Fatalf("seed legacy ordinary internal-kind row: %v", err)
+		}
+		if n, err := s.DeleteScope(ctx, ordinary.Identity); err != nil || n != 1 {
+			t.Fatalf("DeleteScope legacy ordinary row = %d, %v; want 1", n, err)
+		}
+		if _, err := s.Load(ctx, ordinary, kind); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("legacy ordinary internal-kind row survived erasure: %v", err)
+		}
+	})
+
 	t.Run("SaveIf_MatchingStaleAbsentAndMultiSlot", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()

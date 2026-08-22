@@ -56,6 +56,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 )
 
 // driverName is the name under which this driver self-registers.
@@ -67,9 +68,10 @@ const pgxDriverName = "pgx"
 
 // Connection-pool defaults. Mirrors the StateStore choices.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // Postgres SQLSTATE codes mapped at the boundary so callers compare
@@ -106,22 +108,40 @@ func New(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, db, true)
+}
+
+// NewWithDB constructs an artifact store over a runtime-owned pool. The
+// store borrows db; the runtime pool manager owns its close.
+func NewWithDB(cfg config.ArtifactsConfig, db *sql.DB) (artifacts.ArtifactStore, error) {
+	if db == nil {
+		return nil, errors.New("artifacts/postgres: injected db is required")
+	}
+	return newWithDB(cfg, db, false)
+}
+
+func newWithDB(cfg config.ArtifactsConfig, db *sql.DB, ownsDB bool) (artifacts.ArtifactStore, error) {
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
 	// loudly at boot, not on the first Put.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("artifacts/postgres: ping: %w", err)
 	}
 
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
 
-	return &driver{db: db}, nil
+	return &driver{db: db, ownsDB: ownsDB}, nil
 }
 
 func init() {
@@ -135,6 +155,7 @@ func init() {
 // state lives in ctx).
 type driver struct {
 	db     *sql.DB
+	ownsDB bool
 	closed atomic.Bool
 }
 
@@ -441,6 +462,9 @@ func (d *driver) List(ctx context.Context, filter artifacts.ArtifactScope) ([]ar
 // is idempotent — repeat calls are safe and return nil.
 func (d *driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !d.ownsDB {
 		return nil
 	}
 	if err := d.db.Close(); err != nil {

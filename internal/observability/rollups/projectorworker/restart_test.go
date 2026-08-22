@@ -29,6 +29,7 @@ func durableBusCfg() config.EventsConfig {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               1 * time.Second,
 		ReplayBufferSize:         64,
+		LegacyWritersDrained:     true,
 	}
 }
 

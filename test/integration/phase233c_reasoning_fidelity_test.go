@@ -166,6 +166,9 @@ func phase233cConfig(t *testing.T, providerURL string) *config.Config {
 	dsn := filepath.Join(t.TempDir(), "phase233c-state.sqlite")
 	cfg.State = config.StateConfig{Driver: "sqlite", DSN: dsn}
 	cfg.Events.Driver = "durable"
+	// The fresh isolated StateStore starts without legacy sequence authority;
+	// this restart fixture explicitly acknowledges the pre-start writer drain.
+	cfg.Events.LegacyWritersDrained = true
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("phase233c config validate: %v", err)
 	}

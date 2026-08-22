@@ -174,6 +174,7 @@ func TestE2E_Phase163_EventsRetentionHorizon_BothDrivers(t *testing.T) {
 		IdleTimeout:              200 * time.Millisecond,
 		DropWindow:               50 * time.Millisecond,
 		ReplayBufferSize:         16,
+		LegacyWritersDrained:     true,
 	}
 	oldest := phase163Now.AddDate(0, 0, -2)
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}

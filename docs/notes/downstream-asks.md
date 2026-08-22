@@ -43,6 +43,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
+| HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | Planned — phase 251 / D-431; HA-13 historical collision recorded |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -84,7 +85,24 @@ exact run-start composition, and shared production/devstack bootstrap at the
  configured and unavailable wiring postures; broad preflight/full suites were
  not run locally and hosted CI evidence remains pending. This register records
  Harbor implementation evidence only and does not claim downstream acceptance.
- Both asks are **framework-framed** and Harbor-local.
+Both asks are **framework-framed** and Harbor-local.
+
+**HA-13 collision and HA-69 emergency filing.** The current canonical
+register already consumes HA-13 for `flows.runs.list` (the historical
+deferred global-sequence-index note in Harbor's older decision history does
+not reserve that identifier). Reusing HA-13 would make two unrelated asks
+share one handle, so the verified next free Harbor-local identifier is HA-69.
+HA-69 is one release-blocking v1.29.1 ask with two coupled legs: (A) the
+metadata-first durable event index that fixes `events.list`,
+`events.aggregate`, and session-counter scan amplification with safe
+atomicity/backfill/erasure; and (B) runtime-wide connection budgeting,
+shared-pool ownership, namespaced/checksummed migration ledgers, and safe
+split-to-unified cutover across state, memory, artifacts, skills,
+sessions/turns, and observability/rollups. The existing Basic-4GB PostgreSQL
+limit (`max_connections=103`) is a binding deployment constraint; no plan
+upgrade or Harbor-side fleet mutation is part of this ask. Phase 251 / D-431
+is planned and remains pending implementation, reviews, hosted CI, and the
+v1.29.1 release lifecycle.
 
 ---
 
@@ -1245,6 +1263,87 @@ Broad release gates remain outside this local evidence and hosted CI is
 pending; this ask's register entry does not claim downstream acceptance.
 
 ---
+
+## HA-69 — v1.29.1 event-index and six-store PostgreSQL fleet safety
+
+**Priority:** Release blocker. **Size:** large. **State:** Planned — Phase 251
+/ D-431. This is one emergency hotfix ask with an event-read leg and a
+PostgreSQL fleet-safety leg; the latter is not complete if it omits any
+Harbor-owned PostgreSQL projection.
+
+**Observed production failure.** The shared Render PostgreSQL cluster reports
+`max_connections=103`, 96 occupied connections at the incident sample, 72
+idle, 0 active, 0 idle-in-transaction, and `idle_session_timeout=0`.
+PgBouncer port 6432 returns SQLSTATE 53300 (`too many clients`). Released
+v1.29.0 opens independent pools for state, memory, artifacts, skills,
+sessions/turns, and observability/rollups; each historically allowed 25 open,
+5 idle, and a 5-minute lifetime with no finite idle-time budget. Graceful
+shutdown closes stores, so this is steady-state pool multiplication/retention,
+not merely a missing close. The v1.29.1 default must fit the existing
+Basic-4GB instance and must not require a Render plan upgrade.
+
+**Leg A — bounded durable event reads.** The released durable event path can
+load all 25,000 event bodies for a sparse 168-match or zero-match one-hour
+window, and the session counter enrichment repeats the class per visible row.
+The fix is a first-class exact metadata index over the canonical durable
+sequence. It selects identity/type/time/cursor candidates before payload load,
+preserves D-294/D-305 filters, audit, redaction, erasure, cursor, and honest
+partial/truncation semantics, and uses atomic publication or a readiness
+watermark. Existing rows require crash-safe idempotent backfill and catch-up;
+no stale index may be treated as an empty history. Rollups consume the same
+canonical sequence and remain D-426 best-effort derived state.
+
+**Leg B — six-store runtime budget and migration identity.** All six stores —
+state, memory, artifacts, skills, sessions/turns, and observability/rollups —
+participate in one runtime-owned PostgreSQL pool/migration registry. Equal
+canonical DSNs share one `*sql.DB` closed once; distinct DSNs remain a valid
+stage-one topology but share the runtime-wide aggregate permits. The
+documented default is one logical database per runtime, with consolidation
+optional at first hotfix boot and performed one runtime at a time.
+
+The operator fields are `postgres.pool.max_open`, `postgres.pool.max_idle`,
+`postgres.pool.conn_max_lifetime`, and `postgres.pool.conn_max_idle_time`.
+Defaults are 3 aggregate opens, 1 idle, 5m lifetime, and 30s finite idle-time.
+The six direct migration sessions in the budget are an operator/orchestrator
+rollout ceiling, not a Harbor runtime configuration field. The
+worst planned overlap is 9 runtimes × 2 generations × 3 = 54, plus 6 direct
+5432 apply sessions, 12 reserved for Pengui/capabilities, and a 25-connection
+operator reserve: 97 of 103, leaving 6 below the hard cap. Steady state is
+70. A deterministic nine-runtime accounting test rejects over-budget
+topologies and exercises same-DSN and distinct-DSN deployments.
+
+Migration apply is direct/session-affine PostgreSQL on 5432; steady ordinary
+traffic and read-only verify may use transaction-pooled PgBouncer on 6432.
+Applying through an unproven transaction pool fails loudly. Each ledger and
+lock is namespaced and checksum-bound to subsystem, migration filename, and
+version. Verify proves the expected ledger and required schema objects.
+Correctly-shaped legacy stores may be adopted only after schema/checksum
+inspection. The exact false-readiness fixture — `version=1` plus
+`state_records`, no `memory_state`, and memory `migration_mode=verify` — must
+fail with expected subsystem, observed tables/ledger, and remediation. Split
+sources are classified by actual schema rather than DSN/env names; the
+MPR/TAA-like wrong memory sources are treated as empty/misprovisioned unless
+stronger evidence identifies preserved data.
+
+**Cutover and evidence.** A dry-run/non-destructive tool or exact procedure
+freezes or drains writes, applies destination migrations directly, copies all
+six compatible projections, and emits source/destination row counts plus
+canonical content hashes. It reconciles state, memory, artifact bodies,
+skill revisions, identities, receipts, durable turn ordering/cursors/
+activity/usage, and rollup watermarks before switching one runtime to the
+unified DSN and 6432 verify. Harbor never deletes or reconfigures fleet
+databases; old sources remain available for rollback and independent operator
+removal.
+
+**Release evidence required.** The ask is complete only after focused tests,
+real PostgreSQL all-six boot/restart/idempotence, shared-pool cap/close-once,
+separate-DSN compatibility, migration identity/adversarial tests, cutover
+reconciliation, race/PgBouncer tests where available, hosted CI, two
+independent Terra High reviews, immutable v1.29.1 tag/release/provenance and
+checksums, post-tag version pin/cleanup, and a parent handoff containing the
+exact fields, commands, compatibility notes, tag commit, and checksums. Local
+preflight is deferred to hosted CI by emergency instruction and must not be
+reported as passed.
 
 ## Posture signals from the downstream team
 

@@ -878,6 +878,42 @@ func (b *bus) ListWindow(_ context.Context, q events.EventListQuery) (events.Eve
 	return page, nil
 }
 
+// ListWindowMetadata serves the same bounded page using the typed metadata
+// projection. In-memory events already reside in process memory, but keeping
+// this capability aligned with the durable driver makes aggregate and session
+// counter consumers use one contract across all replay-capable drivers.
+func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (events.MetadataListPage, error) {
+	if b.closed.Load() {
+		return events.MetadataListPage{}, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.MetadataListPage{}, err
+	}
+	if b.ringCap == 0 {
+		return events.MetadataListPage{}, events.ErrReplayUnavailable
+	}
+	if !q.Admin && !events.WireFilterHasFullTriple(q.Filter) {
+		return events.MetadataListPage{}, events.ErrIdentityScopeRequired
+	}
+	if q.Admin {
+		b.emitAdminScopeUsedAndFanOut(events.Filter{
+			Tenant:  events.WireFilterFirst(q.Filter.TenantIDs),
+			User:    events.WireFilterFirst(q.Filter.UserIDs),
+			Session: events.WireFilterFirst(q.Filter.SessionIDs),
+		})
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	evicted := b.evicted
+	b.publishMu.Unlock()
+	page, err := events.MetadataListWindowFromSnapshot(snapshot, q.Before, q.Limit, q.Filter)
+	if err != nil {
+		return events.MetadataListPage{}, err
+	}
+	page.Truncated = evicted
+	return page, nil
+}
+
 // emitAdminScopeUsedAndFanOut surfaces admin-scope use on the bus so
 // abuse is retroactively detectable — mirrors the Replay admin path.
 func (b *bus) emitAdminScopeUsedAndFanOut(f events.Filter) {
@@ -1190,11 +1226,12 @@ func (s *subscription) resetDropWindow(now time.Time) {
 // Compile-time assertion that bus implements events.EventBus,
 // events.Replayer AND events.HistoryReplayer.
 var (
-	_ events.EventBus         = (*bus)(nil)
-	_ events.Replayer         = (*bus)(nil)
-	_ events.HistoryReplayer  = (*bus)(nil)
-	_ events.Fencer           = (*bus)(nil)
-	_ events.ProjectionSource = (*bus)(nil)
+	_ events.EventBus              = (*bus)(nil)
+	_ events.Replayer              = (*bus)(nil)
+	_ events.HistoryReplayer       = (*bus)(nil)
+	_ events.EventMetadataReplayer = (*bus)(nil)
+	_ events.Fencer                = (*bus)(nil)
+	_ events.ProjectionSource      = (*bus)(nil)
 )
 
 // Compile-time assertion: subscription.Cancel is exported via the

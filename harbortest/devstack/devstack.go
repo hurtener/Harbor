@@ -1146,7 +1146,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// (CLAUDE.md §17.6). The shared sealer / boot index / projection
 		// loops close through the stack's closer chain.
 		turnsProj, turnsSvc, turnsCloser, tErr := serve.OpenTurnsProjection(ctx, cfg, serve.TurnsProjectionDeps{
-			Bus: bus, Sessions: stack.Sessions, Tasks: stack.Tasks, Artifacts: stack.Artifacts, Logger: lg,
+			Bus: bus, Sessions: stack.Sessions, Tasks: stack.Tasks, Artifacts: stack.Artifacts, Logger: lg, PostgresPools: core.PostgresPools,
 		})
 		if tErr != nil {
 			return stack, tErr
@@ -1158,7 +1158,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		if turnsSvc != nil {
 			turnsStore = turnsSvc.Store()
 		}
-		rollupsStore, rollupsWorker, rollupsCloser, rErr := serve.OpenRollupsProjection(ctx, cfg, serve.RollupsProjectionDeps{Bus: bus, Logger: lg})
+		rollupsStore, rollupsWorker, rollupsCloser, rErr := serve.OpenRollupsProjection(ctx, cfg, serve.RollupsProjectionDeps{Bus: bus, Logger: lg, PostgresPools: core.PostgresPools})
 		if rErr != nil {
 			return stack, rErr
 		}

@@ -17,6 +17,12 @@ var migrationsFS embed.FS
 // runMigrations applies or read-only verifies the embedded migration ledger.
 // Apply mode takes the subsystem-stable session advisory lock; verify mode
 // performs no DDL, transaction, or lock and is safe through transaction pools.
-func runMigrations(ctx context.Context, db *sql.DB, mode sqlmigrate.Mode) error {
-	return sqlmigrate.RunPostgres(ctx, db, migrationsFS, "artifacts/postgres", "harbor-artifacts-migrations", mode)
+func runMigrations(ctx context.Context, db *sql.DB, dsn string, mode sqlmigrate.Mode) error {
+	return sqlmigrate.RunPostgresNamed(ctx, db, migrationsFS, sqlmigrate.PostgresMigrationSpec{
+		Subsystem:      "artifacts",
+		RequiredTables: []string{"artifacts_blobs"},
+		RequiredColumns: map[string][]string{
+			"artifacts_blobs": {"tenant", "user", "session", "task", "namespace", "id", "mime_type", "size_bytes", "filename", "sha256", "source_json", "bytes"},
+		},
+	}, "artifacts/postgres", "harbor-artifacts-migrations", dsn, mode)
 }

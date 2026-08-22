@@ -104,6 +104,24 @@ func TestValidateSaveIf_Cases(t *testing.T) {
 	}
 }
 
+func TestValidateSaveBatchIf_RejectsDuplicateAndUnconditionedWrites(t *testing.T) {
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
+	a := state.StateRecord{ID: "batch-a", Identity: q, Kind: "a"}
+	b := state.StateRecord{ID: "batch-b", Identity: q, Kind: "b"}
+	if err := state.ValidateSaveBatchIf(
+		[]state.SlotExpectation{{Identity: q, Kind: "a"}},
+		[]state.StateRecord{a, a},
+	); !errors.Is(err, state.ErrInvalidRecord) {
+		t.Fatalf("duplicate writes = %v, want ErrInvalidRecord", err)
+	}
+	if err := state.ValidateSaveBatchIf(
+		[]state.SlotExpectation{{Identity: q, Kind: "a"}},
+		[]state.StateRecord{a, b},
+	); !errors.Is(err, state.ErrInvalidRecord) {
+		t.Fatalf("unconditioned write = %v, want ErrInvalidRecord", err)
+	}
+}
+
 func TestValidateDeleteIf_Cases(t *testing.T) {
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}}
 	if err := state.ValidateDeleteIf(state.SlotExpectation{Identity: q, Kind: "slot", ExpectedEventID: "01HABXXX"}); err != nil {

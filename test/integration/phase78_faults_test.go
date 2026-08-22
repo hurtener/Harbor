@@ -103,6 +103,13 @@ func (f *faultyStateStore) SaveIf(ctx context.Context, expectations []state.Slot
 	return f.inner.SaveIf(ctx, expectations, next)
 }
 
+func (f *faultyStateStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if f.faulted() {
+		return errStateDisconnected
+	}
+	return f.inner.SaveBatchIf(ctx, expectations, writes)
+}
+
 func (f *faultyStateStore) FenceIf(ctx context.Context, expectation state.SlotExpectation, fn func() error) error {
 	if f.faulted() {
 		return errStateDisconnected

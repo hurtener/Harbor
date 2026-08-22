@@ -594,11 +594,12 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	var rollupsCloser func(context.Context) error
 	var turnsSvc *turnsService
 	turnsProj, turnsSvc, turnsCloser, err = OpenTurnsProjection(ctx, cfg, TurnsProjectionDeps{
-		Bus:       bus,
-		Sessions:  sessionRegistry,
-		Tasks:     taskReg,
-		Artifacts: artStore,
-		Logger:    opts.Logger,
+		Bus:           bus,
+		Sessions:      sessionRegistry,
+		Tasks:         taskReg,
+		Artifacts:     artStore,
+		Logger:        opts.Logger,
+		PostgresPools: stack.PostgresPools,
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -611,8 +612,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		turnsStore = turnsSvc.store
 	}
 	rollupsStore, rollupsWorker, rollupsCloser, err = OpenRollupsProjection(ctx, cfg, RollupsProjectionDeps{
-		Bus:    bus,
-		Logger: opts.Logger,
+		Bus:           bus,
+		Logger:        opts.Logger,
+		PostgresPools: stack.PostgresPools,
 	})
 	if err != nil {
 		closeAll(ctx)

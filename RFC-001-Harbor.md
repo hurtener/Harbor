@@ -1542,6 +1542,7 @@ type SlotExpectation struct {
 type StateStore interface {
     Save(ctx context.Context, r StateRecord) error                                    // idempotent on EventID; ErrIdempotencyConflict on same-ID-different-bytes
     SaveIf(ctx context.Context, expectations []SlotExpectation, next StateRecord) error // atomically compare every slot, then save one record; ErrConditionFailed on mismatch
+    SaveBatchIf(ctx context.Context, expectations []SlotExpectation, writes []StateRecord) error // atomically compare every slot and save every conditioned record; all-or-nothing
     Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
     LoadByEventID(ctx context.Context, eventID EventID) (StateRecord, error)
     Delete(ctx context.Context, id identity.Quadruple, kind string) error
@@ -1567,9 +1568,35 @@ absent slots so two independent clients have one winner. The shared StateStore
 conformance suite pins matching, stale, absent, multi-slot, identity,
 cancellation, close, and concurrent-reuse behavior on every driver.
 
+**Conditional atomic batch (D-431).** `SaveBatchIf` is mandatory on the same
+driver triad. Expectations and writes are non-empty and unique by
+`(Identity, Kind)`; every write slot must be explicitly conditioned. Duplicate
+write EventIDs are rejected. Predicate mismatch, idempotency conflict,
+cancellation, or driver failure commits no record. In-memory holds its mutex
+across complete validation and application; SQLite and Postgres use one
+transaction, with Postgres taking deterministic advisory locks for absent and
+present slots. Durable event publication uses this operation to advance the
+shared sequence authority and commit the immutable body and conditional
+session head together, preserving gap-free visibility across runtimes.
+The authority and durable session fences occupy a StateStore-reserved internal
+Kind namespace at one exact coordination identity which external records and
+scope deletion cannot reach. Prefix-shaped legacy rows at ordinary identities
+remain ordinary erasable session data. Every
+durable history/index/projection reader observes the persisted fence and
+rechecks before exposing results. Drivers report only genuinely ambiguous
+transaction commit acknowledgement as `ErrCommitOutcomeUnknown`; callers do
+not poison themselves on definite conflicts, cancellation, validation, or
+known rollback. Every authority-absent durable store, including an empty one,
+requires the explicit
+`events.legacy_writers_drained` adoption acknowledgement after every old event
+writer sharing the scope has stopped; an ordinary rolling/zero-downtime
+upgrade is not compliant, while migration-only non-writers may overlap.
+Already-authority restarts require no repeated acknowledgement.
+
 **Session-owned records and fence composition (D-400).** `SaveIf` compares
-many slots but writes exactly one `next` slot; it is not a multi-record
-transaction and cannot atomically enforce a collection cardinality. A
+many slots but writes exactly one `next` slot. `SaveBatchIf` is reserved for
+contracts that genuinely require several conditioned records to become
+visible together; neither operation by itself defines collection cardinality. A
 session-overlay or agent-owned session-personal-skill mutation therefore
 composes four exact expectations: its target record, the agent lifecycle
 slot, the pending session-erasure ledger, and the terminal session-erasure

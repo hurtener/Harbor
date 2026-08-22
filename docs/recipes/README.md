@@ -25,6 +25,7 @@ API, read the godoc.
 | [Control attachment disposition](control-attachment-disposition.md) | The Phase 84b disposition policy — `ref` / `inline` / `provider_native` / `tool:<name>`, headless-first (`InputArtifactView.Disposition`, `DispositionPolicy`, `ResolveDisposition`) with `harbor.yaml` + the Protocol hint as thin carriers. |
 | [Provider-native attachments](provider-native-attachments.md) | The Phase 84c mechanism — the part-level `ProviderNative` flag, the driver-internal `file_id` upload + cache lifecycle, the `llm.provider_file.uploaded` event; fully headless via `llm.Open`. |
 | [Embed and retrieve](embed-and-retrieve.md) | The Phase 84d `Embedder` à la carte — `embeddings.Open` + `Embed` + `Cosine` over your own corpus, plus the one-knob semantic-retrieval opt-ins for memory (`SearchTurns`) and skills (`skill_search`). |
+| [Consolidate split PostgreSQL projections](postgres-split-to-unified-cutover.md) | Inspect, copy, and hash-reconcile all six PostgreSQL projections without deleting source databases; direct `5432` apply and pooled `6432` verify. |
 
 ## Conventions used in these recipes
 

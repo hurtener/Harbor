@@ -61,8 +61,10 @@ assert_grep_present 'func BuildProviders\(ctx context\.Context, cfg config\.Tool
     internal/tools/auth/build_providers.go 'phase 110d: auth.BuildProviders exported'
 
 assert_file internal/events/openwith.go 'phase 110d: events.OpenWith file'
-assert_grep_present 'func OpenWith\(_ context\.Context, cfg config\.EventsConfig, r audit\.Redactor, deps Deps\)' \
-    internal/events/openwith.go 'phase 110d: events.OpenWith exported'
+assert_grep_present 'func OpenWith\(ctx context\.Context, cfg config\.EventsConfig, r audit\.Redactor, deps Deps\)' \
+    internal/events/openwith.go 'phase 110d: events.OpenWith exported with caller startup context'
+assert_grep_present 'deps\.StartupContext = ctx' internal/events/openwith.go \
+    'phase 110d: OpenWith propagates caller startup context to deps-aware drivers'
 assert_grep_present 'func RegisterWithDeps\(' internal/events/openwith.go 'phase 110d: deps-aware registration seam'
 assert_grep_present 'events\.RegisterWithDeps\("durable"' internal/events/drivers/durable/durable.go \
     'phase 110d: the durable driver registers the deps-aware factory (StateStore sharing)'

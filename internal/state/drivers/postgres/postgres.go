@@ -49,6 +49,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -62,9 +63,10 @@ const pgxDriverName = "pgx"
 // Connection-pool defaults. Documented in the phase plan; tuning
 // lives in a future config knob, not here.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // Postgres SQLSTATE codes mapped at the boundary so callers compare
@@ -94,22 +96,41 @@ func New(cfg config.StateConfig) (state.StateStore, error) {
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, db, true)
+}
+
+// NewWithDB constructs a Postgres StateStore over a runtime-owned pool.
+// The returned store borrows db and never closes it; the runtime pool manager
+// owns the physical connection lifecycle.
+func NewWithDB(cfg config.StateConfig, db *sql.DB) (state.StateStore, error) {
+	if db == nil {
+		return nil, errors.New("postgres: injected db is required")
+	}
+	return newWithDB(cfg, db, false)
+}
+
+func newWithDB(cfg config.StateConfig, db *sql.DB, ownsDB bool) (state.StateStore, error) {
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
 	// loudly at boot, not on the first Save.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
 
-	return &driver{db: db}, nil
+	return &driver{db: db, ownsDB: ownsDB}, nil
 }
 
 func init() {
@@ -123,6 +144,7 @@ func init() {
 // state lives in ctx).
 type driver struct {
 	db     *sql.DB
+	ownsDB bool
 	closed atomic.Bool
 }
 
@@ -320,6 +342,97 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 		return d.translateErr(err, "postgres: commit conditional save")
 	}
 	committed = true
+	return nil
+}
+
+// SaveBatchIf atomically verifies all generations and writes every record in
+// one transaction. Ordered advisory locks serialize absent and present slots
+// across independent driver instances.
+func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	if d.closed.Load() {
+		return state.ErrStoreClosed
+	}
+	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return d.translateErr(err, "postgres: begin conditional batch tx")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback() //nolint:errcheck // caller receives the original error
+		}
+	}()
+	lockIDs, err := conditionalAdvisoryLockIDs(ctx, tx, expectations, postgresAdvisoryLockID)
+	if err != nil {
+		return d.translateErr(err, "postgres: conditional batch advisory lock ID")
+	}
+	for _, lockID := range lockIDs {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID); err != nil {
+			return d.translateErr(err, "postgres: conditional batch advisory lock")
+		}
+	}
+	for _, expectation := range expectations {
+		var actual string
+		err := tx.QueryRowContext(ctx, `SELECT event_id FROM state_records WHERE tenant_id=$1 AND user_id=$2 AND session_id=$3 AND run_id=$4 AND kind=$5`,
+			expectation.Identity.TenantID, expectation.Identity.UserID, expectation.Identity.SessionID, expectation.Identity.RunID, expectation.Kind).Scan(&actual)
+		if expectation.ExpectedEventID == "" {
+			if err == nil {
+				return fmt.Errorf("postgres: %w: expected absent slot is present", state.ErrConditionFailed)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return d.translateErr(err, "postgres: conditional batch read")
+			}
+			continue
+		}
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && actual != string(expectation.ExpectedEventID)) {
+			return fmt.Errorf("postgres: %w: expected event_id %q", state.ErrConditionFailed, expectation.ExpectedEventID)
+		}
+		if err != nil {
+			return d.translateErr(err, "postgres: conditional batch read")
+		}
+	}
+	for _, write := range writes {
+		prev, ok, err := loadByEventIDTx(ctx, tx, write.ID)
+		if err != nil {
+			return err
+		}
+		if ok && (prev.Identity != write.Identity || prev.Kind != write.Kind || !bytesEqual(prev.Bytes, write.Bytes) || prev.Version != write.Version) {
+			return fmt.Errorf("postgres: %w: batch EventID %q conflicts", state.ErrIdempotencyConflict, write.ID)
+		}
+	}
+	const upsert = `INSERT INTO state_records (tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (tenant_id, user_id, session_id, run_id, kind) DO UPDATE SET event_id=EXCLUDED.event_id, version=EXCLUDED.version, bytes=EXCLUDED.bytes, updated_at=EXCLUDED.updated_at`
+	for _, write := range writes {
+		payload := write.Bytes
+		if payload == nil {
+			payload = []byte{}
+		}
+		updatedAt := write.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
+		if _, err := tx.ExecContext(ctx, upsert, write.Identity.TenantID, write.Identity.UserID, write.Identity.SessionID, write.Identity.RunID, write.Kind, string(write.ID), write.Version, payload, updatedAt); err != nil {
+			return d.translateUpsertErr(err)
+		}
+	}
+	if err := commitConditionalBatch(ctx, tx.Commit); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func commitConditionalBatch(ctx context.Context, commit func() error) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("postgres: conditional batch cancelled before commit: %w", err)
+	}
+	if err := commit(); err != nil {
+		return fmt.Errorf("postgres: commit conditional batch: %w", errors.Join(state.ErrCommitOutcomeUnknown, err))
+	}
 	return nil
 }
 
@@ -545,8 +658,8 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 	if err := state.ValidateIdentity(q); err != nil {
 		return err
 	}
-	if kind == "" {
-		return state.ErrInvalidRecord
+	if err := state.ValidateExternalKind(kind); err != nil {
+		return err
 	}
 
 	const q1 = `
@@ -575,11 +688,13 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 		return 0, err
 	}
 
-	const q1 = `
-		DELETE FROM state_records
-		WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
-	`
-	res, err := d.db.ExecContext(ctx, q1, id.TenantID, id.UserID, id.SessionID)
+	q1 := `DELETE FROM state_records WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3`
+	args := []any{id.TenantID, id.UserID, id.SessionID}
+	if identity.IsInternalCoordination(id) {
+		q1 += ` AND left(kind, char_length($4)) COLLATE "C" <> $4 COLLATE "C"`
+		args = append(args, state.InternalKindPrefix)
+	}
+	res, err := d.db.ExecContext(ctx, q1, args...)
 	if err != nil {
 		return 0, d.translateErr(err, "postgres: delete scope")
 	}
@@ -786,6 +901,9 @@ func (d *driver) ScanKindForTenant(ctx context.Context, scope state.ListScope, t
 // ErrStoreClosed instead of racing on a closed *sql.DB.
 func (d *driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !d.ownsDB {
 		return nil
 	}
 	if err := d.db.Close(); err != nil {

@@ -3,12 +3,17 @@ package postgres_test
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
+
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/drivers/postgres"
 )
@@ -88,6 +93,61 @@ func TestNew_RejectsUnknownRetrievalModeAndUnreachableDatabase(t *testing.T) {
 		Driver: "postgres", DSN: "postgres://127.0.0.1:1/harbor?connect_timeout=1",
 	}, skills.Deps{Bus: bus}); err == nil {
 		t.Fatal("unreachable database returned nil error")
+	}
+}
+
+func TestNewWithDB_BorrowsRuntimePoolAndVerifiesNamespacedMigrations(t *testing.T) {
+	bus := buildBus(t)
+	cfg := skills.ConfigSnapshot{Driver: "postgres", DSN: freshSchema(t, requireDSN(t)), MigrationMode: sqlmigrate.ModeVerify}
+
+	if _, err := postgres.NewWithDB(cfg, skills.Deps{Bus: bus}, nil); err == nil {
+		t.Fatal("NewWithDB accepted a nil runtime-owned pool")
+	}
+
+	// Apply the immutable migration set through the direct, owned path first;
+	// the borrowed runtime pool must then use read-only namespaced verification.
+	apply, err := postgres.New(skills.ConfigSnapshot{Driver: "postgres", DSN: cfg.DSN}, skills.Deps{Bus: bus})
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if err := apply.Close(context.Background()); err != nil {
+		t.Fatalf("close apply store: %v", err)
+	}
+
+	db, err := sql.Open("pgx", cfg.DSN)
+	if err != nil {
+		t.Fatalf("sql.Open runtime pool: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(3)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(30 * time.Second)
+
+	borrowed, err := postgres.NewWithDB(cfg, skills.Deps{Bus: bus}, db)
+	if err != nil {
+		t.Fatalf("NewWithDB verify: %v", err)
+	}
+	if err := borrowed.Close(context.Background()); err != nil {
+		t.Fatalf("close borrowed store: %v", err)
+	}
+	// Store shutdown must not close a runtime-owned pool borrowed by another
+	// projection; the manager remains responsible for closing db exactly once.
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatalf("borrowed store closed the runtime pool: %v", err)
+	}
+}
+
+func TestNewWithDB_ReportsBorrowedPoolPingFailure(t *testing.T) {
+	bus := buildBus(t)
+	db, err := sql.Open("pgx", "postgres://127.0.0.1:1/harbor?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("sql.Open unreachable runtime pool: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	_, err = postgres.NewWithDB(skills.ConfigSnapshot{Driver: "postgres", DSN: "postgres://127.0.0.1:1/harbor?connect_timeout=1"}, skills.Deps{Bus: bus}, db)
+	if err == nil || !strings.Contains(err.Error(), "skills/postgres: ping") {
+		t.Fatalf("NewWithDB unreachable pool error = %v, want ping diagnostic", err)
 	}
 }
 

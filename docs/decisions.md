@@ -13602,3 +13602,137 @@ an isolation principal), D-204 (curated SDK boundary), D-301 (tenant/admin
 authority), D-411/D-414/D-427 (skill composition and operator reach), D-398
 (StateStore CAS), D-400 (durable identity-scoped state), RFC §5.2, §5.5, §6.7,
 §6.10, §6.11, §6.16, §7, §9. Plan: `docs/plans/phase-250-same-runtime-skill-publications.md`.
+
+---
+
+## D-431 — v1.29.1 closes durable-event scan amplification and makes six PostgreSQL projections one runtime-owned, budgeted, independently identified persistence plane (HA-69)
+
+**Date:** 2026-08-22
+
+**Status:** Accepted for Phase 251; release-blocking v1.29.1 work. Not shipped.
+
+**Governance correction.** The canonical downstream register already assigns
+HA-13 to `flows.runs.list`. The emergency event-index and PostgreSQL work is
+therefore registered as HA-69; the historical HA-13 collision is recorded in
+the register and is not silently reallocated.
+
+**Event-read decision.** `events.list`, `events.aggregate`, and the
+`sessions.list` counter enricher continue to read the canonical durable event
+log and retain D-294/D-305's identity, audit, cursor, projection, and
+`truncated` semantics. They gain a first-class typed metadata projection
+containing sequence, `(tenant_id,user_id,session_id)`, run id, type,
+`OccurredAt`, and the internal-notice marker. A metadata query selects the
+tail-first candidate page before payload loading; aggregate counts that can
+be answered from metadata do so without materializing bodies. Payloads remain
+redacted canonical rows, and the index is not a second source of truth.
+
+The body and metadata publication is atomic through the mandatory StateStore
+`SaveBatchIf` contract. One transaction conditionally advances a reserved
+global sequence-authority slot and writes the immutable body plus the
+session-head metadata generation. Every write slot is conditioned; duplicate
+slots, unconditioned writes, and partial commits are rejected across in-memory,
+SQLite, and PostgreSQL. Independent runtimes allocate one unique monotonic,
+gap-free sequence through bounded context-aware CAS; an ambiguous transaction
+acknowledgement poisons the local bus until restart rather than guessing. A
+driver reports that ambiguity only as `state.ErrCommitOutcomeUnknown` at the
+transaction commit boundary. Definite conflicts, validation failures,
+cancellation, encoding failures, and known rollbacks do not poison the bus.
+The authority and session-fence slots use the protected `harbor.internal/`
+StateStore Kind namespace at one exact coordination identity: external
+writes/deletes are rejected and session `DeleteScope` never reaches those
+slots. Prefix-shaped legacy rows at ordinary identities remain erasable.
+Durable history reads consult the shared
+persisted fence, then recheck it before exposure; fleet reads use two bounded
+fence snapshots rather than one acquisition per event. A
+complete index never points at a missing body, a committed body is not omitted
+from a complete read, and an erased session cannot be resurrected by backfill.
+Existing rows are populated
+by bounded, idempotent, restart-safe sequence backfill; concurrent writes
+catch up before complete readiness. Out-of-order occurrence timestamps are
+metadata predicates, not cursor keys. Corruption or an incomplete watermark
+fails loudly or exposes an honest incomplete/partial state. The rollup
+projection remains D-426's rebuildable, best-effort derived state over the
+canonical sequence, not a billing ledger or general-purpose TSDB.
+
+**Mixed-version writer barrier.** Before creating authority in any durable event store,
+v1.29.1 requires the explicit `events.legacy_writers_drained: true`
+acknowledgement. Set it only after every v1.29.0 event writer sharing that
+StateStore scope has stopped. An ordinary rolling or zero-downtime deployment
+is not compliant because the new writer starts before the old writer stops;
+use true stop-before-start, suspend-then-resume, or an equivalent platform
+guarantee. Migration-only processes that cannot publish events are not event
+writers. An empty scan is not proof that a silent legacy writer is absent, so
+an authority-absent empty store also requires acknowledgement. Once authority
+exists, restarts do not require the acknowledgement.
+
+**PostgreSQL ownership and budget decision.** The six compatible Harbor
+PostgreSQL projections are state, memory, artifacts, skills, sessions/turns,
+and observability/rollups. A runtime-owned pool manager canonicalizes DSN and
+database identity. Stores using the same canonical identity borrow one
+runtime-owned `*sql.DB` and never close it; the runtime closes it once after
+all stores have stopped. Stores with distinct DSNs retain the existing
+backward-compatible topology but every acquisition is charged to one
+runtime-wide aggregate budget. A future PostgreSQL store must register with
+this manager and the migration contract; a registry/AST test rejects an
+independent pool or a bare migration ledger.
+
+The additive restart-required operator fields are
+`postgres.pool.max_open`, `postgres.pool.max_idle`,
+`postgres.pool.conn_max_lifetime`, and `postgres.pool.conn_max_idle_time`.
+Safe defaults are 3 aggregate open permits, 1 aggregate idle target, 5m
+maximum lifetime, and 30s finite idle time. The six direct migration sessions
+in the following budget are an operator/orchestrator rollout ceiling, not a
+Harbor runtime configuration field. For the existing Render Basic-4GB
+`max_connections=103` ceiling, the worst planned overlap is nine runtimes ×
+two generations × 3 = 54, plus six direct 5432 migration sessions, a fixed
+12-connection Pengui/capabilities allowance, and a 25-connection operator
+reserve: 97 planned connections, leaving six below the hard cap. Steady state
+is 70. The deterministic nine-runtime accounting test rejects any topology
+that exceeds 103; a plan upgrade is not a mitigation. `max_idle` and finite
+`conn_max_idle_time` bound retained idle sessions and do not create a second
+per-store allowance.
+
+One logical database per runtime, with all six stores on the same canonical
+DSN, is the documented default. A first hotfix boot may keep distinct DSNs;
+consolidation is optional and is performed one runtime at a time after
+verification. This makes the fleet rollout two-stage without requiring a
+data move before connection safety is installed.
+
+**Migration identity and connectivity decision.** D-428's direct-apply /
+pooled-verify split is extended to all six stores. `apply` uses a direct,
+session-affine PostgreSQL endpoint (normally 5432), the subsystem's advisory
+lock, and forward-only migrations. `verify` is read-only, takes no advisory
+lock, transaction, DDL, or write, and may use transaction-pooled 6432. An
+apply DSN that is detected or explicitly declared as PgBouncer transaction
+mode, or whose session affinity cannot be established, fails loudly; the
+runtime never pretends a 6432 advisory lock is safe.
+
+Every migration ledger and lock authority is subsystem-qualified and records
+subsystem, migration filename, version, and immutable checksum. Verify proves
+both ledger identity and required schema objects. A legacy bare ledger may be
+adopted only after the expected schema and historical migration bodies/checksums
+are inspected and then explicitly seeded into the namespaced ledger. In
+particular, a memory verify against `version=1` plus `state_records` and no
+`memory_state` fails with expected subsystem, observed tables/ledger, and
+remediation; it never treats state as memory. Split-source cutover classifies
+databases from observed schema, not DSN or environment names, and treats a
+misprovisioned memory source as empty unless stronger evidence identifies
+preserved data.
+
+**Cutover decision.** The release provides a dry-run/inspect and
+non-destructive copy/reconciliation tool or exact operator procedure. It
+requires a freeze/drain barrier, applies migrations through direct 5432,
+copies all six compatible projections, emits source/destination row counts
+and canonical content hashes, verifies turns' ordering/cursors/activity/usage
+and rollup watermarks, then switches one runtime to steady 6432 verify. A
+manifest cannot be successful while a source is moving, schema-classified as
+wrong, omitted, or hash-mismatched. Harbor never deletes the split source
+databases; rollback is configuration-only until an operator independently
+removes them.
+
+**Cross-references.** D-025 (concurrent reuse), D-027/D-398/D-400
+(persistence identity, conditional writes, and erasure), D-294 (event-list
+cursor/read contract), D-305 (aggregate substrate and driver gate), D-426
+(rebuildable rollups), D-428 (direct apply and pooled verify), RFC §4, §5.2,
+§6.6, §6.7, §6.9, §6.10, §6.11, §6.13, §6.14, §6.15, §9, briefs 04, 05, 06.
+Plan: `docs/plans/phase-251-v1291-events-postgres-fleet-safety.md`.

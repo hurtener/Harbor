@@ -79,6 +79,7 @@ func newPhase157Deps(t *testing.T) *phase157Deps {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         256,
+		LegacyWritersDrained:     true,
 	}, red, store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

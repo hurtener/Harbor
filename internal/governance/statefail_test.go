@@ -33,6 +33,10 @@ func (failingStateStore) SaveIf(_ context.Context, _ []state.SlotExpectation, _ 
 	return errStateProbe
 }
 
+func (failingStateStore) SaveBatchIf(_ context.Context, _ []state.SlotExpectation, _ []state.StateRecord) error {
+	return errStateProbe
+}
+
 func (failingStateStore) FenceIf(_ context.Context, _ state.SlotExpectation, _ func() error) error {
 	return errStateProbe
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
@@ -302,12 +303,17 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 	// tail-first (Before=0) with a generous bound; a window exceeding the
 	// bound comes back with HasMore=true, which the aggregator surfaces as
 	// Truncated (DATA, never a 400).
-	page, err := hr.ListWindow(ctx, EventListQuery{
-		Filter: effFilter,
-		Before: 0,
-		Limit:  a.scanBound,
-		Admin:  widened,
-	})
+	query := EventListQuery{Filter: effFilter, Before: 0, Limit: a.scanBound, Admin: widened}
+	var page EventListPage
+	var metadataPage MetadataListPage
+	metadataRead := false
+	var err error
+	if mr, ok := a.bus.(EventMetadataReplayer); ok {
+		metadataPage, err = mr.ListWindowMetadata(ctx, query)
+		metadataRead = true
+	} else {
+		page, err = hr.ListWindow(ctx, query)
+	}
 	if err != nil {
 		// ErrReplayUnavailable is the documented "this bus does not
 		// support windowed history reads" case — surface verbatim so the
@@ -325,6 +331,28 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 	// that never opted in — an unelevated caller gains nothing.
 	attribute := req.ByTenant && widened
 
+	add := func(typ string, occurredAt time.Time, id identity.Quadruple) {
+		if occurredAt.Before(windowStart) || !occurredAt.Before(windowEnd) {
+			return
+		}
+		idx := int(occurredAt.Sub(windowStart) / req.Bucket)
+		if idx < 0 || idx >= bucketCount {
+			return
+		}
+		buckets[idx].Counts[typ]++
+		if attribute {
+			tenantID := id.TenantID
+			if buckets[idx].CountsByTenant == nil {
+				buckets[idx].CountsByTenant = make(map[string]map[string]int64)
+			}
+			byType := buckets[idx].CountsByTenant[tenantID]
+			if byType == nil {
+				byType = make(map[string]int64)
+				buckets[idx].CountsByTenant[tenantID] = byType
+			}
+			byType[typ]++
+		}
+	}
 	for _, ev := range page.Events {
 		if err := ctx.Err(); err != nil {
 			return prototypes.EventAggregateResponse{}, err
@@ -332,39 +360,22 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 		// The substrate already applied MatchWire (identity sets +
 		// since/until + type) and excluded bus-internal notices; the guard
 		// below is a defensive bucket-range clamp only.
-		if ev.OccurredAt.Before(windowStart) || !ev.OccurredAt.Before(windowEnd) {
-			continue
+		add(string(ev.Type), ev.OccurredAt, ev.Identity)
+	}
+	for _, meta := range metadataPage.Events {
+		if err := ctx.Err(); err != nil {
+			return prototypes.EventAggregateResponse{}, err
 		}
-		idx := int(ev.OccurredAt.Sub(windowStart) / req.Bucket)
-		if idx < 0 || idx >= bucketCount {
-			continue
-		}
-		typ := string(ev.Type)
-		buckets[idx].Counts[typ]++
-		if attribute {
-			// Re-project the same increment onto the event's existing tenant.
-			// The outer map is allocated lazily so empty buckets omit the
-			// field (nothing to attribute). Because this counts the identical
-			// matched event that just bumped Counts, the per-bucket invariant
-			// Σ_tenant CountsByTenant[tenant][type] == Counts[type] holds by
-			// construction — attribution is a pure re-projection, never a
-			// second, looser read path.
-			tid := ev.Identity.TenantID
-			if buckets[idx].CountsByTenant == nil {
-				buckets[idx].CountsByTenant = make(map[string]map[string]int64)
-			}
-			byType := buckets[idx].CountsByTenant[tid]
-			if byType == nil {
-				byType = make(map[string]int64)
-				buckets[idx].CountsByTenant[tid] = byType
-			}
-			byType[typ]++
-		}
+		add(string(meta.Type), meta.OccurredAt, meta.Identity)
+	}
+	truncated := page.HasMore || page.Truncated
+	if metadataRead {
+		truncated = metadataPage.HasMore || metadataPage.Truncated
 	}
 
 	return prototypes.EventAggregateResponse{
 		Buckets:         buckets,
-		Truncated:       page.HasMore || page.Truncated,
+		Truncated:       truncated,
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
 }

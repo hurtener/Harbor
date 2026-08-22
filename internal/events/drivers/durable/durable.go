@@ -15,12 +15,10 @@
 //   - Replay reads from the StateStore — not an in-memory ring — so a
 //     late subscriber that connects after the Runtime was rebuilt
 //     against the same StateStore sees the full, gap-free history.
-//   - At construction (durable mode) the monotonic sequence counter is
-//     rehydrated from the persisted head records (recoverNextSeq, via the
-//     StateStore.ListKind maintenance scan) so a Runtime rebuilt against
-//     the same StateStore issues sequences strictly greater than any
-//     pre-restart token — a client reconnecting at a high Last-Event-ID
-//     is never silently skipped.
+//   - In durable mode a reserved StateStore authority record allocates the
+//     global sequence across independent Runtime processes. Construction
+//     adopts/floors that authority from legacy head records, so restart and
+//     rolling overlap never reuse a token.
 //   - When NO StateStore is configured the driver auto-degrades to a
 //     best-effort in-memory ring buffer AND emits a loud runtime.warning
 //     event plus an slog.Warn (CLAUDE.md §13 "no silent
@@ -35,16 +33,16 @@
 //     session triple with RunID="" — an event's own RunID is preserved
 //     INSIDE the persisted bytes, not in the storage key.
 //   - Head record:  Kind = "events.durable.head"        — holds the
-//     ordered list of bus-sequences persisted for that session.
+//     ordered list of bus-sequences persisted for that session plus the
+//     typed routing metadata projection for each sequence.
 //   - Entry record: Kind = "events.durable.entry/<seq>" — holds the
 //     JSON-encoded event for bus-sequence <seq>.
 //
-// On Publish: assign the next bus sequence, write the entry record,
-// then read-modify-write the head record's sequence list — all under
-// publishMu so the head list and the sequence counter never disagree.
-// A torn write (entry persisted, head not yet advanced) never produces
-// a GAP in a served replay: Replay only ever returns sequences the
-// head record lists, and the next Publish re-derives the head list.
+// On Publish, one mandatory StateStore SaveBatchIf transaction conditionally
+// advances the global authority and commits the opaque body plus conditional
+// session head. No partial body/head/authority state is visible. An ambiguous
+// transaction acknowledgement poisons the process until restart; restart reads
+// the authority and backfills legacy metadata with generation checks.
 //
 // The driver is registered under name "durable" via init(); cmd/harbor
 // blank-imports this package so the registration fires at process
@@ -52,10 +50,14 @@
 package durable
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -74,7 +76,35 @@ const (
 	// kindEntryPrefix is the StateStore Kind prefix of a per-event
 	// entry record; the bus sequence is appended.
 	kindEntryPrefix = "events.durable.entry/"
+	// kindSequenceAuthority is a reserved internal StateStore slot containing
+	// the global durable event sequence. Its identity is deliberately outside
+	// normal session identities and its kind cannot collide with event heads or
+	// bodies.
+	kindSequenceAuthority = state.InternalKindPrefix + "events/global-sequence-authority"
+	kindFencePrefix       = state.InternalKindPrefix + "events/session-fence/"
+	// metadataValidationBatchSize bounds canonical payload validation before
+	// a durable checkpoint is written. A cancelled/restarted runtime resumes
+	// after the validated prefix instead of repeating the whole head scan.
+	metadataValidationBatchSize = 128
+	// recoveryStableViewMaxAttempts bounds boot catch-up under a continuously
+	// changing head set. Two identical consecutive views are required before
+	// nextSeq is admitted; persistent churn fails boot loudly rather than
+	// risking sequence reuse.
+	recoveryStableViewMaxAttempts = 8
+	// recoveryRetryDelay prevents a conflicting writer from turning boot
+	// catch-up into a tight retry loop while remaining negligible normally.
+	recoveryRetryDelay = time.Millisecond
+	// publishCASMaxAttempts bounds cross-runtime contention. The ceiling admits
+	// the required N=100 concurrent publishers while failing loudly under
+	// sustained churn instead of spinning forever.
+	publishCASMaxAttempts = 256
 )
+
+var sequenceAuthorityIdentity = identity.InternalCoordinationQuadruple()
+
+type sequenceAuthorityRecord struct {
+	Sequence uint64 `json:"sequence"`
+}
 
 // errEventFenced is the internal sentinel sequenceAndStore returns when
 // an event's session triple is fenced (erased) — Publish maps it to a
@@ -193,64 +223,193 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 //
 // It enumerates the per-session head records via the explicitly-elevated
 // maintenance scan (StateStore.ListKind with MaintenanceScoped set — RFC
-// §6.11), decodes each, and floors nextSeq at the GLOBAL maximum sequence
-// across every record's Sequences list (0 for an empty log). It is
+// §6.11), decodes each, and requires two identical consecutive generations
+// before flooring nextSeq at the GLOBAL maximum sequence (0 for an empty
+// log). Conditional adoption conflicts restart the bounded scan. It is
 // another maintenance-scan consumer alongside the pause sweeper's
-// crash-orphan rescan: it reads sequence numbers only, mutates nothing,
-// and records the cross-identity scan via structured slog rather than a
-// dedicated audit event (the sweeper's posture).
+// crash-orphan rescan. In addition to the sequence floor it adopts legacy
+// metadata heads through bounded, conditional checkpoints; the cross-
+// identity scan is recorded via structured slog rather than a dedicated
+// audit event (the sweeper's posture).
 //
 // Fail-loud (CLAUDE.md §13): a scan error or an undecodable head record
 // returns a wrapped error so New fails the boot; the counter is never
 // silently started at 0.
 func (b *bus) recoverNextSeq(ctx context.Context) error {
+	var previous recoveryHeadView
+	for attempt := 1; attempt <= recoveryStableViewMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("durable: recover sequence counter: catch-up cancelled: %w", err)
+		}
+		current, err := b.scanRecoveryHeadView(ctx)
+		switch {
+		case err != nil && errors.Is(err, state.ErrConditionFailed):
+			previous = recoveryHeadView{}
+		case err != nil:
+			return err
+		case previous.generations != nil && recoveryViewsEqual(previous.generations, current.generations):
+			_, authorityExpectation, authorityErr := b.loadSequenceAuthority(ctx)
+			if authorityErr != nil {
+				return fmt.Errorf("durable: inspect sequence authority: %w", authorityErr)
+			}
+			if authorityExpectation.ExpectedEventID == "" && !b.cfg.LegacyWritersDrained {
+				return fmt.Errorf("durable: sequence authority is absent; events.legacy_writers_drained=true is required after every v1.29.0 event writer sharing this StateStore has stopped, even when the head scan is empty; rolling writer overlap is unsafe")
+			}
+			authoritySeq, err := b.adoptSequenceAuthority(ctx, current.maxSeq)
+			if err != nil {
+				return fmt.Errorf("durable: recover sequence authority: %w", err)
+			}
+			b.nextSeq = authoritySeq
+			if current.minSeq > 0 {
+				if err := b.recoverOldestRetained(ctx, current.minSeqOwner, current.minSeq); err != nil {
+					return err
+				}
+			}
+			b.logger.Info("durable event log: rehydrated sequence counter from stable persisted head view",
+				slog.String("driver", "durable"),
+				slog.Uint64("recovered_max_sequence", current.maxSeq),
+				slog.Int("session_count", current.sessionCount),
+				slog.Int("recovery_attempts", attempt))
+			return nil
+		default:
+			previous = current
+		}
+		if attempt < recoveryStableViewMaxAttempts {
+			if err := waitRecoveryRetry(ctx); err != nil {
+				return fmt.Errorf("durable: recover sequence counter: catch-up cancelled: %w", err)
+			}
+		}
+	}
+	return fmt.Errorf("durable: recover sequence counter: head view did not stabilize after %d bounded attempts", recoveryStableViewMaxAttempts)
+}
+
+// adoptSequenceAuthority initializes or floors the shared authority from the
+// canonical legacy heads. It never lowers an existing value and is safe when
+// several new runtimes adopt the same database concurrently.
+func (b *bus) adoptSequenceAuthority(ctx context.Context, floor uint64) (uint64, error) {
+	for attempt := 1; attempt <= publishCASMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		current, expected, err := b.loadSequenceAuthority(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if expected.ExpectedEventID != "" && current >= floor {
+			return current, nil
+		}
+		payload, err := json.Marshal(sequenceAuthorityRecord{Sequence: floor})
+		if err != nil {
+			return 0, err
+		}
+		next := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kindSequenceAuthority, payload)
+		if err := b.store.SaveBatchIf(ctx, []state.SlotExpectation{expected}, []state.StateRecord{next}); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return 0, err
+		}
+		return floor, nil
+	}
+	return 0, fmt.Errorf("authority adoption exceeded %d CAS attempts", publishCASMaxAttempts)
+}
+
+func (b *bus) loadSequenceAuthority(ctx context.Context) (uint64, state.SlotExpectation, error) {
+	expect := state.InternalSlotExpectation(sequenceAuthorityIdentity, kindSequenceAuthority, "")
+	rec, err := b.store.Load(ctx, sequenceAuthorityIdentity, kindSequenceAuthority)
+	if errors.Is(err, state.ErrNotFound) {
+		return 0, expect, nil
+	}
+	if err != nil {
+		return 0, expect, err
+	}
+	var authority sequenceAuthorityRecord
+	if err := json.Unmarshal(rec.Bytes, &authority); err != nil {
+		return 0, expect, fmt.Errorf("decode authority event_id=%s: %w", rec.ID, err)
+	}
+	expect.ExpectedEventID = rec.ID
+	return authority.Sequence, expect, nil
+}
+
+type recoveryHeadView struct {
+	generations  map[string]string
+	maxSeq       uint64
+	minSeq       uint64
+	minSeqOwner  identity.Quadruple
+	sessionCount int
+}
+
+func (b *bus) scanRecoveryHeadView(ctx context.Context) (recoveryHeadView, error) {
+	if err := ctx.Err(); err != nil {
+		return recoveryHeadView{}, err
+	}
 	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
 	if err != nil {
-		return fmt.Errorf("durable: recover sequence counter: scan head records: %w", err)
+		return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: scan head records: %w", err)
 	}
-	var maxSeq uint64
-	var minSeq uint64
-	var minSeqOwner identity.Quadruple
+	if err := ctx.Err(); err != nil {
+		return recoveryHeadView{}, err
+	}
+	view := recoveryHeadView{generations: make(map[string]string, len(recs))}
 	for _, rec := range recs {
-		// ListKind matches kindHead as a literal PREFIX. Today only the
-		// exact head kind starts with it (entry records use the disjoint
-		// "events.durable.entry/" prefix), but a future sibling kind under
-		// the same dotted stem (e.g. a "events.durable.head.checkpoint"
-		// global-max record — the noted scaling follow-up) would be swept
-		// in and fail decodeHead. Guard on the exact kind so the scan stays
-		// correct if such a sibling lands.
+		if err := ctx.Err(); err != nil {
+			return recoveryHeadView{}, err
+		}
 		if rec.Kind != kindHead {
 			continue
 		}
 		head, err := decodeHead(rec.Bytes)
 		if err != nil {
-			return fmt.Errorf("durable: recover sequence counter: decode head record (id=%s): %w", rec.ID, err)
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: decode head record (id=%s): %w", rec.ID, err)
 		}
+		head, err = b.ensureHeadMetadata(ctx, rec.Identity, head)
+		if err != nil {
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: index head record (id=%s): %w", rec.ID, err)
+		}
+		headBytes, err := encodeHead(head)
+		if err != nil {
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: encode adopted head record (id=%s): %w", rec.ID, err)
+		}
+		key := rec.Identity.TenantID + "\x00" + rec.Identity.UserID + "\x00" + rec.Identity.SessionID + "\x00" + rec.Identity.RunID
+		if _, duplicate := view.generations[key]; duplicate {
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: duplicate head identity (%s,%s,%s)", rec.Identity.TenantID, rec.Identity.UserID, rec.Identity.SessionID)
+		}
+		view.generations[key] = string(headBytes)
+		view.sessionCount++
 		for _, seq := range head.Sequences {
-			if seq > maxSeq {
-				maxSeq = seq
+			if seq > view.maxSeq {
+				view.maxSeq = seq
 			}
-			if minSeq == 0 || seq < minSeq {
-				minSeq = seq
-				minSeqOwner = rec.Identity
+			if view.minSeq == 0 || seq < view.minSeq {
+				view.minSeq = seq
+				view.minSeqOwner = rec.Identity
 			}
 		}
 	}
-	b.nextSeq = maxSeq
-	// Seed the observed retention horizon from the persisted head — the
-	// oldest event's OccurredAt. The log is gap-free and untrimmed, so the
-	// global-minimum sequence IS the head; loading its one entry record
-	// (not a table scan) is the cheap min-index read.
-	if minSeq > 0 {
-		if err := b.recoverOldestRetained(ctx, minSeqOwner, minSeq); err != nil {
-			return err
+	return view, nil
+}
+
+func recoveryViewsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, generation := range a {
+		if b[key] != generation {
+			return false
 		}
 	}
-	b.logger.Info("durable event log: rehydrated sequence counter from persisted head records",
-		slog.String("driver", "durable"),
-		slog.Uint64("recovered_max_sequence", maxSeq),
-		slog.Int("session_count", len(recs)))
-	return nil
+	return true
+}
+
+func waitRecoveryRetry(ctx context.Context) error {
+	timer := time.NewTimer(recoveryRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // recoverOldestRetained loads the persisted entry for the global-minimum
@@ -322,12 +481,14 @@ func init() {
 			return newWithOwnedStore(cfg, r)
 		}
 		if deps.State != nil {
-			// The events.RegisterWithDeps factory contract is ctx-free, so
-			// the recovery ctx bridges with context.Background() — the §5
-			// unmanaged-async-boundary case, matching newWithOwnedStore's
-			// state.Open precedent. Threading a real boot ctx through the
-			// factory contract is the tracked follow-up.
-			return New(context.Background(), cfg, r, deps.State)
+			ctx := deps.StartupContext
+			if ctx == nil {
+				// Direct callers of a deps factory cannot reach this branch
+				// through events.OpenWith, which always supplies its ctx. Keep
+				// the defensive fallback for an explicitly hand-built Deps.
+				ctx = context.Background()
+			}
+			return New(ctx, cfg, r, deps.State)
 		}
 		return nil, fmt.Errorf("durable: no StateStore available — set events.state_driver (dedicated event-log store) or call events.OpenWith with Deps.State (share the runtime's store), or pick events.driver=inmem")
 	})
@@ -366,11 +527,9 @@ type bus struct {
 	bestEffort bool // true when store == nil
 	ownStore   bool // true when this bus opened the StateStore (registry path)
 
-	// publishMu serialises sequence assignment + persistence (or ring
-	// append). Holding it across the StateStore writes guarantees the
-	// head record's sequence list and the sequence counter never
-	// disagree, and that the persisted log is in strict sequence
-	// order.
+	// publishMu serialises this process's publication and best-effort ring. In
+	// durable mode the StateStore authority CAS, not this mutex, is the
+	// cross-process sequence source of truth.
 	publishMu sync.Mutex
 	nextSeq   uint64
 	// oldestRetainedAt is the observed retention horizon for durable
@@ -383,6 +542,12 @@ type bus struct {
 	// counter, and the persisted log never disagree. Zero when the log is
 	// empty. Unused in best-effort mode (the ring is the source there).
 	oldestRetainedAt time.Time
+	// persistenceBroken is set after an ambiguous StateStore write failure.
+	// The entry may have reached the store even when Save returned an error;
+	// refusing subsequent publishes prevents sequence reuse from overwriting
+	// a committed payload that has not yet been indexed. A process restart
+	// rehydrates the head and backfills safely.
+	persistenceBroken bool
 
 	// Best-effort ring (used ONLY when bestEffort is true).
 	ringBuf  []events.Event
@@ -426,6 +591,58 @@ func fenceKey(id identity.Identity) string {
 	return id.TenantID + "\x00" + id.UserID + "\x00" + id.SessionID
 }
 
+func durableFenceKind(id identity.Identity) string {
+	sum := sha256.Sum256([]byte(fenceKey(id)))
+	return fmt.Sprintf("%s%x", kindFencePrefix, sum[:])
+}
+
+func (b *bus) isDurablyFenced(ctx context.Context, id identity.Quadruple) (bool, error) {
+	_, err := b.store.Load(ctx, sequenceAuthorityIdentity, durableFenceKind(id.Identity))
+	if err == nil {
+		b.setFenceCache(id.Identity, true)
+		return true, nil
+	}
+	if errors.Is(err, state.ErrNotFound) {
+		b.setFenceCache(id.Identity, false)
+		return false, nil
+	}
+	return false, fmt.Errorf("load durable session fence: %w", err)
+}
+
+func (b *bus) setFenceCache(id identity.Identity, fenced bool) {
+	b.fenceMu.Lock()
+	defer b.fenceMu.Unlock()
+	if fenced {
+		if b.fenced == nil {
+			b.fenced = map[string]struct{}{}
+		}
+		b.fenced[fenceKey(id)] = struct{}{}
+		return
+	}
+	delete(b.fenced, fenceKey(id))
+}
+
+type durableFenceSnapshot map[string]struct{}
+
+func (s durableFenceSnapshot) contains(id identity.Quadruple) bool {
+	_, ok := s[durableFenceKind(id.Identity)]
+	return ok
+}
+
+func (b *bus) loadDurableFenceSnapshot(ctx context.Context) (durableFenceSnapshot, error) {
+	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindFencePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("scan durable session fences: %w", err)
+	}
+	out := make(durableFenceSnapshot, len(recs))
+	for _, rec := range recs {
+		if rec.Kind != "" && state.IsInternalKind(rec.Kind) && len(rec.Kind) >= len(kindFencePrefix) && rec.Kind[:len(kindFencePrefix)] == kindFencePrefix {
+			out[rec.Kind] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
 // isFenced reports whether the event's session triple is fenced (erased).
 func (b *bus) isFenced(id identity.Quadruple) bool {
 	b.fenceMu.RLock()
@@ -443,12 +660,37 @@ func (b *bus) isFenced(id identity.Quadruple) bool {
 // finished persisting before Fence returns — the cascade's DeleteScope
 // then sweeps that just-persisted event; nothing is retained past the
 // fence.
-func (b *bus) Fence(_ context.Context, id identity.Identity) error {
+func (b *bus) Fence(ctx context.Context, id identity.Identity) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
 	}
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
+	if !b.bestEffort {
+		kind := durableFenceKind(id)
+		existing, err := b.store.Load(ctx, sequenceAuthorityIdentity, kind)
+		if err != nil && !errors.Is(err, state.ErrNotFound) {
+			return fmt.Errorf("durable: load session fence: %w", err)
+		}
+		if errors.Is(err, state.ErrNotFound) {
+			payload, marshalErr := json.Marshal(id)
+			if marshalErr != nil {
+				return fmt.Errorf("durable: encode session fence: %w", marshalErr)
+			}
+			next := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kind, payload)
+			if saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(sequenceAuthorityIdentity, kind, "")}, next); saveErr != nil {
+				if !errors.Is(saveErr, state.ErrConditionFailed) {
+					return fmt.Errorf("durable: persist session fence: %w", saveErr)
+				}
+				// A concurrent fencer won; the persisted outcome is equivalent.
+				if _, loadErr := b.store.Load(ctx, sequenceAuthorityIdentity, kind); loadErr != nil {
+					return fmt.Errorf("durable: confirm concurrent session fence: %w", loadErr)
+				}
+			}
+		} else if existing.ID == "" {
+			return fmt.Errorf("durable: invalid persisted session fence")
+		}
+	}
 	b.fenceMu.Lock()
 	defer b.fenceMu.Unlock()
 	if b.fenced == nil {
@@ -460,9 +702,25 @@ func (b *bus) Fence(_ context.Context, id identity.Identity) error {
 
 // Unfence implements events.Fencer. It lifts a fence so a reused session
 // id opened afresh retains events normally. Idempotent.
-func (b *bus) Unfence(_ context.Context, id identity.Identity) error {
+func (b *bus) Unfence(ctx context.Context, id identity.Identity) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
+	}
+	if !b.bestEffort {
+		kind := durableFenceKind(id)
+		rec, err := b.store.Load(ctx, sequenceAuthorityIdentity, kind)
+		if err != nil && !errors.Is(err, state.ErrNotFound) {
+			return fmt.Errorf("durable: load session fence for removal: %w", err)
+		}
+		if err == nil {
+			deleted, deleteErr := b.store.DeleteIf(ctx, state.InternalSlotExpectation(sequenceAuthorityIdentity, kind, rec.ID))
+			if deleteErr != nil {
+				return fmt.Errorf("durable: remove session fence: %w", deleteErr)
+			}
+			if !deleted {
+				return fmt.Errorf("durable: session fence changed during removal: %w", state.ErrConditionFailed)
+			}
+		}
 	}
 	b.fenceMu.Lock()
 	defer b.fenceMu.Unlock()
@@ -573,29 +831,49 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
+	if b.persistenceBroken {
+		return fmt.Errorf("durable: persistence/index state is uncertain; restart required before publishing")
+	}
 
 	// Fenced-session drop. Checked under publishMu (the same lock Fence
 	// acquires) so the fence and the persist never disagree: an event that
 	// reaches here after Fence took hold is dropped and never retained.
-	if b.isFenced(ev.Identity) {
-		return errEventFenced
-	}
-
-	seq := b.nextSeq + 1
-	ev.Sequence = seq
-
 	if b.bestEffort {
+		if b.isFenced(ev.Identity) {
+			return errEventFenced
+		}
+		seq := b.nextSeq + 1
+		ev.Sequence = seq
 		if b.ringCap > 0 {
 			b.ringAppendLocked(*ev)
 		}
 		b.nextSeq = seq
 		return nil
 	}
+	fenced, err := b.isDurablyFenced(ctx, ev.Identity)
+	if err != nil {
+		return err
+	}
+	if fenced {
+		return errEventFenced
+	}
 
-	if err := b.persistLocked(ctx, *ev); err != nil {
-		// nextSeq is NOT advanced: the failed sequence is retried by
-		// the next Publish, keeping the persisted log gap-free.
-		return fmt.Errorf("durable: persist event seq=%d: %w", seq, err)
+	seq, err := b.persistAtomic(ctx, ev)
+	if err != nil {
+		if errors.Is(err, errEventFenced) {
+			return err
+		}
+		// Only an explicit commit-acknowledgement ambiguity poisons the bus.
+		// Validation, reads, cancellation, CAS exhaustion, and known rollback
+		// errors definitely did not commit and leave the next Publish usable.
+		if errors.Is(err, state.ErrCommitOutcomeUnknown) {
+			b.persistenceBroken = true
+		}
+		// nextSeq is NOT advanced. Definite no-commit outcomes retry from shared
+		// authority on the next Publish. An ambiguous outcome stays poisoned:
+		// reusing its sequence could overwrite a commit not yet represented by
+		// the head/index, so restart must perform recovery.
+		return fmt.Errorf("durable: persist event: %w", err)
 	}
 	b.nextSeq = seq
 	// Floor the observed retention horizon at the oldest persisted event.
@@ -608,32 +886,85 @@ func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
 	return nil
 }
 
-// persistLocked writes the entry record and advances the per-session
-// head record. Caller holds publishMu.
-func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
+// persistAtomic allocates through the shared authority and atomically commits
+// authority, immutable body, and conditional session head. Caller holds this
+// bus's publishMu; SaveBatchIf provides cross-process serialization.
+func (b *bus) persistAtomic(ctx context.Context, ev *events.Event) (uint64, error) {
+	for attempt := 1; attempt <= publishCASMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		currentSeq, authorityExpectation, err := b.loadSequenceAuthority(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("load sequence authority: %w", err)
+		}
+		seq := currentSeq + 1
+		if seq == 0 {
+			return 0, fmt.Errorf("global sequence exhausted")
+		}
+		ev.Sequence = seq
+		if err := b.persistAtomicAttempt(ctx, *ev, authorityExpectation); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return 0, err
+		}
+		return seq, nil
+	}
+	return 0, fmt.Errorf("global sequence allocation exceeded %d CAS attempts: %w", publishCASMaxAttempts, state.ErrConditionFailed)
+}
+
+func (b *bus) persistAtomicAttempt(ctx context.Context, ev events.Event, authorityExpectation state.SlotExpectation) error {
 	entryBytes, err := encodeEvent(ev)
 	if err != nil {
 		return err
 	}
+	metadata, err := metadataRecordFromEvent(ev)
+	if err != nil {
+		return fmt.Errorf("build event metadata: %w", err)
+	}
 	sessionID := sessionKey(ev.Identity)
+	fenceExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, durableFenceKind(ev.Identity.Identity), "")
+	if _, err := b.store.Load(ctx, fenceExpectation.Identity, fenceExpectation.Kind); err == nil {
+		return errEventFenced
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return fmt.Errorf("load durable session fence: %w", err)
+	}
 
-	// 1. Write the immutable entry record.
 	entryRec := state.StateRecord{
 		ID:       state.NewEventID(),
 		Identity: sessionID,
 		Kind:     kindEntryPrefix + seqToken(ev.Sequence),
 		Bytes:    entryBytes,
 	}
-	if err := b.store.Save(ctx, entryRec); err != nil {
-		return fmt.Errorf("save entry record: %w", err)
-	}
-
-	// 2. Read-modify-write the head record's sequence list.
-	head, err := b.loadHeadLocked(ctx, sessionID)
+	head, headExpectation, err := b.loadHeadForBatch(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("load head record: %w", err)
 	}
+	// The steady-state path already has one integrity-authenticated metadata
+	// row per sequence. Avoid rebuilding a map over the entire session head on
+	// every publish (which would turn a long-lived session into O(n²) write
+	// work), but force legacy/unchecked heads through bounded canonical
+	// validation before appending a new row.
+	if !headMetadataReady(head) {
+		head, err = b.ensureHeadMetadata(ctx, sessionID, head)
+		if err != nil {
+			return fmt.Errorf("upgrade head index: %w", err)
+		}
+		// Adoption may have replaced the head generation.
+		head, headExpectation, err = b.loadHeadForBatch(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("reload adopted head record: %w", err)
+		}
+		if len(head.Sequences) > 0 && !headMetadataReady(head) {
+			return fmt.Errorf("adopted head changed before publication: %w", state.ErrConditionFailed)
+		}
+	}
 	head.Sequences = append(head.Sequences, ev.Sequence)
+	head.Metadata = append(head.Metadata, metadata)
+	head.MetadataValidatedCount = len(head.Sequences)
+	head.MetadataReady = true
+	head.MetadataIntegrityChecksum = metadataIntegrityChecksum(head.Sequences, head.Metadata)
 	headBytes, err := encodeHead(head)
 	if err != nil {
 		return fmt.Errorf("encode head record: %w", err)
@@ -644,23 +975,245 @@ func (b *bus) persistLocked(ctx context.Context, ev events.Event) error {
 		Kind:     kindHead,
 		Bytes:    headBytes,
 	}
-	if err := b.store.Save(ctx, headRec); err != nil {
-		return fmt.Errorf("save head record: %w", err)
+	authorityBytes, err := json.Marshal(sequenceAuthorityRecord{Sequence: ev.Sequence})
+	if err != nil {
+		return fmt.Errorf("encode sequence authority: %w", err)
 	}
-	return nil
+	authorityRec := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kindSequenceAuthority, authorityBytes)
+	entryExpectation := state.SlotExpectation{Identity: sessionID, Kind: entryRec.Kind}
+	return b.store.SaveBatchIf(ctx,
+		[]state.SlotExpectation{authorityExpectation, entryExpectation, headExpectation, fenceExpectation},
+		[]state.StateRecord{authorityRec, entryRec, headRec})
 }
 
-// loadHeadLocked returns the per-session head record, or a fresh empty
-// head when none exists yet. Caller holds publishMu.
-func (b *bus) loadHeadLocked(ctx context.Context, sessionID identity.Quadruple) (headRecord, error) {
+func (b *bus) loadHeadForBatch(ctx context.Context, sessionID identity.Quadruple) (headRecord, state.SlotExpectation, error) {
+	expect := state.SlotExpectation{Identity: sessionID, Kind: kindHead}
 	rec, err := b.store.Load(ctx, sessionID, kindHead)
+	if errors.Is(err, state.ErrNotFound) {
+		return headRecord{}, expect, nil
+	}
 	if err != nil {
-		if errors.Is(err, state.ErrNotFound) {
-			return headRecord{}, nil
-		}
+		return headRecord{}, expect, err
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		return headRecord{}, expect, err
+	}
+	expect.ExpectedEventID = rec.ID
+	return head, expect, nil
+}
+
+// headMetadataReady reports whether the projection has been validated against
+// canonical event bodies and its persisted digest still authenticates the
+// ordered sequence/metadata pair. A length match alone is intentionally not
+// sufficient: a valid event type/cost/identity can still belong to another
+// payload.
+func headMetadataReady(head headRecord) bool {
+	return len(head.Sequences) > 0 &&
+		head.MetadataReady &&
+		head.MetadataValidatedCount == len(head.Sequences) &&
+		len(head.Metadata) == len(head.Sequences) &&
+		head.MetadataIntegrityChecksum == metadataIntegrityChecksum(head.Sequences, head.Metadata)
+}
+
+// saveHeadCheckpoint conditionally persists a bounded metadata adoption
+// checkpoint. The expected bytes are advanced after each successful save, so
+// another runtime cannot be overwritten silently while a large legacy head is
+// being adopted.
+func (b *bus) saveHeadCheckpoint(ctx context.Context, id identity.Quadruple, expectedBytes []byte, head headRecord) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	headBytes, err := encodeHead(head)
+	if err != nil {
+		return nil, err
+	}
+	current, err := b.store.Load(ctx, id, kindHead)
+	if err != nil {
+		return nil, fmt.Errorf("reload head before metadata checkpoint: %w", err)
+	}
+	if !bytes.Equal(current.Bytes, expectedBytes) {
+		return nil, fmt.Errorf("metadata checkpoint raced with a newer head: %w", state.ErrConditionFailed)
+	}
+	if err := b.store.SaveIf(ctx, []state.SlotExpectation{{
+		Identity: id, Kind: kindHead, ExpectedEventID: current.ID,
+	}}, state.StateRecord{
+		ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headBytes,
+	}); err != nil {
+		return nil, fmt.Errorf("save metadata checkpoint: %w", err)
+	}
+	return headBytes, nil
+}
+
+// ensureHeadMetadata upgrades a v1.29 head (which only carried sequence
+// numbers) to the typed metadata projection. It also authenticates heads
+// whose metadata already has the right length: the event body is canonical,
+// while the persisted ready+checksum marker permits metadata-only consumers
+// to remain O(1) after one successful validation. Legacy/adoption work is
+// bounded by metadataValidationBatchSize and checkpoints a validated prefix,
+// making cancellation and restart resumable rather than a repeated whole-head
+// scan. A stale but structurally-valid row is repaired from its body.
+func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, head headRecord) (headRecord, error) {
+	if err := ctx.Err(); err != nil {
 		return headRecord{}, err
 	}
-	return decodeHead(rec.Bytes)
+	if len(head.Sequences) == 0 {
+		if len(head.Metadata) != 0 || head.MetadataReady || head.MetadataValidatedCount != 0 || head.MetadataIntegrityChecksum != "" {
+			return headRecord{}, fmt.Errorf("metadata exists for empty head")
+		}
+		return head, nil
+	}
+
+	seqSet := make(map[uint64]struct{}, len(head.Sequences))
+	for _, seq := range head.Sequences {
+		if seq == 0 {
+			return headRecord{}, fmt.Errorf("invalid zero sequence in head")
+		}
+		if _, duplicate := seqSet[seq]; duplicate {
+			return headRecord{}, fmt.Errorf("duplicate sequence=%d in head", seq)
+		}
+		seqSet[seq] = struct{}{}
+	}
+
+	bySeq := make(map[uint64]eventMetadataRecord, len(head.Metadata))
+	for _, m := range head.Metadata {
+		if m.Sequence == 0 || m.Type == "" {
+			return headRecord{}, fmt.Errorf("invalid metadata sequence=%d type=%q", m.Sequence, m.Type)
+		}
+		if !events.IsValidEventType(m.Type) {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d has unknown event type %q", m.Sequence, m.Type)
+		}
+		if m.Internal != events.IsBusInternalNotice(m.Type) {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d internal marker disagrees with type %q", m.Sequence, m.Type)
+		}
+		if math.IsNaN(m.CostDollars) || math.IsInf(m.CostDollars, 0) {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d has non-finite cost", m.Sequence)
+		}
+		if _, ok := seqSet[m.Sequence]; !ok {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d is not present in head", m.Sequence)
+		}
+		if _, duplicate := bySeq[m.Sequence]; duplicate {
+			return headRecord{}, fmt.Errorf("duplicate metadata sequence=%d", m.Sequence)
+		}
+		if m.TenantID != id.TenantID || m.UserID != id.UserID || m.SessionID != id.SessionID {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d has identity (%s,%s,%s), want (%s,%s,%s)", m.Sequence, m.TenantID, m.UserID, m.SessionID, id.TenantID, id.UserID, id.SessionID)
+		}
+		bySeq[m.Sequence] = m
+	}
+	if len(head.Metadata) > len(head.Sequences) {
+		return headRecord{}, fmt.Errorf("metadata rows=%d exceed head sequences=%d", len(head.Metadata), len(head.Sequences))
+	}
+
+	// A complete, authenticated head is the normal steady-state path. This is
+	// the only path that avoids loading payload bodies, and the checksum makes
+	// an externally mutated stale-valid row fall back to canonical validation.
+	if headMetadataReady(head) {
+		return head, nil
+	}
+
+	originalHeadBytes, err := encodeHead(head)
+	if err != nil {
+		return headRecord{}, fmt.Errorf("encode head before metadata adoption: %w", err)
+	}
+
+	// A checkpoint contains only the validated sequence prefix. Its checksum
+	// authenticates that prefix so an interrupted adoption never resumes from
+	// a structurally-valid but untrusted row.
+	resumeCount := 0
+	if head.MetadataValidatedCount > 0 && head.MetadataValidatedCount <= len(head.Sequences) &&
+		head.MetadataValidatedCount == len(head.Metadata) &&
+		head.MetadataIntegrityChecksum == metadataIntegrityChecksum(
+			head.Sequences[:head.MetadataValidatedCount], head.Metadata) {
+		resumeCount = head.MetadataValidatedCount
+		for i, m := range head.Metadata {
+			if m.Sequence != head.Sequences[i] {
+				resumeCount = 0
+				break
+			}
+		}
+	}
+	metadata := make([]eventMetadataRecord, resumeCount, len(head.Sequences))
+	copy(metadata, head.Metadata[:resumeCount])
+	expectedBytes := originalHeadBytes
+
+	checkpoint := func(final bool) error {
+		checkpointHead := head
+		checkpointHead.Metadata = append([]eventMetadataRecord(nil), metadata...)
+		checkpointHead.MetadataValidatedCount = len(metadata)
+		checkpointHead.MetadataReady = final
+		if final {
+			checkpointHead.MetadataIntegrityChecksum = metadataIntegrityChecksum(checkpointHead.Sequences, checkpointHead.Metadata)
+		} else {
+			checkpointHead.MetadataIntegrityChecksum = metadataIntegrityChecksum(checkpointHead.Sequences[:len(metadata)], checkpointHead.Metadata)
+		}
+		var saveErr error
+		expectedBytes, saveErr = b.saveHeadCheckpoint(ctx, id, expectedBytes, checkpointHead)
+		if saveErr != nil {
+			return saveErr
+		}
+		head = checkpointHead
+		return nil
+	}
+
+	for i := resumeCount; i < len(head.Sequences); i++ {
+		if err := ctx.Err(); err != nil {
+			return headRecord{}, fmt.Errorf("metadata adoption cancelled after %d/%d rows: %w", len(metadata), len(head.Sequences), err)
+		}
+		seq := head.Sequences[i]
+		rec, err := b.store.Load(ctx, id, kindEntryPrefix+seqToken(seq))
+		if err != nil {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: load payload: %w", seq, err)
+		}
+		ev, err := decodeEvent(rec.Bytes)
+		if err != nil {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: decode payload: %w", seq, err)
+		}
+		if ev.Sequence != seq || ev.Identity.Identity != id.Identity || (ev.Identity.RunID != id.RunID && ev.Identity.RunID != "") {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: payload identity/sequence mismatch", seq)
+		}
+		canonical, err := metadataRecordFromEvent(ev)
+		if err != nil {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: %w", seq, err)
+		}
+		// The body is authoritative. A stale but valid existing row is
+		// replaced, while malformed rows were rejected by the structural
+		// checks above.
+		metadata = append(metadata, canonical)
+
+		if len(metadata)%metadataValidationBatchSize == 0 || i == len(head.Sequences)-1 {
+			if err := checkpoint(i == len(head.Sequences)-1); err != nil {
+				return headRecord{}, fmt.Errorf("metadata adoption checkpoint after %d/%d rows: %w", len(metadata), len(head.Sequences), err)
+			}
+		}
+	}
+	if resumeCount == len(head.Sequences) {
+		if err := checkpoint(true); err != nil {
+			return headRecord{}, fmt.Errorf("finalize metadata adoption: %w", err)
+		}
+	}
+	return head, nil
+}
+
+func metadataFromHead(head headRecord) []events.EventMetadata {
+	out := make([]events.EventMetadata, 0, len(head.Metadata))
+	for _, m := range head.Metadata {
+		out = append(out, m.metadata())
+	}
+	return out
+}
+
+func validateMetadataEvent(meta events.EventMetadata, ev events.Event) error {
+	if meta.Sequence != ev.Sequence || meta.Type != ev.Type || meta.Identity != ev.Identity || !meta.OccurredAt.Equal(ev.OccurredAt) || meta.Internal != events.IsBusInternalNotice(ev.Type) {
+		return fmt.Errorf("projection differs from payload (metadata=%+v payload seq=%d type=%q)", meta, ev.Sequence, ev.Type)
+	}
+	rebuilt, err := events.NewEventMetadata(ev)
+	if err != nil {
+		return fmt.Errorf("rebuild metadata: %w", err)
+	}
+	if meta.CostSummary != rebuilt.CostSummary || meta.TotalTokens != rebuilt.TotalTokens || meta.CostDollars != rebuilt.CostDollars {
+		return fmt.Errorf("cost summary differs from payload")
+	}
+	return nil
 }
 
 // ringAppendLocked writes ev to the next best-effort ring slot. Caller
@@ -729,7 +1282,7 @@ func (b *bus) Replay(ctx context.Context, from events.Cursor, f events.Filter) (
 // The cursor's SessionID selects which session's head record to read;
 // when f is admin and from.SessionID is empty there is no single
 // session to scan, so admin replay requires a SessionID on the cursor.
-func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Filter) ([]events.Event, error) {
+func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Filter) (out []events.Event, retErr error) {
 	session := from.SessionID
 	if session == "" {
 		session = f.Session
@@ -755,10 +1308,22 @@ func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Fi
 		return nil, fmt.Errorf("%w: durable replay requires the full identity triple on the filter",
 			events.ErrIdentityScopeRequired)
 	}
-	if b.isFenced(sessionID) {
+	fenced, err := b.isDurablyFenced(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if fenced {
 		// Erased session — no history to replay (events.Fencer).
 		return nil, nil
 	}
+	defer func() {
+		fenced, err := b.isDurablyFenced(ctx, sessionID)
+		if err != nil {
+			out, retErr = nil, err
+		} else if fenced {
+			out, retErr = nil, nil
+		}
+	}()
 
 	head, err := b.loadHead(ctx, sessionID)
 	if err != nil {
@@ -771,7 +1336,7 @@ func (b *bus) replayDurable(ctx context.Context, from events.Cursor, f events.Fi
 	seqs := append([]uint64(nil), head.Sequences...)
 	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
 
-	out := make([]events.Event, 0, len(seqs))
+	out = make([]events.Event, 0, len(seqs))
 	for _, seq := range seqs {
 		if seq <= from.Sequence {
 			continue
@@ -861,10 +1426,22 @@ func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, t
 	if err != nil {
 		return 0, 0, false, err
 	}
-	if b.isFenced(sessionID) {
+	fenced, err := b.isDurablyFenced(ctx, sessionID)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if fenced {
 		// Erased session — reads as no retained history (events.Fencer).
 		return 0, 0, false, events.ErrNoHistory
 	}
+	defer func() {
+		fenced, fenceErr := b.isDurablyFenced(ctx, sessionID)
+		if fenceErr != nil {
+			head, tail, truncated, err = 0, 0, false, fenceErr
+		} else if fenced {
+			head, tail, truncated, err = 0, 0, false, events.ErrNoHistory
+		}
+	}()
 	hd, err := b.loadHead(ctx, sessionID)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("durable: bounds load head: %w", err)
@@ -888,7 +1465,7 @@ func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, t
 // Window does NOT emit audit.admin_scope_used: the handler always calls
 // Bounds first, which emits it once per state.history request (a paired
 // Bounds+Window must not double-audit a single read).
-func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Filter) ([]events.Event, error) {
+func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Filter) (out []events.Event, retErr error) {
 	if b.closed.Load() {
 		return nil, events.ErrBusClosed
 	}
@@ -905,44 +1482,63 @@ func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Fil
 	if err != nil {
 		return nil, err
 	}
-	if b.isFenced(sessionID) {
+	fenced, err := b.isDurablyFenced(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if fenced {
 		// Erased session — no retained history window (events.Fencer).
 		return nil, nil
 	}
+	defer func() {
+		fenced, err := b.isDurablyFenced(ctx, sessionID)
+		if err != nil {
+			out, retErr = nil, err
+		} else if fenced {
+			out, retErr = nil, nil
+		}
+	}()
 	head, err := b.loadHead(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("durable: window load head: %w", err)
 	}
+	head, err = b.ensureHeadMetadata(ctx, sessionID, head)
+	if err != nil {
+		return nil, fmt.Errorf("durable: window index head: %w", err)
+	}
 	if len(head.Sequences) == 0 {
 		return nil, nil
 	}
-	seqs := append([]uint64(nil), head.Sequences...)
-	sort.Slice(seqs, func(i, j int) bool { return seqs[i] > seqs[j] }) // descending: newest first
+	metadata := metadataFromHead(head)
+	sort.Slice(metadata, func(i, j int) bool { return metadata[i].Sequence > metadata[j].Sequence }) // descending: newest first
 
 	// Walk newest-first, skip sequences at/above `before`, collect up to
 	// `limit` MATCHING events, then reverse to oldest-first.
-	out := make([]events.Event, 0, limit)
-	for _, seq := range seqs {
-		if before != 0 && seq >= before {
+	out = make([]events.Event, 0, limit)
+	for _, meta := range metadata {
+		if before != 0 && meta.Sequence >= before {
 			continue
 		}
-		rec, err := b.store.Load(ctx, sessionID, kindEntryPrefix+seqToken(seq))
+		if meta.Internal || !events.MatchMetadataScoped(meta, f) {
+			continue
+		}
+		rec, err := b.store.Load(ctx, sessionID, kindEntryPrefix+seqToken(meta.Sequence))
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				// The head lists a sequence whose entry record is missing —
 				// a torn write or storage bug. Fail loudly rather than
 				// serving a gap (RFC §6.13 / CLAUDE.md §13).
-				return nil, fmt.Errorf("durable: window gap — head lists seq=%d but entry record is missing: %w",
-					seq, err)
+				return nil, fmt.Errorf("durable: window gap — index lists seq=%d but entry record is missing: %w",
+					meta.Sequence, err)
 			}
-			return nil, fmt.Errorf("durable: window load entry seq=%d: %w", seq, err)
+			return nil, fmt.Errorf("durable: window load entry seq=%d: %w", meta.Sequence, err)
 		}
 		ev, err := decodeEvent(rec.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("durable: window decode entry seq=%d: %w", seq, err)
+			return nil, fmt.Errorf("durable: window decode entry seq=%d: %w", meta.Sequence, err)
 		}
-		if events.IsBusInternalNotice(ev.Type) || !f.MatchesScoped(ev) {
-			continue
+		if err := validateMetadataEvent(meta, ev); err != nil {
+			return nil, fmt.Errorf("durable: window metadata mismatch seq=%d: %w", meta.Sequence, err)
 		}
 		out = append(out, ev)
 		if len(out) >= limit {
@@ -999,7 +1595,184 @@ func (b *bus) ListWindow(ctx context.Context, q events.EventListQuery) (events.E
 		page.Truncated = evicted
 		return page, nil
 	}
+	if !q.Admin {
+		id := identity.Quadruple{Identity: identity.Identity{
+			TenantID: events.WireFilterFirst(q.Filter.TenantIDs), UserID: events.WireFilterFirst(q.Filter.UserIDs), SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
+		}}
+		fenced, err := b.isDurablyFenced(ctx, id)
+		if err != nil {
+			return events.EventListPage{}, err
+		}
+		if fenced {
+			return events.EventListPage{}, nil
+		}
+		page, readErr := b.listWindowDurable(ctx, q)
+		fenced, fenceErr := b.isDurablyFenced(ctx, id)
+		if fenceErr != nil {
+			return events.EventListPage{}, fenceErr
+		}
+		if fenced {
+			return events.EventListPage{}, nil
+		}
+		return page, readErr
+	}
 	return b.listWindowDurable(ctx, q)
+}
+
+// ListWindowMetadata serves the same page as ListWindow using only the
+// durable typed metadata projection. It is the read path for aggregate and
+// session-counter consumers: payload bodies are never loaded.
+func (b *bus) ListWindowMetadata(ctx context.Context, q events.EventListQuery) (page events.MetadataListPage, retErr error) {
+	if b.closed.Load() {
+		return events.MetadataListPage{}, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.MetadataListPage{}, err
+	}
+	if !q.Admin && !events.WireFilterHasFullTriple(q.Filter) {
+		return events.MetadataListPage{}, events.ErrIdentityScopeRequired
+	}
+	if q.Admin {
+		b.emitAdminScopeUsed(events.Filter{
+			Tenant:  events.WireFilterFirst(q.Filter.TenantIDs),
+			User:    events.WireFilterFirst(q.Filter.UserIDs),
+			Session: events.WireFilterFirst(q.Filter.SessionIDs),
+		})
+	}
+	if q.Limit <= 0 {
+		return events.MetadataListPage{}, nil
+	}
+	if b.bestEffort {
+		if b.ringCap == 0 {
+			return events.MetadataListPage{}, events.ErrReplayUnavailable
+		}
+		b.publishMu.Lock()
+		snapshot := b.ringSnapshotLocked()
+		evicted := b.evicted
+		b.publishMu.Unlock()
+		page, err := events.MetadataListWindowFromSnapshot(snapshot, q.Before, q.Limit, q.Filter)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+		page.Truncated = evicted
+		return page, nil
+	}
+	if !q.Admin {
+		id := identity.Quadruple{Identity: identity.Identity{
+			TenantID: events.WireFilterFirst(q.Filter.TenantIDs), UserID: events.WireFilterFirst(q.Filter.UserIDs), SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
+		}}
+		fenced, err := b.isDurablyFenced(ctx, id)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+		if fenced {
+			return events.MetadataListPage{}, nil
+		}
+		defer func() {
+			fenced, err := b.isDurablyFenced(ctx, id)
+			if err != nil {
+				page, retErr = events.MetadataListPage{}, err
+			} else if fenced {
+				page, retErr = events.MetadataListPage{}, nil
+			}
+		}()
+	}
+
+	type sessionHead struct {
+		id       identity.Quadruple
+		metadata []events.EventMetadata
+	}
+	var heads []sessionHead
+	var adminFences durableFenceSnapshot
+	if q.Admin {
+		var err error
+		adminFences, err = b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+	}
+	if !q.Admin {
+		id := identity.Quadruple{Identity: identity.Identity{
+			TenantID:  events.WireFilterFirst(q.Filter.TenantIDs),
+			UserID:    events.WireFilterFirst(q.Filter.UserIDs),
+			SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
+		}}
+		hd, err := b.loadHead(ctx, id)
+		if err != nil {
+			return events.MetadataListPage{}, fmt.Errorf("durable: events.list metadata load head: %w", err)
+		}
+		hd, err = b.ensureHeadMetadata(ctx, id, hd)
+		if err != nil {
+			return events.MetadataListPage{}, fmt.Errorf("durable: events.list metadata index head: %w", err)
+		}
+		heads = append(heads, sessionHead{id: id, metadata: metadataFromHead(hd)})
+	} else {
+		recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
+		if err != nil {
+			return events.MetadataListPage{}, fmt.Errorf("durable: events.list metadata scan heads: %w", err)
+		}
+		for _, rec := range recs {
+			if err := ctx.Err(); err != nil {
+				return events.MetadataListPage{}, err
+			}
+			if rec.Kind != kindHead || !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) || adminFences.contains(rec.Identity) {
+				continue
+			}
+			hd, err := decodeHead(rec.Bytes)
+			if err != nil {
+				return events.MetadataListPage{}, fmt.Errorf("durable: events.list metadata decode head (id=%s): %w", rec.ID, err)
+			}
+			hd, err = b.ensureHeadMetadata(ctx, rec.Identity, hd)
+			if err != nil {
+				return events.MetadataListPage{}, fmt.Errorf("durable: events.list metadata index head (id=%s): %w", rec.ID, err)
+			}
+			heads = append(heads, sessionHead{id: rec.Identity, metadata: metadataFromHead(hd)})
+		}
+	}
+
+	matches := make([]events.EventMetadata, 0, q.Limit+1)
+	for _, head := range heads {
+		if err := ctx.Err(); err != nil {
+			return events.MetadataListPage{}, err
+		}
+		for _, m := range head.metadata {
+			if err := ctx.Err(); err != nil {
+				return events.MetadataListPage{}, err
+			}
+			if q.Before != 0 && m.Sequence >= q.Before {
+				continue
+			}
+			if m.Internal || !events.MatchMetadataWire(m, q.Filter) {
+				continue
+			}
+			matches = append(matches, m)
+		}
+	}
+	if q.Admin {
+		currentFences, err := b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.MetadataListPage{}, err
+		}
+		kept := matches[:0]
+		for _, meta := range matches {
+			if !currentFences.contains(meta.Identity) {
+				kept = append(kept, meta)
+			}
+		}
+		matches = kept
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Sequence > matches[j].Sequence })
+	page = events.MetadataListPage{}
+	if len(matches) > q.Limit {
+		page.HasMore = true
+		matches = matches[:q.Limit]
+		page.NextCursor = matches[len(matches)-1].Sequence
+	}
+	for i, j := 0, len(matches)-1; i < j; i, j = i+1, j-1 {
+		matches[i], matches[j] = matches[j], matches[i]
+	}
+	page.Events = matches
+	return page, nil
 }
 
 // listWindowDurable serves the events.list page from the persisted log. It
@@ -1012,10 +1785,18 @@ func (b *bus) ListWindow(ctx context.Context, q events.EventListQuery) (events.E
 // unbounded entry scan runs.
 func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (events.EventListPage, error) {
 	type sessionHead struct {
-		id   identity.Quadruple
-		seqs []uint64
+		id       identity.Quadruple
+		metadata []events.EventMetadata
 	}
 	var heads []sessionHead
+	var adminFences durableFenceSnapshot
+	if q.Admin {
+		var err error
+		adminFences, err = b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.EventListPage{}, err
+		}
+	}
 
 	if !q.Admin {
 		// The handler folded the caller's triple; the filter names exactly
@@ -1026,20 +1807,24 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 			UserID:    events.WireFilterFirst(q.Filter.UserIDs),
 			SessionID: events.WireFilterFirst(q.Filter.SessionIDs),
 		}}
-		if b.isFenced(quad) {
-			return events.EventListPage{}, nil
-		}
 		hd, err := b.loadHead(ctx, quad)
 		if err != nil {
 			return events.EventListPage{}, fmt.Errorf("durable: events.list load head: %w", err)
 		}
-		heads = append(heads, sessionHead{id: quad, seqs: hd.Sequences})
+		hd, err = b.ensureHeadMetadata(ctx, quad, hd)
+		if err != nil {
+			return events.EventListPage{}, fmt.Errorf("durable: events.list index head: %w", err)
+		}
+		heads = append(heads, sessionHead{id: quad, metadata: metadataFromHead(hd)})
 	} else {
 		recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
 		if err != nil {
 			return events.EventListPage{}, fmt.Errorf("durable: events.list scan head records: %w", err)
 		}
 		for _, rec := range recs {
+			if err := ctx.Err(); err != nil {
+				return events.EventListPage{}, err
+			}
 			// ListKind matches kindHead as a literal PREFIX — guard on the
 			// exact kind so a future sibling kind under the same stem is not
 			// mis-decoded (mirrors recoverNextSeq).
@@ -1052,53 +1837,66 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 			if !events.WireFilterMatchesTriple(q.Filter, rec.Identity.Identity) {
 				continue
 			}
-			if b.isFenced(rec.Identity) {
+			if adminFences.contains(rec.Identity) {
 				continue
 			}
 			hd, err := decodeHead(rec.Bytes)
 			if err != nil {
 				return events.EventListPage{}, fmt.Errorf("durable: events.list decode head (id=%s): %w", rec.ID, err)
 			}
-			heads = append(heads, sessionHead{id: rec.Identity, seqs: hd.Sequences})
+			hd, err = b.ensureHeadMetadata(ctx, rec.Identity, hd)
+			if err != nil {
+				return events.EventListPage{}, fmt.Errorf("durable: events.list index head (id=%s): %w", rec.ID, err)
+			}
+			heads = append(heads, sessionHead{id: rec.Identity, metadata: metadataFromHead(hd)})
 		}
 	}
 
 	// Merge candidate (session, seq) pairs below the cursor, global-
 	// descending by sequence.
 	type candidate struct {
-		id  identity.Quadruple
-		seq uint64
+		id   identity.Quadruple
+		meta events.EventMetadata
 	}
 	var cands []candidate
 	for _, h := range heads {
-		for _, seq := range h.seqs {
-			if q.Before != 0 && seq >= q.Before {
+		if err := ctx.Err(); err != nil {
+			return events.EventListPage{}, err
+		}
+		for _, meta := range h.metadata {
+			if q.Before != 0 && meta.Sequence >= q.Before {
 				continue
 			}
-			cands = append(cands, candidate{id: h.id, seq: seq})
+			if meta.Internal || !events.MatchMetadataWire(meta, q.Filter) {
+				continue
+			}
+			cands = append(cands, candidate{id: h.id, meta: meta})
 		}
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].seq > cands[j].seq })
+	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence > cands[j].meta.Sequence })
 
 	matches := make([]events.Event, 0, q.Limit+1)
 	for _, c := range cands {
 		if err := ctx.Err(); err != nil {
 			return events.EventListPage{}, err
 		}
-		rec, err := b.store.Load(ctx, c.id, kindEntryPrefix+seqToken(c.seq))
+		rec, err := b.store.Load(ctx, c.id, kindEntryPrefix+seqToken(c.meta.Sequence))
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				// The head lists a sequence whose entry record is missing —
 				// a torn write or storage bug. Fail loudly rather than
 				// serving a gap (RFC §6.13 / CLAUDE.md §13).
-				return events.EventListPage{}, fmt.Errorf("durable: events.list gap — head lists seq=%d but entry record is missing: %w",
-					c.seq, err)
+				return events.EventListPage{}, fmt.Errorf("durable: events.list gap — index lists seq=%d but entry record is missing: %w",
+					c.meta.Sequence, err)
 			}
-			return events.EventListPage{}, fmt.Errorf("durable: events.list load entry seq=%d: %w", c.seq, err)
+			return events.EventListPage{}, fmt.Errorf("durable: events.list load entry seq=%d: %w", c.meta.Sequence, err)
 		}
 		ev, err := decodeEvent(rec.Bytes)
 		if err != nil {
-			return events.EventListPage{}, fmt.Errorf("durable: events.list decode entry seq=%d: %w", c.seq, err)
+			return events.EventListPage{}, fmt.Errorf("durable: events.list decode entry seq=%d: %w", c.meta.Sequence, err)
+		}
+		if err := validateMetadataEvent(c.meta, ev); err != nil {
+			return events.EventListPage{}, fmt.Errorf("durable: events.list metadata mismatch seq=%d: %w", c.meta.Sequence, err)
 		}
 		if events.IsBusInternalNotice(ev.Type) || !events.MatchWire(ev, q.Filter) {
 			continue
@@ -1107,6 +1905,20 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 		if len(matches) > q.Limit {
 			break
 		}
+	}
+
+	if q.Admin {
+		currentFences, err := b.loadDurableFenceSnapshot(ctx)
+		if err != nil {
+			return events.EventListPage{}, err
+		}
+		kept := matches[:0]
+		for _, ev := range matches {
+			if !currentFences.contains(ev.Identity) {
+				kept = append(kept, ev)
+			}
+		}
+		matches = kept
 	}
 
 	var page events.EventListPage
@@ -1452,9 +2264,10 @@ func windowFromSnapshot(snapshot []events.Event, before uint64, limit int, f eve
 
 // Compile-time assertions: bus implements all three interfaces.
 var (
-	_ events.EventBus         = (*bus)(nil)
-	_ events.Replayer         = (*bus)(nil)
-	_ events.HistoryReplayer  = (*bus)(nil)
-	_ events.Fencer           = (*bus)(nil)
-	_ events.ProjectionSource = (*bus)(nil)
+	_ events.EventBus              = (*bus)(nil)
+	_ events.Replayer              = (*bus)(nil)
+	_ events.HistoryReplayer       = (*bus)(nil)
+	_ events.EventMetadataReplayer = (*bus)(nil)
+	_ events.Fencer                = (*bus)(nil)
+	_ events.ProjectionSource      = (*bus)(nil)
 )

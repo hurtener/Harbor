@@ -75,6 +75,7 @@ func newAggregateDurableDeps(t *testing.T) *aggregateDurableDeps {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         512,
+		LegacyWritersDrained:     true,
 	}, red, store)
 	if err != nil {
 		t.Fatalf("durable.New: %v", err)

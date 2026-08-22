@@ -54,6 +54,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/observability/rollups"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
@@ -64,9 +65,10 @@ const pgxDriverName = "pgx"
 // Connection-pool defaults. Tuning lives in a future config knob, not
 // here.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // Config configures the Postgres rollups driver. Only DSN is mandatory;
@@ -101,18 +103,39 @@ func New(cfg Config) (rollups.Store, error) {
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, db, true)
+}
+
+// NewWithDB constructs rollups over a runtime-owned pool. The store borrows
+// db and leaves physical shutdown to the runtime pool manager.
+func NewWithDB(cfg Config, db *sql.DB) (rollups.Store, error) {
+	if db == nil {
+		return nil, errors.New("rollups/postgres: injected db is required")
+	}
+	return newWithDB(cfg, db, false)
+}
+
+func newWithDB(cfg Config, db *sql.DB, ownsDB bool) (rollups.Store, error) {
+	if cfg.DSN == "" {
+		return nil, errors.New("rollups/postgres: cfg.DSN is required")
+	}
 
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("rollups/postgres: ping: %w", err)
 	}
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
-	return &driver{db: db}, nil
+	return &driver{db: db, ownsDB: ownsDB}, nil
 }
 
 // driver is the Postgres-backed rollups.Store implementation.
@@ -121,6 +144,7 @@ func New(cfg Config) (rollups.Store, error) {
 // flag (compiled artifacts are immutable; per-run state lives in ctx).
 type driver struct {
 	db     *sql.DB
+	ownsDB bool
 	closed atomic.Bool
 }
 
@@ -470,6 +494,9 @@ func (d *driver) Rebuild(ctx context.Context) error {
 // instead of racing on a closed *sql.DB.
 func (d *driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !d.ownsDB {
 		return nil
 	}
 	if err := d.db.Close(); err != nil {

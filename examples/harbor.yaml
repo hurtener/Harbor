@@ -24,6 +24,16 @@ telemetry:
   log_level: info
   service_name: harbor
 
+# v1.29.1 runtime-wide PostgreSQL budget. Equal subsystem DSNs share one pool;
+# distinct legacy DSNs still share this aggregate cap during the staged first
+# boot. All fields are restart-required.
+postgres:
+  pool:
+    max_open: 3
+    max_idle: 1
+    conn_max_lifetime: 5m
+    conn_max_idle_time: 30s
+
 state:
   driver: inmem
   # Postgres only. Empty/omitted = apply (direct/session-capable endpoint).
@@ -334,6 +344,12 @@ events:
   # is required whenever state_driver is sqlite or postgres.
   #   state_driver: sqlite
   #   state_dsn: /var/lib/harbor/events.db
+  # Required whenever a durable store has no v1.29.1 authority, even when its
+  # scan is empty: set true only after every old event-writing Runtime sharing
+  # this StateStore has stopped. Ordinary
+  # rolling replacement is unsafe; use stop-before-start/suspend-resume.
+  # Migration-only processes are not event writers.
+  #   legacy_writers_drained: true
 
 artifacts:
   # `inmem` (per-process, dev/embedded floor), `fs` (single-binary
