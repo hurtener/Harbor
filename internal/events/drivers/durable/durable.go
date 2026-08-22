@@ -82,6 +82,14 @@ const (
 	// a durable checkpoint is written. A cancelled/restarted runtime resumes
 	// after the validated prefix instead of repeating the whole head scan.
 	metadataValidationBatchSize = 128
+	// recoveryStableViewMaxAttempts bounds boot catch-up under a continuously
+	// changing head set. Two identical consecutive views are required before
+	// nextSeq is admitted; persistent churn fails boot loudly rather than
+	// risking sequence reuse.
+	recoveryStableViewMaxAttempts = 8
+	// recoveryRetryDelay prevents a conflicting writer from turning boot
+	// catch-up into a tight retry loop while remaining negligible normally.
+	recoveryRetryDelay = time.Millisecond
 )
 
 // errEventFenced is the internal sentinel sequenceAndStore returns when
@@ -201,8 +209,9 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 //
 // It enumerates the per-session head records via the explicitly-elevated
 // maintenance scan (StateStore.ListKind with MaintenanceScoped set — RFC
-// §6.11), decodes each, and floors nextSeq at the GLOBAL maximum sequence
-// across every record's Sequences list (0 for an empty log). It is
+// §6.11), decodes each, and requires two identical consecutive generations
+// before flooring nextSeq at the GLOBAL maximum sequence (0 for an empty
+// log). Conditional adoption conflicts restart the bounded scan. It is
 // another maintenance-scan consumer alongside the pause sweeper's
 // crash-orphan rescan. In addition to the sequence floor it adopts legacy
 // metadata heads through bounded, conditional checkpoints; the cross-
@@ -213,57 +222,122 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 // returns a wrapped error so New fails the boot; the counter is never
 // silently started at 0.
 func (b *bus) recoverNextSeq(ctx context.Context) error {
+	var previous recoveryHeadView
+	for attempt := 1; attempt <= recoveryStableViewMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("durable: recover sequence counter: catch-up cancelled: %w", err)
+		}
+		current, err := b.scanRecoveryHeadView(ctx)
+		if err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				previous = recoveryHeadView{}
+			} else {
+				return err
+			}
+		} else if previous.generations != nil && recoveryViewsEqual(previous.generations, current.generations) {
+			b.nextSeq = current.maxSeq
+			if current.minSeq > 0 {
+				if err := b.recoverOldestRetained(ctx, current.minSeqOwner, current.minSeq); err != nil {
+					return err
+				}
+			}
+			b.logger.Info("durable event log: rehydrated sequence counter from stable persisted head view",
+				slog.String("driver", "durable"),
+				slog.Uint64("recovered_max_sequence", current.maxSeq),
+				slog.Int("session_count", current.sessionCount),
+				slog.Int("recovery_attempts", attempt))
+			return nil
+		} else {
+			previous = current
+		}
+		if attempt < recoveryStableViewMaxAttempts {
+			if err := waitRecoveryRetry(ctx); err != nil {
+				return fmt.Errorf("durable: recover sequence counter: catch-up cancelled: %w", err)
+			}
+		}
+	}
+	return fmt.Errorf("durable: recover sequence counter: head view did not stabilize after %d bounded attempts", recoveryStableViewMaxAttempts)
+}
+
+type recoveryHeadView struct {
+	generations  map[string]string
+	maxSeq       uint64
+	minSeq       uint64
+	minSeqOwner  identity.Quadruple
+	sessionCount int
+}
+
+func (b *bus) scanRecoveryHeadView(ctx context.Context) (recoveryHeadView, error) {
+	if err := ctx.Err(); err != nil {
+		return recoveryHeadView{}, err
+	}
 	recs, err := b.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, kindHead)
 	if err != nil {
-		return fmt.Errorf("durable: recover sequence counter: scan head records: %w", err)
+		return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: scan head records: %w", err)
 	}
-	var maxSeq uint64
-	var minSeq uint64
-	var minSeqOwner identity.Quadruple
+	if err := ctx.Err(); err != nil {
+		return recoveryHeadView{}, err
+	}
+	view := recoveryHeadView{generations: make(map[string]string, len(recs))}
 	for _, rec := range recs {
-		// ListKind matches kindHead as a literal PREFIX. Today only the
-		// exact head kind starts with it (entry records use the disjoint
-		// "events.durable.entry/" prefix), but a future sibling kind under
-		// the same dotted stem (e.g. a "events.durable.head.checkpoint"
-		// global-max record — the noted scaling follow-up) would be swept
-		// in and fail decodeHead. Guard on the exact kind so the scan stays
-		// correct if such a sibling lands.
+		if err := ctx.Err(); err != nil {
+			return recoveryHeadView{}, err
+		}
 		if rec.Kind != kindHead {
 			continue
 		}
 		head, err := decodeHead(rec.Bytes)
 		if err != nil {
-			return fmt.Errorf("durable: recover sequence counter: decode head record (id=%s): %w", rec.ID, err)
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: decode head record (id=%s): %w", rec.ID, err)
 		}
 		head, err = b.ensureHeadMetadata(ctx, rec.Identity, head)
 		if err != nil {
-			return fmt.Errorf("durable: recover sequence counter: index head record (id=%s): %w", rec.ID, err)
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: index head record (id=%s): %w", rec.ID, err)
 		}
+		headBytes, err := encodeHead(head)
+		if err != nil {
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: encode adopted head record (id=%s): %w", rec.ID, err)
+		}
+		key := rec.Identity.TenantID + "\x00" + rec.Identity.UserID + "\x00" + rec.Identity.SessionID + "\x00" + rec.Identity.RunID
+		if _, duplicate := view.generations[key]; duplicate {
+			return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: duplicate head identity (%s,%s,%s)", rec.Identity.TenantID, rec.Identity.UserID, rec.Identity.SessionID)
+		}
+		view.generations[key] = string(headBytes)
+		view.sessionCount++
 		for _, seq := range head.Sequences {
-			if seq > maxSeq {
-				maxSeq = seq
+			if seq > view.maxSeq {
+				view.maxSeq = seq
 			}
-			if minSeq == 0 || seq < minSeq {
-				minSeq = seq
-				minSeqOwner = rec.Identity
+			if view.minSeq == 0 || seq < view.minSeq {
+				view.minSeq = seq
+				view.minSeqOwner = rec.Identity
 			}
 		}
 	}
-	b.nextSeq = maxSeq
-	// Seed the observed retention horizon from the persisted head — the
-	// oldest event's OccurredAt. The log is gap-free and untrimmed, so the
-	// global-minimum sequence IS the head; loading its one entry record
-	// (not a table scan) is the cheap min-index read.
-	if minSeq > 0 {
-		if err := b.recoverOldestRetained(ctx, minSeqOwner, minSeq); err != nil {
-			return err
+	return view, nil
+}
+
+func recoveryViewsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, generation := range a {
+		if b[key] != generation {
+			return false
 		}
 	}
-	b.logger.Info("durable event log: rehydrated sequence counter from persisted head records",
-		slog.String("driver", "durable"),
-		slog.Uint64("recovered_max_sequence", maxSeq),
-		slog.Int("session_count", len(recs)))
-	return nil
+	return true
+}
+
+func waitRecoveryRetry(ctx context.Context) error {
+	timer := time.NewTimer(recoveryRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // recoverOldestRetained loads the persisted entry for the global-minimum

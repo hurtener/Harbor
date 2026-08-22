@@ -30,6 +30,32 @@ type cancelAfterPayloadLoadsStore struct {
 	payloadLoads atomic.Int64
 }
 
+type conditionRaceStore struct {
+	state.StateStore
+	update    func()
+	fired     atomic.Bool
+	listCalls atomic.Int64
+}
+
+type snapshotRaceStore struct {
+	state.StateStore
+	update    func()
+	fired     atomic.Bool
+	listCalls atomic.Int64
+}
+
+type churningHeadStore struct {
+	state.StateStore
+	update    func(uint64)
+	listCalls atomic.Int64
+}
+
+type cancelingRecoveryStore struct {
+	state.StateStore
+	cancel    context.CancelFunc
+	listCalls atomic.Int64
+}
+
 var errInjectedHeadSave = errors.New("injected durable head save failure")
 
 type headFailureStore struct {
@@ -70,6 +96,42 @@ func (s *cancelAfterPayloadLoadsStore) Load(ctx context.Context, id identity.Qua
 		}
 	}
 	return s.StateStore.Load(ctx, id, kind)
+}
+
+func (s *conditionRaceStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if next.Kind == kindHead && s.fired.CompareAndSwap(false, true) {
+		s.update()
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+func (s *conditionRaceStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
+	s.listCalls.Add(1)
+	return s.StateStore.ListKind(ctx, scope, prefix)
+}
+
+func (s *snapshotRaceStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
+	recs, err := s.StateStore.ListKind(ctx, scope, prefix)
+	s.listCalls.Add(1)
+	if err == nil && s.fired.CompareAndSwap(false, true) {
+		s.update()
+	}
+	return recs, err
+}
+
+func (s *churningHeadStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
+	call := s.listCalls.Add(1)
+	s.update(uint64(call + 1))
+	return s.StateStore.ListKind(ctx, scope, prefix)
+}
+
+func (s *cancelingRecoveryStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
+	call := s.listCalls.Add(1)
+	recs, err := s.StateStore.ListKind(ctx, scope, prefix)
+	if call == 2 {
+		s.cancel()
+	}
+	return recs, err
 }
 
 func (s *countingStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
@@ -138,6 +200,74 @@ func seedLegacyHistory(t *testing.T, store state.StateStore, n int, at time.Time
 	}
 }
 
+func appendConcurrentHeadEvent(t *testing.T, store state.StateStore, seq uint64, ready bool) {
+	t.Helper()
+	id := metadataIdentity()
+	ev := events.Event{
+		Type:       events.EventTypeRuntimeWarning,
+		Identity:   id,
+		OccurredAt: time.Date(2026, 8, 22, 1, 0, 0, int(seq), time.UTC),
+		Sequence:   seq,
+		Payload: events.BusDroppedPayload{
+			FromSeq: seq, ToSeq: seq, DroppedCount: 0, SubscriberID: 0,
+		},
+	}
+	entryBytes, err := encodeEvent(ev)
+	if err != nil {
+		t.Fatalf("encode concurrent event seq=%d: %v", seq, err)
+	}
+	if err := store.Save(context.Background(), state.StateRecord{
+		ID: state.NewEventID(), Identity: id, Kind: kindEntryPrefix + seqToken(seq), Bytes: entryBytes,
+	}); err != nil {
+		t.Fatalf("save concurrent event seq=%d: %v", seq, err)
+	}
+	rec, err := store.Load(context.Background(), id, kindHead)
+	if err != nil {
+		t.Fatalf("load head for concurrent event seq=%d: %v", seq, err)
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		t.Fatalf("decode head for concurrent event seq=%d: %v", seq, err)
+	}
+	head.Sequences = append(head.Sequences, seq)
+	if ready {
+		metadata, err := metadataRecordFromEvent(ev)
+		if err != nil {
+			t.Fatalf("metadata concurrent event seq=%d: %v", seq, err)
+		}
+		head.Metadata = append(head.Metadata, metadata)
+		head.MetadataValidatedCount = len(head.Sequences)
+		head.MetadataReady = true
+		head.MetadataIntegrityChecksum = metadataIntegrityChecksum(head.Sequences, head.Metadata)
+	} else {
+		head.Metadata = nil
+		head.MetadataValidatedCount = 0
+		head.MetadataReady = false
+		head.MetadataIntegrityChecksum = ""
+	}
+	headBytes, err := encodeHead(head)
+	if err != nil {
+		t.Fatalf("encode concurrent head seq=%d: %v", seq, err)
+	}
+	if err := store.Save(context.Background(), state.StateRecord{
+		ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headBytes,
+	}); err != nil {
+		t.Fatalf("save concurrent head seq=%d: %v", seq, err)
+	}
+}
+
+func seedReadyHistory(t *testing.T, store state.StateStore) {
+	t.Helper()
+	seedLegacyHistory(t, store, 1, time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC))
+	bus, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("adopt ready seed: %v", err)
+	}
+	if err := bus.Close(context.Background()); err != nil {
+		t.Fatalf("close ready seed bus: %v", err)
+	}
+}
+
 func TestDurable_MetadataIndex_BoundsPayloadLoadsForSparseAndZeroMatches(t *testing.T) {
 	base := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
 	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
@@ -200,8 +330,8 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 	if got := store.loads.Load(); got > 2 {
 		t.Fatalf("restart loaded %d payload records, want head + retention seed only", got)
 	}
-	if got := store.listKinds.Load(); got != 1 {
-		t.Fatalf("restart ListKind calls = %d, want one recovery scan", got)
+	if got := store.listKinds.Load(); got != 2 {
+		t.Fatalf("restart ListKind calls = %d, want two scans proving a stable recovery view", got)
 	}
 	_ = second.Close(context.Background())
 
@@ -422,6 +552,114 @@ func TestDurable_OpenWith_UsesCallerStartupContextForRecovery(t *testing.T) {
 	_, err = events.OpenWith(ctx, metadataCfg(), auditpatterns.New(), events.Deps{State: inner})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("OpenWith cancelled recovery = %v, want context.Canceled", err)
+	}
+}
+
+func TestDurable_Recovery_ConditionalCheckpointRaceCatchesUpWithoutSequenceReuse(t *testing.T) {
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	seedLegacyHistory(t, inner, 1, time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC))
+	tracing := &conditionRaceStore{StateStore: inner}
+	tracing.update = func() { appendConcurrentHeadEvent(t, inner, 2, false) }
+
+	bus, err := New(context.Background(), metadataCfg(), auditpatterns.New(), tracing)
+	if err != nil {
+		t.Fatalf("New after conditional checkpoint race: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	if !tracing.fired.Load() {
+		t.Fatal("test did not trigger the competing head generation")
+	}
+	if got := tracing.listCalls.Load(); got != 3 {
+		t.Fatalf("recovery scans = %d, want conflict retry plus two stable views", got)
+	}
+	if err := bus.Publish(context.Background(), events.Event{
+		Type: events.EventTypeRuntimeWarning, Identity: metadataIdentity(),
+		Payload: events.BusDroppedPayload{FromSeq: 3, ToSeq: 3},
+	}); err != nil {
+		t.Fatalf("Publish after recovery catch-up: %v", err)
+	}
+	rec, err := inner.Load(context.Background(), metadataIdentity(), kindHead)
+	if err != nil {
+		t.Fatalf("load recovered head: %v", err)
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		t.Fatalf("decode recovered head: %v", err)
+	}
+	if got := head.Sequences[len(head.Sequences)-1]; got != 3 {
+		t.Fatalf("post-recovery sequence = %d, want 3 (no reuse of concurrent seq=2)", got)
+	}
+}
+
+func TestDurable_Recovery_PostSnapshotHeadUpdateRequiresStableCatchUp(t *testing.T) {
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	seedReadyHistory(t, inner)
+	tracing := &snapshotRaceStore{StateStore: inner}
+	tracing.update = func() { appendConcurrentHeadEvent(t, inner, 2, true) }
+
+	bus, err := New(context.Background(), metadataCfg(), auditpatterns.New(), tracing)
+	if err != nil {
+		t.Fatalf("New after post-snapshot update: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	if got := tracing.listCalls.Load(); got != 3 {
+		t.Fatalf("recovery scans = %d, want old snapshot, catch-up, stable confirmation", got)
+	}
+	if err := bus.Publish(context.Background(), events.Event{
+		Type: events.EventTypeRuntimeWarning, Identity: metadataIdentity(),
+		Payload: events.BusDroppedPayload{FromSeq: 3, ToSeq: 3},
+	}); err != nil {
+		t.Fatalf("Publish after stable catch-up: %v", err)
+	}
+	rec, err := inner.Load(context.Background(), metadataIdentity(), kindHead)
+	if err != nil {
+		t.Fatalf("load recovered head: %v", err)
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		t.Fatalf("decode recovered head: %v", err)
+	}
+	if got := head.Sequences[len(head.Sequences)-1]; got != 3 {
+		t.Fatalf("post-recovery sequence = %d, want 3 (no reuse of post-snapshot seq=2)", got)
+	}
+}
+
+func TestDurable_Recovery_ContinuousChurnFailsWithinBound(t *testing.T) {
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	seedReadyHistory(t, inner)
+	churning := &churningHeadStore{StateStore: inner}
+	churning.update = func(seq uint64) { appendConcurrentHeadEvent(t, inner, seq, true) }
+	if _, err := New(context.Background(), metadataCfg(), auditpatterns.New(), churning); err == nil {
+		t.Fatal("New accepted a head view that never stabilized")
+	}
+	if got := churning.listCalls.Load(); got != recoveryStableViewMaxAttempts {
+		t.Fatalf("continuous-churn scans = %d, want bounded %d", got, recoveryStableViewMaxAttempts)
+	}
+}
+
+func TestDurable_Recovery_StableViewWaitHonorsCancellation(t *testing.T) {
+	inner, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("stateinmem.New: %v", err)
+	}
+	seedReadyHistory(t, inner)
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := &cancelingRecoveryStore{StateStore: inner, cancel: cancel}
+	_, err = New(ctx, metadataCfg(), auditpatterns.New(), canceling)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled stable-view recovery = %v, want context.Canceled", err)
+	}
+	if got := canceling.listCalls.Load(); got != 2 {
+		t.Fatalf("cancelled recovery scans = %d, want 2", got)
 	}
 }
 
