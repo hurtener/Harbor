@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -247,6 +248,69 @@ func TestLegacyRepair_ResponseLoss_ReplaysPersistedReceiptByteIdentically(t *tes
 	}
 	if !reflect.DeepEqual(firstReport, secondReport) {
 		t.Fatalf("response-loss reports differ:\nfirst=%+v\nsecond=%+v", firstReport, secondReport)
+	}
+}
+
+func TestLegacyRepair_DurableBootReplaysEachImmutableEventOnceAndAdoptsAuthority(t *testing.T) {
+	store := newRepairInmem(t)
+	id := seedRepairHead(t, store, "boot-replay", []uint64{100, 100, 101, 102, 102, 103}, false)
+
+	if _, err := RepairLegacyHeads(context.Background(), store, LegacyRepairOptions{Mode: LegacyRepairApply, WriterDrained: true}); err != nil {
+		t.Fatalf("repair legacy head: %v", err)
+	}
+
+	opened, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store)
+	if err != nil {
+		t.Fatalf("durable boot after repair: %v", err)
+	}
+	b := opened.(*bus)
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	if b.nextSeq != 103 {
+		t.Fatalf("boot sequence floor = %d, want repaired head max 103", b.nextSeq)
+	}
+	authority, err := store.Load(context.Background(), sequenceAuthorityIdentity, kindSequenceAuthority)
+	if err != nil {
+		t.Fatalf("load adopted sequence authority: %v", err)
+	}
+	var adopted sequenceAuthorityRecord
+	if err := json.Unmarshal(authority.Bytes, &adopted); err != nil {
+		t.Fatalf("decode adopted sequence authority: %v", err)
+	}
+	if adopted.Sequence != 103 {
+		t.Fatalf("adopted sequence authority = %d, want 103", adopted.Sequence)
+	}
+
+	filter := events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
+	replayed, err := opened.(events.Replayer).Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, filter)
+	if err != nil {
+		t.Fatalf("replay after repair and boot: %v", err)
+	}
+	if len(replayed) != 4 {
+		t.Fatalf("replayed %d immutable events, want exactly 4: %+v", len(replayed), replayed)
+	}
+	for i, ev := range replayed {
+		want := uint64(100 + i)
+		if ev.Sequence != want {
+			t.Fatalf("replayed event[%d] sequence = %d, want %d", i, ev.Sequence, want)
+		}
+		if ev.Identity.TenantID != id.TenantID || ev.Identity.UserID != id.UserID || ev.Identity.SessionID != id.SessionID {
+			t.Fatalf("replayed event[%d] identity = %+v, want session identity", i, ev.Identity)
+		}
+	}
+
+	if err := opened.Publish(context.Background(), events.Event{
+		Type:     events.EventTypeRuntimeWarning,
+		Identity: id,
+		Payload:  repairEvent(id, 104, "run-boot-replay").Payload,
+	}); err != nil {
+		t.Fatalf("publish after repaired boot: %v", err)
+	}
+	after, err := opened.(events.Replayer).Replay(context.Background(), events.Cursor{SessionID: id.SessionID, Sequence: 103}, filter)
+	if err != nil {
+		t.Fatalf("replay post-recovery event: %v", err)
+	}
+	if len(after) != 1 || after[0].Sequence != 104 {
+		t.Fatalf("post-recovery replay = %+v, want exactly sequence 104", after)
 	}
 }
 
