@@ -488,10 +488,11 @@ func ValidateApplyDSN(dsn string) error {
 	if trimmed == "" {
 		return errors.New("cutover: direct apply DSN is required")
 	}
-	if strings.Contains(trimmed, "pgbouncer_mode=transaction") || strings.Contains(trimmed, "pool_mode=transaction") {
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "pgbouncer_mode=transaction") || strings.Contains(lower, "pool_mode=transaction") {
 		return fmt.Errorf("cutover: migration apply refuses transaction-pooled DSN; use direct PostgreSQL 5432, never PgBouncer 6432")
 	}
-	if strings.Contains(trimmed, ":6432") {
+	if strings.Contains(lower, ":6432") || strings.Contains(lower, "port=6432") {
 		return fmt.Errorf("cutover: migration apply DSN %q resolves to PgBouncer 6432; use a direct PostgreSQL 5432 endpoint", redactedDSN(trimmed))
 	}
 	return nil
