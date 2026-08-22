@@ -182,7 +182,7 @@ Harbor is four layers, each with a hard boundary:
 | **Runtime** | The orchestration kernel — tasks, planner runtime, tools, memory, sessions, events, skills, artifacts, the unified pause/resume primitive. Headless. |
 | **Protocol** | The canonical, versioned event/state contract. Streaming events, the task-control surface, state snapshots, topology, traces, metrics. |
 | **Console** | The observability + control-plane UI (SvelteKit). Architecturally just a Protocol client — it never reads a Runtime object directly. |
-| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `skill`, `composition-preview`, `version`, and the `inspect-*` family. |
+| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `skill`, `events repair-legacy-heads`, `composition-preview`, `version`, and the `inspect-*` family. |
 
 Because the Console only ever speaks Protocol, the same surface powers a
 remote attach, a third-party dashboard, or an IDE/TUI client. Nothing about

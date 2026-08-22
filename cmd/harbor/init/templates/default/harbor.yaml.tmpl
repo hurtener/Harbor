@@ -101,6 +101,9 @@ llm:
 #     max_idle: 1
 #     conn_max_lifetime: 5m
 #     conn_max_idle_time: 30s
+# Legacy durable-head repair is an offline command, not a runtime key. Stop
+# event writers before `harbor events repair-legacy-heads --driver postgres --dsn "$HARBOR_STATE_DSN" --mode inspect`; see
+# docs/recipes/repair-legacy-durable-heads.md for direct-5432 apply and verify.
 
 # memory — multi-turn context across runs in a session.
 # Strategies: none (default), truncation, rolling_summary.

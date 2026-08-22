@@ -17,6 +17,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Added an offline `harbor events repair-legacy-heads` command for legacy
+  durable heads with redundant sequence references. Inspection is the default
+  and emits only content-free counts, positions, generations, stable hashes,
+  and outcomes; it never logs or stores event payloads or identity values.
+- Exact duplicate references can be canonicalized through StateStore
+  conditional writes while immutable event entries remain untouched. Ambiguous,
+  malformed, mismatched, non-canonical, or concurrently changed data fails
+  closed with no partial write. Receipts are durable and replay is idempotent.
+
+### Operational safety
+
+- Repair requires event-writer stop/drain and explicit freeze acknowledgement.
+  PostgreSQL mutation requires a direct, session-affine `5432` endpoint and
+  refuses detectable transaction-pooled or `6432` destinations. Operators
+  should inspect, apply, and verify before admitting a new event writer.
+
 ## [1.29.2] — 2026-08-22
 
 ### Fixed

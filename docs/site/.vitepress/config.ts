@@ -249,6 +249,7 @@ export default defineConfig({
             { text: "Provider-native attachments", link: "/recipes/provider-native-attachments" },
             { text: "Embed and retrieve", link: "/recipes/embed-and-retrieve" },
             { text: "Consolidate split PostgreSQL projections", link: "/recipes/postgres-split-to-unified-cutover" },
+            { text: "Repair legacy durable heads", link: "/recipes/repair-legacy-durable-heads" },
           ],
         },
       ],

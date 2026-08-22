@@ -2152,3 +2152,14 @@ where advisory-lock migrations run through a direct/session-affine PostgreSQL
 endpoint (normally 5432), while read-only verification and ordinary traffic
 may use transaction-pooled PgBouncer (6432). Applying through an unproven
 transaction pool fails loudly. D-428, D-431.
+
+**Legacy-head repair** — an offline, conditional canonicalization of a
+historical durable event head that removes only validated redundant sequence
+references while leaving immutable entry bodies unchanged. Ambiguous,
+malformed, mismatched, or concurrently changed data fails closed. D-433.
+
+**Content-free repair receipt** — the bounded durable result of a legacy-head
+repair operation. It carries counts, positions, generations, stable hashes or
+record identifiers, immutable entry hashes, tool/version, and outcome, but no
+event payload bytes or identity values. Repeated apply and response-loss
+replay return the same receipt. D-433.
