@@ -46,17 +46,21 @@ Two versions move independently in Harbor (RFC §5.3):
   03:31–03:32Z artifacts/state health pings crash-looped during the same
   connection exhaustion. The v1.29.1 pool budget and cutover procedure keep
   those paths bounded without requiring a Render plan upgrade.
-- Release-candidate evidence includes focused implementation and race tests,
-  plus three focused smoke checks reporting `OK 37 / FAIL 0`,
-  `OK 30 / FAIL 0`, and `OK 7 / SKIP 1 / FAIL 0`, respectively, at implementation head
+- v1.29.1 release evidence includes focused implementation and race tests, plus
+  three focused smoke checks reporting `OK 37 / FAIL 0`, `OK 30 / FAIL 0`, and
+  `OK 7 / SKIP 1 / FAIL 0`, respectively, at implementation head
   `479119fa43f97d8b59800d2d9a5cea688f1130d7`; two independent Terra High
-  reviews are P0/P1 clear. Replacement hosted candidate run `32564052955`
-  attempt 2 completed successfully, including live preflight, on that same
-  SHA. Attempt 1's generic skills race was transient; the exact
-  focused local smoke/race checks were green and the same-SHA rerun was green.
-  Immutable tag/release/provenance/checksums and post-tag version pin remain
-  pending. This ledger claims neither local `make preflight` nor downstream
-  fleet cutover.
+  reviews are P0/P1 clear. Hosted candidate run `32564052955` attempt 2
+  completed successfully, including live preflight, on that same SHA; attempt
+  1's generic skills race was transient, and the exact focused local smoke/race
+  checks plus same-SHA rerun were green. The immutable annotated `v1.29.1`
+  tag (object `99ed87f4b2be1082e4c6aaf3654696277a843a6a`, release commit
+  `bc23ca2931f180d969e13dc0840067dbc802e7ac`) is published in the [GitHub
+  release](https://github.com/hurtener/Harbor/releases/tag/v1.29.1), with 13
+  assets, verified aggregate and six sidecar checksums, and six verified GitHub
+  attestations. The native darwin/arm64 binary reports v1.29.1, Protocol 0.1.0,
+  build `bc23ca29`; the post-tag scaffold pin is complete. Local `make
+  preflight` was never run, and downstream fleet cutover is not claimed.
 
 ## [1.29.0] — 2026-08-20
 

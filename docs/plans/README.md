@@ -967,22 +967,25 @@ real two-client race under `-race`.
   6432 pooled verify, wrong-ledger refusal, schema-classified non-destructive
   cutover, Basic-4GB `max_connections=103` math, and parent handoff evidence
   are binding.
-- **Evidence:** The integrated release-candidate implementation is present at
-  `479119fa43f97d8b59800d2d9a5cea688f1130d7` (the pre-tag ledger commit is
-  documentation-only). Focused implementation and race checks pass; static
-  smoke reports phase-122
-  `OK 37 / SKIP 0 / FAIL 0`, phase-110d `OK 30 / SKIP 0 / FAIL 0`, and
-  phase-53 `OK 7 / SKIP 1 / FAIL 0`. The focused steering race and Phase-53
-  integration selector pass, including `go vet` for steering. Hosted
-  candidate run `32564052955` attempt 2 completed successfully, including live
-  preflight, on the same SHA; attempt 1's phase-39 generic skills race was
-  transient, and the exact focused local smoke/race checks plus same-SHA rerun
-  were green. PostgreSQL conformance and skills coverage (≥85%) jobs passed.
-  Two independent Terra High reviews report P0/P1 clear. Local `make preflight`
-  was not run or claimed; no downstream fleet cutover is claimed.
-- **Decision:** D-431. **Status:** Release candidate (pre-tag; hosted
-  preflight rerun, immutable tag/release/provenance/checksums, and post-tag
-  version pin/cleanup remain pending).
+- **Evidence:** The integrated implementation head is
+  `479119fa43f97d8b59800d2d9a5cea688f1130d7`; focused implementation, race,
+  and smoke checks pass, including the bounded event-index and all-six
+  PostgreSQL pool/migration/cutover contracts. Hosted candidate run
+  `32564052955` attempt 2 completed successfully, including live preflight, on
+  the same SHA; the transient attempt-1 generic skills race was not reproduced,
+  and the exact focused local smoke/race checks plus same-SHA rerun were green.
+  PostgreSQL conformance and skills coverage (≥85%) passed. Two independent
+  Terra High reviews report P0/P1 clear. Feature PR #725 merged as
+  `13d3186b`; ledger PR #726 merged as `bc23ca29`. The immutable annotated
+  `v1.29.1` tag object is `99ed87f4b2be1082e4c6aaf3654696277a843a6a` and peels
+  to `bc23ca2931f180d969e13dc0840067dbc802e7ac`; release workflow
+  `32574108353` succeeded, the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.1)
+  carries 13 assets with verified aggregate and six sidecar checksums, and six
+  GitHub attestations were verified. The native darwin/arm64 artifact reports
+  v1.29.1, Protocol 0.1.0, build `bc23ca29`; ledger CI `32571509875` is green.
+  Local `make preflight` was never run; no downstream fleet cutover is claimed.
+- **Decision:** D-431. **Status:** Shipped (v1.29.1; immutable tag, release,
+  provenance, checksums, hosted gates, and post-tag scaffold pin verified).
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 

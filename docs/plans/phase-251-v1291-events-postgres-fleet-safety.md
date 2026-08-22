@@ -10,19 +10,18 @@ Leg B makes PostgreSQL connection ownership and migration identity runtime
 wide across all six Harbor-owned PostgreSQL projections: state, memory,
 artifacts, skills, sessions/turns, and observability/rollups. The phase also
 ships a non-destructive split-to-unified cutover verifier and operator
-procedure. It is a release-blocking v1.29.1 plan, not a claim that the
-unreleased candidate is already shipped.
+procedure. It was release-blocking for v1.29.1 and is now shipped; downstream
+fleet cutover remains an operator-owned follow-up.
 
 The canonical downstream register already consumes HA-13 for
 `flows.runs.list`. This emergency ask is therefore HA-69, with that
 historical collision recorded in the register and in D-431; no HA-13
 reallocation is implied.
 
-## Release-candidate evidence (2026-08-22)
+## Release evidence (2026-08-22)
 
-The integrated implementation head under review is
-`479119fa43f97d8b59800d2d9a5cea688f1130d7` (the release-ledger commit that
-follows it changes documentation only). Focused evidence is:
+The integrated implementation head is
+`479119fa43f97d8b59800d2d9a5cea688f1130d7`. Focused evidence is:
 
 - phase-122 smoke: `OK 37 / SKIP 0 / FAIL 0`;
 - phase-110d smoke: `OK 30 / SKIP 0 / FAIL 0`;
@@ -35,13 +34,21 @@ follows it changes documentation only). Focused evidence is:
   85%; and
 - two independent Terra High reviews report P0/P1 clear.
 
-Replacement hosted candidate run `32564052955` attempt 2 completed
-successfully, including live preflight, on the same SHA. Attempt 1's phase-39
-generic skills race was transient; the exact focused local smoke/race checks
-were green and the same-SHA rerun was green. Local `make preflight` was not
-run. The immutable annotated tag/release/provenance/checksums, post-tag
-version pin, and downstream fleet cutover remain outside this pre-tag
-evidence.
+Hosted candidate run `32564052955` attempt 2 completed successfully, including
+live preflight, on the same SHA. Attempt 1's generic skills race was transient;
+the exact focused local smoke/race checks were green and the same-SHA rerun was
+green. PostgreSQL conformance and skills coverage (≥85%) passed, and two
+independent Terra High reviews report P0/P1 clear. Feature PR #725 merged as
+`13d3186b`; ledger PR #726 merged as `bc23ca29`. The immutable annotated
+`v1.29.1` tag object is
+`99ed87f4b2be1082e4c6aaf3654696277a843a6a` and peels to
+`bc23ca2931f180d969e13dc0840067dbc802e7ac`. Release workflow `32574108353`
+succeeded; the GitHub release carries 13 assets with verified aggregate and six
+sidecar checksums, six GitHub attestations were verified, and the native
+darwin/arm64 artifact reports v1.29.1, Protocol 0.1.0, build `bc23ca29`.
+Ledger CI `32571509875` is green. Local `make preflight` was never run. The
+post-tag scaffold pin is complete; downstream fleet cutover remains outside
+Harbor release acceptance.
 
 ## RFC anchor
 
@@ -211,10 +218,12 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       and bodies together and rebuild never resurrects them. Out-of-order
       `OccurredAt`, tail-first cursors, filters, identity isolation, and
       retention/truncation are covered.
-- [ ] **Rollup integration:** observability/rollups consumes canonical/index
-      metadata without raw payload scans for supported queries, retains D-426
-      watermark/completeness/erasure semantics, and never reports zero for
-      unavailable or stale data.
+- [ ] **Rollup integration (deferred follow-up):** direct consumption of the
+      event metadata index by observability/rollups remains a follow-up. The
+      shipped v1.29.1 scope includes rollups in the exhaustive six-store
+      runtime-owned pool, migration-identity, restart, and non-destructive
+      cutover contracts; D-426 watermark/completeness/erasure semantics remain
+      unchanged.
 - [x] **Exhaustive six-store registry:** state, memory, artifacts, skills,
       sessions/turns, and observability/rollups each register their PostgreSQL
       pool/migration contract. A registry/AST/contract test fails when a
@@ -292,14 +301,15 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
       never infers a source from a DSN/env name, reports omitted/misprovisioned
       sources, and cannot declare success until every in-scope subsystem
       matches. Old databases are not removed by Harbor.
-- [ ] **Release lifecycle:** HA-69/Phase 251/D-431 docs, config examples,
+- [x] **Release lifecycle:** HA-69/Phase 251/D-431 docs, config examples,
       migration/cutover commands, compatibility notes, focused tests, hosted
       CI, two independent Terra High reviews, immutable annotated v1.29.1
       tag/release/provenance/checksums, and post-tag version pin/cleanup are
-      complete. The candidate evidence is present, but the hosted preflight
-      rerun, immutable tag/release/provenance/checksums, and post-tag version
-      pin/cleanup remain pending. Local `make preflight` is explicitly
-      deferred per the emergency instruction; no fleet cutover is claimed.
+      complete. Tag object `99ed87f4b2be1082e4c6aaf3654696277a843a6a` peels to
+      `bc23ca2931f180d969e13dc0840067dbc802e7ac`; release workflow
+      `32574108353`, candidate run `32564052955` attempt 2, and ledger CI
+      `32571509875` are green. Local `make preflight` was never run per the
+      emergency instruction; no downstream fleet cutover is claimed.
 
 ## Files added or changed
 
@@ -480,11 +490,13 @@ projection, and D-428's direct-apply/pooled-verify split all remain in force.
 ## Pre-merge checklist
 
 - [x] `make drift-audit` passes.
-- [ ] `make preflight` is **deferred to hosted CI per the emergency user
-      instruction**; local preflight is not run and must not be marked green.
+- [x] Hosted live preflight passed in candidate run `32564052955` attempt 2;
+      local `make preflight` was never run per the emergency instruction and is
+      not claimed.
 - [x] `make check-mirror` passes.
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve.
-- [ ] Coverage on touched packages meets the targets above.
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve (`make drift-audit`).
+- [x] Coverage on touched packages meets the targets above under hosted CI,
+      including the PostgreSQL conformance and skills ≥85% gates.
 - [x] Multi-isolation event, persistence, cutover, and pool tests pass in the
       focused and hosted candidate evidence above.
 - [x] Shared event-index and pool-manager artifacts have N≥100 concurrent
