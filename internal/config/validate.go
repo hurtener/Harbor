@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -87,6 +88,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 	validators = append(validators,
 		c.validateRuntime,
 		c.validateTelemetry,
+		c.validatePostgres,
 		c.validateState,
 		c.validateLLM,
 		c.validateEmbeddings,
@@ -110,6 +112,37 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		if err := v(); err != nil {
 			return c.wrapValidationError(err)
 		}
+	}
+	return nil
+}
+
+func (c *Config) validatePostgres() error {
+	p := c.Postgres
+	if p.MaxOpenConns < 0 {
+		return fieldError("postgres.max_open_conns", "must be zero (default) or at least 1")
+	}
+	if p.MaxIdleConns < 0 {
+		return fieldError("postgres.max_idle_conns", "must be zero (default) or non-negative")
+	}
+	maxOpen := p.MaxOpenConns
+	if maxOpen == 0 {
+		maxOpen = postgrespool.DefaultMaxOpenConns
+	}
+	maxIdle := p.MaxIdleConns
+	if maxIdle == 0 {
+		maxIdle = postgrespool.DefaultMaxIdleConns
+	}
+	if maxIdle > maxOpen {
+		return fieldError("postgres.max_idle_conns", fmt.Sprintf("must be <= postgres.max_open_conns (%d)", maxOpen))
+	}
+	if p.ConnMaxLifetime < 0 {
+		return fieldError("postgres.conn_max_lifetime", "must be zero (default) or non-negative")
+	}
+	if p.ConnMaxIdleTime < 0 {
+		return fieldError("postgres.conn_max_idle_time", "must be zero (default) or non-negative")
+	}
+	if p.MigrationMaxConcurrent < 0 {
+		return fieldError("postgres.migration_max_concurrent", "must be zero (default) or at least 1")
 	}
 	return nil
 }

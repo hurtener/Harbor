@@ -66,6 +66,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -81,9 +82,10 @@ const pgxDriverName = "pgx"
 // Postgres drivers for consistency; tuning lives in a future config
 // knob, not here.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // Search-limit bounds mirror the SQLite driver so the two backends cap
@@ -129,23 +131,48 @@ func New(cfg skills.ConfigSnapshot, deps skills.Deps) (skills.SkillStore, error)
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, deps, db, true)
+}
+
+// NewWithDB constructs a skills store over a runtime-owned pool. The returned
+// store borrows db and does not close it.
+func NewWithDB(cfg skills.ConfigSnapshot, deps skills.Deps, db *sql.DB) (skills.SkillStore, error) {
+	if db == nil {
+		return nil, errors.New("skills/postgres: injected db is required")
+	}
+	return newWithDB(cfg, deps, db, false)
+}
+
+func newWithDB(cfg skills.ConfigSnapshot, deps skills.Deps, db *sql.DB, ownsDB bool) (skills.SkillStore, error) {
+	if deps.Bus == nil {
+		return nil, fmt.Errorf("skills/postgres: deps.Bus is required")
+	}
+	if cfg.DSN == "" {
+		return nil, errors.New("skills/postgres: cfg.DSN is required")
+	}
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
 	// loudly at boot, not on the first Upsert.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("skills/postgres: ping: %w", err)
 	}
 
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
 
 	return &driver{
 		db:        db,
+		ownsDB:    ownsDB,
 		bus:       deps.Bus,
 		retrieval: cfg.Retrieval,
 		embedder:  deps.Embedder,
@@ -159,8 +186,9 @@ func init() {
 // driver is the Postgres-backed SkillStore. Safe for concurrent use by
 // N goroutines.
 type driver struct {
-	db  *sql.DB
-	bus events.EventBus
+	db     *sql.DB
+	ownsDB bool
+	bus    events.EventBus
 	// retrieval / embedder configure the opt-in semantic Search path.
 	// Read-only after construction (the concurrent-reuse contract); a
 	// nil embedder is only legal under the default retrieval mode.
@@ -710,6 +738,9 @@ func (d *driver) Close(_ context.Context) error {
 	// closed false->true owns the db.Close(); every other concurrent
 	// caller loses the swap and returns nil. Close is idempotent.
 	if !d.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !d.ownsDB {
 		return nil
 	}
 	if err := d.db.Close(); err != nil {

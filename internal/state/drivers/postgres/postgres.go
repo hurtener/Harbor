@@ -49,6 +49,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -62,9 +63,10 @@ const pgxDriverName = "pgx"
 // Connection-pool defaults. Documented in the phase plan; tuning
 // lives in a future config knob, not here.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // Postgres SQLSTATE codes mapped at the boundary so callers compare
@@ -94,22 +96,41 @@ func New(cfg config.StateConfig) (state.StateStore, error) {
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, db, true)
+}
+
+// NewWithDB constructs a Postgres StateStore over a runtime-owned pool.
+// The returned store borrows db and never closes it; the runtime pool manager
+// owns the physical connection lifecycle.
+func NewWithDB(cfg config.StateConfig, db *sql.DB) (state.StateStore, error) {
+	if db == nil {
+		return nil, errors.New("postgres: injected db is required")
+	}
+	return newWithDB(cfg, db, false)
+}
+
+func newWithDB(cfg config.StateConfig, db *sql.DB, ownsDB bool) (state.StateStore, error) {
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
 	// loudly at boot, not on the first Save.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
 
-	return &driver{db: db}, nil
+	return &driver{db: db, ownsDB: ownsDB}, nil
 }
 
 func init() {
@@ -123,6 +144,7 @@ func init() {
 // state lives in ctx).
 type driver struct {
 	db     *sql.DB
+	ownsDB bool
 	closed atomic.Bool
 }
 
@@ -786,6 +808,9 @@ func (d *driver) ScanKindForTenant(ctx context.Context, scope state.ListScope, t
 // ErrStoreClosed instead of racing on a closed *sql.DB.
 func (d *driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !d.ownsDB {
 		return nil
 	}
 	if err := d.db.Close(); err != nil {

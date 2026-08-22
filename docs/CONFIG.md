@@ -192,13 +192,54 @@ Postgres migration posture at store open. Default: `apply` when empty or
 omitted. Validation: `apply` or `verify`, and only valid when `driver` is
 `postgres`. `apply` takes Harbor's session advisory lock and applies missing
 migrations, so it requires a direct/session-capable Postgres endpoint.
-`verify` performs one read-only `schema_migrations` ledger query, takes no
-advisory lock, begins no transaction, executes no DDL/write, and fails loud if
-the ledger is missing, malformed, or lacks an embedded migration version. It
+`verify` performs read-only checks of the subsystem's namespaced
+`harbor_schema_migrations` rows, `harbor_store_identity`, and required physical
+schema, takes no advisory lock, begins no transaction, executes no DDL/write,
+and fails loud if identity, checksums, schema, or an embedded migration is
+missing or malformed. It
 is safe for transaction-pooled connections after a separate apply step has
 completed. Restart-required.
 
 ---
+
+## PostgreSQL runtime budget
+
+### postgres.max_open_conns
+
+Aggregate maximum open backend connections for one Harbor runtime across
+all six PostgreSQL stores. Equal DSNs reuse one pool; distinct DSNs share
+this same budget. Default: `3` (the Basic-4GB rollout budget).
+
+The supported steady-state topology is one logical PostgreSQL database per
+Harbor runtime with state, memory, artifacts, skills, `sessions.turns`, and
+`observability.rollups` pointed at that database. A distinct DSN per
+subsystem remains supported for the first hotfix rollout, but all such pools
+still consume this same aggregate budget; consolidate one runtime at a time.
+
+### postgres.max_idle_conns
+
+Aggregate idle allowance distributed across the runtime's physical pools.
+Default: `1`.
+
+### postgres.conn_max_lifetime
+
+Maximum connection generation lifetime. Default: `5m`; zero selects the
+default. Restart-required.
+
+### postgres.conn_max_idle_time
+
+Maximum idle connection lifetime. Default: `30s`; zero selects the default,
+never an unbounded idle lifetime. Restart-required.
+
+### postgres.migration_max_concurrent
+
+Operator-declared direct PostgreSQL migration-session budget used by rollout
+planning and accounting. Default: `6`; migrations still use direct port
+`5432`, while ordinary verify traffic may use transaction-pooled `6432`.
+
+The Basic-4GB acceptance math is 18 overlapping runtimes × 3 open = 54,
+plus 6 migration sessions + 12 Pengui/capabilities connections + a 25
+connection operator reserve = 97, below the observed `max_connections=103`.
 
 ## State
 
@@ -219,9 +260,11 @@ Postgres migration posture at store open. Default: `apply` when empty or
 omitted. Validation: `apply` or `verify`, and only valid when `driver` is
 `postgres`. `apply` takes Harbor's session advisory lock and applies missing
 migrations, so it requires a direct/session-capable Postgres endpoint.
-`verify` performs one read-only `schema_migrations` ledger query, takes no
-advisory lock, begins no transaction, executes no DDL/write, and fails loud if
-the ledger is missing, malformed, or lacks an embedded migration version. It
+`verify` performs read-only checks of the subsystem's namespaced
+`harbor_schema_migrations` rows, `harbor_store_identity`, and required physical
+schema, takes no advisory lock, begins no transaction, executes no DDL/write,
+and fails loud if identity, checksums, schema, or an embedded migration is
+missing or malformed. It
 is safe for transaction-pooled connections after a separate apply step has
 completed. Restart-required.
 
@@ -590,9 +633,11 @@ Postgres migration posture at store open. Default: `apply` when empty or
 omitted. Validation: `apply` or `verify`, and only valid when `driver` is
 `postgres`. `apply` takes Harbor's session advisory lock and applies missing
 migrations, so it requires a direct/session-capable Postgres endpoint.
-`verify` performs one read-only `schema_migrations` ledger query, takes no
-advisory lock, begins no transaction, executes no DDL/write, and fails loud if
-the ledger is missing, malformed, or lacks an embedded migration version. It
+`verify` performs read-only checks of the subsystem's namespaced
+`harbor_schema_migrations` rows, `harbor_store_identity`, and required physical
+schema, takes no advisory lock, begins no transaction, executes no DDL/write,
+and fails loud if identity, checksums, schema, or an embedded migration is
+missing or malformed. It
 is safe for transaction-pooled connections after a separate apply step has
 completed. Restart-required.
 
@@ -689,9 +734,11 @@ Postgres migration posture at store open. Default: `apply` when empty or
 omitted. Validation: `apply` or `verify`, and only valid when `driver` is
 `postgres`. `apply` takes Harbor's session advisory lock and applies missing
 migrations, so it requires a direct/session-capable Postgres endpoint.
-`verify` performs one read-only `schema_migrations` ledger query, takes no
-advisory lock, begins no transaction, executes no DDL/write, and fails loud if
-the ledger is missing, malformed, or lacks an embedded migration version. It
+`verify` performs read-only checks of the subsystem's namespaced
+`harbor_schema_migrations` rows, `harbor_store_identity`, and required physical
+schema, takes no advisory lock, begins no transaction, executes no DDL/write,
+and fails loud if identity, checksums, schema, or an embedded migration is
+missing or malformed. It
 is safe for transaction-pooled connections after a separate apply step has
 completed. Restart-required.
 
@@ -954,9 +1001,11 @@ Postgres migration posture at store open. Default: `apply` when empty or
 omitted. Validation: `apply` or `verify`, and only valid when `driver` is
 `postgres`. `apply` takes Harbor's session advisory lock and applies missing
 migrations, so it requires a direct/session-capable Postgres endpoint.
-`verify` performs one read-only `schema_migrations` ledger query, takes no
-advisory lock, begins no transaction, executes no DDL/write, and fails loud if
-the ledger is missing, malformed, or lacks an embedded migration version. It
+`verify` performs read-only checks of the subsystem's namespaced
+`harbor_schema_migrations` rows, `harbor_store_identity`, and required physical
+schema, takes no advisory lock, begins no transaction, executes no DDL/write,
+and fails loud if identity, checksums, schema, or an embedded migration is
+missing or malformed. It
 is safe for transaction-pooled connections after a separate apply step has
 completed. Restart-required.
 
@@ -1009,9 +1058,11 @@ Postgres migration posture at store open. Default: `apply` when empty or
 omitted. Validation: `apply` or `verify`, and only valid when `driver` is
 `postgres`. `apply` takes Harbor's session advisory lock and applies missing
 migrations, so it requires a direct/session-capable Postgres endpoint.
-`verify` performs one read-only `schema_migrations` ledger query, takes no
-advisory lock, begins no transaction, executes no DDL/write, and fails loud if
-the ledger is missing, malformed, or lacks an embedded migration version. It
+`verify` performs read-only checks of the subsystem's namespaced
+`harbor_schema_migrations` rows, `harbor_store_identity`, and required physical
+schema, takes no advisory lock, begins no transaction, executes no DDL/write,
+and fails loud if identity, checksums, schema, or an embedded migration is
+missing or malformed. It
 is safe for transaction-pooled connections after a separate apply step has
 completed. Restart-required.
 

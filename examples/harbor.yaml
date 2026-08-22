@@ -24,6 +24,15 @@ telemetry:
   log_level: info
   service_name: harbor
 
+# Runtime-wide PostgreSQL budget. Equal subsystem DSNs share one pool;
+# distinct legacy DSNs still share this aggregate cap.
+postgres:
+  max_open_conns: 3
+  max_idle_conns: 1
+  conn_max_lifetime: 5m
+  conn_max_idle_time: 30s
+  migration_max_concurrent: 6
+
 state:
   driver: inmem
   # Postgres only. Empty/omitted = apply (direct/session-capable endpoint).

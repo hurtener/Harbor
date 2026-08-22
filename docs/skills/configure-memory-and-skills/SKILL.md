@@ -221,7 +221,7 @@ tools:
 
 Switching backends is a `driver:` + `dsn:` change — the CLI verbs, meta-tools, directory, and semantic mode all behave identically (proven by the shared conformance suite). Identity scoping (`(tenant, user, session)` in the SQL `WHERE`) is enforced at the driver on both.
 
-For Postgres, empty/`apply` runs forward migrations under a session advisory lock and therefore needs a direct/session-capable endpoint. A transaction-pooled steady-state deployment first completes that apply separately, then switches BOTH the DSN to the pooler and `migration_mode` to `verify`. Verify mode reads the existing `schema_migrations` ledger only and refuses startup if any embedded version is missing; it never creates or repairs schema through the pool.
+For Postgres, empty/`apply` runs forward migrations under a session advisory lock and therefore needs a direct/session-capable endpoint. A transaction-pooled steady-state deployment first completes that apply separately, then switches BOTH the DSN to the pooler and `migration_mode` to `verify`. Verify mode reads the subsystem's namespaced `harbor_schema_migrations` and `harbor_store_identity` plus required physical schema, refuses startup if identity/checksums/schema or any embedded version is missing, and never creates or repairs schema through the pool.
 
 ### Node-local boot agent packs (HA-66) — `skills.boot_agent_packs`
 

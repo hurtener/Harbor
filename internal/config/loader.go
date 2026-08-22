@@ -408,6 +408,13 @@ func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 // the Identity (JWT) block — see ValidateCore's godoc for the split.
 func Defaults() *Config {
 	return &Config{
+		Postgres: PostgresConfig{
+			MaxOpenConns:           3,
+			MaxIdleConns:           1,
+			ConnMaxLifetime:        5 * time.Minute,
+			ConnMaxIdleTime:        30 * time.Second,
+			MigrationMaxConcurrent: 6,
+		},
 		Server: ServerConfig{
 			BindAddr:            "127.0.0.1:8080",
 			ShutdownGracePeriod: 30 * time.Second,

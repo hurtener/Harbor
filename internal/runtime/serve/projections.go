@@ -42,6 +42,7 @@ import (
 	"github.com/hurtener/Harbor/internal/observability/rollups/drivers/sqlite"
 	rollupsmem "github.com/hurtener/Harbor/internal/observability/rollups/memstore"
 	"github.com/hurtener/Harbor/internal/observability/rollups/projectorworker"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/sessions/turns/drivers/inmem"
@@ -70,7 +71,7 @@ func OpenTurnsProjection(ctx context.Context, cfg *config.Config, deps TurnsProj
 	if t.Driver == "" {
 		return nil, nil, nil, nil
 	}
-	store, err := openTurnsStore(t)
+	store, err := openTurnsStore(t, deps.PostgresPools)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("sessions.turns: %w", err)
 	}
@@ -186,16 +187,17 @@ func (s *turnsService) Store() turns.Store { return s.store }
 // TurnsProjectionDeps bundles the runtime collaborators OpenTurnsProjection
 // threads into the materializer + snapshot adapter.
 type TurnsProjectionDeps struct {
-	Bus       events.EventBus
-	Sessions  sessionEraser
-	Tasks     tasks.TaskRegistry
-	Artifacts artifacts.ArtifactStore
-	Logger    *slog.Logger
+	Bus           events.EventBus
+	Sessions      sessionEraser
+	Tasks         tasks.TaskRegistry
+	Artifacts     artifacts.ArtifactStore
+	Logger        *slog.Logger
+	PostgresPools *postgrespool.Manager
 }
 
 // openTurnsStore dispatches the turns projection store by the
 // operator's configured driver name (inmem / sqlite / postgres).
-func openTurnsStore(t config.TurnsConfig) (turns.Store, error) {
+func openTurnsStore(t config.TurnsConfig, pools ...*postgrespool.Manager) (turns.Store, error) {
 	switch t.Driver {
 	case "", "inmem":
 		return inmem.New()
@@ -207,6 +209,13 @@ func openTurnsStore(t config.TurnsConfig) (turns.Store, error) {
 	case "postgres":
 		if t.DSN == "" {
 			return nil, errors.New("postgres driver requires sessions.turns.dsn (validated upstream — sanity check)")
+		}
+		if len(pools) > 0 && pools[0] != nil {
+			db, ok := pools[0].DB(t.DSN)
+			if !ok {
+				return nil, errors.New("postgres runtime pool has no sessions.turns DSN; refusing an unbudgeted direct pool")
+			}
+			return turnspg.NewWithDB(turnsPostgresConfig(t), db)
 		}
 		return turnspg.New(turnsPostgresConfig(t))
 	default:
@@ -370,7 +379,7 @@ func OpenRollupsProjection(ctx context.Context, cfg *config.Config, deps Rollups
 	if r.Driver == "" {
 		return nil, nil, nil, nil
 	}
-	store, err = openRollupsStore(r)
+	store, err = openRollupsStore(r, deps.PostgresPools)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("observability.rollups: %w", err)
 	}
@@ -417,7 +426,7 @@ func OpenRollupsProjection(ctx context.Context, cfg *config.Config, deps Rollups
 
 // openRollupsStore dispatches the rollup store by the operator's
 // configured driver name (inmem / sqlite / postgres).
-func openRollupsStore(r config.RollupsConfig) (rollups.Store, error) {
+func openRollupsStore(r config.RollupsConfig, pools ...*postgrespool.Manager) (rollups.Store, error) {
 	switch r.Driver {
 	case "", "inmem":
 		return rollupsmem.New(), nil
@@ -429,6 +438,13 @@ func openRollupsStore(r config.RollupsConfig) (rollups.Store, error) {
 	case "postgres":
 		if r.DSN == "" {
 			return nil, errors.New("postgres driver requires observability.rollups.dsn (validated upstream — sanity check)")
+		}
+		if len(pools) > 0 && pools[0] != nil {
+			db, ok := pools[0].DB(r.DSN)
+			if !ok {
+				return nil, errors.New("postgres runtime pool has no observability.rollups DSN; refusing an unbudgeted direct pool")
+			}
+			return postgres.NewWithDB(rollupsPostgresConfig(r), db)
 		}
 		return postgres.New(rollupsPostgresConfig(r))
 	default:
@@ -455,8 +471,9 @@ func (w *rollupWorker) Quality(ctx context.Context) (rollups.Quality, error) {
 // RollupsProjectionDeps bundles the runtime collaborators
 // OpenRollupsProjection threads into the worker.
 type RollupsProjectionDeps struct {
-	Bus    events.EventBus
-	Logger *slog.Logger
+	Bus           events.EventBus
+	Logger        *slog.Logger
+	PostgresPools *postgrespool.Manager
 }
 
 // closeProjectionClosers drains a projection's partially-opened closer

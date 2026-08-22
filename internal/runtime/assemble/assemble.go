@@ -61,6 +61,8 @@ import (
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
+	"github.com/hurtener/Harbor/internal/persistence/postgresruntime"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/engine"
@@ -214,6 +216,11 @@ type Stack struct {
 	Sessions  *sessions.Registry
 	Agents    *agentregistry.Registry
 
+	// PostgresPools is the runtime-owned aggregate pool manager. PostgreSQL
+	// stores borrow its handles and the manager closes physical pools exactly
+	// once after all store closers have run.
+	PostgresPools *postgrespool.Manager
+
 	// Telemetry is the canonical redactor-mandatory structured Logger
 	// (RFC §6.14), constructed with the bus-paired emitter so
 	// Logger.Error emits the slog record AND a `runtime.error` bus
@@ -362,6 +369,18 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 
 	stack := &Stack{Cfg: cfg}
 
+	// Open the runtime-wide PostgreSQL pool manager before any store. It
+	// includes all six possible Harbor projections so a later serve-band
+	// turns/rollups open cannot create an unbudgeted pool.
+	postgresRuntime, pgErr := postgresruntime.Open(ctx, cfg)
+	if pgErr != nil {
+		return stack, fmt.Errorf("postgres pools: %w", pgErr)
+	}
+	stack.PostgresPools = postgresRuntime.Pools
+	stack.closers = append(stack.closers, func(closeCtx context.Context) error {
+		return postgresRuntime.Pools.Close(closeCtx)
+	})
+
 	// Audit. The redactor has no Close in the current interface —
 	// nothing to register.
 	red, err := audit.Open(ctx, cfg.Audit)
@@ -373,7 +392,12 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// State BEFORE events (reconciliation): the durable event-log
 	// driver shares the runtime's StateStore through events.OpenWith,
 	// so the store must outlive the bus — open first, close last.
-	stateStore, err := state.Open(ctx, cfg.State)
+	var stateStore state.StateStore
+	if cfg.State.Driver == "postgres" {
+		stateStore, err = postgresRuntime.State(ctx, cfg.State)
+	} else {
+		stateStore, err = state.Open(ctx, cfg.State)
+	}
 	if err != nil {
 		return stack, fmt.Errorf("state: %w", err)
 	}
@@ -463,7 +487,12 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 	stack.closers = append(stack.closers, func(context.Context) error { traceBridgeStop(); return nil })
 
-	artStore, err := artifacts.Open(ctx, cfg.Artifacts)
+	var artStore artifacts.ArtifactStore
+	if cfg.Artifacts.Driver == "postgres" {
+		artStore, err = postgresRuntime.Artifacts(cfg.Artifacts)
+	} else {
+		artStore, err = artifacts.Open(ctx, cfg.Artifacts)
+	}
 	if err != nil {
 		return stack, fmt.Errorf("artifacts: %w", err)
 	}
@@ -613,12 +642,23 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			}
 			summarizer = s
 		}
-		ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
-			State:      stateStore,
-			Bus:        bus,
-			Summarizer: summarizer,
-			Embedder:   stack.Embedder,
-		})
+		var ms memory.MemoryStore
+		var openErr error
+		if memCfg.Driver == "postgres" {
+			ms, openErr = postgresRuntime.Memory(memCfg, memory.Deps{
+				State:      stateStore,
+				Bus:        bus,
+				Summarizer: summarizer,
+				Embedder:   stack.Embedder,
+			})
+		} else {
+			ms, openErr = memory.Open(ctx, memCfg, memory.Deps{
+				State:      stateStore,
+				Bus:        bus,
+				Summarizer: summarizer,
+				Embedder:   stack.Embedder,
+			})
+		}
 		if openErr != nil {
 			return stack, fmt.Errorf("memory: %w", openErr)
 		}
@@ -631,7 +671,14 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// opens via the exported projection.
 	stack.Skills = opts.SkillStore
 	if stack.Skills == nil && cfg.Skills.Driver != "" {
-		ss, openErr := skills.Open(ctx, skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus, Embedder: stack.Embedder})
+		skillCfg := skills.SnapshotFromConfig(cfg.Skills)
+		var ss skills.SkillStore
+		var openErr error
+		if skillCfg.Driver == "postgres" {
+			ss, openErr = postgresRuntime.Skills(skillCfg, skills.Deps{Bus: bus, Embedder: stack.Embedder})
+		} else {
+			ss, openErr = skills.Open(ctx, skillCfg, skills.Deps{Bus: bus, Embedder: stack.Embedder})
+		}
 		if openErr != nil {
 			return stack, fmt.Errorf("skills: %w", openErr)
 		}

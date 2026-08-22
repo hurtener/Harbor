@@ -87,6 +87,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // register the "pgx" database/sql driver
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 )
@@ -99,9 +100,10 @@ const pgxDriverName = "pgx"
 // + SkillsStore Postgres drivers for consistency; tuning lives in a
 // future config knob, not here.
 const (
-	defaultMaxOpenConns    = 25
-	defaultMaxIdleConns    = 5
-	defaultConnMaxLifetime = 5 * time.Minute
+	defaultMaxOpenConns    = postgrespool.DefaultMaxOpenConns
+	defaultMaxIdleConns    = postgrespool.DefaultMaxIdleConns
+	defaultConnMaxLifetime = postgrespool.DefaultConnMaxLifetime
+	defaultConnMaxIdleTime = postgrespool.DefaultConnMaxIdleTime
 )
 
 // Config configures a Postgres-backed turns.Store.
@@ -125,10 +127,6 @@ func New(cfg Config) (turns.Store, error) {
 	if cfg.DSN == "" {
 		return nil, errors.New("turns/postgres: cfg.DSN is required")
 	}
-	retention := cfg.Retention
-	if retention <= 0 {
-		retention = turns.MaxRetainedTurns
-	}
 	db, err := sql.Open(pgxDriverName, cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("turns/postgres: sql.Open: %w", err)
@@ -136,20 +134,45 @@ func New(cfg Config) (turns.Store, error) {
 	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(defaultMaxIdleConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
+	return newWithDB(cfg, db, true)
+}
+
+// NewWithDB constructs a turns store over a runtime-owned pool. The store
+// borrows db and leaves physical pool shutdown to the runtime manager.
+func NewWithDB(cfg Config, db *sql.DB) (turns.Store, error) {
+	if db == nil {
+		return nil, errors.New("turns/postgres: injected db is required")
+	}
+	return newWithDB(cfg, db, false)
+}
+
+func newWithDB(cfg Config, db *sql.DB, ownsDB bool) (turns.Store, error) {
+	if cfg.DSN == "" {
+		return nil, errors.New("turns/postgres: cfg.DSN is required")
+	}
+	retention := cfg.Retention
+	if retention <= 0 {
+		retention = turns.MaxRetainedTurns
+	}
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
 	// loudly at boot, not on the first AppendTurnIf.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("turns/postgres: ping: %w", err)
 	}
-	if err := runMigrations(pingCtx, db, cfg.MigrationMode); err != nil {
-		_ = db.Close()
+	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+		if ownsDB {
+			_ = db.Close()
+		}
 		return nil, err
 	}
-	return &driver{db: db, retention: retention}, nil
+	return &driver{db: db, retention: retention, ownsDB: ownsDB}, nil
 }
 
 // driver is the Postgres-backed turns.Store implementation. Safe for
@@ -157,6 +180,7 @@ func New(cfg Config) (turns.Store, error) {
 type driver struct {
 	db        *sql.DB
 	retention int
+	ownsDB    bool
 	closed    atomic.Bool
 }
 
@@ -834,6 +858,9 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 // fail with ErrStoreClosed.
 func (d *driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !d.ownsDB {
 		return nil
 	}
 	if err := d.db.Close(); err != nil {
