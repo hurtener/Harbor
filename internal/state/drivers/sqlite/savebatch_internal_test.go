@@ -11,7 +11,7 @@ import (
 )
 
 func TestSaveBatchIf_WriteStageFailureRollsBackEveryPosition(t *testing.T) {
-	for failPosition := 0; failPosition < 3; failPosition++ {
+	for failPosition := range 3 {
 		t.Run(string(rune('1'+failPosition)), func(t *testing.T) {
 			opened, err := New(config.StateConfig{Driver: "sqlite", DSN: ":memory:"})
 			if err != nil {

@@ -21,8 +21,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hurtener/Harbor/internal/persistence/cutover"
 	_ "github.com/jackc/pgx/v5/stdlib" // register the pgx database/sql driver
+
+	"github.com/hurtener/Harbor/internal/persistence/cutover"
 )
 
 const (
@@ -149,7 +150,9 @@ func runPostgresCutover(cmd *cobra.Command, flags postgresCutoverFlags) error {
 			return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: err.Error(), Code: codePostgresCutoverInternal})
 		}
 		if sourceManifest.Classification.Class == cutover.ClassMisprovisioned || sourceManifest.Classification.Class == cutover.ClassUnknown {
-			_ = writeCutoverManifest(cmd, flags.manifest, manifest)
+			if manifestErr := writeCutoverManifest(cmd, flags.manifest, manifest); manifestErr != nil {
+				return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: fmt.Sprintf("write refusal manifest: %v", manifestErr), Code: codePostgresCutoverInternal})
+			}
 			return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: fmt.Sprintf("source %s refused: %s", sub, sourceManifest.Classification.Diagnostic), Code: codePostgresCutoverRefused, Hint: "classify by observed tables; do not copy a database because an environment variable named it for this subsystem"})
 		}
 		if destinationDB == nil {
@@ -163,20 +166,25 @@ func runPostgresCutover(cmd *cobra.Command, flags postgresCutoverFlags) error {
 		if buildErr != nil {
 			return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: fmt.Sprintf("classify destination %s: %v", sub, buildErr), Code: codePostgresCutoverRefused})
 		}
-		if mode == "copy" {
+		switch mode {
+		case "copy":
 			if sourceManifest.Classification.Class != cutover.ClassEmpty {
 				copyManifest, copyErr := cutover.CopySubsystem(ctx, sourceDB, destinationDB, sub, cutover.CopyOptions{SourceDSN: flags.source, DestinationDSN: flags.destination, Frozen: flags.frozen, BatchSize: flags.batchSize})
 				if copyErr != nil {
-					_ = writeCutoverManifest(cmd, flags.manifest, manifest)
+					if manifestErr := writeCutoverManifest(cmd, flags.manifest, manifest); manifestErr != nil {
+						return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: fmt.Sprintf("write copy refusal manifest: %v", manifestErr), Code: codePostgresCutoverInternal})
+					}
 					return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: copyErr.Error(), Code: codePostgresCutoverRefused, Hint: "copy is resumable; resolve the reported mismatch or cancellation, then rerun with the same source/destination"})
 				}
 				if len(copyManifest.DestinationSubsystems) == 1 {
 					destinationManifest = copyManifest.DestinationSubsystems[0]
 				}
 			}
-		} else if mode == "verify" {
+		case "verify":
 			if err := cutover.Reconcile(sourceManifest, destinationManifest); err != nil {
-				_ = writeCutoverManifest(cmd, flags.manifest, manifest)
+				if manifestErr := writeCutoverManifest(cmd, flags.manifest, manifest); manifestErr != nil {
+					return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: fmt.Sprintf("write verify refusal manifest: %v", manifestErr), Code: codePostgresCutoverInternal})
+				}
 				return emitCLIError(cmd, CLIError{Subcommand: "postgres cutover", Message: err.Error(), Code: codePostgresCutoverRefused})
 			}
 		}

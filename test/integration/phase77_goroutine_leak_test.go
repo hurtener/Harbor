@@ -126,6 +126,10 @@ func leakEventsConfig(driver string) config.EventsConfig {
 	}
 	if driver == "durable" {
 		cfg.StateDriver = "inmem"
+		// A fresh isolated StateStore has no adopted sequence authority;
+		// this harness explicitly acknowledges the stop-before-start legacy
+		// writer drain required before durable v1.29.1 boot.
+		cfg.LegacyWritersDrained = true
 	}
 	return cfg
 }

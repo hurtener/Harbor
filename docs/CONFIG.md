@@ -55,7 +55,7 @@ Migration `verify` is read-only and may use transaction-pooled PgBouncer
 closed.
 
 For the staged split-to-unified procedure and machine-readable row/hash
-manifests, see [Consolidate split PostgreSQL projections](recipes/postgres-split-to-unified-cutover.md).
+manifests, see [Consolidate split PostgreSQL projections](/recipes/postgres-split-to-unified-cutover).
 
 ---
 

@@ -51,6 +51,7 @@ func TestE2E_Wave1_DurableBackendsCoexistInOneStore(t *testing.T) {
 	evlog, err := events.OpenWith(context.Background(), config.EventsConfig{
 		Driver: "durable", MaxSubscribersPerSession: 16, SubscriberBufferSize: 256,
 		IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 1024,
+		LegacyWritersDrained: true,
 	}, red, events.Deps{State: store})
 	if err != nil {
 		t.Fatalf("events durable OpenWith: %v", err)
@@ -153,6 +154,7 @@ func TestE2E_Wave1_DurableBackendsCoexistInOneStore(t *testing.T) {
 	evlog2, err := events.OpenWith(context.Background(), config.EventsConfig{
 		Driver: "durable", MaxSubscribersPerSession: 16, SubscriberBufferSize: 256,
 		IdleTimeout: 60 * time.Second, DropWindow: time.Second, ReplayBufferSize: 1024,
+		LegacyWritersDrained: true,
 	}, red, events.Deps{State: store2})
 	if err != nil {
 		t.Fatalf("events durable reopen: %v", err)

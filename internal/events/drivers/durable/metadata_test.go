@@ -173,7 +173,7 @@ func seedLegacyHistory(t *testing.T, store state.StateStore, n int, at time.Time
 	t.Helper()
 	id := metadataIdentity()
 	seqs := make([]uint64, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		typ := events.EventTypeRuntimeWarning
 		if i == n-1 {
 			typ = events.EventTypeRuntimeError
@@ -447,7 +447,7 @@ func TestDurable_MetadataIndex_StaleValidRowsRepairMetadataOnlyConsumers(t *test
 			if err != nil {
 				t.Fatalf("encode stale head: %v", err)
 			}
-			if err := store.StateStore.Save(context.Background(), state.StateRecord{
+			if err := store.Save(context.Background(), state.StateRecord{
 				ID: state.NewEventID(), Identity: metadataIdentity(), Kind: kindHead, Bytes: bytes,
 			}); err != nil {
 				t.Fatalf("save stale head: %v", err)

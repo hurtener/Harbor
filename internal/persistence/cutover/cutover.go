@@ -242,7 +242,7 @@ func Classify(sub Subsystem, snapshot SchemaSnapshot) (Classification, error) {
 		if err := validateIdentity(sub, snapshot); err != nil {
 			result.Class = ClassMisprovisioned
 			result.Diagnostic = err.Error()
-			return result, nil
+			return result, nil //nolint:nilerr // validation is represented by the classification diagnostic
 		}
 		if len(snapshot.Namespaced) > 0 {
 			result.Class = ClassCompatible
@@ -324,7 +324,10 @@ func isLowerSHA256(value string) bool {
 
 func knownTable(table string) bool {
 	for _, sub := range AllSubsystems {
-		spec, _ := Spec(sub)
+		spec, err := Spec(sub)
+		if err != nil {
+			return false
+		}
 		for _, t := range spec.tables {
 			if t.Name == table {
 				return true

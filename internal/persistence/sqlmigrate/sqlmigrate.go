@@ -551,7 +551,8 @@ func ensureNamedLedger(ctx context.Context, conn *sql.Conn, prefix string) error
 func contractChecksum(spec PostgresMigrationSpec) string {
 	tables := append([]string(nil), spec.RequiredTables...)
 	sort.Strings(tables)
-	parts := []string{spec.Subsystem, strings.Join(tables, "\x00")}
+	parts := make([]string, 0, 2+2*len(spec.RequiredColumns))
+	parts = append(parts, spec.Subsystem, strings.Join(tables, "\x00"))
 	columnTables := make([]string, 0, len(spec.RequiredColumns))
 	for table := range spec.RequiredColumns {
 		columnTables = append(columnTables, table)

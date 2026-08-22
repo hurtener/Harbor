@@ -1,6 +1,7 @@
 package postgresruntime
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,7 +84,10 @@ func TestPostgresRegistry_DriversUseNamedMigrationRunner(t *testing.T) {
 			return err
 		}
 		if _, err := os.Stat(filepath.Join(path, "postgres.go")); err != nil {
-			return nil
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
 		}
 		discovered = append(discovered, filepath.ToSlash(rel))
 		migrationPath := filepath.Join(path, "migrations.go")

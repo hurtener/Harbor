@@ -222,10 +222,7 @@ func inspectColumns(ctx context.Context, db SQLQuerier, table string) ([]string,
 }
 
 func inspectRowsFingerprint(ctx context.Context, db SQLQuerier, table TableSpec, columns []string) (TableManifest, error) {
-	query, err := tableSelectQuery(table, columns)
-	if err != nil {
-		return TableManifest{}, err
-	}
+	query := tableSelectQuery(table, columns)
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return TableManifest{}, fmt.Errorf("cutover: read %s: %w", table.Name, err)
@@ -254,10 +251,16 @@ func inspectRowsFingerprintIterator(ctx context.Context, rows rowIterator, table
 	orderedColumns := append([]string(nil), columns...)
 	sort.Strings(orderedColumns)
 	hash := sha256.New()
-	_, _ = hash.Write([]byte("harbor-cutover-table-v1\x00"))
-	writeLengthPrefixed(hash, []byte(table.Name))
+	if _, err := hash.Write([]byte("harbor-cutover-table-v1\x00")); err != nil {
+		return TableManifest{}, fmt.Errorf("cutover: fingerprint %s header: %w", table.Name, err)
+	}
+	if err := writeLengthPrefixed(hash, []byte(table.Name)); err != nil {
+		return TableManifest{}, fmt.Errorf("cutover: fingerprint %s table name: %w", table.Name, err)
+	}
 	for _, column := range orderedColumns {
-		writeLengthPrefixed(hash, []byte(column))
+		if err := writeLengthPrefixed(hash, []byte(column)); err != nil {
+			return TableManifest{}, fmt.Errorf("cutover: fingerprint %s column: %w", table.Name, err)
+		}
 	}
 	var count int64
 	for {
@@ -288,7 +291,9 @@ func inspectRowsFingerprintIterator(ctx context.Context, rows rowIterator, table
 		if err != nil {
 			return TableManifest{}, fmt.Errorf("cutover: marshal %s row: %w", table.Name, err)
 		}
-		writeLengthPrefixed(hash, buf)
+		if err := writeLengthPrefixed(hash, buf); err != nil {
+			return TableManifest{}, fmt.Errorf("cutover: fingerprint %s row: %w", table.Name, err)
+		}
 		count++
 	}
 	if err := rows.Err(); err != nil {
@@ -303,7 +308,7 @@ func inspectRowsFingerprintIterator(ctx context.Context, rows rowIterator, table
 	return TableManifest{Table: table.Name, Columns: append([]string(nil), columns...), RowCount: count, ContentSHA256: hex.EncodeToString(digest)}, nil
 }
 
-func tableSelectQuery(table TableSpec, columns []string) (string, error) {
+func tableSelectQuery(table TableSpec, columns []string) string {
 	quoted := make([]string, len(columns))
 	for i, column := range columns {
 		quoted[i] = quoteIdentifier(column)
@@ -318,7 +323,7 @@ func tableSelectQuery(table TableSpec, columns []string) (string, error) {
 	if len(order) > 0 {
 		query += " ORDER BY " + strings.Join(order, ", ")
 	}
-	return query, nil
+	return query
 }
 
 func boundedSQLContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -328,11 +333,14 @@ func boundedSQLContext(ctx context.Context) (context.Context, context.CancelFunc
 	return context.WithTimeout(ctx, sqlOperationTimeout)
 }
 
-func writeLengthPrefixed(hash interface{ Write([]byte) (int, error) }, data []byte) {
+func writeLengthPrefixed(hash interface{ Write([]byte) (int, error) }, data []byte) error {
 	var length [8]byte
 	binary.BigEndian.PutUint64(length[:], uint64(len(data)))
-	_, _ = hash.Write(length[:])
-	_, _ = hash.Write(data)
+	if _, err := hash.Write(length[:]); err != nil {
+		return err
+	}
+	_, err := hash.Write(data)
+	return err
 }
 
 func cloneValue(value any) any {
@@ -479,7 +487,7 @@ func copySQLTables(ctx context.Context, source, destination SQLExecutor, snapsho
 	return nil
 }
 
-func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subsystem, table TableSpec, columns []string, expectedRows int64, batchSize int) error {
+func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subsystem, table TableSpec, columns []string, expectedRows int64, batchSize int) (err error) {
 	if batchSize <= 0 {
 		batchSize = 256
 	}
@@ -491,10 +499,7 @@ func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subs
 	if !ok {
 		return fmt.Errorf("cutover: copy %s.%s requires a transaction-capable direct PostgreSQL destination", sub, table.Name)
 	}
-	selectQuery, err := tableSelectQuery(table, columns)
-	if err != nil {
-		return err
-	}
+	selectQuery := tableSelectQuery(table, columns)
 	readCtx, cancel := boundedSQLContext(ctx)
 	defer cancel()
 	sourceTx, err := sourceBeginner.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
@@ -504,7 +509,9 @@ func copySQLTable(ctx context.Context, source, destination SQLExecutor, sub Subs
 	rolledBack := false
 	defer func() {
 		if !rolledBack {
-			_ = sourceTx.Rollback()
+			if rollbackErr := sourceTx.Rollback(); rollbackErr != nil && err == nil {
+				err = fmt.Errorf("cutover: rollback source %s.%s snapshot: %w", sub, table.Name, rollbackErr)
+			}
 		}
 	}()
 	if err := setCopyTimeouts(readCtx, sourceTx); err != nil {
@@ -596,7 +603,7 @@ func setCopyTimeouts(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func insertCopyBatch(ctx context.Context, beginner sqlTxBeginner, table TableSpec, columns []string, insertQuery string, batch []Row) error {
+func insertCopyBatch(ctx context.Context, beginner sqlTxBeginner, table TableSpec, columns []string, insertQuery string, batch []Row) (err error) {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -607,7 +614,9 @@ func insertCopyBatch(ctx context.Context, beginner sqlTxBeginner, table TableSpe
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback()
+			if rollbackErr := tx.Rollback(); rollbackErr != nil && err == nil {
+				err = fmt.Errorf("rollback destination transaction for %s: %w", table.Name, rollbackErr)
+			}
 		}
 	}()
 	if err := setCopyTimeouts(ctx, tx); err != nil {

@@ -120,10 +120,16 @@ type headMetadataDigest struct {
 // record above; encoding/json emits struct fields in declaration order, so
 // the digest is stable across restarts and drivers.
 func metadataIntegrityChecksum(sequences []uint64, metadata []eventMetadataRecord) string {
-	digest, _ := json.Marshal(headMetadataDigest{
+	digest, err := json.Marshal(headMetadataDigest{
 		Sequences: sequences,
 		Metadata:  metadata,
 	})
+	if err != nil {
+		// The private shape contains only JSON-safe slices/structs. Keep the
+		// helper total if that invariant ever changes rather than hashing a
+		// partial/empty encoding.
+		return ""
+	}
 	sum := sha256.Sum256(digest)
 	return hex.EncodeToString(sum[:])
 }

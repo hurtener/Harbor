@@ -30,7 +30,7 @@ func (s *unknownCommitStore) SaveBatchIf(ctx context.Context, expectations []sta
 	if err := s.StateStore.SaveBatchIf(ctx, expectations, writes); err != nil {
 		return err
 	}
-	return fmt.Errorf("%w: %v", state.ErrCommitOutcomeUnknown, context.Canceled)
+	return fmt.Errorf("ambiguous commit acknowledgement: %w", errors.Join(state.ErrCommitOutcomeUnknown, context.Canceled))
 }
 
 func (s *authorityConflictStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {

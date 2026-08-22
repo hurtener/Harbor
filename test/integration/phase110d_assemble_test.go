@@ -183,6 +183,9 @@ func TestE2E_Phase110d_DurableEvents_SharedStateStore(t *testing.T) {
 	cfg := headlessRecipeCfg(t)
 	cfg.Events.Driver = "durable"
 	cfg.Events.StateDriver = "" // no dedicated store — share the runtime's
+	// The fresh runtime StateStore has no legacy writer authority to drain;
+	// this isolated fixture explicitly acknowledges the stop-before-start drain.
+	cfg.Events.LegacyWritersDrained = true
 	if err := cfg.ValidateCore(); err != nil {
 		t.Fatalf("ValidateCore: %v", err)
 	}

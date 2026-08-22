@@ -431,7 +431,7 @@ func commitConditionalBatch(ctx context.Context, commit func() error) error {
 		return fmt.Errorf("postgres: conditional batch cancelled before commit: %w", err)
 	}
 	if err := commit(); err != nil {
-		return fmt.Errorf("postgres: commit conditional batch: %w: %v", state.ErrCommitOutcomeUnknown, err)
+		return fmt.Errorf("postgres: commit conditional batch: %w", errors.Join(state.ErrCommitOutcomeUnknown, err))
 	}
 	return nil
 }

@@ -242,13 +242,12 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 			return fmt.Errorf("durable: recover sequence counter: catch-up cancelled: %w", err)
 		}
 		current, err := b.scanRecoveryHeadView(ctx)
-		if err != nil {
-			if errors.Is(err, state.ErrConditionFailed) {
-				previous = recoveryHeadView{}
-			} else {
-				return err
-			}
-		} else if previous.generations != nil && recoveryViewsEqual(previous.generations, current.generations) {
+		switch {
+		case err != nil && errors.Is(err, state.ErrConditionFailed):
+			previous = recoveryHeadView{}
+		case err != nil:
+			return err
+		case previous.generations != nil && recoveryViewsEqual(previous.generations, current.generations):
 			_, authorityExpectation, authorityErr := b.loadSequenceAuthority(ctx)
 			if authorityErr != nil {
 				return fmt.Errorf("durable: inspect sequence authority: %w", authorityErr)
@@ -272,7 +271,7 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 				slog.Int("session_count", current.sessionCount),
 				slog.Int("recovery_attempts", attempt))
 			return nil
-		} else {
+		default:
 			previous = current
 		}
 		if attempt < recoveryStableViewMaxAttempts {
@@ -1002,19 +1001,6 @@ func (b *bus) loadHeadForBatch(ctx context.Context, sessionID identity.Quadruple
 	}
 	expect.ExpectedEventID = rec.ID
 	return head, expect, nil
-}
-
-// loadHeadLocked returns the per-session head record, or a fresh empty
-// head when none exists yet. Caller holds publishMu.
-func (b *bus) loadHeadLocked(ctx context.Context, sessionID identity.Quadruple) (headRecord, error) {
-	rec, err := b.store.Load(ctx, sessionID, kindHead)
-	if err != nil {
-		if errors.Is(err, state.ErrNotFound) {
-			return headRecord{}, nil
-		}
-		return headRecord{}, err
-	}
-	return decodeHead(rec.Bytes)
 }
 
 // headMetadataReady reports whether the projection has been validated against

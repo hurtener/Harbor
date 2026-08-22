@@ -149,8 +149,7 @@ func (m *Manager) open(ctx context.Context, allocations []Allocation, connectorF
 	for _, allocation := range allocations {
 		connector, err := connectorFor(allocation.DSN)
 		if err != nil {
-			_ = m.closePools()
-			return fmt.Errorf("postgres pool: parse %s: %w", stringsJoin(allocation.Subsystems), err)
+			return fmt.Errorf("postgres pool: parse %s: %w", stringsJoin(allocation.Subsystems), errors.Join(err, m.closePools()))
 		}
 		db := sql.OpenDB(&budgetConnector{inner: connector, budget: m.budget})
 		db.SetMaxOpenConns(allocation.MaxOpenConns)
@@ -161,9 +160,7 @@ func (m *Manager) open(ctx context.Context, allocations []Allocation, connectorF
 		db.SetConnMaxLifetime(m.config.ConnMaxLifetime)
 		db.SetConnMaxIdleTime(m.config.ConnMaxIdleTime)
 		if err := db.PingContext(ctx); err != nil {
-			_ = db.Close()
-			_ = m.closePools()
-			return fmt.Errorf("postgres pool: ping %s: %w", stringsJoin(allocation.Subsystems), err)
+			return fmt.Errorf("postgres pool: ping %s: %w", stringsJoin(allocation.Subsystems), errors.Join(err, db.Close(), m.closePools()))
 		}
 		db.SetMaxIdleConns(allocation.MaxIdleConns)
 		m.pools[allocation.DSN] = db
@@ -321,7 +318,7 @@ type connectionBudget struct {
 
 func newConnectionBudget(limit int) *connectionBudget {
 	tokens := make(chan struct{}, limit)
-	for i := 0; i < limit; i++ {
+	for range limit {
 		tokens <- struct{}{}
 	}
 	return &connectionBudget{tokens: tokens}
@@ -381,7 +378,10 @@ func (c *budgetConn) Prepare(query string) (driver.Stmt, error) {
 }
 
 func (c *budgetConn) Begin() (driver.Tx, error) {
-	return c.inner.Begin()
+	if conn, ok := c.inner.(driver.ConnBeginTx); ok {
+		return conn.BeginTx(context.Background(), driver.TxOptions{})
+	}
+	return nil, driver.ErrSkip
 }
 
 func (c *budgetConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {

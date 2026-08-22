@@ -143,7 +143,7 @@ func TestBudgetConnector_AllSixDistinctPoolsProgressWithoutExceedingCap(t *testi
 	var wg sync.WaitGroup
 	errCh := make(chan error, poolCount*callsPerPool)
 	for i := range dbs {
-		for call := 0; call < callsPerPool; call++ {
+		for call := range callsPerPool {
 			wg.Add(1)
 			go func(db *sql.DB, pool, call int) {
 				defer wg.Done()
