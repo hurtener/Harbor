@@ -17,12 +17,26 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.29.5] — 2026-08-23
+
 ### Fixed
 
 - The turns projection's lost-wake fallback now polls every 30 seconds rather
   than every 2 seconds. Event watches remain the fast path, deferred terminal
   snapshots still converge on the fallback, and an idle durable runtime now
   performs two source-watermark reads per minute instead of thirty.
+
+### Release candidate evidence
+
+- Implementation PR #735 merged at
+  `f0cd36b0c82f2332df575a5434b1a3e7a0d7a586`; hosted CI run
+  `32628090701` attempt 2 completed successfully on the exact reviewed
+  implementation head `280518aa36628ec602b668ea3b22fde1c082585f`, including
+  the live preflight, PostgreSQL conformance, both Go platforms, Console
+  Playwright, isolation, leak, chaos, performance, lint, and examples.
+  Documentation run `32628090829` also completed successfully. The Protocol
+  wire is unchanged. No downstream runtime, fleet, or database mutation is
+  claimed by this release candidate.
 
 ## [1.29.4] — 2026-08-23
 
@@ -4807,7 +4821,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.4...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.5...HEAD
+[1.29.5]: https://github.com/hurtener/Harbor/compare/v1.29.4...v1.29.5
 [1.29.4]: https://github.com/hurtener/Harbor/compare/v1.29.3...v1.29.4
 [1.29.3]: https://github.com/hurtener/Harbor/compare/v1.29.2...v1.29.3
 [1.29.2]: https://github.com/hurtener/Harbor/compare/v1.29.1...v1.29.2
