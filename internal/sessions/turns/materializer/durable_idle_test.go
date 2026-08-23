@@ -3,6 +3,7 @@ package materializer
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions/turns/drivers/sqlite"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // listKindCountingStore makes the durable projection's global maintenance
@@ -25,6 +27,38 @@ import (
 type listKindCountingStore struct {
 	state.StateStore
 	listKinds atomic.Int64
+}
+
+type scriptedProjectionSource struct {
+	mu    sync.Mutex
+	pages []events.ProjectionPage
+	calls int
+	wm    uint64
+}
+
+func (s *scriptedProjectionSource) Page(ctx context.Context, after uint64, _ int) (events.ProjectionPage, error) {
+	if err := ctx.Err(); err != nil {
+		return events.ProjectionPage{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calls >= len(s.pages) {
+		return events.ProjectionPage{Next: after, Watermark: s.wm, Quality: events.ProjectionCurrent}, nil
+	}
+	page := s.pages[s.calls]
+	s.calls++
+	page.Events = append([]events.Event(nil), page.Events...)
+	return page, nil
+}
+
+func (s *scriptedProjectionSource) Watermark(context.Context) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wm, nil
+}
+
+func (*scriptedProjectionSource) Watch(context.Context, chan<- uint64) (events.ProjectionWatch, error) {
+	return events.ProjectionWatchFunc(func() {}), nil
 }
 
 func (s *listKindCountingStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
@@ -152,6 +186,53 @@ func TestMaterialize_DurableExcludedTailDoesNotRescanWhileIdle(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("materializer Run did not stop after cancellation")
+	}
+}
+
+func TestMaterialize_EmptyCatchingUpDoesNotPromoteWatermark(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+
+	later := spawnEv(h.id, "run-after-fence", "task-after-fence", tasks.KindForeground, "")
+	later.Sequence = 3
+	src := &scriptedProjectionSource{
+		wm: 3,
+		pages: []events.ProjectionPage{
+			{Next: 0, Watermark: 3, Quality: events.ProjectionCatchingUp},
+			{Events: []events.Event{later}, Next: 3, Watermark: 3, Quality: events.ProjectionCurrent},
+		},
+	}
+	m, err := New(src, h.proj, WithPageLimit(1))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	first, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("first Materialize: %v", err)
+	}
+	if first.Cursor != 0 || first.Quality != events.ProjectionCatchingUp || first.EventsApplied != 0 {
+		t.Fatalf("first result = %+v; want unchanged cursor 0 and CatchingUp", first)
+	}
+
+	second, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("second Materialize: %v", err)
+	}
+	if second.Cursor != 3 || second.EventsApplied != 1 {
+		t.Fatalf("second result = %+v; want later canonical event applied at cursor 3", second)
+	}
+	row := mustGetRow(t, h, "task-after-fence")
+	if row.RunID != "run-after-fence" || row.Status != turns.StatusPending {
+		t.Fatalf("later turn = run %q status %q; want run-after-fence, pending", row.RunID, row.Status)
+	}
+
+	third, err := m.Materialize(context.Background())
+	if err != nil {
+		t.Fatalf("third Materialize: %v", err)
+	}
+	if third.EventsApplied != 0 || third.Cursor != 3 {
+		t.Fatalf("third result = %+v; later canonical event applied more than once", third)
 	}
 }
 

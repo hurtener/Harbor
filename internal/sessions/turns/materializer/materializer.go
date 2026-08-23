@@ -477,9 +477,10 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 			break
 		}
 		if len(page.Events) == 0 {
-			// A catching-up page with no events is a source anomaly;
-			// break rather than loop forever (the cursor did not
-			// advance).
+			// A concurrent final fence filter can legitimately leave an
+			// empty CatchingUp page. Return with the cursor unchanged so
+			// the wake/lost-wake path retries it without a busy loop; never
+			// promote through Watermark without a Current proof.
 			break
 		}
 	}

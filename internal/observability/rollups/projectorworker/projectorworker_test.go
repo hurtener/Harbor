@@ -116,6 +116,38 @@ func seq(evs ...events.Event) []events.Event {
 	return evs
 }
 
+type scriptedProjectionSource struct {
+	mu    sync.Mutex
+	pages []events.ProjectionPage
+	calls int
+	wm    uint64
+}
+
+func (s *scriptedProjectionSource) Page(ctx context.Context, after uint64, _ int) (events.ProjectionPage, error) {
+	if err := ctx.Err(); err != nil {
+		return events.ProjectionPage{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calls >= len(s.pages) {
+		return events.ProjectionPage{Next: after, Watermark: s.wm, Quality: events.ProjectionCurrent}, nil
+	}
+	page := s.pages[s.calls]
+	s.calls++
+	page.Events = append([]events.Event(nil), page.Events...)
+	return page, nil
+}
+
+func (s *scriptedProjectionSource) Watermark(context.Context) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wm, nil
+}
+
+func (*scriptedProjectionSource) Watch(context.Context, chan<- uint64) (events.ProjectionWatch, error) {
+	return events.ProjectionWatchFunc(func() {}), nil
+}
+
 // inmemCfg returns an in-memory bus config with the retention ring at
 // the given capacity (0 disables the projection substrate).
 func inmemCfg(ring int) config.EventsConfig {
@@ -372,6 +404,54 @@ func TestWorker_OnlyEmptyReadProvesCurrent(t *testing.T) {
 	}
 	if got := measureSum(t, store, rollups.Filter{}, rollups.MeasureLLMCostMicros); got != 30_000 {
 		t.Fatalf("cost = %d micros; want 30_000", got)
+	}
+}
+
+func TestWorker_EmptyCatchingUpDoesNotPromoteWatermark(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore(t)
+	id := tq("tenant-fence", "user-fence", "session-after-fence")
+	later := costEvent(base.Add(3*time.Minute), id, "model-after-fence", 0.01)
+	later.Sequence = 3
+	src := &scriptedProjectionSource{
+		wm: 3,
+		pages: []events.ProjectionPage{
+			{Next: 0, Watermark: 3, Quality: events.ProjectionCatchingUp},
+			{Events: []events.Event{later}, Next: 3, Watermark: 3, Quality: events.ProjectionCurrent},
+		},
+	}
+	w, err := projectorworker.New(src, store, projectorworker.WithBatchSize(1))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	caughtUp, err := w.Advance(ctx)
+	if err != nil {
+		t.Fatalf("Advance empty CatchingUp: %v", err)
+	}
+	if caughtUp {
+		t.Fatal("empty CatchingUp page promoted the projection to Current")
+	}
+	q, err := w.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality after empty CatchingUp: %v", err)
+	}
+	if q.Watermark != 0 || q.State != rollups.StateCatchingUp {
+		t.Fatalf("quality after empty CatchingUp = %+v; want watermark 0, catching_up", q)
+	}
+
+	if err := w.CatchUp(ctx); err != nil {
+		t.Fatalf("CatchUp after transient fence filter: %v", err)
+	}
+	q, err = w.Quality(ctx)
+	if err != nil {
+		t.Fatalf("Quality after CatchUp: %v", err)
+	}
+	if q.Watermark != 3 || q.State != rollups.StateCurrent {
+		t.Fatalf("final quality = %+v; want watermark 3, current", q)
+	}
+	if got := measureSum(t, store, rollups.Filter{}, rollups.MeasureLLMCompletions); got != 1 {
+		t.Fatalf("later canonical event applied %d times; want exactly once", got)
 	}
 }
 

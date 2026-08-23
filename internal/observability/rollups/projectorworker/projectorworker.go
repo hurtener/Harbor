@@ -45,7 +45,7 @@
 //
 // # Honesty rules the worker enforces
 //
-//   - Only an EMPTY page proves the projection is current. A short
+//   - Only an EMPTY Current page proves the projection is current. A short
 //     non-empty page (even one the source labels Current) never does:
 //     more events may exist beyond the returned prefix. The worker
 //     stays catching_up until a subsequent read returns no events.
@@ -99,7 +99,7 @@ const (
 	// the projection is behind (or retrying a prior failure).
 	defaultPollInterval = 30 * time.Second
 	// maxCatchUpIterations bounds one CatchUp call so a pathological
-	// source (one that never reports an empty page) fails loudly instead
+	// source (one that never reports an empty Current page) fails loudly instead
 	// of looping forever.
 	maxCatchUpIterations = 1_000_000
 )
@@ -209,7 +209,7 @@ type Quality struct {
 // nor double-count values (at-least-once on the local sequence, never
 // an active-active exactly-once claim).
 //
-// StateCurrent is reported only after an EMPTY page read: a short
+// StateCurrent is reported only after an EMPTY Current page read: a short
 // non-empty page (even one the source labels Current) never proves the
 // source holds nothing newer.
 type Worker struct {
@@ -242,7 +242,7 @@ type Worker struct {
 // loudly on a closed / broken store); the durable watermark itself is
 // read at the start of every advance step, so a restart resumes exactly
 // where the last run stopped. The initial State is StateCatchingUp
-// until the first empty page verifies the source head.
+// until the first empty Current page verifies the source head.
 func New(source events.ProjectionSource, store rollups.Store, opts ...Option) (*Worker, error) {
 	if source == nil {
 		return nil, fmt.Errorf("projectorworker: New: source is nil")
@@ -277,11 +277,12 @@ func New(source events.ProjectionSource, store rollups.Store, opts ...Option) (*
 // them atomically with the watermark — then reports whether the Source
 // proved caught up.
 //
-// The catch-up proof is an EMPTY page: a short non-empty page does NOT
+// The catch-up proof is an EMPTY Current page: a short non-empty page does NOT
 // mark the worker current (the ProjectionSource promises at most limit
 // events, not "the rest"), and a page the source itself labels Current
 // is still non-empty until a SUBSEQUENT read returns no events. Only an
-// empty read flips the state to StateCurrent.
+// empty Current read flips the state to StateCurrent. An empty CatchingUp
+// page is a bounded retry signal: it cannot promote the checkpoint.
 //
 // A page whose events violate the source's cursor contract (a sequence
 // at or below the cursor, or a non-ascending sequence) fails loudly —
@@ -357,7 +358,16 @@ func (w *Worker) advanceLocked(ctx context.Context) (bool, error) {
 	}
 
 	if len(page.Events) == 0 {
-		// Only an empty page proves the source holds nothing newer — the
+		if page.Quality == events.ProjectionCatchingUp {
+			// A concurrent fence can remove every selected event during the
+			// source's final filter while its pre-filter overflow proof still
+			// says more canonical history exists. Keep the checkpoint and
+			// state unchanged and retry from the same cursor; never promote
+			// through Watermark without a Current proof.
+			w.setState(rollups.StateCatchingUp, nil)
+			return false, nil
+		}
+		// Only an empty Current page proves the source holds nothing newer — the
 		// log head has been verified. Persist a current watermark that
 		// advanced across excluded sequences so the next idle poll is a
 		// cheap checkpoint/watermark read rather than another Page scan.
@@ -440,7 +450,7 @@ func (w *Worker) advanceLocked(ctx context.Context) (bool, error) {
 }
 
 // CatchUp advances in pages until the Source proves caught up with an
-// empty read, honouring ctx. It is a convenience loop over Advance for
+// empty Current read, honouring ctx. It is a convenience loop over Advance for
 // the operator paths that want "drain the backlog now". Bounded by
 // maxCatchUpIterations so a pathological source fails loudly rather
 // than looping forever.
@@ -460,7 +470,7 @@ func (w *Worker) CatchUp(ctx context.Context) error {
 // Run drives the projection in the background until ctx is cancelled.
 // It registers a wake sink on the source (the source seeds the sink
 // with its current watermark, then notifies after every successful
-// persistence of a canonical event), drains until the first empty read,
+// persistence of a canonical event), drains until the first empty Current read,
 // then waits for a wake notification or the lost-wake fallback poll
 // before draining again.
 //
