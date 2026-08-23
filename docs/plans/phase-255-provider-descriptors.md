@@ -98,6 +98,20 @@ adding a new Protocol method.
 - Fleet configuration, downstream databases, deployment, release tagging, or
   local preflight.
 
+## Release-candidate evidence (2026-08-23)
+
+Implementation PR #738 was merged at
+`d9bf28fe703e10eb9f995657f4ac52949aa57e04` (tree
+`72f8093049a3f7bc952d8d3e0decdd8d02ea7744`). Hosted candidate run
+`32670321270` completed successfully on PR head
+`1da7845326088e451bcf19970136a62b8e274e5a` (the same tree), including the full
+preflight. Post-merge main run `32673186738` also completed successfully on
+merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
+preflight.
+The immutable tag, GitHub release, public module provenance/checksums, and
+post-tag scaffold cleanup remain pending. Operator-approved provider acceptance
+and downstream runtime/database acceptance are not claimed.
+
 ## Contract shape
 
 `ProviderDescriptor` carries an opaque provider ID/kind, credential modes,
@@ -141,9 +155,12 @@ without exporting a provider rate table in this prerequisite.
 - [x] Generic catalog and Bifrost adapter tests pass under `-race`; the
       concurrent-reuse test exercises 100 discovery calls.
 - [x] CLI help/golden and static smoke coverage identify the shipped consumer.
-- [ ] Hosted CI, independent adversarial review, and any downstream live
-      provider acceptance remain release gates for a future release; this
-      unreleased candidate makes no such claim.
+- [x] Post-merge main CI run `32673186738` is green on merged commit
+      `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full preflight.
+- [ ] Independent adversarial review, operator-approved provider acceptance,
+      immutable tag/release/provenance/checksums, post-tag cleanup, and
+      downstream acceptance remain release gates; this pre-tag candidate makes
+      no public-release claim.
 
 ## Files added or changed
 

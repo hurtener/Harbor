@@ -35,6 +35,19 @@ Two versions move independently in Harbor (RFC §5.3):
   credential path and report `runtime_origin=true` only after admin-tier
   authorization. No release or downstream deployment is claimed.
 
+### Release candidate evidence
+
+- Implementation PR #738 was merged at
+  `d9bf28fe703e10eb9f995657f4ac52949aa57e04` (tree
+  `72f8093049a3f7bc952d8d3e0decdd8d02ea7744`). Hosted candidate run
+  `32670321270` completed successfully on PR head
+  `1da7845326088e451bcf19970136a62b8e274e5a` (the same tree), including the
+  full preflight. Post-merge main run `32673186738` also completed successfully
+  on merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
+  preflight. The immutable tag, GitHub release, public module provenance,
+  checksums, and post-tag scaffold cleanup remain pending; no downstream
+  runtime, fleet, or database acceptance is claimed.
+
 ## [1.29.5] — 2026-08-23
 
 ### Fixed
