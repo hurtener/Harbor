@@ -52,7 +52,7 @@ func TestStore_AtomicReservationSettlementAndReplayAcrossDrivers(t *testing.T) {
 			now := time.Now().UTC()
 			identityScope := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, RunID: "run"}
 			mk := func(id string) llm.LeaseReservationRequest {
-				return llm.LeaseReservationRequest{AttemptID: id, GrantID: "grant", LeaseID: "lease", Epoch: 1, Capacity: 100, Units: 100, ExpiresAt: now.Add(time.Minute), Identity: identityScope}
+				return llm.LeaseReservationRequest{AttemptID: id, LogicalCallID: id, AttemptNonce: "nonce-" + id, GrantID: "grant", LeaseID: "lease", Epoch: 1, Capacity: 100, Units: 100, ExpiresAt: now.Add(time.Minute), Identity: identityScope}
 			}
 			var wg sync.WaitGroup
 			results := make(chan error, 2)
@@ -84,10 +84,11 @@ func TestStore_AtomicReservationSettlementAndReplayAcrossDrivers(t *testing.T) {
 				}
 			}
 			receipt := testReceipt(winning, now)
-			if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: winning, Receipt: receipt, Units: 7, Now: now}); err != nil {
+			request := mk(winning)
+			if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: winning, LogicalCallID: request.LogicalCallID, AttemptNonce: request.AttemptNonce, Receipt: receipt, Units: 7, Now: now}); err != nil {
 				t.Fatalf("Settle: %v", err)
 			}
-			if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: winning, Receipt: receipt, Units: 7, Now: now}); err != nil {
+			if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: winning, LogicalCallID: request.LogicalCallID, AttemptNonce: request.AttemptNonce, Receipt: receipt, Units: 7, Now: now}); err != nil {
 				t.Fatalf("idempotent Settle: %v", err)
 			}
 			pending, err := mgr.PendingReceipts(context.Background(), 10)
@@ -100,7 +101,7 @@ func TestStore_AtomicReservationSettlementAndReplayAcrossDrivers(t *testing.T) {
 			if err := mgr.TopUp(context.Background(), leases.TopUpRequest{LeaseID: "lease", Epoch: 2, Capacity: 200, ExpiresAt: now.Add(2 * time.Minute)}); err != nil {
 				t.Fatalf("TopUp: %v", err)
 			}
-			if _, err := mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "attempt-c", GrantID: "grant-2", LeaseID: "lease", Epoch: 2, Capacity: 200, Units: 100, ExpiresAt: now.Add(2 * time.Minute), Identity: identityScope}); err != nil {
+			if _, err := mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "attempt-c", LogicalCallID: "attempt-c", AttemptNonce: "nonce-attempt-c", GrantID: "grant-2", LeaseID: "lease", Epoch: 2, Capacity: 200, Units: 100, ExpiresAt: now.Add(2 * time.Minute), Identity: identityScope}); err != nil {
 				t.Fatalf("epoch top-up reserve: %v", err)
 			}
 			if err := mgr.Release(context.Background(), "attempt-c"); err != nil {
@@ -122,11 +123,11 @@ func TestStore_ExpiryReleasesUnsettledReservation(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "r"}
-	_, err = mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "expired", GrantID: "g", LeaseID: "l", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(-time.Second), Identity: q})
+	_, err = mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "expired", LogicalCallID: "expired", AttemptNonce: "nonce-expired", GrantID: "g", LeaseID: "l", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(-time.Second), Identity: q})
 	if !errors.Is(err, leases.ErrInsufficient) {
 		t.Fatalf("expired reserve=%v", err)
 	}
-	_, err = mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "will-expire", GrantID: "g", LeaseID: "l2", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(time.Second), Identity: q})
+	_, err = mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "will-expire", LogicalCallID: "will-expire", AttemptNonce: "nonce-will-expire", GrantID: "g", LeaseID: "l2", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(time.Second), Identity: q})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestStore_FailedSettlementReleasesWithoutConsuming(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "r"}
-	request := llm.LeaseReservationRequest{AttemptID: "failed", GrantID: "g", LeaseID: "failed-lease", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(time.Minute), Identity: q}
+	request := llm.LeaseReservationRequest{AttemptID: "failed", LogicalCallID: "failed", AttemptNonce: "nonce-failed", GrantID: "g", LeaseID: "failed-lease", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(time.Minute), Identity: q}
 	if _, err := mgr.Reserve(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestStore_FailedSettlementReleasesWithoutConsuming(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt.CanonicalBodyHash = hash
-	if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: request.AttemptID, Receipt: receipt, Units: request.Units, Now: now}); err != nil {
+	if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: request.AttemptID, LogicalCallID: request.LogicalCallID, AttemptNonce: request.AttemptNonce, Receipt: receipt, Units: request.Units, Now: now}); err != nil {
 		t.Fatal(err)
 	}
 	// The released capacity can be reserved again in the same lease epoch.
@@ -171,7 +172,7 @@ func TestStore_FailedSettlementReleasesWithoutConsuming(t *testing.T) {
 }
 
 func testReceipt(id string, now time.Time) llm.AttemptUsageReceipt {
-	r := llm.AttemptUsageReceipt{ReceiptID: id, GrantID: "grant", OrganizationID: "org", RuntimeID: "runtime", TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run", Provider: "openai", ProviderModelID: "model", ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, RouteID: "route", CredentialAssetGeneration: 1, PolicyGeneration: 1, AttemptNumber: 1, Status: "success", StartedAt: now, CompletedAt: now.Add(time.Millisecond), IdempotencyKey: id, TotalTokens: 7}
+	r := llm.AttemptUsageReceipt{ReceiptID: id, GrantID: "grant", LogicalCallID: id, AttemptNonce: "nonce-" + id, OrganizationID: "org", RuntimeID: "runtime", TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run", Provider: "openai", ProviderModelID: "model", ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, RouteID: "route", CredentialAssetGeneration: 1, PolicyGeneration: 1, AttemptNumber: 1, Status: "success", StartedAt: now, CompletedAt: now.Add(time.Millisecond), IdempotencyKey: id, TotalTokens: 7}
 	h, _ := llm.CanonicalAttemptUsageReceiptBodyHash(r)
 	r.CanonicalBodyHash = h
 	return r

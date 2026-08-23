@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,10 +190,10 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 		"model-fast": {ContextWindowTokens: 4096, TokenEstimator: "chars_div_4"},
 	}
 	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
-		Mode:           "required",
-		Audience:       "harbor-runtime",
-		RuntimeID:      "runtime-1",
-		OrganizationID: "org-a",
+		Mode:                    "required",
+		Audience:                "harbor-runtime",
+		RuntimeID:               "runtime-1",
+		AuthorizedOrganizations: []string{"org-a", "org-b"},
 		PublicKeys: map[string]string{
 			"key-1": base64.RawURLEncoding.EncodeToString(signer.PublicKey()),
 		},
@@ -204,7 +205,13 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 1)}
+	if err := binding.Put(grant.Binding{
+		Handle: "binding-b", OrganizationID: "org-b", RuntimeID: "runtime-1", Provider: "mock",
+		ProviderConnectionID: "connection-b", ProviderConnectionGeneration: 1, Generation: 1, Secret: "not-used-by-mock-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 2)}
 	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
 		ExternalGrant:         llm.ExternalGrantConfig{Credentials: binding},
 		ExternalGrantDelivery: delivery,
@@ -223,7 +230,6 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithVerifiedOrganization(ctx, "org-a")
 	now := time.Now().UTC()
 	signed, err := signer.Sign(llm.ExternalGrant{
 		Version: 1, GrantID: "grant-a", OrganizationID: "org-a", RuntimeID: "runtime-1",
@@ -237,18 +243,78 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stack.LLM.Complete(ctx, llm.CompleteRequest{
-		Model: "model-fast", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: stringPtr("hello")}}}, ExternalGrant: &signed,
-	}); err != nil {
-		t.Fatalf("real assembled LLM grant call: %v", err)
+	grantB := signed
+	grantB.GrantID = "grant-b"
+	grantB.OrganizationID = "org-b"
+	grantB.ProviderConnectionID = "connection-b"
+	grantB.CredentialBindingHandle = "binding-b"
+	grantB.Lease.LeaseID = "lease-b"
+	grantB.LogicalCallID = ""
+	grantB.AttemptNonce = ""
+	signed, err = signer.Sign(grantB)
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case receipt := <-delivery.ch:
-		if receipt.GrantID != "grant-a" || receipt.Status != "success" {
-			t.Fatalf("delivered receipt = %+v", receipt)
+	ctxB, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err = identity.WithRun(ctxB, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantA := grantB
+	grantA.GrantID = "grant-a"
+	grantA.OrganizationID = "org-a"
+	grantA.ProviderConnectionID = "connection-a"
+	grantA.CredentialBindingHandle = "binding-a"
+	grantA.Lease.LeaseID = "lease-a"
+	grantA.LogicalCallID = ""
+	grantA.AttemptNonce = ""
+	grantA, err = signer.Sign(grantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxA := ctx
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, call := range []struct {
+		ctx   context.Context
+		grant llm.ExternalGrant
+	}{
+		{ctx: ctxA, grant: grantA},
+		{ctx: ctxB, grant: signed},
+	} {
+		wg.Add(1)
+		go func(call struct {
+			ctx   context.Context
+			grant llm.ExternalGrant
+		}) {
+			defer wg.Done()
+			_, completeErr := stack.LLM.Complete(call.ctx, llm.CompleteRequest{
+				Model: "model-fast", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: stringPtr("hello")}}}, ExternalGrant: &call.grant,
+			})
+			errs <- completeErr
+		}(call)
+	}
+	wg.Wait()
+	close(errs)
+	for completeErr := range errs {
+		if completeErr != nil {
+			t.Fatalf("real assembled multi-organization LLM call: %v", completeErr)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("assembled outbox did not deliver the content-free receipt")
+	}
+	seenOrganizations := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case receipt := <-delivery.ch:
+			seenOrganizations[receipt.OrganizationID] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("assembled outbox did not deliver both content-free receipts")
+		}
+	}
+	if len(seenOrganizations) != 2 || !seenOrganizations["org-a"] || !seenOrganizations["org-b"] {
+		t.Fatalf("multi-organization receipts = %+v, want org-a and org-b", seenOrganizations)
 	}
 }
 

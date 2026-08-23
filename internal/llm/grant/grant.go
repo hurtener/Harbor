@@ -77,6 +77,16 @@ func (s *Signer) Sign(claims llm.ExternalGrant) (llm.ExternalGrant, error) {
 	if claims.IssuedAt.IsZero() {
 		claims.IssuedAt = s.clock().UTC()
 	}
+	// The coordinator owns logical-call identity. Older callers that did not
+	// populate the additive fields are upgraded at this signing boundary from
+	// stable grant/run claims; no dispatch caller can choose a different value
+	// after the signature is produced.
+	if claims.LogicalCallID == "" {
+		claims.LogicalCallID = derivedIdentity("call", claims.GrantID, claims.LogicalRunID)
+	}
+	if claims.AttemptNonce == "" {
+		claims.AttemptNonce = derivedIdentity("nonce", claims.GrantID, claims.LogicalRunID)
+	}
 	if err := validateClaims(claims, false); err != nil {
 		return llm.ExternalGrant{}, err
 	}
@@ -91,22 +101,22 @@ func (s *Signer) Sign(claims llm.ExternalGrant) (llm.ExternalGrant, error) {
 // Verifier validates signed grants and binds them to the verified request
 // context. The key set and expectations are immutable after construction.
 type Verifier struct {
-	keys           map[string]ed25519.PublicKey
-	audience       string
-	runtimeID      string
-	organizationID string
-	clock          func() time.Time
-	clockSkew      time.Duration
+	keys                    map[string]ed25519.PublicKey
+	audience                string
+	runtimeID               string
+	authorizedOrganizations map[string]struct{}
+	clock                   func() time.Time
+	clockSkew               time.Duration
 }
 
 // VerifierConfig constructs a verifier from a copied key set.
 type VerifierConfig struct {
-	Audience       string
-	RuntimeID      string
-	OrganizationID string
-	Keys           map[string]ed25519.PublicKey
-	Clock          func() time.Time
-	ClockSkew      time.Duration
+	Audience                string
+	RuntimeID               string
+	AuthorizedOrganizations []string
+	Keys                    map[string]ed25519.PublicKey
+	Clock                   func() time.Time
+	ClockSkew               time.Duration
 }
 
 // NewVerifier constructs a fail-closed verifier. Public keys are copied so a
@@ -130,7 +140,15 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if skew <= 0 {
 		skew = 30 * time.Second
 	}
-	return &Verifier{keys: keys, audience: cfg.Audience, runtimeID: cfg.RuntimeID, organizationID: cfg.OrganizationID, clock: clock, clockSkew: skew}, nil
+	organizations := make(map[string]struct{}, len(cfg.AuthorizedOrganizations))
+	for _, organization := range cfg.AuthorizedOrganizations {
+		organization = strings.TrimSpace(organization)
+		if organization == "" {
+			return nil, fmt.Errorf("%w: authorized organization ids must not be empty", ErrInvalidGrantShape)
+		}
+		organizations[organization] = struct{}{}
+	}
+	return &Verifier{keys: keys, audience: cfg.Audience, runtimeID: cfg.RuntimeID, authorizedOrganizations: organizations, clock: clock, clockSkew: skew}, nil
 }
 
 // Verify implements llm.ExternalGrantVerifier. It requires the request-edge
@@ -171,17 +189,13 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 	if !ok || quad.RunID == "" {
 		return fmt.Errorf("%w: request has no logical run id", llm.ErrExternalGrantInvalid)
 	}
-	organizationID, ok := llm.VerifiedOrganizationFrom(ctx)
-	if !ok {
-		// A Harbor runtime has no organization claim in its Protocol identity
-		// triple. For the production boot path, the organization fence is
-		// therefore pinned in the verifier config by the serving host. The
-		// context value remains the stronger request-edge check when a host
-		// supplies one.
-		organizationID = v.organizationID
-	}
-	if organizationID == "" || organizationID != grant.OrganizationID {
+	if organizationID, supplied := llm.VerifiedOrganizationFrom(ctx); supplied && organizationID != grant.OrganizationID {
 		return fmt.Errorf("%w: request has no matching verified organization", llm.ErrExternalGrantInvalid)
+	}
+	if len(v.authorizedOrganizations) > 0 {
+		if _, allowed := v.authorizedOrganizations[grant.OrganizationID]; !allowed {
+			return fmt.Errorf("%w: signed organization is not authorized for this runtime", llm.ErrExternalGrantInvalid)
+		}
 	}
 	if verified.TenantID != grant.TenantID || working != (identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}) ||
 		quad.RunID != grant.LogicalRunID || grant.OrganizationID == "" {
@@ -318,9 +332,15 @@ func (s *BindingStore) Resolve(ctx context.Context, grant llm.ExternalGrant) (ll
 	if !ok || quad.RunID != grant.LogicalRunID {
 		return llm.ResolvedCredential{}, fmt.Errorf("%w: logical run mismatch", llm.ErrExternalGrantRevoked)
 	}
-	organizationID, ok := llm.VerifiedOrganizationFrom(ctx)
-	if !ok || organizationID != grant.OrganizationID {
+	if organizationID, supplied := llm.VerifiedOrganizationFrom(ctx); supplied && organizationID != grant.OrganizationID {
 		return llm.ResolvedCredential{}, fmt.Errorf("%w: verified organization mismatch", llm.ErrExternalGrantRevoked)
+	}
+	if verifiedGrant, bound := llm.VerifiedGrantContextFrom(ctx); bound {
+		if verifiedGrant.Grant.GrantID != grant.GrantID || verifiedGrant.Grant.OrganizationID != grant.OrganizationID ||
+			verifiedGrant.Grant.RuntimeID != grant.RuntimeID || verifiedGrant.Grant.CredentialBindingHandle != grant.CredentialBindingHandle ||
+			verifiedGrant.Grant.CredentialAssetGeneration != grant.CredentialAssetGeneration {
+			return llm.ResolvedCredential{}, fmt.Errorf("%w: verified grant binding mismatch", llm.ErrExternalGrantRevoked)
+		}
 	}
 	s.mu.RLock()
 	binding, ok := s.bindings[grant.CredentialBindingHandle]
@@ -352,6 +372,8 @@ type grantDocument struct {
 	UserID                       string              `json:"user_id"`
 	SessionID                    string              `json:"session_id"`
 	LogicalRunID                 string              `json:"logical_run_id"`
+	LogicalCallID                string              `json:"logical_call_id"`
+	AttemptNonce                 string              `json:"attempt_nonce"`
 	Provider                     string              `json:"provider"`
 	ProviderModelID              string              `json:"provider_model_id"`
 	ProviderConnectionID         string              `json:"provider_connection_id"`
@@ -372,6 +394,7 @@ func toDocument(g llm.ExternalGrant) grantDocument {
 		Version: g.Version, KeyID: g.KeyID, Audience: g.Audience, GrantID: g.GrantID,
 		OrganizationID: g.OrganizationID, RuntimeID: g.RuntimeID, TenantID: g.TenantID,
 		UserID: g.UserID, SessionID: g.SessionID, LogicalRunID: g.LogicalRunID,
+		LogicalCallID: g.LogicalCallID, AttemptNonce: g.AttemptNonce,
 		Provider: g.Provider, ProviderModelID: g.ProviderModelID, ProviderConnectionID: g.ProviderConnectionID, ProviderConnectionGeneration: g.ProviderConnectionGeneration,
 		RouteID: g.RouteID, CredentialBindingHandle: g.CredentialBindingHandle,
 		CredentialAssetGeneration: g.CredentialAssetGeneration, PolicyGeneration: g.PolicyGeneration,
@@ -388,7 +411,7 @@ func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 		return fmt.Errorf("%w: unsupported version=%d", ErrInvalidGrantShape, g.Version)
 	case g.KeyID == "", g.Audience == "", g.GrantID == "", g.OrganizationID == "", g.RuntimeID == "":
 		return fmt.Errorf("%w: missing signed context claim", ErrInvalidGrantShape)
-	case g.TenantID == "", g.UserID == "", g.SessionID == "", g.LogicalRunID == "":
+	case g.TenantID == "", g.UserID == "", g.SessionID == "", g.LogicalRunID == "", g.LogicalCallID == "", g.AttemptNonce == "":
 		return fmt.Errorf("%w: missing identity/run claim", ErrInvalidGrantShape)
 	case g.Provider == "", g.ProviderModelID == "", g.ProviderConnectionID == "", g.ProviderConnectionGeneration == 0, g.RouteID == "":
 		return fmt.Errorf("%w: missing provider route claim", ErrInvalidGrantShape)
@@ -404,6 +427,11 @@ func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 		return fmt.Errorf("%w: missing signature", ErrInvalidGrantShape)
 	}
 	return nil
+}
+
+func derivedIdentity(prefix, grantID, runID string) string {
+	digest := sha256.Sum256([]byte(prefix + "\x00" + grantID + "\x00" + runID))
+	return prefix + "/" + hex.EncodeToString(digest[:12])
 }
 
 // CanonicalBodyHash returns the stable digest of the unsigned claim document.

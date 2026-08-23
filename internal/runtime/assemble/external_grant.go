@@ -17,10 +17,12 @@ import (
 )
 
 // wireExternalGrant composes the production runtime grant boundary. The
-// public-key verifier and organization fence come from boot configuration;
-// the secret-bearing resolver and coordinator delivery remain host-owned
-// injection seams. This keeps Harbor from accepting caller-selected provider
-// credentials while still giving the configured runtime a real consumer.
+// public-key verifier and optional authorized-organization allowlist come from
+// boot configuration; signed grants remain the authority for the organization
+// on each call. The secret-bearing resolver and coordinator delivery remain
+// host-owned injection seams. This keeps Harbor from accepting caller-selected
+// provider credentials while still giving the configured runtime a real
+// consumer.
 func wireExternalGrant(
 	ctx context.Context,
 	settings config.LLMExternalGrantConfig,
@@ -54,10 +56,10 @@ func wireExternalGrant(
 			return llm.ExternalGrantConfig{}, func() {}, err
 		}
 		verifier, err := grant.NewVerifier(grant.VerifierConfig{
-			Audience:       settings.Audience,
-			RuntimeID:      settings.RuntimeID,
-			OrganizationID: settings.OrganizationID,
-			Keys:           keys,
+			Audience:                settings.Audience,
+			RuntimeID:               settings.RuntimeID,
+			AuthorizedOrganizations: settings.AuthorizedOrganizations,
+			Keys:                    keys,
 		})
 		if err != nil {
 			return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant verifier: %w", err)

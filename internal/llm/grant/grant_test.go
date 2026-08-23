@@ -83,13 +83,13 @@ func TestSignerVerifier_BindsVerifiedContextAndRoute(t *testing.T) {
 	}
 }
 
-func TestVerifier_UsesBootOrganizationFenceWhenContextHasNoOrganization(t *testing.T) {
+func TestVerifier_UsesAuthorizedOrganizationAllowlistWhenContextHasNoOrganization(t *testing.T) {
 	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	verifier, err := NewVerifier(VerifierConfig{
-		Audience: "harbor-runtime", RuntimeID: "runtime-1", OrganizationID: "org-a",
+		Audience: "harbor-runtime", RuntimeID: "runtime-1", AuthorizedOrganizations: []string{"org-a"},
 		Keys: map[string]ed25519.PublicKey{"key-1": signer.PublicKey()}, Clock: testClock,
 	})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestVerifier_UsesBootOrganizationFenceWhenContextHasNoOrganization(t *testi
 		t.Fatal(err)
 	}
 	if err := verifier.Verify(ctx, signed, llm.CompleteRequest{Model: "model-fast"}); err != nil {
-		t.Fatalf("boot organization fence should authorize matching grant: %v", err)
+		t.Fatalf("authorized organization allowlist should authorize matching grant: %v", err)
 	}
 	wrong := signed
 	wrong.OrganizationID = "org-b"
@@ -117,6 +117,51 @@ func TestVerifier_UsesBootOrganizationFenceWhenContextHasNoOrganization(t *testi
 		// The body was changed without resigning; this must fail before any
 		// configured organization comparison can be bypassed.
 		t.Fatalf("tampered organization = %v, want signature failure", err)
+	}
+}
+
+func TestVerifier_AllowsTwoSignedOrganizationsOnOneRuntime(t *testing.T) {
+	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-1": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := testGrant()
+	grantA, err := signer.Sign(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantB := base
+	grantB.GrantID = "grant-b"
+	grantB.OrganizationID = "org-b"
+	grantB.ProviderConnectionID = "connection-b"
+	grantB.CredentialBindingHandle = "binding-b"
+	grantB.Lease.LeaseID = "lease-b"
+	grantB.LogicalCallID = ""
+	grantB.AttemptNonce = ""
+	grantB, err = signer.Sign(grantB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range []llm.ExternalGrant{grantA, grantB} {
+		if err := verifier.Verify(ctx, grant, llm.CompleteRequest{Model: "model-fast"}); err != nil {
+			t.Fatalf("signed organization %q on shared runtime: %v", grant.OrganizationID, err)
+		}
 	}
 }
 

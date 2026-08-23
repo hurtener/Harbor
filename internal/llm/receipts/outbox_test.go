@@ -19,16 +19,24 @@ type recordingDelivery struct {
 	mu       sync.Mutex
 	receipts []llm.AttemptUsageReceipt
 	err      error
+	calls    int
 }
 
 func (d *recordingDelivery) Deliver(_ context.Context, receipt llm.AttemptUsageReceipt) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.calls++
 	if d.err != nil {
 		return d.err
 	}
 	d.receipts = append(d.receipts, receipt)
 	return nil
+}
+
+func (d *recordingDelivery) callCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
 }
 
 func receiptContext(t *testing.T, receipt llm.AttemptUsageReceipt) context.Context {
@@ -48,11 +56,11 @@ func receiptContext(t *testing.T, receipt llm.AttemptUsageReceipt) context.Conte
 func testReceipt() llm.AttemptUsageReceipt {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	receipt := llm.AttemptUsageReceipt{
-		ReceiptID: "grant-1/call-1/0/0/0/1", GrantID: "grant-1", OrganizationID: "org-a", RuntimeID: "runtime-1",
+		ReceiptID: "grant-1/call-1/nonce-1/0/0/0/1", GrantID: "grant-1", LogicalCallID: "call-1", AttemptNonce: "nonce-1", OrganizationID: "org-a", RuntimeID: "runtime-1",
 		TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", LogicalRunID: "run-a", Provider: "openai",
 		ProviderModelID: "model-fast", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, RouteID: "route-a", CredentialAssetGeneration: 1,
 		PolicyGeneration: 7, AttemptNumber: 1, Currency: "USD", Status: "success", StartedAt: now, CompletedAt: now.Add(time.Millisecond),
-		IdempotencyKey: "grant-1/call-1/0/0/0/1", TotalTokens: 5,
+		IdempotencyKey: "grant-1/call-1/nonce-1/0/0/0/1", TotalTokens: 5,
 	}
 	hash, _ := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
 	receipt.CanonicalBodyHash = hash

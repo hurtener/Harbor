@@ -507,12 +507,16 @@ func (c *Config) validateLLMExternalGrant() error {
 		return fieldError("llm.external_grant.mode", fmt.Sprintf("must be one of \"disabled\", \"optional\", \"required\", got %q", g.Mode))
 	}
 	for path, value := range map[string]string{
-		"audience":        g.Audience,
-		"runtime_id":      g.RuntimeID,
-		"organization_id": g.OrganizationID,
+		"audience":   g.Audience,
+		"runtime_id": g.RuntimeID,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fieldError("llm.external_grant."+path, "must be set when external grants are enabled")
+		}
+	}
+	for i, organization := range g.AuthorizedOrganizations {
+		if strings.TrimSpace(organization) == "" {
+			return fieldError(fmt.Sprintf("llm.external_grant.authorized_organizations[%d]", i), "must not be empty")
 		}
 	}
 	if len(g.PublicKeys) == 0 {

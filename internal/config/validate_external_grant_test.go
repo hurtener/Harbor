@@ -14,17 +14,17 @@ func validExternalGrantConfig(t *testing.T) LLMExternalGrantConfig {
 		t.Fatal(err)
 	}
 	return LLMExternalGrantConfig{
-		Mode:           "required",
-		Audience:       "harbor-runtime",
-		RuntimeID:      "runtime-1",
-		OrganizationID: "org-a",
+		Mode:                    "required",
+		Audience:                "harbor-runtime",
+		RuntimeID:               "runtime-1",
+		AuthorizedOrganizations: []string{"org-a", "org-b"},
 		PublicKeys: map[string]string{
 			"key-1": base64.RawURLEncoding.EncodeToString(key.Public().(ed25519.PublicKey)),
 		},
 	}
 }
 
-func TestValidateLLMExternalGrant_RequiresBootFenceAndKey(t *testing.T) {
+func TestValidateLLMExternalGrant_RequiresIssuerFenceAndKey(t *testing.T) {
 	c := &Config{}
 	c.LLM.ExternalGrant = validExternalGrantConfig(t)
 	if err := c.validateLLMExternalGrant(); err != nil {
@@ -32,11 +32,11 @@ func TestValidateLLMExternalGrant_RequiresBootFenceAndKey(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*LLMExternalGrantConfig){
-		"mode":         func(g *LLMExternalGrantConfig) { g.Mode = "mystery" },
-		"audience":     func(g *LLMExternalGrantConfig) { g.Audience = "" },
-		"runtime":      func(g *LLMExternalGrantConfig) { g.RuntimeID = "" },
-		"organization": func(g *LLMExternalGrantConfig) { g.OrganizationID = "" },
-		"keys":         func(g *LLMExternalGrantConfig) { g.PublicKeys = map[string]string{"key-1": "not-a-key"} },
+		"mode":                    func(g *LLMExternalGrantConfig) { g.Mode = "mystery" },
+		"audience":                func(g *LLMExternalGrantConfig) { g.Audience = "" },
+		"runtime":                 func(g *LLMExternalGrantConfig) { g.RuntimeID = "" },
+		"authorized_organization": func(g *LLMExternalGrantConfig) { g.AuthorizedOrganizations = []string{""} },
+		"keys":                    func(g *LLMExternalGrantConfig) { g.PublicKeys = map[string]string{"key-1": "not-a-key"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := validExternalGrantConfig(t)

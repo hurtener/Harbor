@@ -316,17 +316,18 @@ type LLMConfig struct {
 	ExternalGrant LLMExternalGrantConfig `yaml:"external_grant,omitempty"`
 }
 
-// LLMExternalGrantConfig is the non-secret, boot-pinned runtime posture for
-// external inference grants. Enabled modes fail closed unless the serving
-// host supplies a credential resolver and (for strict mode) a receipt sink.
-// PublicKeys values are base64-encoded Ed25519 public keys keyed by the
-// coordinator key id.
+// LLMExternalGrantConfig is the non-secret runtime posture for external
+// inference grants. The signed grant issuer supplies organization authority;
+// AuthorizedOrganizations is an optional explicit allowlist for deployments
+// that want an additional runtime fence. It is deliberately not a single
+// boot-pinned organization, so one runtime can serve multiple organizations
+// concurrently without cross-organization credential bleed.
 type LLMExternalGrantConfig struct {
-	Mode           string            `yaml:"mode,omitempty"`
-	Audience       string            `yaml:"audience,omitempty"`
-	RuntimeID      string            `yaml:"runtime_id,omitempty"`
-	OrganizationID string            `yaml:"organization_id,omitempty"`
-	PublicKeys     map[string]string `yaml:"public_keys,omitempty"`
+	Mode                    string            `yaml:"mode,omitempty"`
+	Audience                string            `yaml:"audience,omitempty"`
+	RuntimeID               string            `yaml:"runtime_id,omitempty"`
+	AuthorizedOrganizations []string          `yaml:"authorized_organizations,omitempty"`
+	PublicKeys              map[string]string `yaml:"public_keys,omitempty"`
 }
 
 // InferenceBrokerConfig declares one NAMED, boot-declared inference-plane

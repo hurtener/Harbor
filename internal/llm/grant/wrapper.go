@@ -59,6 +59,9 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if c.deps.ExternalGrant.Credentials == nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: credential resolver is not configured", llm.ErrExternalGrantInvalid)
 	}
+	if mode == llm.ExternalGrantRequired && c.deps.ExternalGrant.Reservations == nil {
+		return llm.CompleteResponse{}, fmt.Errorf("%w: durable reservation manager is not configured", llm.ErrExternalGrantInvalid)
+	}
 
 	grant := *req.ExternalGrant
 	req = bindRequestDefaults(req, grant, c.cfg)
@@ -71,7 +74,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return llm.CompleteResponse{}, err
 	}
 	var scope *llm.AttemptScope
-	ctx, scope, err = llm.EnsureAttemptScope(ctx)
+	ctx, scope, err = llm.EnsureGrantAttemptScope(ctx, grant)
 	if err != nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %v", llm.ErrExternalGrantInvalid, err)
 	}
@@ -88,16 +91,33 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			epoch = 1
 		}
 		units := grant.Lease.RemainingTokens()
+		// Reserve only the bounded provider-call ceiling, not the entire
+		// remaining grant lease. The remainder stays available for later
+		// planner steps and true response-loss replays after settlement.
+		if req.MaxTokens != nil && int64(*req.MaxTokens) < units {
+			units = int64(*req.MaxTokens)
+		}
 		if units <= 0 {
 			return llm.CompleteResponse{}, llm.ErrExternalGrantLeaseInsufficient
 		}
 		reservation, err = c.deps.ExternalGrant.Reservations.Reserve(ctx, llm.LeaseReservationRequest{
-			AttemptID: attemptID(grant, scope), GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID,
+			AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
+			GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID,
 			Epoch: epoch, Capacity: grant.Lease.TokenUnits, Units: units, ExpiresAt: grant.Lease.ExpiresAt,
 			Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
 		})
 		if err != nil {
 			return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %v", llm.ErrExternalGrantLeaseInsufficient, err)
+		}
+		if reservation.Existing {
+			switch reservation.Status {
+			case "reserved":
+				return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptInFlight
+			case "consumed", "released", "expired":
+				return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptSettled
+			default:
+				return llm.CompleteResponse{}, fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
+			}
 		}
 	}
 	// Never let an unverified caller-provided request field reach the driver;
@@ -126,7 +146,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		if used < 0 {
 			used = 0
 		}
-		if err := c.deps.ExternalGrant.Reservations.Settle(ctx, llm.LeaseSettlement{AttemptID: reservation.AttemptID, Receipt: receipt, Units: used, Now: receipt.CompletedAt}); err != nil {
+		if err := c.deps.ExternalGrant.Reservations.Settle(ctx, llm.LeaseSettlement{AttemptID: reservation.AttemptID, LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce, Receipt: receipt, Units: used, Now: receipt.CompletedAt}); err != nil {
 			return resp, fmt.Errorf("%w: settle attempt: %v", llm.ErrUsageReceiptUnavailable, err)
 		}
 	}
@@ -142,13 +162,20 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 
 func attemptID(grant llm.ExternalGrant, scope *llm.AttemptScope) string {
 	attempt, retry, downgrade, hop := 1, 0, 0, 0
+	logicalCallID, attemptNonce := grant.LogicalCallID, grant.AttemptNonce
 	if scope != nil {
 		attempt, retry, downgrade, hop = scope.Attempt, scope.Retry, scope.Downgrade, scope.FallbackHop
+		if scope.LogicalCallID != "" {
+			logicalCallID = scope.LogicalCallID
+		}
+		if scope.AttemptNonce != "" {
+			attemptNonce = scope.AttemptNonce
+		}
 		if attempt <= 0 {
 			attempt = 1
 		}
 	}
-	return fmt.Sprintf("%s/%d/%d/%d/%d", grant.GrantID, retry, downgrade, hop, attempt)
+	return fmt.Sprintf("%s/%s/%s/%d/%d/%d/%d", grant.GrantID, logicalCallID, attemptNonce, retry, downgrade, hop, attempt)
 }
 
 // bindRequestDefaults closes the two ordinary omission paths before the
@@ -214,6 +241,9 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 	if topErr != nil {
 		return fmt.Errorf("%w: top-up failed: %v", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
+	if newGrant.LogicalCallID != grant.LogicalCallID || newGrant.AttemptNonce != grant.AttemptNonce {
+		return fmt.Errorf("%w: lease top-up changed attempt identity", llm.ErrExternalGrantInvalid)
+	}
 	*grant = newGrant
 	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req); err != nil {
 		return err
@@ -241,19 +271,26 @@ func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.Comp
 		}
 	}
 	attempt, retry, hop := 1, 0, 0
-	// GrantID is the coordinator's stable logical-call id. It deliberately
-	// anchors receipt identity instead of the locally generated AttemptScope
-	// id, so a caller retry after response loss re-enqueues the same receipt
-	// and the StateStore outbox/delivery idempotency key converges.
+	logicalCallID, attemptNonce := grant.LogicalCallID, grant.AttemptNonce
+	// The signed logical-call id and nonce anchor receipt identity. A true
+	// response-loss retry carries the same grant and therefore reuses the same
+	// durable identity; planner steps derive distinct child identities before
+	// reaching this boundary.
 	if scope != nil {
 		attempt, retry, hop = scope.Attempt, scope.Retry, scope.FallbackHop
+		if scope.LogicalCallID != "" {
+			logicalCallID = scope.LogicalCallID
+		}
+		if scope.AttemptNonce != "" {
+			attemptNonce = scope.AttemptNonce
+		}
 		if attempt <= 0 {
 			attempt = 1
 		}
 	}
 	idempotency := attemptID(grant, scope)
 	receipt := llm.AttemptUsageReceipt{
-		ReceiptID: idempotency, GrantID: grant.GrantID, OrganizationID: grant.OrganizationID,
+		ReceiptID: idempotency, GrantID: grant.GrantID, LogicalCallID: logicalCallID, AttemptNonce: attemptNonce, OrganizationID: grant.OrganizationID,
 		RuntimeID: grant.RuntimeID, TenantID: grant.TenantID, UserID: grant.UserID,
 		SessionID: grant.SessionID, LogicalRunID: grant.LogicalRunID, Provider: grant.Provider,
 		ProviderModelID: grant.ProviderModelID, ProviderConnectionID: grant.ProviderConnectionID,

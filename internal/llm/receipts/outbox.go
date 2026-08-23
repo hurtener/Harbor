@@ -337,18 +337,36 @@ func (o *Outbox) Run(ctx context.Context) error {
 		return err
 	}
 	for {
+		// Once the delivery breaker is open, Replay is intentionally a
+		// pure in-memory refusal.  Do not ask the durable due index on every
+		// pass: an immediately-due entry would otherwise turn the breaker
+		// into a tight read loop.  We take one due snapshot when the breaker
+		// opens and then sleep until the later of that due time and the
+		// breaker deadline.  Enqueue still wakes the loop if a newer entry
+		// arrives while it is parked.
+		openBefore := o.circuitOpen()
 		if _, err := o.Replay(ctx); err != nil && !errors.Is(err, ErrCircuitOpen) && !errors.Is(err, ErrDeliveryFailed) {
 			return err
 		}
 		delay := o.reconcileInterval
-		if due, ok := o.nextDue(ctx); ok {
-			until := time.Until(due)
-			if until < 0 {
-				until = 0
+		if openUntil, open := o.circuitOpenUntil(); open {
+			// A just-opened breaker gets one durable due lookup so that a
+			// later due item can extend the sleep.  An already-open breaker
+			// must not reload the index until the deadline has passed.
+			if !openBefore {
+				if due, ok := o.nextDue(ctx); ok && due.After(openUntil) {
+					openUntil = due
+				}
 			}
+			delay = durationUntil(o.clock().UTC(), openUntil)
+		} else if due, ok := o.nextDue(ctx); ok {
+			until := durationUntil(o.clock().UTC(), due)
 			if until < delay {
 				delay = until
 			}
+		}
+		if delay <= 0 {
+			delay = time.Nanosecond
 		}
 		timer := time.NewTimer(delay)
 		select {
@@ -366,6 +384,16 @@ func (o *Outbox) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func durationUntil(now, target time.Time) time.Duration {
+	if target.IsZero() {
+		return 0
+	}
+	if !target.After(now) {
+		return 0
+	}
+	return target.Sub(now)
 }
 
 // Reconcile imports settled receipts from a runtime reservation manager and
@@ -546,12 +574,24 @@ func findDue(idx dueIndex, entry dueEntry) int {
 }
 
 func (o *Outbox) breakerError() error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if !o.circuitOpenTil.IsZero() && o.clock().UTC().Before(o.circuitOpenTil) {
+	if _, open := o.circuitOpenUntil(); open {
 		return ErrCircuitOpen
 	}
 	return nil
+}
+
+func (o *Outbox) circuitOpen() bool {
+	_, open := o.circuitOpenUntil()
+	return open
+}
+
+func (o *Outbox) circuitOpenUntil() (time.Time, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.circuitOpenTil.IsZero() && o.clock().UTC().Before(o.circuitOpenTil) {
+		return o.circuitOpenTil, true
+	}
+	return time.Time{}, false
 }
 func (o *Outbox) noteFailure(now time.Time) {
 	o.mu.Lock()
@@ -599,7 +639,7 @@ func receiptMatchesRecord(record state.StateRecord, receipt llm.AttemptUsageRece
 }
 
 func validateReceipt(receipt llm.AttemptUsageReceipt) error {
-	if receipt.ReceiptID == "" || receipt.IdempotencyKey == "" || receipt.ReceiptID != receipt.IdempotencyKey || receipt.GrantID == "" || receipt.OrganizationID == "" || receipt.RuntimeID == "" || receipt.TenantID == "" || receipt.UserID == "" || receipt.SessionID == "" || receipt.LogicalRunID == "" || receipt.Provider == "" || receipt.ProviderModelID == "" || receipt.ProviderConnectionID == "" || receipt.ProviderConnectionGeneration == 0 || receipt.RouteID == "" || receipt.CredentialAssetGeneration == 0 || receipt.PolicyGeneration == 0 || receipt.AttemptNumber <= 0 || receipt.RetryNumber < 0 || receipt.FallbackHop < 0 {
+	if receipt.ReceiptID == "" || receipt.IdempotencyKey == "" || receipt.ReceiptID != receipt.IdempotencyKey || receipt.GrantID == "" || receipt.LogicalCallID == "" || receipt.AttemptNonce == "" || receipt.OrganizationID == "" || receipt.RuntimeID == "" || receipt.TenantID == "" || receipt.UserID == "" || receipt.SessionID == "" || receipt.LogicalRunID == "" || receipt.Provider == "" || receipt.ProviderModelID == "" || receipt.ProviderConnectionID == "" || receipt.ProviderConnectionGeneration == 0 || receipt.RouteID == "" || receipt.CredentialAssetGeneration == 0 || receipt.PolicyGeneration == 0 || receipt.AttemptNumber <= 0 || receipt.RetryNumber < 0 || receipt.FallbackHop < 0 {
 		return fmt.Errorf("%w: missing identity, route, generation, or idempotency field", ErrInvalidReceipt)
 	}
 	if receipt.PromptTokens < 0 || receipt.CompletionTokens < 0 || receipt.ReasoningTokens < 0 || receipt.TotalTokens < 0 || receipt.CacheReadTokens < 0 || receipt.CacheWriteTokens < 0 || receipt.InputCostMicros < 0 || receipt.OutputCostMicros < 0 || receipt.ReasoningCostMicros < 0 || receipt.TotalCostMicros < 0 || receipt.LatencyMS < 0 {

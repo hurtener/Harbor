@@ -88,7 +88,7 @@ func (s *Store) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (l
 			if !attempt.matches(req) {
 				return llm.LeaseReservation{}, ErrAttemptConflict
 			}
-			return attempt.reservation(), nil
+			return attempt.reservation(true), nil
 		}
 		if leaseErr != nil {
 			lease = leaseState{LeaseID: req.LeaseID, Epoch: req.Epoch, Capacity: req.Capacity, ExpiresAt: req.ExpiresAt}
@@ -102,7 +102,7 @@ func (s *Store) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (l
 			return llm.LeaseReservation{}, fmt.Errorf("%w: available=%d requested=%d", ErrInsufficient, lease.Capacity-lease.Consumed-lease.Reserved, req.Units)
 		}
 		lease.Reserved += req.Units
-		attempt = attemptState{AttemptID: req.AttemptID, GrantID: req.GrantID, LeaseID: req.LeaseID, Epoch: req.Epoch, Units: req.Units, ExpiresAt: req.ExpiresAt, Identity: req.Identity, Status: "reserved"}
+		attempt = attemptState{AttemptID: req.AttemptID, LogicalCallID: req.LogicalCallID, AttemptNonce: req.AttemptNonce, GrantID: req.GrantID, LeaseID: req.LeaseID, Epoch: req.Epoch, Units: req.Units, ExpiresAt: req.ExpiresAt, Identity: req.Identity, Status: "reserved"}
 		leaseBody, err := json.Marshal(lease)
 		if err != nil {
 			return llm.LeaseReservation{}, fmt.Errorf("llm/leases: encode lease: %w", err)
@@ -120,7 +120,7 @@ func (s *Store) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (l
 			}
 			return llm.LeaseReservation{}, fmt.Errorf("llm/leases: reserve: %w", err)
 		}
-		return attempt.reservation(), nil
+		return attempt.reservation(false), nil
 	}
 	return llm.LeaseReservation{}, fmt.Errorf("%w: concurrent reservation did not converge", state.ErrConditionFailed)
 }
@@ -128,7 +128,7 @@ func (s *Store) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (l
 // Settle atomically moves reserved units to consumed (or releases them on a
 // failed/cancelled call) and stores the receipt for later outbox reconciliation.
 func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
-	if req.AttemptID == "" || req.Receipt.ReceiptID == "" || req.Units < 0 {
+	if req.AttemptID == "" || req.Receipt.ReceiptID == "" || req.LogicalCallID == "" || req.AttemptNonce == "" || req.Units < 0 {
 		return ErrInvalidRequest
 	}
 	now := req.Now
@@ -144,6 +144,11 @@ func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
 		lr, l, err := s.loadLease(ctx, q, leasePrefix+a.LeaseID)
 		if err != nil {
 			return err
+		}
+		if a.LogicalCallID != req.LogicalCallID || a.AttemptNonce != req.AttemptNonce ||
+			req.Receipt.LogicalCallID != a.LogicalCallID || req.Receipt.AttemptNonce != a.AttemptNonce ||
+			req.Receipt.ReceiptID != a.AttemptID || req.Receipt.IdempotencyKey != a.AttemptID {
+			return ErrAttemptConflict
 		}
 		if a.Status == "consumed" || a.Status == "released" || a.Status == "expired" {
 			if a.ReceiptHash == receiptHash(req.Receipt) {
@@ -320,6 +325,8 @@ type leaseState struct {
 }
 type attemptState struct {
 	AttemptID     string                  `json:"attempt_id"`
+	LogicalCallID string                  `json:"logical_call_id"`
+	AttemptNonce  string                  `json:"attempt_nonce"`
 	GrantID       string                  `json:"grant_id"`
 	LeaseID       string                  `json:"lease_id"`
 	Epoch         uint64                  `json:"epoch"`
@@ -334,10 +341,10 @@ type attemptState struct {
 }
 
 func (a attemptState) matches(r llm.LeaseReservationRequest) bool {
-	return a.AttemptID == r.AttemptID && a.GrantID == r.GrantID && a.LeaseID == r.LeaseID && a.Epoch == r.Epoch && a.Units == r.Units && a.Identity == r.Identity
+	return a.AttemptID == r.AttemptID && a.LogicalCallID == r.LogicalCallID && a.AttemptNonce == r.AttemptNonce && a.GrantID == r.GrantID && a.LeaseID == r.LeaseID && a.Epoch == r.Epoch && a.Units == r.Units && a.Identity == r.Identity
 }
-func (a attemptState) reservation() llm.LeaseReservation {
-	return llm.LeaseReservation{AttemptID: a.AttemptID, GrantID: a.GrantID, LeaseID: a.LeaseID, Epoch: a.Epoch, Units: a.Units, ExpiresAt: a.ExpiresAt}
+func (a attemptState) reservation(existing bool) llm.LeaseReservation {
+	return llm.LeaseReservation{AttemptID: a.AttemptID, LogicalCallID: a.LogicalCallID, AttemptNonce: a.AttemptNonce, GrantID: a.GrantID, LeaseID: a.LeaseID, Epoch: a.Epoch, Units: a.Units, ExpiresAt: a.ExpiresAt, Status: a.Status, Existing: existing, Receipt: a.Receipt}
 }
 func expectedID(r state.StateRecord) state.EventID {
 	if r.ID == "" {
@@ -364,7 +371,7 @@ func (s *Store) loadAttempt(ctx context.Context, q identity.Quadruple, k string)
 	return r, v, e
 }
 func validateRequest(r llm.LeaseReservationRequest) error {
-	if strings.TrimSpace(r.AttemptID) == "" || strings.TrimSpace(r.GrantID) == "" || strings.TrimSpace(r.LeaseID) == "" || r.Epoch == 0 || r.Capacity <= 0 || r.Units <= 0 || r.Units > r.Capacity || r.ExpiresAt.IsZero() {
+	if strings.TrimSpace(r.AttemptID) == "" || strings.TrimSpace(r.LogicalCallID) == "" || strings.TrimSpace(r.AttemptNonce) == "" || strings.TrimSpace(r.GrantID) == "" || strings.TrimSpace(r.LeaseID) == "" || r.Epoch == 0 || r.Capacity <= 0 || r.Units <= 0 || r.Units > r.Capacity || r.ExpiresAt.IsZero() {
 		return ErrInvalidRequest
 	}
 	if err := identity.Validate(r.Identity.Identity); err != nil {

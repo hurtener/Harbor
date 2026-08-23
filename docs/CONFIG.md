@@ -451,11 +451,14 @@ when `llm.external_grant.mode` is `optional` or `required`. Non-secret.
 The runtime identity bound into accepted grants. Required for an enabled
 external-grant posture. It is a boot fence, not a caller-supplied authority.
 
-### llm.external_grant.organization_id
+### llm.external_grant.authorized_organizations
 
-The organization identity bound into accepted grants. Required for an enabled
-external-grant posture. The runtime verifies this server-side and never trusts
-an organization value from the dispatch caller.
+Optional explicit organization allowlist for accepted signed grants. When it is
+empty, the configured coordinator public-key issuer is the authority and the
+runtime accepts grants for every organization that issuer signs. When present,
+each signed grant organization must be listed. This is a set, not a single
+boot-pinned organization, so one runtime can serve multiple organizations
+concurrently without trusting an organization value from the dispatch caller.
 
 ### llm.external_grant.public_keys
 

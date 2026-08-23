@@ -33,6 +33,8 @@ type ExternalGrant struct {
 	UserID                       string          `json:"user_id"`
 	SessionID                    string          `json:"session_id"`
 	LogicalRunID                 string          `json:"logical_run_id"`
+	LogicalCallID                string          `json:"logical_call_id"`
+	AttemptNonce                 string          `json:"attempt_nonce"`
 	Provider                     string          `json:"provider"`
 	ProviderModelID              string          `json:"provider_model_id"`
 	ProviderConnectionID         string          `json:"provider_connection_id"`
@@ -100,6 +102,14 @@ var (
 	// ErrExternalGrantLeaseInsufficient indicates that a bounded lease needs a
 	// coordinator top-up before this provider attempt can start.
 	ErrExternalGrantLeaseInsufficient = errors.New("llm: external execution grant lease insufficient")
+	// ErrExternalGrantAttemptInFlight means a duplicate invocation reached the
+	// durable reservation after another process already admitted the exact
+	// logical provider attempt. The duplicate must not call the provider.
+	ErrExternalGrantAttemptInFlight = errors.New("llm: external execution attempt already in flight")
+	// ErrExternalGrantAttemptSettled means a response-loss retry reached an
+	// attempt whose provider outcome was already durably settled. Callers may
+	// reconcile the persisted receipt; they must not invoke the provider again.
+	ErrExternalGrantAttemptSettled = errors.New("llm: external execution attempt already settled")
 	// ErrExternalGrantCrossProviderFallback is returned before a provider call
 	// when an external grant would cross its signed provider boundary. A
 	// coordinator must issue a new grant for a different provider.
@@ -147,33 +157,42 @@ type LeaseTopUpper interface {
 // Implementations must serialize competing requests for the same LeaseID in
 // the StateStore, not in process-local memory.
 type LeaseReservationRequest struct {
-	AttemptID string
-	GrantID   string
-	LeaseID   string
-	Epoch     uint64
-	Capacity  int64
-	Units     int64
-	ExpiresAt time.Time
-	Identity  identity.Quadruple
+	AttemptID     string
+	LogicalCallID string
+	AttemptNonce  string
+	GrantID       string
+	LeaseID       string
+	Epoch         uint64
+	Capacity      int64
+	Units         int64
+	ExpiresAt     time.Time
+	Identity      identity.Quadruple
 }
 
 // LeaseReservation is the durable reservation identity returned before the
 // provider call starts.
 type LeaseReservation struct {
-	AttemptID string
-	GrantID   string
-	LeaseID   string
-	Epoch     uint64
-	Units     int64
-	ExpiresAt time.Time
+	AttemptID     string
+	LogicalCallID string
+	AttemptNonce  string
+	GrantID       string
+	LeaseID       string
+	Epoch         uint64
+	Units         int64
+	ExpiresAt     time.Time
+	Status        string
+	Existing      bool
+	Receipt       AttemptUsageReceipt
 }
 
 // LeaseSettlement closes a reservation with the content-free attempt receipt.
 type LeaseSettlement struct {
-	AttemptID string
-	Receipt   AttemptUsageReceipt
-	Units     int64
-	Now       time.Time
+	AttemptID     string
+	LogicalCallID string
+	AttemptNonce  string
+	Receipt       AttemptUsageReceipt
+	Units         int64
+	Now           time.Time
 }
 
 // LeaseReservationManager is the optional execution-edge reservation seam.
@@ -190,6 +209,8 @@ type LeaseReservationManager interface {
 type AttemptUsageReceipt struct {
 	ReceiptID                    string
 	GrantID                      string
+	LogicalCallID                string
+	AttemptNonce                 string
 	OrganizationID               string
 	RuntimeID                    string
 	TenantID                     string
@@ -306,14 +327,34 @@ func VerifiedGrantContextFrom(ctx context.Context) (VerifiedGrantContext, bool) 
 // coordinates used to produce deterministic receipt IDs. It is per invocation,
 // never stored on a reusable client.
 type AttemptScope struct {
-	CallID      string
-	Attempt     int
-	Retry       int
-	Downgrade   int
-	FallbackHop int
+	CallID        string
+	LogicalCallID string
+	AttemptNonce  string
+	Attempt       int
+	Retry         int
+	Downgrade     int
+	FallbackHop   int
 }
 
 type attemptScopeKey struct{}
+
+type attemptStepKey struct{}
+
+// WithAttemptStep installs the server-owned planner step coordinate used to
+// derive a child logical-call identity from a signed grant. The run loop is
+// the only production caller; the provider grant verifier still authenticates
+// the parent grant and the child is deterministic from that verified parent.
+func WithAttemptStep(ctx context.Context, step int) context.Context {
+	if step <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, attemptStepKey{}, step)
+}
+
+func attemptStepFrom(ctx context.Context) (int, bool) {
+	step, ok := ctx.Value(attemptStepKey{}).(int)
+	return step, ok && step > 0
+}
 
 // WithAttemptScope installs a scope on ctx. The caller owns the returned scope
 // and may derive per-attempt contexts with WithAttemptCoordinates.
@@ -338,8 +379,35 @@ func EnsureAttemptScope(ctx context.Context) (context.Context, *AttemptScope, er
 	if _, err := rand.Read(callID[:]); err != nil {
 		return ctx, nil, fmt.Errorf("llm: allocate attempt scope: %w", err)
 	}
-	scope := &AttemptScope{CallID: hex.EncodeToString(callID[:])}
+	callIDText := hex.EncodeToString(callID[:])
+	scope := &AttemptScope{CallID: callIDText, LogicalCallID: callIDText, AttemptNonce: callIDText}
 	return WithAttemptScope(ctx, scope), scope, nil
+}
+
+// EnsureGrantAttemptScope binds retry coordinates to the coordinator-signed
+// grant. A true response-loss replay carries the same signed grant and thus
+// receives the same identity. ReAct/planner steps receive deterministic child
+// identities derived from the server-owned step coordinate, so two steps
+// cannot share one durable reservation.
+func EnsureGrantAttemptScope(ctx context.Context, grant ExternalGrant) (context.Context, *AttemptScope, error) {
+	if grant.LogicalCallID == "" || grant.AttemptNonce == "" {
+		return ctx, nil, ErrExternalGrantInvalid
+	}
+	ctx, scope, err := EnsureAttemptScope(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	copyScope := *scope
+	copyScope.LogicalCallID = grant.LogicalCallID
+	copyScope.AttemptNonce = grant.AttemptNonce
+	copyScope.CallID = grant.LogicalCallID
+	if step, ok := attemptStepFrom(ctx); ok {
+		copyScope.LogicalCallID = fmt.Sprintf("%s/step/%d", grant.LogicalCallID, step)
+		copyScope.CallID = copyScope.LogicalCallID
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", grant.AttemptNonce, step)))
+		copyScope.AttemptNonce = hex.EncodeToString(digest[:])
+	}
+	return WithAttemptScope(ctx, &copyScope), &copyScope, nil
 }
 
 // WithAttemptCoordinates returns a derived context with provider-attempt

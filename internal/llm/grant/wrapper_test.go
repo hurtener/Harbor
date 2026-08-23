@@ -7,10 +7,15 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/leases"
 	"github.com/hurtener/Harbor/internal/llm/retry"
+	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
 type recordingClient struct {
@@ -39,7 +44,42 @@ type recordingSink struct {
 	err      error
 }
 
+type blockingClient struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+	calls     atomic.Int32
+	response  llm.CompleteResponse
+}
+
+func (c *blockingClient) Complete(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	c.calls.Add(1)
+	c.startOnce.Do(func() { close(c.started) })
+	select {
+	case <-c.release:
+		return c.response, nil
+	case <-ctx.Done():
+		return llm.CompleteResponse{}, ctx.Err()
+	}
+}
+
+func (*blockingClient) Close(context.Context) error { return nil }
+
 type topUpperFunc func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error)
+
+func newTestReservations(t *testing.T) *leases.Store {
+	t.Helper()
+	stateStore, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stateStore.Close(context.Background()) })
+	reservations, err := leases.New(stateStore, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reservations
+}
 
 func (f topUpperFunc) TopUp(ctx context.Context, grant llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
 	return f(ctx, grant, needed)
@@ -75,7 +115,7 @@ func TestWrap_RequiredGrantResolvesOnlyVerifiedContextAndEmitsContentFreeReceipt
 	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}}}
 	sink := &recordingSink{}
 	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
-		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding, ReceiptSink: sink, ReceiptRequired: true,
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding, Reservations: newTestReservations(t), ReceiptSink: sink, ReceiptRequired: true,
 	}})
 	ctx := testContext(t, "org-a")
 	resp, err := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed})
@@ -169,7 +209,7 @@ func TestWrap_TopsUpBoundedLeaseBeforeProviderCall(t *testing.T) {
 	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
 	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
 		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding,
-		TopUpper: topUpper, ReceiptSink: &recordingSink{}, ReceiptRequired: true,
+		Reservations: newTestReservations(t), TopUpper: topUpper, ReceiptSink: &recordingSink{}, ReceiptRequired: true,
 	}})
 	maxTokens := 100
 	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &signed}); err != nil {
@@ -199,7 +239,7 @@ func TestWrap_GrantIsRecheckedForEveryRetryAttempt(t *testing.T) {
 	}
 	sink := &recordingSink{}
 	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 1}}}
-	granted := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding, ReceiptSink: sink, ReceiptRequired: true}})
+	granted := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding, Reservations: newTestReservations(t), ReceiptSink: sink, ReceiptRequired: true}})
 	wrapped := retry.Wrap(granted, llm.ConfigSnapshot{ModelProfiles: map[string]llm.ModelProfile{"model-fast": {MaxRetries: 1}}}, llm.Deps{})
 	validatorCalls := 0
 	_, err = wrapped.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed, Validator: func(llm.CompleteResponse) error {
@@ -217,6 +257,105 @@ func TestWrap_GrantIsRecheckedForEveryRetryAttempt(t *testing.T) {
 	}
 	if sink.receipts[0].ReceiptID == sink.receipts[1].ReceiptID || sink.receipts[0].AttemptNumber == sink.receipts[1].AttemptNumber {
 		t.Fatalf("retry receipt coordinates did not advance: %+v", sink.receipts)
+	}
+}
+
+func TestWrap_DurableAttemptIdentityBlocksConcurrentAndResponseLossReplay(t *testing.T) {
+	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-1": signer.PublicKey()}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := NewBindingStore()
+	if err := binding.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signer.Sign(testGrant())
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &blockingClient{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 5}},
+	}
+	sink := &recordingSink{err: errors.New("receipt enqueue lost")}
+	client := Wrap(provider, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding,
+		Reservations: newTestReservations(t), ReceiptSink: sink, ReceiptRequired: true,
+	}})
+	ctx := testContext(t, "org-a")
+	firstDone := make(chan error, 1)
+	go func() {
+		_, completeErr := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed})
+		firstDone <- completeErr
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("first provider call did not start")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, completeErr := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed})
+		secondDone <- completeErr
+	}()
+	select {
+	case secondErr := <-secondDone:
+		if !errors.Is(secondErr, llm.ErrExternalGrantAttemptInFlight) {
+			t.Fatalf("concurrent duplicate = %v, want ErrExternalGrantAttemptInFlight", secondErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent duplicate did not return")
+	}
+	close(provider.release)
+	if firstErr := <-firstDone; !errors.Is(firstErr, llm.ErrUsageReceiptUnavailable) {
+		t.Fatalf("response-loss provider call = %v, want receipt failure", firstErr)
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("provider calls after first settlement = %d, want one", got)
+	}
+	if _, replayErr := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed}); !errors.Is(replayErr, llm.ErrExternalGrantAttemptSettled) {
+		t.Fatalf("response-loss replay = %v, want ErrExternalGrantAttemptSettled", replayErr)
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("provider calls after replay = %d, want one", got)
+	}
+}
+
+func TestWrap_GrantAttemptIdentityIsStablePerPlannerStep(t *testing.T) {
+	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := signer.Sign(testGrant())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := testContext(t, "org-a")
+	stepOneCtx, stepOne, err := llm.EnsureGrantAttemptScope(llm.WithAttemptStep(base, 1), grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stepOneReplay, err := llm.EnsureGrantAttemptScope(llm.WithAttemptStep(base, 1), grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stepTwo, err := llm.EnsureGrantAttemptScope(llm.WithAttemptStep(base, 2), grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stepOne.LogicalCallID != grant.LogicalCallID+"/step/1" || stepTwo.LogicalCallID != grant.LogicalCallID+"/step/2" {
+		t.Fatalf("planner step logical IDs = %q, %q", stepOne.LogicalCallID, stepTwo.LogicalCallID)
+	}
+	if stepOne.AttemptNonce == stepTwo.AttemptNonce || stepOne.AttemptNonce != stepOneReplay.AttemptNonce {
+		t.Fatalf("planner step nonces are not deterministic/distinct: %q %q %q", stepOne.AttemptNonce, stepTwo.AttemptNonce, stepOneReplay.AttemptNonce)
+	}
+	if scoped, ok := llm.AttemptScopeFrom(stepOneCtx); !ok || scoped.LogicalCallID != stepOne.LogicalCallID {
+		t.Fatalf("step scope was not installed: %+v, %v", scoped, ok)
 	}
 }
 

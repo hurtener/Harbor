@@ -114,7 +114,8 @@ type Options struct {
 	LLMSnapshot *llm.ConfigSnapshot
 
 	// ExternalGrant supplies host-owned runtime grant dependencies. The
-	// non-secret posture (mode, audience, runtime and organization fence,
+	// non-secret posture (mode, audience, runtime and optional organization
+	// allowlist,
 	// public keys) is read from cfg.LLM.ExternalGrant; these seams carry only
 	// the verified credential resolver, optional top-up implementation, and
 	// coordinator receipt delivery. A required configured mode fails boot
