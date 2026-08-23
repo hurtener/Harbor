@@ -75,7 +75,7 @@ func (s *Store) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (l
 	if !req.ExpiresAt.IsZero() && !now.Before(req.ExpiresAt) {
 		return llm.LeaseReservation{}, fmt.Errorf("%w: reservation expired", ErrInsufficient)
 	}
-	for n := 0; n < maxCASRetries; n++ {
+	for range maxCASRetries {
 		leaseRec, lease, leaseErr := s.loadLease(ctx, leaseQ, leaseKind)
 		if leaseErr != nil && !errors.Is(leaseErr, state.ErrNotFound) {
 			return llm.LeaseReservation{}, leaseErr
@@ -136,7 +136,7 @@ func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
 		now = s.clock().UTC()
 	}
 	q := identity.InternalCoordinationQuadruple()
-	for n := 0; n < maxCASRetries; n++ {
+	for range maxCASRetries {
 		ar, a, err := s.loadAttempt(ctx, q, attemptPrefix+req.AttemptID)
 		if err != nil {
 			return err
@@ -177,8 +177,14 @@ func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
 		a.Receipt = req.Receipt
 		a.ReceiptHash = receiptHash(req.Receipt)
 		a.SettledAt = now
-		lb, _ := json.Marshal(l)
-		ab, _ := json.Marshal(a)
+		lb, err := json.Marshal(l)
+		if err != nil {
+			return fmt.Errorf("llm/leases: encode settled lease: %w", err)
+		}
+		ab, err := json.Marshal(a)
+		if err != nil {
+			return fmt.Errorf("llm/leases: encode settled attempt: %w", err)
+		}
 		ln := state.NewInternalRecord(state.NewEventID(), q, leasePrefix+a.LeaseID, lb)
 		an := state.NewInternalRecord(state.NewEventID(), q, attemptPrefix+a.AttemptID, ab)
 		if err := s.state.SaveBatchIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(q, leasePrefix+a.LeaseID, lr.ID), state.InternalSlotExpectation(q, attemptPrefix+a.AttemptID, ar.ID)}, []state.StateRecord{ln, an}); err != nil {
@@ -200,7 +206,7 @@ func (s *Store) TopUp(ctx context.Context, req TopUpRequest) error {
 	}
 	q := identity.InternalCoordinationQuadruple()
 	kind := leasePrefix + req.LeaseID
-	for n := 0; n < maxCASRetries; n++ {
+	for range maxCASRetries {
 		rec, lease, err := s.loadLease(ctx, q, kind)
 		if err != nil {
 			return err
@@ -232,7 +238,7 @@ func (s *Store) Release(ctx context.Context, attemptID string) error {
 		return ErrInvalidRequest
 	}
 	q := identity.InternalCoordinationQuadruple()
-	for n := 0; n < maxCASRetries; n++ {
+	for range maxCASRetries {
 		ar, attempt, err := s.loadAttempt(ctx, q, attemptPrefix+attemptID)
 		if err != nil {
 			return err
@@ -249,8 +255,14 @@ func (s *Store) Release(ctx context.Context, attemptID string) error {
 		}
 		lease.Reserved -= attempt.Units
 		attempt.Status = "released"
-		lb, _ := json.Marshal(lease)
-		ab, _ := json.Marshal(attempt)
+		lb, err := json.Marshal(lease)
+		if err != nil {
+			return fmt.Errorf("llm/leases: encode released lease: %w", err)
+		}
+		ab, err := json.Marshal(attempt)
+		if err != nil {
+			return fmt.Errorf("llm/leases: encode released attempt: %w", err)
+		}
 		ln := state.NewInternalRecord(state.NewEventID(), q, leasePrefix+attempt.LeaseID, lb)
 		an := state.NewInternalRecord(state.NewEventID(), q, attemptPrefix+attemptID, ab)
 		if err := s.state.SaveBatchIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(q, leasePrefix+attempt.LeaseID, lr.ID), state.InternalSlotExpectation(q, attemptPrefix+attemptID, ar.ID)}, []state.StateRecord{ln, an}); err != nil {

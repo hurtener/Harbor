@@ -183,7 +183,7 @@ func (o *Outbox) Enqueue(ctx context.Context, receipt llm.AttemptUsageReceipt) e
 
 func (o *Outbox) enqueueAt(ctx context.Context, q identity.Quadruple, receipt llm.AttemptUsageReceipt) error {
 	receiptKind := receiptKind(receipt.ReceiptID)
-	for n := 0; n < 8; n++ {
+	for range 8 {
 		rec, err := o.store.Load(ctx, q, receiptKind)
 		if err != nil && !errors.Is(err, state.ErrNotFound) {
 			return fmt.Errorf("llm/receipts: load: %w", err)
@@ -226,7 +226,11 @@ func (o *Outbox) enqueueAt(ctx context.Context, q identity.Quadruple, receipt ll
 		} else {
 			// The receipt body is immutable; only the index changed.
 			exps = append(exps, state.InternalSlotExpectation(q, receiptKind, rec.ID))
-			writes = append(writes, state.NewInternalRecord(state.NewEventID(), q, receiptKind, mustJSON(stored)))
+			body, marshalErr := json.Marshal(stored)
+			if marshalErr != nil {
+				return fmt.Errorf("%w: encode receipt", ErrInvalidReceipt)
+			}
+			writes = append(writes, state.NewInternalRecord(state.NewEventID(), q, receiptKind, body))
 		}
 		// SaveBatchIf has no ordering requirement, but expectations and writes
 		// must name the same slots in a one-to-one manner.
@@ -255,7 +259,7 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 	o.replaying = true
 	o.mu.Unlock()
 	defer func() { o.mu.Lock(); o.replaying = false; o.mu.Unlock() }()
-	rec, idx, err := o.loadIndex(ctx)
+	_, idx, err := o.loadIndex(ctx)
 	if err != nil {
 		if errors.Is(err, state.ErrNotFound) {
 			return ReplayStats{}, nil
@@ -281,7 +285,7 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 		}
 		rr, loadErr := o.store.Load(ctx, entry.Identity, receiptKind(entry.ReceiptID))
 		if errors.Is(loadErr, state.ErrNotFound) {
-			if updateErr := o.updateEntry(ctx, rec, idx, entry, nil, true); updateErr != nil && firstErr == nil {
+			if updateErr := o.updateEntry(ctx, entry, nil, true); updateErr != nil && firstErr == nil {
 				firstErr = updateErr
 			}
 			continue
@@ -297,7 +301,9 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 			return stats, fmt.Errorf("%w: due entry identity mismatch", ErrInvalidReceipt)
 		}
 		if stored.Status == "acked" {
-			_ = o.updateEntry(ctx, rec, idx, entry, &stored, true)
+			if updateErr := o.updateEntry(ctx, entry, &stored, true); updateErr != nil && firstErr == nil {
+				firstErr = updateErr
+			}
 			continue
 		}
 		if !stored.NextAttemptAt.IsZero() && now.Before(stored.NextAttemptAt) {
@@ -306,7 +312,7 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 		}
 		if deliveryErr := o.delivery.Deliver(ctx, stored.Receipt); deliveryErr != nil {
 			stats.Failed++
-			if updateErr := o.updateEntry(ctx, rec, idx, entry, &stored, false); updateErr != nil && firstErr == nil {
+			if updateErr := o.updateEntry(ctx, entry, &stored, false); updateErr != nil && firstErr == nil {
 				firstErr = updateErr
 			} else if firstErr == nil {
 				firstErr = fmt.Errorf("%w: receipt delivery returned an error", ErrDeliveryFailed)
@@ -318,7 +324,7 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 		stored.Status = "acked"
 		stored.NextAttemptAt = time.Time{}
 		stored.LastFailureCode = ""
-		if updateErr := o.updateEntry(ctx, rec, idx, entry, &stored, true); updateErr != nil {
+		if updateErr := o.updateEntry(ctx, entry, &stored, true); updateErr != nil {
 			if firstErr == nil {
 				firstErr = updateErr
 			}
@@ -449,7 +455,7 @@ func verifiedReceiptContext(ctx context.Context, receipt llm.AttemptUsageReceipt
 }
 
 func (o *Outbox) ensureDue(ctx context.Context, q identity.Quadruple, receipt llm.AttemptUsageReceipt) error {
-	for n := 0; n < 8; n++ {
+	for range 8 {
 		rec, idx, err := o.loadIndex(ctx)
 		if err != nil && !errors.Is(err, state.ErrNotFound) {
 			return err
@@ -474,7 +480,7 @@ func (o *Outbox) ensureDue(ctx context.Context, q identity.Quadruple, receipt ll
 	return fmt.Errorf("%w: due-index reconciliation did not converge", llm.ErrUsageReceiptUnavailable)
 }
 
-func (o *Outbox) updateEntry(ctx context.Context, oldIdxRec state.StateRecord, oldIdx dueIndex, entry dueEntry, stored *storedReceipt, remove bool) error {
+func (o *Outbox) updateEntry(ctx context.Context, entry dueEntry, stored *storedReceipt, remove bool) error {
 	idxRec, idx, err := o.loadIndex(ctx)
 	if err != nil {
 		return err
@@ -497,7 +503,6 @@ func (o *Outbox) updateEntry(ctx context.Context, oldIdxRec state.StateRecord, o
 	}
 	receiptRec, recErr := o.store.Load(ctx, entry.Identity, receiptKind(entry.ReceiptID))
 	if errors.Is(recErr, state.ErrNotFound) {
-		remove = true
 	} else if recErr != nil {
 		return recErr
 	}
@@ -560,7 +565,6 @@ func (o *Outbox) loadIndex(ctx context.Context) (state.StateRecord, dueIndex, er
 func internalQ() identity.Quadruple                { return identity.InternalCoordinationQuadruple() }
 func receiptKind(id string) string                 { return kindPrefix + hex.EncodeToString([]byte(id)) }
 func expectedID(r state.StateRecord) state.EventID { return r.ID }
-func mustJSON(v any) []byte                        { b, _ := json.Marshal(v); return b }
 func hasDue(idx dueIndex, id string, q identity.Quadruple) bool {
 	return findDue(idx, dueEntry{ReceiptID: id, Identity: q}) >= 0
 }

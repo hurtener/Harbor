@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -101,9 +102,5 @@ func asProtocolError(err error, out **protoerrors.Error) bool {
 	if err == nil {
 		return false
 	}
-	if pe, ok := err.(*protoerrors.Error); ok {
-		*out = pe
-		return true
-	}
-	return false
+	return errors.As(err, out)
 }

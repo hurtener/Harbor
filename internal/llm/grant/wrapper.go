@@ -76,7 +76,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	var scope *llm.AttemptScope
 	ctx, scope, err = llm.EnsureGrantAttemptScope(ctx, grant)
 	if err != nil {
-		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %v", llm.ErrExternalGrantInvalid, err)
+		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %w", llm.ErrExternalGrantInvalid, err)
 	}
 	if scope.FallbackHop > 0 {
 		return llm.CompleteResponse{}, llm.ErrExternalGrantCrossProviderFallback
@@ -107,7 +107,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
 		})
 		if err != nil {
-			return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %v", llm.ErrExternalGrantLeaseInsufficient, err)
+			return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %w", llm.ErrExternalGrantLeaseInsufficient, err)
 		}
 		if reservation.Existing {
 			switch reservation.Status {
@@ -136,7 +136,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	hash, err := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
 	if err != nil {
 		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
-			return resp, fmt.Errorf("%w: canonical body: %v", llm.ErrUsageReceiptUnavailable, err)
+			return resp, fmt.Errorf("%w: canonical body: %w", llm.ErrUsageReceiptUnavailable, err)
 		}
 		return resp, callErr
 	}
@@ -147,14 +147,14 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			used = 0
 		}
 		if err := c.deps.ExternalGrant.Reservations.Settle(ctx, llm.LeaseSettlement{AttemptID: reservation.AttemptID, LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce, Receipt: receipt, Units: used, Now: receipt.CompletedAt}); err != nil {
-			return resp, fmt.Errorf("%w: settle attempt: %v", llm.ErrUsageReceiptUnavailable, err)
+			return resp, fmt.Errorf("%w: settle attempt: %w", llm.ErrUsageReceiptUnavailable, err)
 		}
 	}
 	receiptCtx, cancelReceipt := context.WithTimeout(context.WithoutCancel(ctx), receiptEnqueueTimeout)
 	defer cancelReceipt()
 	if err := c.deps.ExternalGrant.ReceiptSink.Enqueue(receiptCtx, receipt); err != nil {
 		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
-			return resp, fmt.Errorf("%w: %v", llm.ErrUsageReceiptUnavailable, err)
+			return resp, fmt.Errorf("%w: %w", llm.ErrUsageReceiptUnavailable, err)
 		}
 	}
 	return resp, callErr
@@ -239,7 +239,7 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 	}
 	newGrant, topErr := c.deps.ExternalGrant.TopUpper.TopUp(ctx, *grant, needed)
 	if topErr != nil {
-		return fmt.Errorf("%w: top-up failed: %v", llm.ErrExternalGrantLeaseInsufficient, topErr)
+		return fmt.Errorf("%w: top-up failed: %w", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
 	if newGrant.LogicalCallID != grant.LogicalCallID || newGrant.AttemptNonce != grant.AttemptNonce {
 		return fmt.Errorf("%w: lease top-up changed attempt identity", llm.ErrExternalGrantInvalid)

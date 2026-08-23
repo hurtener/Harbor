@@ -149,7 +149,7 @@ func TestProviderCatalogConcurrentReuse(t *testing.T) {
 	const invocations = 100
 	var wg sync.WaitGroup
 	errs := make(chan error, invocations)
-	for i := 0; i < invocations; i++ {
+	for range invocations {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -64,11 +64,12 @@ func TestStore_AtomicReservationSettlementAndReplayAcrossDrivers(t *testing.T) {
 			close(results)
 			var successes, insufficient int
 			for err := range results {
-				if err == nil {
+				switch {
+				case err == nil:
 					successes++
-				} else if errors.Is(err, leases.ErrInsufficient) || errors.Is(err, leases.ErrAttemptConflict) {
+				case errors.Is(err, leases.ErrInsufficient) || errors.Is(err, leases.ErrAttemptConflict):
 					insufficient++
-				} else {
+				default:
 					t.Errorf("Reserve: %v", err)
 				}
 			}

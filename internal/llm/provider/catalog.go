@@ -350,7 +350,7 @@ func (c *Catalog) Validate(ctx context.Context, req ValidationRequest) Validatio
 		return result
 	}
 	if err := ctx.Err(); err != nil {
-		result.Outcome = contextOutcome(err, true)
+		result.Outcome = contextOutcome(err)
 		return result
 	}
 	if _, ok := c.descriptors[providerID]; !ok {
@@ -429,19 +429,19 @@ func (c *Catalog) Discover(ctx context.Context, req DiscoveryRequest) (Discovery
 	var all []Model
 	pageToken := ""
 	partial, stale := false, false
-	for page := 0; page < maxPages; page++ {
+	for page := range maxPages {
 		if err := ctx.Err(); err != nil {
 			result.Pages = page
 			result.Models = nil
 			result.ModelCount = 0
-			result.Outcome = contextOutcome(err, true)
+			result.Outcome = contextOutcome(err)
 			return result, nil
 		}
 		response, err := c.source.ListModels(ctx, providerID, pageSize, pageToken)
 		result.Pages++
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				result.Outcome = contextOutcome(ctxErr, true)
+				result.Outcome = contextOutcome(ctxErr)
 				return result, nil
 			}
 			if len(all) > 0 {
@@ -464,7 +464,7 @@ func (c *Catalog) Discover(ctx context.Context, req DiscoveryRequest) (Discovery
 			result.ModelCount = 0
 			result.Outcome = fixedOutcome(SupportMalformed, "provider_reply_malformed", "provider returned malformed model metadata", true)
 			result.Outcome.RuntimeOrigin = true
-			return result, nil
+			return completeDiscoveryResult(result)
 		}
 		if response.Stale {
 			stale = true
@@ -478,7 +478,7 @@ func (c *Catalog) Discover(ctx context.Context, req DiscoveryRequest) (Discovery
 			result.ModelCount = 0
 			result.Outcome = fixedOutcome(SupportMalformed, "provider_reply_malformed", "provider returned malformed model metadata", true)
 			result.Outcome.RuntimeOrigin = true
-			return result, nil
+			return completeDiscoveryResult(result)
 		}
 		for i := range normalized {
 			normalized[i].Source = ModelSourceDiscovered
@@ -508,7 +508,7 @@ func (c *Catalog) Discover(ctx context.Context, req DiscoveryRequest) (Discovery
 		result.ModelCount = 0
 		result.Outcome = fixedOutcome(SupportMalformed, "provider_reply_malformed", "provider returned duplicate model metadata", true)
 		result.Outcome.RuntimeOrigin = true
-		return result, nil
+		return completeDiscoveryResult(result)
 	}
 	result.Models = all
 	result.ModelCount = len(all)
@@ -681,19 +681,25 @@ func observedOutcome(page ModelPage, runtimeOrigin bool) Outcome {
 	return outcome
 }
 
-func contextOutcome(err error, runtimeOrigin bool) Outcome {
+func contextOutcome(err error) Outcome {
 	state, code, message := SupportUnavailable, "provider_unavailable", "provider validation was cancelled"
 	if errors.Is(err, context.DeadlineExceeded) {
 		code, message = "provider_timeout", "provider validation timed out"
 	}
 	outcome := fixedOutcome(state, code, message, false)
-	outcome.RuntimeOrigin = runtimeOrigin
+	outcome.RuntimeOrigin = true
 	return outcome
+}
+
+// completeDiscoveryResult keeps provider observation failures in the typed
+// Outcome rather than returning raw provider errors to the caller.
+func completeDiscoveryResult(result DiscoveryResult) (DiscoveryResult, error) {
+	return result, nil
 }
 
 func errorOutcome(ctx context.Context, err error) Outcome {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return contextOutcome(ctxErr, true)
+		return contextOutcome(ctxErr)
 	}
 	var providerErr *ProviderError
 	if errors.As(err, &providerErr) {
@@ -744,7 +750,7 @@ func sanitizeProviderCode(code string) string {
 	if code == "" || len(code) > 64 {
 		return "provider_unavailable"
 	}
-	for i := 0; i < len(code); i++ {
+	for i := range len(code) {
 		if (code[i] < 'a' || code[i] > 'z') && (code[i] < '0' || code[i] > '9') && code[i] != '_' && code[i] != '-' {
 			return "provider_unavailable"
 		}

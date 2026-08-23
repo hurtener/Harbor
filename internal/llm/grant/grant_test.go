@@ -228,7 +228,7 @@ func TestBindingStore_ConcurrentTwoOrganizationsNoBleed(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	errCh := make(chan error, 200)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()

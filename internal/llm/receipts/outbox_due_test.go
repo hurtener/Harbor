@@ -39,10 +39,10 @@ func (s *countingStateStore) Load(ctx context.Context, q identity.Quadruple, kin
 	return s.StateStore.Load(ctx, q, kind)
 }
 
-func (s *countingStateStore) counters() (int, int) {
+func (s *countingStateStore) counters() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.bounded, s.loads
+	return s.bounded
 }
 
 func (s *countingStateStore) resetCounters() {
@@ -81,7 +81,7 @@ func TestOutboxReplayUsesDurableDueIndexAndHonorsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		r := receiptVariant(i)
 		if err := o.Enqueue(receiptContext(t, r), r); err != nil {
 			t.Fatalf("enqueue %d: %v", i, err)
@@ -92,7 +92,7 @@ func TestOutboxReplayUsesDurableDueIndexAndHonorsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bounded, _ := store.counters()
+	bounded := store.counters()
 	if bounded != 0 {
 		t.Fatalf("Replay performed %d global prefix scans", bounded)
 	}
@@ -140,7 +140,7 @@ func TestOutboxDeferredReceiptDoesNotSpin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bounded, _ := store.counters()
+	bounded := store.counters()
 	if bounded != 0 || stats.Deferred != 1 || stats.Failed != 0 {
 		t.Fatalf("stats=%+v bounded=%d, want deferred without retry scan", stats, bounded)
 	}
@@ -161,9 +161,9 @@ func TestOutboxRunIdleReconciliationDoesNotGrowQueries(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- o.Run(ctx) }()
 	time.Sleep(20 * time.Millisecond)
-	boundedBefore, _ := store.counters()
+	boundedBefore := store.counters()
 	time.Sleep(50 * time.Millisecond)
-	boundedAfter, _ := store.counters()
+	boundedAfter := store.counters()
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run=%v", err)

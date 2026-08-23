@@ -670,7 +670,7 @@ func (s *PostureSurface) handleLLMPosture(
 	request *types.RuntimeInfoRequest,
 ) (any, error) {
 	if request != nil && request.ProviderOperation != "" {
-		return s.handleProviderOperation(ctx, method, id, request)
+		return s.handleProviderOperation(ctx, method, request)
 	}
 	snap, err := s.llm.Posture(ctx)
 	if err != nil {
@@ -688,7 +688,6 @@ func (s *PostureSurface) handleLLMPosture(
 func (s *PostureSurface) handleProviderOperation(
 	ctx context.Context,
 	method methods.Method,
-	id identity.Identity,
 	request *types.RuntimeInfoRequest,
 ) (any, error) {
 	if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {

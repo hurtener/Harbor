@@ -65,7 +65,11 @@ func NewSigner(keyID, audience string, private ed25519.PrivateKey, clock func() 
 
 // PublicKey returns a copy of the signer's public key for a verifier.
 func (s *Signer) PublicKey() ed25519.PublicKey {
-	return append(ed25519.PublicKey(nil), s.private.Public().(ed25519.PublicKey)...)
+	public, ok := s.private.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil
+	}
+	return append(ed25519.PublicKey(nil), public...)
 }
 
 // Sign creates a signed grant with coordinator-owned key and audience. The
@@ -163,7 +167,7 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 	}
 	key, ok := v.keys[grant.KeyID]
 	if !ok {
-		return fmt.Errorf("%w: %s", llm.ErrExternalGrantSignature, ErrUnknownKey)
+		return fmt.Errorf("%w: %w", llm.ErrExternalGrantSignature, ErrUnknownKey)
 	}
 	doc, err := canonicalDocument(grant)
 	if err != nil {
@@ -346,7 +350,7 @@ func (s *BindingStore) Resolve(ctx context.Context, grant llm.ExternalGrant) (ll
 	binding, ok := s.bindings[grant.CredentialBindingHandle]
 	s.mu.RUnlock()
 	if !ok {
-		return llm.ResolvedCredential{}, fmt.Errorf("%w: %s", llm.ErrExternalGrantRevoked, ErrBindingNotFound)
+		return llm.ResolvedCredential{}, fmt.Errorf("%w: %w", llm.ErrExternalGrantRevoked, ErrBindingNotFound)
 	}
 	if binding.Revoked || binding.Generation != grant.CredentialAssetGeneration || binding.OrganizationID != grant.OrganizationID ||
 		binding.RuntimeID != grant.RuntimeID || binding.Provider != grant.Provider || binding.ProviderConnectionID != grant.ProviderConnectionID || binding.ProviderConnectionGeneration != grant.ProviderConnectionGeneration {

@@ -305,7 +305,7 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 		}
 	}
 	seenOrganizations := map[string]bool{}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case receipt := <-delivery.ch:
 			seenOrganizations[receipt.OrganizationID] = true

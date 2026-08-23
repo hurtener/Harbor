@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -115,7 +117,9 @@ func wireExternalGrant(
 		runDone = make(chan struct{})
 		go func() {
 			defer close(runDone)
-			_ = outbox.Run(runCtx)
+			if err := outbox.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Default().Error("external grant receipt outbox stopped", slog.String("error", err.Error()))
+			}
 		}()
 	}
 

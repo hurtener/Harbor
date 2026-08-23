@@ -20,9 +20,9 @@ func (f *fakeLister) ListModels(ctx context.Context, providerID string, pageSize
 	return f.fn(ctx, providerID, pageSize, pageToken)
 }
 
-func supportedDescriptor(id string) ProviderDescriptor {
+func supportedDescriptor() ProviderDescriptor {
 	return ProviderDescriptor{
-		ID: id, Kind: "native", CredentialModes: []CredentialMode{CredentialAPIKey},
+		ID: "openai", Kind: "native", CredentialModes: []CredentialMode{CredentialAPIKey},
 		CredentialFields: []CredentialField{{Name: "api_key", Kind: FieldSecret, Required: true, Secret: true}},
 		CustomEndpoint:   SupportManual,
 		Validation:       OperationSupport{State: SupportSupported, RuntimeOrigin: true, Bounded: true},
@@ -95,7 +95,7 @@ func TestCatalogPartialAndStaleResultsAreNotComplete(t *testing.T) {
 		}
 		return ModelPage{Models: []RawModel{{ID: "b"}}, Stale: true}, nil
 	}}
-	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor("openai")}, []string{"openai"}, nil)
+	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor()}, []string{"openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestCatalogMalformedProviderReplyFailsClosedAndRedacts(t *testing.T) {
 	lister := &fakeLister{fn: func(context.Context, string, int, string) (ModelPage, error) {
 		return ModelPage{Models: []RawModel{{ID: secret}, {ID: secret}}}, nil
 	}}
-	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor("openai")}, []string{"openai"}, nil)
+	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor()}, []string{"openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestCatalogRejectsUnboundedProviderPage(t *testing.T) {
 	lister := &fakeLister{fn: func(context.Context, string, int, string) (ModelPage, error) {
 		return ModelPage{Models: []RawModel{{ID: "a"}, {ID: "b"}}}, nil
 	}}
-	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor("openai")}, []string{"openai"}, nil)
+	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor()}, []string{"openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestCatalogValidationUsesStableRedactedErrors(t *testing.T) {
 	lister := &fakeLister{fn: func(context.Context, string, int, string) (ModelPage, error) {
 		return ModelPage{}, NewProviderError("provider_unavailable", 401, false)
 	}}
-	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor("openai")}, []string{"openai"}, nil)
+	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor()}, []string{"openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,12 +201,12 @@ func TestCatalogConcurrentReuse(t *testing.T) {
 	lister := &fakeLister{fn: func(_ context.Context, _ string, _ int, _ string) (ModelPage, error) {
 		return ModelPage{Models: []RawModel{{ID: "model", SupportedParameters: []string{"tools"}}}}, nil
 	}}
-	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor("openai")}, []string{"openai"}, nil)
+	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor()}, []string{"openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -225,7 +225,7 @@ func TestCatalogContextCancellationDoesNotCallSource(t *testing.T) {
 		called.Store(true)
 		return ModelPage{}, errors.New("must not be called")
 	}}
-	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor("openai")}, []string{"openai"}, nil)
+	catalog, err := NewCatalog(lister, []ProviderDescriptor{supportedDescriptor()}, []string{"openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
