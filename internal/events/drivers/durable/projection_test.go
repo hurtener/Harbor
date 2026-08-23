@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,44 @@ func projSeqs(page events.ProjectionPage) []uint64 {
 		out[i] = ev.Sequence
 	}
 	return out
+}
+
+// finalFenceStore deterministically lands one session fence immediately
+// before Page's final fence snapshot. It makes the limit+1 overflow race
+// reproducible without changing production synchronization.
+type finalFenceStore struct {
+	state.StateStore
+	mu         sync.Mutex
+	armed      bool
+	fenceScans int
+	hook       func() error
+}
+
+func (s *finalFenceStore) arm(hook func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed = true
+	s.fenceScans = 0
+	s.hook = hook
+}
+
+func (s *finalFenceStore) ListKind(ctx context.Context, scope state.ListScope, prefix string) ([]state.StateRecord, error) {
+	s.mu.Lock()
+	var hook func() error
+	if s.armed && strings.Contains(prefix, "events/session-fence/") {
+		s.fenceScans++
+		if s.fenceScans == 2 {
+			hook = s.hook
+			s.armed = false
+		}
+	}
+	s.mu.Unlock()
+	if hook != nil {
+		if err := hook(); err != nil {
+			return nil, err
+		}
+	}
+	return s.StateStore.ListKind(ctx, scope, prefix)
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +169,47 @@ func TestProjection_Page_GloballyOrderedAcrossSessions(t *testing.T) {
 		if wantSession[ev.Sequence] != ev.Identity.SessionID {
 			t.Fatalf("seq %d belongs to session %q, want %q", ev.Sequence, ev.Identity.SessionID, wantSession[ev.Sequence])
 		}
+	}
+}
+
+func TestProjection_Page_ConcurrentFinalFencePreservesOverflowProof(t *testing.T) {
+	store := &finalFenceStore{StateStore: newInmemStore(t)}
+	bus, src := newProjectionBus(t, store)
+	idA := quad("tenant", "user", "session-a")
+	idB := quad("tenant", "user", "session-b")
+	idC := quad("tenant", "user", "session-c")
+	publishSafeN(t, bus, idA, 1) // seq 1
+	publishSafeN(t, bus, idB, 1) // seq 2 — fenced during Page
+	publishSafeN(t, bus, idC, 1) // seq 3 — not loaded in the limit+1 read
+
+	fencer, ok := bus.(events.Fencer)
+	if !ok {
+		t.Fatal("durable bus does not implement events.Fencer")
+	}
+	store.arm(func() error { return fencer.Fence(context.Background(), idB.Identity) })
+
+	first, err := src.Page(context.Background(), 0, 1)
+	if err != nil {
+		t.Fatalf("Page first: %v", err)
+	}
+	if got := projSeqs(first); fmt.Sprint(got) != fmt.Sprint([]uint64{1}) {
+		t.Fatalf("first page seqs=%v, want [1] (fenced overflow excluded)", got)
+	}
+	if first.Next != 1 || first.Watermark != 3 || first.Quality != events.ProjectionCatchingUp {
+		t.Fatalf("first page = Next %d Watermark %d Quality %s; want 1, 3, CatchingUp",
+			first.Next, first.Watermark, first.Quality)
+	}
+
+	second, err := src.Page(context.Background(), first.Next, 1)
+	if err != nil {
+		t.Fatalf("Page second: %v", err)
+	}
+	if got := projSeqs(second); fmt.Sprint(got) != fmt.Sprint([]uint64{3}) {
+		t.Fatalf("second page seqs=%v, want [3] (later canonical event retained)", got)
+	}
+	if second.Next != 3 || second.Watermark != 3 || second.Quality != events.ProjectionCurrent {
+		t.Fatalf("second page = Next %d Watermark %d Quality %s; want 3, 3, Current",
+			second.Next, second.Watermark, second.Quality)
 	}
 }
 

@@ -150,9 +150,13 @@
 // and out-of-order feeds never mutate a row, never bump a version, and
 // never need a lucky expected version). The materializer advances the
 // projector Store's per-session checkpoint monotonically after every
-// applied event. After a process restart the materializer's in-memory
-// state is empty, so the first pass re-pages the source from sequence
-// zero: row mutations at or below the checkpoint are no-ops (cheap
+// applied event. A current page may also move the materializer's
+// source cursor through an excluded watermark range after all
+// returned events have been applied; no per-session checkpoint is
+// fabricated for those excluded records. After a process restart the
+// materializer's in-memory state is empty, so the first pass re-pages
+// the source from sequence zero: row mutations at or below the
+// checkpoint are no-ops (cheap
 // reads), the in-memory accumulators rebuild deterministically from
 // the events, and the pass continues past the checkpoint — restart
 // catch-up is idempotent and converging. Within one instance the
@@ -250,10 +254,13 @@ type Materializer struct {
 
 	mu sync.Mutex
 	// cursor is the materializer's in-memory global forward cursor:
-	// the sequence of the last event processed. A fresh instance starts
-	// at 0 and re-pages the retained log from the beginning (restart
-	// catch-up is idempotent; the projector's monotonic guards make
-	// re-application a no-op).
+	// normally the sequence of the last canonical event processed, or,
+	// after a ProjectionCurrent page, the source watermark examined by
+	// that page. The latter can include excluded internal/fenced
+	// sequences, which are safe to skip only after the page is applied.
+	// A fresh instance starts at 0 and re-pages the retained log from
+	// the beginning (restart catch-up is idempotent; the projector's
+	// monotonic guards make re-application a no-op).
 	cursor uint64
 	// sessions holds the per-session working state, keyed by the
 	// isolation triple.
@@ -449,7 +456,19 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 				res.EventsSkipped++
 			}
 		}
-		m.cursor = page.Next
+		// A current page has examined the source through its watermark.
+		// The source cursor deliberately remains the last returned
+		// canonical event, so it can be lower than Watermark when the
+		// intervening sequences are bus-internal notices or fenced
+		// sessions.  Advance across those excluded sequences only after
+		// the page was successfully applied; otherwise the lost-wake poll
+		// would see Watermark > cursor forever and repeat the global head
+		// scan on every tick.
+		nextCursor := page.Next
+		if page.Quality == events.ProjectionCurrent && page.Watermark > nextCursor {
+			nextCursor = page.Watermark
+		}
+		m.cursor = nextCursor
 
 		if len(page.Events) > 0 {
 			res.SessionsTouched = m.passTouched
@@ -458,9 +477,10 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 			break
 		}
 		if len(page.Events) == 0 {
-			// A catching-up page with no events is a source anomaly;
-			// break rather than loop forever (the cursor did not
-			// advance).
+			// A concurrent final fence filter can legitimately leave an
+			// empty CatchingUp page. Return with the cursor unchanged so
+			// the wake/lost-wake path retries it without a busy loop; never
+			// promote through Watermark without a Current proof.
 			break
 		}
 	}

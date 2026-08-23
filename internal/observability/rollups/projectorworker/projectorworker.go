@@ -20,12 +20,14 @@
 // The worker deliberately drives the source's own page cursor: the
 // ProjectionSource serves CANONICAL events only (bus-internal notices
 // and erased-session events are excluded by the drivers), so its page
-// sequences are not contiguous with the raw log. The durable watermark
-// the worker persists is therefore the source cursor — the last applied
-// canonical sequence — which is exactly the resume point the source
-// understands. A page that legitimately skips a notice or a fenced
-// session's events is applied as-is; the skipped sequences are never
-// served and never revisited.
+// sequences are not contiguous with the raw log. The durable checkpoint
+// normally is the last applied canonical sequence. After a page proves
+// ProjectionCurrent, it may additionally advance through the page's
+// observed Watermark when the intervening raw sequences were excluded;
+// that is safe only after the returned page has been applied and avoids
+// revisiting a permanently excluded tail. Both values remain valid
+// resume positions for the source because the source pages strictly
+// after the caller-provided sequence.
 //
 // # Best-effort downstream posture (no publication coupling)
 //
@@ -43,7 +45,7 @@
 //
 // # Honesty rules the worker enforces
 //
-//   - Only an EMPTY page proves the projection is current. A short
+//   - Only an EMPTY Current page proves the projection is current. A short
 //     non-empty page (even one the source labels Current) never does:
 //     more events may exist beyond the returned prefix. The worker
 //     stays catching_up until a subsequent read returns no events.
@@ -92,11 +94,12 @@ const (
 	defaultWakeBuffer = 16
 	// defaultPollInterval is the lost-wake fallback poll. Wakes are the
 	// primary notification; the poll bounds staleness if a wake is ever
-	// lost or the source stops notifying (an idle poll is one bounded
-	// forward page — cheap, and Current on an empty source).
+	// lost or the source stops notifying. An idle tick compares the cheap
+	// source watermark and durable checkpoint first, and only pages when
+	// the projection is behind (or retrying a prior failure).
 	defaultPollInterval = 30 * time.Second
 	// maxCatchUpIterations bounds one CatchUp call so a pathological
-	// source (one that never reports an empty page) fails loudly instead
+	// source (one that never reports an empty Current page) fails loudly instead
 	// of looping forever.
 	maxCatchUpIterations = 1_000_000
 )
@@ -162,9 +165,11 @@ func (realClock) Now() time.Time { return time.Now().UTC() }
 type Quality struct {
 	// Quality carries the shared rollup quality block: State
 	// (current / catching_up / unavailable), Watermark (the durable
-	// applied-through cursor read from the Store's checkpoint — the
-	// truth across restarts), WatermarkAt (this instance's last
-	// advance stamp), RetentionStart / RetentionEnd (the oldest /
+	// applied-through source checkpoint read from the Store — normally
+	// the last canonical event, but possibly including excluded source
+	// sequences proven current; this is the truth across restarts),
+	// WatermarkAt (this instance's last advance stamp), RetentionStart /
+	// RetentionEnd (the oldest /
 	// newest retained bucket), and Err (the latest ingestion failure,
 	// present only when State is StateUnavailable).
 	rollups.Quality
@@ -188,12 +193,12 @@ type Quality struct {
 //
 // # Watermark semantics
 //
-// The durable watermark is the Store's checkpoint — the last applied
-// canonical sequence, which is exactly the resume cursor the
-// ProjectionSource understands. The worker reads it from the Store at
-// the START of every advance step (never a cached copy), pages the
-// source strictly after it, and applies the page atomically with the
-// checkpoint. Reading the durable checkpoint per step is what makes
+// The durable watermark is the Store's checkpoint — normally the last
+// applied canonical sequence, or a source watermark that a current page
+// proved safe to skip across excluded records. The worker reads it from
+// the Store at the START of every advance step (never a cached copy),
+// pages the source strictly after it, and applies the page atomically
+// with the checkpoint. Reading the durable checkpoint per step is what makes
 // concurrent replica application converge instead of double-counting:
 // two workers over one Store read the SAME cursor, produce IDENTICAL
 // pages (same cursor + same batch size + a stable source), and the
@@ -204,7 +209,7 @@ type Quality struct {
 // nor double-count values (at-least-once on the local sequence, never
 // an active-active exactly-once claim).
 //
-// StateCurrent is reported only after an EMPTY page read: a short
+// StateCurrent is reported only after an EMPTY Current page read: a short
 // non-empty page (even one the source labels Current) never proves the
 // source holds nothing newer.
 type Worker struct {
@@ -237,7 +242,7 @@ type Worker struct {
 // loudly on a closed / broken store); the durable watermark itself is
 // read at the start of every advance step, so a restart resumes exactly
 // where the last run stopped. The initial State is StateCatchingUp
-// until the first empty page verifies the source head.
+// until the first empty Current page verifies the source head.
 func New(source events.ProjectionSource, store rollups.Store, opts ...Option) (*Worker, error) {
 	if source == nil {
 		return nil, fmt.Errorf("projectorworker: New: source is nil")
@@ -272,11 +277,12 @@ func New(source events.ProjectionSource, store rollups.Store, opts ...Option) (*
 // them atomically with the watermark — then reports whether the Source
 // proved caught up.
 //
-// The catch-up proof is an EMPTY page: a short non-empty page does NOT
+// The catch-up proof is an EMPTY Current page: a short non-empty page does NOT
 // mark the worker current (the ProjectionSource promises at most limit
 // events, not "the rest"), and a page the source itself labels Current
 // is still non-empty until a SUBSEQUENT read returns no events. Only an
-// empty read flips the state to StateCurrent.
+// empty Current read flips the state to StateCurrent. An empty CatchingUp
+// page is a bounded retry signal: it cannot promote the checkpoint.
 //
 // A page whose events violate the source's cursor contract (a sequence
 // at or below the cursor, or a non-ascending sequence) fails loudly —
@@ -339,10 +345,41 @@ func (w *Worker) advanceLocked(ctx context.Context) (bool, error) {
 	}
 	w.mu.Unlock()
 
+	checkpoint := page.Next
+	if page.Quality == events.ProjectionCurrent && page.Watermark > checkpoint {
+		// ProjectionPage.Next is intentionally the last returned
+		// canonical sequence. A current page has nevertheless examined
+		// the source through Watermark, which may be ahead when the
+		// intervening sequences are internal notices or fenced sessions.
+		// Persist that skipped range only after the page has been fully
+		// validated, otherwise every lost-wake poll repeats the global
+		// head scan forever.
+		checkpoint = page.Watermark
+	}
+
 	if len(page.Events) == 0 {
-		// Only an empty page proves the source holds nothing newer — the
-		// log head has been verified. Empty pages keep Next == after, so
-		// the durable watermark is untouched.
+		if page.Quality == events.ProjectionCatchingUp {
+			// A concurrent fence can remove every selected event during the
+			// source's final filter while its pre-filter overflow proof still
+			// says more canonical history exists. Keep the checkpoint and
+			// state unchanged and retry from the same cursor; never promote
+			// through Watermark without a Current proof.
+			w.setState(rollups.StateCatchingUp, nil)
+			return false, nil
+		}
+		// Only an empty Current page proves the source holds nothing newer — the
+		// log head has been verified. Persist a current watermark that
+		// advanced across excluded sequences so the next idle poll is a
+		// cheap checkpoint/watermark read rather than another Page scan.
+		if checkpoint > after {
+			if err := w.store.ApplyBatch(ctx, rollups.Batch{Checkpoint: checkpoint}); err != nil {
+				w.fail(err)
+				return false, fmt.Errorf("projectorworker: advance excluded checkpoint: %w", err)
+			}
+			w.mu.Lock()
+			w.watermarkAt = w.clock.Now()
+			w.mu.Unlock()
+		}
 		w.setState(rollups.StateCurrent, nil)
 		return true, nil
 	}
@@ -392,11 +429,12 @@ func (w *Worker) advanceLocked(ctx context.Context) (bool, error) {
 
 	// Every consumed event advances the durable watermark — including
 	// fenced (dropped) and unsupported-type events, which contribute no
-	// deltas but must never be re-read. Applying an empty-delta page is
-	// exactly the cursor advance. A concurrent replica may have already
-	// applied this identical page; the Store's non-advancing gate turns
-	// that into a no-op (no double-count).
-	if err := w.store.ApplyBatch(ctx, rollups.Batch{Checkpoint: page.Next, Deltas: deltas}); err != nil {
+	// deltas but must never be re-read. A current page may also advance
+	// across excluded internal/fenced sequences through Watermark (see
+	// checkpoint above). A concurrent replica may have already applied
+	// this identical page; the Store's non-advancing gate turns that into
+	// a no-op (no double-count).
+	if err := w.store.ApplyBatch(ctx, rollups.Batch{Checkpoint: checkpoint, Deltas: deltas}); err != nil {
 		w.fail(err)
 		return false, fmt.Errorf("projectorworker: apply: %w", err)
 	}
@@ -412,7 +450,7 @@ func (w *Worker) advanceLocked(ctx context.Context) (bool, error) {
 }
 
 // CatchUp advances in pages until the Source proves caught up with an
-// empty read, honouring ctx. It is a convenience loop over Advance for
+// empty Current read, honouring ctx. It is a convenience loop over Advance for
 // the operator paths that want "drain the backlog now". Bounded by
 // maxCatchUpIterations so a pathological source fails loudly rather
 // than looping forever.
@@ -432,7 +470,7 @@ func (w *Worker) CatchUp(ctx context.Context) error {
 // Run drives the projection in the background until ctx is cancelled.
 // It registers a wake sink on the source (the source seeds the sink
 // with its current watermark, then notifies after every successful
-// persistence of a canonical event), drains until the first empty read,
+// persistence of a canonical event), drains until the first empty Current read,
 // then waits for a wake notification or the lost-wake fallback poll
 // before draining again.
 //
@@ -470,7 +508,50 @@ func (w *Worker) Run(ctx context.Context) error {
 		tick = ticker.C
 	}
 
+	if err := w.CatchUp(ctx); err != nil {
+		if ctx.Err() != nil {
+			// Cancelled mid-drain: graceful shutdown, the drained
+			// pages are already atomically applied.
+			return nil
+		}
+		// Transient failure — already recorded as StateUnavailable
+		// by Advance; retry on the next wake or poll.
+	}
 	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-wake:
+			// New events persisted (or the seed watermark): re-drain.
+		case <-tick:
+			// Lost-wake healer: first compare the cheap source watermark
+			// with the durable projection checkpoint. A current projection
+			// with no new source sequence does not need a global Page scan;
+			// this is the idle path. A prior failure or a still-catching-up
+			// pass deliberately retries even when the watermark is equal.
+			wm, wmErr := w.source.Watermark(ctx)
+			if wmErr != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				w.fail(wmErr)
+				continue
+			}
+			checkpoint, checkpointErr := w.store.Checkpoint(ctx)
+			if checkpointErr != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				w.fail(checkpointErr)
+				continue
+			}
+			w.mu.RLock()
+			current := w.state == rollups.StateCurrent
+			w.mu.RUnlock()
+			if current && wm <= checkpoint {
+				continue
+			}
+		}
 		if err := w.CatchUp(ctx); err != nil {
 			if ctx.Err() != nil {
 				// Cancelled mid-drain: graceful shutdown, the drained
@@ -479,15 +560,6 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			// Transient failure — already recorded as StateUnavailable
 			// by Advance; retry on the next wake or poll.
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-wake:
-			// New events persisted (or the seed watermark): re-drain.
-		case <-tick:
-			// Lost-wake healer: re-page from the cursor; a Current
-			// source answers with one empty read.
 		}
 	}
 }

@@ -98,8 +98,11 @@ type ProjectionPage struct {
 	Events []Event
 	// Next is the cursor the reader passes to the next Page call: the
 	// Sequence of the last returned event, or the requested cursor
-	// unchanged when the page is empty. The reader advances its
-	// checkpoint to Next after applying the page.
+	// unchanged when the page is empty. A consumer that owns a durable
+	// projection checkpoint may advance through Watermark after a
+	// successfully applied ProjectionCurrent page; that is how it
+	// permanently skips excluded internal/fenced sequences without
+	// changing this canonical-event cursor shape.
 	Next uint64
 	// Watermark is the highest sequence that had completed persistence
 	// when the page was assembled — the source's high-water mark.

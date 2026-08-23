@@ -153,6 +153,12 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 			break
 		}
 	}
+	// Overflow is an exhaustion proof from the pre-filter snapshot. Keep it
+	// even if a fence lands during the final check and removes the extra
+	// event: another canonical candidate still existed beyond the caller's
+	// bounded page, so reporting Current would let a watermark-promoting
+	// consumer skip it permanently.
+	hadOverflow := len(matches) > limit
 	currentFences, err := b.loadDurableFenceSnapshot(ctx)
 	if err != nil {
 		return events.ProjectionPage{}, fmt.Errorf("durable: projection page final fence check: %w", err)
@@ -166,8 +172,10 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	matches = kept
 
 	quality := events.ProjectionCurrent
-	if len(matches) > limit {
+	if hadOverflow {
 		quality = events.ProjectionCatchingUp
+	}
+	if len(matches) > limit {
 		matches = matches[:limit]
 	}
 	next := after
