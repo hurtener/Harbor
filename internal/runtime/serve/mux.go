@@ -37,6 +37,7 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/provider"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
 	observabilityprotocol "github.com/hurtener/Harbor/internal/observability/protocol"
@@ -95,7 +96,8 @@ type MuxInput struct {
 	Logger   *slog.Logger
 	Metrics  *telemetry.MetricsRegistry
 	// LLMSnapshot is the resolved snapshot the posture provider projects.
-	LLMSnapshot llm.ConfigSnapshot
+	LLMSnapshot     llm.ConfigSnapshot
+	ProviderCatalog provider.CatalogSurface
 
 	// Core subsystem handles.
 	Tasks          tasks.TaskRegistry
@@ -361,6 +363,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Metrics:                    runtimeposture.MetricsProvider(in.Metrics, logger),
 		Governance:                 governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
 		LLM:                        llm.NewPostureProvider(in.LLMSnapshot),
+		ProviderCatalog:            in.ProviderCatalog,
 		Redactor:                   red,
 		Bus:                        bus,
 		DisplayName:                in.DisplayName,
@@ -371,6 +374,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		SessionLifecycleAvailable:  sessionLifecycleAvailable,
 		ToolAnnotationsAvailable:   toolAnnotationsAvailable,
 		SkillPublicationsAvailable: publicationAvailable,
+		ProviderCatalogAvailable:   in.ProviderCatalog != nil,
 	})
 	if err != nil {
 		return nil, wrapErr("posture surface", err)

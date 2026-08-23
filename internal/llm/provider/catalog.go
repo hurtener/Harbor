@@ -81,6 +81,16 @@ type ProviderDescriptor struct {
 	Discovery        OperationSupport  `json:"discovery"`
 }
 
+// CatalogSurface is the protected runtime-origin provider operation exposed
+// to the Protocol layer. Implementations must source validation and discovery
+// from the booted runtime's credential/configuration path; an offline CLI
+// adapter must not be presented as a runtime-origin surface.
+type CatalogSurface interface {
+	Descriptors(context.Context) []ProviderDescriptor
+	Validate(context.Context, ValidationRequest) ValidationResult
+	Discover(context.Context, DiscoveryRequest) (DiscoveryResult, error)
+}
+
 // RawModel is the small provider-neutral subset that an adapter may assert
 // from a provider SDK. Pointer-valued limits preserve the distinction between
 // an explicitly reported zero and an omitted field; both are validated

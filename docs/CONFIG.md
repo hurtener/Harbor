@@ -434,6 +434,36 @@ referenced by name from `llm.credential_source: remote` and from the
 `agent_config.set_llm_provider` Protocol write. See the
 `InferenceBrokerConfig` godoc. Config/file-only, restart-required.
 
+### llm.external_grant.mode
+
+Runtime-side external inference-grant posture. Default: `disabled`.
+Validation: `disabled`, `optional`, or `required`. `optional` verifies a
+supplied signed grant while preserving legacy calls; `required` rejects calls
+without one. Restart-required.
+
+### llm.external_grant.audience
+
+The exact audience claim accepted by the runtime-side grant verifier. Required
+when `llm.external_grant.mode` is `optional` or `required`. Non-secret.
+
+### llm.external_grant.runtime_id
+
+The runtime identity bound into accepted grants. Required for an enabled
+external-grant posture. It is a boot fence, not a caller-supplied authority.
+
+### llm.external_grant.organization_id
+
+The organization identity bound into accepted grants. Required for an enabled
+external-grant posture. The runtime verifies this server-side and never trusts
+an organization value from the dispatch caller.
+
+### llm.external_grant.public_keys
+
+Named Ed25519 public keys used to verify signed grants. Values are standard or
+URL-safe base64-encoded public keys; private signing material never belongs in
+the runtime configuration. Credential resolution and receipt delivery are
+injected by the boot host. Restart-required.
+
 ### llm.network_defaults.timeout
 
 Default per-provider timeout. Default: `0` → bifrost's package

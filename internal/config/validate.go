@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -484,6 +486,58 @@ func (c *Config) validateLLM() error {
 	}
 	if err := c.validateInferenceBrokers(); err != nil {
 		return err
+	}
+	if err := c.validateLLMExternalGrant(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLLMExternalGrant validates the non-secret runtime grant posture.
+// The verifier is constructed only after this gate succeeds; malformed key
+// material must therefore fail at boot rather than on the first provider
+// call. A configured organization is the runtime-side authority fence and
+// is deliberately required for every enabled mode.
+func (c *Config) validateLLMExternalGrant() error {
+	g := c.LLM.ExternalGrant
+	if g.Mode == "" || g.Mode == "disabled" {
+		return nil
+	}
+	if g.Mode != "optional" && g.Mode != "required" {
+		return fieldError("llm.external_grant.mode", fmt.Sprintf("must be one of \"disabled\", \"optional\", \"required\", got %q", g.Mode))
+	}
+	for path, value := range map[string]string{
+		"audience":        g.Audience,
+		"runtime_id":      g.RuntimeID,
+		"organization_id": g.OrganizationID,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fieldError("llm.external_grant."+path, "must be set when external grants are enabled")
+		}
+	}
+	if len(g.PublicKeys) == 0 {
+		return fieldError("llm.external_grant.public_keys", "must contain at least one base64-encoded Ed25519 public key when external grants are enabled")
+	}
+	for id, encoded := range g.PublicKeys {
+		if strings.TrimSpace(id) == "" {
+			return fieldError("llm.external_grant.public_keys", "key ids must not be empty")
+		}
+		var decoded []byte
+		var err error
+		for _, encoding := range []*base64.Encoding{
+			base64.RawURLEncoding,
+			base64.URLEncoding,
+			base64.RawStdEncoding,
+			base64.StdEncoding,
+		} {
+			decoded, err = encoding.DecodeString(encoded)
+			if err == nil {
+				break
+			}
+		}
+		if len(decoded) != ed25519.PublicKeySize {
+			return fieldError(fmt.Sprintf("llm.external_grant.public_keys[%q]", id), "must be a base64-encoded Ed25519 public key")
+		}
 	}
 	return nil
 }

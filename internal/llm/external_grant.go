@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 // ExternalGrant is the signed, content-free authorization envelope a
@@ -21,40 +23,44 @@ import (
 // llm package deliberately does not choose a wire or key-management format;
 // internal/llm/grant supplies the Harbor reference signer and verifier.
 type ExternalGrant struct {
-	Version                      int
-	KeyID                        string
-	Audience                     string
-	GrantID                      string
-	OrganizationID               string
-	RuntimeID                    string
-	TenantID                     string
-	UserID                       string
-	SessionID                    string
-	LogicalRunID                 string
-	Provider                     string
-	ProviderModelID              string
-	ProviderConnectionID         string
-	ProviderConnectionGeneration uint64
-	RouteID                      string
-	CredentialBindingHandle      string
-	CredentialAssetGeneration    uint64
-	PolicyGeneration             uint64
-	MaxReasoning                 ReasoningEffort
-	MaxOutputTokens              int
-	Lease                        ComputeLease
-	IssuedAt                     time.Time
-	ExpiresAt                    time.Time
-	Signature                    string
+	Version                      int             `json:"version"`
+	KeyID                        string          `json:"key_id"`
+	Audience                     string          `json:"audience"`
+	GrantID                      string          `json:"grant_id"`
+	OrganizationID               string          `json:"organization_id"`
+	RuntimeID                    string          `json:"runtime_id"`
+	TenantID                     string          `json:"tenant_id"`
+	UserID                       string          `json:"user_id"`
+	SessionID                    string          `json:"session_id"`
+	LogicalRunID                 string          `json:"logical_run_id"`
+	Provider                     string          `json:"provider"`
+	ProviderModelID              string          `json:"provider_model_id"`
+	ProviderConnectionID         string          `json:"provider_connection_id"`
+	ProviderConnectionGeneration uint64          `json:"provider_connection_generation"`
+	RouteID                      string          `json:"route_id"`
+	CredentialBindingHandle      string          `json:"credential_binding_handle"`
+	CredentialAssetGeneration    uint64          `json:"credential_asset_generation"`
+	PolicyGeneration             uint64          `json:"policy_generation"`
+	MaxReasoning                 ReasoningEffort `json:"max_reasoning"`
+	MaxOutputTokens              int             `json:"max_output_tokens"`
+	Lease                        ComputeLease    `json:"lease"`
+	IssuedAt                     time.Time       `json:"issued_at"`
+	ExpiresAt                    time.Time       `json:"expires_at"`
+	Signature                    string          `json:"signature"`
 }
 
 // ComputeLease is the bounded local allowance a runtime may consume before
 // asking the coordinator for a top-up. Units are provider-neutral token units;
 // cost accounting remains in the content-free receipt.
 type ComputeLease struct {
-	LeaseID       string
-	TokenUnits    int64
-	ConsumedUnits int64
-	ExpiresAt     time.Time
+	LeaseID string `json:"lease_id"`
+	// Epoch changes whenever a coordinator issues a top-up.  A durable
+	// reservation store uses it to prevent an old grant from consuming the
+	// newer lease generation.
+	Epoch         uint64    `json:"epoch"`
+	TokenUnits    int64     `json:"token_units"`
+	ConsumedUnits int64     `json:"consumed_units"`
+	ExpiresAt     time.Time `json:"expires_at"`
 }
 
 // RemainingTokens returns the still-available bounded lease units.
@@ -94,6 +100,10 @@ var (
 	// ErrExternalGrantLeaseInsufficient indicates that a bounded lease needs a
 	// coordinator top-up before this provider attempt can start.
 	ErrExternalGrantLeaseInsufficient = errors.New("llm: external execution grant lease insufficient")
+	// ErrExternalGrantCrossProviderFallback is returned before a provider call
+	// when an external grant would cross its signed provider boundary. A
+	// coordinator must issue a new grant for a different provider.
+	ErrExternalGrantCrossProviderFallback = errors.New("llm: external execution grant forbids cross-provider fallback")
 	// ErrUsageReceiptUnavailable indicates that a required content-free receipt
 	// could not be durably enqueued. Strict callers fail closed rather than
 	// pretending that provider consumption was accounted.
@@ -131,6 +141,47 @@ type ResolvedCredential struct {
 // lease locally.
 type LeaseTopUpper interface {
 	TopUp(context.Context, ExternalGrant, int64) (ExternalGrant, error)
+}
+
+// LeaseReservationRequest is the durable per-attempt reservation request.
+// Implementations must serialize competing requests for the same LeaseID in
+// the StateStore, not in process-local memory.
+type LeaseReservationRequest struct {
+	AttemptID string
+	GrantID   string
+	LeaseID   string
+	Epoch     uint64
+	Capacity  int64
+	Units     int64
+	ExpiresAt time.Time
+	Identity  identity.Quadruple
+}
+
+// LeaseReservation is the durable reservation identity returned before the
+// provider call starts.
+type LeaseReservation struct {
+	AttemptID string
+	GrantID   string
+	LeaseID   string
+	Epoch     uint64
+	Units     int64
+	ExpiresAt time.Time
+}
+
+// LeaseSettlement closes a reservation with the content-free attempt receipt.
+type LeaseSettlement struct {
+	AttemptID string
+	Receipt   AttemptUsageReceipt
+	Units     int64
+	Now       time.Time
+}
+
+// LeaseReservationManager is the optional execution-edge reservation seam.
+// Strict deployments should wire it; a nil manager preserves compatibility
+// for embedded callers that have not enabled durable global allowances yet.
+type LeaseReservationManager interface {
+	Reserve(context.Context, LeaseReservationRequest) (LeaseReservation, error)
+	Settle(context.Context, LeaseSettlement) error
 }
 
 // AttemptUsageReceipt is the content-free provider-attempt fact emitted by
@@ -208,6 +259,7 @@ type ExternalGrantConfig struct {
 	ReceiptSink     UsageReceiptSink
 	ReceiptRequired bool
 	RuntimeID       string
+	Reservations    LeaseReservationManager
 }
 
 // VerifiedGrantContext is installed only after ExternalGrantVerifier succeeds.

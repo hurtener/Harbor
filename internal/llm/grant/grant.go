@@ -91,20 +91,22 @@ func (s *Signer) Sign(claims llm.ExternalGrant) (llm.ExternalGrant, error) {
 // Verifier validates signed grants and binds them to the verified request
 // context. The key set and expectations are immutable after construction.
 type Verifier struct {
-	keys      map[string]ed25519.PublicKey
-	audience  string
-	runtimeID string
-	clock     func() time.Time
-	clockSkew time.Duration
+	keys           map[string]ed25519.PublicKey
+	audience       string
+	runtimeID      string
+	organizationID string
+	clock          func() time.Time
+	clockSkew      time.Duration
 }
 
 // VerifierConfig constructs a verifier from a copied key set.
 type VerifierConfig struct {
-	Audience  string
-	RuntimeID string
-	Keys      map[string]ed25519.PublicKey
-	Clock     func() time.Time
-	ClockSkew time.Duration
+	Audience       string
+	RuntimeID      string
+	OrganizationID string
+	Keys           map[string]ed25519.PublicKey
+	Clock          func() time.Time
+	ClockSkew      time.Duration
 }
 
 // NewVerifier constructs a fail-closed verifier. Public keys are copied so a
@@ -128,7 +130,7 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if skew <= 0 {
 		skew = 30 * time.Second
 	}
-	return &Verifier{keys: keys, audience: cfg.Audience, runtimeID: cfg.RuntimeID, clock: clock, clockSkew: skew}, nil
+	return &Verifier{keys: keys, audience: cfg.Audience, runtimeID: cfg.RuntimeID, organizationID: cfg.OrganizationID, clock: clock, clockSkew: skew}, nil
 }
 
 // Verify implements llm.ExternalGrantVerifier. It requires the request-edge
@@ -170,7 +172,15 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 		return fmt.Errorf("%w: request has no logical run id", llm.ErrExternalGrantInvalid)
 	}
 	organizationID, ok := llm.VerifiedOrganizationFrom(ctx)
-	if !ok || organizationID != grant.OrganizationID {
+	if !ok {
+		// A Harbor runtime has no organization claim in its Protocol identity
+		// triple. For the production boot path, the organization fence is
+		// therefore pinned in the verifier config by the serving host. The
+		// context value remains the stronger request-edge check when a host
+		// supplies one.
+		organizationID = v.organizationID
+	}
+	if organizationID == "" || organizationID != grant.OrganizationID {
 		return fmt.Errorf("%w: request has no matching verified organization", llm.ErrExternalGrantInvalid)
 	}
 	if verified.TenantID != grant.TenantID || working != (identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}) ||

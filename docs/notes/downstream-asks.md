@@ -1530,9 +1530,12 @@ real Bifrost account path and `ListModelsRequest`; it is bounded and
 cancellable, rejects malformed/duplicate rows, and maps errors to stable
 redacted codes. No provider response body, `ProviderExtra`, endpoint value,
 environment variable name, credential, prompt, or identity value enters the
-descriptor/result. The first consumer is read-only `harbor llm providers`;
-no Protocol version or method is added. A future Protocol surface must define
-its own authority/audience before consuming this contract.
+descriptor/result. The offline consumer is read-only `harbor llm providers`
+and reports `runtime_origin=false`. The booted runtime also exposes the
+contract through the existing protected `llm.posture` envelope with
+`provider_operation=validate|discover` for admin-tier callers; it uses the
+shared runtime credential path and is the only path that reports
+`runtime_origin=true`. No new Protocol version or method is added.
 
 **Evidence required before release.** Focused race/vet/CLI/smoke gates,
 independent adversarial review, hosted CI, and an operator-approved

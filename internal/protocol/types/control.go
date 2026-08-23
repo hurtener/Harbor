@@ -95,6 +95,10 @@ type StartRequest struct {
 	// Identity is the request's identity scope. The triple is mandatory;
 	// Run is ignored (a `start` mints the run). Scope is ignored.
 	Identity IdentityScope `json:"identity"`
+	// ExternalGrant is an opaque, signed, content-free inference grant. The
+	// runtime carries it to the LLM edge but never treats caller fields as
+	// authority; the grant verifier binds it to the verified request identity.
+	ExternalGrant json.RawMessage `json:"external_grant,omitempty"`
 	// Query is the user-facing query that starts the run. Optional —
 	// some runs are kicked off without a natural-language query.
 	Query string `json:"query,omitempty"`

@@ -26,10 +26,20 @@ type ProviderCatalog struct {
 }
 
 // NewProviderCatalog constructs a catalog from the exact LLM snapshot used by
-// the Bifrost driver. Descriptor listing is local; validation and discovery
-// make bounded runtime-origin Bifrost calls for the configured primary only.
+// the Bifrost driver. It is retained as a convenient offline/test constructor;
+// the serving path uses NewProviderCatalogWithDeps so the catalog shares the
+// opened driver's LiveKey and therefore the same broker-pulled credential.
 func NewProviderCatalog(cfg llm.ConfigSnapshot) (*ProviderCatalog, error) {
-	account, err := newAccount(cfg, llm.Deps{})
+	return NewProviderCatalogWithDeps(cfg, llm.Deps{})
+}
+
+// NewProviderCatalogWithDeps constructs the runtime-origin catalog over the
+// same dependency seam as ordinary LLM execution. In particular, a shared
+// LiveKey means a remote inference broker can seed/rotate one credential holder
+// and both provider calls and catalog probes observe the same value without
+// copying a secret through Protocol or the catalog surface.
+func NewProviderCatalogWithDeps(cfg llm.ConfigSnapshot, deps llm.Deps) (*ProviderCatalog, error) {
+	account, err := newAccount(cfg, deps)
 	if err != nil {
 		return nil, err
 	}

@@ -25,13 +25,15 @@ Two versions move independently in Harbor (RFC §5.3):
   governance remains an emergency ceiling, and receipt delivery is durable,
   bounded, and idempotent. No release or downstream deployment is claimed.
 
-- HA-71 / Phase 255 adds the provider-neutral technical descriptor contract
-  and the read-only `harbor llm providers` consumer. Static descriptors expose
+- HA-71 / Phase 255 adds the provider-neutral technical descriptor contract,
+  the read-only `harbor llm providers` consumer, and a protected runtime-origin
+  projection on the existing `llm.posture` envelope. Static descriptors expose
   credential modes, custom-endpoint support, bounded validation/discovery
   capability, and explicit manual/partial/stale/unknown/unpriced outcomes
-  without secrets or provider response bodies. Explicit runtime-origin probes
-  reuse the configured Bifrost account and normalize only facts the provider
-  reports; no release or downstream deployment is claimed.
+  without secrets or provider response bodies. CLI probes report
+  `runtime_origin=false`; booted-runtime probes reuse the shared Bifrost
+  credential path and report `runtime_origin=true` only after admin-tier
+  authorization. No release or downstream deployment is claimed.
 
 ## [1.29.5] — 2026-08-23
 

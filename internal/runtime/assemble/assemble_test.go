@@ -6,6 +6,9 @@ package assemble_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,12 +26,29 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/grant"
+	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
+
+type recordingGrantDelivery struct {
+	ch chan llm.AttemptUsageReceipt
+}
+
+func (d *recordingGrantDelivery) Deliver(_ context.Context, receipt llm.AttemptUsageReceipt) error {
+	select {
+	case d.ch <- receipt:
+	default:
+	}
+	return nil
+}
+
+var _ llmreceipts.Delivery = (*recordingGrantDelivery)(nil)
 
 // minimalCfg is the examples-shaped minimal config the golden boot
 // uses (mirrors harbortest/devstack's fixture; mock LLM driver).
@@ -154,6 +174,85 @@ func TestAssemble_GoldenBoot_BuildsEveryLayer(t *testing.T) {
 	}
 	settleGoroutines(t, baseline)
 }
+
+func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing.T) {
+	cfg := minimalCfg(t)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := grant.NewSigner("key-1", "harbor-runtime", private, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"model-fast": {ContextWindowTokens: 4096, TokenEstimator: "chars_div_4"},
+	}
+	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+		Mode:           "required",
+		Audience:       "harbor-runtime",
+		RuntimeID:      "runtime-1",
+		OrganizationID: "org-a",
+		PublicKeys: map[string]string{
+			"key-1": base64.RawURLEncoding.EncodeToString(signer.PublicKey()),
+		},
+	}
+	binding := grant.NewBindingStore()
+	if err := binding.Put(grant.Binding{
+		Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "mock",
+		ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "not-used-by-mock",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 1)}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+		ExternalGrant:         llm.ExternalGrantConfig{Credentials: binding},
+		ExternalGrantDelivery: delivery,
+	})
+	if err != nil {
+		t.Fatalf("Assemble external grant: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	id := identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = llm.WithVerifiedOrganization(ctx, "org-a")
+	now := time.Now().UTC()
+	signed, err := signer.Sign(llm.ExternalGrant{
+		Version: 1, GrantID: "grant-a", OrganizationID: "org-a", RuntimeID: "runtime-1",
+		TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", LogicalRunID: "run-a",
+		Provider: "mock", ProviderModelID: "model-fast", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1,
+		RouteID: "route-a", CredentialBindingHandle: "binding-a", CredentialAssetGeneration: 1, PolicyGeneration: 1,
+		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 512,
+		Lease:    llm.ComputeLease{LeaseID: "lease-a", TokenUnits: 512, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stack.LLM.Complete(ctx, llm.CompleteRequest{
+		Model: "model-fast", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: stringPtr("hello")}}}, ExternalGrant: &signed,
+	}); err != nil {
+		t.Fatalf("real assembled LLM grant call: %v", err)
+	}
+	select {
+	case receipt := <-delivery.ch:
+		if receipt.GrantID != "grant-a" || receipt.Status != "success" {
+			t.Fatalf("delivered receipt = %+v", receipt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("assembled outbox did not deliver the content-free receipt")
+	}
+}
+
+func stringPtr(value string) *string { return &value }
 
 // TestAssemble_TokenBudget_BuildsCompressionRunner — Phase 111e
 // (D-202): a non-zero `planner.token_budget` makes the assembly

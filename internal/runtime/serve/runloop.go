@@ -1194,6 +1194,19 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	var externalGrant json.RawMessage
+	if len(task.ExternalGrant) > 0 {
+		var grant llm.ExternalGrant
+		if err := json.Unmarshal(task.ExternalGrant, &grant); err != nil {
+			d.logger.Warn("RunLoopDriver: external grant carrier is malformed; failing run",
+				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "external_grant_invalid", Message: "external grant carrier is malformed"}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed after external-grant validation failed", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		externalGrant = append([]byte(nil), task.ExternalGrant...)
+	}
 
 	// The run's EFFECTIVE config agent id: the caller-named agent when
 	// the request named one (already validated at the Protocol edge),
@@ -1815,6 +1828,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		Planner: d.planner,
 		Base: planner.RunContext{
 			Quadruple:         q,
+			ExternalGrant:     externalGrant,
 			Query:             task.Query,
 			Goal:              task.Query,   // initial goal = user query; runtime REDIRECT may mutate
 			LLMOverrides:      llmOverrides, // admin-set tenant default, pinned at run start

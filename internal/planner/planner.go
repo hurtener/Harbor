@@ -257,6 +257,11 @@ type RunContext struct {
 	// shared planner artifact). The planner reads only.
 	LLMOverrides *LLMOverrides
 
+	// ExternalGrant is the verified-at-runtime carrier for the execution-edge
+	// LLM wrapper. The planner only forwards the opaque signed envelope; it
+	// does not interpret caller authority or credentials.
+	ExternalGrant json.RawMessage
+
 	// MemoryBlocks carries the pre-fetched, identity-scoped memory
 	// blobs the planner injects into the system prompt as UNTRUSTED-
 	// framed `<read_only_*_memory>` sections. The

@@ -304,6 +304,29 @@ type LLMConfig struct {
 	// descriptor). Config/file-only, restart-required — NOT a Protocol
 	// surface.
 	InferenceBrokers []InferenceBrokerConfig `yaml:"inference_brokers,omitempty"`
+
+	// ExternalGrant declares the runtime-side verification posture for
+	// coordinator-issued inference grants. The grant itself never carries a
+	// credential; the serving host must inject the verified credential
+	// resolver and receipt delivery seam at boot. Static Ed25519 public keys
+	// are an intentionally small, safe verification input for this first
+	// runtime path; callers that need remote JWKS rotation should build an
+	// equivalent verifier behind the assembly seam instead of putting a URL
+	// on the grant wire.
+	ExternalGrant LLMExternalGrantConfig `yaml:"external_grant,omitempty"`
+}
+
+// LLMExternalGrantConfig is the non-secret, boot-pinned runtime posture for
+// external inference grants. Enabled modes fail closed unless the serving
+// host supplies a credential resolver and (for strict mode) a receipt sink.
+// PublicKeys values are base64-encoded Ed25519 public keys keyed by the
+// coordinator key id.
+type LLMExternalGrantConfig struct {
+	Mode           string            `yaml:"mode,omitempty"`
+	Audience       string            `yaml:"audience,omitempty"`
+	RuntimeID      string            `yaml:"runtime_id,omitempty"`
+	OrganizationID string            `yaml:"organization_id,omitempty"`
+	PublicKeys     map[string]string `yaml:"public_keys,omitempty"`
 }
 
 // InferenceBrokerConfig declares one NAMED, boot-declared inference-plane

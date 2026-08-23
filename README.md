@@ -245,7 +245,9 @@ omit the additive fields; version and commit must be supplied together.
   or remove one by name.
 - `harbor llm providers` — list provider-neutral technical descriptors without
   secrets; add `--validate` or `--discover` with `--config` and `--provider`
-  for a bounded runtime-origin Bifrost probe.
+  for a bounded offline/configured-account Bifrost probe (`runtime_origin=false`).
+  Booted runtimes expose runtime-origin validation/discovery through the
+  protected existing `llm.posture` envelope.
 - `harbor inspect-events` / `inspect-runs` — tail the live event stream or
   reconstruct a run's trajectory from event replay.
 - `harbor composition-preview` — preview the effective skill composition a

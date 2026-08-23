@@ -682,6 +682,13 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// not here — this stamps only the scalar request fields. Reads from
 	// rc, never from the shared planner artifact.
 	applyLLMOverrides(&req, rc.LLMOverrides)
+	if len(rc.ExternalGrant) > 0 {
+		var grant llm.ExternalGrant
+		if err := json.Unmarshal(rc.ExternalGrant, &grant); err != nil {
+			return nil, fmt.Errorf("external grant carrier: %w", err)
+		}
+		req.ExternalGrant = &grant
+	}
 
 	// Run-level structured output. When the run carries an output schema
 	// the terminal answer must validate against it. We render the schema

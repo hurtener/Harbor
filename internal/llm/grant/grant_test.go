@@ -83,6 +83,43 @@ func TestSignerVerifier_BindsVerifiedContextAndRoute(t *testing.T) {
 	}
 }
 
+func TestVerifier_UsesBootOrganizationFenceWhenContextHasNoOrganization(t *testing.T) {
+	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1", OrganizationID: "org-a",
+		Keys: map[string]ed25519.PublicKey{"key-1": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signer.Sign(testGrant())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(ctx, signed, llm.CompleteRequest{Model: "model-fast"}); err != nil {
+		t.Fatalf("boot organization fence should authorize matching grant: %v", err)
+	}
+	wrong := signed
+	wrong.OrganizationID = "org-b"
+	if err := verifier.Verify(ctx, wrong, llm.CompleteRequest{Model: "model-fast"}); !errors.Is(err, llm.ErrExternalGrantSignature) {
+		// The body was changed without resigning; this must fail before any
+		// configured organization comparison can be bypassed.
+		t.Fatalf("tampered organization = %v, want signature failure", err)
+	}
+}
+
 func TestBindingStore_RotationRevocationAndOrganizationFence(t *testing.T) {
 	store := NewBindingStore()
 	binding := Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}

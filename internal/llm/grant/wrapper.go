@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
@@ -74,6 +75,31 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if err != nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %v", llm.ErrExternalGrantInvalid, err)
 	}
+	if scope.FallbackHop > 0 {
+		return llm.CompleteResponse{}, llm.ErrExternalGrantCrossProviderFallback
+	}
+	if c.cfg.Provider != "" && grant.Provider != "" && c.cfg.Provider != grant.Provider {
+		return llm.CompleteResponse{}, fmt.Errorf("%w: grant provider %q is not the configured provider", llm.ErrExternalGrantCrossProviderFallback, grant.Provider)
+	}
+	var reservation llm.LeaseReservation
+	if c.deps.ExternalGrant.Reservations != nil {
+		epoch := grant.Lease.Epoch
+		if epoch == 0 {
+			epoch = 1
+		}
+		units := grant.Lease.RemainingTokens()
+		if units <= 0 {
+			return llm.CompleteResponse{}, llm.ErrExternalGrantLeaseInsufficient
+		}
+		reservation, err = c.deps.ExternalGrant.Reservations.Reserve(ctx, llm.LeaseReservationRequest{
+			AttemptID: attemptID(grant, scope), GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID,
+			Epoch: epoch, Capacity: grant.Lease.TokenUnits, Units: units, ExpiresAt: grant.Lease.ExpiresAt,
+			Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
+		})
+		if err != nil {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %v", llm.ErrExternalGrantLeaseInsufficient, err)
+		}
+	}
 	// Never let an unverified caller-provided request field reach the driver;
 	// the driver receives the copy that is tied to the successful verification.
 	req.ExternalGrant = &grant
@@ -95,6 +121,15 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return resp, callErr
 	}
 	receipt.CanonicalBodyHash = hash
+	if c.deps.ExternalGrant.Reservations != nil {
+		used := int64(receipt.TotalTokens)
+		if used < 0 {
+			used = 0
+		}
+		if err := c.deps.ExternalGrant.Reservations.Settle(ctx, llm.LeaseSettlement{AttemptID: reservation.AttemptID, Receipt: receipt, Units: used, Now: receipt.CompletedAt}); err != nil {
+			return resp, fmt.Errorf("%w: settle attempt: %v", llm.ErrUsageReceiptUnavailable, err)
+		}
+	}
 	receiptCtx, cancelReceipt := context.WithTimeout(context.WithoutCancel(ctx), receiptEnqueueTimeout)
 	defer cancelReceipt()
 	if err := c.deps.ExternalGrant.ReceiptSink.Enqueue(receiptCtx, receipt); err != nil {
@@ -103,6 +138,17 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		}
 	}
 	return resp, callErr
+}
+
+func attemptID(grant llm.ExternalGrant, scope *llm.AttemptScope) string {
+	attempt, retry, downgrade, hop := 1, 0, 0, 0
+	if scope != nil {
+		attempt, retry, downgrade, hop = scope.Attempt, scope.Retry, scope.Downgrade, scope.FallbackHop
+		if attempt <= 0 {
+			attempt = 1
+		}
+	}
+	return fmt.Sprintf("%s/%d/%d/%d/%d", grant.GrantID, retry, downgrade, hop, attempt)
 }
 
 // bindRequestDefaults closes the two ordinary omission paths before the
@@ -194,18 +240,18 @@ func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.Comp
 			status = "canceled"
 		}
 	}
-	attempt, retry, downgrade, hop := 1, 0, 0, 0
+	attempt, retry, hop := 1, 0, 0
 	// GrantID is the coordinator's stable logical-call id. It deliberately
 	// anchors receipt identity instead of the locally generated AttemptScope
 	// id, so a caller retry after response loss re-enqueues the same receipt
 	// and the StateStore outbox/delivery idempotency key converges.
 	if scope != nil {
-		attempt, retry, downgrade, hop = scope.Attempt, scope.Retry, scope.Downgrade, scope.FallbackHop
+		attempt, retry, hop = scope.Attempt, scope.Retry, scope.FallbackHop
 		if attempt <= 0 {
 			attempt = 1
 		}
 	}
-	idempotency := fmt.Sprintf("%s/%d/%d/%d/%d", grant.GrantID, retry, downgrade, hop, attempt)
+	idempotency := attemptID(grant, scope)
 	receipt := llm.AttemptUsageReceipt{
 		ReceiptID: idempotency, GrantID: grant.GrantID, OrganizationID: grant.OrganizationID,
 		RuntimeID: grant.RuntimeID, TenantID: grant.TenantID, UserID: grant.UserID,

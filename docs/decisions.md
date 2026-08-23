@@ -14014,10 +14014,14 @@ The catalog has three operations. `Descriptors` is a stable local snapshot.
 `Validate` makes one bounded runtime-origin model request. `Discover` uses the
 same Bifrost `Account` construction as LLM execution, honors cancellation,
 pages at most 20 times with a maximum page size of 1,000, and normalizes only
-provider-neutral metadata. The first consumer is the read-only
-`harbor llm providers` CLI; it never assembles or boots the Runtime/EventBus.
-A future Protocol projection can reuse the contract after its authority and
-audience are specified; no Protocol method or version is added here.
+provider-neutral metadata. The read-only `harbor llm providers` CLI remains an
+offline/configured-account consumer and explicitly reports `runtime_origin:
+false`; it never assembles or boots the Runtime/EventBus. The booted runtime
+also projects the catalog through the existing protected `llm.posture`
+request envelope (`provider_operation=validate|discover`) for admin-tier
+callers. This adds no Protocol method or version: it is an additive operation
+on the already-shipped posture surface, and only that path reports
+`runtime_origin: true`.
 
 The result vocabulary is deliberately explicit. `supported`, `unsupported`,
 `unavailable`, `manual`, `partial`, `stale`, `unknown`, `unpriced`, and
@@ -14045,8 +14049,8 @@ failover boundary), D-333/D-334 (brokered credential custody), RFC §3,
 §6.5, §6.15, §8, briefs 03, 06, and 08. Plan:
 `docs/plans/phase-255-provider-descriptors.md`.
 
-**Evidence boundary.** Focused local race tests, CLI tests, vet, and static
-Phase-255 smoke is the candidate evidence. A configured runtime-origin probe
-requires operator-approved credentials and is not run by the static smoke.
-No downstream database, fleet, deployment, tag, or release was mutated or
-claimed.
+**Evidence boundary.** Focused local race tests, Protocol/CLI tests, vet, and
+static Phase-255 smoke are the candidate evidence. A configured
+runtime-origin probe requires operator-approved credentials and is not run by
+the static smoke. No downstream database, fleet, deployment, tag, or release
+was mutated or claimed.

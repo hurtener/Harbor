@@ -336,6 +336,22 @@ var CanonicalWireTypes = map[string]string{
 	"IdentityTierView":          "types",
 	"RateLimitView":             "types",
 	"LLMPostureResponse":        "types",
+	// Runtime-origin provider catalog operation results. These are bounded
+	// admin Protocol responses and remain canonical wire shapes so the
+	// consumer manifest cannot drift from Harbor's runtime surface.
+	"LLMProviderOperationResponse":   "types",
+	"LLMProviderDescriptor":          "types",
+	"LLMProviderOperation":           "types",
+	"LLMProviderValidation":          "types",
+	"LLMProviderDiscovery":           "types",
+	"LLMProviderOutcome":             "types",
+	"LLMProviderModel":               "types",
+	"LLMProviderCredentialField":     "types",
+	"LLMProviderModelCapabilities":   "types",
+	"LLMProviderNumericCapability":   "types",
+	"LLMProviderSetCapability":       "types",
+	"LLMProviderReasoningCapability": "types",
+	"LLMProviderPricingCapability":   "types",
 	// admin-scoped governance tenant-override wire types — the
 	// `governance.{set,get}_tenant_overrides` request/response shapes
 	// live in internal/protocol/types/governance.go (the RFC §6.15

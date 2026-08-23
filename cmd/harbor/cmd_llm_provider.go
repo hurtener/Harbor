@@ -67,9 +67,13 @@ func newLLMProvidersCmd() *cobra.Command {
 }
 
 type llmProvidersOutput struct {
-	Descriptors []provider.ProviderDescriptor `json:"descriptors"`
-	Validation  *provider.ValidationResult    `json:"validation,omitempty"`
-	Discovery   *provider.DiscoveryResult     `json:"discovery,omitempty"`
+	// RuntimeOrigin is false because this command runs outside a booted
+	// Harbor process. Its optional probes use the local CLI adapter and must
+	// never be presented as evidence about a remote runtime.
+	RuntimeOrigin bool                          `json:"runtime_origin"`
+	Descriptors   []provider.ProviderDescriptor `json:"descriptors"`
+	Validation    *provider.ValidationResult    `json:"validation,omitempty"`
+	Discovery     *provider.DiscoveryResult     `json:"discovery,omitempty"`
 }
 
 func runLLMProviders(cmd *cobra.Command, flags llmProviderFlags) error {
@@ -81,7 +85,7 @@ func runLLMProviders(cmd *cobra.Command, flags llmProviderFlags) error {
 	}
 	providerID := strings.TrimSpace(flags.provider)
 	if !flags.discover && !flags.validate {
-		output := llmProvidersOutput{Descriptors: bifrost.StaticProviderDescriptors(nil)}
+		output := llmProvidersOutput{Descriptors: offlineProviderDescriptors(bifrost.StaticProviderDescriptors(nil))}
 		if providerID != "" {
 			output.Descriptors = filterProviderDescriptors(output.Descriptors, providerID)
 			if len(output.Descriptors) == 0 {
@@ -105,21 +109,32 @@ func runLLMProviders(cmd *cobra.Command, flags llmProviderFlags) error {
 		return emitCLIError(cmd, CLIError{Subcommand: "llm providers", Message: "runtime provider catalog could not be initialized", Code: codeLLMProviderInternal})
 	}
 	defer func() { _ = catalog.Close(context.Background()) }()
-	output := llmProvidersOutput{Descriptors: filterProviderDescriptors(catalog.Descriptors(ctx), providerID)}
+	output := llmProvidersOutput{Descriptors: offlineProviderDescriptors(filterProviderDescriptors(catalog.Descriptors(ctx), providerID))}
 	if len(output.Descriptors) == 0 {
 		return emitCLIError(cmd, CLIError{Subcommand: "llm providers", Message: "provider is not configured or not in the Harbor provider registry", Code: codeLLMProviderInvalid})
 	}
 	if flags.validate {
 		result := catalog.Validate(ctx, provider.ValidationRequest{ProviderID: providerID})
+		result.Outcome.RuntimeOrigin = false
 		output.Validation = &result
 	} else {
 		result, discoverErr := catalog.Discover(ctx, provider.DiscoveryRequest{ProviderID: providerID, PageSize: flags.pageSize, MaxPages: flags.maxPages})
 		if discoverErr != nil {
 			return emitCLIError(cmd, CLIError{Subcommand: "llm providers", Message: "provider discovery request was invalid", Code: codeLLMProviderInternal})
 		}
+		result.Outcome.RuntimeOrigin = false
 		output.Discovery = &result
 	}
 	return writeLLMProvidersOutput(cmd.OutOrStdout(), resolveJSONMode(cmd), output)
+}
+
+func offlineProviderDescriptors(in []provider.ProviderDescriptor) []provider.ProviderDescriptor {
+	out := append([]provider.ProviderDescriptor(nil), in...)
+	for i := range out {
+		out[i].Validation.RuntimeOrigin = false
+		out[i].Discovery.RuntimeOrigin = false
+	}
+	return out
 }
 
 func filterProviderDescriptors(descriptors []provider.ProviderDescriptor, providerID string) []provider.ProviderDescriptor {
@@ -146,6 +161,12 @@ func writeLLMProvidersOutput(w io.Writer, jsonMode bool, output llmProvidersOutp
 		return err
 	}
 	if err := write("Providers: %d\n", len(output.Descriptors)); err != nil {
+		return err
+	}
+	// This command is deliberately offline: make the provenance visible in
+	// the human output as an explicit stable fact, not a formatter-dependent
+	// implication.
+	if err := write("runtime_origin=false (offline CLI; not a booted runtime)\n"); err != nil {
 		return err
 	}
 	for _, descriptor := range output.Descriptors {

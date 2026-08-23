@@ -9,14 +9,17 @@ prove: credential modes and required technical fields, custom-endpoint
 support, bounded validation/discovery capability, model limits/modalities/tool
 and reasoning signals, and pricing provenance.
 
-The phase adds the first real consumer, `harbor llm providers`. Listing the
-descriptor registry is local and read-only. Explicit `--validate` and
-`--discover` probes construct the same Bifrost account used by runtime LLM
-execution and make bounded, cancellable calls from that runtime origin. A
-custom endpoint is queried through Bifrost when it exposes model discovery;
-its configured model list remains an explicit manual fallback when discovery
-is unavailable or empty. No provider response body, endpoint credential, or
-presentation metadata crosses the Harbor contract.
+The phase adds two consumers. `harbor llm providers` lists technical
+descriptors locally and, for explicit probes, uses the configured account
+without booting Runtime/EventBus; it reports `runtime_origin=false`. The
+booted runtime exposes the same bounded validation/discovery through the
+existing protected `llm.posture` request envelope for admin-tier callers,
+using the runtime's shared credential holder (including broker-pulled
+credentials) and reporting `runtime_origin=true`. No new Protocol method or
+version is needed. A custom endpoint is queried through Bifrost when it
+exposes model discovery; its configured model list remains an explicit manual
+fallback when discovery is unavailable or empty. No provider response body,
+endpoint credential, or presentation metadata crosses the Harbor contract.
 
 ## RFC anchor
 
@@ -48,9 +51,10 @@ presentation metadata crosses the Harbor contract.
 
 ## Findings I'm departing from (if any)
 
-None. The phase keeps provider presentation metadata outside Harbor and uses
-the existing Bifrost account/list-model seam rather than adding a parallel
-provider SDK or a new Protocol method.
+None. The phase keeps provider presentation metadata outside Harbor, uses the
+existing Bifrost account/list-model seam rather than adding a parallel
+provider SDK, and extends the existing `llm.posture` envelope rather than
+adding a new Protocol method.
 
 ## Goals
 
@@ -69,8 +73,12 @@ provider SDK or a new Protocol method.
   modalities, tool support, canonical reasoning-effort signals, deprecation,
   and pricing provenance.
 - Ship `harbor llm providers` as a thin operator consumer with stable JSON and
-  human output. Static listing never boots a runtime; probes load the explicit
-  config and close the Bifrost client.
+  human output. Static listing and explicit CLI probes never boot a runtime
+  and report `runtime_origin=false`.
+- Project the same descriptor/validation/discovery contract through the
+  existing protected `llm.posture` envelope, with admin-tier authorization,
+  shared runtime credential state, and `runtime_origin=true` only from a
+  booted runtime.
 - Cover supported, unsupported, manual, partial, stale, unpriced, malformed,
   custom-endpoint, cancellation, secret-redaction, and concurrent reuse
   behavior.
@@ -79,9 +87,9 @@ provider SDK or a new Protocol method.
 
 - Provider logos, display names, help copy, consumer aliases, policy
   profiles, quotas, allowance enforcement, or billing truth.
-- A new Protocol method or wire-type version. This phase's first consumer is
-  the operator CLI; a future Protocol projection can consume the same typed
-  contract after its authority and audience are specified.
+- A new Protocol method or wire-type version. The runtime-origin projection
+  uses the already-shipped protected `llm.posture` surface; the offline CLI
+  remains explicitly non-runtime-origin.
 - Direct HTTP/provider SDK calls outside Bifrost, exposing raw provider errors,
   returning provider response bodies, returning API keys or environment
   variable names, or claiming invoice pricing.
@@ -120,8 +128,12 @@ without exporting a provider rate table in this prerequisite.
       discovery facts, falling back to a manual catalog without exposing their
       configured URL, env-var name, or model list as discovered provider data.
 - [x] Runtime-origin validation/discovery reuses the Bifrost account setup,
-      is bounded/cancellable, closes cleanly, and never boots the full Runtime
-      or EventBus.
+      is bounded/cancellable, closes cleanly, and the protected Protocol path
+      uses the booted runtime; the CLI path never boots Runtime/EventBus and
+      reports `runtime_origin=false`.
+- [x] The existing protected `llm.posture` envelope exposes `validate` and
+      `discover` only to admin-tier callers and projects sanitized descriptor,
+      capability, outcome, and model facts.
 - [x] Normalized model limits, modalities, tools, canonical reasoning,
       deprecation, and pricing provenance preserve unknown/unpriced facts.
 - [x] Unsupported, unavailable, credential-rejected, partial, stale, empty,
@@ -138,6 +150,8 @@ without exporting a provider rate table in this prerequisite.
 - `internal/llm/provider/catalog.go` and `catalog_test.go`
 - `internal/llm/drivers/bifrost/provider_catalog.go` and focused tests
 - `cmd/harbor/cmd_llm_provider.go`, CLI tests, root help, and help golden
+- `internal/protocol/posture.go`, `internal/protocol/types/llm.go`, and
+  runtime/serve wiring for the protected runtime-origin projection
 - `docs/decisions.md` (D-435)
 - `docs/notes/downstream-asks.md` (HA-71)
 - `docs/glossary.md`
@@ -153,18 +167,20 @@ The first consumer is the operator command:
 harbor llm providers [--provider <id>] [--validate|--discover]
 ```
 
-The reusable Go contract remains internal to Harbor in this prerequisite. It
-is intentionally not a Protocol or SDK surface until its authority and
-audience are specified by a later phase.
+The reusable Go contract also feeds the existing protected `llm.posture`
+request envelope. A request supplies `provider_operation=validate|discover`
+and is admitted only for admin-tier scopes; no new method or Protocol version
+is introduced. The offline CLI path remains explicitly non-runtime-origin.
 
 ## Test plan
 
 - **Unit:** descriptor validation, stable outcomes, bounded page shape,
   normalized capabilities, manual fallback, malformed/duplicate rows, and
   provider-error redaction.
-- **Integration:** Bifrost adapter mapping and CLI descriptor/probe wiring;
-  the CLI uses the same account construction as runtime LLM execution without
-  booting Runtime or EventBus.
+- **Integration:** Bifrost adapter mapping, CLI descriptor/probe wiring, and
+  the protected `llm.posture` projection; the CLI uses the same account
+  construction without booting Runtime/EventBus, while the Protocol path uses
+  the booted runtime's shared credential holder.
 - **Conformance:** supported, unsupported, custom-endpoint, manual,
   partial/stale, unpriced, empty, and unavailable provider states.
 - **Concurrency / leak:** 100 concurrent calls against one immutable Catalog,
@@ -202,8 +218,9 @@ no provider call or database mutation.
   unknown/unpriced/manual facts instead of guessing.
 - A custom endpoint may not expose `/models`; a configured model list is
   returned only as an explicit manual fallback and never as discovered data.
-- A future Protocol projection must define authority, audience, caching, and
-  freshness semantics before exposing this contract beyond the CLI.
+- The runtime projection uses the existing admin-tier posture authority and
+  bounded request envelope; future caching/freshness remains a consumer
+  concern and must not turn an offline CLI probe into runtime-origin evidence.
 
 ## Glossary additions
 

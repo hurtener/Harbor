@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 427 canonical Harbor Protocol wire types, generated from the single-source
+The 440 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2465,6 +2465,152 @@ Declared in `internal/protocol/types`.
 | `mock_mode` | `bool` |  |
 | `protocol_version` | `string` |  |
 
+## LLMProviderCredentialField
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `name` | `string` |  |
+| `kind` | `string` |  |
+| `required` | `bool` |  |
+| `secret` | `bool` |  |
+
+## LLMProviderDescriptor
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `kind` | `string` |  |
+| `credential_modes` | `[]string` |  |
+| `credential_fields` | `[]types.LLMProviderCredentialField` — see [`LLMProviderCredentialField`](./types.md#llmprovidercredentialfield) |  |
+| `custom_endpoint` | `string` |  |
+| `validation` | `types.LLMProviderOperation` — see [`LLMProviderOperation`](./types.md#llmprovideroperation) |  |
+| `discovery` | `types.LLMProviderOperation` — see [`LLMProviderOperation`](./types.md#llmprovideroperation) |  |
+
+## LLMProviderDiscovery
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `provider_id` | `string` |  |
+| `outcome` | `types.LLMProviderOutcome` — see [`LLMProviderOutcome`](./types.md#llmprovideroutcome) |  |
+| `models` | `[]types.LLMProviderModel` — see [`LLMProviderModel`](./types.md#llmprovidermodel) | optional (`omitempty`) |
+| `pages` | `int` |  |
+| `model_count` | `int` |  |
+
+## LLMProviderModel
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `source` | `string` |  |
+| `deprecated` | `bool` |  |
+| `capabilities` | `types.LLMProviderModelCapabilities` — see [`LLMProviderModelCapabilities`](./types.md#llmprovidermodelcapabilities) |  |
+
+## LLMProviderModelCapabilities
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `context` | `types.LLMProviderNumericCapability` — see [`LLMProviderNumericCapability`](./types.md#llmprovidernumericcapability) |  |
+| `max_input_tokens` | `types.LLMProviderNumericCapability` — see [`LLMProviderNumericCapability`](./types.md#llmprovidernumericcapability) |  |
+| `max_output_tokens` | `types.LLMProviderNumericCapability` — see [`LLMProviderNumericCapability`](./types.md#llmprovidernumericcapability) |  |
+| `input_modalities` | `types.LLMProviderSetCapability` — see [`LLMProviderSetCapability`](./types.md#llmprovidersetcapability) |  |
+| `output_modalities` | `types.LLMProviderSetCapability` — see [`LLMProviderSetCapability`](./types.md#llmprovidersetcapability) |  |
+| `tools` | `string` |  |
+| `vision` | `string` |  |
+| `reasoning` | `types.LLMProviderReasoningCapability` — see [`LLMProviderReasoningCapability`](./types.md#llmproviderreasoningcapability) |  |
+| `pricing` | `types.LLMProviderPricingCapability` — see [`LLMProviderPricingCapability`](./types.md#llmproviderpricingcapability) |  |
+
+## LLMProviderNumericCapability
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `value` | `int` | optional (`omitempty`) |
+
+## LLMProviderOperation
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `runtime_origin` | `bool` |  |
+| `bounded` | `bool` |  |
+
+## LLMProviderOperationResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `operation` | `string` |  |
+| `runtime_origin` | `bool` |  |
+| `provider_id` | `string` | optional (`omitempty`) |
+| `descriptors` | `[]types.LLMProviderDescriptor` — see [`LLMProviderDescriptor`](./types.md#llmproviderdescriptor) | optional (`omitempty`) |
+| `validation` | `*types.LLMProviderValidation` — see [`LLMProviderValidation`](./types.md#llmprovidervalidation) | optional (`omitempty`) |
+| `discovery` | `*types.LLMProviderDiscovery` — see [`LLMProviderDiscovery`](./types.md#llmproviderdiscovery) | optional (`omitempty`) |
+
+## LLMProviderOutcome
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `code` | `string` |  |
+| `message` | `string` |  |
+| `observed_at` | `string` | optional (`omitempty`) |
+| `runtime_origin` | `bool` |  |
+| `partial` | `bool` |  |
+| `stale` | `bool` |  |
+
+## LLMProviderPricingCapability
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `source` | `string` | optional (`omitempty`) |
+
+## LLMProviderReasoningCapability
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `levels` | `[]string` | optional (`omitempty`) |
+
+## LLMProviderSetCapability
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `string` |  |
+| `values` | `[]string` | optional (`omitempty`) |
+
+## LLMProviderValidation
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `provider_id` | `string` |  |
+| `outcome` | `types.LLMProviderOutcome` — see [`LLMProviderOutcome`](./types.md#llmprovideroutcome) |  |
+
 ## MCPAppCallToolRequest
 
 Declared in `internal/protocol/types`.
@@ -3464,6 +3610,10 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `provider_operation` | `string` | optional (`omitempty`) |
+| `provider_id` | `string` | optional (`omitempty`) |
+| `provider_page_size` | `int` | optional (`omitempty`) |
+| `provider_max_pages` | `int` | optional (`omitempty`) |
 
 ## SearchArtifactRef
 
@@ -4265,6 +4415,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `external_grant` | `json.RawMessage` | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
 | `description` | `string` | optional (`omitempty`) |
 | `priority` | `int` | optional (`omitempty`) |

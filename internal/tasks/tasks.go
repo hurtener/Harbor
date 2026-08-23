@@ -210,8 +210,12 @@ type Task struct {
 	PropagateOnCancel string
 	NotifyOnComplete  bool
 	IdempotencyKey    string
-	CreatedAt         int64 // unix nanoseconds; matches sessions / events convention
-	UpdatedAt         int64 // unix nanoseconds
+	// ExternalGrant is the opaque signed inference grant carried from
+	// Protocol start to the run's LLM edge. It contains no credential bytes;
+	// the verifier, not the task record, establishes authority.
+	ExternalGrant json.RawMessage `json:",omitempty"`
+	CreatedAt     int64           // unix nanoseconds; matches sessions / events convention
+	UpdatedAt     int64           // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
 	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
@@ -365,6 +369,9 @@ type SpawnRequest struct {
 	PropagateOnCancel string
 	NotifyOnComplete  bool
 	GroupID           TaskGroupID
+	// ExternalGrant carries the signed, content-free runtime grant through
+	// task persistence to the run loop. It is included in idempotency identity.
+	ExternalGrant json.RawMessage
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
 	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run

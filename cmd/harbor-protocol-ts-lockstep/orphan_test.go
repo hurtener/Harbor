@@ -41,6 +41,26 @@ var nonMethodRootedTypes = map[string]string{
 	// is reachable in reality (every row's `measures` values are exactly this
 	// type) but invisible to the ref-graph walk.
 	"ObservabilityMeasureValue": "map value type of ObservabilityQueryRow.measures; map fields carry no ref in the manifest",
+
+	// The runtime-origin provider catalog is an alternate response family of
+	// the existing `llm.posture` method. The shared RuntimeInfoRequest
+	// envelope selects it with `provider_operation`; the generated method
+	// table intentionally retains LLMPostureResponse as the ordinary posture
+	// response root, so these bounded catalog shapes are not reachable through
+	// that single response cell's ref graph.
+	"LLMProviderOperationResponse":   "alternate llm.posture response selected by RuntimeInfoRequest.provider_operation",
+	"LLMProviderDescriptor":          "nested in the alternate runtime-origin llm.posture response",
+	"LLMProviderOperation":           "nested in the alternate runtime-origin provider descriptor",
+	"LLMProviderValidation":          "nested in the alternate runtime-origin llm.posture response",
+	"LLMProviderDiscovery":           "nested in the alternate runtime-origin llm.posture response",
+	"LLMProviderOutcome":             "nested in alternate runtime-origin validation/discovery outcomes",
+	"LLMProviderModel":               "nested in alternate runtime-origin provider discovery",
+	"LLMProviderCredentialField":     "nested in alternate runtime-origin provider descriptors",
+	"LLMProviderModelCapabilities":   "nested in alternate runtime-origin discovered models",
+	"LLMProviderNumericCapability":   "nested in alternate runtime-origin model capabilities",
+	"LLMProviderSetCapability":       "nested in alternate runtime-origin model capabilities",
+	"LLMProviderReasoningCapability": "nested in alternate runtime-origin model capabilities",
+	"LLMProviderPricingCapability":   "nested in alternate runtime-origin model capabilities",
 }
 
 // TestManifest_NoOrphanWireTypes fails when a canonical wire type is published

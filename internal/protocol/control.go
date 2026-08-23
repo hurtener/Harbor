@@ -330,6 +330,11 @@ const maxOutputSchemaBytes = 64 * 1024
 // below `maxBodyBytes`.
 const maxCallerMemoryBytes = 32 * 1024
 
+// maxExternalGrantBytes bounds the signed carrier before a task exists. A
+// grant is content-free and should remain small; this is deliberately below
+// the control envelope limit so the field check is reachable.
+const maxExternalGrantBytes = 16 * 1024
+
 // jsonNullLiteral is the four bytes `json.RawMessage` holds after
 // decoding an explicit `"caller_memory": null`. An absent field decodes
 // to a nil RawMessage; an explicit null decodes to this. The two are
@@ -364,6 +369,26 @@ func validateCallerMemory(method string, raw json.RawMessage) error {
 	if !json.Valid(raw) {
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: caller_memory is not a valid JSON document", method)
+	}
+	return nil
+}
+
+func validateExternalGrant(method string, raw json.RawMessage) error {
+	if raw == nil {
+		return nil
+	}
+	if len(raw) == 0 || len(raw) > maxExternalGrantBytes {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: external_grant must be a non-empty JSON object below %d bytes", method, maxExternalGrantBytes)
+	}
+	if !json.Valid(raw) {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: external_grant is not valid JSON", method)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: external_grant must be a JSON object", method)
 	}
 	return nil
 }
@@ -554,6 +579,9 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err := validateCallerMemory(string(method), sr.CallerMemory); err != nil {
 		return nil, err
 	}
+	if err := validateExternalGrant(string(method), sr.ExternalGrant); err != nil {
+		return nil, err
+	}
 
 	spawnCtx := ctx
 	if s.reachAdmissions != nil {
@@ -576,6 +604,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		OutputSchema:              sr.OutputSchema,
 		AgentID:                   sr.AgentID,
 		CallerMemory:              sr.CallerMemory,
+		ExternalGrant:             append([]byte(nil), sr.ExternalGrant...),
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

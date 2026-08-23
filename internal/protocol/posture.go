@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/provider"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -69,20 +70,21 @@ import (
 // Runtime wires at boot; PostureSurface translates their output into
 // the wire shape and returns it.
 type PostureSurface struct {
-	build       types.RuntimeInfo
-	clock       func() time.Time
-	health      func(ctx context.Context) []types.SubsystemHealth
-	retention   func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
-	counters    func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
-	drivers     func() []types.SubsystemDriver
-	metrics     func(ctx context.Context) types.MetricsSnapshot
-	governance  *governance.PostureProvider
-	llm         *llm.PostureProvider
-	redactor    audit.Redactor
-	bus         events.EventBus
-	bootedAt    time.Time
-	displayName string
-	instanceID  string
+	build           types.RuntimeInfo
+	clock           func() time.Time
+	health          func(ctx context.Context) []types.SubsystemHealth
+	retention       func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
+	counters        func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
+	drivers         func() []types.SubsystemDriver
+	metrics         func(ctx context.Context) types.MetricsSnapshot
+	governance      *governance.PostureProvider
+	llm             *llm.PostureProvider
+	providerCatalog provider.CatalogSurface
+	redactor        audit.Redactor
+	bus             events.EventBus
+	bootedAt        time.Time
+	displayName     string
+	instanceID      string
 	// wiredCaps is the per-instance subset of canonical Protocol
 	// capabilities this Runtime actually wires.
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
@@ -152,6 +154,10 @@ type PostureDeps struct {
 	// source the `llm.posture` method projects onto
 	// types.LLMPostureResponse. Mandatory.
 	LLM *llm.PostureProvider
+	// ProviderCatalog is the booted runtime's credential-backed provider
+	// descriptor/validation/discovery seam. It is optional because runtimes
+	// without an LLM provider must advertise the capability as absent.
+	ProviderCatalog provider.CatalogSurface
 	// Redactor is the audit Redactor every cross-tenant
 	// `*.posture_read_admin` payload runs through before the bus
 	// publish (CLAUDE.md §7 rule 6). Mandatory.
@@ -216,6 +222,10 @@ type PostureDeps struct {
 	// transport. It is derived from the same construction condition as the
 	// transport option; an unattached publication store must not be advertised.
 	SkillPublicationsAvailable bool
+	// ProviderCatalogAvailable must be set from the same construction
+	// condition that wires ProviderCatalog, so capability advertisement is
+	// never a claim about an unmounted operation.
+	ProviderCatalogAvailable bool
 }
 
 // ErrPostureMisconfigured — NewPostureSurface was called with a missing
@@ -265,21 +275,22 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt = deps.Clock()
 	}
 	return &PostureSurface{
-		build:       deps.Build,
-		clock:       deps.Clock,
-		health:      deps.Health,
-		retention:   deps.Retention,
-		counters:    deps.Counters,
-		drivers:     deps.Drivers,
-		metrics:     deps.Metrics,
-		governance:  deps.Governance,
-		llm:         deps.LLM,
-		redactor:    deps.Redactor,
-		bus:         deps.Bus,
-		bootedAt:    bootedAt,
-		displayName: deps.DisplayName,
-		instanceID:  deps.InstanceID,
-		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable),
+		build:           deps.Build,
+		clock:           deps.Clock,
+		health:          deps.Health,
+		retention:       deps.Retention,
+		counters:        deps.Counters,
+		drivers:         deps.Drivers,
+		metrics:         deps.Metrics,
+		governance:      deps.Governance,
+		llm:             deps.LLM,
+		providerCatalog: deps.ProviderCatalog,
+		redactor:        deps.Redactor,
+		bus:             deps.Bus,
+		bootedAt:        bootedAt,
+		displayName:     deps.DisplayName,
+		instanceID:      deps.InstanceID,
+		wiredCaps:       wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable),
 	}, nil
 }
 
@@ -292,7 +303,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -321,6 +332,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 	}
 	if skillPublicationsAvailable {
 		caps = append(caps, types.CapSkillPublications)
+	}
+	if providerCatalogAvailable {
+		caps = append(caps, types.CapLLMProviderCatalog)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps
@@ -417,7 +431,7 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 	case methods.MethodGovernancePosture:
 		return s.handleGovernancePosture(ctx, method, id, actor, crossTenant)
 	case methods.MethodLLMPosture:
-		return s.handleLLMPosture(ctx, method, id, actor, crossTenant)
+		return s.handleLLMPosture(ctx, method, id, actor, crossTenant, pr)
 	default:
 		// Unreachable: IsPostureMethod already gated the method set.
 		// Fail loud rather than silently no-op (CLAUDE.md §5).
@@ -653,7 +667,11 @@ func (s *PostureSurface) handleLLMPosture(
 	id identity.Identity,
 	actor identity.Identity,
 	crossTenant bool,
+	request *types.RuntimeInfoRequest,
 ) (any, error) {
+	if request != nil && request.ProviderOperation != "" {
+		return s.handleProviderOperation(ctx, method, id, request)
+	}
 	snap, err := s.llm.Posture(ctx)
 	if err != nil {
 		return nil, mapPostureError(string(method), err)
@@ -665,6 +683,126 @@ func (s *PostureSurface) handleLLMPosture(
 		}
 	}
 	return projectLLMPosture(snap), nil
+}
+
+func (s *PostureSurface) handleProviderOperation(
+	ctx context.Context,
+	method methods.Method,
+	id identity.Identity,
+	request *types.RuntimeInfoRequest,
+) (any, error) {
+	if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: provider catalog operations require an admin-tier scope", string(method))
+	}
+	if s.providerCatalog == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: provider catalog capability is not wired", string(method))
+	}
+	operation := request.ProviderOperation
+	if operation != "validate" && operation != "discover" {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: unsupported provider operation %q", string(method), operation)
+	}
+	result := types.LLMProviderOperationResponse{
+		Operation: operation, RuntimeOrigin: true, ProviderID: request.ProviderID,
+		Descriptors: projectProviderDescriptors(s.providerCatalog.Descriptors(ctx)),
+	}
+	switch operation {
+	case "validate":
+		validation := s.providerCatalog.Validate(ctx, provider.ValidationRequest{ProviderID: request.ProviderID})
+		result.Validation = &types.LLMProviderValidation{
+			ProviderID: validation.ProviderID,
+			Outcome:    projectProviderOutcome(validation.Outcome),
+		}
+	case "discover":
+		pageSize, maxPages := request.ProviderPageSize, request.ProviderMaxPages
+		if pageSize == 0 {
+			pageSize = 100
+		}
+		if maxPages == 0 {
+			maxPages = 20
+		}
+		discovery, err := s.providerCatalog.Discover(ctx, provider.DiscoveryRequest{
+			ProviderID: request.ProviderID, PageSize: pageSize, MaxPages: maxPages,
+		})
+		if err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: provider discovery request invalid: %v", string(method), err)
+		}
+		result.Discovery = &types.LLMProviderDiscovery{
+			ProviderID: discovery.ProviderID,
+			Outcome:    projectProviderOutcome(discovery.Outcome),
+			Pages:      discovery.Pages, ModelCount: discovery.ModelCount,
+			Models: projectProviderModels(discovery.Models),
+		}
+	}
+	return result, nil
+}
+
+func projectProviderDescriptors(in []provider.ProviderDescriptor) []types.LLMProviderDescriptor {
+	out := make([]types.LLMProviderDescriptor, 0, len(in))
+	for _, descriptor := range in {
+		modes := make([]string, 0, len(descriptor.CredentialModes))
+		for _, mode := range descriptor.CredentialModes {
+			modes = append(modes, string(mode))
+		}
+		out = append(out, types.LLMProviderDescriptor{
+			ID: descriptor.ID, Kind: descriptor.Kind, CredentialModes: modes,
+			CredentialFields: projectProviderCredentialFields(descriptor.CredentialFields),
+			CustomEndpoint:   string(descriptor.CustomEndpoint),
+			Validation:       types.LLMProviderOperation{State: string(descriptor.Validation.State), RuntimeOrigin: descriptor.Validation.RuntimeOrigin, Bounded: descriptor.Validation.Bounded},
+			Discovery:        types.LLMProviderOperation{State: string(descriptor.Discovery.State), RuntimeOrigin: descriptor.Discovery.RuntimeOrigin, Bounded: descriptor.Discovery.Bounded},
+		})
+	}
+	return out
+}
+
+func projectProviderOutcome(in provider.Outcome) types.LLMProviderOutcome {
+	observed := ""
+	if !in.ObservedAt.IsZero() {
+		observed = in.ObservedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return types.LLMProviderOutcome{State: string(in.State), Code: in.Code, Message: in.Message,
+		ObservedAt: observed, RuntimeOrigin: in.RuntimeOrigin, Partial: in.Partial, Stale: in.Stale}
+}
+
+func projectProviderModels(in []provider.Model) []types.LLMProviderModel {
+	out := make([]types.LLMProviderModel, 0, len(in))
+	for _, model := range in {
+		out = append(out, types.LLMProviderModel{ID: model.ID, Source: string(model.Source), Deprecated: model.Deprecated, Capabilities: projectProviderCapabilities(model.Capabilities)})
+	}
+	return out
+}
+
+func projectProviderCredentialFields(in []provider.CredentialField) []types.LLMProviderCredentialField {
+	out := make([]types.LLMProviderCredentialField, 0, len(in))
+	for _, field := range in {
+		out = append(out, types.LLMProviderCredentialField{Name: field.Name, Kind: string(field.Kind), Required: field.Required, Secret: field.Secret})
+	}
+	return out
+}
+
+func projectProviderCapabilities(in provider.ModelCapabilities) types.LLMProviderModelCapabilities {
+	return types.LLMProviderModelCapabilities{
+		Context:          projectProviderNumeric(in.Context),
+		MaxInputTokens:   projectProviderNumeric(in.MaxInputTokens),
+		MaxOutputTokens:  projectProviderNumeric(in.MaxOutputTokens),
+		InputModalities:  projectProviderSet(in.InputModalities),
+		OutputModalities: projectProviderSet(in.OutputModalities),
+		Tools:            string(in.Tools),
+		Vision:           string(in.Vision),
+		Reasoning:        types.LLMProviderReasoningCapability{State: string(in.Reasoning.State), Levels: append([]string(nil), in.Reasoning.Levels...)},
+		Pricing:          types.LLMProviderPricingCapability{State: string(in.Pricing.State), Source: in.Pricing.Source},
+	}
+}
+
+func projectProviderNumeric(in provider.NumericCapability) types.LLMProviderNumericCapability {
+	return types.LLMProviderNumericCapability{State: string(in.State), Value: in.Value}
+}
+
+func projectProviderSet(in provider.SetCapability) types.LLMProviderSetCapability {
+	return types.LLMProviderSetCapability{State: string(in.State), Values: append([]string(nil), in.Values...)}
 }
 
 // emitPostureReadAdmin publishes the typed `*.posture_read_admin` audit
