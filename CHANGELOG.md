@@ -32,16 +32,28 @@ Two versions move independently in Harbor (RFC §5.3):
   proof. A truncated page remains catching up and can never promote its
   checkpoint past a later canonical event.
 
-### Release candidate evidence
+### Release evidence
 
-- Implementation PR #732 merged as
-  `a86a1330b7f5e3c4b6e091f549400ac5558be21d`. Hosted candidate run
-  `32617848106` completed successfully, including Go on Ubuntu/macOS,
-  PostgreSQL conformance, isolation/chaos/leak/benchmark gates, Console
-  Playwright, and the live preflight. Two independent exact-head reviews were
-  P0/P1 clear after the concurrent-fence correction. The Protocol wire is
-  unchanged. No downstream runtime, fleet, or database mutation is claimed by
-  this release candidate.
+- Implementation PR #733 merged at
+  `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`. Hosted candidate run
+  `32620015889` completed successfully, including the live preflight,
+  PostgreSQL conformance, both Go platforms, Playwright, isolation, leak,
+  chaos, lint, docs, and examples. The immutable annotated `v1.29.4` tag
+  object `d85ca3928171cbf5c72e890f7c4b622e4b2cf1ff` peels to
+  `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; release workflow `32622414573`
+  succeeded and the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.4)
+  carries 13 assets with verified aggregate `checksums.txt`, six sidecar
+  checksums, and six GitHub attestations. The native darwin/arm64 artifact
+  reports Harbor v1.29.4, Protocol 0.1.0, build
+  `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; module provenance records
+  `Sum=h1:GNQ902D6ddXlYtiOmC+wGMN7LSbE7VQilFb5HggKUyU=`,
+  `GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+  `Origin.Hash=90f5f8ce96f83f994462e33cdfeccc77c535ca7e`, and
+  `Origin.Ref=refs/tags/v1.29.4`. The post-tag scaffold pin and golden
+  fixtures are complete. Focused local
+  `go test ./cmd/harbor -run TestScaffold_Golden` and `make drift-audit`
+  passed; local `make preflight` was not run. No downstream runtime, fleet,
+  or database mutation is claimed.
 
 ## [1.29.3] — 2026-08-22
 
@@ -4788,7 +4800,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.3...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.4...HEAD
+[1.29.4]: https://github.com/hurtener/Harbor/compare/v1.29.3...v1.29.4
 [1.29.3]: https://github.com/hurtener/Harbor/compare/v1.29.2...v1.29.3
 [1.29.2]: https://github.com/hurtener/Harbor/compare/v1.29.1...v1.29.2
 [1.29.1]: https://github.com/hurtener/Harbor/compare/v1.29.0...v1.29.1

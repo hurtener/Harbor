@@ -110,6 +110,36 @@ identity-labelled OTel metrics remain rejected.
   existing server-derived admin / `console:fleet` claims from the request
   context (never the body) with the established widened-read audit evidence.
 
+## v1.29.4 production correction and release evidence
+
+The v1.29.4 correction makes rollup lost-wake polling compare the cheap source
+watermark with the durable projection checkpoint before opening a bounded
+source page. A current idle projection performs no global event-head scan;
+stale and catching-up projections retain the existing bounded replay and
+explicit completeness semantics. This stays within D-426's existing indexed,
+rebuildable, best-effort projection contract and adds no new canonical event,
+Protocol method, or analytics authority.
+
+Implementation PR #733 merged at
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; hosted candidate run
+`32620015889` completed successfully, including the live preflight,
+PostgreSQL conformance, both Go platforms, Playwright, isolation, leak,
+chaos, lint, docs, and examples. The immutable annotated `v1.29.4` tag
+object is `d85ca3928171cbf5c72e890f7c4b622e4b2cf1ff` and peels to
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; release workflow `32622414573`
+succeeded, publishing [13 release assets](https://github.com/hurtener/Harbor/releases/tag/v1.29.4)
+with verified aggregate `checksums.txt`, six sidecar checksums, and six
+GitHub attestations. The native darwin/arm64 artifact reports Harbor v1.29.4,
+Protocol 0.1.0, build `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; module
+provenance records `Sum=h1:GNQ902D6ddXlYtiOmC+wGMN7LSbE7VQilFb5HggKUyU=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=90f5f8ce96f83f994462e33cdfeccc77c535ca7e`, and
+`Origin.Ref=refs/tags/v1.29.4`. The post-tag scaffold pin and golden
+fixtures are complete. Focused local
+`go test ./cmd/harbor -run TestScaffold_Golden` and `make drift-audit`
+passed; local `make preflight` was not run. No downstream runtime, fleet,
+or database mutation is claimed.
+
 ## Acceptance criteria
 
 - [ ] A session emits more than 10,000 events; session and admin usage queries

@@ -38,8 +38,8 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-61 | Verified-caller two-phase `SKILL.md` package import into durable personal skills | skills + agentcfg protocol + state + protocol | High | Contained-to-medium | Shipped (v1.28) — phase 243 / D-422 |
 | HA-62 | Draft-only personal-skill proposer as an ordinary runtime tool | skills + tools + agentcfg + artifacts | High | Contained | Shipped (v1.28) — phase 244 / D-423 |
 | HA-63 | Lifecycle-only session catalog and inspection projection | sessions/protocol + protocol + console | High | Contained | Shipped (v1.28) — phase 245 / D-424 |
-| HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Shipped (v1.28) — phase 246 / D-425 |
-| HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Shipped (v1.28) — phase 247 / D-426 |
+| HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Shipped (v1.28); v1.29.4 idle-convergence correction shipped — phase 246 / D-425 |
+| HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Shipped (v1.28); v1.29.4 idle-rollup correction shipped — phase 247 / D-426 |
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
@@ -872,8 +872,15 @@ full projection behavior remains compatible and explicitly selectable.
 ## HA-64 — durable tail-paged conversation turns are needed for chat open
 
 **Priority:** High (chat-open latency and replay correctness). **Size:** large.
-**State:** Shipped (v1.28) — phase 246 / D-425 (framework-framed filing). Linked
-dependency: HA-63.
+**State:** Shipped (v1.28) — phase 246 / D-425 (framework-framed filing). The
+v1.29.4 idle-convergence correction is shipped; linked dependency: HA-63.
+
+**v1.29.4 correction.** Durable turn materialization now advances through a
+fully examined current source watermark after every returned canonical event;
+persisted bus-internal notices and fenced-session tails no longer repeat
+global `state_records` prefix scans on an idle runtime. Concurrent final-fence
+filtering preserves the page's pre-filter overflow proof, so a truncated page
+cannot promote its checkpoint past a later canonical event.
 
 **What the verified caller sees.** Harbor has authoritative task rows/results and
 raw event history, but no ready-to-render conversation page. One Protocol
@@ -981,7 +988,14 @@ remain separate. No shadow transcript or summary store is introduced.
 ## HA-65 — administrative observability queries need a rebuildable rollup projection
 
 **Priority:** High (confirmed operational scalability gap). **Size:** large.
-**State:** Shipped (v1.28) — phase 247 / D-426 (framework-framed filing).
+**State:** Shipped (v1.28) — phase 247 / D-426 (framework-framed filing). The
+v1.29.4 idle-rollup correction is shipped.
+
+**v1.29.4 correction.** Rollup lost-wake polling now compares the cheap source
+watermark with the durable projection checkpoint before opening a bounded
+source page. A current idle projection performs no global event-head scan;
+stale and catching-up projections retain the existing bounded replay and
+explicit completeness semantics.
 
 **What the verified caller sees.** An active session can exceed Harbor's bounded
 10,000-event session-counter scan. At that point `sessions.list` and
@@ -1077,6 +1091,26 @@ projection or remains an honest fallback.
 10. D-296 is explicitly amended or superseded: the decision must explain why
     this rebuildable projection is allowed while a general-purpose Harbor
     TSDB and identity-labelled OTel metrics remain rejected.
+
+**v1.29.4 release evidence.** Implementation PR #733 merged at
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; hosted candidate run
+`32620015889` completed successfully, including the live preflight,
+PostgreSQL conformance, both Go platforms, Playwright, isolation, leak,
+chaos, lint, docs, and examples. The immutable annotated `v1.29.4` tag
+object is `d85ca3928171cbf5c72e890f7c4b622e4b2cf1ff` and peels to
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; release workflow `32622414573`
+succeeded, publishing [13 release assets](https://github.com/hurtener/Harbor/releases/tag/v1.29.4)
+with verified aggregate `checksums.txt`, six sidecar checksums, and six
+GitHub attestations. The native darwin/arm64 artifact reports Harbor v1.29.4,
+Protocol 0.1.0, build `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; module
+provenance records `Sum=h1:GNQ902D6ddXlYtiOmC+wGMN7LSbE7VQilFb5HggKUyU=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=90f5f8ce96f83f994462e33cdfeccc77c535ca7e`, and
+`Origin.Ref=refs/tags/v1.29.4`. The post-tag scaffold pin and golden
+fixtures are complete. Focused local
+`go test ./cmd/harbor -run TestScaffold_Golden` and `make drift-audit`
+passed; local `make preflight` was not run. No downstream runtime, fleet,
+or database mutation is claimed.
 
 ---
 

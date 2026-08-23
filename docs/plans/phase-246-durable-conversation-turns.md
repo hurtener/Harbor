@@ -111,6 +111,37 @@ absent from the turn row.
   whole trajectory, no reconstructing answers from completion chunks, and no
   summary cache.
 
+## v1.29.4 production correction and release evidence
+
+The v1.29.4 correction makes durable turn materialization advance through a
+fully examined current source watermark after every returned canonical event.
+Persisted bus-internal notices and fenced-session tails no longer repeat
+global `state_records` prefix scans on an idle runtime. Concurrent final-fence
+filtering preserves the page's pre-filter overflow proof, so a truncated page
+cannot promote its checkpoint past a later canonical event. This stays within
+D-425's existing bounded, durable, fail-closed convergence contract and adds
+no Protocol wire surface or transcript authority.
+
+Implementation PR #733 merged at
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; hosted candidate run
+`32620015889` completed successfully, including the live preflight,
+PostgreSQL conformance, both Go platforms, Playwright, isolation, leak,
+chaos, lint, docs, and examples. The immutable annotated `v1.29.4` tag
+object is `d85ca3928171cbf5c72e890f7c4b622e4b2cf1ff` and peels to
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; release workflow `32622414573`
+succeeded, publishing [13 release assets](https://github.com/hurtener/Harbor/releases/tag/v1.29.4)
+with verified aggregate `checksums.txt`, six sidecar checksums, and six
+GitHub attestations. The native darwin/arm64 artifact reports Harbor v1.29.4,
+Protocol 0.1.0, build `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; module
+provenance records `Sum=h1:GNQ902D6ddXlYtiOmC+wGMN7LSbE7VQilFb5HggKUyU=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=90f5f8ce96f83f994462e33cdfeccc77c535ca7e`, and
+`Origin.Ref=refs/tags/v1.29.4`. The post-tag scaffold pin and golden
+fixtures are complete. Focused local
+`go test ./cmd/harbor -run TestScaffold_Golden` and `make drift-audit`
+passed; local `make preflight` was not run. No downstream runtime, fleet,
+or database mutation is claimed.
+
 ## Acceptance criteria
 
 - [ ] `sessions.turns.list` returns a stable tail page of root foreground

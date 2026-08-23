@@ -13039,7 +13039,8 @@ erasure), D-409 (session reach), D-397 (agent reach), D-313/D-349
 
 **Status:** Accepted for Phase 246 (HA-64). Shipped (v1.28): the accepted
 snapshot-to-live handoff is page-before-subscribe (below), which supersedes
-the earlier provisional ordering.
+the earlier provisional ordering. The v1.29.4 idle-convergence correction is
+also shipped below.
 
 **Decision.** Add a dedicated, runtime-owned conversation read model —
 `sessions.turns.list` (stable tail pages) and `sessions.turns.get` (one
@@ -13164,6 +13165,17 @@ provider reasoning/tool arguments/results and App callback bindings remain
 structurally absent, and App ToolCallID remains correlation metadata for the
 separately authorized persisted tool-context replay.
 
+**Production correction (2026-08-23; v1.29.4) — idle source convergence.**
+Durable turn materialization now advances through a fully examined current
+source watermark after applying every returned canonical event, so persisted
+bus-internal notices and fenced-session tails cannot keep an idle runtime
+repeating global `state_records` prefix scans. Concurrent final-fence
+filtering preserves the page's pre-filter overflow proof; a truncated page
+therefore remains catching up and cannot promote its checkpoint past a later
+canonical event. This is an implementation correction within D-425's existing
+bounded, durable, fail-closed convergence contract; it adds no Protocol wire
+surface or transcript authority.
+
 **Required acceptance (binding for the phase).** Once the owning runtime is
 selected, a persisted session with more than 100,000 events, at least 10,000
 turns, and one turn with more than 100 tool calls reopens its latest 20 turns
@@ -13203,7 +13215,8 @@ Plan: `docs/plans/phase-246-durable-conversation-turns.md`.
 
 **Date:** 2026-08-13
 
-**Status:** Accepted for Phase 247 (HA-65). Shipped (v1.28).
+**Status:** Accepted for Phase 247 (HA-65). Shipped (v1.28). The v1.29.4
+idle-rollup correction is also shipped below.
 
 **Decision.** Add a first-class durable observability rollup projection behind
 its own typed interface and §4.4 driver seam with in-memory, SQLite, and
@@ -13271,6 +13284,15 @@ gate) continues to forbid `tenant_id`/`user_id`/`session_id`/`run_id` as
 metric labels. This amendment is recorded here, not by rewriting D-296
 (decisions remain append-only).
 
+**Production correction (2026-08-23; v1.29.4) — idle rollup polling.**
+Rollup lost-wake polling now compares the cheap source watermark with the
+durable projection checkpoint before opening a bounded source page. A current
+idle projection consequently performs no global event-head scan, while a
+stale or catching-up projection retains the existing bounded replay and
+explicit completeness semantics. This is an implementation correction within
+D-426's existing indexed, rebuildable, best-effort projection contract; it
+adds no new canonical event, Protocol method, or analytics authority.
+
 **Required acceptance (binding for the phase).** A session emits more than
 10,000 events; session and admin usage queries still return exact
 projection-backed totals without `counters_partial` and without scanning
@@ -13305,6 +13327,26 @@ representation), D-300/D-301 (credential-plane and metrics posture), D-025
 audit), D-312/D-400 (erasure fences), D-353/D-254 (bounded windowed reads),
 D-020 (audit redaction). RFC §6.13, §6.14, §6.15, §6.9, §5.2, §5.5, §7, §9.
 Plan: `docs/plans/phase-247-observability-rollups.md`.
+
+**Release evidence (2026-08-23):** implementation PR #733 merged at
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; hosted candidate run
+`32620015889` completed successfully, including the live preflight,
+PostgreSQL conformance, both Go platforms, Playwright, isolation, leak,
+chaos, lint, docs, and examples. The immutable annotated `v1.29.4` tag
+object is `d85ca3928171cbf5c72e890f7c4b622e4b2cf1ff` and peels to
+`90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; release workflow `32622414573`
+succeeded, publishing [13 release assets](https://github.com/hurtener/Harbor/releases/tag/v1.29.4)
+with verified aggregate `checksums.txt`, six sidecar checksums, and six
+GitHub attestations. The native darwin/arm64 artifact reports Harbor v1.29.4,
+Protocol 0.1.0, build `90f5f8ce96f83f994462e33cdfeccc77c535ca7e`; module
+provenance records `Sum=h1:GNQ902D6ddXlYtiOmC+wGMN7LSbE7VQilFb5HggKUyU=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=90f5f8ce96f83f994462e33cdfeccc77c535ca7e`, and
+`Origin.Ref=refs/tags/v1.29.4`. The post-tag scaffold pin and golden
+fixtures are complete. Focused local
+`go test ./cmd/harbor -run TestScaffold_Golden` and `make drift-audit`
+passed; local `make preflight` was not run. No downstream runtime, fleet,
+or database mutation is claimed.
 
 ---
 
