@@ -118,7 +118,11 @@ type Driver interface {
 // `Extra` is provider-passthrough sanitized by the correction
 // layer. Harbor stores the field but does not interpret it.
 type CompleteRequest struct {
-	Model           string
+	Model string
+	// ExternalGrant is an optional coordinator-signed execution grant. The
+	// grant wrapper verifies it before this request reaches a provider. It is
+	// intentionally not interpreted by individual drivers.
+	ExternalGrant   *ExternalGrant
 	Messages        []ChatMessage
 	ResponseFormat  *ResponseFormat
 	Stream          bool

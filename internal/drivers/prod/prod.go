@@ -10,7 +10,8 @@
 // `harbor` binary boots with: the §4.4 self-registering factories
 // (artifacts / audit / distributed / events / llm / memory / skills /
 // state / tasks / telemetry / tools-OAuth / planner drivers), the LLM
-// wrapper hooks (corrections / output-downgrade / retry / governance),
+// wrapper hooks (corrections / external grants / output-downgrade / retry /
+// governance),
 // and the notifications event-type registration. `cmd/harbor/main.go`,
 // `harbortest/devstack`, and headless embedders all import this ONE
 // package — closing the SDK friction audit's §7 finding (devstack
@@ -75,6 +76,11 @@ import (
 	// internal/llm via init() so `llm.Open()` composes
 	// `corrections(safetyClient(driver))` by default.
 	_ "github.com/hurtener/Harbor/internal/llm/corrections"
+	// LLM external execution grants — verifies context-bound signed grants,
+	// resolves opaque credential bindings at the Bifrost boundary, and queues
+	// content-free attempt receipts. Legacy behavior remains disabled unless
+	// the runtime explicitly enables the grant mode.
+	_ "github.com/hurtener/Harbor/internal/llm/grant"
 	// LLM driver — bifrost-backed LLMClient, registered via init().
 	_ "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
 	// LLM output — structured-output downgrade chain (RFC §6.5).

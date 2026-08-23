@@ -1,0 +1,306 @@
+package llm
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// ExternalGrant is the signed, content-free authorization envelope a
+// coordinator may attach to one provider attempt. The grant contains no
+// credential bytes. Its claims bind the attempt to the verified runtime
+// identity, the logical run, the selected route, and an immutable credential
+// asset generation.
+//
+// The signature is encoded by the signing implementation as base64url. The
+// llm package deliberately does not choose a wire or key-management format;
+// internal/llm/grant supplies the Harbor reference signer and verifier.
+type ExternalGrant struct {
+	Version                      int
+	KeyID                        string
+	Audience                     string
+	GrantID                      string
+	OrganizationID               string
+	RuntimeID                    string
+	TenantID                     string
+	UserID                       string
+	SessionID                    string
+	LogicalRunID                 string
+	Provider                     string
+	ProviderModelID              string
+	ProviderConnectionID         string
+	ProviderConnectionGeneration uint64
+	RouteID                      string
+	CredentialBindingHandle      string
+	CredentialAssetGeneration    uint64
+	PolicyGeneration             uint64
+	MaxReasoning                 ReasoningEffort
+	MaxOutputTokens              int
+	Lease                        ComputeLease
+	IssuedAt                     time.Time
+	ExpiresAt                    time.Time
+	Signature                    string
+}
+
+// ComputeLease is the bounded local allowance a runtime may consume before
+// asking the coordinator for a top-up. Units are provider-neutral token units;
+// cost accounting remains in the content-free receipt.
+type ComputeLease struct {
+	LeaseID       string
+	TokenUnits    int64
+	ConsumedUnits int64
+	ExpiresAt     time.Time
+}
+
+// RemainingTokens returns the still-available bounded lease units.
+func (l ComputeLease) RemainingTokens() int64 {
+	remaining := l.TokenUnits - l.ConsumedUnits
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// ExternalGrantMode selects how the LLM edge handles grants.
+type ExternalGrantMode string
+
+const (
+	// ExternalGrantDisabled preserves the pre-HA-70 behavior.
+	ExternalGrantDisabled ExternalGrantMode = "disabled"
+	// ExternalGrantOptional verifies a supplied grant, but permits legacy calls
+	// that carry no grant. It is the migration mode for mixed fleets.
+	ExternalGrantOptional ExternalGrantMode = "optional"
+	// ExternalGrantRequired refuses every call without a valid grant.
+	ExternalGrantRequired ExternalGrantMode = "required"
+)
+
+var (
+	// ErrExternalGrantRequired indicates that strict mode received no grant.
+	ErrExternalGrantRequired = errors.New("llm: external execution grant required")
+	// ErrExternalGrantInvalid indicates a malformed, expired, or mismatched
+	// grant. The wrapped detail is intentionally content-free.
+	ErrExternalGrantInvalid = errors.New("llm: external execution grant invalid")
+	// ErrExternalGrantSignature indicates that the grant was not signed by a
+	// configured coordinator key.
+	ErrExternalGrantSignature = errors.New("llm: external execution grant signature invalid")
+	// ErrExternalGrantRevoked indicates a credential asset generation that is
+	// no longer current.
+	ErrExternalGrantRevoked = errors.New("llm: external execution grant credential binding revoked or stale")
+	// ErrExternalGrantLeaseInsufficient indicates that a bounded lease needs a
+	// coordinator top-up before this provider attempt can start.
+	ErrExternalGrantLeaseInsufficient = errors.New("llm: external execution grant lease insufficient")
+	// ErrUsageReceiptUnavailable indicates that a required content-free receipt
+	// could not be durably enqueued. Strict callers fail closed rather than
+	// pretending that provider consumption was accounted.
+	ErrUsageReceiptUnavailable = errors.New("llm: external execution usage receipt unavailable")
+)
+
+// ExternalGrantVerifier validates a signed grant against the verified request
+// context and the actual model request. It must never trust caller-provided
+// identity or runtime authority.
+type ExternalGrantVerifier interface {
+	Verify(context.Context, ExternalGrant, CompleteRequest) error
+}
+
+// CredentialResolver resolves one opaque credential binding only after the
+// grant wrapper has verified the signature and context. Implementations must
+// return a secret only to the provider driver; they must not expose it in
+// grant claims, logs, receipts, or caller-facing errors.
+type CredentialResolver interface {
+	Resolve(context.Context, ExternalGrant) (ResolvedCredential, error)
+}
+
+// ResolvedCredential is the short-lived provider secret returned to the
+// driver boundary. It is never serialized by Harbor's grant or receipt code.
+type ResolvedCredential struct {
+	Provider                     string
+	CredentialBindingHandle      string
+	CredentialAssetGeneration    uint64
+	ProviderConnectionGeneration uint64
+	Secret                       string
+}
+
+// LeaseTopUpper can replace a verified grant with a newly signed bounded
+// grant when the current lease is insufficient. The implementation owns the
+// coordinator exchange; the runtime never invents authority or extends a
+// lease locally.
+type LeaseTopUpper interface {
+	TopUp(context.Context, ExternalGrant, int64) (ExternalGrant, error)
+}
+
+// AttemptUsageReceipt is the content-free provider-attempt fact emitted by
+// the grant wrapper. It intentionally contains no messages, prompts,
+// responses, tool arguments, or reasoning traces.
+type AttemptUsageReceipt struct {
+	ReceiptID                    string
+	GrantID                      string
+	OrganizationID               string
+	RuntimeID                    string
+	TenantID                     string
+	UserID                       string
+	SessionID                    string
+	LogicalRunID                 string
+	Provider                     string
+	ProviderModelID              string
+	ProviderConnectionID         string
+	ProviderConnectionGeneration uint64
+	RouteID                      string
+	CredentialAssetGeneration    uint64
+	PolicyGeneration             uint64
+	AttemptNumber                int
+	RetryNumber                  int
+	FallbackHop                  int
+	RequestedReasoning           ReasoningEffort
+	EffectiveReasoning           ReasoningEffort
+	PromptTokens                 int
+	CompletionTokens             int
+	ReasoningTokens              int
+	TotalTokens                  int
+	CacheReadTokens              int
+	CacheWriteTokens             int
+	InputCostMicros              int64
+	OutputCostMicros             int64
+	ReasoningCostMicros          int64
+	TotalCostMicros              int64
+	Currency                     string
+	LatencyMS                    int64
+	Status                       string
+	StartedAt                    time.Time
+	CompletedAt                  time.Time
+	IdempotencyKey               string
+	CanonicalBodyHash            string
+}
+
+// UsageReceiptSink durably accepts a receipt before a strict provider call is
+// considered fully observed. Implementations are responsible for idempotent
+// receipt identity and replay semantics.
+type UsageReceiptSink interface {
+	Enqueue(context.Context, AttemptUsageReceipt) error
+}
+
+// CanonicalAttemptUsageReceiptBodyHash returns the SHA-256 digest of the
+// receipt body with its digest field blank. encoding/json preserves the
+// declared field order, giving the outbox and downstream consumers one
+// deterministic content-free idempotency representation without adding a
+// second serialization format.
+func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, error) {
+	receipt.CanonicalBodyHash = ""
+	body, err := json.Marshal(receipt)
+	if err != nil {
+		return "", fmt.Errorf("llm: canonical usage receipt: %w", err)
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// ExternalGrantConfig wires the opt-in grant and receipt seams into llm.Open.
+// A zero value disables the layer and preserves legacy behavior.
+type ExternalGrantConfig struct {
+	Mode            ExternalGrantMode
+	Verifier        ExternalGrantVerifier
+	Credentials     CredentialResolver
+	TopUpper        LeaseTopUpper
+	ReceiptSink     UsageReceiptSink
+	ReceiptRequired bool
+	RuntimeID       string
+}
+
+// VerifiedGrantContext is installed only after ExternalGrantVerifier succeeds.
+// Provider drivers use it to resolve the opaque credential binding without
+// accepting a caller-selected key or a process-global mutable secret.
+type VerifiedGrantContext struct {
+	Grant       ExternalGrant
+	Credentials CredentialResolver
+}
+
+type verifiedOrganizationKey struct{}
+
+// WithVerifiedOrganization attaches the request-edge organization authority
+// established by the coordinator. Like identity.WithVerified, this helper is
+// intended for the authentication/dispatch boundary; provider callers must
+// not derive or overwrite it from a request body.
+func WithVerifiedOrganization(ctx context.Context, organizationID string) context.Context {
+	return context.WithValue(ctx, verifiedOrganizationKey{}, organizationID)
+}
+
+// VerifiedOrganizationFrom returns the coordinator-verified organization
+// scope, if the request edge supplied one.
+func VerifiedOrganizationFrom(ctx context.Context) (string, bool) {
+	organizationID, ok := ctx.Value(verifiedOrganizationKey{}).(string)
+	return organizationID, ok && organizationID != ""
+}
+
+type verifiedGrantContextKey struct{}
+
+// WithVerifiedGrantContext attaches a verified grant for the provider-driver
+// boundary. Callers should use the grant wrapper rather than this helper.
+func WithVerifiedGrantContext(ctx context.Context, grant ExternalGrant, resolver CredentialResolver) context.Context {
+	return context.WithValue(ctx, verifiedGrantContextKey{}, VerifiedGrantContext{Grant: grant, Credentials: resolver})
+}
+
+// VerifiedGrantContextFrom returns the verified grant context, if the grant
+// wrapper has installed one for this call.
+func VerifiedGrantContextFrom(ctx context.Context) (VerifiedGrantContext, bool) {
+	v, ok := ctx.Value(verifiedGrantContextKey{}).(VerifiedGrantContext)
+	return v, ok
+}
+
+// AttemptScope carries a stable call identity plus the retry/downgrade/failover
+// coordinates used to produce deterministic receipt IDs. It is per invocation,
+// never stored on a reusable client.
+type AttemptScope struct {
+	CallID      string
+	Attempt     int
+	Retry       int
+	Downgrade   int
+	FallbackHop int
+}
+
+type attemptScopeKey struct{}
+
+// WithAttemptScope installs a scope on ctx. The caller owns the returned scope
+// and may derive per-attempt contexts with WithAttemptCoordinates.
+func WithAttemptScope(ctx context.Context, scope *AttemptScope) context.Context {
+	return context.WithValue(ctx, attemptScopeKey{}, scope)
+}
+
+// AttemptScopeFrom reads the current per-call scope.
+func AttemptScopeFrom(ctx context.Context) (*AttemptScope, bool) {
+	s, ok := ctx.Value(attemptScopeKey{}).(*AttemptScope)
+	return s, ok
+}
+
+// EnsureAttemptScope returns a context with one stable invocation identity.
+// The scope is allocated per call, never stored on a reusable client; retry,
+// downgrade, and failover wrappers derive their attempt coordinates from it.
+func EnsureAttemptScope(ctx context.Context) (context.Context, *AttemptScope, error) {
+	if scope, ok := AttemptScopeFrom(ctx); ok && scope != nil && scope.CallID != "" {
+		return ctx, scope, nil
+	}
+	var callID [16]byte
+	if _, err := rand.Read(callID[:]); err != nil {
+		return ctx, nil, fmt.Errorf("llm: allocate attempt scope: %w", err)
+	}
+	scope := &AttemptScope{CallID: hex.EncodeToString(callID[:])}
+	return WithAttemptScope(ctx, scope), scope, nil
+}
+
+// WithAttemptCoordinates returns a derived context with provider-attempt
+// coordinates updated without mutating the shared scope.
+func WithAttemptCoordinates(ctx context.Context, attempt, retry, downgrade, fallbackHop int) context.Context {
+	scope, ok := AttemptScopeFrom(ctx)
+	if !ok || scope == nil {
+		return ctx
+	}
+	copyScope := *scope
+	copyScope.Attempt = attempt
+	copyScope.Retry = retry
+	copyScope.Downgrade = downgrade
+	copyScope.FallbackHop = fallbackHop
+	return WithAttemptScope(ctx, &copyScope)
+}

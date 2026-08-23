@@ -76,6 +76,10 @@ type Account struct {
 	// map so future multi-provider work can widen
 	// without restructuring the Account.
 	customByName map[string]customRuntime
+	// externalGrantRequired prevents a direct account caller from falling
+	// back to the legacy LiveKey when strict mode was selected. The normal
+	// registry path also enforces this at the grant wrapper boundary.
+	externalGrantRequired bool
 }
 
 // customRuntime is the resolved-at-construction shape of one custom
@@ -112,14 +116,19 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	// at this point — if the key is unset for ANY declared custom
 	// provider, we fail closed at boot rather than at first request.
 	customByName := make(map[string]customRuntime, len(cfg.CustomProviders))
+	strictExternalGrant := deps.ExternalGrant.Mode == llm.ExternalGrantRequired
 	for _, spec := range cfg.CustomProviders {
 		if spec.Name == "" || spec.BaseURL == "" || spec.APIKeyEnvVar == "" || len(spec.Models) == 0 {
 			return nil, fmt.Errorf("%w: name=%q base_url=%q api_key_env_var=%q models=%d",
 				ErrInvalidCustomProvider, spec.Name, spec.BaseURL, spec.APIKeyEnvVar, len(spec.Models))
 		}
-		key, err := resolveCustomAPIKey(spec.APIKeyEnvVar)
-		if err != nil {
-			return nil, err
+		var key string
+		if !strictExternalGrant {
+			var err error
+			key, err = resolveCustomAPIKey(spec.APIKeyEnvVar)
+			if err != nil {
+				return nil, err
+			}
 		}
 		runtimeCfg := buildCustomProviderConfig(spec, cfg.NetworkDefaults)
 		customByName[spec.Name] = customRuntime{
@@ -137,11 +146,12 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	if entry, ok := customByName[cfg.Provider]; ok {
 		holder.Init(entry.apiKey)
 		return &Account{
-			provider:      provider,
-			primaryKey:    holder,
-			primaryModels: entry.models,
-			primaryConfig: entry.config,
-			customByName:  customByName,
+			provider:              provider,
+			primaryKey:            holder,
+			primaryModels:         entry.models,
+			primaryConfig:         entry.config,
+			customByName:          customByName,
+			externalGrantRequired: strictExternalGrant,
 		}, nil
 	}
 	if !isKnownProvider(provider) {
@@ -155,7 +165,7 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	// every GetKeysForProvider call. Until the source's first Connect seeds it,
 	// the holder is empty and the safety edge / bifrost fails closed on the
 	// empty key (never a silent bad call).
-	if cfg.CredentialSource != "remote" {
+	if cfg.CredentialSource != "remote" && !strictExternalGrant {
 		key, err := resolveAPIKey(cfg.APIKey)
 		if err != nil {
 			return nil, err
@@ -164,11 +174,12 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	}
 	nativeCfg := buildNativeProviderConfig(cfg)
 	return &Account{
-		provider:      provider,
-		primaryKey:    holder,
-		primaryModels: []string{"*"}, // bifrost's "all non-blacklisted" wildcard; see Account.primaryModels godoc
-		primaryConfig: nativeCfg,
-		customByName:  customByName,
+		provider:              provider,
+		primaryKey:            holder,
+		primaryModels:         []string{"*"}, // bifrost's "all non-blacklisted" wildcard; see Account.primaryModels godoc
+		primaryConfig:         nativeCfg,
+		customByName:          customByName,
+		externalGrantRequired: strictExternalGrant,
 	}, nil
 }
 
@@ -354,13 +365,42 @@ func (a *Account) GetConfiguredProviders() ([]bfschemas.ModelProvider, error) {
 	return []bfschemas.ModelProvider{a.provider}, nil
 }
 
-// GetKeysForProvider implements `bfschemas.Account`. Returns the
-// primary's resolved key. The `ctx` is unused at this layer —
-// Harbor's identity is propagated separately (the safety pass
-// enforces presence; the driver's `Complete` rejects on missing).
-func (a *Account) GetKeysForProvider(_ context.Context, providerKey bfschemas.ModelProvider) ([]bfschemas.Key, error) {
+// GetKeysForProvider implements `bfschemas.Account`. A verified external
+// grant takes the credential path: the opaque binding is resolved only from
+// the verified call context and its immutable generation, never from a
+// caller-selected key or the process-wide LiveKey. Calls without a grant
+// retain the legacy primary-key path for compatibility mode.
+func (a *Account) GetKeysForProvider(ctx context.Context, providerKey bfschemas.ModelProvider) ([]bfschemas.Key, error) {
 	if providerKey != a.provider {
 		return nil, fmt.Errorf("bifrost: provider %q is not configured for this Harbor account", providerKey)
+	}
+	if verified, ok := llm.VerifiedGrantContextFrom(ctx); ok {
+		if verified.Credentials == nil {
+			return nil, fmt.Errorf("bifrost: external grant credential resolver is unavailable")
+		}
+		if verified.Grant.Provider != string(providerKey) {
+			return nil, fmt.Errorf("bifrost: external grant provider does not match configured provider")
+		}
+		resolved, err := verified.Credentials.Resolve(ctx, verified.Grant)
+		if err != nil {
+			return nil, fmt.Errorf("bifrost: external grant credential resolution failed: %w", err)
+		}
+		if resolved.Provider != string(providerKey) || resolved.Secret == "" ||
+			resolved.CredentialBindingHandle != verified.Grant.CredentialBindingHandle ||
+			resolved.CredentialAssetGeneration != verified.Grant.CredentialAssetGeneration ||
+			resolved.ProviderConnectionGeneration != verified.Grant.ProviderConnectionGeneration {
+			return nil, fmt.Errorf("bifrost: external grant credential binding is invalid")
+		}
+		return []bfschemas.Key{
+			{
+				ID: "harbor-external-grant", Name: "harbor-external-grant",
+				Value:  bfschemas.SecretVar{Val: resolved.Secret},
+				Models: append([]string(nil), a.primaryModels...), Weight: 1.0,
+			},
+		}, nil
+	}
+	if a.externalGrantRequired {
+		return nil, llm.ErrExternalGrantRequired
 	}
 	return []bfschemas.Key{
 		{

@@ -13935,3 +13935,55 @@ native darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build
 `Origin.Ref=refs/tags/v1.29.3`. Post-tag scaffold pin/golden cleanup is
 complete. Local `make preflight` was never run and no downstream fleet repair
 or cutover is claimed.
+
+---
+
+## D-434 — Context-bound external execution grants and durable attempt receipts (HA-70)
+
+**Date:** 2026-08-23
+
+**Status:** Implementation candidate; Phase 254. No release or tag is claimed.
+
+Harbor adds a generic, opt-in execution-edge contract for a coordinator-signed
+external grant. The grant is versioned and signed, carries a key id and
+audience, expires, and binds the verified runtime, `(tenant,user,session)`
+identity, logical run, provider connection and immutable connection generation,
+provider route/model, policy generation, opaque credential-binding handle, immutable credential-asset
+generation, reasoning/output ceilings, and bounded compute lease. It carries
+no key or secret. The reference Ed25519 signer/verifier checks every claim
+against request-edge verified identity and organization context before the
+Bifrost provider call. Disabled mode preserves the existing local-key path;
+optional mode permits mixed fleets; required mode fails closed when a grant or
+required receipt path is absent.
+
+Credential resolution is a distinct verified-context-only seam. Bifrost's
+account resolves only the verified opaque handle and exact asset generation,
+runtime, organization, provider, connection, identity, and run; rotation and
+revocation fence stale generations. Strict grant mode does not require a boot
+provider secret and never falls back to a process-global `LiveKey` for a
+granted call. Harbor's existing local governance remains the emergency ceiling.
+
+The grant wrapper is composed inside retry, structured-output downgrade, and
+Harbor-orchestrated failover. Every provider attempt therefore re-verifies the
+grant, checks the bounded lease, and emits a content-free usage receipt with
+stable attempt coordinates, route/provider/model dimensions, policy and asset
+generations, token/cost/latency usage, outcome, idempotency key, and canonical
+body hash. A StateStore-backed outbox conditionally persists receipts, ACKs
+them, replays response-loss duplicates safely, applies bounded exponential
+backoff, and opens a circuit breaker. Delivery is required to deduplicate by
+receipt id and canonical body hash. No prompt, response, tool arguments,
+reasoning trace, credential bytes, or secret appears in a grant, receipt,
+error, or log.
+
+**Compatibility and limits.** The grant layer is internal to `LLMClient`; it
+does not add a provider-specific interface or a Protocol version. A coordinator
+may issue a top-up grant when a bounded lease is insufficient, but Harbor does
+not mint authority or widen a lease locally. The receipt records provider
+reported/available token and cost data; it is not an invoice. Cross-runtime
+global quota policy, credential custody, and coordinator delivery remain
+outside Harbor. The StateStore outbox uses the existing in-memory, SQLite, and
+PostgreSQL seam; no new receipt database or content mirror is introduced.
+
+**Cross-references.** RFC §6.5, §6.11, §6.15, D-018, D-019, D-025, D-333,
+D-334, D-335, brief 03, brief 08. Plan:
+`docs/plans/phase-254-external-execution-grants.md`.

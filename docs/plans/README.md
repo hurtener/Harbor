@@ -395,6 +395,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |249 | Optional per-parameter MCP artifact-egress mappings (HA-67, D-429): a trailing `?` marker is stripped at the shared compile boundary, schema/`ParamsFor` projections expose bare names, missing or `null` optional values skip substitution, and present values retain the required type/empty-id/resolver/digest/ceiling checks; no new wire shape or artifact resolver | tools/artifactegress + MCP driver | §6.4, §6.10, §7 | 214 | ≥90% artifactegress | Shipped (unreleased candidate; focused evidence only) |
 |250 | Same-runtime organization skill publications (HA-68, D-430): immutable content-addressed revisions, content-free metadata/references/receipts, StateStore-backed CAS and idempotency, admin/user Protocol methods, exact signed-agent reach and runtime binding; strict Protocol transport, typed clients/capability, generated reference pages, run-start composition, and shared production/devstack bootstrap with one authorized store/runtime id are landed | skills/publication + state + protocol + runtime composition | §6.7, §6.10, §6.11, §6.16, §5.2, §5.5, §7, §9 | 37, 40, 202, 205, 232, 237, 240, 248 | 85–90% (target) | Shipped (unreleased candidate; focused evidence only) |
 |253 | Offline legacy durable-head integrity repair (HA-69 second compatibility extension, D-433): content-free inspect/dry-run, explicit freeze/drain admission, direct-5432 mutation guard, exact duplicate validation, StateStore CAS canonicalization, durable receipts, idempotent replay, and hosted real-Postgres acceptance | durable events + state + CLI + operator docs + CI | §4.3, §6.11, §6.13, §8, §12 | 16, 57, 251, 252, D-294, D-305, D-398, D-431, D-432 | existing floors | Shipped (v1.29.3) |
+|254 | Context-bound external execution grants and durable attempt receipts (HA-70, D-434): signed runtime/identity/run/route/credential-generation grant, verified Bifrost binding resolution, bounded lease/top-up, retry/downgrade/failover attempt coverage, content-free StateStore outbox with ACK/replay/backoff/circuit breaker, and strict/optional/disabled compatibility modes | LLM edge + Bifrost + StateStore + governance + docs | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-333, D-334 | ≥85% new packages | Implementation candidate |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5459,6 +5460,35 @@ The v1.21 wave (phases 202 + 203) shipped **without** the §17.7-step-5 wave-end
 Recorded because the lapse is now cumulative and worth being visible: **v1.19, v1.20 and v1.21 all shipped without a wave-end E2E and without a checkpoint audit.** The last wave-end composing E2E is `test/integration/wave_v118_test.go`. §17.5 makes the audit the gate on the *next* wave's planning, so three waves of un-audited surface now sit upstream of v1.22. Whether to run one catch-up audit spanning 201–203 or to resume the cadence at the v1.22 boundary is a scoping call for the coordinator; either way this note should be updated when the cadence resumes.
 
 ---
+
+### Phase 254 — Context-bound external execution grants and durable attempt receipts (HA-70)
+
+- **Subsystem:** LLM edge, Bifrost account credential resolution, retry /
+  structured-output downgrade / failover attempt coordination, StateStore
+  receipt outbox, and operator documentation.
+- **RFC:** §6.5, §6.11, §6.15. **Deps:** 33, 36a, 57, 91, 93; D-333 and
+  D-334 provide the generic inference-plane broker direction.
+- **What it delivers:** D-434 — one additive `ExternalGrant` request/dependency
+  seam and registered wrapper. A coordinator-signed grant binds audience,
+  runtime, verified identity and logical run, provider connection and immutable
+  connection generation, provider model/route, policy generation, opaque
+  credential handle, immutable asset generation,
+  reasoning/output ceilings, and a bounded lease. The Bifrost account resolves
+  the binding only from the verified context and never uses a caller-selected
+  key for a granted call. The wrapper is inside retry/downgrade/failover, so
+  every provider attempt is verified and emits a content-free receipt. The
+  StateStore outbox conditionally queues/ACKs receipts, safely replays
+  response-loss duplicates, backs off, and circuit-breaks delivery. Disabled,
+  optional, and required modes preserve compatibility and fail-closed strict
+  behavior respectively.
+- **Evidence:** Focused grant, Bifrost, retry, receipt, in-memory, and SQLite
+  tests cover identity/generation fencing, two-organization concurrent reuse,
+  missing/invalid grants, no-secret receipts, retry coordinates, ACK/replay,
+  changed-body refusal, and bounded delivery failure. Race/vet/smoke evidence
+  and any hosted PostgreSQL/provider acceptance must be recorded on the
+  implementation handoff; no release, tag, or downstream deployment is
+  implied by the plan.
+- **Decision:** D-434. **Status:** Implementation candidate.
 
 ## Notes
 
