@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:add9cb68d186f75af2c5b9c988c8c1374c905527e0465210f7dc190ce6526769";
+export const WIRE_SURFACE_DIGEST = "sha256:77781daaac820833f6038ea3938d93335a9b785a19ca94a6b11378fbec0712a4";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1931,6 +1931,100 @@ export interface LLMPostureResponse {
   protocol_version: string;
 }
 
+export interface LLMProviderCredentialField {
+  name: string;
+  kind: string;
+  required: boolean;
+  secret: boolean;
+}
+
+export interface LLMProviderDescriptor {
+  id: string;
+  kind: string;
+  credential_modes: string[];
+  credential_fields: LLMProviderCredentialField[];
+  custom_endpoint: string;
+  validation: LLMProviderOperation;
+  discovery: LLMProviderOperation;
+}
+
+export interface LLMProviderDiscovery {
+  provider_id: string;
+  outcome: LLMProviderOutcome;
+  models?: LLMProviderModel[];
+  pages: number;
+  model_count: number;
+}
+
+export interface LLMProviderModel {
+  id: string;
+  source: string;
+  deprecated: boolean;
+  capabilities: LLMProviderModelCapabilities;
+}
+
+export interface LLMProviderModelCapabilities {
+  context: LLMProviderNumericCapability;
+  max_input_tokens: LLMProviderNumericCapability;
+  max_output_tokens: LLMProviderNumericCapability;
+  input_modalities: LLMProviderSetCapability;
+  output_modalities: LLMProviderSetCapability;
+  tools: string;
+  vision: string;
+  reasoning: LLMProviderReasoningCapability;
+  pricing: LLMProviderPricingCapability;
+}
+
+export interface LLMProviderNumericCapability {
+  state: string;
+  value?: number;
+}
+
+export interface LLMProviderOperation {
+  state: string;
+  runtime_origin: boolean;
+  bounded: boolean;
+}
+
+export interface LLMProviderOperationResponse {
+  operation: string;
+  runtime_origin: boolean;
+  provider_id?: string;
+  descriptors?: LLMProviderDescriptor[];
+  validation?: LLMProviderValidation;
+  discovery?: LLMProviderDiscovery;
+}
+
+export interface LLMProviderOutcome {
+  state: string;
+  code: string;
+  message: string;
+  observed_at?: string;
+  runtime_origin: boolean;
+  partial: boolean;
+  stale: boolean;
+}
+
+export interface LLMProviderPricingCapability {
+  state: string;
+  source?: string;
+}
+
+export interface LLMProviderReasoningCapability {
+  state: string;
+  levels?: string[];
+}
+
+export interface LLMProviderSetCapability {
+  state: string;
+  values?: string[];
+}
+
+export interface LLMProviderValidation {
+  provider_id: string;
+  outcome: LLMProviderOutcome;
+}
+
 export interface MCPAppCallToolRequest {
   identity: IdentityScope;
   agent_id?: string;
@@ -2569,6 +2663,10 @@ export interface RuntimeInfo {
 
 export interface RuntimeInfoRequest {
   identity: IdentityScope;
+  provider_operation?: string;
+  provider_id?: string;
+  provider_page_size?: number;
+  provider_max_pages?: number;
 }
 
 export interface SearchArtifactRef {
@@ -3114,6 +3212,7 @@ export interface SkillPublicationUpdateResponse {
 
 export interface StartRequest {
   identity: IdentityScope;
+  external_grant?: unknown;
   query?: string;
   description?: string;
   priority?: number;

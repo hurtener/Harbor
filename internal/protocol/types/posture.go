@@ -33,6 +33,14 @@ type RuntimeInfoRequest struct {
 	// validates the triple and gates cross-tenant reads on the admin
 	// scope claim.
 	Identity IdentityScope `json:"identity"`
+	// ProviderOperation requests the protected runtime-origin provider
+	// catalog operation over the booted runtime. It is intentionally carried
+	// by the existing posture envelope so older transports remain compatible;
+	// the server requires an admin-tier verified scope before dispatching it.
+	ProviderOperation string `json:"provider_operation,omitempty"`
+	ProviderID        string `json:"provider_id,omitempty"`
+	ProviderPageSize  int    `json:"provider_page_size,omitempty"`
+	ProviderMaxPages  int    `json:"provider_max_pages,omitempty"`
 }
 
 // RuntimeInfo is the runtime.info response: the Runtime's build

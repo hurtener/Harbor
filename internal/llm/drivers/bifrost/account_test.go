@@ -5,10 +5,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	grantpkg "github.com/hurtener/Harbor/internal/llm/grant"
 )
 
 // TestNewAccount_LiteralKey — APIKey supplied as a literal value.
@@ -207,6 +210,72 @@ func TestAccount_GetKeysForProvider_ReflectsRotate(t *testing.T) {
 	}
 	if keys[0].Value.Val != "sk-rotated" {
 		t.Errorf("after rotate, GetKeysForProvider = %q, want sk-rotated", keys[0].Value.Val)
+	}
+}
+
+func TestAccount_GetKeysForProvider_ExternalGrantUsesVerifiedBinding(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	signer, err := grantpkg.NewSigner("key-1", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := grantpkg.NewBindingStore()
+	if err := binding.Put(grantpkg.Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: string(bfschemas.OpenAI), ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "grant-credential"}); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := signer.Sign(llm.ExternalGrant{
+		Version: 1, GrantID: "grant-1", OrganizationID: "org-a", RuntimeID: "runtime-1", TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", LogicalRunID: "run-a",
+		Provider: string(bfschemas.OpenAI), ProviderModelID: "model-fast", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, RouteID: "route-a", CredentialBindingHandle: "binding-a", CredentialAssetGeneration: 1, PolicyGeneration: 1, MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 1000,
+		Lease: llm.ComputeLease{LeaseID: "lease-a", TokenUnits: 1000, ExpiresAt: now.Add(time.Minute)}, IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = llm.WithVerifiedOrganization(ctx, "org-a")
+	ctx = llm.WithVerifiedGrantContext(ctx, grant, binding)
+	a, err := newAccount(llm.ConfigSnapshot{Provider: string(bfschemas.OpenAI), APIKey: "legacy-key"}, llm.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := a.GetKeysForProvider(ctx, bfschemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider grant: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "grant-credential" {
+		t.Fatalf("grant keys = %+v, want opaque binding credential", keys)
+	}
+	if keys[0].Value.Val == a.primaryKey.Get() {
+		t.Fatal("external grant unexpectedly used process-wide LiveKey")
+	}
+	// A caller-selected grant context without the verified organization is
+	// rejected by the binding resolver rather than falling back to LiveKey.
+	badCtx := llm.WithVerifiedGrantContext(context.Background(), grant, binding)
+	if _, err := a.GetKeysForProvider(badCtx, bfschemas.OpenAI); err == nil {
+		t.Fatal("unverified external grant context resolved a credential")
+	}
+}
+
+func TestNewAccount_RequiredExternalGrantDoesNotResolveBootSecret(t *testing.T) {
+	// Strict grant mode must be able to boot without a provider key in the
+	// runtime environment. The verified binding is the only credential path;
+	// a missing local key must not turn into a boot-time secret requirement.
+	a, err := newAccount(llm.ConfigSnapshot{Provider: string(bfschemas.OpenAI)}, llm.Deps{
+		ExternalGrant: llm.ExternalGrantConfig{Mode: llm.ExternalGrantRequired},
+	})
+	if err != nil {
+		t.Fatalf("newAccount strict grant: %v", err)
+	}
+	if got := a.primaryKey.Get(); got != "" {
+		t.Fatalf("strict grant boot key = %q, want empty", got)
 	}
 }
 

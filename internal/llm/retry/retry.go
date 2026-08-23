@@ -73,6 +73,11 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if req.Validator == nil {
 		return c.inner.Complete(ctx, req)
 	}
+	var err error
+	ctx, scope, err := llm.EnsureAttemptScope(ctx)
+	if err != nil {
+		return llm.CompleteResponse{}, err
+	}
 
 	// Default the model from the snapshot when the caller left it empty
 	// (the react planner does — see safety.go). This wrapper is the
@@ -98,7 +103,8 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			return llm.CompleteResponse{}, err
 		}
 
-		resp, err := c.inner.Complete(ctx, current)
+		attemptCtx := llm.WithAttemptCoordinates(ctx, attempt+1, attempt, 0, scope.FallbackHop)
+		resp, err := c.inner.Complete(attemptCtx, current)
 		if err != nil {
 			return resp, err
 		}
@@ -127,10 +133,10 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		// This attempt is CONSUMED: its rejected response is folded into a
 		// corrective turn and never propagates to the caller. Report its
 		// cost into the tap so it reaches cost accounting exactly once.
-		llm.ReportAttemptCost(ctx, resp.Cost)
+		llm.ReportAttemptCost(attemptCtx, resp.Cost)
 
 		nextAttempt := attempt + 1
-		emitRetryWithFeedback(ctx, c.deps.Bus, id, req.Model, nextAttempt, maxRetries, valErr)
+		emitRetryWithFeedback(attemptCtx, c.deps.Bus, id, req.Model, nextAttempt, maxRetries, valErr)
 
 		current = appendCorrectiveTurn(req, resp, valErr)
 	}

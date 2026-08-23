@@ -6,10 +6,14 @@ package assemble_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,12 +27,29 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/grant"
+	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
+
+type recordingGrantDelivery struct {
+	ch chan llm.AttemptUsageReceipt
+}
+
+func (d *recordingGrantDelivery) Deliver(_ context.Context, receipt llm.AttemptUsageReceipt) error {
+	select {
+	case d.ch <- receipt:
+	default:
+	}
+	return nil
+}
+
+var _ llmreceipts.Delivery = (*recordingGrantDelivery)(nil)
 
 // minimalCfg is the examples-shaped minimal config the golden boot
 // uses (mirrors harbortest/devstack's fixture; mock LLM driver).
@@ -154,6 +175,150 @@ func TestAssemble_GoldenBoot_BuildsEveryLayer(t *testing.T) {
 	}
 	settleGoroutines(t, baseline)
 }
+
+func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing.T) {
+	cfg := minimalCfg(t)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := grant.NewSigner("key-1", "harbor-runtime", private, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"model-fast": {ContextWindowTokens: 4096, TokenEstimator: "chars_div_4"},
+	}
+	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+		Mode:                    "required",
+		Audience:                "harbor-runtime",
+		RuntimeID:               "runtime-1",
+		AuthorizedOrganizations: []string{"org-a", "org-b"},
+		PublicKeys: map[string]string{
+			"key-1": base64.RawURLEncoding.EncodeToString(signer.PublicKey()),
+		},
+	}
+	binding := grant.NewBindingStore()
+	if err := binding.Put(grant.Binding{
+		Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "mock",
+		ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "not-used-by-mock",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := binding.Put(grant.Binding{
+		Handle: "binding-b", OrganizationID: "org-b", RuntimeID: "runtime-1", Provider: "mock",
+		ProviderConnectionID: "connection-b", ProviderConnectionGeneration: 1, Generation: 1, Secret: "not-used-by-mock-b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 2)}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+		ExternalGrant:         llm.ExternalGrantConfig{Credentials: binding},
+		ExternalGrantDelivery: delivery,
+	})
+	if err != nil {
+		t.Fatalf("Assemble external grant: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	id := identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	signed, err := signer.Sign(llm.ExternalGrant{
+		Version: 1, GrantID: "grant-a", OrganizationID: "org-a", RuntimeID: "runtime-1",
+		TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", LogicalRunID: "run-a",
+		Provider: "mock", ProviderModelID: "model-fast", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1,
+		RouteID: "route-a", CredentialBindingHandle: "binding-a", CredentialAssetGeneration: 1, PolicyGeneration: 1,
+		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 512,
+		Lease:    llm.ComputeLease{LeaseID: "lease-a", TokenUnits: 512, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantB := signed
+	grantB.GrantID = "grant-b"
+	grantB.OrganizationID = "org-b"
+	grantB.ProviderConnectionID = "connection-b"
+	grantB.CredentialBindingHandle = "binding-b"
+	grantB.Lease.LeaseID = "lease-b"
+	grantB.LogicalCallID = ""
+	grantB.AttemptNonce = ""
+	signed, err = signer.Sign(grantB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err = identity.WithRun(ctxB, id, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantA := grantB
+	grantA.GrantID = "grant-a"
+	grantA.OrganizationID = "org-a"
+	grantA.ProviderConnectionID = "connection-a"
+	grantA.CredentialBindingHandle = "binding-a"
+	grantA.Lease.LeaseID = "lease-a"
+	grantA.LogicalCallID = ""
+	grantA.AttemptNonce = ""
+	grantA, err = signer.Sign(grantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxA := ctx
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, call := range []struct {
+		ctx   context.Context
+		grant llm.ExternalGrant
+	}{
+		{ctx: ctxA, grant: grantA},
+		{ctx: ctxB, grant: signed},
+	} {
+		wg.Add(1)
+		go func(call struct {
+			ctx   context.Context
+			grant llm.ExternalGrant
+		}) {
+			defer wg.Done()
+			_, completeErr := stack.LLM.Complete(call.ctx, llm.CompleteRequest{
+				Model: "model-fast", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: stringPtr("hello")}}}, ExternalGrant: &call.grant,
+			})
+			errs <- completeErr
+		}(call)
+	}
+	wg.Wait()
+	close(errs)
+	for completeErr := range errs {
+		if completeErr != nil {
+			t.Fatalf("real assembled multi-organization LLM call: %v", completeErr)
+		}
+	}
+	seenOrganizations := map[string]bool{}
+	for range 2 {
+		select {
+		case receipt := <-delivery.ch:
+			seenOrganizations[receipt.OrganizationID] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("assembled outbox did not deliver both content-free receipts")
+		}
+	}
+	if len(seenOrganizations) != 2 || !seenOrganizations["org-a"] || !seenOrganizations["org-b"] {
+		t.Fatalf("multi-organization receipts = %+v, want org-a and org-b", seenOrganizations)
+	}
+}
+
+func stringPtr(value string) *string { return &value }
 
 // TestAssemble_TokenBudget_BuildsCompressionRunner — Phase 111e
 // (D-202): a non-zero `planner.token_budget` makes the assembly

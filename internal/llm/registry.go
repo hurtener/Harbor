@@ -42,6 +42,10 @@ type Deps struct {
 	// (`cmd/harbor`) creates ONE holder, passes it here, and hands the
 	// SAME holder to the rotate service.
 	LiveKey *LiveKey
+	// ExternalGrant wires the opt-in signed grant, opaque credential binding,
+	// bounded lease, and content-free receipt seams. A zero value preserves
+	// legacy deployments that do not require coordinator grants.
+	ExternalGrant ExternalGrantConfig
 }
 
 // ConfigSnapshot is the strict subset of `config.LLMConfig` the LLM
@@ -256,6 +260,12 @@ var (
 	retryWrapperMu sync.RWMutex
 	retryWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
 
+	// externalGrantWrapperMu guards externalGrantWrapper. The grant
+	// package self-registers via init(); this layer is deliberately placed
+	// inside retry and downgrade so every provider attempt is verified.
+	externalGrantWrapperMu sync.RWMutex
+	externalGrantWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
+
 	// governanceWrapperMu guards governanceWrapper. the
 	// governance package self-registers via init(). The
 	// governance wrapper composes OUTSIDE the rest of the chain —
@@ -365,6 +375,29 @@ func resetRetryWrapperForTesting() {
 	retryWrapperMu.Lock()
 	defer retryWrapperMu.Unlock()
 	retryWrapper = nil
+}
+
+// RegisterExternalGrantWrapper installs the signed external-execution grant
+// wrapper. It is called once from internal/llm/grant.init(); production
+// binaries seat it by blank-importing that package. Re-registering panics so
+// a build cannot accidentally compose two authority layers.
+func RegisterExternalGrantWrapper(fn func(LLMClient, ConfigSnapshot, Deps) LLMClient) {
+	if fn == nil {
+		panic("llm: RegisterExternalGrantWrapper called with nil hook")
+	}
+	externalGrantWrapperMu.Lock()
+	defer externalGrantWrapperMu.Unlock()
+	if externalGrantWrapper != nil {
+		panic("llm: external grant wrapper already registered")
+	}
+	externalGrantWrapper = fn
+}
+
+//nolint:unused // referenced by package-internal registry tests.
+func resetExternalGrantWrapperForTesting() {
+	externalGrantWrapperMu.Lock()
+	defer externalGrantWrapperMu.Unlock()
+	externalGrantWrapper = nil
 }
 
 // RegisterGovernanceWrapper installs the governance
@@ -514,6 +547,21 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		} else {
 			warnUnseatedWrapper("corrections", "github.com/hurtener/Harbor/internal/llm/corrections")
 		}
+	}
+
+	// External grants compose inside downgrade and retry. A retry or
+	// structured-output downgrade must not be able to reach a provider with
+	// a missing, stale, or mismatched grant. Legacy calls remain untouched
+	// when the mode is disabled or empty; enabled modes fail closed if the
+	// production hook was not seated.
+	if deps.ExternalGrant.Mode != "" && deps.ExternalGrant.Mode != ExternalGrantDisabled {
+		externalGrantWrapperMu.RLock()
+		wrap := externalGrantWrapper
+		externalGrantWrapperMu.RUnlock()
+		if wrap == nil {
+			return nil, fmt.Errorf("%w: external grant wrapper is not registered", ErrExternalGrantInvalid)
+		}
+		client = wrap(client, cfg, deps)
 	}
 
 	// downgrade composes OUTSIDE corrections. A downgrade

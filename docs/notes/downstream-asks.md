@@ -1499,8 +1499,116 @@ The native darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build
 complete. Local `make preflight` was never run and no downstream fleet repair
 or cutover is claimed.
 
+---
+
+## HA-71 — provider-neutral descriptors, runtime validation, and model discovery
+
+**Priority:** High. **Size:** medium. **State:** Harbor Phase 255 / D-435
+candidate implemented locally; no release or downstream acceptance claimed.
+
+**Observed gap.** Bifrost already owns provider setup and model-listing
+mechanics, but a control-plane consumer cannot safely ask Harbor what a
+provider connection technically supports. Re-deriving credential fields,
+custom endpoint support, model capabilities, or discovery behavior outside
+the runtime would drift from the execution source of truth and risks exposing
+provider errors or secrets.
+
+**Required shape.** Harbor exposes a provider-neutral typed descriptor with
+credential modes and logical field kinds, custom-endpoint support,
+runtime-origin validation capability, discovery capability, and explicit
+supported/unsupported/manual/unavailable/partial/stale/unknown/unpriced
+states. Model discovery normalizes only reported context/input/output limits,
+modalities, tools, canonical reasoning signals, deprecation, and pricing
+provenance. Missing facts remain unknown or unpriced. Configured custom model
+lists remain manual; when a custom endpoint cannot provide discovery, Harbor
+returns that manual list as an explicit fallback rather than calling it
+discovered.
+
+**Boundary and guardrails.** Presentation metadata (friendly names, logos,
+copy, and consumer aliases) remains outside Harbor. The adapter reuses the
+real Bifrost account path and `ListModelsRequest`; it is bounded and
+cancellable, rejects malformed/duplicate rows, and maps errors to stable
+redacted codes. No provider response body, `ProviderExtra`, endpoint value,
+environment variable name, credential, prompt, or identity value enters the
+descriptor/result. The offline consumer is read-only `harbor llm providers`
+and reports `runtime_origin=false`. The booted runtime also exposes the
+contract through the existing protected `llm.posture` envelope with
+`provider_operation=validate|discover` for admin-tier callers; it uses the
+shared runtime credential path and is the only path that reports
+`runtime_origin=true`. No new Protocol version or method is added.
+
+**Evidence required before release.** Focused race/vet/CLI/smoke gates,
+independent adversarial review, hosted CI, and an operator-approved
+runtime-origin validation/discovery probe with sanitized output. This ask does
+not claim provider account readiness, fleet rollout, or downstream database
+mutation.
+
 ## Posture signals from the downstream team
 
 Recorded so a future phase does not "helpfully" relax something the consumer explicitly wants kept:
 
 - **Do NOT relax `connect-src 'none'`, and do NOT honour server-declared `connectDomains`.** The deny-by-default CSP posture on the MCP-Apps sandbox — the D-173 sanctioned deviation, under which all App traffic stays bridge-proxied through the injected client — should be **preserved**. The consuming team asked for this explicitly. Any HA-38/39/40/41 work stays inside the bridge and the injected Protocol client; a direct-network escape hatch is not wanted, is not needed by any of these asks, and the `app-bridge-host` no-direct-transport spy test that guards it should keep passing untouched.
+
+---
+
+## HA-70 — context-bound external execution grants and durable usage receipts
+
+**Priority:** High. **Size:** large. **State:** Implementation candidate —
+Phase 254 / D-434. This is a generic runtime execution-edge request; it does
+not prescribe a coordinator product or provider-specific policy vocabulary.
+
+**Observed gap.** Harbor's LLM edge has local governance, retry/failover,
+provider-neutral reasoning controls, and token/cost telemetry, but a remote
+coordinator cannot currently authorize one provider attempt with a signed,
+context-bound policy decision while keeping credential custody outside the
+runtime. Local `LiveKey` rotation is not a substitute for a per-attempt
+runtime/identity/run/route binding, and post-call telemetry alone cannot make
+cross-runtime consumption auditable or replay-safe.
+
+**Requested shape.** Add one opt-in external-execution layer around the existing
+one-method `LLMClient`. A coordinator-signed, content-free grant must carry a
+version, signing key id, audience, expiry, policy generation, runtime and
+verified identity/run binding, provider connection and immutable connection
+generation, provider model/route, opaque
+credential-binding handle, immutable credential-asset generation, reasoning
+ceiling, output ceiling, and bounded compute lease. The runtime verifies the
+signature and every claim against the request-edge verified context before
+the Bifrost driver is reached. The caller cannot select authority, a provider
+key, or a secret. Legacy calls remain byte-compatible when the mode is disabled;
+optional mode supports a mixed fleet; strict mode refuses a missing or invalid
+grant.
+
+Credential resolution is a separate verified-context-only operation. The
+provider account resolves the opaque handle only after grant verification and
+rechecks exact runtime, organization, identity, run, provider, connection, and
+asset generation. Rotation/revocation advances the generation and fences old
+grants. A strict grant runtime must not need a boot API key. Harbor never logs,
+serializes, or places credential bytes in grants, requests, receipts, errors,
+or audit payloads.
+
+The layer must sit inside retry, structured-output downgrade, and Harbor's
+orchestrated failover so every provider attempt is checked and metered. A
+bounded lease is checked before each call and may be replaced only by a newly
+authorized coordinator top-up; the runtime never extends authority locally.
+Existing local governance remains an emergency ceiling for both legacy and
+granted calls.
+
+Each attempted provider call emits an immutable content-free receipt with
+stable grant/attempt/idempotency identifiers, route/model/provider dimensions,
+policy and asset generations, token/cost/latency usage, outcome, and a
+canonical body hash. A StateStore-backed outbox durably queues receipts,
+conditionally ACKs them, deduplicates response-loss replay by receipt id and
+body hash, retries with bounded backoff, and opens a circuit breaker during a
+coordinator outage. Receipts contain no prompt, response, tool arguments,
+reasoning trace, or secrets. The delivery contract must acknowledge duplicate
+receipt submissions without double counting.
+
+**Required evidence.** Focused tests must prove two organizations on one
+runtime resolve distinct bindings without bleed; generation rotation and
+revocation fence stale grants; retry/downgrade/failover/cancellation paths
+emit distinct content-free attempt receipts; response loss and crash/replay
+are idempotent; strict mode fails closed; N≥100 concurrent calls are race
+clean; and the StateStore outbox works with in-memory and SQLite drivers with
+the existing PostgreSQL acceptance seam retained. Hosted CI must exercise the
+real provider-account grant path when credentials are available. This ask does
+not claim a release, tag, coordinator integration, or downstream deployment.

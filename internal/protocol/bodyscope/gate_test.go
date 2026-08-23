@@ -47,6 +47,7 @@ var elevationSiteAllowList = map[string]string{
 	filepath.Join("internal", "protocol", "control.go"):                          "a cross-tenant topology snapshot runs under the named tenant; the surface verified the admin claim and wrote the audit record before this call",
 	filepath.Join("internal", "protocol", "posture.go"):                          "a cross-tenant posture read runs under the named tenant; the surface verified the admin-tier claim before this call and writes the audit record on the way out",
 	filepath.Join("internal", "tasks", "agent_reach_admission.go"):               "a persisted Agent-reach receipt re-seats the verified task identity only after envelope, digest, identity, and task-binding checks pass; it cannot widen the signed authority",
+	filepath.Join("internal", "llm", "receipts", "outbox.go"):                    "receipt reconciliation re-seats the content-free receipt identity only after the stored receipt has passed its canonical identity and body-hash checks; it cannot widen the verified call scope",
 
 	// Per-ROW re-scopes behind an already-authorized fan-in. Each reads a
 	// row under that row's own identity; the listing or search that

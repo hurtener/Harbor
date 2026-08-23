@@ -49,6 +49,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
@@ -58,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -110,6 +112,19 @@ type Options struct {
 	// ). `harbor dev` uses this for the mock-LLM
 	// escape hatch; tests flip the driver without rewriting yaml.
 	LLMSnapshot *llm.ConfigSnapshot
+
+	// ExternalGrant supplies host-owned runtime grant dependencies. The
+	// non-secret posture (mode, audience, runtime and optional organization
+	// allowlist,
+	// public keys) is read from cfg.LLM.ExternalGrant; these seams carry only
+	// the verified credential resolver, optional top-up implementation, and
+	// coordinator receipt delivery. A required configured mode fails boot
+	// when its credential or receipt boundary is absent.
+	ExternalGrant          llm.ExternalGrantConfig
+	ExternalGrantDelivery  llmreceipts.Delivery
+	ExternalGrantPending   llmreceipts.PendingReceiptSource
+	ExternalGrantMaxBatch  int
+	ExternalGrantReconcile time.Duration
 
 	// PlannerOverride, when non-nil, replaces the registry-resolved
 	// planner concrete. Tests inject stub / scripted / pausing
@@ -588,15 +603,35 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			llmCfg = *opts.LLMSnapshot
 		}
 		stack.LLMSnapshot = llmCfg
+		externalGrant, externalGrantClose, externalGrantErr := wireExternalGrant(
+			ctx,
+			cfg.LLM.ExternalGrant,
+			opts.ExternalGrant,
+			stack.State,
+			opts.ExternalGrantDelivery,
+			opts.ExternalGrantPending,
+			opts.ExternalGrantMaxBatch,
+			opts.ExternalGrantReconcile,
+		)
+		if externalGrantErr != nil {
+			return stack, externalGrantErr
+		}
+		if externalGrant.Mode != "" && externalGrant.Mode != llm.ExternalGrantDisabled {
+			stack.closers = append(stack.closers, func(context.Context) error {
+				externalGrantClose()
+				return nil
+			})
+		}
 		// The shared, atomically-swappable primary-key holder for
 		// Console-driven key rotation. Created here so the SAME holder is
 		// both injected into the driver (the per-call read path) and
 		// exposed on the Stack as a KeyRotator (the admin write path).
 		liveKey := llm.NewLiveKey()
 		llmClient, llmErr := llm.Open(ctx, llmCfg, llm.Deps{
-			Artifacts: artStore,
-			Bus:       bus,
-			LiveKey:   liveKey,
+			Artifacts:     artStore,
+			Bus:           bus,
+			LiveKey:       liveKey,
+			ExternalGrant: externalGrant,
 		})
 		if llmErr != nil {
 			return stack, fmt.Errorf("llm: %w", llmErr)

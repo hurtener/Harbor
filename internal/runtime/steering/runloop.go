@@ -10,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -978,7 +979,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 
 		// --- NEXT: the planner contributes exactly this. ---
-		decision, nerr := spec.Planner.Next(runCtx, rc)
+		// The run loop is the trusted owner of planner-step identity. The
+		// grant wrapper derives a distinct signed-grant child call id from
+		// this coordinate, while retries of this same step retain it.
+		plannerCtx := llm.WithAttemptStep(runCtx, step)
+		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		if nerr != nil {
 			// A native-path projector structural rejection — the planner
 			// consumed the LLM response but could not project it into an

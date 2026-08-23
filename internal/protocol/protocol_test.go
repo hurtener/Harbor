@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"testing"
 	"time"
@@ -209,6 +210,42 @@ func TestDispatch_Start_RoutesToTaskRegistry(t *testing.T) {
 	}
 	if got.Kind != tasks.KindForeground {
 		t.Errorf("spawned task Kind = %q, want %q", got.Kind, tasks.KindForeground)
+	}
+}
+
+func TestDispatch_Start_CarriesOpaqueExternalGrantToRealTask(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	carrier := json.RawMessage(`{"version":1,"grant_id":"grant-a","organization_id":"org-a"}`)
+	resp, err := fx.surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+		Identity:      types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"},
+		Query:         "grant carrier",
+		ExternalGrant: carrier,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(start with external grant): %v", err)
+	}
+	start := resp.(*types.StartResponse)
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{TenantID: "tenant-a", UserID: "user-1", SessionID: "session-x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := fx.tasks.Get(ctx, tasks.TaskID(start.TaskID))
+	if err != nil {
+		t.Fatalf("tasks.Get: %v", err)
+	}
+	if string(got.ExternalGrant) != string(carrier) {
+		t.Fatalf("task external grant = %s, want %s", got.ExternalGrant, carrier)
+	}
+}
+
+func TestDispatch_Start_RejectsMalformedExternalGrantBeforeSpawn(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	_, err := fx.surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+		Identity:      types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"},
+		ExternalGrant: json.RawMessage(`[]`),
+	})
+	if got := codeOf(t, err); got != protoerrors.CodeInvalidRequest {
+		t.Fatalf("malformed external grant code = %q, want %q", got, protoerrors.CodeInvalidRequest)
 	}
 }
 

@@ -52,6 +52,9 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	llmbifrost "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
+	llmprovider "github.com/hurtener/Harbor/internal/llm/provider"
+	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/observability/rollups"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -243,9 +246,18 @@ type Options struct {
 
 	// Caller-side injection seams (all optional).
 	BuildLLMSnapshot LLMSnapshotBuilder
-	BuildAuthSurface AuthSurfaceBuilder
-	ExtraRoutes      ExtraRoutesFunc
-	PostBoot         PostBootFunc
+	// ExternalGrant carries host-owned grant dependencies into the real
+	// runtime assembly. The non-secret verifier posture is read from
+	// cfg.LLM.ExternalGrant; credentials and receipt delivery are never read
+	// from a Protocol request or caller-provided config field.
+	ExternalGrant          llm.ExternalGrantConfig
+	ExternalGrantDelivery  llmreceipts.Delivery
+	ExternalGrantPending   llmreceipts.PendingReceiptSource
+	ExternalGrantMaxBatch  int
+	ExternalGrantReconcile time.Duration
+	BuildAuthSurface       AuthSurfaceBuilder
+	ExtraRoutes            ExtraRoutesFunc
+	PostBoot               PostBootFunc
 }
 
 // Handle is the running serve band a successful Boot returns. Serve binds the
@@ -369,11 +381,16 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	stack, err := assemble.Assemble(ctx, cfg, assemble.Options{
-		Logger:             opts.Logger,
-		LLMSnapshot:        &llmCfg,
-		MCPDefaultIdentity: opts.MCPDefaultIdentity,
-		ApprovalAuthorizer: server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
-		RegisterCatalog:    opts.RegisterCatalog,
+		Logger:                 opts.Logger,
+		LLMSnapshot:            &llmCfg,
+		ExternalGrant:          opts.ExternalGrant,
+		ExternalGrantDelivery:  opts.ExternalGrantDelivery,
+		ExternalGrantPending:   opts.ExternalGrantPending,
+		ExternalGrantMaxBatch:  opts.ExternalGrantMaxBatch,
+		ExternalGrantReconcile: opts.ExternalGrantReconcile,
+		MCPDefaultIdentity:     opts.MCPDefaultIdentity,
+		ApprovalAuthorizer:     server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
+		RegisterCatalog:        opts.RegisterCatalog,
 	})
 	closers := make([]func(context.Context) error, 0, 8)
 	if stack != nil {
@@ -390,6 +407,21 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if err != nil {
 		closeAll(ctx)
 		return nil, err
+	}
+	// Provider catalog operations execute from the booted runtime, using the
+	// same resolved LLM configuration as ordinary execution. This separate
+	// bounded Bifrost client never receives a caller key or raw provider body.
+	var providerCatalog llmprovider.CatalogSurface
+	if stack != nil && stack.LLM != nil && llmCfg.Driver == "bifrost" && llmCfg.Provider != "" {
+		catalog, catalogErr := llmbifrost.NewProviderCatalogWithDeps(llmCfg, llm.Deps{
+			LiveKey: stack.LLMLiveKey,
+		})
+		if catalogErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("llm provider catalog: %w", catalogErr)
+		}
+		providerCatalog = catalog
+		closers = append(closers, catalog.Close)
 	}
 
 	var (
@@ -986,6 +1018,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Logger:                         opts.Logger,
 		Metrics:                        metricsReg,
 		LLMSnapshot:                    llmCfg,
+		ProviderCatalog:                providerCatalog,
 		Tasks:                          taskReg,
 		Sessions:                       sessionRegistry,
 		Agents:                         agentRegistry,

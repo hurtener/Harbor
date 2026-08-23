@@ -45,3 +45,104 @@ type LLMPostureResponse struct {
 	// with — same field every Protocol response carries.
 	ProtocolVersion string `json:"protocol_version"`
 }
+
+// LLMProviderOperationResponse is the bounded, content-free result of a
+// runtime-origin provider catalog operation. Provider credentials, endpoint
+// values, and raw provider response bodies never cross this wire boundary.
+type LLMProviderOperationResponse struct {
+	Operation     string                  `json:"operation"`
+	RuntimeOrigin bool                    `json:"runtime_origin"`
+	ProviderID    string                  `json:"provider_id,omitempty"`
+	Descriptors   []LLMProviderDescriptor `json:"descriptors,omitempty"`
+	Validation    *LLMProviderValidation  `json:"validation,omitempty"`
+	Discovery     *LLMProviderDiscovery   `json:"discovery,omitempty"`
+}
+
+type LLMProviderDescriptor struct {
+	ID               string                       `json:"id"`
+	Kind             string                       `json:"kind"`
+	CredentialModes  []string                     `json:"credential_modes"`
+	CredentialFields []LLMProviderCredentialField `json:"credential_fields"`
+	CustomEndpoint   string                       `json:"custom_endpoint"`
+	Validation       LLMProviderOperation         `json:"validation"`
+	Discovery        LLMProviderOperation         `json:"discovery"`
+}
+
+// LLMProviderCredentialField describes a non-secret input shape. Secret
+// values and endpoint values never cross this wire type.
+type LLMProviderCredentialField struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Required bool   `json:"required"`
+	Secret   bool   `json:"secret"`
+}
+
+type LLMProviderOperation struct {
+	State         string `json:"state"`
+	RuntimeOrigin bool   `json:"runtime_origin"`
+	Bounded       bool   `json:"bounded"`
+}
+
+type LLMProviderValidation struct {
+	ProviderID string             `json:"provider_id"`
+	Outcome    LLMProviderOutcome `json:"outcome"`
+}
+
+type LLMProviderDiscovery struct {
+	ProviderID string             `json:"provider_id"`
+	Outcome    LLMProviderOutcome `json:"outcome"`
+	Models     []LLMProviderModel `json:"models,omitempty"`
+	Pages      int                `json:"pages"`
+	ModelCount int                `json:"model_count"`
+}
+
+type LLMProviderOutcome struct {
+	State         string `json:"state"`
+	Code          string `json:"code"`
+	Message       string `json:"message"`
+	ObservedAt    string `json:"observed_at,omitempty"`
+	RuntimeOrigin bool   `json:"runtime_origin"`
+	Partial       bool   `json:"partial"`
+	Stale         bool   `json:"stale"`
+}
+
+type LLMProviderModel struct {
+	ID           string                       `json:"id"`
+	Source       string                       `json:"source"`
+	Deprecated   bool                         `json:"deprecated"`
+	Capabilities LLMProviderModelCapabilities `json:"capabilities"`
+}
+
+// The capability shapes mirror the provider-neutral runtime descriptor while
+// remaining content-free and bounded for Protocol consumers.
+type LLMProviderModelCapabilities struct {
+	Context          LLMProviderNumericCapability   `json:"context"`
+	MaxInputTokens   LLMProviderNumericCapability   `json:"max_input_tokens"`
+	MaxOutputTokens  LLMProviderNumericCapability   `json:"max_output_tokens"`
+	InputModalities  LLMProviderSetCapability       `json:"input_modalities"`
+	OutputModalities LLMProviderSetCapability       `json:"output_modalities"`
+	Tools            string                         `json:"tools"`
+	Vision           string                         `json:"vision"`
+	Reasoning        LLMProviderReasoningCapability `json:"reasoning"`
+	Pricing          LLMProviderPricingCapability   `json:"pricing"`
+}
+
+type LLMProviderNumericCapability struct {
+	State string `json:"state"`
+	Value int    `json:"value,omitempty"`
+}
+
+type LLMProviderSetCapability struct {
+	State  string   `json:"state"`
+	Values []string `json:"values,omitempty"`
+}
+
+type LLMProviderReasoningCapability struct {
+	State  string   `json:"state"`
+	Levels []string `json:"levels,omitempty"`
+}
+
+type LLMProviderPricingCapability struct {
+	State  string `json:"state"`
+	Source string `json:"source,omitempty"`
+}

@@ -13935,3 +13935,122 @@ native darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build
 `Origin.Ref=refs/tags/v1.29.3`. Post-tag scaffold pin/golden cleanup is
 complete. Local `make preflight` was never run and no downstream fleet repair
 or cutover is claimed.
+
+---
+
+## D-434 — Context-bound external execution grants and durable attempt receipts (HA-70)
+
+**Date:** 2026-08-23
+
+**Status:** Implementation candidate; Phase 254. No release or tag is claimed.
+
+Harbor adds a generic, opt-in execution-edge contract for a coordinator-signed
+external grant. The grant is versioned and signed, carries a key id and
+audience, expires, and binds the verified runtime, `(tenant,user,session)`
+identity, logical run, provider connection and immutable connection generation,
+provider route/model, policy generation, opaque credential-binding handle,
+immutable credential-asset generation, reasoning/output ceilings, and bounded
+compute lease. It carries no key or secret. The reference Ed25519 signer/verifier
+checks every claim against request-edge verified identity and organization
+context before the Bifrost provider call. Disabled mode preserves the existing
+local-key path; optional mode permits mixed fleets; required mode fails closed
+when a grant or required receipt path is absent.
+
+Credential resolution is a distinct verified-context-only seam. Bifrost's
+account resolves only the verified opaque handle and exact asset generation,
+runtime, organization, provider, connection, identity, and run; rotation and
+revocation fence stale generations. Strict grant mode does not require a boot
+provider secret and never falls back to a process-global `LiveKey` for a
+granted call. Harbor's existing local governance remains the emergency ceiling.
+
+The grant wrapper is composed inside retry, structured-output downgrade, and
+Harbor-orchestrated failover. Every provider attempt therefore re-verifies the
+grant, checks the bounded lease, and emits a content-free usage receipt with
+stable attempt coordinates, route/provider/model dimensions, policy and asset
+generations, token/cost/latency usage, outcome, idempotency key, and canonical
+body hash. A StateStore-backed outbox conditionally persists receipts, ACKs
+them, replays response-loss duplicates safely, applies bounded exponential
+backoff, and opens a circuit breaker. Delivery is required to deduplicate by
+receipt id and canonical body hash. No prompt, response, tool arguments,
+reasoning trace, credential bytes, or secret appears in a grant, receipt,
+error, or log.
+
+**Compatibility and limits.** The grant layer is internal to `LLMClient`; it
+does not add a provider-specific interface or a Protocol version. A coordinator
+may issue a top-up grant when a bounded lease is insufficient, but Harbor does
+not mint authority or widen a lease locally. The receipt records provider
+reported/available token and cost data; it is not an invoice. Cross-runtime
+global quota policy, credential custody, and coordinator delivery remain
+outside Harbor. The StateStore outbox uses the existing in-memory, SQLite, and
+PostgreSQL seam; no new receipt database or content mirror is introduced.
+
+**Cross-references.** RFC §6.5, §6.11, §6.15, D-018, D-019, D-025, D-333,
+D-334, D-335, brief 03, brief 08. Plan:
+`docs/plans/phase-254-external-execution-grants.md`.
+
+---
+
+## D-435 — Phase 255: provider-neutral descriptors are technical facts, and runtime-origin model discovery is bounded (HA-71)
+
+**Date:** 2026-08-23
+
+**Status:** Accepted as an unreleased candidate; hosted release evidence and
+downstream acceptance remain open.
+
+Harbor now owns the smallest typed technical contract needed by a provider
+control-plane consumer without becoming that consumer's presentation or
+policy layer. `ProviderDescriptor` reports an opaque provider id/kind,
+credential modes, secret/url/text field kinds, custom-endpoint support, and
+whether validation and model discovery are available through Harbor/Bifrost.
+The descriptor carries no logo, friendly label, help copy, endpoint value,
+environment variable name, credential, or provider response body. Native
+provider endpoint handling remains `manual` where Bifrost's provider-specific
+semantics are not portable; declared OpenAI-compatible custom providers are
+the supported custom-endpoint fact. For those endpoints, Bifrost model
+discovery is attempted when the operation is available; the configured model
+ids remain a manual fallback when discovery is unavailable or empty.
+
+The catalog has three operations. `Descriptors` is a stable local snapshot.
+`Validate` makes one bounded runtime-origin model request. `Discover` uses the
+same Bifrost `Account` construction as LLM execution, honors cancellation,
+pages at most 20 times with a maximum page size of 1,000, and normalizes only
+provider-neutral metadata. The read-only `harbor llm providers` CLI remains an
+offline/configured-account consumer and explicitly reports `runtime_origin:
+false`; it never assembles or boots the Runtime/EventBus. The booted runtime
+also projects the catalog through the existing protected `llm.posture`
+request envelope (`provider_operation=validate|discover`) for admin-tier
+callers. This adds no Protocol method or version: it is an additive operation
+on the already-shipped posture surface, and only that path reports
+`runtime_origin: true`.
+
+The result vocabulary is deliberately explicit. `supported`, `unsupported`,
+`unavailable`, `manual`, `partial`, `stale`, `unknown`, `unpriced`, and
+`malformed` are distinct states. Missing context, modality, tool, or
+reasoning metadata remains unknown rather than being guessed or called
+unsupported. Operator-configured custom model ids are manual rather than
+discovered, including the explicit fallback path after an unavailable or empty
+custom endpoint. Key/page failures produce partial results; cached stale facts are
+marked stale; absent provider pricing is unpriced. Duplicate ids, empty ids,
+non-positive reported limits, and malformed pages fail closed. Bifrost error
+classification uses status/type only and maps to fixed messages; raw provider
+messages, response bodies, opaque `ProviderExtra`, secrets, and identity
+values never cross the adapter.
+
+The normalized model facts are context/input/output limits, input/output
+modalities, tool support when a canonical tool parameter is reported,
+canonical `off|low|medium|high` reasoning levels only when a canonical
+reasoning parameter is reported, deprecation, and pricing provenance
+(`provider_reported` or `unpriced`). No provider rate table or invoice claim
+is introduced. Catalog objects are immutable after construction and the
+focused suite proves 100 concurrent discovery calls are race-safe.
+
+**Cross-references.** D-025 (concurrent reuse), D-018/D-335 (Harbor-owned
+failover boundary), D-333/D-334 (brokered credential custody), RFC §3,
+§6.5, §6.15, §8, briefs 03, 06, and 08. Plan:
+`docs/plans/phase-255-provider-descriptors.md`.
+
+**Evidence boundary.** Focused local race tests, Protocol/CLI tests, vet, and
+static Phase-255 smoke are the candidate evidence. A configured
+runtime-origin probe requires operator-approved credentials and is not run by
+the static smoke. No downstream database, fleet, deployment, tag, or release
+was mutated or claimed.

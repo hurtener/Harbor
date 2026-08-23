@@ -71,12 +71,16 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 
 	id := identityFromCtx(ctx)
 	mode := profile.OutputMode
+	baseCtx, scope, scopeErr := llm.EnsureAttemptScope(ctx)
+	if scopeErr != nil {
+		return llm.CompleteResponse{}, scopeErr
+	}
 
 	var lastErr error
 	attempts := make([]attemptRecord, 0, maxDowngradeAttempts)
 
-	for range maxDowngradeAttempts {
-		if err := ctx.Err(); err != nil {
+	for downgradeAttempt := range maxDowngradeAttempts {
+		if err := baseCtx.Err(); err != nil {
 			return llm.CompleteResponse{}, err
 		}
 
@@ -85,7 +89,8 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 			return llm.CompleteResponse{}, fmt.Errorf("output: shape request for mode %q: %w", mode, err)
 		}
 
-		resp, err := d.inner.Complete(ctx, shaped)
+		attemptCtx := llm.WithAttemptCoordinates(baseCtx, downgradeAttempt+1, scope.Retry, downgradeAttempt, scope.FallbackHop)
+		resp, err := d.inner.Complete(attemptCtx, shaped)
 		if err == nil {
 			return resp, nil
 		}
@@ -98,7 +103,7 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 		// once (the propagate-or-report invariant). Most drivers price a
 		// failed generation at zero, so this is invariant-completeness — it
 		// also correctly accounts any driver that DOES price failed calls.
-		llm.ReportAttemptCost(ctx, resp.Cost)
+		llm.ReportAttemptCost(attemptCtx, resp.Cost)
 
 		attempts = append(attempts, attemptRecord{Mode: mode, Err: err})
 		lastErr = err
@@ -114,7 +119,7 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 		if !hasNext {
 			break
 		}
-		emitModeDowngraded(ctx, d.deps.Bus, id, req.Model, mode, nextMode, err)
+		emitModeDowngraded(attemptCtx, d.deps.Bus, id, req.Model, mode, nextMode, err)
 		mode = nextMode
 	}
 

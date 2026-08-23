@@ -449,6 +449,10 @@ directly regardless of propagation mode. See **Cancel hierarchy**. Phase
 
 **Expected-revision token** — the optional `expected_content_hash` an agent-config write may declare, requiring the agent's ACTIVE revision to still carry exactly that content hash at write time. Absent (the default) is the unconditional last-writer-wins write. It is a CONTENT hash rather than a revision id because `agent_config.rollback` repoints the active pointer without necessarily changing the content, so a revision-id token would raise a false conflict on Harbor's own recovery path; it is also the comparand the shipped idempotent re-set already uses, so the two share one notion of "unchanged" instead of growing a second. A PRECONDITION and never an AUTHORITY — compared strictly after the identity and scope gates, it can only ever cause a write to be refused. A conflicted client recovers by re-reading the door's OWN tier — `agent_config.get` for the admin tier, `agent_config.user.get` for the user tier — which returns both the current `revision_id` and `content_hash`; re-reading the wrong tier yields a hash that can never match. The reserved value `-` is the **first-write sentinel** (see below), which makes the token expressible on an agent that has no active revision yet. Phase 221, D-366, D-370.
 
+**External execution grant** — a versioned, coordinator-signed, content-free authorization envelope for one Harbor LLM execution context. It binds audience, runtime, verified identity, logical run, provider connection and immutable connection generation, provider model/route, policy generation, opaque credential-binding handle, immutable credential-asset generation, reasoning/output ceilings, and a bounded compute lease. It carries no credential bytes; disabled mode preserves local behavior, optional mode supports mixed fleets, and required mode fails closed. HA-70, D-434.
+
+**External execution usage receipt** — an immutable, content-free provider-attempt fact emitted after a grant-verified LLM call. It carries stable grant/attempt/idempotency identifiers, policy and asset generations, provider/route/model dimensions, token/cost/latency usage, outcome, and a canonical body hash, but no prompt, response, tool argument, reasoning trace, or credential. HA-70, D-434.
+
 **Erasure cascade** — the ordered, fail-loud, idempotent sequence the `sessions.delete` Protocol method (Phase 130, D-262) runs across a session's three identity-scoped stores plus the SessionRegistry record: refuse-if-running (load+verify the record + probe the running-task seam) → Artifacts (`List` + `Delete` each) → Memory (`Flush`) → State (`StateStore.DeleteScope`, the kind-agnostic scope delete that removes the `session.lifecycle` record + run-scoped trajectories + planner checkpoints + the durable event stream under the triple) → clear the registry's in-memory map + discovery-catalog entry → emit a redacted, content-free `session.erased` audit event under the actor's observability scope. There is no ACID transaction across the independent stores; each per-store delete is idempotent, so a mid-cascade error returns loudly and is safe to re-invoke to convergence. The load+verify + probe run FIRST so a refusal touches nothing. RFC §6.9 / §6.11 / §6.13, D-262.
 
 **Embedding client (`Embedder`)** — Harbor's interface for turning text into vectors (Phase 84d, D-191): `Embed(ctx, texts) ([][]float32, error)` + a lifecycle `Close`, in its own `internal/embeddings` package as a §4.4 driver/factory/registry seam (production driver: `bifrost`, wired to the provider gateway's embedding surface; configured separately from the chat model via the `embeddings` config block). A sibling to `LLMClient`, NOT a method on it — an embeddings-only consumer never inherits the chat client's artifact-store/bus deps. Identity is mandatory at the `Embed` edge (fail closed, mirroring the chat edge); the factory-returned client enforces it by construction. Standalone and à-la-carte-usable (`embeddings.Open` + `Embed` + `Cosine` — docs/recipes/embed-and-retrieve.md); its first consumers are the opt-in semantic-retrieval modes in memory and skills, injected via `Deps.Embedder` with fail-loud guards. RFC §6.5, D-189, D-191.
@@ -2163,3 +2167,20 @@ repair operation. It carries counts, positions, generations, stable hashes or
 record identifiers, immutable entry hashes, tool/version, and outcome, but no
 event payload bytes or identity values. Repeated apply and response-loss
 replay return the same receipt. D-433.
+
+**Provider descriptor** — Harbor's provider-neutral technical fact set for one
+LLM integration: credential modes, logical secret/url/text fields, custom
+endpoint support, and bounded runtime-origin validation/discovery capability.
+It carries no presentation metadata, endpoint value, credential, or provider
+response body. D-435.
+
+**Runtime-origin provider validation** — a bounded provider probe issued by
+the Harbor runtime through the same Bifrost account used for LLM execution.
+It reports a sanitized capability/readiness outcome, never raw provider
+messages or secrets. D-435.
+
+**Normalized model capability** — a provider-neutral model fact with an
+explicit support state, such as known context/output limits, modalities, tool
+support, canonical reasoning levels, deprecation, or pricing provenance.
+Missing facts remain `unknown`; absent pricing is `unpriced`; operator-listed
+models remain `manual`. D-435.

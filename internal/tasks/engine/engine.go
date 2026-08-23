@@ -396,6 +396,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		PropagateOnCancel: propagate,
 		NotifyOnComplete:  req.NotifyOnComplete,
 		IdempotencyKey:    req.IdempotencyKey,
+		ExternalGrant:     append([]byte(nil), req.ExternalGrant...),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		InputArtifactIDs:  inputArtifactIDs,
@@ -554,6 +555,7 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		return nil, fmt.Errorf("%w: id=%q", tasks.ErrNotFound, id)
 	}
 	cp := *t
+	cp.ExternalGrant = append([]byte(nil), t.ExternalGrant...)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1373,6 +1375,9 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.IdempotencyKey != req.IdempotencyKey {
 		return false
 	}
+	if !bytes.Equal(existing.ExternalGrant, req.ExternalGrant) {
+		return false
+	}
 	// input artifact attachments are part of the
 	// task's content identity. Same key, different attachments → conflict.
 	if !stringSliceEqual(existing.InputArtifactIDs, req.InputArtifactIDs) {
@@ -1538,6 +1543,13 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 	if len(req.CallerMemory) > 0 {
 		h.Write([]byte{0x1F})
 		h.Write(req.CallerMemory)
+	}
+	// fold the signed inference grant into idempotency identity. A grant is
+	// opaque to the task engine, but retrying a key with a different signed
+	// authority must never silently reuse the first task.
+	if len(req.ExternalGrant) > 0 {
+		h.Write([]byte{0x1F})
+		h.Write(req.ExternalGrant)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

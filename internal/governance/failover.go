@@ -161,11 +161,16 @@ func NewFailoverPolicy(cfg FailoverConfig) (FailoverPolicy, error) {
 // resolved identity, used as the attribution fallback when ctx carries no
 // quadruple.
 func (p *chainFailoverPolicy) Complete(ctx context.Context, ident identity.Identity, req llm.CompleteRequest, chain []ProviderRef) (llm.CompleteResponse, error) {
+	var err error
+	ctx, _, err = llm.EnsureAttemptScope(ctx)
+	if err != nil {
+		return llm.CompleteResponse{}, err
+	}
 	quad := p.resolveQuad(ctx, ident)
 
 	// Hop 0 — the primary provider. PreCall gates it exactly like every
 	// hop; a trip fails loud (identical to the plain single-provider path).
-	resp, callErr := p.issue(ctx, req)
+	resp, callErr := p.issue(ctx, req, 0)
 	if callErr == nil {
 		return resp, nil
 	}
@@ -204,7 +209,7 @@ func (p *chainFailoverPolicy) Complete(ctx context.Context, ident identity.Ident
 		// walk LOUD — the walk does NOT continue down the chain, and an
 		// N-provider chain can never push a run past its per-identity ceiling
 		// across hops.
-		resp, callErr = p.issue(ctx, req)
+		resp, callErr = p.issue(ctx, req, hopIndex)
 		if callErr == nil {
 			return resp, nil
 		}
@@ -222,11 +227,11 @@ func (p *chainFailoverPolicy) Complete(ctx context.Context, ident identity.Ident
 // per-call attempt-cost tap so intermediate retry / downgrade attempts fold
 // into accounting (parity with the plain wrap path). PreCall's error
 // short-circuits (fail loud); PostCall's error is observability-only.
-func (p *chainFailoverPolicy) issue(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+func (p *chainFailoverPolicy) issue(ctx context.Context, req llm.CompleteRequest, fallbackHop int) (llm.CompleteResponse, error) {
 	if err := p.gov.PreCall(ctx, req); err != nil {
 		return llm.CompleteResponse{}, err
 	}
-	ctx, _ = llm.ContextWithAttemptCostTap(ctx)
+	ctx, _ = llm.ContextWithAttemptCostTap(llm.WithAttemptCoordinates(ctx, fallbackHop+1, 0, 0, fallbackHop))
 	resp, callErr := p.inner.Complete(ctx, req)
 	if postErr := p.gov.PostCall(ctx, req, resp, callErr); postErr != nil {
 		p.logger.WarnContext(ctx, "governance/failover: PostCall error (observability only)",

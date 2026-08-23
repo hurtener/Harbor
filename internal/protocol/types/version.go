@@ -380,6 +380,10 @@ const (
 	// backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapRuntimePosture Capability = "runtime_posture"
+	// CapLLMProviderCatalog advertises the protected runtime-origin provider
+	// descriptor/validate/discover operation. It is conditional: a runtime
+	// only advertises it when its provider catalog is wired at boot.
+	CapLLMProviderCatalog Capability = "llm_provider_catalog"
 	// CapTopologySnapshot — the engine-graph topology projection
 	// (`topology.snapshot`,). Conditional: a runtime
 	// only advertises this capability when it hosts an engine (the

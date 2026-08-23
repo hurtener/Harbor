@@ -123,6 +123,113 @@ export interface LLMPostureResponse {
 	protocol_version?: string;
 }
 
+/** A non-secret provider credential field exposed by the runtime catalog. */
+export interface LLMProviderCredentialField {
+	name: string;
+	kind: string;
+	required: boolean;
+	secret: boolean;
+}
+
+/** A runtime-origin provider descriptor with bounded validation/discovery metadata. */
+export interface LLMProviderDescriptor {
+	id: string;
+	kind: string;
+	credential_modes: string[];
+	credential_fields: LLMProviderCredentialField[];
+	custom_endpoint: string;
+	validation: LLMProviderOperation;
+	discovery: LLMProviderOperation;
+}
+
+/** Bounded provider operation capability advertised by a runtime. */
+export interface LLMProviderOperation {
+	state: string;
+	runtime_origin: boolean;
+	bounded: boolean;
+}
+
+/** Sanitized outcome of a runtime-origin provider operation. */
+export interface LLMProviderOutcome {
+	state: string;
+	code: string;
+	message: string;
+	observed_at?: string;
+	runtime_origin: boolean;
+	partial: boolean;
+	stale: boolean;
+}
+
+/** Result of validating a provider through the booted runtime. */
+export interface LLMProviderValidation {
+	provider_id: string;
+	outcome: LLMProviderOutcome;
+}
+
+/** Result of discovering models through the booted runtime. */
+export interface LLMProviderDiscovery {
+	provider_id: string;
+	outcome: LLMProviderOutcome;
+	models?: LLMProviderModel[];
+	pages: number;
+	model_count: number;
+}
+
+/** Runtime-origin provider catalog response selected from the posture envelope. */
+export interface LLMProviderOperationResponse {
+	operation: string;
+	runtime_origin: boolean;
+	provider_id?: string;
+	descriptors?: LLMProviderDescriptor[];
+	validation?: LLMProviderValidation;
+	discovery?: LLMProviderDiscovery;
+}
+
+/** A discovered/configured provider model and normalized capabilities. */
+export interface LLMProviderModel {
+	id: string;
+	source: string;
+	deprecated: boolean;
+	capabilities: LLMProviderModelCapabilities;
+}
+
+/** Normalized provider model capability groups. */
+export interface LLMProviderModelCapabilities {
+	context: LLMProviderNumericCapability;
+	max_input_tokens: LLMProviderNumericCapability;
+	max_output_tokens: LLMProviderNumericCapability;
+	input_modalities: LLMProviderSetCapability;
+	output_modalities: LLMProviderSetCapability;
+	tools: string;
+	vision: string;
+	reasoning: LLMProviderReasoningCapability;
+	pricing: LLMProviderPricingCapability;
+}
+
+/** A normalized numeric provider capability. */
+export interface LLMProviderNumericCapability {
+	state: string;
+	value?: number;
+}
+
+/** A normalized set-valued provider capability. */
+export interface LLMProviderSetCapability {
+	state: string;
+	values?: string[];
+}
+
+/** A normalized reasoning-effort capability. */
+export interface LLMProviderReasoningCapability {
+	state: string;
+	levels?: string[];
+}
+
+/** A normalized pricing capability with an explicit source label. */
+export interface LLMProviderPricingCapability {
+	state: string;
+	source?: string;
+}
+
 /** `auth.rotate_token` response — the one-time-revealed re-minted token. */
 export interface AuthRotateTokenResponse {
 	new_token: string;
