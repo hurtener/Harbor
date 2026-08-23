@@ -13039,8 +13039,8 @@ erasure), D-409 (session reach), D-397 (agent reach), D-313/D-349
 
 **Status:** Accepted for Phase 246 (HA-64). Shipped (v1.28): the accepted
 snapshot-to-live handoff is page-before-subscribe (below), which supersedes
-the earlier provisional ordering. The v1.29.4 idle-convergence correction is
-also shipped below.
+the earlier provisional ordering. The v1.29.4 idle-convergence and v1.29.5
+lost-wake corrections are also shipped below.
 
 **Decision.** Add a dedicated, runtime-owned conversation read model —
 `sessions.turns.list` (stable tail pages) and `sessions.turns.get` (one
@@ -13176,6 +13176,16 @@ canonical event. This is an implementation correction within D-425's existing
 bounded, durable, fail-closed convergence contract; it adds no Protocol wire
 surface or transcript authority.
 
+**Production correction (2026-08-23; v1.29.5) — bounded lost-wake polling.**
+The turns materializer's lost-wake and deferred-terminal-snapshot fallback now
+polls every 30 seconds rather than every 2 seconds. Durable event watches remain
+the fast path; the bounded fallback still catches up when a source watermark is
+ahead and still converges a deferred terminal snapshot without a new event.
+This reduces an idle durable runtime's fallback budget to two source-watermark
+reads per minute while preserving bounded recovery and the existing D-425
+convergence contract; it adds no Protocol wire surface or transcript
+authority.
+
 **Required acceptance (binding for the phase).** Once the owning runtime is
 selected, a persisted session with more than 100,000 events, at least 10,000
 turns, and one turn with more than 100 tool calls reopens its latest 20 turns
@@ -13208,6 +13218,26 @@ activity rehydration), D-347/D-353 (artifact read contract), D-409/D-397
 (reach), D-312/D-400 (lifecycle/erasure fences), D-062 (Protocol-only
 consumer). RFC §6.2, §6.8, §6.9, §6.10, §6.13, §6.16, §5.2, §5.5, §7, §9.
 Plan: `docs/plans/phase-246-durable-conversation-turns.md`.
+
+**Release evidence (2026-08-23):** implementation PR #735 merged at
+`f0cd36b0c82f2332df575a5434b1a3e7a0d7a586`; hosted CI run `32628090701`
+attempt 2 completed successfully on the exact reviewed implementation head
+`280518aa36628ec602b668ea3b22fde1c082585f`, and documentation run
+`32628090829` also completed successfully. The immutable annotated `v1.29.5`
+tag object is `8aba749eadfc0919668bf0769796d26793181ba6` and peels to
+`8540a26e70552d49acc8d7267f6c3c3a99cd9f5c`; release workflow `32635519880`
+succeeded, publishing [13 release assets](https://github.com/hurtener/Harbor/releases/tag/v1.29.5)
+with verified aggregate `checksums.txt`, six sidecar checksums, and six GitHub
+attestations. The native darwin/arm64 artifact reports Harbor v1.29.5,
+Protocol 0.1.0, build `8540a26e70552d49acc8d7267f6c3c3a99cd9f5c`; module
+provenance records `Sum=h1:iD6KARsZ3yWkLoiQeHvdCoLpEtQ0T9F8deC169S6280=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=8540a26e70552d49acc8d7267f6c3c3a99cd9f5c`, and
+`Origin.Ref=refs/tags/v1.29.5`. The post-tag scaffold pin and golden fixtures
+are complete. Focused local `go test ./cmd/harbor -run TestScaffold_Golden`,
+`make drift-audit`, `make markdownlint`, and `make docs` passed; local
+`make preflight` was not run. No downstream runtime, fleet, or database
+mutation is claimed.
 
 ---
 

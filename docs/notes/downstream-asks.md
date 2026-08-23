@@ -38,7 +38,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-61 | Verified-caller two-phase `SKILL.md` package import into durable personal skills | skills + agentcfg protocol + state + protocol | High | Contained-to-medium | Shipped (v1.28) — phase 243 / D-422 |
 | HA-62 | Draft-only personal-skill proposer as an ordinary runtime tool | skills + tools + agentcfg + artifacts | High | Contained | Shipped (v1.28) — phase 244 / D-423 |
 | HA-63 | Lifecycle-only session catalog and inspection projection | sessions/protocol + protocol + console | High | Contained | Shipped (v1.28) — phase 245 / D-424 |
-| HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Shipped (v1.28); v1.29.4 idle-convergence correction shipped — phase 246 / D-425 |
+| HA-64 | Durable tail-paged conversation turns | turns projection + sessions/protocol + protocol + console | High | Large | Shipped (v1.28); v1.29.4 idle-convergence and v1.29.5 lost-wake corrections shipped — phase 246 / D-425 |
 | HA-65 | Persistent queryable observability rollups without raw-event scans | observability rollup + events + sessions + protocol + console | High | Large | Shipped (v1.28); v1.29.4 idle-rollup correction shipped — phase 247 / D-426 |
 | HA-66 | Boot-declared resource-free operator skill baseline for the resolved boot/default agent | skills + config + runtime/serve + devstack | Medium | Contained | Shipped (v1.28) — phase 248 / D-427 |
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
@@ -873,7 +873,8 @@ full projection behavior remains compatible and explicitly selectable.
 
 **Priority:** High (chat-open latency and replay correctness). **Size:** large.
 **State:** Shipped (v1.28) — phase 246 / D-425 (framework-framed filing). The
-v1.29.4 idle-convergence correction is shipped; linked dependency: HA-63.
+v1.29.4 idle-convergence and v1.29.5 lost-wake corrections are shipped; linked
+dependency: HA-63.
 
 **v1.29.4 correction.** Durable turn materialization now advances through a
 fully examined current source watermark after every returned canonical event;
@@ -881,6 +882,33 @@ persisted bus-internal notices and fenced-session tails no longer repeat
 global `state_records` prefix scans on an idle runtime. Concurrent final-fence
 filtering preserves the page's pre-filter overflow proof, so a truncated page
 cannot promote its checkpoint past a later canonical event.
+
+**v1.29.5 correction.** The turns materializer's lost-wake fallback for
+deferred terminal snapshots now polls every 30 seconds rather than every 2
+seconds. Durable event watches remain the fast path, and the bounded fallback
+still catches up when the source watermark is ahead or a deferred terminal
+snapshot needs reconciliation; an idle durable runtime now performs two
+source-watermark reads per minute instead of thirty.
+
+**v1.29.5 release evidence.** Implementation PR #735 merged at
+`f0cd36b0c82f2332df575a5434b1a3e7a0d7a586`; hosted CI run `32628090701`
+attempt 2 completed successfully on the exact reviewed implementation head
+`280518aa36628ec602b668ea3b22fde1c082585f`, and documentation run
+`32628090829` also completed successfully. The immutable annotated `v1.29.5`
+tag object is `8aba749eadfc0919668bf0769796d26793181ba6` and peels to
+`8540a26e70552d49acc8d7267f6c3c3a99cd9f5c`; release workflow `32635519880`
+succeeded, publishing 13 assets with verified aggregate and six sidecar
+checksums and six GitHub attestations at the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.5).
+The native darwin/arm64 artifact reports Harbor v1.29.5, Protocol 0.1.0,
+build `8540a26e70552d49acc8d7267f6c3c3a99cd9f5c`; module provenance records
+`Sum=h1:iD6KARsZ3yWkLoiQeHvdCoLpEtQ0T9F8deC169S6280=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=8540a26e70552d49acc8d7267f6c3c3a99cd9f5c`, and
+`Origin.Ref=refs/tags/v1.29.5`. Post-tag scaffold pin and golden cleanup are
+complete. Focused local `go test ./cmd/harbor -run TestScaffold_Golden`,
+`make drift-audit`, `make markdownlint`, and `make docs` passed; local
+`make preflight` was not run and no downstream runtime, fleet, or database
+mutation is claimed.
 
 **What the verified caller sees.** Harbor has authoritative task rows/results and
 raw event history, but no ready-to-render conversation page. One Protocol
