@@ -79,39 +79,58 @@ None.
 - Running local preflight; hosted CI owns broad preflight and real-Postgres
   acceptance.
 
+## Release evidence (2026-08-22)
+
+Implementation PR #730 merged at `dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`.
+Hosted candidate run `32600083120` and documentation run `32600083113`
+completed successfully. The immutable annotated `v1.29.3` tag object is
+`eeae1f44f4fb7d862f581f9cbbabb40a7827146a` and peels to
+`dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`; release workflow `32602553267`
+succeeded, publishing 13 assets with verified aggregate and six sidecar
+checksums and six attestations at
+`https://github.com/hurtener/Harbor/releases/tag/v1.29.3`. The native
+darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build `dabbcff4`;
+module provenance records
+`Sum=h1:uRya1FQV+hu4YKH5jzQDVP0z0wqOnH6DnsOe8M7oxog=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`, and
+`Origin.Ref=refs/tags/v1.29.3`. The post-tag scaffold pin and golden fixtures
+are complete. Local `make preflight` was never run, and no downstream fleet
+repair or cutover is claimed.
+
 ## Acceptance criteria
 
-- [ ] The command loads only explicit driver/DSN and repair options; it never
+- [x] The command loads only explicit driver/DSN and repair options; it never
       assembles or boots a Harbor Runtime/EventBus before inspection.
-- [ ] Inspect is the default and performs no StateStore writes. Apply requires
+- [x] Inspect is the default and performs no StateStore writes. Apply requires
       an explicit freeze/drain acknowledgement and refuses missing or invalid
       acknowledgement before opening a mutating database handle.
-- [ ] Apply refuses URL and keyword DSNs that identify PgBouncer/transaction
+- [x] Apply refuses URL and keyword DSNs that identify PgBouncer/transaction
       pooling or port `6432`; direct session-affine PostgreSQL `5432` is
       required for PostgreSQL mutation.
-- [ ] A whole-store scan is bounded, cancellable, and content-free. It uses
+- [x] A whole-store scan is bounded, cancellable, and content-free. It uses
       the StateStore bounded-enumeration seam with a `max-heads+1` refusal
       guard, and reports aggregate affected-head, duplicate-sequence, and
       redundant-reference counts without retaining or logging event bodies or
       identity values.
-- [ ] The exact legacy fixture with two adjacent duplicate sequence values in
+- [x] The exact legacy fixture with two adjacent duplicate sequence values in
       one head is detected, repaired by retaining the first occurrence, and
       leaves immutable entry bodies unchanged.
-- [ ] Non-adjacent duplicates, multiple duplicate values, metadata-ready heads,
+- [x] Non-adjacent duplicates, multiple duplicate values, metadata-ready heads,
       missing/mismatched entries, sequence/triple/type/storage-kind mismatch,
       malformed JSON, checksum divergence, non-canonical ordering, and moving
       generations all fail closed with zero partial writes.
-- [ ] The session-scoped storage `RunID=""` exception remains compatible with
+- [x] The session-scoped storage `RunID=""` exception remains compatible with
       v1.29.2: each event body's authoritative RunID survives repair and is
       never compared to the empty storage-key RunID.
-- [ ] Apply writes a content-free durable receipt/manifest atomically with the
+- [x] Apply writes a content-free durable receipt/manifest atomically with the
       canonical head update, records expected/applied generations and hashes,
       and replays idempotently after response loss or a second invocation.
-- [ ] In-memory, SQLite, and PostgreSQL StateStore conformance covers CAS,
+- [x] In-memory, SQLite, and PostgreSQL StateStore conformance covers CAS,
       cancellation, N concurrent attempts, and no partial publication; the
       direct-5432 PostgreSQL acceptance is selected by hosted CI with an exact
       non-vacuous PASS assertion and no skip accepted.
-- [ ] Operator documentation requires stop-before-repair, backup/rollback,
+- [x] Operator documentation requires stop-before-repair, backup/rollback,
       inspect → apply → verify, and repair before admitting any v1.29.2+
       event writer.
 
@@ -258,14 +277,14 @@ database or runs local preflight.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] Hosted preflight/CI passes (local `make preflight` intentionally not run)
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages meets the stated target
-- [ ] Multi-isolation repair tests cover tenant/user/session and RunID
-- [ ] No reusable artifact or new goroutine path is introduced without the
+- [x] `make drift-audit` passes
+- [x] Hosted preflight/CI passes (local `make preflight` intentionally not run)
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages meets the stated target
+- [x] Multi-isolation repair tests cover tenant/user/session and RunID
+- [x] No reusable artifact or new goroutine path is introduced without the
       required concurrent-reuse/leak coverage
-- [ ] Shared StateStore integration/conformance test runs under `-race`
-- [ ] New vocabulary is documented in this plan and the glossary if retained
-- [ ] No brief finding was departed from
+- [x] Shared StateStore integration/conformance test runs under `-race`
+- [x] New vocabulary is documented in this plan and the glossary if retained
+- [x] No brief finding was departed from

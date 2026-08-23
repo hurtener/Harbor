@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.29.3] — 2026-08-22
+
 ### Fixed
 
 - Added an offline `harbor events repair-legacy-heads` command for legacy
@@ -34,6 +36,25 @@ Two versions move independently in Harbor (RFC §5.3):
   PostgreSQL mutation requires a direct, session-affine `5432` endpoint and
   refuses detectable transaction-pooled or `6432` destinations. Operators
   should inspect, apply, and verify before admitting a new event writer.
+
+### Release evidence
+
+- Implementation PR #730 merged at
+  `dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`; hosted candidate run
+  `32600083120` and documentation run `32600083113` completed
+  successfully. The immutable annotated `v1.29.3` tag object
+  `eeae1f44f4fb7d862f581f9cbbabb40a7827146a` peels to
+  `dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`; release workflow
+  `32602553267` succeeded and the [GitHub release](https://github.com/hurtener/Harbor/releases/tag/v1.29.3)
+  carries 13 assets with verified aggregate and six sidecar checksums and
+  six verified attestations. The native darwin/arm64 artifact reports
+  v1.29.3, Protocol 0.1.0, build `dabbcff4`; module provenance records
+  `Sum=h1:uRya1FQV+hu4YKH5jzQDVP0z0wqOnH6DnsOe8M7oxog=`,
+  `GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+  `Origin.Hash=dabbcff4f0bbadf7d5710d0b8844b639512ca4ac`, and
+  `Origin.Ref=refs/tags/v1.29.3`. The post-tag scaffold pin and golden
+  fixtures are complete. Local `make preflight` was never run, and no
+  downstream fleet repair or cutover is claimed.
 
 ## [1.29.2] — 2026-08-22
 
@@ -4741,7 +4762,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.2...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.3...HEAD
+[1.29.3]: https://github.com/hurtener/Harbor/compare/v1.29.2...v1.29.3
 [1.29.2]: https://github.com/hurtener/Harbor/compare/v1.29.1...v1.29.2
 [1.29.1]: https://github.com/hurtener/Harbor/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/hurtener/Harbor/compare/v1.28.7...v1.29.0
