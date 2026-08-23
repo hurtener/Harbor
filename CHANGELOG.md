@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- The turns projection's lost-wake fallback now polls every 30 seconds rather
+  than every 2 seconds. Event watches remain the fast path, deferred terminal
+  snapshots still converge on the fallback, and an idle durable runtime now
+  performs two source-watermark reads per minute instead of thirty.
+
 ## [1.29.4] — 2026-08-23
 
 ### Fixed

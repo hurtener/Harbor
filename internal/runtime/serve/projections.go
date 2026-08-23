@@ -137,11 +137,14 @@ func OpenTurnsProjection(ctx context.Context, cfg *config.Config, deps TurnsProj
 }
 
 // turnsPollInterval is the bounded lost-wake / pending-snapshot poll
-// cadence of the turns materializer. It is deliberately small enough
-// that a completed task whose answer record converges shortly after
-// its terminal event seals promptly, and large enough that an idle
-// projection does not busy-loop.
-const turnsPollInterval = 2 * time.Second
+// cadence of the turns materializer. Wakes remain the fast path; this
+// fallback only repairs a lost wake or checks the bounded deferred
+// completion queue. Thirty seconds keeps that recovery bounded while
+// limiting an idle durable runtime to two source-watermark reads per
+// minute instead of thirty. It does not suppress a required audit or
+// event: the source watch still delivers every persisted wake, and a
+// poll still catches up whenever the source watermark is ahead.
+const turnsPollInterval = 30 * time.Second
 
 // turnsErasureProbe adapts the sessions Registry's exported Erased
 // seam to the turns ErasureProbe contract: the runtime's DURABLE
