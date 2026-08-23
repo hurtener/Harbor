@@ -17,6 +17,32 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.29.4] — 2026-08-23
+
+### Fixed
+
+- Durable turn materialization and observability rollups now advance through a
+  fully examined current source watermark after applying every returned
+  canonical event. Persisted bus-internal notices and fenced-session tails no
+  longer keep idle runtimes repeating global `state_records` prefix scans.
+- Rollup lost-wake polling now compares the cheap source watermark with the
+  durable projection checkpoint before opening a bounded source page. A
+  current idle projection performs no global event-head scan.
+- Concurrent final fence filtering preserves the page's pre-filter overflow
+  proof. A truncated page remains catching up and can never promote its
+  checkpoint past a later canonical event.
+
+### Release candidate evidence
+
+- Implementation PR #732 merged as
+  `a86a1330b7f5e3c4b6e091f549400ac5558be21d`. Hosted candidate run
+  `32617848106` completed successfully, including Go on Ubuntu/macOS,
+  PostgreSQL conformance, isolation/chaos/leak/benchmark gates, Console
+  Playwright, and the live preflight. Two independent exact-head reviews were
+  P0/P1 clear after the concurrent-fence correction. The Protocol wire is
+  unchanged. No downstream runtime, fleet, or database mutation is claimed by
+  this release candidate.
+
 ## [1.29.3] — 2026-08-22
 
 ### Fixed
