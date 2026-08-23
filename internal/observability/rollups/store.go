@@ -38,10 +38,11 @@ var (
 // applying deltas and checkpointing is impossible, and re-applying a batch
 // whose checkpoint does not advance the stored checkpoint is a no-op.
 type Batch struct {
-	// Checkpoint is the sequence of the last event the batch covers (the
-	// existing local durable sequence — the bus Sequence). Must be
-	// strictly greater than the stored checkpoint or the batch is a
-	// no-op.
+	// Checkpoint is the source sequence through which the batch has
+	// successfully applied canonical events and, when a current page
+	// proves them excluded, any intervening source records (the existing
+	// local durable bus Sequence). It must be strictly greater than the
+	// stored checkpoint or the batch is a no-op.
 	Checkpoint uint64
 	// Deltas are the row updates derived from the batch's events.
 	Deltas []Delta

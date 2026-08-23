@@ -68,9 +68,11 @@ const (
 type Quality struct {
 	// State is current / catching_up / unavailable.
 	State State
-	// Watermark is the last successfully applied sequence (the existing
-	// local durable sequence — read from the Store's checkpoint, so it is
-	// the durable truth across restarts).
+	// Watermark is the durable source checkpoint (the existing local
+	// sequence, read from the Store). It is normally the last successfully
+	// applied canonical sequence; a projection worker may also include
+	// source sequences it examined and proved excluded, so it remains the
+	// durable truth across restarts.
 	Watermark uint64
 	// WatermarkAt is the wall-clock instant the watermark last advanced in
 	// THIS projector instance (zero before the first advance — e.g. right

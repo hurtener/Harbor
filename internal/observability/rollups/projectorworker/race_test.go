@@ -383,3 +383,61 @@ func TestWorker_RunLoop_WakeDrivenCatchUpAndShutdown(t *testing.T) {
 	_ = store.Close(ctx)
 	eventuallyGoroutinesSettle(t, goroBase, 3)
 }
+
+// TestWorker_RunLoop_IdlePollChecksWatermarkBeforePage pins the durable
+// lost-wake healer's idle path: a current worker polls the cheap source
+// watermark and durable checkpoint without re-reading the global source
+// page. A later source sequence still crosses the gate and is projected.
+func TestWorker_RunLoop_IdlePollChecksWatermarkBeforePage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore(t)
+	src := &stubSource{}
+	w, err := projectorworker.New(src, store, projectorworker.WithPollInterval(5*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	runErr := make(chan error, 1)
+	go func() { runErr <- w.Run(ctx) }()
+
+	eventually(t, "initial empty page", func() bool {
+		src.mu.Lock()
+		defer src.mu.Unlock()
+		return src.calls >= 1
+	})
+	src.mu.Lock()
+	initialPages := src.calls
+	src.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	src.mu.Lock()
+	idlePages := src.calls
+	src.mu.Unlock()
+	if idlePages != initialPages {
+		t.Fatalf("idle poll issued %d extra source pages; initial=%d idle=%d", idlePages-initialPages, initialPages, idlePages)
+	}
+
+	id := tq("tenant-idle", "user-idle", "session-idle")
+	src.mu.Lock()
+	src.events = seq(costEvent(base.Add(time.Minute), id, "idle-model", 0.01))
+	src.mu.Unlock()
+	eventually(t, "watermark change crosses page gate", func() bool {
+		return measureSum(t, store, rollups.Filter{}, rollups.MeasureLLMCompletions) == 1
+	})
+	src.mu.Lock()
+	projectedPages := src.calls
+	src.mu.Unlock()
+	if projectedPages <= idlePages {
+		t.Fatal("new source sequence was projected without a source page")
+	}
+
+	cancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s of cancellation")
+	}
+}

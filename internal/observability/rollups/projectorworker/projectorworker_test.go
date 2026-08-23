@@ -387,7 +387,10 @@ func TestWorker_NoticesAndFencedGapsAreSkipped(t *testing.T) {
 	a := tq("tenant-a", "user-1", "session-a")
 	b := tq("tenant-a", "user-1", "session-b")
 
-	// seq 1 A cost; seq 2 B cost; seq 3 notice; Fence(B); seq 4 A cost.
+	// seq 1 A cost; seq 2 B cost; seq 3 notice; Fence(B); seq 4 A cost;
+	// seq 5 notice at the tail. The tail notice is the important case:
+	// a current page can have Watermark > Next even after all canonical
+	// events have been applied.
 	publish(t, bus,
 		costEvent(base.Add(time.Minute), a, "m", 0.01),
 		costEvent(base.Add(2*time.Minute), b, "m", 0.50),
@@ -400,7 +403,10 @@ func TestWorker_NoticesAndFencedGapsAreSkipped(t *testing.T) {
 	} else {
 		t.Fatal("inmem bus does not implement events.Fencer")
 	}
-	publish(t, bus, costEvent(base.Add(4*time.Minute), a, "m", 0.02))
+	publish(t, bus,
+		costEvent(base.Add(4*time.Minute), a, "m", 0.02),
+		noticeEvent(base.Add(5*time.Minute), a),
+	)
 
 	w, err := projectorworker.New(src, store)
 	if err != nil {
@@ -413,10 +419,12 @@ func TestWorker_NoticesAndFencedGapsAreSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Quality: %v", err)
 	}
-	// The page covered seq 1..4; the notice (3) and the fenced B event
-	// (2) were excluded — the watermark is the last CANONICAL event.
-	if q.Watermark != 4 {
-		t.Fatalf("watermark = %d; want 4 (canonical cursor across the gap)", q.Watermark)
+	// The page covered seq 1..5; the notices (3, 5) and the fenced B
+	// event (2) were excluded. The durable projection checkpoint still
+	// advances through the excluded tail so an idle poll does not repeat
+	// the same global source page forever.
+	if q.Watermark != 5 {
+		t.Fatalf("watermark = %d; want 5 (canonical cursor across the gap and excluded tail)", q.Watermark)
 	}
 	if q.State != rollups.StateCurrent {
 		t.Fatalf("state = %q; want current", q.State)
