@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
@@ -34,6 +35,22 @@ func TestProjectionPostgresConfig_MapsMigrationMode(t *testing.T) {
 	})
 	if rollupsCfg.DSN != "postgres://rollups" || rollupsCfg.MigrationMode != sqlmigrate.ModeVerify {
 		t.Fatalf("rollups postgres config = %+v", rollupsCfg)
+	}
+}
+
+// TestTurnsPollInterval_ExactIdleWatermarkBudget pins the production
+// fallback's database-read budget. The materializer's source watch remains
+// the fast path; an idle durable runtime should need exactly two fallback
+// watermark reads per minute, not one read every two seconds.
+func TestTurnsPollInterval_ExactIdleWatermarkBudget(t *testing.T) {
+	if turnsPollInterval <= 0 {
+		t.Fatalf("turnsPollInterval = %s; want a positive bounded fallback", turnsPollInterval)
+	}
+	if time.Minute%turnsPollInterval != 0 {
+		t.Fatalf("turnsPollInterval = %s does not divide one minute exactly", turnsPollInterval)
+	}
+	if got, want := int(time.Minute/turnsPollInterval), 2; got != want {
+		t.Fatalf("idle turns watermark reads per minute = %d; want %d", got, want)
 	}
 }
 
