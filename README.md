@@ -182,7 +182,7 @@ Harbor is four layers, each with a hard boundary:
 | **Runtime** | The orchestration kernel — tasks, planner runtime, tools, memory, sessions, events, skills, artifacts, the unified pause/resume primitive. Headless. |
 | **Protocol** | The canonical, versioned event/state contract. Streaming events, the task-control surface, state snapshots, topology, traces, metrics. |
 | **Console** | The observability + control-plane UI (SvelteKit). Architecturally just a Protocol client — it never reads a Runtime object directly. |
-| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `skill`, `events repair-legacy-heads`, `composition-preview`, `version`, and the `inspect-*` family. |
+| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `skill`, `llm providers`, `events repair-legacy-heads`, `composition-preview`, `version`, and the `inspect-*` family. |
 
 Because the Console only ever speaks Protocol, the same surface powers a
 remote attach, a third-party dashboard, or an IDE/TUI client. Nothing about
@@ -243,6 +243,9 @@ omit the additive fields; version and commit must be supplied together.
 - `harbor skill import <path>` / `harbor skill rm <name>` — ingest a Skills.md
   playbook into the runtime skill catalog (the same store `harbor dev` serves)
   or remove one by name.
+- `harbor llm providers` — list provider-neutral technical descriptors without
+  secrets; add `--validate` or `--discover` with `--config` and `--provider`
+  for a bounded runtime-origin Bifrost probe.
 - `harbor inspect-events` / `inspect-runs` — tail the live event stream or
   reconstruct a run's trajectory from event replay.
 - `harbor composition-preview` — preview the effective skill composition a

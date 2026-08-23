@@ -126,6 +126,7 @@ func NewRootCmd() *cobra.Command {
 Subcommands fall into three groups:
 
   Local dev loop      init, dev, console, scaffold, validate, skill
+  LLM inspection      llm providers
   Production          serve, token, postgres
   Persistence repair  events repair-legacy-heads
   Run inspection      inspect-events, inspect-runs, inspect-topology,
@@ -164,6 +165,7 @@ docs/plans/README.md for the implementation schedule.`,
 	root.AddCommand(newScaffoldCmd())
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newSkillCmd())
+	root.AddCommand(newLLMCmd())
 	root.AddCommand(newEventsCmd())
 	root.AddCommand(newInspectEventsCmd())
 	root.AddCommand(newInspectRunsCmd())

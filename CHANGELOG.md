@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- HA-70 / Phase 254 adds the opt-in external execution grant and durable,
+  content-free provider-attempt receipt seam. Grants are signed and bound to
+  verified runtime/run/provider generations; strict mode fails closed, local
+  governance remains an emergency ceiling, and receipt delivery is durable,
+  bounded, and idempotent. No release or downstream deployment is claimed.
+
+- HA-71 / Phase 255 adds the provider-neutral technical descriptor contract
+  and the read-only `harbor llm providers` consumer. Static descriptors expose
+  credential modes, custom-endpoint support, bounded validation/discovery
+  capability, and explicit manual/partial/stale/unknown/unpriced outcomes
+  without secrets or provider response bodies. Explicit runtime-origin probes
+  reuse the configured Bifrost account and normalize only facts the provider
+  reports; no release or downstream deployment is claimed.
+
 ## [1.29.5] — 2026-08-23
 
 ### Fixed

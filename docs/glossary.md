@@ -2167,3 +2167,20 @@ repair operation. It carries counts, positions, generations, stable hashes or
 record identifiers, immutable entry hashes, tool/version, and outcome, but no
 event payload bytes or identity values. Repeated apply and response-loss
 replay return the same receipt. D-433.
+
+**Provider descriptor** — Harbor's provider-neutral technical fact set for one
+LLM integration: credential modes, logical secret/url/text fields, custom
+endpoint support, and bounded runtime-origin validation/discovery capability.
+It carries no presentation metadata, endpoint value, credential, or provider
+response body. D-435.
+
+**Runtime-origin provider validation** — a bounded provider probe issued by
+the Harbor runtime through the same Bifrost account used for LLM execution.
+It reports a sanitized capability/readiness outcome, never raw provider
+messages or secrets. D-435.
+
+**Normalized model capability** — a provider-neutral model fact with an
+explicit support state, such as known context/output limits, modalities, tool
+support, canonical reasoning levels, deprecation, or pricing provenance.
+Missing facts remain `unknown`; absent pricing is `unpriced`; operator-listed
+models remain `manual`. D-435.

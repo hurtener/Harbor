@@ -395,7 +395,8 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |249 | Optional per-parameter MCP artifact-egress mappings (HA-67, D-429): a trailing `?` marker is stripped at the shared compile boundary, schema/`ParamsFor` projections expose bare names, missing or `null` optional values skip substitution, and present values retain the required type/empty-id/resolver/digest/ceiling checks; no new wire shape or artifact resolver | tools/artifactegress + MCP driver | §6.4, §6.10, §7 | 214 | ≥90% artifactegress | Shipped (unreleased candidate; focused evidence only) |
 |250 | Same-runtime organization skill publications (HA-68, D-430): immutable content-addressed revisions, content-free metadata/references/receipts, StateStore-backed CAS and idempotency, admin/user Protocol methods, exact signed-agent reach and runtime binding; strict Protocol transport, typed clients/capability, generated reference pages, run-start composition, and shared production/devstack bootstrap with one authorized store/runtime id are landed | skills/publication + state + protocol + runtime composition | §6.7, §6.10, §6.11, §6.16, §5.2, §5.5, §7, §9 | 37, 40, 202, 205, 232, 237, 240, 248 | 85–90% (target) | Shipped (unreleased candidate; focused evidence only) |
 |253 | Offline legacy durable-head integrity repair (HA-69 second compatibility extension, D-433): content-free inspect/dry-run, explicit freeze/drain admission, direct-5432 mutation guard, exact duplicate validation, StateStore CAS canonicalization, durable receipts, idempotent replay, and hosted real-Postgres acceptance | durable events + state + CLI + operator docs + CI | §4.3, §6.11, §6.13, §8, §12 | 16, 57, 251, 252, D-294, D-305, D-398, D-431, D-432 | existing floors | Shipped (v1.29.3) |
-|254 | Context-bound external execution grants and durable attempt receipts (HA-70, D-434): signed runtime/identity/run/route/credential-generation grant, verified Bifrost binding resolution, bounded lease/top-up, retry/downgrade/failover attempt coverage, content-free StateStore outbox with ACK/replay/backoff/circuit breaker, and strict/optional/disabled compatibility modes | LLM edge + Bifrost + StateStore + governance + docs | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-333, D-334 | ≥85% new packages | Implementation candidate |
+|254 | Context-bound external execution grants and durable attempt receipts (HA-70, D-434): signed verified-context grants, generation-fenced credential handles, bounded leases, retry/downgrade/failover coverage, content-free receipt outbox, idempotent replay, bounded backoff, and strict compatibility modes | llm edge + Bifrost account + retry/failover + StateStore receipt outbox | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-333, D-334 | focused package/race gates | Implementation candidate (unreleased; focused evidence only) |
+|255 | Provider-neutral technical descriptors and runtime-origin model discovery (HA-71, D-435): credential modes/field kinds, conservative custom-endpoint facts, bounded Bifrost validation/discovery, normalized model capabilities, explicit manual/partial/stale/unknown/unpriced outcomes, redacted errors, and read-only `harbor llm providers` consumer | llm/provider + bifrost adapter + CLI + operator docs | §3, §6.5, §6.15, §8 | 03, 06, 08, 25, 33, 33a, D-018, D-025, D-333, D-334, D-434 | 80% new package; 70% CLI | Implemented candidate (unreleased; focused evidence only) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5472,15 +5473,14 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   seam and registered wrapper. A coordinator-signed grant binds audience,
   runtime, verified identity and logical run, provider connection and immutable
   connection generation, provider model/route, policy generation, opaque
-  credential handle, immutable asset generation,
-  reasoning/output ceilings, and a bounded lease. The Bifrost account resolves
-  the binding only from the verified context and never uses a caller-selected
-  key for a granted call. The wrapper is inside retry/downgrade/failover, so
-  every provider attempt is verified and emits a content-free receipt. The
-  StateStore outbox conditionally queues/ACKs receipts, safely replays
-  response-loss duplicates, backs off, and circuit-breaks delivery. Disabled,
-  optional, and required modes preserve compatibility and fail-closed strict
-  behavior respectively.
+  credential handle, immutable asset generation, reasoning/output ceilings,
+  and a bounded lease. The Bifrost account resolves the binding only from the
+  verified context and never uses a caller-selected key for a granted call.
+  The wrapper is inside retry/downgrade/failover, so every provider attempt is
+  verified and emits a content-free receipt. The StateStore outbox
+  conditionally queues/ACKs receipts, safely replays response-loss duplicates,
+  backs off, and circuit-breaks delivery. Disabled, optional, and required
+  modes preserve compatibility and fail-closed strict behavior.
 - **Evidence:** Focused grant, Bifrost, retry, receipt, in-memory, and SQLite
   tests cover identity/generation fencing, two-organization concurrent reuse,
   missing/invalid grants, no-secret receipts, retry coordinates, ACK/replay,
@@ -5489,6 +5489,26 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   implementation handoff; no release, tag, or downstream deployment is
   implied by the plan.
 - **Decision:** D-434. **Status:** Implementation candidate.
+
+### Phase 255 — Provider-neutral descriptors and runtime-origin model discovery (HA-71)
+
+- **Subsystem:** `internal/llm/provider`, the Bifrost provider adapter, and the
+  read-only provider CLI. No Protocol method or version is added by this phase.
+- **RFC:** §3.4, §4.3, §6.5, §6.15, §8. **Deps:** 33, 36a, 57, 91, 93;
+  D-333, D-334, and D-434 provide adjacent provider and grant boundaries.
+- **What it delivers:** D-435 — a typed `ProviderDescriptor` and immutable
+  catalog snapshot plus bounded `Validate`/`Discover` operations. Runtime
+  discovery uses the same Bifrost account construction as execution, honors
+  cancellation, caps pagination, and normalizes only provider-neutral facts.
+  The first consumer is the read-only `harbor llm providers` CLI; it does not
+  assemble or boot Runtime/EventBus. Presentation, credentials, provider
+  response bodies, and Pengui policy remain outside Harbor.
+- **Evidence:** Focused catalog/adapter/CLI race tests, vet, static smoke,
+  mutation-resistant documentation/drift checks, hosted CI, and an
+  operator-approved runtime-origin probe with sanitized output are required
+  before any release claim. No downstream deployment or database mutation is
+  implied by the phase.
+- **Decision:** D-435. **Status:** Accepted as an unreleased candidate.
 
 ## Notes
 

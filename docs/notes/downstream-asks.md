@@ -1499,6 +1499,47 @@ The native darwin/arm64 artifact reports v1.29.3, Protocol 0.1.0, build
 complete. Local `make preflight` was never run and no downstream fleet repair
 or cutover is claimed.
 
+---
+
+## HA-71 — provider-neutral descriptors, runtime validation, and model discovery
+
+**Priority:** High. **Size:** medium. **State:** Harbor Phase 255 / D-435
+candidate implemented locally; no release or downstream acceptance claimed.
+
+**Observed gap.** Bifrost already owns provider setup and model-listing
+mechanics, but a control-plane consumer cannot safely ask Harbor what a
+provider connection technically supports. Re-deriving credential fields,
+custom endpoint support, model capabilities, or discovery behavior outside
+the runtime would drift from the execution source of truth and risks exposing
+provider errors or secrets.
+
+**Required shape.** Harbor exposes a provider-neutral typed descriptor with
+credential modes and logical field kinds, custom-endpoint support,
+runtime-origin validation capability, discovery capability, and explicit
+supported/unsupported/manual/unavailable/partial/stale/unknown/unpriced
+states. Model discovery normalizes only reported context/input/output limits,
+modalities, tools, canonical reasoning signals, deprecation, and pricing
+provenance. Missing facts remain unknown or unpriced. Configured custom model
+lists remain manual; when a custom endpoint cannot provide discovery, Harbor
+returns that manual list as an explicit fallback rather than calling it
+discovered.
+
+**Boundary and guardrails.** Presentation metadata (friendly names, logos,
+copy, and consumer aliases) remains outside Harbor. The adapter reuses the
+real Bifrost account path and `ListModelsRequest`; it is bounded and
+cancellable, rejects malformed/duplicate rows, and maps errors to stable
+redacted codes. No provider response body, `ProviderExtra`, endpoint value,
+environment variable name, credential, prompt, or identity value enters the
+descriptor/result. The first consumer is read-only `harbor llm providers`;
+no Protocol version or method is added. A future Protocol surface must define
+its own authority/audience before consuming this contract.
+
+**Evidence required before release.** Focused race/vet/CLI/smoke gates,
+independent adversarial review, hosted CI, and an operator-approved
+runtime-origin validation/discovery probe with sanitized output. This ask does
+not claim provider account readiness, fleet rollout, or downstream database
+mutation.
+
 ## Posture signals from the downstream team
 
 Recorded so a future phase does not "helpfully" relax something the consumer explicitly wants kept:
