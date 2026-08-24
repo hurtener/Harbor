@@ -13942,9 +13942,8 @@ or cutover is claimed.
 
 **Date:** 2026-08-23
 
-**Status:** Release candidate (pre-tag; Phase 254). Hosted CI is green,
-including full preflight; the immutable tag, release, provenance/checksums, and
-post-tag scaffold cleanup remain pending.
+**Status:** Shipped in Harbor v1.30.0 (Phase 254). Hosted CI and the release
+workflow are green; downstream deployment and acceptance remain pending.
 
 Harbor adds a generic, opt-in execution-edge contract for a coordinator-signed
 external grant. The grant is versioned and signed, carries a key id and
@@ -13998,8 +13997,19 @@ at `d9bf28fe703e10eb9f995657f4ac52949aa57e04` (tree
 preflight. Post-merge main run `32673186738` also completed successfully on
 merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
 preflight.
-No public tag, GitHub release, module provenance/checksum claim, post-tag
-scaffold cleanup, or downstream acceptance is made here.
+**Release evidence (2026-08-24).** The annotated `v1.30.0` tag object is
+`53c388028f1150c9afb6263332583d319c3ba544` and peels to
+`466b307c563f8193950ac5abef36677e48b1bae8`. Release workflow `32683661507`
+completed successfully and published 13 assets with verified aggregate
+`checksums.txt`, six sidecar checksums, and six GitHub attestations. The native
+darwin/arm64 artifact reports Harbor v1.30.0, Protocol 0.1.0, build
+`466b307c563f8193950ac5abef36677e48b1bae8`. Public module provenance records
+`Sum=h1:9MfAk67WbACqvXnwSMMv0WYonE+S0fV5Y7wcuhwNo8o=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=466b307c563f8193950ac5abef36677e48b1bae8`, and
+`Origin.Ref=refs/tags/v1.30.0`. The post-tag scaffold pin and golden cleanup
+is included in this follow-up; no downstream runtime, fleet, or database
+deployment/acceptance is claimed.
 
 ---
 
@@ -14007,9 +14017,8 @@ scaffold cleanup, or downstream acceptance is made here.
 
 **Date:** 2026-08-23
 
-**Status:** Release candidate (pre-tag). Hosted CI is green, including full
-preflight; immutable tag/release/provenance/checksums, post-tag scaffold
-cleanup, and downstream acceptance remain open.
+**Status:** Shipped in Harbor v1.30.0 (Phase 255). Hosted CI and the release
+workflow are green; downstream deployment and acceptance remain pending.
 
 Harbor now owns the smallest typed technical contract needed by a provider
 control-plane consumer without becoming that consumer's presentation or
@@ -14072,4 +14081,17 @@ commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04` (including full preflight),
 are the candidate evidence. A configured runtime-origin probe requires
 operator-approved credentials and is not run by the static smoke. No downstream
 database, fleet,
-deployment, tag, or release was mutated or claimed.
+deployment, or downstream acceptance was mutated or claimed. The annotated
+`v1.30.0` tag object is
+`53c388028f1150c9afb6263332583d319c3ba544` and peels to
+`466b307c563f8193950ac5abef36677e48b1bae8`; release workflow `32683661507`
+completed successfully and published 13 assets with verified aggregate
+`checksums.txt`, six sidecar checksums, and six GitHub attestations. Public
+module provenance records `Sum=h1:9MfAk67WbACqvXnwSMMv0WYonE+S0fV5Y7wcuhwNo8o=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=466b307c563f8193950ac5abef36677e48b1bae8`, and
+`Origin.Ref=refs/tags/v1.30.0`. The native darwin/arm64 artifact reports
+Harbor v1.30.0, Protocol 0.1.0, and build
+`466b307c563f8193950ac5abef36677e48b1bae8`. The post-tag scaffold pin and
+golden cleanup is included in this follow-up; no downstream runtime, fleet,
+database, or deployment acceptance is claimed.
