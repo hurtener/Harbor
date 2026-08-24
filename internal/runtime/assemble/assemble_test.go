@@ -216,7 +216,11 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 2)}
+	// The durable outbox is at-least-once: a concurrent enqueue can race the
+	// post-delivery acknowledgement and cause a bounded redelivery before both
+	// distinct receipts arrive. Keep enough observation capacity to retain that
+	// valid duplicate while the two Complete calls finish.
+	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 16)}
 	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
 		ExternalGrant:         llm.ExternalGrantConfig{Credentials: binding},
 		ExternalGrantDelivery: delivery,
@@ -310,11 +314,25 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 		}
 	}
 	seenOrganizations := map[string]bool{}
-	for range 2 {
+	deliveryDeadline := time.NewTimer(5 * time.Second)
+	defer deliveryDeadline.Stop()
+	for len(seenOrganizations) < 2 {
 		select {
 		case receipt := <-delivery.ch:
+			switch receipt.OrganizationID {
+			case "org-a":
+				if receipt.ProviderConnectionID != "connection-a" {
+					t.Fatalf("org-a provider connection = %q, want connection-a", receipt.ProviderConnectionID)
+				}
+			case "org-b":
+				if receipt.ProviderConnectionID != "connection-b" {
+					t.Fatalf("org-b provider connection = %q, want connection-b", receipt.ProviderConnectionID)
+				}
+			default:
+				t.Fatalf("unexpected receipt organization %q", receipt.OrganizationID)
+			}
 			seenOrganizations[receipt.OrganizationID] = true
-		case <-time.After(2 * time.Second):
+		case <-deliveryDeadline.C:
 			t.Fatal("assembled outbox did not deliver both content-free receipts")
 		}
 	}
