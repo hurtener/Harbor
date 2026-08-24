@@ -56,19 +56,35 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if c.deps.ExternalGrant.Verifier == nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: verifier is not configured", llm.ErrExternalGrantInvalid)
 	}
-	if c.deps.ExternalGrant.Credentials == nil {
+	grant := *req.ExternalGrant
+	grantMode := llm.EffectiveExternalGrantRouteMode(grant.RouteMode)
+	if c.deps.ExternalGrant.RouteMode != "" && grantMode != c.deps.ExternalGrant.RouteMode {
+		return llm.CompleteResponse{}, fmt.Errorf("%w: grant route mode is not enabled", llm.ErrExternalGrantInvalid)
+	}
+	if grantMode == llm.ExternalGrantRouteCoordinatorBound && c.deps.ExternalGrant.Credentials == nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: credential resolver is not configured", llm.ErrExternalGrantInvalid)
 	}
 	if mode == llm.ExternalGrantRequired && c.deps.ExternalGrant.Reservations == nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: durable reservation manager is not configured", llm.ErrExternalGrantInvalid)
 	}
 
-	grant := *req.ExternalGrant
-	req = bindRequestDefaults(req, grant, c.cfg)
+	requestedModel := req.Model
+	if grantMode == llm.ExternalGrantRouteRuntimeDefault {
+		if c.cfg.Provider == "" || c.cfg.Model == "" || (requestedModel != "" && requestedModel != c.cfg.Model) {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: runtime-default grant requires the configured provider and model", llm.ErrExternalGrantInvalid)
+		}
+		if grant.Provider != "" || grant.ProviderModelID != "" || grant.ProviderConnectionID != "" || grant.ProviderConnectionGeneration != 0 || grant.RouteID != "" || grant.CredentialBindingHandle != "" || grant.CredentialAssetGeneration != 0 {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: runtime-default grant carries coordinator route claims", llm.ErrExternalGrantInvalid)
+		}
+	}
+	var err error
+	req, err = bindRequestDefaults(req, grant, c.cfg)
+	if err != nil {
+		return llm.CompleteResponse{}, err
+	}
 	if err := c.verifyOrTopUp(ctx, &grant, req); err != nil {
 		return llm.CompleteResponse{}, err
 	}
-	var err error
 	req, err = capRequestToGrant(req, grant)
 	if err != nil {
 		return llm.CompleteResponse{}, err
@@ -81,7 +97,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if scope.FallbackHop > 0 {
 		return llm.CompleteResponse{}, llm.ErrExternalGrantCrossProviderFallback
 	}
-	if c.cfg.Provider != "" && grant.Provider != "" && c.cfg.Provider != grant.Provider {
+	if grantMode == llm.ExternalGrantRouteCoordinatorBound && c.cfg.Provider != "" && grant.Provider != "" && c.cfg.Provider != grant.Provider {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: grant provider %q is not the configured provider", llm.ErrExternalGrantCrossProviderFallback, grant.Provider)
 	}
 	var reservation llm.LeaseReservation
@@ -123,7 +139,12 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	// Never let an unverified caller-provided request field reach the driver;
 	// the driver receives the copy that is tied to the successful verification.
 	req.ExternalGrant = &grant
-	ctx = llm.WithVerifiedGrantContext(ctx, grant, c.deps.ExternalGrant.Credentials)
+	ctx = llm.WithVerifiedGrantContext(ctx, grant, func() llm.CredentialResolver {
+		if grantMode == llm.ExternalGrantRouteRuntimeDefault {
+			return nil
+		}
+		return c.deps.ExternalGrant.Credentials
+	}())
 	started := time.Now().UTC()
 	resp, callErr := c.inner.Complete(ctx, req)
 	if c.deps.ExternalGrant.ReceiptSink == nil {
@@ -132,7 +153,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		}
 		return resp, callErr
 	}
-	receipt := makeReceipt(grant, req, resp, callErr, started, time.Now().UTC(), scope)
+	receipt := makeReceipt(grant, req, resp, callErr, started, time.Now().UTC(), scope, c.cfg)
 	hash, err := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
 	if err != nil {
 		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
@@ -141,6 +162,12 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return resp, callErr
 	}
 	receipt.CanonicalBodyHash = hash
+	if err := llm.ValidateAttemptUsageReceiptAgainstGrant(receipt, grant); err != nil {
+		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
+			return resp, fmt.Errorf("%w: validate receipt: %w", llm.ErrUsageReceiptUnavailable, err)
+		}
+		return resp, callErr
+	}
 	if c.deps.ExternalGrant.Reservations != nil {
 		used := int64(receipt.TotalTokens)
 		if used < 0 {
@@ -175,7 +202,7 @@ func attemptID(grant llm.ExternalGrant, scope *llm.AttemptScope) string {
 			attempt = 1
 		}
 	}
-	return fmt.Sprintf("%s/%s/%s/%d/%d/%d/%d", grant.GrantID, logicalCallID, attemptNonce, retry, downgrade, hop, attempt)
+	return llm.CanonicalAttemptID(grant.GrantID, logicalCallID, attemptNonce, attempt, retry, downgrade, hop)
 }
 
 // bindRequestDefaults closes the two ordinary omission paths before the
@@ -184,9 +211,16 @@ func attemptID(grant llm.ExternalGrant, scope *llm.AttemptScope) string {
 // profile's reasoning default is checked against the grant ceiling. An
 // explicitly empty reasoning control remains an intentional provider-default
 // request and is not rewritten.
-func bindRequestDefaults(req llm.CompleteRequest, grant llm.ExternalGrant, cfg llm.ConfigSnapshot) llm.CompleteRequest {
+func bindRequestDefaults(req llm.CompleteRequest, grant llm.ExternalGrant, cfg llm.ConfigSnapshot) (llm.CompleteRequest, error) {
 	if req.Model == "" {
-		req.Model = grant.ProviderModelID
+		if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) == llm.ExternalGrantRouteRuntimeDefault {
+			req.Model = cfg.Model
+		} else {
+			req.Model = grant.ProviderModelID
+		}
+	}
+	if req.Model == "" {
+		return llm.CompleteRequest{}, fmt.Errorf("%w: no configured model for grant", llm.ErrExternalGrantInvalid)
 	}
 	if req.ReasoningEffort == "" && !req.ReasoningEffortExplicit {
 		if profile, ok := cfg.ModelProfiles[req.Model]; ok && profile.ReasoningEffort != "" {
@@ -195,7 +229,7 @@ func bindRequestDefaults(req llm.CompleteRequest, grant llm.ExternalGrant, cfg l
 			req.ReasoningEffort = grant.MaxReasoning
 		}
 	}
-	return req
+	return req, nil
 }
 
 // capRequestToGrant makes an omitted output limit explicit at the provider
@@ -226,6 +260,7 @@ func capRequestToGrant(req llm.CompleteRequest, grant llm.ExternalGrant) (llm.Co
 func maxInt() int { return int(^uint(0) >> 1) }
 
 func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, req llm.CompleteRequest) error {
+	originalMode := llm.EffectiveExternalGrantRouteMode(grant.RouteMode)
 	err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req)
 	if err == nil {
 		return nil
@@ -241,8 +276,8 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 	if topErr != nil {
 		return fmt.Errorf("%w: top-up failed: %w", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
-	if newGrant.LogicalCallID != grant.LogicalCallID || newGrant.AttemptNonce != grant.AttemptNonce {
-		return fmt.Errorf("%w: lease top-up changed attempt identity", llm.ErrExternalGrantInvalid)
+	if newGrant.LogicalCallID != grant.LogicalCallID || newGrant.AttemptNonce != grant.AttemptNonce || llm.EffectiveExternalGrantRouteMode(newGrant.RouteMode) != originalMode {
+		return fmt.Errorf("%w: lease top-up changed attempt identity or route mode", llm.ErrExternalGrantInvalid)
 	}
 	*grant = newGrant
 	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req); err != nil {
@@ -262,7 +297,7 @@ func (c *client) Close(ctx context.Context) error {
 	return c.inner.Close(ctx)
 }
 
-func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.CompleteResponse, callErr error, started, completed time.Time, scope *llm.AttemptScope) llm.AttemptUsageReceipt {
+func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.CompleteResponse, callErr error, started, completed time.Time, scope *llm.AttemptScope, cfg llm.ConfigSnapshot) llm.AttemptUsageReceipt {
 	status := "success"
 	if callErr != nil {
 		status = "error"
@@ -270,33 +305,48 @@ func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.Comp
 			status = "canceled"
 		}
 	}
-	attempt, retry, hop := 1, 0, 0
+	attempt, retry, downgrade, hop := 1, 0, 0, 0
 	logicalCallID, attemptNonce := grant.LogicalCallID, grant.AttemptNonce
+	parentLogicalCallID, parentAttemptNonce, plannerStep := grant.LogicalCallID, grant.AttemptNonce, 0
 	// The signed logical-call id and nonce anchor receipt identity. A true
 	// response-loss retry carries the same grant and therefore reuses the same
 	// durable identity; planner steps derive distinct child identities before
 	// reaching this boundary.
 	if scope != nil {
-		attempt, retry, hop = scope.Attempt, scope.Retry, scope.FallbackHop
+		attempt, retry, downgrade, hop = scope.Attempt, scope.Retry, scope.Downgrade, scope.FallbackHop
 		if scope.LogicalCallID != "" {
 			logicalCallID = scope.LogicalCallID
 		}
 		if scope.AttemptNonce != "" {
 			attemptNonce = scope.AttemptNonce
 		}
+		if scope.ParentLogicalCallID != "" {
+			parentLogicalCallID = scope.ParentLogicalCallID
+		}
+		if scope.ParentAttemptNonce != "" {
+			parentAttemptNonce = scope.ParentAttemptNonce
+		}
+		plannerStep = scope.PlannerStep
 		if attempt <= 0 {
 			attempt = 1
 		}
 	}
 	idempotency := attemptID(grant, scope)
+	provider := grant.Provider
+	model := grant.ProviderModelID
+	if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) == llm.ExternalGrantRouteRuntimeDefault {
+		provider = cfg.Provider
+		model = req.Model
+	}
 	receipt := llm.AttemptUsageReceipt{
-		ReceiptID: idempotency, GrantID: grant.GrantID, LogicalCallID: logicalCallID, AttemptNonce: attemptNonce, OrganizationID: grant.OrganizationID,
+		ReceiptID: idempotency, GrantID: grant.GrantID, RouteMode: grant.RouteMode, LogicalCallID: logicalCallID, AttemptNonce: attemptNonce,
+		ParentLogicalCallID: parentLogicalCallID, ParentAttemptNonce: parentAttemptNonce, PlannerStep: plannerStep, OrganizationID: grant.OrganizationID,
 		RuntimeID: grant.RuntimeID, TenantID: grant.TenantID, UserID: grant.UserID,
-		SessionID: grant.SessionID, LogicalRunID: grant.LogicalRunID, Provider: grant.Provider,
-		ProviderModelID: grant.ProviderModelID, ProviderConnectionID: grant.ProviderConnectionID,
+		SessionID: grant.SessionID, LogicalRunID: grant.LogicalRunID, Provider: provider,
+		ProviderModelID: model, ProviderConnectionID: grant.ProviderConnectionID,
 		ProviderConnectionGeneration: grant.ProviderConnectionGeneration,
 		RouteID:                      grant.RouteID, CredentialAssetGeneration: grant.CredentialAssetGeneration,
-		PolicyGeneration: grant.PolicyGeneration, AttemptNumber: attempt, RetryNumber: retry,
+		PolicyGeneration: grant.PolicyGeneration, AttemptNumber: attempt, RetryNumber: retry, DowngradeNumber: downgrade,
 		FallbackHop: hop, RequestedReasoning: req.ReasoningEffort, EffectiveReasoning: req.ReasoningEffort,
 		PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens,
 		ReasoningTokens: resp.Usage.ReasoningTokens, TotalTokens: resp.Usage.TotalTokens,

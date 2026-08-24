@@ -14,6 +14,12 @@ import (
 	grantpkg "github.com/hurtener/Harbor/internal/llm/grant"
 )
 
+type credentialResolverFunc func(context.Context, llm.ExternalGrant) (llm.ResolvedCredential, error)
+
+func (f credentialResolverFunc) Resolve(ctx context.Context, grant llm.ExternalGrant) (llm.ResolvedCredential, error) {
+	return f(ctx, grant)
+}
+
 // TestNewAccount_LiteralKey — APIKey supplied as a literal value.
 func TestNewAccount_LiteralKey(t *testing.T) {
 	cfg := llm.ConfigSnapshot{
@@ -265,9 +271,10 @@ func TestAccount_GetKeysForProvider_ExternalGrantUsesVerifiedBinding(t *testing.
 }
 
 func TestNewAccount_RequiredExternalGrantDoesNotResolveBootSecret(t *testing.T) {
-	// Strict grant mode must be able to boot without a provider key in the
-	// runtime environment. The verified binding is the only credential path;
-	// a missing local key must not turn into a boot-time secret requirement.
+	// Legacy v1.30.0 required mode with no route restriction must still boot
+	// without a provider key. A coordinator-bound verified call can use its
+	// resolver; runtime_default fails at the call boundary if no local key was
+	// available to seed opportunistically.
 	a, err := newAccount(llm.ConfigSnapshot{Provider: string(bfschemas.OpenAI)}, llm.Deps{
 		ExternalGrant: llm.ExternalGrantConfig{Mode: llm.ExternalGrantRequired},
 	})
@@ -276,6 +283,102 @@ func TestNewAccount_RequiredExternalGrantDoesNotResolveBootSecret(t *testing.T) 
 	}
 	if got := a.primaryKey.Get(); got != "" {
 		t.Fatalf("strict grant boot key = %q, want empty", got)
+	}
+	runtimeDefaultCtx := llm.WithVerifiedGrantContext(context.Background(), llm.ExternalGrant{
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+	}, nil)
+	if _, err := a.GetKeysForProvider(runtimeDefaultCtx, bfschemas.OpenAI); !errors.Is(err, ErrMissingAPIKey) {
+		t.Fatalf("keyless runtime_default = %v, want ErrMissingAPIKey", err)
+	}
+}
+
+func TestAccount_GetKeysForProvider_BlankRequiredCoordinatorBoundUsesResolverWithoutBootKey(t *testing.T) {
+	a, err := newAccount(llm.ConfigSnapshot{Provider: string(bfschemas.OpenAI)}, llm.Deps{
+		ExternalGrant: llm.ExternalGrantConfig{Mode: llm.ExternalGrantRequired},
+	})
+	if err != nil {
+		t.Fatalf("newAccount blank required: %v", err)
+	}
+	grant := llm.ExternalGrant{
+		// Blank is the signed v1.30.0 coordinator-bound compatibility shape.
+		Provider: string(bfschemas.OpenAI), ProviderConnectionID: "connection-a",
+		ProviderConnectionGeneration: 2, CredentialBindingHandle: "binding-a", CredentialAssetGeneration: 3,
+	}
+	resolver := credentialResolverFunc(func(_ context.Context, got llm.ExternalGrant) (llm.ResolvedCredential, error) {
+		return llm.ResolvedCredential{
+			Provider: got.Provider, CredentialBindingHandle: got.CredentialBindingHandle,
+			CredentialAssetGeneration:    got.CredentialAssetGeneration,
+			ProviderConnectionGeneration: got.ProviderConnectionGeneration, Secret: "coordinator-secret",
+		}, nil
+	})
+	ctx := llm.WithVerifiedGrantContext(context.Background(), grant, resolver)
+	keys, err := a.GetKeysForProvider(ctx, bfschemas.OpenAI)
+	if err != nil {
+		t.Fatalf("blank coordinator-bound GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "coordinator-secret" || keys[0].ID != "harbor-external-grant" {
+		t.Fatalf("blank coordinator-bound keys = %+v, want resolver credential", keys)
+	}
+}
+
+func TestNewAccount_ExplicitRuntimeDefaultRequiresBootSecret(t *testing.T) {
+	_, err := newAccount(llm.ConfigSnapshot{Provider: string(bfschemas.OpenAI)}, llm.Deps{
+		ExternalGrant: llm.ExternalGrantConfig{
+			Mode:      llm.ExternalGrantRequired,
+			RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		},
+	})
+	if !errors.Is(err, ErrMissingAPIKey) {
+		t.Fatalf("explicit runtime_default boot = %v, want ErrMissingAPIKey", err)
+	}
+}
+
+func TestAccount_GetKeysForProvider_RuntimeDefaultGrantUsesConfiguredNativeKey(t *testing.T) {
+	a, err := newAccount(llm.ConfigSnapshot{
+		Provider: string(bfschemas.OpenAI),
+		APIKey:   "runtime-native-key",
+	}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{Mode: llm.ExternalGrantRequired}})
+	if err != nil {
+		t.Fatalf("newAccount runtime-default-capable: %v", err)
+	}
+	ctx := llm.WithVerifiedGrantContext(context.Background(), llm.ExternalGrant{
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+	}, nil)
+	keys, err := a.GetKeysForProvider(ctx, bfschemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider runtime_default: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "runtime-native-key" || keys[0].ID != "harbor-default" {
+		t.Fatalf("runtime-default keys = %+v, want configured native key", keys)
+	}
+}
+
+func TestAccount_GetKeysForProvider_RuntimeDefaultGrantUsesConfiguredCustomKey(t *testing.T) {
+	t.Setenv("HARBOR_TEST_RUNTIME_DEFAULT_CUSTOM_KEY", "runtime-custom-key")
+	a, err := newAccount(llm.ConfigSnapshot{
+		Provider: "runtime-custom",
+		CustomProviders: []llm.CustomProviderSpec{{
+			Name:         "runtime-custom",
+			BaseURL:      "https://provider.example.com",
+			APIKeyEnvVar: "HARBOR_TEST_RUNTIME_DEFAULT_CUSTOM_KEY",
+			Models:       []string{"runtime-model"},
+		}},
+	}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode:      llm.ExternalGrantRequired,
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+	}})
+	if err != nil {
+		t.Fatalf("newAccount custom runtime_default: %v", err)
+	}
+	ctx := llm.WithVerifiedGrantContext(context.Background(), llm.ExternalGrant{
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+	}, nil)
+	keys, err := a.GetKeysForProvider(ctx, bfschemas.ModelProvider("runtime-custom"))
+	if err != nil {
+		t.Fatalf("GetKeysForProvider custom runtime_default: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "runtime-custom-key" || keys[0].ID != "harbor-default" {
+		t.Fatalf("custom runtime-default keys = %+v, want configured custom key", keys)
 	}
 }
 

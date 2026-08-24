@@ -2,10 +2,12 @@ package localdb
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/skills"
 )
@@ -124,6 +126,55 @@ func TestMigrate_InstalledPackages_ConcurrentNew(t *testing.T) {
 	defer func() { _ = probe.Close(context.Background()) }()
 	if got := readSchemaVersions(t, probe.(*driver)); !reflect.DeepEqual(got, []int{1, 2, 3}) {
 		t.Fatalf("schema_migrations after %d concurrent runs = %v, want [1 2 3]", n, got)
+	}
+}
+
+// TestBootstrapSQLite_RetriesCrossPoolContention proves the open-time retry
+// covers migration work as well as the WAL verification query. The lock holder
+// and contender use independent pools, matching overlapping New calls and
+// processes; the contender's 1 ms busy timeout forces at least one retry
+// before the holder releases its transaction.
+func TestBootstrapSQLite_RetriesCrossPoolContention(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "bootstrap-contention.sqlite")
+	lockerDSN := dsn + `?_pragma=busy_timeout%285000%29&_pragma=journal_mode%28WAL%29&_txlock=immediate`
+	locker, err := sql.Open(sqliteDriver, lockerDSN)
+	if err != nil {
+		t.Fatalf("open lock holder: %v", err)
+	}
+	locker.SetMaxOpenConns(1)
+	defer func() { _ = locker.Close() }()
+	if err := verifyJournalMode(context.Background(), locker, dsn); err != nil {
+		t.Fatalf("initialize WAL: %v", err)
+	}
+
+	tx, err := locker.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin lock holder: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(context.Background(), `CREATE TABLE lock_probe (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("acquire write lock: %v", err)
+	}
+
+	contenderDSN := dsn + `?_pragma=busy_timeout%281%29&_pragma=journal_mode%28WAL%29&_txlock=immediate`
+	contender, err := sql.Open(sqliteDriver, contenderDSN)
+	if err != nil {
+		t.Fatalf("open contender: %v", err)
+	}
+	contender.SetMaxOpenConns(1)
+	defer func() { _ = contender.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- bootstrapSQLite(ctx, contender, dsn) }()
+	time.Sleep(100 * time.Millisecond)
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("release lock holder: %v", err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("bootstrap after contention: %v", err)
 	}
 }
 

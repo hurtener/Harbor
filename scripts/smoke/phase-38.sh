@@ -25,9 +25,13 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if go test -race -count=1 -timeout 120s ./internal/skills/tools/... >/dev/null 2>&1; then
+phase38_log_dir="$(mktemp -d)"
+trap 'rm -rf "${phase38_log_dir}"' EXIT
+
+if go test -race -count=1 -timeout 120s ./internal/skills/tools/... >"${phase38_log_dir}/tools.log" 2>&1; then
     ok 'phase 38: internal/skills/tools tests pass under -race (filter + redactor + budgeter + handlers + D-025 + integration)'
 else
+    sed -n '1,400p' "${phase38_log_dir}/tools.log" >&2
     fail 'phase 38: internal/skills/tools tests failed (run `go test -race ./internal/skills/tools/...` for detail)'
 fi
 
@@ -44,9 +48,10 @@ fi
 # Regression check: Phase 37's surface still passes once Phase 38's
 # wrapper sits on top. Pre-Phase-38 this lived in scripts/smoke/phase-37.sh as
 # a skip; flipped to an assertion in this PR.
-if go test -race -count=1 -timeout 120s ./internal/skills/... >/dev/null 2>&1; then
+if go test -race -count=1 -timeout 120s ./internal/skills/... >"${phase38_log_dir}/skills.log" 2>&1; then
     ok 'phase 38: internal/skills (Phase 37) tests still green with Phase 38 wrapper present'
 else
+    sed -n '1,400p' "${phase38_log_dir}/skills.log" >&2
     fail 'phase 38: internal/skills regression detected (run `go test -race ./internal/skills/...` for detail)'
 fi
 

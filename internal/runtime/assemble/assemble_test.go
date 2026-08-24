@@ -9,11 +9,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,6 +320,186 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 	}
 	if len(seenOrganizations) != 2 || !seenOrganizations["org-a"] || !seenOrganizations["org-b"] {
 		t.Fatalf("multi-organization receipts = %+v, want org-a and org-b", seenOrganizations)
+	}
+}
+
+func TestAssemble_ExternalGrantRuntimeDefaultUsesNativeProviderAndReceipts(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.LLM.Provider = "mock"
+	cfg.LLM.Model = "model-fast"
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		"model-fast": {ContextWindowTokens: 4096, TokenEstimator: "chars_div_4"},
+	}
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := grant.NewSigner("key-default", "harbor-runtime", private, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+		Mode: "required",
+		// Leave route_mode unrestricted: an explicit runtime_default grant
+		// must still boot and execute without a coordinator credential resolver.
+		Audience:   "harbor-runtime",
+		RuntimeID:  "runtime-default",
+		PublicKeys: map[string]string{"key-default": base64.RawURLEncoding.EncodeToString(signer.PublicKey())},
+	}
+	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 1)}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{ExternalGrantDelivery: delivery})
+	if err != nil {
+		t.Fatalf("Assemble runtime-default external grant: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	id := identity.Identity{TenantID: "tenant-default", UserID: "user-default", SessionID: "session-default"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	signed, err := signer.Sign(llm.ExternalGrant{
+		Version: 1, GrantID: "grant-default", OrganizationID: "org-default", RuntimeID: "runtime-default",
+		TenantID: "tenant-default", UserID: "user-default", SessionID: "session-default", LogicalRunID: "run-default",
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault, PolicyGeneration: 3,
+		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 128,
+		Lease:    llm.ComputeLease{LeaseID: "lease-default", TokenUnits: 256, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stack.LLM.Complete(ctx, llm.CompleteRequest{
+		Messages:      []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: stringPtr("hello")}}},
+		ExternalGrant: &signed,
+	}); err != nil {
+		t.Fatalf("runtime-default completion: %v", err)
+	}
+	select {
+	case receipt := <-delivery.ch:
+		if receipt.RouteMode != llm.ExternalGrantRouteRuntimeDefault || receipt.Provider != "mock" || receipt.ProviderModelID != "model-fast" {
+			t.Fatalf("runtime-default receipt = %+v", receipt)
+		}
+		if receipt.ProviderConnectionID != "" || receipt.RouteID != "" || receipt.CredentialAssetGeneration != 0 {
+			t.Fatalf("runtime-default receipt leaked coordinator route claims: %+v", receipt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime-default receipt was not delivered")
+	}
+}
+
+func TestAssemble_ExternalGrantRuntimeDefaultReachesBifrostCustomProvider(t *testing.T) {
+	const (
+		envName  = "HARBOR_TEST_ASSEMBLED_RUNTIME_DEFAULT_KEY"
+		provider = "runtime-openai-compatible"
+		model    = "runtime/model-fast"
+	)
+	t.Setenv(envName, "runtime-provider-secret")
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("provider path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer runtime-provider-secret" {
+			t.Errorf("provider authorization = %q, want runtime configured secret", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read provider request: %v", err)
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		if request.Model != model {
+			t.Errorf("provider model = %q, want %q", request.Model, model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"runtime-default","object":"chat.completion","created":1,"model":"runtime/model-fast","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`))
+	}))
+	defer server.Close()
+
+	cfg := minimalCfg(t)
+	cfg.LLM.Driver = "bifrost"
+	cfg.LLM.Provider = provider
+	cfg.LLM.Model = model
+	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{{
+		Name: provider, BaseURL: server.URL, APIKeyEnvVar: envName,
+		Models: []string{model}, Timeout: 5 * time.Second,
+	}}
+	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+		model: {ContextWindowTokens: 4096, TokenEstimator: "chars_div_4"},
+	}
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := grant.NewSigner("key-bifrost", "harbor-runtime", private, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+		Mode: "required", RouteMode: "runtime_default", Audience: "harbor-runtime", RuntimeID: "runtime-bifrost",
+		PublicKeys: map[string]string{"key-bifrost": base64.RawURLEncoding.EncodeToString(signer.PublicKey())},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("runtime-default bifrost config: %v", err)
+	}
+	delivery := &recordingGrantDelivery{ch: make(chan llm.AttemptUsageReceipt, 1)}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{ExternalGrantDelivery: delivery})
+	if err != nil {
+		t.Fatalf("Assemble runtime-default bifrost: %v", err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+
+	id := identity.Identity{TenantID: "tenant-bifrost", UserID: "user-bifrost", SessionID: "session-bifrost"}
+	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, id, "run-bifrost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	signed, err := signer.Sign(llm.ExternalGrant{
+		Version: 1, GrantID: "grant-bifrost", OrganizationID: "org-bifrost", RuntimeID: "runtime-bifrost",
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LogicalRunID: "run-bifrost",
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault, PolicyGeneration: 4,
+		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 128,
+		Lease:    llm.ComputeLease{LeaseID: "lease-bifrost", TokenUnits: 256, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "hello"
+	if _, err := stack.LLM.Complete(ctx, llm.CompleteRequest{
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}}, ExternalGrant: &signed,
+	}); err != nil {
+		t.Fatalf("runtime-default bifrost completion: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want 1", calls.Load())
+	}
+	select {
+	case receipt := <-delivery.ch:
+		if receipt.RouteMode != llm.ExternalGrantRouteRuntimeDefault || receipt.Provider != provider || receipt.ProviderModelID != model {
+			t.Fatalf("runtime-default bifrost receipt = %+v", receipt)
+		}
+		if receipt.ProviderConnectionID != "" || receipt.RouteID != "" || receipt.CredentialAssetGeneration != 0 {
+			t.Fatalf("runtime-default bifrost receipt leaked coordinator route claims: %+v", receipt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime-default bifrost receipt was not delivered")
 	}
 }
 

@@ -14095,3 +14095,73 @@ Harbor v1.30.0, Protocol 0.1.0, and build
 `466b307c563f8193950ac5abef36677e48b1bae8`. The post-tag scaffold pin and
 golden cleanup is included in this follow-up; no downstream runtime, fleet,
 database, or deployment acceptance is claimed.
+
+---
+
+## D-436 — Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension)
+
+**Date:** 2026-08-24
+
+**Status:** Implementation candidate for the v1.30.1 hotfix; no tag or release claim.
+
+The v1.30.0 external-grant implementation was correct at its internal runtime
+boundary but not yet a usable generic framework contract for a second consumer:
+the grant, route configuration, receipt delivery, and receipt validation types
+were internal-only, and the reference verifier required provider-route and
+credential claims even when a deployment intentionally keeps provider
+management in the runtime configuration.
+
+This compatibility extension makes the existing contract nameable through
+`sdk/llm`, `sdk/llm/grant`, `sdk/llm/receipts`, `sdk/config`, and
+`sdk/assemble`. The public surface includes the signer/verifier configuration,
+transport-neutral delivery interface, canonical receipt JSON/hash, canonical
+attempt identity, and receipt-to-grant validation. No HTTP delivery protocol,
+provider presentation layer, or product-specific policy vocabulary is added.
+
+The signed `route_mode` is explicit. `coordinator_bound` preserves the v1.30.0
+provider/model/route/opaque-credential shape; blank remains its legacy alias so
+old signed grants and receipt hashes remain readable. Opt-in `runtime_default`
+omits all coordinator route/credential claims, uses the runtime's configured
+provider/model and native `LiveKey` or custom-primary credential, records the
+actual route in the receipt, and still enforces
+verified identity, policy generation, bounded lease, durable attempt
+reservation/settlement, receipt delivery, retries, and structured-output
+downgrades. Mixed shapes fail closed before provider invocation. A lease top-up
+cannot change route mode or attempt identity, and cross-provider fallback is
+refused before invocation under an external grant.
+
+An empty runtime `route_mode` is an acceptance restriction, not a grant-shape
+default: it accepts either explicit signed mode and therefore does not require
+a coordinator credential resolver merely to boot. A coordinator-bound call on
+such a runtime still fails before provider invocation when no resolver is
+wired. Blank mode inside a legacy signed grant continues to mean
+`coordinator_bound`.
+
+The Bifrost account branches on the verified grant's route mode. Only
+`coordinator_bound` resolves the opaque coordinator credential; `runtime_default`
+uses the already configured primary key. A strict runtime explicitly restricted
+to `runtime_default` requires that local key at boot; one restricted to
+`coordinator_bound` does not load it. Legacy blank required mode keeps v1.30.0's
+keyless coordinator-bound boot and opportunistically seeds a configured local
+key. If none is available, a later runtime-default call fails with
+`ErrMissingAPIKey` while a coordinator-bound resolver call remains usable. This
+is verified through an assembled real Bifrost request against an
+OpenAI-compatible test provider, not only through the mock driver.
+
+Receipts carry parent logical-call/nonce and planner-step derivation alongside
+retry, downgrade, fallback, and attempt coordinates. The canonical validator
+binds root and planner-child receipts to the signed grant and rejects forged
+children, route drift, body-hash drift, and duplicate attempt identities without
+reading content or secrets. A second consumer may implement any transport for
+the public `Delivery` seam using the canonical JSON; Harbor does not prescribe
+an HTTP endpoint here.
+
+**Compatibility boundary.** Protocol version remains `0.1.0`. Disabled and
+optional grant modes preserve existing behavior, coordinator-bound grants remain
+the default, and legacy v1.30.0 receipt hashes are accepted. `runtime_default`
+is never inferred from missing provider fields. The v1.30.1 release/tag,
+published assets, checksums, public module provenance, hosted release workflow,
+and downstream acceptance are separate gates and are not claimed by this
+decision's implementation candidate.
+
+**Plan:** `docs/plans/phase-256-external-grant-sdk-runtime-default.md`.

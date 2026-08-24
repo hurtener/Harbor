@@ -78,6 +78,9 @@ func (s *Signer) PublicKey() ed25519.PublicKey {
 func (s *Signer) Sign(claims llm.ExternalGrant) (llm.ExternalGrant, error) {
 	claims.KeyID = s.keyID
 	claims.Audience = s.audience
+	if claims.RouteMode == "" {
+		claims.RouteMode = llm.ExternalGrantRouteCoordinatorBound
+	}
 	if claims.IssuedAt.IsZero() {
 		claims.IssuedAt = s.clock().UTC()
 	}
@@ -111,6 +114,7 @@ type Verifier struct {
 	authorizedOrganizations map[string]struct{}
 	clock                   func() time.Time
 	clockSkew               time.Duration
+	routeMode               llm.ExternalGrantRouteMode
 }
 
 // VerifierConfig constructs a verifier from a copied key set.
@@ -121,6 +125,10 @@ type VerifierConfig struct {
 	Keys                    map[string]ed25519.PublicKey
 	Clock                   func() time.Time
 	ClockSkew               time.Duration
+	// RouteMode optionally restricts this runtime to one signed route shape.
+	// Empty accepts both explicit modes so mixed fleets can migrate without
+	// weakening per-grant validation.
+	RouteMode llm.ExternalGrantRouteMode
 }
 
 // NewVerifier constructs a fail-closed verifier. Public keys are copied so a
@@ -128,6 +136,9 @@ type VerifierConfig struct {
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if strings.TrimSpace(cfg.Audience) == "" || strings.TrimSpace(cfg.RuntimeID) == "" || len(cfg.Keys) == 0 {
 		return nil, fmt.Errorf("%w: audience, runtime_id, and at least one key are required", ErrInvalidGrantShape)
+	}
+	if cfg.RouteMode != "" && cfg.RouteMode != llm.ExternalGrantRouteRuntimeDefault && cfg.RouteMode != llm.ExternalGrantRouteCoordinatorBound {
+		return nil, fmt.Errorf("%w: unsupported route mode %q", ErrInvalidGrantShape, cfg.RouteMode)
 	}
 	keys := make(map[string]ed25519.PublicKey, len(cfg.Keys))
 	for id, key := range cfg.Keys {
@@ -152,7 +163,7 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 		}
 		organizations[organization] = struct{}{}
 	}
-	return &Verifier{keys: keys, audience: cfg.Audience, runtimeID: cfg.RuntimeID, authorizedOrganizations: organizations, clock: clock, clockSkew: skew}, nil
+	return &Verifier{keys: keys, audience: cfg.Audience, runtimeID: cfg.RuntimeID, authorizedOrganizations: organizations, clock: clock, clockSkew: skew, routeMode: cfg.RouteMode}, nil
 }
 
 // Verify implements llm.ExternalGrantVerifier. It requires the request-edge
@@ -161,6 +172,10 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
 	if err := validateClaims(grant, true); err != nil {
 		return err
+	}
+	grantMode := normalizedRouteMode(grant.RouteMode)
+	if v.routeMode != "" && grantMode != v.routeMode {
+		return fmt.Errorf("%w: route mode is not enabled for this runtime", llm.ErrExternalGrantInvalid)
 	}
 	if grant.Audience != v.audience || grant.RuntimeID != v.runtimeID {
 		return fmt.Errorf("%w: audience or runtime mismatch", llm.ErrExternalGrantInvalid)
@@ -205,7 +220,7 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 		quad.RunID != grant.LogicalRunID || grant.OrganizationID == "" {
 		return fmt.Errorf("%w: grant identity/run binding mismatch", llm.ErrExternalGrantInvalid)
 	}
-	if req.Model != "" && grant.ProviderModelID != req.Model {
+	if grantMode == llm.ExternalGrantRouteCoordinatorBound && req.Model != "" && grant.ProviderModelID != req.Model {
 		return fmt.Errorf("%w: provider model mismatch", llm.ErrExternalGrantInvalid)
 	}
 	if req.MaxTokens != nil && grant.MaxOutputTokens > 0 && *req.MaxTokens > grant.MaxOutputTokens {
@@ -346,6 +361,9 @@ func (s *BindingStore) Resolve(ctx context.Context, grant llm.ExternalGrant) (ll
 			return llm.ResolvedCredential{}, fmt.Errorf("%w: verified grant binding mismatch", llm.ErrExternalGrantRevoked)
 		}
 	}
+	if normalizedRouteMode(grant.RouteMode) != llm.ExternalGrantRouteCoordinatorBound {
+		return llm.ResolvedCredential{}, fmt.Errorf("%w: runtime-default grants do not resolve coordinator credentials", llm.ErrExternalGrantInvalid)
+	}
 	s.mu.RLock()
 	binding, ok := s.bindings[grant.CredentialBindingHandle]
 	s.mu.RUnlock()
@@ -366,36 +384,38 @@ func (s *BindingStore) Resolve(ctx context.Context, grant llm.ExternalGrant) (ll
 }
 
 type grantDocument struct {
-	Version                      int                 `json:"version"`
-	KeyID                        string              `json:"kid"`
-	Audience                     string              `json:"aud"`
-	GrantID                      string              `json:"grant_id"`
-	OrganizationID               string              `json:"organization_id"`
-	RuntimeID                    string              `json:"runtime_id"`
-	TenantID                     string              `json:"tenant_id"`
-	UserID                       string              `json:"user_id"`
-	SessionID                    string              `json:"session_id"`
-	LogicalRunID                 string              `json:"logical_run_id"`
-	LogicalCallID                string              `json:"logical_call_id"`
-	AttemptNonce                 string              `json:"attempt_nonce"`
-	Provider                     string              `json:"provider"`
-	ProviderModelID              string              `json:"provider_model_id"`
-	ProviderConnectionID         string              `json:"provider_connection_id"`
-	ProviderConnectionGeneration uint64              `json:"provider_connection_generation"`
-	RouteID                      string              `json:"route_id"`
-	CredentialBindingHandle      string              `json:"credential_binding_handle"`
-	CredentialAssetGeneration    uint64              `json:"credential_asset_generation"`
-	PolicyGeneration             uint64              `json:"policy_generation"`
-	MaxReasoning                 llm.ReasoningEffort `json:"max_reasoning"`
-	MaxOutputTokens              int                 `json:"max_output_tokens"`
-	Lease                        llm.ComputeLease    `json:"lease"`
-	IssuedAt                     time.Time           `json:"issued_at"`
-	ExpiresAt                    time.Time           `json:"expires_at"`
+	Version                      int                        `json:"version"`
+	KeyID                        string                     `json:"kid"`
+	Audience                     string                     `json:"aud"`
+	GrantID                      string                     `json:"grant_id"`
+	RouteMode                    llm.ExternalGrantRouteMode `json:"route_mode,omitempty"`
+	OrganizationID               string                     `json:"organization_id"`
+	RuntimeID                    string                     `json:"runtime_id"`
+	TenantID                     string                     `json:"tenant_id"`
+	UserID                       string                     `json:"user_id"`
+	SessionID                    string                     `json:"session_id"`
+	LogicalRunID                 string                     `json:"logical_run_id"`
+	LogicalCallID                string                     `json:"logical_call_id"`
+	AttemptNonce                 string                     `json:"attempt_nonce"`
+	Provider                     string                     `json:"provider,omitempty"`
+	ProviderModelID              string                     `json:"provider_model_id,omitempty"`
+	ProviderConnectionID         string                     `json:"provider_connection_id,omitempty"`
+	ProviderConnectionGeneration uint64                     `json:"provider_connection_generation,omitempty"`
+	RouteID                      string                     `json:"route_id,omitempty"`
+	CredentialBindingHandle      string                     `json:"credential_binding_handle,omitempty"`
+	CredentialAssetGeneration    uint64                     `json:"credential_asset_generation,omitempty"`
+	PolicyGeneration             uint64                     `json:"policy_generation"`
+	MaxReasoning                 llm.ReasoningEffort        `json:"max_reasoning"`
+	MaxOutputTokens              int                        `json:"max_output_tokens"`
+	Lease                        llm.ComputeLease           `json:"lease"`
+	IssuedAt                     time.Time                  `json:"issued_at"`
+	ExpiresAt                    time.Time                  `json:"expires_at"`
 }
 
 func toDocument(g llm.ExternalGrant) grantDocument {
 	return grantDocument{
 		Version: g.Version, KeyID: g.KeyID, Audience: g.Audience, GrantID: g.GrantID,
+		RouteMode:      g.RouteMode,
 		OrganizationID: g.OrganizationID, RuntimeID: g.RuntimeID, TenantID: g.TenantID,
 		UserID: g.UserID, SessionID: g.SessionID, LogicalRunID: g.LogicalRunID,
 		LogicalCallID: g.LogicalCallID, AttemptNonce: g.AttemptNonce,
@@ -410,6 +430,7 @@ func toDocument(g llm.ExternalGrant) grantDocument {
 func canonicalDocument(g llm.ExternalGrant) ([]byte, error) { return json.Marshal(toDocument(g)) }
 
 func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
+	mode := normalizedRouteMode(g.RouteMode)
 	switch {
 	case g.Version != 1:
 		return fmt.Errorf("%w: unsupported version=%d", ErrInvalidGrantShape, g.Version)
@@ -417,10 +438,8 @@ func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 		return fmt.Errorf("%w: missing signed context claim", ErrInvalidGrantShape)
 	case g.TenantID == "", g.UserID == "", g.SessionID == "", g.LogicalRunID == "", g.LogicalCallID == "", g.AttemptNonce == "":
 		return fmt.Errorf("%w: missing identity/run claim", ErrInvalidGrantShape)
-	case g.Provider == "", g.ProviderModelID == "", g.ProviderConnectionID == "", g.ProviderConnectionGeneration == 0, g.RouteID == "":
-		return fmt.Errorf("%w: missing provider route claim", ErrInvalidGrantShape)
-	case g.CredentialBindingHandle == "" || g.CredentialAssetGeneration == 0 || g.PolicyGeneration == 0:
-		return fmt.Errorf("%w: missing credential/policy generation", ErrInvalidGrantShape)
+	case g.PolicyGeneration == 0:
+		return fmt.Errorf("%w: missing policy generation", ErrInvalidGrantShape)
 	case g.MaxReasoning == "" || reasoningRank(g.MaxReasoning) >= 99:
 		return fmt.Errorf("%w: unsupported reasoning ceiling", ErrInvalidGrantShape)
 	case g.MaxOutputTokens <= 0 || g.Lease.LeaseID == "" || g.Lease.TokenUnits <= 0 || g.Lease.ConsumedUnits < 0:
@@ -430,7 +449,26 @@ func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 	case requireSignature && g.Signature == "":
 		return fmt.Errorf("%w: missing signature", ErrInvalidGrantShape)
 	}
+	switch mode {
+	case llm.ExternalGrantRouteCoordinatorBound:
+		if g.Provider == "" || g.ProviderModelID == "" || g.ProviderConnectionID == "" || g.ProviderConnectionGeneration == 0 || g.RouteID == "" || g.CredentialBindingHandle == "" || g.CredentialAssetGeneration == 0 {
+			return fmt.Errorf("%w: missing coordinator-bound provider route claim", ErrInvalidGrantShape)
+		}
+	case llm.ExternalGrantRouteRuntimeDefault:
+		if g.Provider != "" || g.ProviderModelID != "" || g.ProviderConnectionID != "" || g.ProviderConnectionGeneration != 0 || g.RouteID != "" || g.CredentialBindingHandle != "" || g.CredentialAssetGeneration != 0 {
+			return fmt.Errorf("%w: runtime-default grant carries coordinator route claim", ErrInvalidGrantShape)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported route mode %q", ErrInvalidGrantShape, g.RouteMode)
+	}
 	return nil
+}
+
+func normalizedRouteMode(mode llm.ExternalGrantRouteMode) llm.ExternalGrantRouteMode {
+	if mode == "" {
+		return llm.ExternalGrantRouteCoordinatorBound
+	}
+	return mode
 }
 
 func derivedIdentity(prefix, grantID, runID string) string {

@@ -17,6 +17,25 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- HA-70 follow-up makes the external execution grant and
+  content-free receipt contract consumable from Harbor's public SDK. It adds
+  explicit `coordinator_bound` and opt-in `runtime_default` route modes;
+  runtime-default grants use Bifrost's boot-configured native/custom credential
+  and provider/model while receipts record the actual route. Canonical
+  parent/child attempt derivation,
+  retry/downgrade coordinates, mixed-route rejection, and receipt validation
+  prevent a second provider call on response-loss replay. This is an unreleased
+  compatibility hotfix; no v1.30.1 tag, assets, or downstream acceptance is
+  claimed.
+
+- Skills LocalDB startup now retries typed SQLite `BUSY`/`LOCKED` contention
+  across both WAL verification and the idempotent migration bootstrap, bounded
+  by the existing constructor deadline. Overlapping store/process opens no
+  longer fail before the busy owner releases its lock, and the hosted skills
+  regression smoke preserves exact Go diagnostics on any future failure.
+
 ## [1.30.0] — 2026-08-24
 
 ### Added

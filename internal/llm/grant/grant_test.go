@@ -3,6 +3,8 @@ package grant
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -52,6 +54,166 @@ func signedTestGrant(t *testing.T) llm.ExternalGrant {
 		t.Fatal(err)
 	}
 	return signed
+}
+
+func receiptForGrant(t *testing.T, grant llm.ExternalGrant, step int) llm.AttemptUsageReceipt {
+	t.Helper()
+	ctx := context.Background()
+	if step > 0 {
+		ctx = llm.WithAttemptStep(ctx, step)
+	}
+	_, scope, err := llm.EnsureGrantAttemptScope(ctx, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := testClock()
+	receipt := llm.AttemptUsageReceipt{
+		ReceiptID:                    llm.CanonicalAttemptID(grant.GrantID, scope.LogicalCallID, scope.AttemptNonce, 1, 0, 0, 0),
+		GrantID:                      grant.GrantID,
+		RouteMode:                    grant.RouteMode,
+		LogicalCallID:                scope.LogicalCallID,
+		AttemptNonce:                 scope.AttemptNonce,
+		ParentLogicalCallID:          scope.ParentLogicalCallID,
+		ParentAttemptNonce:           scope.ParentAttemptNonce,
+		PlannerStep:                  scope.PlannerStep,
+		OrganizationID:               grant.OrganizationID,
+		RuntimeID:                    grant.RuntimeID,
+		TenantID:                     grant.TenantID,
+		UserID:                       grant.UserID,
+		SessionID:                    grant.SessionID,
+		LogicalRunID:                 grant.LogicalRunID,
+		Provider:                     grant.Provider,
+		ProviderModelID:              grant.ProviderModelID,
+		ProviderConnectionID:         grant.ProviderConnectionID,
+		ProviderConnectionGeneration: grant.ProviderConnectionGeneration,
+		RouteID:                      grant.RouteID,
+		CredentialAssetGeneration:    grant.CredentialAssetGeneration,
+		PolicyGeneration:             grant.PolicyGeneration,
+		AttemptNumber:                1,
+		RequestedReasoning:           grant.MaxReasoning,
+		EffectiveReasoning:           grant.MaxReasoning,
+		Status:                       "success",
+		StartedAt:                    now,
+		CompletedAt:                  now.Add(time.Second),
+	}
+	if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) == llm.ExternalGrantRouteRuntimeDefault {
+		receipt.Provider = "mock"
+		receipt.ProviderModelID = "model-fast"
+	}
+	receipt.IdempotencyKey = receipt.ReceiptID
+	receipt.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
+func TestRuntimeDefaultGrantShapeAndReceiptDerivation(t *testing.T) {
+	signer, err := NewSigner("key-default", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := testGrant()
+	base.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	base.Provider = ""
+	base.ProviderModelID = ""
+	base.ProviderConnectionID = ""
+	base.ProviderConnectionGeneration = 0
+	base.RouteID = ""
+	base.CredentialBindingHandle = ""
+	base.CredentialAssetGeneration = 0
+	signed, err := signer.Sign(base)
+	if err != nil {
+		t.Fatalf("runtime-default sign: %v", err)
+	}
+	wireBytes, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(wireBytes, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range []string{"provider", "provider_model_id", "provider_connection_id", "provider_connection_generation", "route_id", "credential_binding_handle", "credential_asset_generation"} {
+		if _, present := wire[claim]; present {
+			t.Fatalf("runtime-default wire carries coordinator claim %q: %s", claim, wireBytes)
+		}
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1", RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Keys: map[string]ed25519.PublicKey{"key-default": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(testContext(t, "org-a"), signed, llm.CompleteRequest{Model: "model-fast"}); err != nil {
+		t.Fatalf("runtime-default verify: %v", err)
+	}
+	mixed := base
+	mixed.Provider = "openai"
+	if _, err := signer.Sign(mixed); !errors.Is(err, ErrInvalidGrantShape) {
+		t.Fatalf("runtime-default mixed route = %v, want ErrInvalidGrantShape", err)
+	}
+
+	root := receiptForGrant(t, signed, 0)
+	if err := llm.ValidateAttemptUsageReceiptAgainstGrant(root, signed); err != nil {
+		t.Fatalf("root receipt validation: %v", err)
+	}
+	child := receiptForGrant(t, signed, 2)
+	if err := llm.ValidateAttemptUsageReceiptAgainstGrant(child, signed); err != nil {
+		t.Fatalf("planner child receipt validation: %v", err)
+	}
+	forged := child
+	forged.AttemptNonce = signed.AttemptNonce
+	forged.ReceiptID = llm.CanonicalAttemptID(signed.GrantID, forged.LogicalCallID, forged.AttemptNonce, forged.AttemptNumber, forged.RetryNumber, forged.DowngradeNumber, forged.FallbackHop)
+	forged.IdempotencyKey = forged.ReceiptID
+	forged.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := llm.ValidateAttemptUsageReceiptAgainstGrant(forged, signed); !errors.Is(err, llm.ErrInvalidUsageReceipt) {
+		t.Fatalf("forged planner child = %v, want ErrInvalidUsageReceipt", err)
+	}
+	forgedRoot := root
+	forgedRoot.LogicalCallID = "forged-root"
+	forgedRoot.ReceiptID = llm.CanonicalAttemptID(signed.GrantID, forgedRoot.LogicalCallID, forgedRoot.AttemptNonce, forgedRoot.AttemptNumber, forgedRoot.RetryNumber, forgedRoot.DowngradeNumber, forgedRoot.FallbackHop)
+	forgedRoot.IdempotencyKey = forgedRoot.ReceiptID
+	forgedRoot.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(forgedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := llm.ValidateAttemptUsageReceiptAgainstGrant(forgedRoot, signed); !errors.Is(err, llm.ErrInvalidUsageReceipt) {
+		t.Fatalf("forged root receipt = %v, want ErrInvalidUsageReceipt", err)
+	}
+}
+
+func TestVerifierAcceptsLegacyV1300CoordinatorBoundSignature(t *testing.T) {
+	signer, err := NewSigner("key-legacy", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := testGrant()
+	legacy.KeyID = "key-legacy"
+	legacy.Audience = "harbor-runtime"
+	legacy.LogicalCallID = derivedIdentity("call", legacy.GrantID, legacy.LogicalRunID)
+	legacy.AttemptNonce = derivedIdentity("nonce", legacy.GrantID, legacy.LogicalRunID)
+	// v1.30.0 signed this exact document before route_mode existed. The
+	// omitempty compatibility path must preserve those signature bytes.
+	document, err := canonicalDocument(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.private, document))
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-legacy": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(testContext(t, "org-a"), legacy, llm.CompleteRequest{Model: "model-fast"}); err != nil {
+		t.Fatalf("verify v1.30.0 coordinator-bound signature: %v", err)
+	}
 }
 
 func TestSignerVerifier_BindsVerifiedContextAndRoute(t *testing.T) {

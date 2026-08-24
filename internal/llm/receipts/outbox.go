@@ -643,21 +643,11 @@ func receiptMatchesRecord(record state.StateRecord, receipt llm.AttemptUsageRece
 }
 
 func validateReceipt(receipt llm.AttemptUsageReceipt) error {
-	if receipt.ReceiptID == "" || receipt.IdempotencyKey == "" || receipt.ReceiptID != receipt.IdempotencyKey || receipt.GrantID == "" || receipt.LogicalCallID == "" || receipt.AttemptNonce == "" || receipt.OrganizationID == "" || receipt.RuntimeID == "" || receipt.TenantID == "" || receipt.UserID == "" || receipt.SessionID == "" || receipt.LogicalRunID == "" || receipt.Provider == "" || receipt.ProviderModelID == "" || receipt.ProviderConnectionID == "" || receipt.ProviderConnectionGeneration == 0 || receipt.RouteID == "" || receipt.CredentialAssetGeneration == 0 || receipt.PolicyGeneration == 0 || receipt.AttemptNumber <= 0 || receipt.RetryNumber < 0 || receipt.FallbackHop < 0 {
-		return fmt.Errorf("%w: missing identity, route, generation, or idempotency field", ErrInvalidReceipt)
+	if receipt.ReceiptID == "" || receipt.IdempotencyKey == "" || receipt.ReceiptID != receipt.IdempotencyKey {
+		return fmt.Errorf("%w: receipt id and idempotency key must match", ErrInvalidReceipt)
 	}
-	if receipt.PromptTokens < 0 || receipt.CompletionTokens < 0 || receipt.ReasoningTokens < 0 || receipt.TotalTokens < 0 || receipt.CacheReadTokens < 0 || receipt.CacheWriteTokens < 0 || receipt.InputCostMicros < 0 || receipt.OutputCostMicros < 0 || receipt.ReasoningCostMicros < 0 || receipt.TotalCostMicros < 0 || receipt.LatencyMS < 0 {
-		return fmt.Errorf("%w: negative usage value", ErrInvalidReceipt)
-	}
-	if receipt.Status != "success" && receipt.Status != "error" && receipt.Status != "canceled" {
-		return fmt.Errorf("%w: unknown receipt status", ErrInvalidReceipt)
-	}
-	if receipt.StartedAt.IsZero() || receipt.CompletedAt.IsZero() || receipt.CompletedAt.Before(receipt.StartedAt) {
-		return fmt.Errorf("%w: invalid receipt interval", ErrInvalidReceipt)
-	}
-	hash, err := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
-	if err != nil || receipt.CanonicalBodyHash != hash {
-		return fmt.Errorf("%w: canonical body hash mismatch", ErrInvalidReceipt)
+	if err := llm.ValidateAttemptUsageReceipt(receipt); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidReceipt, err)
 	}
 	return nil
 }
