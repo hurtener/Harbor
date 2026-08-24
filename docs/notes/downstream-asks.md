@@ -1503,9 +1503,9 @@ or cutover is claimed.
 
 ## HA-71 — provider-neutral descriptors, runtime validation, and model discovery
 
-**Priority:** High. **Size:** medium. **State:** Release candidate (pre-tag),
-Harbor Phase 255 / D-435. Hosted CI is green, including full preflight; no
-immutable release or downstream acceptance is claimed.
+**Priority:** High. **Size:** medium. **State:** Shipped in Harbor v1.30.0,
+Harbor Phase 255 / D-435. Hosted CI and the release workflow are green;
+downstream deployment and acceptance remain pending.
 
 **Observed gap.** Bifrost already owns provider setup and model-listing
 mechanics, but a control-plane consumer cannot safely ask Harbor what a
@@ -1548,9 +1548,19 @@ merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
 preflight.
 Independent adversarial review and an operator-approved runtime-origin
 validation/discovery probe with sanitized output remain separate acceptance
-evidence. The immutable tag/release/provenance/checksums and post-tag scaffold
-cleanup remain pending; this ask does not claim provider account readiness,
-fleet rollout, or downstream database mutation.
+evidence. The annotated `v1.30.0` tag object is
+`53c388028f1150c9afb6263332583d319c3ba544` and peels to
+`466b307c563f8193950ac5abef36677e48b1bae8`; release workflow `32683661507`
+completed successfully and published 13 assets with verified aggregate
+`checksums.txt`, six sidecar checksums, and six GitHub attestations. Public
+module provenance records `Sum=h1:9MfAk67WbACqvXnwSMMv0WYonE+S0fV5Y7wcuhwNo8o=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=466b307c563f8193950ac5abef36677e48b1bae8`, and
+`Origin.Ref=refs/tags/v1.30.0`. The native darwin/arm64 artifact reports
+Harbor v1.30.0, Protocol 0.1.0, and build
+`466b307c563f8193950ac5abef36677e48b1bae8`. The post-tag scaffold pin and
+golden cleanup is included in this follow-up; this ask does not claim provider
+account readiness, fleet rollout, or downstream database mutation.
 
 ## Posture signals from the downstream team
 
@@ -1562,9 +1572,9 @@ Recorded so a future phase does not "helpfully" relax something the consumer exp
 
 ## HA-70 — context-bound external execution grants and durable usage receipts
 
-**Priority:** High. **Size:** large. **State:** Release candidate (pre-tag),
-Harbor Phase 254 / D-434. Hosted CI is green, including full preflight; no
-immutable release or downstream acceptance is claimed. This is a generic
+**Priority:** High. **Size:** large. **State:** Shipped in Harbor v1.30.0,
+Harbor Phase 254 / D-434. Hosted CI and the release workflow are green;
+downstream deployment and acceptance remain pending. This is a generic
 runtime execution-edge request; it does not prescribe a coordinator product or
 provider-specific policy vocabulary.
 
@@ -1622,6 +1632,17 @@ receipt submissions without double counting.
 preflight. Post-merge main run `32673186738` also completed successfully on
 merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
 preflight.
-The immutable tag/release/provenance/checksums and post-tag scaffold cleanup
-remain pending. This ask does not claim a release, tag, coordinator
-integration, or downstream deployment.
+The annotated `v1.30.0` tag object is
+`53c388028f1150c9afb6263332583d319c3ba544` and peels to
+`466b307c563f8193950ac5abef36677e48b1bae8`; release workflow `32683661507`
+completed successfully and published 13 assets with verified aggregate
+`checksums.txt`, six sidecar checksums, and six GitHub attestations. Public
+module provenance records `Sum=h1:9MfAk67WbACqvXnwSMMv0WYonE+S0fV5Y7wcuhwNo8o=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=466b307c563f8193950ac5abef36677e48b1bae8`, and
+`Origin.Ref=refs/tags/v1.30.0`. The native darwin/arm64 artifact reports
+Harbor v1.30.0, Protocol 0.1.0, and build
+`466b307c563f8193950ac5abef36677e48b1bae8`. The post-tag scaffold pin and
+golden cleanup is included in this follow-up. This ask does not claim
+coordinator integration or downstream deployment, fleet, or database
+acceptance.

@@ -108,9 +108,19 @@ Implementation PR #738 was merged at
 preflight. Post-merge main run `32673186738` also completed successfully on
 merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
 preflight.
-The immutable tag, GitHub release, public module provenance/checksums, and
-post-tag scaffold cleanup remain pending. Operator-approved provider acceptance
-and downstream runtime/database acceptance are not claimed.
+The annotated `v1.30.0` tag object is
+`53c388028f1150c9afb6263332583d319c3ba544` and peels to
+`466b307c563f8193950ac5abef36677e48b1bae8`. Release workflow `32683661507`
+completed successfully and published 13 assets with verified aggregate
+`checksums.txt`, six sidecar checksums, and six GitHub attestations. Public
+module provenance records `Sum=h1:9MfAk67WbACqvXnwSMMv0WYonE+S0fV5Y7wcuhwNo8o=`,
+`GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+`Origin.Hash=466b307c563f8193950ac5abef36677e48b1bae8`, and
+`Origin.Ref=refs/tags/v1.30.0`. The native darwin/arm64 artifact reports
+Harbor v1.30.0, Protocol 0.1.0, build
+`466b307c563f8193950ac5abef36677e48b1bae8`. The post-tag scaffold pin and
+golden cleanup is included in this follow-up. Operator-approved provider
+acceptance and downstream runtime/database acceptance remain pending.
 
 ## Contract shape
 
@@ -157,10 +167,9 @@ without exporting a provider rate table in this prerequisite.
 - [x] CLI help/golden and static smoke coverage identify the shipped consumer.
 - [x] Post-merge main CI run `32673186738` is green on merged commit
       `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full preflight.
-- [ ] Independent adversarial review, operator-approved provider acceptance,
-      immutable tag/release/provenance/checksums, post-tag cleanup, and
-      downstream acceptance remain release gates; this pre-tag candidate makes
-      no public-release claim.
+- [ ] Operator-approved provider acceptance and downstream runtime/database
+      acceptance remain separate release follow-up gates; the immutable
+      v1.30.0 release and post-tag scaffold cleanup are recorded above.
 
 ## Files added or changed
 
