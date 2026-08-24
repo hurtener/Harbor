@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.0] — 2026-08-24
+
 ### Added
 
 - HA-70 adds the opt-in external execution grant and durable,
@@ -44,9 +46,11 @@ Two versions move independently in Harbor (RFC §5.3):
   `1da7845326088e451bcf19970136a62b8e274e5a` (the same tree), including the
   full preflight. Post-merge main run `32673186738` also completed successfully
   on merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
-  preflight. The immutable tag, GitHub release, public module provenance,
-  checksums, and post-tag scaffold cleanup remain pending; no downstream
-  runtime, fleet, or database acceptance is claimed.
+  preflight. Candidate ledger PR #739 was merged at
+  `8de114f37c64531c3f05ac3f51099d9fd3566d55`. Release assets, public module
+  provenance, checksums/attestations, post-tag scaffold cleanup, and downstream
+  runtime, fleet, or database acceptance are not claimed by this release-cut
+  commit.
 
 ## [1.29.5] — 2026-08-23
 
@@ -4865,7 +4869,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.29.5...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/hurtener/Harbor/compare/v1.29.5...v1.30.0
 [1.29.5]: https://github.com/hurtener/Harbor/compare/v1.29.4...v1.29.5
 [1.29.4]: https://github.com/hurtener/Harbor/compare/v1.29.3...v1.29.4
 [1.29.3]: https://github.com/hurtener/Harbor/compare/v1.29.2...v1.29.3
