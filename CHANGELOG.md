@@ -52,7 +52,7 @@ Two versions move independently in Harbor (RFC §5.3):
 ### Release evidence
 
 - The annotated `v1.30.1` tag object is
-  `b540f631854e32b6093fa1e540f4e594c8d928ba` and peels to
+  `8175c93a3ff974d522210054b8c39c2a21ba7199` and peels to
   `fd801b14b553c2c4ebea67963e74ef83a2a050e4`. Release workflow
   `32720513063` completed successfully, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.30.1)
   with verified aggregate `checksums.txt`, six sidecar checksums, and six
@@ -62,8 +62,10 @@ Two versions move independently in Harbor (RFC §5.3):
   `Sum=h1:Q9WeXJLy15PIOSEV+sA1sXHa1st8DHmnsIx4oynmMWY=`,
   `GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
   `Origin.Hash=fd801b14b553c2c4ebea67963e74ef83a2a050e4`, and
-  `Origin.Ref=refs/tags/v1.30.1`. The post-tag scaffold pin and golden cleanup
-  are included in this follow-up. No downstream runtime, fleet, database, or
+  `Origin.Ref=refs/tags/v1.30.1`. The annotated tag object was reissued with
+  the canonical maintainer identity without changing its peeled release commit
+  or published assets. The post-tag scaffold pin and golden cleanup are
+  included in this follow-up. No downstream runtime, fleet, database, or
   deployment acceptance is claimed.
 
 ## [1.30.0] — 2026-08-24

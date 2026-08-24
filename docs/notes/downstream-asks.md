@@ -1676,9 +1676,10 @@ provider-specific policy vocabulary. Protocol version remains `0.1.0`.
 Implementation PR #742 was reviewed at exact head `9af8e6e7` and squash-merged
 as `506d1f8c`. Hosted candidate run `32705738802` and post-merge main run
 `32710662323` completed successfully, including full preflight. The annotated
-`v1.30.1` tag object `b540f631854e32b6093fa1e540f4e594c8d928ba`
+`v1.30.1` tag object `8175c93a3ff974d522210054b8c39c2a21ba7199`
 peels to `fd801b14`; release workflow `32720513063` succeeded with 13 assets,
 verified checksums and attestations, the expected native binary stamp, and
-public module provenance. Post-tag scaffold cleanup is included in the
-follow-up. No downstream deployment, fleet, database, or acceptance claim is
-made.
+public module provenance. The annotated tag object was reissued with the
+canonical maintainer identity without changing its peeled release commit or
+published assets. Post-tag scaffold cleanup is included in the follow-up. No
+downstream deployment, fleet, database, or acceptance claim is made.
