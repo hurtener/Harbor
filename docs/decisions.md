@@ -14165,14 +14165,16 @@ ledger are separate commits; no tag, assets, published module provenance,
 post-tag cleanup, or downstream acceptance is claimed here.
 
 **Release evidence.** The annotated `v1.30.1` tag object
-`b540f631854e32b6093fa1e540f4e594c8d928ba` peels to
+`8175c93a3ff974d522210054b8c39c2a21ba7199` peels to
 `fd801b14b553c2c4ebea67963e74ef83a2a050e4`; release workflow
 `32720513063` succeeded with 13 assets, verified aggregate and six sidecar
 checksums, six verified attestations, a native v1.30.1/Protocol 0.1.0/build
 `fd801b14` binary, and public module provenance
 `Sum=h1:Q9WeXJLy15PIOSEV+sA1sXHa1st8DHmnsIx4oynmMWY=` with
-`Origin.Ref=refs/tags/v1.30.1`. Post-tag scaffold cleanup is included in the
-separate follow-up; downstream deployment and acceptance remain unclaimed.
+`Origin.Ref=refs/tags/v1.30.1`. The annotated tag object was reissued with the
+canonical maintainer identity without changing its peeled release commit or
+published assets. Post-tag scaffold cleanup is included in the separate
+follow-up; downstream deployment and acceptance remain unclaimed.
 
 **Compatibility boundary.** Protocol version remains `0.1.0`. Disabled and
 optional grant modes preserve existing behavior, coordinator-bound grants remain
