@@ -1649,8 +1649,8 @@ acceptance.
 
 ### HA-70 v1.30.1 compatibility extension — Phase 256 / D-436
 
-**State:** Implementation candidate against Harbor main `56f13da`; no v1.30.1 tag or
-release claim.
+**State:** Accepted release candidate on merged Harbor main `506d1f8c`; no
+v1.30.1 tag or release claim.
 
 The first external consumer found a generic framework gap in the v1.30.0
 surface: grant/config/receipt delivery types and canonical receipt validation
@@ -1673,8 +1673,8 @@ response-loss replay cannot issue a second provider call. The public delivery
 interface is transport-neutral; this ask does not add an HTTP endpoint or
 provider-specific policy vocabulary. Protocol version remains `0.1.0`.
 
-The candidate must pass focused race/vet, public external-package compilation,
-assembled runtime-default execution, route/receipt adversarial tests, phase
-smoke, and repository documentation/mirror checks before a release lane. No
-downstream deployment, fleet, database, v1.30.1 tag, assets, checksums, or
-module provenance are claimed here.
+Implementation PR #742 was reviewed at exact head `9af8e6e7` and squash-merged
+as `506d1f8c`. Hosted candidate run `32705738802` and post-merge main run
+`32710662323` completed successfully, including full preflight. No downstream
+deployment, fleet, database, v1.30.1 tag, assets, checksums, public module
+provenance, or post-tag cleanup are claimed here.

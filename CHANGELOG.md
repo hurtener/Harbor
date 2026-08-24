@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.1] — 2026-08-24
+
 ### Fixed
 
 - HA-70 follow-up makes the external execution grant and
@@ -26,15 +28,26 @@ Two versions move independently in Harbor (RFC §5.3):
   and provider/model while receipts record the actual route. Canonical
   parent/child attempt derivation,
   retry/downgrade coordinates, mixed-route rejection, and receipt validation
-  prevent a second provider call on response-loss replay. This is an unreleased
-  compatibility hotfix; no v1.30.1 tag, assets, or downstream acceptance is
-  claimed.
+  prevent a second provider call on response-loss replay.
 
 - Skills LocalDB startup now retries typed SQLite `BUSY`/`LOCKED` contention
   across both WAL verification and the idempotent migration bootstrap, bounded
   by the existing constructor deadline. Overlapping store/process opens no
   longer fail before the busy owner releases its lock, and the hosted skills
   regression smoke preserves exact Go diagnostics on any future failure.
+
+### Release candidate evidence
+
+- Implementation PR #742 was reviewed at exact head
+  `9af8e6e72dfb8398329554feadda495272e686c1` and squash-merged as
+  `506d1f8cbab78eb87cbc87050369fff8fe36abb1` (tree
+  `7a1266b50b0f268e7c0ea19163958b67ce19dd3a`). Hosted candidate run
+  `32705738802` and post-merge main run `32710662323` completed successfully,
+  including both Go platforms, real PostgreSQL acceptance, Console Playwright,
+  and the full preflight. The v1.30.1 tag, release assets, public module
+  provenance, checksums/attestations, post-tag scaffold cleanup, and downstream
+  runtime, fleet, or database acceptance are not claimed by this release-cut
+  commit.
 
 ## [1.30.0] — 2026-08-24
 
@@ -4907,7 +4920,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.1...HEAD
+[1.30.1]: https://github.com/hurtener/Harbor/compare/v1.30.0...v1.30.1
 [1.30.0]: https://github.com/hurtener/Harbor/compare/v1.29.5...v1.30.0
 [1.29.5]: https://github.com/hurtener/Harbor/compare/v1.29.4...v1.29.5
 [1.29.4]: https://github.com/hurtener/Harbor/compare/v1.29.3...v1.29.4

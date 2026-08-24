@@ -85,8 +85,9 @@ an HTTP delivery protocol in this hotfix.
   response-loss/replay attempt identities fail closed without a second provider
   call.
 - Focused race tests, vet, phase smoke, docs/mirror, and repository diff checks
-  pass. Hosted CI remains the broad release gate; this plan makes no v1.30.1
-  tag, release, module-provenance, or downstream deployment claim.
+  pass. Hosted candidate and post-merge main CI, including full preflight, also
+  pass; this plan makes no v1.30.1 tag, release, module-provenance, or downstream
+  deployment claim.
 
 ## Files added or changed
 
@@ -134,9 +135,13 @@ remain accepted. `runtime_default` is opt-in and never inferred from omitted
 provider fields. No credential, prompt, response, tool payload, reasoning
 trace, or provider response body enters the public receipt contract.
 
-The implementation is based on Harbor main `56f13da5813adf134692d95bf091e0a8c97680a7`
-(the merged v1.30.0 post-tag cleanup). The v1.30.1 tag, release assets,
-checksums, public module provenance, hosted release workflow, and any downstream
+Implementation PR #742 was reviewed at exact head
+`9af8e6e72dfb8398329554feadda495272e686c1` and squash-merged as
+`506d1f8cbab78eb87cbc87050369fff8fe36abb1` (tree
+`7a1266b50b0f268e7c0ea19163958b67ce19dd3a`). Hosted candidate run
+`32705738802` and post-merge main run `32710662323` completed successfully,
+including full preflight. The v1.30.1 tag, release assets, checksums, public
+module provenance, hosted release workflow, post-tag cleanup, and downstream
 runtime acceptance remain pending until a separate release lane proves them.
 
 ## Dependencies
