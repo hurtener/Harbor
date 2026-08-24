@@ -323,7 +323,11 @@ type LLMConfig struct {
 // boot-pinned organization, so one runtime can serve multiple organizations
 // concurrently without cross-organization credential bleed.
 type LLMExternalGrantConfig struct {
-	Mode                    string            `yaml:"mode,omitempty"`
+	Mode string `yaml:"mode,omitempty"`
+	// RouteMode optionally restricts the signed grant shape accepted by this
+	// runtime: runtime_default or coordinator_bound. Empty accepts both while
+	// each grant still validates its own signed mode.
+	RouteMode               string            `yaml:"route_mode,omitempty"`
 	Audience                string            `yaml:"audience,omitempty"`
 	RuntimeID               string            `yaml:"runtime_id,omitempty"`
 	AuthorizedOrganizations []string          `yaml:"authorized_organizations,omitempty"`

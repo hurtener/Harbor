@@ -1646,3 +1646,35 @@ Harbor v1.30.0, Protocol 0.1.0, and build
 golden cleanup is included in this follow-up. This ask does not claim
 coordinator integration or downstream deployment, fleet, or database
 acceptance.
+
+### HA-70 v1.30.1 compatibility extension — Phase 256 / D-436
+
+**State:** Implementation candidate against Harbor main `56f13da`; no v1.30.1 tag or
+release claim.
+
+The first external consumer found a generic framework gap in the v1.30.0
+surface: grant/config/receipt delivery types and canonical receipt validation
+were internal-only, and the strict grant shape required a coordinator-selected
+provider route even when a runtime should continue using its existing configured
+provider/model. This hotfix exposes the smallest public SDK aliases/helpers and
+adds a signed `route_mode` with two explicit shapes:
+
+- `coordinator_bound` retains the v1.30.0 provider/model/route/credential
+  binding semantics and remains the default/legacy blank interpretation.
+- `runtime_default` carries no provider or credential claims, uses the runtime's
+  configured provider/model, records actual provider/model in the receipt, and
+  retains all signed limits, durable attempt reservation, receipt, retry, and
+  downgrade enforcement.
+
+Canonical receipt JSON/hash and receipt-to-grant validation include stable
+parent logical-call/nonce, planner-step, retry, downgrade, fallback, and
+attempt coordinates. Forged root/child or mixed-route receipts fail closed;
+response-loss replay cannot issue a second provider call. The public delivery
+interface is transport-neutral; this ask does not add an HTTP endpoint or
+provider-specific policy vocabulary. Protocol version remains `0.1.0`.
+
+The candidate must pass focused race/vet, public external-package compilation,
+assembled runtime-default execution, route/receipt adversarial tests, phase
+smoke, and repository documentation/mirror checks before a release lane. No
+downstream deployment, fleet, database, v1.30.1 tag, assets, checksums, or
+module provenance are claimed here.

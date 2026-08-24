@@ -2184,3 +2184,16 @@ explicit support state, such as known context/output limits, modalities, tool
 support, canonical reasoning levels, deprecation, or pricing provenance.
 Missing facts remain `unknown`; absent pricing is `unpriced`; operator-listed
 models remain `manual`. D-435.
+
+**External grant route mode** — the signed authority for where a provider route
+comes from. `coordinator_bound` carries a verified provider/model/connection
+and opaque credential-binding generation; `runtime_default` carries only the
+verified execution context and limits, so Harbor uses the runtime's configured
+provider/model and records the actual route in the receipt. An empty mode is
+the legacy coordinator-bound shape. D-436.
+
+**Canonical attempt receipt** — the transport-neutral, content-free provider
+attempt fact whose stable id includes the grant, logical call, attempt nonce,
+retry, downgrade, fallback, and attempt coordinates. Parent logical-call/nonce
+and planner-step fields let a consumer validate a derived receipt against the
+signed grant without re-deriving Harbor internals. D-436.

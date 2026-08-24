@@ -344,7 +344,7 @@ func TestWrap_GrantAttemptIdentityIsStablePerPlannerStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stepTwo, err := llm.EnsureGrantAttemptScope(llm.WithAttemptStep(base, 2), grant)
+	stepTwoCtx, stepTwo, err := llm.EnsureGrantAttemptScope(llm.WithAttemptStep(base, 2), grant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +356,51 @@ func TestWrap_GrantAttemptIdentityIsStablePerPlannerStep(t *testing.T) {
 	}
 	if scoped, ok := llm.AttemptScopeFrom(stepOneCtx); !ok || scoped.LogicalCallID != stepOne.LogicalCallID {
 		t.Fatalf("step scope was not installed: %+v, %v", scoped, ok)
+	}
+
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-1": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := NewBindingStore()
+	if err := binding.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 1}}}
+	sink := &recordingSink{}
+	client := Wrap(provider, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding,
+		Reservations: newTestReservations(t), ReceiptSink: sink, ReceiptRequired: true,
+	}})
+	request := llm.CompleteRequest{Model: "model-fast", ExternalGrant: &grant}
+	if _, err := client.Complete(stepOneCtx, request); err != nil {
+		t.Fatalf("planner step one: %v", err)
+	}
+	if _, err := client.Complete(stepTwoCtx, request); err != nil {
+		t.Fatalf("planner step two: %v", err)
+	}
+	if _, err := client.Complete(stepOneCtx, request); !errors.Is(err, llm.ErrExternalGrantAttemptSettled) {
+		t.Fatalf("planner step replay = %v, want ErrExternalGrantAttemptSettled", err)
+	}
+	provider.mu.Lock()
+	providerCalls := len(provider.requests)
+	provider.mu.Unlock()
+	sink.mu.Lock()
+	receipts := append([]llm.AttemptUsageReceipt(nil), sink.receipts...)
+	sink.mu.Unlock()
+	if providerCalls != 2 || len(receipts) != 2 {
+		t.Fatalf("provider calls=%d receipts=%d, want two distinct steps", providerCalls, len(receipts))
+	}
+	if receipts[0].PlannerStep != 1 || receipts[1].PlannerStep != 2 || receipts[0].ReceiptID == receipts[1].ReceiptID {
+		t.Fatalf("planner-step receipts are not distinct/canonical: %+v", receipts)
+	}
+	for _, receipt := range receipts {
+		if err := llm.ValidateAttemptUsageReceiptAgainstGrant(receipt, grant); err != nil {
+			t.Fatalf("planner-step receipt validation: %v", err)
+		}
 	}
 }
 

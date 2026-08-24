@@ -506,6 +506,9 @@ func (c *Config) validateLLMExternalGrant() error {
 	if g.Mode != "optional" && g.Mode != "required" {
 		return fieldError("llm.external_grant.mode", fmt.Sprintf("must be one of \"disabled\", \"optional\", \"required\", got %q", g.Mode))
 	}
+	if g.RouteMode != "" && g.RouteMode != "runtime_default" && g.RouteMode != "coordinator_bound" {
+		return fieldError("llm.external_grant.route_mode", fmt.Sprintf("must be empty, \"runtime_default\", or \"coordinator_bound\", got %q", g.RouteMode))
+	}
 	for path, value := range map[string]string{
 		"audience":   g.Audience,
 		"runtime_id": g.RuntimeID,

@@ -49,6 +49,8 @@ type (
 	ResponseFormatKind = internal.ResponseFormatKind
 	// OutputMode selects the structured-output strategy.
 	OutputMode = internal.OutputMode
+	// ReasoningEffort is the provider-neutral reasoning ceiling/request hint.
+	ReasoningEffort = internal.ReasoningEffort
 	// Usage is the token usage block of a response.
 	Usage = internal.Usage
 	// Cost is the computed cost block of a response.
@@ -57,10 +59,58 @@ type (
 	ArtifactStub = internal.ArtifactStub
 	// StubFetch resolves an ArtifactStub back to bytes on demand.
 	StubFetch = internal.StubFetch
+	// ExternalGrant is the signed, content-free execution authority.
+	ExternalGrant = internal.ExternalGrant
+	// ComputeLease is the bounded provider-attempt allowance.
+	ComputeLease = internal.ComputeLease
+	// ExternalGrantMode selects optional versus strict grant handling.
+	ExternalGrantMode = internal.ExternalGrantMode
+	// ExternalGrantRouteMode selects runtime-default or coordinator-bound
+	// provider route authority.
+	ExternalGrantRouteMode = internal.ExternalGrantRouteMode
+	// ExternalGrantVerifier verifies a grant against a verified request.
+	ExternalGrantVerifier = internal.ExternalGrantVerifier
+	// CredentialResolver resolves an opaque binding after verification.
+	CredentialResolver = internal.CredentialResolver
+	// ResolvedCredential is the short-lived provider secret at the driver edge.
+	ResolvedCredential = internal.ResolvedCredential
+	// LeaseTopUpper requests a coordinator-signed lease extension.
+	LeaseTopUpper = internal.LeaseTopUpper
+	// LeaseReservationRequest is the durable attempt reservation input.
+	LeaseReservationRequest = internal.LeaseReservationRequest
+	// LeaseReservation is the durable attempt reservation result.
+	LeaseReservation = internal.LeaseReservation
+	// LeaseSettlement settles one provider attempt exactly once.
+	LeaseSettlement = internal.LeaseSettlement
+	// LeaseReservationManager is the durable reservation/settlement seam.
+	LeaseReservationManager = internal.LeaseReservationManager
+	// AttemptUsageReceipt is the content-free provider-attempt fact.
+	AttemptUsageReceipt = internal.AttemptUsageReceipt
+	// UsageReceiptSink durably accepts a content-free receipt.
+	UsageReceiptSink = internal.UsageReceiptSink
+	// ExternalGrantConfig wires the execution-edge grant seams.
+	ExternalGrantConfig = internal.ExternalGrantConfig
+	// VerifiedGrantContext is the verified grant available at the driver edge.
+	VerifiedGrantContext = internal.VerifiedGrantContext
+	// AttemptScope carries server-derived logical call and retry coordinates.
+	AttemptScope = internal.AttemptScope
 )
 
 // DefaultDriver is the production LLM driver name.
 const DefaultDriver = internal.DefaultDriver
+
+// ExternalGrant modes.
+const (
+	ExternalGrantDisabled = internal.ExternalGrantDisabled
+	ExternalGrantOptional = internal.ExternalGrantOptional
+	ExternalGrantRequired = internal.ExternalGrantRequired
+)
+
+// External grant route modes.
+const (
+	ExternalGrantRouteRuntimeDefault   = internal.ExternalGrantRouteRuntimeDefault
+	ExternalGrantRouteCoordinatorBound = internal.ExternalGrantRouteCoordinatorBound
+)
 
 // PartType values.
 const (
@@ -88,6 +138,12 @@ const (
 
 // ResponseFormatKind values.
 const (
+	// ReasoningEffort levels.
+	ReasoningOff    = internal.ReasoningOff
+	ReasoningLow    = internal.ReasoningLow
+	ReasoningMedium = internal.ReasoningMedium
+	ReasoningHigh   = internal.ReasoningHigh
+
 	// FormatText — plain text output.
 	FormatText = internal.FormatText
 	// FormatJSONObject — any-JSON-object output.
@@ -134,6 +190,26 @@ var (
 	ErrRetryExhausted = internal.ErrRetryExhausted
 	// ErrValidationFailed — the response validator rejected the output.
 	ErrValidationFailed = internal.ErrValidationFailed
+	// ErrExternalGrantRequired — strict mode received no grant.
+	ErrExternalGrantRequired = internal.ErrExternalGrantRequired
+	// ErrExternalGrantInvalid — the grant or its binding is invalid.
+	ErrExternalGrantInvalid = internal.ErrExternalGrantInvalid
+	// ErrExternalGrantSignature — the grant signature is not trusted.
+	ErrExternalGrantSignature = internal.ErrExternalGrantSignature
+	// ErrExternalGrantRevoked — the credential binding is stale or revoked.
+	ErrExternalGrantRevoked = internal.ErrExternalGrantRevoked
+	// ErrExternalGrantLeaseInsufficient — the bounded lease cannot cover a call.
+	ErrExternalGrantLeaseInsufficient = internal.ErrExternalGrantLeaseInsufficient
+	// ErrExternalGrantAttemptInFlight — the exact attempt is already reserved.
+	ErrExternalGrantAttemptInFlight = internal.ErrExternalGrantAttemptInFlight
+	// ErrExternalGrantAttemptSettled — the exact attempt already has an outcome.
+	ErrExternalGrantAttemptSettled = internal.ErrExternalGrantAttemptSettled
+	// ErrExternalGrantCrossProviderFallback — the signed route forbids a hop.
+	ErrExternalGrantCrossProviderFallback = internal.ErrExternalGrantCrossProviderFallback
+	// ErrUsageReceiptUnavailable — strict accounting could not enqueue a receipt.
+	ErrUsageReceiptUnavailable = internal.ErrUsageReceiptUnavailable
+	// ErrInvalidUsageReceipt — the receipt is malformed or unbound.
+	ErrInvalidUsageReceipt = internal.ErrInvalidUsageReceipt
 )
 
 // Open resolves the configured driver and composes the production
@@ -147,3 +223,54 @@ var SnapshotFromConfig = internal.SnapshotFromConfig
 // RegisteredDrivers lists the seated LLM driver names (blank-import
 // sdk/drivers/prod to seat the production set).
 var RegisteredDrivers = internal.RegisteredDrivers
+
+// CanonicalAttemptUsageReceiptBodyHash returns the deterministic receipt hash.
+var CanonicalAttemptUsageReceiptBodyHash = internal.CanonicalAttemptUsageReceiptBodyHash
+
+// MarshalCanonicalAttemptUsageReceipt returns the public transport-neutral
+// receipt JSON representation.
+var MarshalCanonicalAttemptUsageReceipt = internal.MarshalCanonicalAttemptUsageReceipt
+
+// ValidateAttemptUsageReceipt validates the content-free receipt shape.
+var ValidateAttemptUsageReceipt = internal.ValidateAttemptUsageReceipt
+
+// ValidateAttemptUsageReceiptAgainstGrant binds a receipt to a signed grant's
+// identity, route and planner-derived attempt coordinates.
+var ValidateAttemptUsageReceiptAgainstGrant = internal.ValidateAttemptUsageReceiptAgainstGrant
+
+// CanonicalAttemptID returns the durable per-attempt identity.
+var CanonicalAttemptID = internal.CanonicalAttemptID
+
+// EffectiveExternalGrantRouteMode normalizes legacy blank route mode to the
+// coordinator-bound shape.
+var EffectiveExternalGrantRouteMode = internal.EffectiveExternalGrantRouteMode
+
+// WithVerifiedOrganization attaches the server-derived organization scope.
+var WithVerifiedOrganization = internal.WithVerifiedOrganization
+
+// VerifiedOrganizationFrom reads the verified organization scope.
+var VerifiedOrganizationFrom = internal.VerifiedOrganizationFrom
+
+// WithVerifiedGrantContext attaches the verified driver grant context.
+var WithVerifiedGrantContext = internal.WithVerifiedGrantContext
+
+// VerifiedGrantContextFrom reads the verified driver grant context.
+var VerifiedGrantContextFrom = internal.VerifiedGrantContextFrom
+
+// WithAttemptStep installs a server-derived planner step coordinate.
+var WithAttemptStep = internal.WithAttemptStep
+
+// WithAttemptScope installs a per-call attempt scope.
+var WithAttemptScope = internal.WithAttemptScope
+
+// AttemptScopeFrom reads the per-call attempt scope.
+var AttemptScopeFrom = internal.AttemptScopeFrom
+
+// EnsureAttemptScope allocates one invocation identity.
+var EnsureAttemptScope = internal.EnsureAttemptScope
+
+// EnsureGrantAttemptScope derives a stable grant-bound call/step identity.
+var EnsureGrantAttemptScope = internal.EnsureGrantAttemptScope
+
+// WithAttemptCoordinates derives retry/downgrade/fallback coordinates.
+var WithAttemptCoordinates = internal.WithAttemptCoordinates

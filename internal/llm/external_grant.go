@@ -23,32 +23,36 @@ import (
 // llm package deliberately does not choose a wire or key-management format;
 // internal/llm/grant supplies the Harbor reference signer and verifier.
 type ExternalGrant struct {
-	Version                      int             `json:"version"`
-	KeyID                        string          `json:"key_id"`
-	Audience                     string          `json:"audience"`
-	GrantID                      string          `json:"grant_id"`
-	OrganizationID               string          `json:"organization_id"`
-	RuntimeID                    string          `json:"runtime_id"`
-	TenantID                     string          `json:"tenant_id"`
-	UserID                       string          `json:"user_id"`
-	SessionID                    string          `json:"session_id"`
-	LogicalRunID                 string          `json:"logical_run_id"`
-	LogicalCallID                string          `json:"logical_call_id"`
-	AttemptNonce                 string          `json:"attempt_nonce"`
-	Provider                     string          `json:"provider"`
-	ProviderModelID              string          `json:"provider_model_id"`
-	ProviderConnectionID         string          `json:"provider_connection_id"`
-	ProviderConnectionGeneration uint64          `json:"provider_connection_generation"`
-	RouteID                      string          `json:"route_id"`
-	CredentialBindingHandle      string          `json:"credential_binding_handle"`
-	CredentialAssetGeneration    uint64          `json:"credential_asset_generation"`
-	PolicyGeneration             uint64          `json:"policy_generation"`
-	MaxReasoning                 ReasoningEffort `json:"max_reasoning"`
-	MaxOutputTokens              int             `json:"max_output_tokens"`
-	Lease                        ComputeLease    `json:"lease"`
-	IssuedAt                     time.Time       `json:"issued_at"`
-	ExpiresAt                    time.Time       `json:"expires_at"`
-	Signature                    string          `json:"signature"`
+	Version  int    `json:"version"`
+	KeyID    string `json:"key_id"`
+	Audience string `json:"audience"`
+	GrantID  string `json:"grant_id"`
+	// RouteMode makes the provider-route authority explicit. A blank value is
+	// accepted only for legacy v1.30.0 coordinator-bound grants; new signers
+	// stamp the explicit coordinator_bound value.
+	RouteMode                    ExternalGrantRouteMode `json:"route_mode,omitempty"`
+	OrganizationID               string                 `json:"organization_id"`
+	RuntimeID                    string                 `json:"runtime_id"`
+	TenantID                     string                 `json:"tenant_id"`
+	UserID                       string                 `json:"user_id"`
+	SessionID                    string                 `json:"session_id"`
+	LogicalRunID                 string                 `json:"logical_run_id"`
+	LogicalCallID                string                 `json:"logical_call_id"`
+	AttemptNonce                 string                 `json:"attempt_nonce"`
+	Provider                     string                 `json:"provider,omitempty"`
+	ProviderModelID              string                 `json:"provider_model_id,omitempty"`
+	ProviderConnectionID         string                 `json:"provider_connection_id,omitempty"`
+	ProviderConnectionGeneration uint64                 `json:"provider_connection_generation,omitempty"`
+	RouteID                      string                 `json:"route_id,omitempty"`
+	CredentialBindingHandle      string                 `json:"credential_binding_handle,omitempty"`
+	CredentialAssetGeneration    uint64                 `json:"credential_asset_generation,omitempty"`
+	PolicyGeneration             uint64                 `json:"policy_generation"`
+	MaxReasoning                 ReasoningEffort        `json:"max_reasoning"`
+	MaxOutputTokens              int                    `json:"max_output_tokens"`
+	Lease                        ComputeLease           `json:"lease"`
+	IssuedAt                     time.Time              `json:"issued_at"`
+	ExpiresAt                    time.Time              `json:"expires_at"`
+	Signature                    string                 `json:"signature"`
 }
 
 // ComputeLease is the bounded local allowance a runtime may consume before
@@ -87,6 +91,30 @@ const (
 	ExternalGrantRequired ExternalGrantMode = "required"
 )
 
+// ExternalGrantRouteMode selects who supplies the provider route. The mode is
+// signed as part of the grant and cannot be inferred from optional fields.
+type ExternalGrantRouteMode string
+
+const (
+	// ExternalGrantRouteRuntimeDefault permits the runtime's configured
+	// provider credentials and default model. The grant may carry limits and a
+	// lease, but no coordinator-selected provider binding.
+	ExternalGrantRouteRuntimeDefault ExternalGrantRouteMode = "runtime_default"
+	// ExternalGrantRouteCoordinatorBound requires the signed provider/model,
+	// connection, route, and opaque credential binding claims.
+	ExternalGrantRouteCoordinatorBound ExternalGrantRouteMode = "coordinator_bound"
+)
+
+// EffectiveExternalGrantRouteMode treats an empty mode as the legacy
+// coordinator-bound shape. New issuers should always stamp an explicit mode;
+// this compatibility rule keeps already-issued v1.30.0 grants verifiable.
+func EffectiveExternalGrantRouteMode(mode ExternalGrantRouteMode) ExternalGrantRouteMode {
+	if mode == "" {
+		return ExternalGrantRouteCoordinatorBound
+	}
+	return mode
+}
+
 var (
 	// ErrExternalGrantRequired indicates that strict mode received no grant.
 	ErrExternalGrantRequired = errors.New("llm: external execution grant required")
@@ -118,6 +146,9 @@ var (
 	// could not be durably enqueued. Strict callers fail closed rather than
 	// pretending that provider consumption was accounted.
 	ErrUsageReceiptUnavailable = errors.New("llm: external execution usage receipt unavailable")
+	// ErrInvalidUsageReceipt identifies a malformed or unbound content-free
+	// usage fact before it reaches a delivery transport.
+	ErrInvalidUsageReceipt = errors.New("llm: invalid external execution usage receipt")
 )
 
 // ExternalGrantVerifier validates a signed grant against the verified request
@@ -207,6 +238,222 @@ type LeaseReservationManager interface {
 // the grant wrapper. It intentionally contains no messages, prompts,
 // responses, tool arguments, or reasoning traces.
 type AttemptUsageReceipt struct {
+	ReceiptID     string
+	GrantID       string
+	RouteMode     ExternalGrantRouteMode
+	LogicalCallID string
+	AttemptNonce  string
+	// ParentLogicalCallID and ParentAttemptNonce bind a planner-derived child
+	// receipt back to the signed grant identity. They are empty only on legacy
+	// v1.30.0 receipts, which retain the old hash representation.
+	ParentLogicalCallID          string
+	ParentAttemptNonce           string
+	PlannerStep                  int
+	OrganizationID               string
+	RuntimeID                    string
+	TenantID                     string
+	UserID                       string
+	SessionID                    string
+	LogicalRunID                 string
+	Provider                     string
+	ProviderModelID              string
+	ProviderConnectionID         string
+	ProviderConnectionGeneration uint64
+	RouteID                      string
+	CredentialAssetGeneration    uint64
+	PolicyGeneration             uint64
+	AttemptNumber                int
+	RetryNumber                  int
+	DowngradeNumber              int
+	FallbackHop                  int
+	RequestedReasoning           ReasoningEffort
+	EffectiveReasoning           ReasoningEffort
+	PromptTokens                 int
+	CompletionTokens             int
+	ReasoningTokens              int
+	TotalTokens                  int
+	CacheReadTokens              int
+	CacheWriteTokens             int
+	InputCostMicros              int64
+	OutputCostMicros             int64
+	ReasoningCostMicros          int64
+	TotalCostMicros              int64
+	Currency                     string
+	LatencyMS                    int64
+	Status                       string
+	StartedAt                    time.Time
+	CompletedAt                  time.Time
+	IdempotencyKey               string
+	CanonicalBodyHash            string
+}
+
+// UsageReceiptSink durably accepts a receipt before a strict provider call is
+// considered fully observed. Implementations are responsible for idempotent
+// receipt identity and replay semantics.
+type UsageReceiptSink interface {
+	Enqueue(context.Context, AttemptUsageReceipt) error
+}
+
+// CanonicalAttemptUsageReceiptBodyHash returns the SHA-256 digest of the
+// receipt body with its digest field blank. encoding/json preserves the
+// declared field order, giving the outbox and downstream consumers one
+// deterministic content-free idempotency representation without adding a
+// second serialization format.
+func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, error) {
+	receipt.CanonicalBodyHash = ""
+	var (
+		body []byte
+		err  error
+	)
+	if receipt.ParentLogicalCallID == "" && receipt.ParentAttemptNonce == "" && receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == "" {
+		// Preserve the v1.30.0 representation for pending receipts written
+		// before this additive identity/mode extension. New receipts use the
+		// explicit canonical wire below.
+		body, err = json.Marshal(legacyAttemptUsageReceiptFrom(receipt))
+	} else {
+		body, err = json.Marshal(canonicalAttemptUsageReceiptWire(receipt))
+	}
+	if err != nil {
+		return "", fmt.Errorf("llm: canonical usage receipt: %w", err)
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// MarshalCanonicalAttemptUsageReceipt returns the public, transport-neutral
+// JSON representation for a receipt. HTTP, queue, and file deliveries may use
+// this same shape without importing Harbor internals or re-deriving fields.
+func MarshalCanonicalAttemptUsageReceipt(receipt AttemptUsageReceipt) ([]byte, error) {
+	body, err := json.Marshal(canonicalAttemptUsageReceiptWire(receipt))
+	if err != nil {
+		return nil, fmt.Errorf("llm: canonical usage receipt wire: %w", err)
+	}
+	return body, nil
+}
+
+// ValidateAttemptUsageReceipt validates content-free shape and the explicit
+// route boundary. It intentionally does not authenticate a grant; use
+// ValidateAttemptUsageReceiptAgainstGrant after the signed grant has been
+// verified.
+func ValidateAttemptUsageReceipt(receipt AttemptUsageReceipt) error {
+	if receipt.ReceiptID == "" || receipt.GrantID == "" || receipt.LogicalCallID == "" || receipt.AttemptNonce == "" ||
+		receipt.OrganizationID == "" || receipt.RuntimeID == "" || receipt.TenantID == "" || receipt.UserID == "" || receipt.SessionID == "" || receipt.LogicalRunID == "" ||
+		receipt.Provider == "" || receipt.ProviderModelID == "" || receipt.PolicyGeneration == 0 || receipt.AttemptNumber <= 0 || receipt.RetryNumber < 0 || receipt.DowngradeNumber < 0 || receipt.FallbackHop < 0 {
+		return fmt.Errorf("%w: missing identity, route, policy, or attempt field", ErrInvalidUsageReceipt)
+	}
+	if receipt.Status != "success" && receipt.Status != "error" && receipt.Status != "canceled" {
+		return fmt.Errorf("%w: unsupported status", ErrInvalidUsageReceipt)
+	}
+	if receipt.StartedAt.IsZero() || receipt.CompletedAt.IsZero() || receipt.CompletedAt.Before(receipt.StartedAt) {
+		return fmt.Errorf("%w: invalid interval", ErrInvalidUsageReceipt)
+	}
+	if receipt.PromptTokens < 0 || receipt.CompletionTokens < 0 || receipt.ReasoningTokens < 0 || receipt.TotalTokens < 0 || receipt.CacheReadTokens < 0 || receipt.CacheWriteTokens < 0 ||
+		receipt.InputCostMicros < 0 || receipt.OutputCostMicros < 0 || receipt.ReasoningCostMicros < 0 || receipt.TotalCostMicros < 0 || receipt.LatencyMS < 0 {
+		return fmt.Errorf("%w: negative usage", ErrInvalidUsageReceipt)
+	}
+	mode := receipt.RouteMode
+	if mode == "" {
+		mode = ExternalGrantRouteCoordinatorBound // legacy v1.30.0 receipt
+	}
+	switch mode {
+	case ExternalGrantRouteCoordinatorBound:
+		if receipt.ProviderConnectionID == "" || receipt.ProviderConnectionGeneration == 0 || receipt.RouteID == "" || receipt.CredentialAssetGeneration == 0 {
+			return fmt.Errorf("%w: coordinator-bound route is incomplete", ErrInvalidUsageReceipt)
+		}
+	case ExternalGrantRouteRuntimeDefault:
+		if receipt.ProviderConnectionID != "" || receipt.ProviderConnectionGeneration != 0 || receipt.RouteID != "" || receipt.CredentialAssetGeneration != 0 {
+			return fmt.Errorf("%w: runtime-default receipt carries coordinator route claims", ErrInvalidUsageReceipt)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported route mode", ErrInvalidUsageReceipt)
+	}
+	if receipt.CanonicalBodyHash == "" {
+		return fmt.Errorf("%w: missing canonical body hash", ErrInvalidUsageReceipt)
+	}
+	wantHash, err := CanonicalAttemptUsageReceiptBodyHash(receipt)
+	if err != nil {
+		return fmt.Errorf("%w: canonical body: %w", ErrInvalidUsageReceipt, err)
+	}
+	if wantHash != receipt.CanonicalBodyHash {
+		return fmt.Errorf("%w: canonical body hash mismatch", ErrInvalidUsageReceipt)
+	}
+	if receipt.PlannerStep < 0 || receipt.PlannerStep > 0 && (receipt.ParentLogicalCallID == "" || receipt.ParentAttemptNonce == "") {
+		return fmt.Errorf("%w: incomplete parent attempt binding", ErrInvalidUsageReceipt)
+	}
+	if receipt.ParentLogicalCallID != "" || receipt.ParentAttemptNonce != "" {
+		if receipt.ParentLogicalCallID == "" || receipt.ParentAttemptNonce == "" {
+			return fmt.Errorf("%w: incomplete parent attempt binding", ErrInvalidUsageReceipt)
+		}
+	}
+	return nil
+}
+
+// ValidateAttemptUsageReceiptAgainstGrant verifies that the receipt is the
+// server-derived attempt represented by the signed grant. It catches forged
+// planner children and receipt route/identity drift without needing the
+// provider credential or prompt content.
+func ValidateAttemptUsageReceiptAgainstGrant(receipt AttemptUsageReceipt, grant ExternalGrant) error {
+	if err := ValidateAttemptUsageReceipt(receipt); err != nil {
+		return err
+	}
+	if receipt.GrantID != grant.GrantID || receipt.OrganizationID != grant.OrganizationID || receipt.RuntimeID != grant.RuntimeID ||
+		receipt.TenantID != grant.TenantID || receipt.UserID != grant.UserID || receipt.SessionID != grant.SessionID || receipt.LogicalRunID != grant.LogicalRunID ||
+		receipt.PolicyGeneration != grant.PolicyGeneration {
+		return fmt.Errorf("%w: grant identity mismatch", ErrInvalidUsageReceipt)
+	}
+	mode := grant.RouteMode
+	if mode == "" {
+		mode = ExternalGrantRouteCoordinatorBound
+	}
+	receiptMode := receipt.RouteMode
+	if receiptMode == "" {
+		receiptMode = ExternalGrantRouteCoordinatorBound
+	}
+	if receiptMode != mode {
+		return fmt.Errorf("%w: grant and receipt route modes differ", ErrInvalidUsageReceipt)
+	}
+	if receipt.ParentLogicalCallID != "" || receipt.ParentAttemptNonce != "" {
+		if receipt.ParentLogicalCallID != grant.LogicalCallID || receipt.ParentAttemptNonce != grant.AttemptNonce {
+			return fmt.Errorf("%w: parent attempt mismatch", ErrInvalidUsageReceipt)
+		}
+		if receipt.PlannerStep > 0 {
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", grant.AttemptNonce, receipt.PlannerStep)))
+			wantNonce := hex.EncodeToString(digest[:])
+			if receipt.LogicalCallID != fmt.Sprintf("%s/step/%d", grant.LogicalCallID, receipt.PlannerStep) || receipt.AttemptNonce != wantNonce {
+				return fmt.Errorf("%w: planner step derivation mismatch", ErrInvalidUsageReceipt)
+			}
+		} else if receipt.LogicalCallID != grant.LogicalCallID || receipt.AttemptNonce != grant.AttemptNonce {
+			return fmt.Errorf("%w: root attempt derivation mismatch", ErrInvalidUsageReceipt)
+		}
+	} else if receipt.LogicalCallID != grant.LogicalCallID || receipt.AttemptNonce != grant.AttemptNonce {
+		return fmt.Errorf("%w: attempt identity mismatch", ErrInvalidUsageReceipt)
+	}
+	if receipt.ReceiptID != CanonicalAttemptID(grant.GrantID, receipt.LogicalCallID, receipt.AttemptNonce, receipt.AttemptNumber, receipt.RetryNumber, receipt.DowngradeNumber, receipt.FallbackHop) || receipt.IdempotencyKey != receipt.ReceiptID {
+		return fmt.Errorf("%w: attempt id mismatch", ErrInvalidUsageReceipt)
+	}
+	if mode == ExternalGrantRouteCoordinatorBound {
+		if receipt.Provider != grant.Provider || receipt.ProviderModelID != grant.ProviderModelID || receipt.ProviderConnectionID != grant.ProviderConnectionID || receipt.ProviderConnectionGeneration != grant.ProviderConnectionGeneration || receipt.RouteID != grant.RouteID || receipt.CredentialAssetGeneration != grant.CredentialAssetGeneration {
+			return fmt.Errorf("%w: coordinator route mismatch", ErrInvalidUsageReceipt)
+		}
+	} else if receipt.ProviderConnectionID != "" || receipt.RouteID != "" {
+		return fmt.Errorf("%w: runtime-default route mismatch", ErrInvalidUsageReceipt)
+	}
+	return nil
+}
+
+// CanonicalAttemptID returns the stable durable identity for one provider
+// attempt. Logical call and nonce are server-derived; retry, downgrade and
+// fallback coordinates are explicit to keep distinct calls distinct.
+func CanonicalAttemptID(grantID, logicalCallID, attemptNonce string, attempt, retry, downgrade, fallbackHop int) string {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	return fmt.Sprintf("%s/%s/%s/%d/%d/%d/%d", grantID, logicalCallID, attemptNonce, retry, downgrade, fallbackHop, attempt)
+}
+
+// legacyAttemptUsageReceipt preserves the v1.30.0 hash shape for receipts
+// that predate RouteMode and planner-parent fields.
+type legacyAttemptUsageReceipt struct {
 	ReceiptID                    string
 	GrantID                      string
 	LogicalCallID                string
@@ -248,32 +495,74 @@ type AttemptUsageReceipt struct {
 	CanonicalBodyHash            string
 }
 
-// UsageReceiptSink durably accepts a receipt before a strict provider call is
-// considered fully observed. Implementations are responsible for idempotent
-// receipt identity and replay semantics.
-type UsageReceiptSink interface {
-	Enqueue(context.Context, AttemptUsageReceipt) error
+func legacyAttemptUsageReceiptFrom(receipt AttemptUsageReceipt) legacyAttemptUsageReceipt {
+	return legacyAttemptUsageReceipt{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
 }
 
-// CanonicalAttemptUsageReceiptBodyHash returns the SHA-256 digest of the
-// receipt body with its digest field blank. encoding/json preserves the
-// declared field order, giving the outbox and downstream consumers one
-// deterministic content-free idempotency representation without adding a
-// second serialization format.
-func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, error) {
-	receipt.CanonicalBodyHash = ""
-	body, err := json.Marshal(receipt)
-	if err != nil {
-		return "", fmt.Errorf("llm: canonical usage receipt: %w", err)
+// canonicalAttemptUsageReceiptWire is the stable public JSON contract. The
+// internal struct remains untagged for backwards-compatible persistence.
+type canonicalAttemptUsageReceiptWirePayload struct {
+	ReceiptID                    string                 `json:"receipt_id"`
+	GrantID                      string                 `json:"grant_id"`
+	RouteMode                    ExternalGrantRouteMode `json:"route_mode"`
+	LogicalCallID                string                 `json:"logical_call_id"`
+	AttemptNonce                 string                 `json:"attempt_nonce"`
+	ParentLogicalCallID          string                 `json:"parent_logical_call_id,omitempty"`
+	ParentAttemptNonce           string                 `json:"parent_attempt_nonce,omitempty"`
+	PlannerStep                  int                    `json:"planner_step,omitempty"`
+	OrganizationID               string                 `json:"organization_id"`
+	RuntimeID                    string                 `json:"runtime_id"`
+	TenantID                     string                 `json:"tenant_id"`
+	UserID                       string                 `json:"user_id"`
+	SessionID                    string                 `json:"session_id"`
+	LogicalRunID                 string                 `json:"logical_run_id"`
+	Provider                     string                 `json:"provider"`
+	ProviderModelID              string                 `json:"provider_model_id"`
+	ProviderConnectionID         string                 `json:"provider_connection_id,omitempty"`
+	ProviderConnectionGeneration uint64                 `json:"provider_connection_generation,omitempty"`
+	RouteID                      string                 `json:"route_id,omitempty"`
+	CredentialAssetGeneration    uint64                 `json:"credential_asset_generation,omitempty"`
+	PolicyGeneration             uint64                 `json:"policy_generation"`
+	AttemptNumber                int                    `json:"attempt_number"`
+	RetryNumber                  int                    `json:"retry_number"`
+	DowngradeNumber              int                    `json:"downgrade_number"`
+	FallbackHop                  int                    `json:"fallback_hop"`
+	RequestedReasoning           ReasoningEffort        `json:"requested_reasoning"`
+	EffectiveReasoning           ReasoningEffort        `json:"effective_reasoning"`
+	PromptTokens                 int                    `json:"prompt_tokens"`
+	CompletionTokens             int                    `json:"completion_tokens"`
+	ReasoningTokens              int                    `json:"reasoning_tokens"`
+	TotalTokens                  int                    `json:"total_tokens"`
+	CacheReadTokens              int                    `json:"cache_read_tokens"`
+	CacheWriteTokens             int                    `json:"cache_write_tokens"`
+	InputCostMicros              int64                  `json:"input_cost_micros"`
+	OutputCostMicros             int64                  `json:"output_cost_micros"`
+	ReasoningCostMicros          int64                  `json:"reasoning_cost_micros"`
+	TotalCostMicros              int64                  `json:"total_cost_micros"`
+	Currency                     string                 `json:"currency"`
+	LatencyMS                    int64                  `json:"latency_ms"`
+	Status                       string                 `json:"status"`
+	StartedAt                    time.Time              `json:"started_at"`
+	CompletedAt                  time.Time              `json:"completed_at"`
+	IdempotencyKey               string                 `json:"idempotency_key"`
+	CanonicalBodyHash            string                 `json:"canonical_body_hash,omitempty"`
+}
+
+func canonicalAttemptUsageReceiptWire(receipt AttemptUsageReceipt) canonicalAttemptUsageReceiptWirePayload {
+	mode := receipt.RouteMode
+	if mode == "" {
+		mode = ExternalGrantRouteCoordinatorBound
 	}
-	digest := sha256.Sum256(body)
-	return hex.EncodeToString(digest[:]), nil
+	return canonicalAttemptUsageReceiptWirePayload{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, RouteMode: mode, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, ParentLogicalCallID: receipt.ParentLogicalCallID, ParentAttemptNonce: receipt.ParentAttemptNonce, PlannerStep: receipt.PlannerStep, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, DowngradeNumber: receipt.DowngradeNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
 }
 
 // ExternalGrantConfig wires the opt-in grant and receipt seams into llm.Open.
 // A zero value disables the layer and preserves legacy behavior.
 type ExternalGrantConfig struct {
-	Mode            ExternalGrantMode
+	Mode ExternalGrantMode
+	// RouteMode optionally restricts accepted signed grant shapes. Empty
+	// accepts both explicit route modes; the signed grant remains authoritative.
+	RouteMode       ExternalGrantRouteMode
 	Verifier        ExternalGrantVerifier
 	Credentials     CredentialResolver
 	TopUpper        LeaseTopUpper
@@ -327,13 +616,16 @@ func VerifiedGrantContextFrom(ctx context.Context) (VerifiedGrantContext, bool) 
 // coordinates used to produce deterministic receipt IDs. It is per invocation,
 // never stored on a reusable client.
 type AttemptScope struct {
-	CallID        string
-	LogicalCallID string
-	AttemptNonce  string
-	Attempt       int
-	Retry         int
-	Downgrade     int
-	FallbackHop   int
+	CallID              string
+	LogicalCallID       string
+	AttemptNonce        string
+	ParentLogicalCallID string
+	ParentAttemptNonce  string
+	PlannerStep         int
+	Attempt             int
+	Retry               int
+	Downgrade           int
+	FallbackHop         int
 }
 
 type attemptScopeKey struct{}
@@ -400,8 +692,12 @@ func EnsureGrantAttemptScope(ctx context.Context, grant ExternalGrant) (context.
 	copyScope := *scope
 	copyScope.LogicalCallID = grant.LogicalCallID
 	copyScope.AttemptNonce = grant.AttemptNonce
+	copyScope.ParentLogicalCallID = grant.LogicalCallID
+	copyScope.ParentAttemptNonce = grant.AttemptNonce
+	copyScope.PlannerStep = 0
 	copyScope.CallID = grant.LogicalCallID
 	if step, ok := attemptStepFrom(ctx); ok {
+		copyScope.PlannerStep = step
 		copyScope.LogicalCallID = fmt.Sprintf("%s/step/%d", grant.LogicalCallID, step)
 		copyScope.CallID = copyScope.LogicalCallID
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", grant.AttemptNonce, step)))

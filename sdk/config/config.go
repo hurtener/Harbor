@@ -46,6 +46,9 @@ type (
 	IdentityConfig = internal.IdentityConfig
 	// LLMConfig configures the LLM client.
 	LLMConfig = internal.LLMConfig
+	// LLMExternalGrantConfig configures signed external-grant verification and
+	// the accepted provider-route mode.
+	LLMExternalGrantConfig = internal.LLMExternalGrantConfig
 	// LLMCorrectionsConfig configures the provider-correction layer.
 	LLMCorrectionsConfig = internal.LLMCorrectionsConfig
 	// LLMCorrectionsProfileConfig is a per-model corrections override.

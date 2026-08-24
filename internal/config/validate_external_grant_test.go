@@ -33,6 +33,7 @@ func TestValidateLLMExternalGrant_RequiresIssuerFenceAndKey(t *testing.T) {
 
 	for name, mutate := range map[string]func(*LLMExternalGrantConfig){
 		"mode":                    func(g *LLMExternalGrantConfig) { g.Mode = "mystery" },
+		"route_mode":              func(g *LLMExternalGrantConfig) { g.RouteMode = "caller_selected" },
 		"audience":                func(g *LLMExternalGrantConfig) { g.Audience = "" },
 		"runtime":                 func(g *LLMExternalGrantConfig) { g.RuntimeID = "" },
 		"authorized_organization": func(g *LLMExternalGrantConfig) { g.AuthorizedOrganizations = []string{""} },
@@ -44,6 +45,16 @@ func TestValidateLLMExternalGrant_RequiresIssuerFenceAndKey(t *testing.T) {
 			c.LLM.ExternalGrant = got
 			if err := c.validateLLMExternalGrant(); err == nil {
 				t.Fatal("invalid external-grant config accepted")
+			}
+		})
+	}
+	for _, routeMode := range []string{"", "runtime_default", "coordinator_bound"} {
+		t.Run("route_mode_"+routeMode, func(t *testing.T) {
+			got := validExternalGrantConfig(t)
+			got.RouteMode = routeMode
+			c.LLM.ExternalGrant = got
+			if err := c.validateLLMExternalGrant(); err != nil {
+				t.Fatalf("valid route mode %q: %v", routeMode, err)
 			}
 		})
 	}

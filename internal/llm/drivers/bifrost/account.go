@@ -117,16 +117,22 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	// provider, we fail closed at boot rather than at first request.
 	customByName := make(map[string]customRuntime, len(cfg.CustomProviders))
 	strictExternalGrant := deps.ExternalGrant.Mode == llm.ExternalGrantRequired
+	// A strict explicit runtime_default posture requires a local key; explicit
+	// coordinator_bound never reads one. Legacy blank required mode accepts both
+	// shapes and preserves v1.30.0 keyless boot: seed a configured key when it is
+	// available, but defer a missing-key failure until a runtime_default call.
+	coordinatorOnly := strictExternalGrant && deps.ExternalGrant.RouteMode == llm.ExternalGrantRouteCoordinatorBound
+	opportunisticLocalKey := strictExternalGrant && deps.ExternalGrant.RouteMode == ""
 	for _, spec := range cfg.CustomProviders {
 		if spec.Name == "" || spec.BaseURL == "" || spec.APIKeyEnvVar == "" || len(spec.Models) == 0 {
 			return nil, fmt.Errorf("%w: name=%q base_url=%q api_key_env_var=%q models=%d",
 				ErrInvalidCustomProvider, spec.Name, spec.BaseURL, spec.APIKeyEnvVar, len(spec.Models))
 		}
 		var key string
-		if !strictExternalGrant {
+		if !coordinatorOnly {
 			var err error
 			key, err = resolveCustomAPIKey(spec.APIKeyEnvVar)
-			if err != nil {
+			if err != nil && !opportunisticLocalKey {
 				return nil, err
 			}
 		}
@@ -165,12 +171,14 @@ func newAccount(cfg llm.ConfigSnapshot, deps llm.Deps) (*Account, error) {
 	// every GetKeysForProvider call. Until the source's first Connect seeds it,
 	// the holder is empty and the safety edge / bifrost fails closed on the
 	// empty key (never a silent bad call).
-	if cfg.CredentialSource != "remote" && !strictExternalGrant {
+	if cfg.CredentialSource != "remote" && !coordinatorOnly {
 		key, err := resolveAPIKey(cfg.APIKey)
-		if err != nil {
+		if err != nil && !opportunisticLocalKey {
 			return nil, err
 		}
-		holder.Init(key)
+		if err == nil {
+			holder.Init(key)
+		}
 	}
 	nativeCfg := buildNativeProviderConfig(cfg)
 	return &Account{
@@ -366,15 +374,23 @@ func (a *Account) GetConfiguredProviders() ([]bfschemas.ModelProvider, error) {
 }
 
 // GetKeysForProvider implements `bfschemas.Account`. A verified external
-// grant takes the credential path: the opaque binding is resolved only from
-// the verified call context and its immutable generation, never from a
-// caller-selected key or the process-wide LiveKey. Calls without a grant
-// retain the legacy primary-key path for compatibility mode.
+// coordinator-bound grant takes the opaque credential path. A verified
+// runtime-default grant deliberately retains the runtime's configured
+// primary LiveKey/custom-provider key. Calls without a grant retain the
+// legacy primary-key path only when strict mode is not enabled.
 func (a *Account) GetKeysForProvider(ctx context.Context, providerKey bfschemas.ModelProvider) ([]bfschemas.Key, error) {
 	if providerKey != a.provider {
 		return nil, fmt.Errorf("bifrost: provider %q is not configured for this Harbor account", providerKey)
 	}
 	if verified, ok := llm.VerifiedGrantContextFrom(ctx); ok {
+		switch llm.EffectiveExternalGrantRouteMode(verified.Grant.RouteMode) {
+		case llm.ExternalGrantRouteRuntimeDefault:
+			return a.defaultKeys()
+		case llm.ExternalGrantRouteCoordinatorBound:
+			// Continue below through the coordinator credential resolver.
+		default:
+			return nil, fmt.Errorf("bifrost: external grant route mode is invalid")
+		}
 		if verified.Credentials == nil {
 			return nil, fmt.Errorf("bifrost: external grant credential resolver is unavailable")
 		}
@@ -402,11 +418,19 @@ func (a *Account) GetKeysForProvider(ctx context.Context, providerKey bfschemas.
 	if a.externalGrantRequired {
 		return nil, llm.ErrExternalGrantRequired
 	}
+	return a.defaultKeys()
+}
+
+func (a *Account) defaultKeys() ([]bfschemas.Key, error) {
+	key := a.primaryKey.Get()
+	if key == "" {
+		return nil, ErrMissingAPIKey
+	}
 	return []bfschemas.Key{
 		{
 			ID:     "harbor-default",
 			Name:   "harbor-default",
-			Value:  bfschemas.SecretVar{Val: a.primaryKey.Get()},
+			Value:  bfschemas.SecretVar{Val: key},
 			Models: append([]string(nil), a.primaryModels...),
 			Weight: 1.0,
 		},

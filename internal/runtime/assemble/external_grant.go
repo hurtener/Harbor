@@ -37,16 +37,25 @@ func wireExternalGrant(
 ) (llm.ExternalGrantConfig, func(), error) {
 	ext := provided
 	configuredMode := llm.ExternalGrantMode(strings.TrimSpace(settings.Mode))
+	configuredRouteMode := llm.ExternalGrantRouteMode(strings.TrimSpace(settings.RouteMode))
 	if configuredMode == "disabled" {
 		configuredMode = llm.ExternalGrantDisabled
 	}
 	if configuredMode != "" && configuredMode != llm.ExternalGrantDisabled && configuredMode != llm.ExternalGrantOptional && configuredMode != llm.ExternalGrantRequired {
 		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: unsupported mode %q", settings.Mode)
 	}
+	if configuredRouteMode != "" && configuredRouteMode != llm.ExternalGrantRouteRuntimeDefault && configuredRouteMode != llm.ExternalGrantRouteCoordinatorBound {
+		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: unsupported route mode %q", settings.RouteMode)
+	}
 	if ext.Mode == "" {
 		ext.Mode = configuredMode
 	} else if configuredMode != "" && configuredMode != llm.ExternalGrantDisabled && ext.Mode != configuredMode {
 		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: injected mode %q conflicts with configured mode %q", ext.Mode, configuredMode)
+	}
+	if ext.RouteMode == "" {
+		ext.RouteMode = configuredRouteMode
+	} else if configuredRouteMode != "" && ext.RouteMode != configuredRouteMode {
+		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: injected route mode %q conflicts with configured route mode %q", ext.RouteMode, configuredRouteMode)
 	}
 	if ext.Mode == "" || ext.Mode == llm.ExternalGrantDisabled {
 		return ext, func() {}, nil
@@ -62,6 +71,7 @@ func wireExternalGrant(
 			RuntimeID:               settings.RuntimeID,
 			AuthorizedOrganizations: settings.AuthorizedOrganizations,
 			Keys:                    keys,
+			RouteMode:               ext.RouteMode,
 		})
 		if err != nil {
 			return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant verifier: %w", err)
@@ -85,7 +95,13 @@ func wireExternalGrant(
 			pending = reservationStore
 		}
 	}
-	if ext.Mode == llm.ExternalGrantRequired && ext.Credentials == nil {
+	// An empty route restriction accepts either explicit signed shape. Do not
+	// collapse it to the legacy coordinator-bound grant shape at boot: a
+	// runtime-default grant intentionally needs no coordinator credential
+	// resolver. If an unrestricted runtime later receives a coordinator-bound
+	// grant without a resolver, the per-call wrapper still rejects it before
+	// the provider is invoked.
+	if ext.Mode == llm.ExternalGrantRequired && ext.RouteMode == llm.ExternalGrantRouteCoordinatorBound && ext.Credentials == nil {
 		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: required mode needs an injected credential resolver")
 	}
 	if ext.Mode == llm.ExternalGrantRequired && ext.ReceiptSink == nil && delivery == nil {

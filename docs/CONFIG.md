@@ -441,6 +441,18 @@ Validation: `disabled`, `optional`, or `required`. `optional` verifies a
 supplied signed grant while preserving legacy calls; `required` rejects calls
 without one. Restart-required.
 
+### llm.external_grant.route_mode
+
+Optional route shape accepted by the runtime-side grant verifier:
+`coordinator_bound` requires a coordinator-selected provider route and
+credential binding, while `runtime_default` uses the runtime's configured
+provider/model and carries only the signed limits and lease. Empty accepts
+either explicit shape. In required mode, explicit `runtime_default` requires
+the configured native/custom provider key at boot; explicit
+`coordinator_bound` does not load it. Legacy empty mode may boot without a local
+key for coordinator-bound compatibility and uses a configured key when one is
+available. Restart-required.
+
 ### llm.external_grant.audience
 
 The exact audience claim accepted by the runtime-side grant verifier. Required

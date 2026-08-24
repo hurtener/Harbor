@@ -64,8 +64,11 @@ import (
 	"time"
 
 	// modernc.org/sqlite registers the "sqlite" driver name with
-	// database/sql via its own init().
-	_ "modernc.org/sqlite"
+	// database/sql via its own init(). The named import also lets the
+	// open-time WAL verifier distinguish retryable SQLITE_BUSY from
+	// permanent configuration errors.
+	moderncsqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -76,6 +79,7 @@ const (
 	driverName    = "localdb"
 	sqliteDriver  = "sqlite"
 	busyTimeoutMs = 5000
+	busyRetryWait = 25 * time.Millisecond
 
 	defaultListLimit  = 100
 	maxListLimit      = 1000
@@ -109,13 +113,9 @@ func New(cfg skills.ConfigSnapshot, deps skills.Deps) (skills.SkillStore, error)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := verifyJournalMode(ctx, db, cfg.DSN); err != nil {
+	if err := bootstrapSQLite(ctx, db, cfg.DSN); err != nil {
 		_ = db.Close()
 		return nil, err
-	}
-	if err := migrate(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("skills/localdb: migrate: %w", err)
 	}
 
 	// Semantic retrieval (opt-in) requires the injected embedder —
@@ -790,6 +790,48 @@ func verifyJournalMode(ctx context.Context, db *sql.DB, originalDSN string) erro
 			mode, originalDSN)
 	}
 	return nil
+}
+
+// bootstrapSQLite makes concurrent process/store startup match the driver's
+// documented busy-timeout contract. Separate New calls own separate sql.DB
+// pools, so the per-pool single-connection limit cannot serialize their WAL
+// setup or migration transactions. Retrying only the WAL probe leaves the
+// migration bootstrap exposed; both operations are idempotent and therefore
+// retry together until the constructor's existing deadline.
+func bootstrapSQLite(ctx context.Context, db *sql.DB, originalDSN string) error {
+	for {
+		err := verifyJournalMode(ctx, db, originalDSN)
+		if err == nil {
+			if migrateErr := migrate(ctx, db); migrateErr != nil {
+				err = fmt.Errorf("skills/localdb: migrate: %w", migrateErr)
+			}
+		}
+		if err == nil || !isSQLiteContention(err) {
+			return err
+		}
+
+		timer := time.NewTimer(busyRetryWait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return fmt.Errorf("skills/localdb: bootstrap after SQLite contention: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func isSQLiteContention(err error) bool {
+	var sqliteErr *moderncsqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	primary := sqliteErr.Code() & 0xff
+	return primary == sqlite3.SQLITE_BUSY || primary == sqlite3.SQLITE_LOCKED
 }
 
 func isMemoryDSN(dsn string) bool {
