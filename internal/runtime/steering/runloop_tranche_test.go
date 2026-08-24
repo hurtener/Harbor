@@ -623,17 +623,23 @@ func TestRun_TrancheDuplicateResume_FailsClosed(t *testing.T) {
 		t.Fatalf("Lookup: %v", err)
 	}
 	// Two RESUMEs for the SAME pause, drained in one batch: the first
-	// advances the pause, the second must fail closed.
-	for i := range 2 {
-		if err := in.Enqueue(ControlEvent{
+	// advances the pause, the second must fail closed. Queue them under
+	// one inbox lock so the run loop cannot consume the first and retire
+	// the inbox before the second is appended.
+	enqueueBatch(t, in,
+		ControlEvent{
 			Type:         ControlResume,
 			Identity:     runA,
 			CallerScope:  ScopeOwnerUser,
 			CallerTenant: runA.TenantID,
-		}); err != nil {
-			t.Fatalf("Enqueue(RESUME #%d): %v", i+1, err)
-		}
-	}
+		},
+		ControlEvent{
+			Type:         ControlResume,
+			Identity:     runA,
+			CallerScope:  ScopeOwnerUser,
+			CallerTenant: runA.TenantID,
+		},
+	)
 	select {
 	case out := <-done:
 		if !errors.Is(out.err, pauseresume.ErrAlreadyResumed) {
