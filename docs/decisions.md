@@ -14102,7 +14102,7 @@ database, or deployment acceptance is claimed.
 
 **Date:** 2026-08-24
 
-**Status:** Implementation candidate for the v1.30.1 hotfix; no tag or release claim.
+**Status:** Accepted for the v1.30.1 release candidate; tag and release pending.
 
 The v1.30.0 external-grant implementation was correct at its internal runtime
 boundary but not yet a usable generic framework contract for a second consumer:
@@ -14156,12 +14156,19 @@ reading content or secrets. A second consumer may implement any transport for
 the public `Delivery` seam using the canonical JSON; Harbor does not prescribe
 an HTTP endpoint here.
 
+**Release-candidate evidence.** Implementation PR #742 was reviewed at exact
+head `9af8e6e72dfb8398329554feadda495272e686c1` and squash-merged as
+`506d1f8cbab78eb87cbc87050369fff8fe36abb1`. Hosted candidate run
+`32705738802` and post-merge main run `32710662323` both completed
+successfully, including full preflight. The implementation and release-candidate
+ledger are separate commits; no tag, assets, published module provenance,
+post-tag cleanup, or downstream acceptance is claimed here.
+
 **Compatibility boundary.** Protocol version remains `0.1.0`. Disabled and
 optional grant modes preserve existing behavior, coordinator-bound grants remain
 the default, and legacy v1.30.0 receipt hashes are accepted. `runtime_default`
 is never inferred from missing provider fields. The v1.30.1 release/tag,
 published assets, checksums, public module provenance, hosted release workflow,
-and downstream acceptance are separate gates and are not claimed by this
-decision's implementation candidate.
+and downstream acceptance are separate gates and remain pending.
 
 **Plan:** `docs/plans/phase-256-external-grant-sdk-runtime-default.md`.
