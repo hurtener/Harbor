@@ -1503,8 +1503,9 @@ or cutover is claimed.
 
 ## HA-71 — provider-neutral descriptors, runtime validation, and model discovery
 
-**Priority:** High. **Size:** medium. **State:** Harbor Phase 255 / D-435
-candidate implemented locally; no release or downstream acceptance claimed.
+**Priority:** High. **Size:** medium. **State:** Release candidate (pre-tag),
+Harbor Phase 255 / D-435. Hosted CI is green, including full preflight; no
+immutable release or downstream acceptance is claimed.
 
 **Observed gap.** Bifrost already owns provider setup and model-listing
 mechanics, but a control-plane consumer cannot safely ask Harbor what a
@@ -1537,11 +1538,19 @@ contract through the existing protected `llm.posture` envelope with
 shared runtime credential path and is the only path that reports
 `runtime_origin=true`. No new Protocol version or method is added.
 
-**Evidence required before release.** Focused race/vet/CLI/smoke gates,
-independent adversarial review, hosted CI, and an operator-approved
-runtime-origin validation/discovery probe with sanitized output. This ask does
-not claim provider account readiness, fleet rollout, or downstream database
-mutation.
+**Release-candidate evidence.** Implementation PR #738 was merged at
+`d9bf28fe703e10eb9f995657f4ac52949aa57e04` (tree
+`72f8093049a3f7bc952d8d3e0decdd8d02ea7744`). Hosted candidate run
+`32670321270` completed successfully on PR head
+`1da7845326088e451bcf19970136a62b8e274e5a` (the same tree), including the full
+preflight. Post-merge main run `32673186738` also completed successfully on
+merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
+preflight.
+Independent adversarial review and an operator-approved runtime-origin
+validation/discovery probe with sanitized output remain separate acceptance
+evidence. The immutable tag/release/provenance/checksums and post-tag scaffold
+cleanup remain pending; this ask does not claim provider account readiness,
+fleet rollout, or downstream database mutation.
 
 ## Posture signals from the downstream team
 
@@ -1553,9 +1562,11 @@ Recorded so a future phase does not "helpfully" relax something the consumer exp
 
 ## HA-70 — context-bound external execution grants and durable usage receipts
 
-**Priority:** High. **Size:** large. **State:** Implementation candidate —
-Phase 254 / D-434. This is a generic runtime execution-edge request; it does
-not prescribe a coordinator product or provider-specific policy vocabulary.
+**Priority:** High. **Size:** large. **State:** Release candidate (pre-tag),
+Harbor Phase 254 / D-434. Hosted CI is green, including full preflight; no
+immutable release or downstream acceptance is claimed. This is a generic
+runtime execution-edge request; it does not prescribe a coordinator product or
+provider-specific policy vocabulary.
 
 **Observed gap.** Harbor's LLM edge has local governance, retry/failover,
 provider-neutral reasoning controls, and token/cost telemetry, but a remote
@@ -1603,12 +1614,14 @@ coordinator outage. Receipts contain no prompt, response, tool arguments,
 reasoning trace, or secrets. The delivery contract must acknowledge duplicate
 receipt submissions without double counting.
 
-**Required evidence.** Focused tests must prove two organizations on one
-runtime resolve distinct bindings without bleed; generation rotation and
-revocation fence stale grants; retry/downgrade/failover/cancellation paths
-emit distinct content-free attempt receipts; response loss and crash/replay
-are idempotent; strict mode fails closed; N≥100 concurrent calls are race
-clean; and the StateStore outbox works with in-memory and SQLite drivers with
-the existing PostgreSQL acceptance seam retained. Hosted CI must exercise the
-real provider-account grant path when credentials are available. This ask does
-not claim a release, tag, coordinator integration, or downstream deployment.
+**Release-candidate evidence.** Implementation PR #738 was merged at
+`d9bf28fe703e10eb9f995657f4ac52949aa57e04` (tree
+`72f8093049a3f7bc952d8d3e0decdd8d02ea7744`). Hosted candidate run
+`32670321270` completed successfully on PR head
+`1da7845326088e451bcf19970136a62b8e274e5a` (the same tree), including the full
+preflight. Post-merge main run `32673186738` also completed successfully on
+merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
+preflight.
+The immutable tag/release/provenance/checksums and post-tag scaffold cleanup
+remain pending. This ask does not claim a release, tag, coordinator
+integration, or downstream deployment.

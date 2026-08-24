@@ -13942,7 +13942,9 @@ or cutover is claimed.
 
 **Date:** 2026-08-23
 
-**Status:** Implementation candidate; Phase 254. No release or tag is claimed.
+**Status:** Release candidate (pre-tag; Phase 254). Hosted CI is green,
+including full preflight; the immutable tag, release, provenance/checksums, and
+post-tag scaffold cleanup remain pending.
 
 Harbor adds a generic, opt-in execution-edge contract for a coordinator-signed
 external grant. The grant is versioned and signed, carries a key id and
@@ -13988,14 +13990,26 @@ PostgreSQL seam; no new receipt database or content mirror is introduced.
 D-334, D-335, brief 03, brief 08. Plan:
 `docs/plans/phase-254-external-execution-grants.md`.
 
+**Release-candidate evidence (2026-08-23).** Implementation PR #738 was merged
+at `d9bf28fe703e10eb9f995657f4ac52949aa57e04` (tree
+`72f8093049a3f7bc952d8d3e0decdd8d02ea7744`). Hosted candidate run
+`32670321270` completed successfully on PR head
+`1da7845326088e451bcf19970136a62b8e274e5a` (the same tree), including the full
+preflight. Post-merge main run `32673186738` also completed successfully on
+merged commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04`, including full
+preflight.
+No public tag, GitHub release, module provenance/checksum claim, post-tag
+scaffold cleanup, or downstream acceptance is made here.
+
 ---
 
 ## D-435 — Phase 255: provider-neutral descriptors are technical facts, and runtime-origin model discovery is bounded (HA-71)
 
 **Date:** 2026-08-23
 
-**Status:** Accepted as an unreleased candidate; hosted release evidence and
-downstream acceptance remain open.
+**Status:** Release candidate (pre-tag). Hosted CI is green, including full
+preflight; immutable tag/release/provenance/checksums, post-tag scaffold
+cleanup, and downstream acceptance remain open.
 
 Harbor now owns the smallest typed technical contract needed by a provider
 control-plane consumer without becoming that consumer's presentation or
@@ -14049,8 +14063,13 @@ failover boundary), D-333/D-334 (brokered credential custody), RFC §3,
 §6.5, §6.15, §8, briefs 03, 06, and 08. Plan:
 `docs/plans/phase-255-provider-descriptors.md`.
 
-**Evidence boundary.** Focused local race tests, Protocol/CLI tests, vet, and
-static Phase-255 smoke are the candidate evidence. A configured
-runtime-origin probe requires operator-approved credentials and is not run by
-the static smoke. No downstream database, fleet, deployment, tag, or release
-was mutated or claimed.
+**Evidence boundary.** Focused local race tests, Protocol/CLI tests, vet, static
+Phase-255 smoke, and hosted candidate run `32670321270` on PR head
+`1da7845326088e451bcf19970136a62b8e274e5a` (tree
+`72f8093049a3f7bc952d8d3e0decdd8d02ea7744`, also the merged commit's tree;
+including full preflight), plus post-merge main run `32673186738` on merged
+commit `d9bf28fe703e10eb9f995657f4ac52949aa57e04` (including full preflight),
+are the candidate evidence. A configured runtime-origin probe requires
+operator-approved credentials and is not run by the static smoke. No downstream
+database, fleet,
+deployment, tag, or release was mutated or claimed.
