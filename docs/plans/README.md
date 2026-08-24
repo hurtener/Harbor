@@ -397,7 +397,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |253 | Offline legacy durable-head integrity repair (HA-69 second compatibility extension, D-433): content-free inspect/dry-run, explicit freeze/drain admission, direct-5432 mutation guard, exact duplicate validation, StateStore CAS canonicalization, durable receipts, idempotent replay, and hosted real-Postgres acceptance | durable events + state + CLI + operator docs + CI | §4.3, §6.11, §6.13, §8, §12 | 16, 57, 251, 252, D-294, D-305, D-398, D-431, D-432 | existing floors | Shipped (v1.29.3) |
 |254 | Context-bound external execution grants and durable attempt receipts (HA-70, D-434): signed verified-context grants, generation-fenced credential handles, bounded leases, retry/downgrade/failover coverage, content-free receipt outbox, idempotent replay, bounded backoff, and strict compatibility modes | llm edge + Bifrost account + retry/failover + StateStore receipt outbox | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-333, D-334 | focused package/race gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |255 | Provider-neutral technical descriptors and runtime-origin model discovery (HA-71, D-435): credential modes/field kinds, conservative custom-endpoint facts, bounded Bifrost validation/discovery, normalized model capabilities, explicit manual/partial/stale/unknown/unpriced outcomes, redacted errors, offline CLI plus protected existing `llm.posture` runtime projection | llm/provider + bifrost adapter + Protocol posture + CLI + operator docs | §3, §6.5, §6.15, §8 | 03, 06, 08, 25, 33, 33a, D-018, D-025, D-333, D-334, D-434 | focused package/Protocol/CLI gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
-|256 | Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension, D-436): public grant/config/signer/verifier/receipt delivery seams, canonical receipt JSON/hash and parent/child validation, signed coordinator-bound vs runtime-default route shapes, native configured provider/model receipts, mixed-route and cross-provider fail-closed behavior, assembled runtime and external-package first consumers | sdk/llm + sdk/assemble + grant wrapper + receipt outbox + runtime assembly + config | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-025, D-333, D-334, D-434, D-435 | focused race/vet + public consumer + smoke | Ready for v1.30.1 tag; release pending |
+|256 | Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension, D-436): public grant/config/signer/verifier/receipt delivery seams, canonical receipt JSON/hash and parent/child validation, signed coordinator-bound vs runtime-default route shapes, native configured provider/model receipts, mixed-route and cross-provider fail-closed behavior, assembled runtime and external-package first consumers | sdk/llm + sdk/assemble + grant wrapper + receipt outbox + runtime assembly + config | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-025, D-333, D-334, D-434, D-435 | focused race/vet + public consumer + smoke | Shipped (v1.30.1; hosted CI/release green; downstream acceptance pending) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5572,9 +5572,12 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   passed. PR #742 was reviewed at exact head `9af8e6e7` and squash-merged as
   `506d1f8c`; hosted candidate run `32705738802` and post-merge main run
   `32710662323` completed successfully, including full preflight. The v1.30.1
-  tag, release assets, checksums, public module provenance, hosted release
-  workflow, post-tag cleanup, and downstream acceptance remain unclaimed.
-- **Decision:** D-436. **Status:** Ready for v1.30.1 tag; release pending.
+  annotated tag object is `b540f631` and peels to `fd801b14`; release workflow
+  `32720513063`, 13 assets, checksums, attestations, native binary stamp, and
+  public module provenance are verified. Post-tag scaffold cleanup is included
+  in the follow-up; downstream acceptance remains unclaimed.
+- **Decision:** D-436. **Status:** Shipped in Harbor v1.30.1; downstream
+  acceptance pending.
 
 ## Notes
 

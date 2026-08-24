@@ -1649,8 +1649,8 @@ acceptance.
 
 ### HA-70 v1.30.1 compatibility extension — Phase 256 / D-436
 
-**State:** Accepted release candidate on merged Harbor main `506d1f8c`; no
-v1.30.1 tag or release claim.
+**State:** Shipped in Harbor v1.30.1; downstream deployment and acceptance
+remain pending.
 
 The first external consumer found a generic framework gap in the v1.30.0
 surface: grant/config/receipt delivery types and canonical receipt validation
@@ -1675,6 +1675,10 @@ provider-specific policy vocabulary. Protocol version remains `0.1.0`.
 
 Implementation PR #742 was reviewed at exact head `9af8e6e7` and squash-merged
 as `506d1f8c`. Hosted candidate run `32705738802` and post-merge main run
-`32710662323` completed successfully, including full preflight. No downstream
-deployment, fleet, database, v1.30.1 tag, assets, checksums, public module
-provenance, or post-tag cleanup are claimed here.
+`32710662323` completed successfully, including full preflight. The annotated
+`v1.30.1` tag object `b540f631854e32b6093fa1e540f4e594c8d928ba`
+peels to `fd801b14`; release workflow `32720513063` succeeded with 13 assets,
+verified checksums and attestations, the expected native binary stamp, and
+public module provenance. Post-tag scaffold cleanup is included in the
+follow-up. No downstream deployment, fleet, database, or acceptance claim is
+made.

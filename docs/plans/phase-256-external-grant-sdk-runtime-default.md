@@ -140,9 +140,11 @@ Implementation PR #742 was reviewed at exact head
 `506d1f8cbab78eb87cbc87050369fff8fe36abb1` (tree
 `7a1266b50b0f268e7c0ea19163958b67ce19dd3a`). Hosted candidate run
 `32705738802` and post-merge main run `32710662323` completed successfully,
-including full preflight. The v1.30.1 tag, release assets, checksums, public
-module provenance, hosted release workflow, post-tag cleanup, and downstream
-runtime acceptance remain pending until a separate release lane proves them.
+including full preflight. The annotated `v1.30.1` tag object `b540f631` peels
+to `fd801b14`; release workflow `32720513063` succeeded with 13 assets,
+verified aggregate and sidecar checksums, six attestations, the expected native
+binary stamp, and public module provenance. Post-tag scaffold cleanup is
+included in this follow-up. Downstream runtime acceptance remains pending.
 
 ## Dependencies
 

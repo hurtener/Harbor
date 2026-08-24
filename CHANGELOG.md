@@ -49,6 +49,23 @@ Two versions move independently in Harbor (RFC §5.3):
   runtime, fleet, or database acceptance are not claimed by this release-cut
   commit.
 
+### Release evidence
+
+- The annotated `v1.30.1` tag object is
+  `b540f631854e32b6093fa1e540f4e594c8d928ba` and peels to
+  `fd801b14b553c2c4ebea67963e74ef83a2a050e4`. Release workflow
+  `32720513063` completed successfully, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.30.1)
+  with verified aggregate `checksums.txt`, six sidecar checksums, and six
+  GitHub attestations. The native darwin/arm64 artifact reports Harbor
+  v1.30.1, Protocol 0.1.0, build
+  `fd801b14b553c2c4ebea67963e74ef83a2a050e4`; module provenance records
+  `Sum=h1:Q9WeXJLy15PIOSEV+sA1sXHa1st8DHmnsIx4oynmMWY=`,
+  `GoModSum=h1:mlX6OoauN4FzVO6Bw2PZTvb3l1tf3y4WHYRzudiTkYg=`,
+  `Origin.Hash=fd801b14b553c2c4ebea67963e74ef83a2a050e4`, and
+  `Origin.Ref=refs/tags/v1.30.1`. The post-tag scaffold pin and golden cleanup
+  are included in this follow-up. No downstream runtime, fleet, database, or
+  deployment acceptance is claimed.
+
 ## [1.30.0] — 2026-08-24
 
 ### Added
