@@ -14191,7 +14191,8 @@ acceptance remain a separate gate and are not claimed here.
 **Date:** 2026-08-25
 
 **Status:** Accepted for Phase 257; implemented as an unreleased candidate.
-The stock transport/readiness remainder of HA-72 remains open.
+Phase 258 / D-438 completes HA-72's stock transport and readiness boundary;
+hosted CI, release, and downstream acceptance remain pending.
 
 Harbor's v1.30.1 SDK exposes `AttemptUsageReceipt`, its canonical marshal/hash,
 and validation helpers, but the canonical snake-case wire remains deliberately
@@ -14202,10 +14203,11 @@ shape), or duplicate the private wire and drift when Harbor changes it.
 Harbor therefore exposes exactly
 `UnmarshalCanonicalAttemptUsageReceipt([]byte) (AttemptUsageReceipt, error)`
 beside the existing marshal helper. The implementation decodes directly into
-the one private `canonicalAttemptUsageReceiptWirePayload`, rejects unknown
-fields, projects every field back to the public receipt, applies the existing
-semantic/body-hash validator, and accepts the document only when Harbor's own
-canonical marshal reproduces the input byte-for-byte. That exactness gate is
+the private current wire or the exact v1.30.0 legacy wire selected by that
+same marshal/hash predicate, rejects unknown fields, projects every field back
+to the public receipt, applies the existing semantic/body-hash validator, and
+accepts the document only when Harbor's own canonical marshal reproduces the
+input byte-for-byte. That exactness gate is
 load-bearing: it rejects duplicate or missing members, changed member order,
 whitespace, redundant escapes, alternate number/timestamp encodings, explicit
 zero values canonically omitted, and trailing content without introducing a
@@ -14232,9 +14234,9 @@ This decision changes no receipt producer, grant verifier, outbox, persistence,
 Protocol method/type/version, provider execution, runtime assembly, config, or
 disabled-mode behavior. It performs no I/O and creates no timer, goroutine,
 network request, StateStore read, or idle work. Integrity parsing does not
-authenticate a sender: stock authenticated delivery/ACK/replay, optional lease
-top-up, and truthful runtime readiness remain the separate unresolved portion
-of HA-72.
+authenticate a sender: stock authenticated delivery/ACK/replay and truthful
+runtime readiness are owned by D-438 / Phase 258. Stock live top-up remains
+explicitly unsupported pending separately owned durable successor application.
 
 **Cross-references.** RFC §6.5, §6.11, §6.15, D-025, D-434, D-436, briefs 03,
 06, and 08.

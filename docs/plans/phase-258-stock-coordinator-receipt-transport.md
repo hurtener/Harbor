@@ -26,6 +26,23 @@ model and never require coordinator provider credentials or a model catalog.
 - D-436 / Phase 256: public canonical receipt and route-mode contract.
 - D-437 / Phase 257: strict public canonical receipt parser.
 
+## Briefs informing this phase
+
+- brief 03 — one provider-neutral LLM boundary for retries and usage facts.
+- brief 06 — canonical content-free projections for external consumers.
+- brief 08 — pure-Go LLM clients with explicit cancellation and validation.
+
+## Brief findings incorporated
+
+- brief 03 §5: delivery stays attached to the existing LLM receipt path rather
+  than introducing a parallel provider or accounting mode.
+- brief 06 §1: the coordinator receives a canonical content-free projection,
+  never runtime-private state or provider payloads.
+- brief 06 §6: stable token, cost, latency, route, and attempt identity facts
+  are delivered without prompts, responses, or reasoning traces.
+- brief 08 §2: the stock client is pure Go, bounded, cancellation-aware, and
+  reusable without mutable request state.
+
 ## Transport contract
 
 The configured receipt endpoint receives one versioned JSON object containing a
@@ -100,11 +117,65 @@ transport state to degraded without leaking operational material.
   truthfully when present and absence reports `unsupported`.
 - Startup refuses a retained legacy backlog larger than the configured bound
   instead of silently starving later pending facts.
+- A v1.30.0 blank-route receipt is delivered in its original legacy canonical
+  wire; the strict public parser accepts it and re-emits byte-identical JSON
+  with the same body hash.
 - `runtime.info` distinguishes support, configured mode, route-specific wiring,
   observed transport/parser readiness, and strict readiness truthfully.
 - In-memory and SQLite outbox behavior, N=100 concurrent reuse, focused race,
   vet, Protocol generators, config documentation, Phase-258 smoke, and drift
   gates pass.
+
+## Files added or changed
+
+- `internal/llm/receipts/httptransport/` — bounded authenticated batch client.
+- `internal/llm/receipts/outbox.go` — optional batch delivery and durable
+  retry/reconciliation scheduling.
+- `internal/runtime/serve/` — stock composition and truthful readiness.
+- `internal/config/`, `sdk/config/`, `examples/harbor.yaml`, and `docs/CONFIG.md`
+  — opt-in coordinator transport configuration.
+- `internal/protocol/`, generated Protocol references/TypeScript projections,
+  and `sdk/protocolclient/` — additive content-free readiness projection.
+- `scripts/smoke/phase-258.sh` and this plan — static acceptance truth.
+
+## Test plan
+
+- **Unit:** strict request/ACK bounds, redirects, malformed/duplicate/unknown
+  ACKs, partial ACKs, stable jitter, and retained-fact reconciliation.
+- **Integration:** assemble stock serve with the real in-memory and SQLite
+  StateStore drivers, authenticate against a local HTTP server, and prove
+  response-loss replay plus route-specific readiness and disabled zero work.
+- **Conformance:** existing single-receipt delivery remains valid; the optional
+  batch extension has identical durable removal semantics for acknowledged
+  facts.
+- **Concurrency / leak:** reuse one immutable HTTP client for at least 100
+  concurrent deliveries under `-race`; cancellation does not cross requests,
+  and shutdown joins the outbox worker.
+- **Fuzz:** strict canonical receipt parsing remains Phase 257's fuzz surface;
+  this phase adds bounded adversarial ACK documents rather than a second JSON
+  canonicalizer.
+
+## Smoke script additions
+
+`scripts/smoke/phase-258.sh` asserts D-438/HA-72/plan truth, the stock client,
+batch/ACK/replay tests, disabled and readiness integration tests, Console
+Protocol projection, operator configuration, and runtime-default independence.
+
+## Coverage target
+
+- `internal/llm/receipts/httptransport`: at least 85% branch coverage across
+  request construction, transport refusal, response bounds, and ACK parsing.
+- `internal/llm/receipts`: every new batch, retry, response-loss, partial-ACK,
+  startup reconciliation, and cancellation branch covered.
+- `internal/runtime/serve` and `internal/config`: every new stock wiring,
+  disabled/default, invalid configuration, and readiness branch covered.
+
+## Dependencies
+
+- Phase 254 / D-434 — context-bound grants, durable reservations, and outbox.
+- Phase 256 / D-436 — public receipt/delivery and explicit route modes.
+- Phase 257 / D-437 — strict canonical receipt parser.
+- D-025 — immutable concurrent reuse for the stock client.
 
 ## Compatibility and evidence boundary
 

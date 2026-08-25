@@ -433,24 +433,33 @@ func MarshalCanonicalAttemptUsageReceipt(receipt AttemptUsageReceipt) ([]byte, e
 // This keeps external receipt consumers on Harbor's one private wire shape.
 func UnmarshalCanonicalAttemptUsageReceipt(data []byte) (AttemptUsageReceipt, error) {
 	var wire canonicalAttemptUsageReceiptWirePayload
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return AttemptUsageReceipt{}, fmt.Errorf("%w: malformed canonical wire", ErrInvalidUsageReceipt)
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return AttemptUsageReceipt{}, fmt.Errorf("%w: trailing canonical wire content", ErrInvalidUsageReceipt)
+	if decodeExactReceiptWire(data, &wire) {
+		return validateExactCanonicalReceipt(data, attemptUsageReceiptFromCanonicalWire(wire))
 	}
 
-	receipt := attemptUsageReceiptFromCanonicalWire(wire)
+	var legacy legacyAttemptUsageReceipt
+	if decodeExactReceiptWire(data, &legacy) {
+		return validateExactCanonicalReceipt(data, attemptUsageReceiptFromLegacyWire(legacy))
+	}
+	return AttemptUsageReceipt{}, fmt.Errorf("%w: malformed canonical wire", ErrInvalidUsageReceipt)
+}
+
+func decodeExactReceiptWire(data []byte, wire any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(wire); err != nil {
+		return false
+	}
+	_, err := decoder.Token()
+	return err == io.EOF
+}
+
+func validateExactCanonicalReceipt(data []byte, receipt AttemptUsageReceipt) (AttemptUsageReceipt, error) {
 	if err := ValidateAttemptUsageReceipt(receipt); err != nil {
-		// v1.30.0 receipts predate RouteMode, but the existing canonical
-		// marshal helper necessarily projects their blank public value as the
-		// explicit coordinator_bound wire value. Retain the public blank value
-		// only for that exact historical shape when it validates with the
-		// preserved legacy body hash. Re-marshal still emits the same canonical
-		// coordinator_bound wire, so this does not admit an alternative JSON
-		// representation or weaken the exact-byte gate below.
+		// v1.30.0 receipts predate RouteMode. Retain the blank public value only
+		// for that exact historical shape when it validates with the preserved
+		// legacy body hash. The byte-identity gate below still requires the
+		// matching historical wire and does not admit an alternative encoding.
 		legacy, ok := legacyAttemptUsageReceiptFromCanonicalWire(receipt)
 		if !ok {
 			return AttemptUsageReceipt{}, err
@@ -644,6 +653,24 @@ type legacyAttemptUsageReceipt struct {
 
 func legacyAttemptUsageReceiptFrom(receipt AttemptUsageReceipt) legacyAttemptUsageReceipt {
 	return legacyAttemptUsageReceipt{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
+}
+
+func attemptUsageReceiptFromLegacyWire(wire legacyAttemptUsageReceipt) AttemptUsageReceipt {
+	return AttemptUsageReceipt{
+		ReceiptID: wire.ReceiptID, GrantID: wire.GrantID, LogicalCallID: wire.LogicalCallID, AttemptNonce: wire.AttemptNonce,
+		OrganizationID: wire.OrganizationID, RuntimeID: wire.RuntimeID, TenantID: wire.TenantID, UserID: wire.UserID,
+		SessionID: wire.SessionID, LogicalRunID: wire.LogicalRunID, Provider: wire.Provider, ProviderModelID: wire.ProviderModelID,
+		ProviderConnectionID: wire.ProviderConnectionID, ProviderConnectionGeneration: wire.ProviderConnectionGeneration,
+		RouteID: wire.RouteID, CredentialAssetGeneration: wire.CredentialAssetGeneration, PolicyGeneration: wire.PolicyGeneration,
+		AttemptNumber: wire.AttemptNumber, RetryNumber: wire.RetryNumber, FallbackHop: wire.FallbackHop,
+		RequestedReasoning: wire.RequestedReasoning, EffectiveReasoning: wire.EffectiveReasoning,
+		PromptTokens: wire.PromptTokens, CompletionTokens: wire.CompletionTokens, ReasoningTokens: wire.ReasoningTokens,
+		TotalTokens: wire.TotalTokens, CacheReadTokens: wire.CacheReadTokens, CacheWriteTokens: wire.CacheWriteTokens,
+		InputCostMicros: wire.InputCostMicros, OutputCostMicros: wire.OutputCostMicros,
+		ReasoningCostMicros: wire.ReasoningCostMicros, TotalCostMicros: wire.TotalCostMicros,
+		Currency: wire.Currency, LatencyMS: wire.LatencyMS, Status: wire.Status, StartedAt: wire.StartedAt,
+		CompletedAt: wire.CompletedAt, IdempotencyKey: wire.IdempotencyKey, CanonicalBodyHash: wire.CanonicalBodyHash,
+	}
 }
 
 // canonicalAttemptUsageReceiptWire is the stable public JSON contract. The

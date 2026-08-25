@@ -91,13 +91,14 @@ func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsExactCanonicalWire(t *t
 	}
 }
 
-func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsLegacyBlankRouteMode(t *testing.T) {
+func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsExactLegacyWire(t *testing.T) {
 	want, _ := canonicalReceiptFixture(t)
 	want.RouteMode = ""
-	want.ProviderConnectionID = "connection-legacy"
+	want.ProviderConnectionID = "connection-1"
 	want.ProviderConnectionGeneration = 3
-	want.RouteID = "route-legacy"
+	want.RouteID = "route-1"
 	want.CredentialAssetGeneration = 5
+	want.CanonicalBodyHash = ""
 	var err error
 	want.CanonicalBodyHash, err = CanonicalAttemptUsageReceiptBodyHash(want)
 	if err != nil {
@@ -107,19 +108,16 @@ func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsLegacyBlankRouteMode(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(body, []byte(`"route_mode":"coordinator_bound"`)) {
-		t.Fatalf("legacy canonical wire did not project coordinator_bound: %s", body)
+	if bytes.Contains(body, []byte(`"route_mode"`)) || !bytes.Contains(body, []byte(`"ReceiptID"`)) {
+		t.Fatalf("legacy wire shape changed: %s", body)
 	}
 
 	got, err := UnmarshalCanonicalAttemptUsageReceipt(body)
 	if err != nil {
-		t.Fatalf("UnmarshalCanonicalAttemptUsageReceipt(legacy) error = %v", err)
+		t.Fatalf("UnmarshalCanonicalAttemptUsageReceipt() error = %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("legacy parsed receipt differs:\n got: %#v\nwant: %#v", got, want)
-	}
-	if got.RouteMode != "" {
-		t.Fatalf("legacy parser route mode = %q, want blank legacy public value", got.RouteMode)
+		t.Fatalf("parsed legacy receipt differs:\n got: %#v\nwant: %#v", got, want)
 	}
 	roundTrip, err := MarshalCanonicalAttemptUsageReceipt(got)
 	if err != nil {
@@ -266,7 +264,15 @@ func TestUnmarshalCanonicalAttemptUsageReceipt_RejectsMalformedReceiptFacts(t *t
 
 func FuzzUnmarshalCanonicalAttemptUsageReceipt_ExactOrRejected(f *testing.F) {
 	_, canonical := canonicalReceiptFixture(f)
+	legacy, _ := canonicalReceiptFixture(f)
+	legacy.RouteMode = ""
+	legacy.ProviderConnectionID = "connection-1"
+	legacy.ProviderConnectionGeneration = 3
+	legacy.RouteID = "route-1"
+	legacy.CredentialAssetGeneration = 5
+	legacyCanonical := marshalReceiptWithFreshHash(f, legacy)
 	f.Add(canonical)
+	f.Add(legacyCanonical)
 	f.Add([]byte(`{}`))
 	f.Add(append(append([]byte(nil), canonical...), []byte(` {}`)...))
 	f.Fuzz(func(t *testing.T, data []byte) {

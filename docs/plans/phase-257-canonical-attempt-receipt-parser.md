@@ -44,8 +44,9 @@ None.
 - Export exactly
   `UnmarshalCanonicalAttemptUsageReceipt([]byte) (AttemptUsageReceipt, error)`
   beside the canonical marshal helper.
-- Decode through the one existing private snake-case canonical wire and
-  project it back to the public receipt without a second DTO.
+- Decode through the private current snake-case wire or the exact v1.30.0
+  legacy wire already selected by the encoder, then project either back to the
+  public receipt without exporting a wire DTO.
 - Reject unknown, duplicate, missing, reordered, alternatively encoded,
   malformed, or trailing content under `ErrInvalidUsageReceipt`.
 - Validate identity, route, interval, usage, cost, status, and canonical body
@@ -53,10 +54,9 @@ None.
 - Require `MarshalCanonicalAttemptUsageReceipt(parsed)` to reproduce the input
   byte-for-byte.
 - Preserve a legacy blank public `RouteMode` when its historical body hash is
-  valid. The canonical wire still spells that legacy value as
-  `coordinator_bound`; parsing returns the blank public value so the preserved
-  v1.30.0 hash remains verifiable, and re-marshal reproduces the identical
-  wire bytes.
+  valid. The exact v1.30.0 legacy wire omits that later field; parsing returns
+  the blank public value so the preserved hash remains verifiable, and
+  re-marshal reproduces the identical historical wire bytes.
 - Keep parser errors and all tests content-free; log nothing.
 
 ## Non-goals
@@ -65,8 +65,9 @@ None.
   top-up, or readiness projection.
 - A new Protocol method/type/version, HTTP endpoint, config field, database
   record, provider policy, billing, catalog, or user interface.
-- Accepting legacy untagged/CamelCase persistence JSON or merely equivalent
-  noncanonical JSON.
+- Accepting arbitrary persistence JSON, later legacy shapes, or merely
+  equivalent noncanonical JSON. Only the exact v1.30.0 wire emitted by the
+  canonical encoder is compatible.
 - Changing receipt production, outbox delivery, grant verification, provider
   execution, or disabled-mode behavior.
 
@@ -112,10 +113,10 @@ The function returns `ErrInvalidUsageReceipt` for every rejected document.
 already-public D-436 aliases/helpers.
 
 The legacy v1.30.0 public receipt shape has a blank `RouteMode` and a preserved
-pre-extension body hash. Its canonical wire projects the blank value as
-`coordinator_bound`. When that exact historical hash validates, this parser
-returns the blank public value; marshaling it again emits the same canonical
-`coordinator_bound` wire. New explicit coordinator-bound receipts keep the
+pre-extension body hash. Its exact historical wire predates and omits
+`route_mode`. When that exact hash validates, this parser returns the blank
+public value; marshaling it again emits the same legacy bytes. New explicit
+coordinator-bound receipts use the current snake-case wire and keep the
 explicit public value.
 
 ## Test plan
@@ -127,8 +128,9 @@ explicit public value.
   receipt, hashes/marshals/parses/remarshals it without importing `internal/`.
   No runtime driver is needed because this phase is a pure codec over the
   already-produced canonical receipt.
-- **Conformance:** N/A — there is one canonical wire and one implementation,
-  not a driver family.
+- **Conformance:** N/A — one implementation selects either the current
+  snake-case encoding or the exact preserved v1.30.0 encoding; this is not a
+  driver family.
 - **Concurrency / leak:** N/A — the parser is a pure function with no shared
   mutable state, goroutine, I/O handle, timer, or lifecycle.
 - **Fuzz:** seed canonical and adversarial documents; any accepted input must
@@ -137,7 +139,8 @@ explicit public value.
 ## Smoke script additions
 
 `scripts/smoke/phase-257.sh` statically asserts the plan/decision/register,
-exact public signature, one private wire projection, adversarial/fuzz tests,
+exact public signature, current and legacy private wire projections,
+adversarial/fuzz tests,
 external-package consumer, and unchanged Protocol boundary.
 
 ## Coverage target

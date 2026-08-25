@@ -20,7 +20,7 @@ assert_grep_present 'UnmarshalCanonicalAttemptUsageReceipt = internal\.Unmarshal
 assert_grep_present 'attemptUsageReceiptFromCanonicalWire' "internal/llm/external_grant.go" "canonical wire reverse projection exists"
 assert_grep_present 'TestUnmarshalCanonicalAttemptUsageReceipt_RejectsNonCanonicalDocuments' "internal/llm/external_grant_receipt_parse_test.go" "noncanonical adversarial test exists"
 assert_grep_present 'TestUnmarshalCanonicalAttemptUsageReceipt_RejectsMalformedReceiptFacts' "internal/llm/external_grant_receipt_parse_test.go" "semantic and hash test exists"
-assert_grep_present 'TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsLegacyBlankRouteMode' "internal/llm/external_grant_receipt_parse_test.go" "legacy canonical hash round-trip test exists"
+assert_grep_present 'TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsExactLegacyWire' "internal/llm/external_grant_receipt_parse_test.go" "legacy canonical hash round-trip test exists"
 assert_grep_present 'FuzzUnmarshalCanonicalAttemptUsageReceipt_ExactOrRejected' "internal/llm/external_grant_receipt_parse_test.go" "canonical parser fuzz target exists"
 assert_grep_present 'llm\.UnmarshalCanonicalAttemptUsageReceipt' "sdk/assemble/external_grant_sdk_test.go" "external-package parser consumer exists"
 assert_grep_present 'legacyParsed' "sdk/assemble/external_grant_sdk_test.go" "external-package legacy parser consumer exists"

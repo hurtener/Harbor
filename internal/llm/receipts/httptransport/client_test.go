@@ -1,6 +1,7 @@
 package httptransport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,50 @@ func TestClient_DeliverBatch_AuthenticatesCanonicalPartialAck(t *testing.T) {
 	}
 	if got := client.Readiness().Receipt; got != "degraded" {
 		t.Fatalf("receipt readiness = %q, want degraded after partial ack", got)
+	}
+}
+
+func TestClient_DeliverBatch_PreservesLegacyCanonicalWire(t *testing.T) {
+	receipt := validLegacyReceipt(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req receiptBatchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if len(req.Receipts) != 1 {
+			t.Errorf("receipt count = %d, want 1", len(req.Receipts))
+			return
+		}
+		body := []byte(req.Receipts[0])
+		if bytes.Contains(body, []byte(`"route_mode"`)) || !bytes.Contains(body, []byte(`"ReceiptID"`)) {
+			t.Errorf("legacy wire shape changed: %s", body)
+			return
+		}
+		parsed, err := llm.UnmarshalCanonicalAttemptUsageReceipt(body)
+		if err != nil {
+			t.Errorf("strict parse: %v", err)
+			return
+		}
+		if parsed.RouteMode != "" || parsed.CanonicalBodyHash != receipt.CanonicalBodyHash {
+			t.Errorf("parsed legacy receipt = %#v", parsed)
+			return
+		}
+		roundTrip, err := llm.MarshalCanonicalAttemptUsageReceipt(parsed)
+		if err != nil || !bytes.Equal(roundTrip, body) {
+			t.Errorf("legacy re-marshal = %s, %v; want %s", roundTrip, err, body)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(receiptBatchResponse{Version: contractVersion, Acks: []receipts.DeliveryAck{{ReceiptID: receipt.ReceiptID, CanonicalBodyHash: receipt.CanonicalBodyHash}}})
+	}))
+	defer server.Close()
+
+	acks, err := newTestClient(t, server.URL).DeliverBatch(context.Background(), []llm.AttemptUsageReceipt{receipt})
+	if err != nil {
+		t.Fatalf("DeliverBatch: %v", err)
+	}
+	if len(acks) != 1 || acks[0].CanonicalBodyHash != receipt.CanonicalBodyHash {
+		t.Fatalf("acks = %#v", acks)
 	}
 }
 
@@ -178,6 +223,27 @@ func validReceipt(t *testing.T, id string) llm.AttemptUsageReceipt {
 		PolicyGeneration: 1, AttemptNumber: 1, Status: "success", StartedAt: now,
 		CompletedAt: now.Add(time.Second), IdempotencyKey: id,
 	}
+	hash, err := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.CanonicalBodyHash = hash
+	return receipt
+}
+
+func validLegacyReceipt(t *testing.T) llm.AttemptUsageReceipt {
+	t.Helper()
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	receipt := llm.AttemptUsageReceipt{
+		GrantID: "grant-legacy", LogicalCallID: "call-legacy", AttemptNonce: "nonce-legacy",
+		OrganizationID: "org-1", RuntimeID: "runtime-1", TenantID: "tenant-1", UserID: "user-1",
+		SessionID: "session-1", LogicalRunID: "run-1", Provider: "provider-1", ProviderModelID: "model-1",
+		ProviderConnectionID: "connection-1", ProviderConnectionGeneration: 3, RouteID: "route-1",
+		CredentialAssetGeneration: 5, PolicyGeneration: 1, AttemptNumber: 1, Status: "success",
+		StartedAt: now, CompletedAt: now.Add(time.Second),
+	}
+	receipt.ReceiptID = llm.CanonicalAttemptID(receipt.GrantID, receipt.LogicalCallID, receipt.AttemptNonce, receipt.AttemptNumber, receipt.RetryNumber, receipt.DowngradeNumber, receipt.FallbackHop)
+	receipt.IdempotencyKey = receipt.ReceiptID
 	hash, err := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
 	if err != nil {
 		t.Fatal(err)

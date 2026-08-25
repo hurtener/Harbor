@@ -14,7 +14,7 @@ source "scripts/smoke/common.sh"
 
 assert_file "docs/plans/phase-258-stock-coordinator-receipt-transport.md" "phase 258 plan exists"
 assert_grep_present '## D-438' "docs/decisions.md" "D-438 decision exists"
-assert_grep_present 'HA-72 stock transport/readiness completion' "docs/notes/downstream-asks.md" "HA-72 transport register exists"
+assert_grep_present '\*\*Stock transport/readiness completion\.\*\* Phase 258' "docs/notes/downstream-asks.md" "HA-72 transport register exists"
 assert_file "internal/llm/receipts/httptransport/client.go" "stock authenticated transport exists"
 assert_grep_present 'type BatchDelivery interface' "internal/llm/receipts/outbox.go" "bounded batch extension exists"
 assert_grep_present 'TestOutbox_BatchPartialAckAndResponseLossReplayOnlyUnackedFacts' "internal/llm/receipts/outbox_test.go" "partial ACK/response-loss replay covered"

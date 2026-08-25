@@ -20,13 +20,14 @@ Two versions move independently in Harbor (RFC §5.3):
 ### Added
 
 - `sdk/llm.UnmarshalCanonicalAttemptUsageReceipt` is the strict public inverse
-  of Harbor's canonical content-free receipt encoder. It accepts only the
-  exact snake-case canonical bytes, rejects unknown, duplicate, missing,
+  of Harbor's canonical content-free receipt encoder. It accepts only exact
+  current snake-case bytes or the exact v1.30.0 legacy bytes selected by the
+  encoder, rejects unknown, duplicate, missing,
   reordered, alternatively encoded, or trailing content, validates the
   receipt and its body hash, and returns the public receipt without requiring
   an external consumer to recreate Harbor's private wire struct. It preserves
   the blank public route mode required to verify a legacy receipt hash while
-  re-marshaling the same explicit canonical wire bytes.
+  re-marshaling the same exact v1.30.0 legacy bytes.
 
 - HA-72 adds an opt-in stock `harbor serve` transport for authenticated,
   bounded batches of canonical content-free usage receipts, exact
