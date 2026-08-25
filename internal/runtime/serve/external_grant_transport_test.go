@@ -124,3 +124,30 @@ func TestExternalGrantReadiness_ReportsModeRoutesAndConcreteWiring(t *testing.T)
 		t.Fatalf("fully wired coordinator-bound route not ready: %+v", coordinatorBound)
 	}
 }
+
+func TestExternalGrantReadiness_StockOutboxDegradesAndRecovers(t *testing.T) {
+	opts := Options{ExternalGrant: llm.ExternalGrantConfig{
+		Mode:      llm.ExternalGrantRequired,
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier:  testGrantVerifier{},
+	}}
+	stock, err := configureStockExternalGrant(config.ExternalGrantCoordinatorConfig{
+		ReceiptURL:   "https://coordinator.example.test/v1/receipts",
+		AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN",
+	}, &opts, func(string) (string, bool) { return testCoordinatorToken, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	readiness := externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, opts.ExternalGrant, opts.ExternalGrantDelivery, stock)
+	if initial := readiness(); !initial.StrictReady || initial.ReceiptTransport != "wired" {
+		t.Fatalf("initial readiness=%+v", initial)
+	}
+	stock.SetOutboxHealth(false)
+	if degraded := readiness(); degraded.StrictReady || degraded.ReceiptTransport != "degraded" {
+		t.Fatalf("degraded readiness=%+v", degraded)
+	}
+	stock.SetOutboxHealth(true)
+	if recovered := readiness(); !recovered.StrictReady || recovered.ReceiptTransport != "wired" {
+		t.Fatalf("recovered readiness=%+v", recovered)
+	}
+}

@@ -105,16 +105,17 @@ type RuntimeInfo struct {
 	WireSurfaceDigest string `json:"wire_surface_digest"`
 	// ExternalGrant reports the structural and observed readiness of the
 	// opt-in external execution-grant edge. It contains no endpoint, key id,
-	// credential, organization, or identity value.
-	ExternalGrant ExternalGrantReadiness `json:"external_grant"`
+	// credential, organization, or identity value. It is absent on runtimes
+	// built before the readiness projection was introduced.
+	ExternalGrant *ExternalGrantReadiness `json:"external_grant,omitempty"`
 }
 
 // ExternalGrantReadiness distinguishes compile-time support, configured
 // posture, and fully wired strict execution paths. Receipt transport state is
 // one of disabled, absent, wired, or degraded; its kind distinguishes the
-// stock authenticated HTTP path from host injection. Top-up is unsupported
-// until a successor grant can advance the durable reservation epoch
-// idempotently.
+// stock authenticated HTTP path from host injection. Stock top-up is
+// unsupported until a successor grant can advance the durable reservation
+// epoch idempotently; an existing host-injected top-upper is reported exactly.
 type ExternalGrantReadiness struct {
 	Supported               bool     `json:"supported"`
 	Configured              bool     `json:"configured"`

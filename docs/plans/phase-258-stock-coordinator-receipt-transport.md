@@ -78,11 +78,21 @@ existing circuit breaker prevents an unavailable coordinator from turning into
 a query or request storm.
 
 Retry deadlines and enqueue wakes run delivery replay only. The slow
-maintenance scan has its own deadline. Startup legacy recovery requests one row
-beyond the configured work batch and refuses overflow before adopting a page;
-this hotfix does not claim keyset continuation. Stock serve performs that check
-synchronously and fails boot. Operators must increase the approved bound or use
-offline recovery when retained legacy facts exceed it.
+maintenance path has its own deadline. The old whole receipt-prefix scan runs
+only until a versioned durable legacy-reconciliation marker is committed.
+Startup legacy recovery requests one row beyond the configured work batch and
+refuses overflow before adopting a page; this hotfix does not claim keyset
+continuation. Stock serve performs that check synchronously and fails boot.
+After the marker, ordinary ACKed lifetime history does not re-enter the scan or
+its bound.
+
+Lease settlement atomically writes a separate removable pending-receipt
+handoff for success, error, and cancellation. Maintenance scans only that
+bounded prefix, durably enqueues each exact receipt, and removes the handoff
+only after enqueue succeeds. A crash between enqueue and removal replays the
+same canonical receipt and converges through outbox idempotency. Retained
+attempt history is never a recovery queue and cannot hide a later pending
+handoff behind its first page.
 
 ## Runtime posture
 
@@ -100,8 +110,13 @@ offline recovery when retained legacy facts exceed it.
 - `strict_ready` only when the chosen route shapes are fully enforceable.
 
 Coordinator-bound acceptance requires a credential resolver. Runtime-default
-acceptance does not. A failed or partial stock exchange changes observed
-transport state to degraded without leaking operational material.
+acceptance does not. A failed or partial stock exchange or transient
+reconciliation failure changes observed transport state to degraded without
+leaking operational material. Maintenance keeps retrying with bounded delay
+and returns to wired only after a successful reconciliation; startup
+reconciliation still fails boot. The whole additive readiness object is
+optional so clients can render an older runtime that omitted it as
+pre-projection/unknown rather than ready.
 
 ## Acceptance criteria
 
@@ -117,6 +132,12 @@ transport state to degraded without leaking operational material.
   truthfully when present and absence reports `unsupported`.
 - Startup refuses a retained legacy backlog larger than the configured bound
   instead of silently starving later pending facts.
+- More than one configured batch of ordinary lifetime ACKs does not re-enter
+  legacy reconciliation after the durable marker, including after restart.
+- Success, error, and cancellation settlements atomically create removable
+  pending handoffs; crash-before-removal replay converges in-memory and SQLite.
+- A transient cadence failure degrades readiness, retries, and recovers; an
+  explicit disabled YAML mode conflicts with an injected enabled mode.
 - A v1.30.0 blank-route receipt is delivered in its original legacy canonical
   wire; the strict public parser accepts it and re-emits byte-identical JSON
   with the same body hash.
@@ -179,10 +200,19 @@ Protocol projection, operator configuration, and runtime-default independence.
 
 ## Compatibility and evidence boundary
 
-Protocol remains `0.1.0`; `runtime.info.external_grant` is additive. Existing
+Protocol remains `0.1.0`; `runtime.info.external_grant` is additive and
+optional. Its absence means the runtime predates or does not project this
+readiness surface; clients must not infer strict readiness. Existing
 host-injected transports and single-receipt delivery implementations remain
 valid. No product-specific endpoint, catalog, policy, credential-custody model,
 or presentation layer is introduced.
+
+Two contained follow-ups remain explicit rather than hidden in this phase: the
+due index is one bounded internal JSON record rather than a keyset-addressable
+queue, and the stock outbox has no DSN-gated real-PostgreSQL acceptance test.
+The in-memory and SQLite behavior is binding here; a later phase may replace
+the index or add hosted PostgreSQL evidence without changing the public
+transport contract.
 
 This candidate claims local implementation and focused evidence only. Hosted
 CI, release/tag/assets/module provenance, an external coordinator deployment,

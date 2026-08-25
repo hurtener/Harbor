@@ -2675,7 +2675,7 @@ export interface RuntimeInfo {
   uptime_seconds: number;
   mcp_app_display_modes?: string[];
   wire_surface_digest: string;
-  external_grant: ExternalGrantReadiness;
+  external_grant?: ExternalGrantReadiness;
 }
 
 export interface RuntimeInfoRequest {

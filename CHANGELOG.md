@@ -38,7 +38,11 @@ Two versions move independently in Harbor (RFC §5.3):
   and independently ready route modes, verifier/reservation/credential wiring,
   strict receipt parser, concrete receipt transport kind and readiness, an
   explicitly unsupported stock top-up path, and a
-  fail-closed aggregate strict-ready signal.
+  fail-closed aggregate strict-ready signal. Durable settlement atomically
+  creates removable pending handoffs for success, error, and cancellation;
+  legacy receipt-prefix reconciliation is version-marked and upgrade-only, so
+  ACKed lifetime history cannot amplify idle reads. Transient reconciliation
+  failures degrade readiness while retrying and recover only after success.
 
 ### Fixed
 
@@ -51,7 +55,9 @@ Two versions move independently in Harbor (RFC §5.3):
   predecessor's signed windows. Key rotation and renewed signatures remain
   subject to the configured grant verifier. Stock live top-up transport and
   replay-idempotent durable lease advancement remain unsupported; this change
-  does not claim them. No Protocol method or version changes.
+  does not claim them. An omitted request output limit derives top-up need from
+  the same signed output ceiling later applied to the provider call. No
+  Protocol method or version changes.
 
 ## [1.30.1] — 2026-08-24
 

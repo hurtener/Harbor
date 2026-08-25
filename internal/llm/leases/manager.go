@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	leasePrefix   = "harbor.internal/inference.lease/"
-	attemptPrefix = "harbor.internal/inference.attempt/"
-	maxCASRetries = 8
+	leasePrefix          = "harbor.internal/inference.lease/"
+	attemptPrefix        = "harbor.internal/inference.attempt/"
+	pendingReceiptPrefix = "harbor.internal/inference.receipt.pending/"
+	maxCASRetries        = 8
 )
 
 var (
@@ -136,6 +137,7 @@ func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
 		now = s.clock().UTC()
 	}
 	q := identity.InternalCoordinationQuadruple()
+	pendingKind := pendingReceiptKind(req.AttemptID)
 	for range maxCASRetries {
 		ar, a, err := s.loadAttempt(ctx, q, attemptPrefix+req.AttemptID)
 		if err != nil {
@@ -152,7 +154,7 @@ func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
 		}
 		if a.Status == "consumed" || a.Status == "released" || a.Status == "expired" {
 			if a.ReceiptHash == receiptHash(req.Receipt) {
-				return nil
+				return s.ensurePendingReceipt(ctx, req.Receipt)
 			}
 			return ErrAttemptConflict
 		}
@@ -187,7 +189,18 @@ func (s *Store) Settle(ctx context.Context, req llm.LeaseSettlement) error {
 		}
 		ln := state.NewInternalRecord(state.NewEventID(), q, leasePrefix+a.LeaseID, lb)
 		an := state.NewInternalRecord(state.NewEventID(), q, attemptPrefix+a.AttemptID, ab)
-		if err := s.state.SaveBatchIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(q, leasePrefix+a.LeaseID, lr.ID), state.InternalSlotExpectation(q, attemptPrefix+a.AttemptID, ar.ID)}, []state.StateRecord{ln, an}); err != nil {
+		pendingBody, err := json.Marshal(pendingReceiptState{AttemptID: a.AttemptID, ReceiptHash: a.ReceiptHash, Receipt: req.Receipt})
+		if err != nil {
+			return fmt.Errorf("llm/leases: encode pending receipt: %w", err)
+		}
+		pn := state.NewInternalRecord(state.NewEventID(), q, pendingKind, pendingBody)
+		if err := s.state.SaveBatchIf(ctx,
+			[]state.SlotExpectation{
+				state.InternalSlotExpectation(q, leasePrefix+a.LeaseID, lr.ID),
+				state.InternalSlotExpectation(q, attemptPrefix+a.AttemptID, ar.ID),
+				state.InternalSlotExpectation(q, pendingKind, ""),
+			},
+			[]state.StateRecord{ln, an, pn}); err != nil {
 			if errors.Is(err, state.ErrConditionFailed) {
 				continue
 			}
@@ -303,28 +316,111 @@ func (s *Store) Expire(ctx context.Context, now time.Time, limit int) (int, erro
 	return count, nil
 }
 
-// PendingReceipts returns bounded receipts whose provider call settled before
-// their outbox enqueue. It is intentionally a low-frequency reconciliation
-// seam, not the normal delivery path.
+// PendingReceipts returns only the bounded, removable handoff records written
+// atomically with settlement. Retained attempt history is deliberately not
+// scanned: successful acknowledgement removes this prefix, so later crash-gap
+// receipts cannot be hidden behind an immutable first page.
 func (s *Store) PendingReceipts(ctx context.Context, limit int) ([]llm.AttemptUsageReceipt, error) {
 	if limit <= 0 || limit > state.MaxStateMaintenanceListLimit {
 		return nil, ErrInvalidRequest
 	}
-	recs, err := s.state.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, attemptPrefix, limit)
+	recs, err := s.state.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, pendingReceiptPrefix, limit)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]llm.AttemptUsageReceipt, 0, len(recs))
 	for _, rec := range recs {
-		var a attemptState
-		if err := json.Unmarshal(rec.Bytes, &a); err != nil {
-			return nil, fmt.Errorf("llm/leases: decode attempt: %w", err)
+		pending, err := decodePendingReceipt(rec)
+		if err != nil {
+			return nil, err
 		}
-		if a.Status == "consumed" && a.Receipt.ReceiptID != "" {
-			out = append(out, a.Receipt)
-		}
+		out = append(out, pending.Receipt)
 	}
 	return out, nil
+}
+
+// AcknowledgePendingReceipt removes only the exact pending handoff after the
+// durable outbox has accepted the same canonical receipt. Absence is an
+// idempotent success; a changed body fails closed.
+func (s *Store) AcknowledgePendingReceipt(ctx context.Context, receipt llm.AttemptUsageReceipt) error {
+	if receipt.ReceiptID == "" || receipt.CanonicalBodyHash == "" {
+		return ErrInvalidRequest
+	}
+	q := identity.InternalCoordinationQuadruple()
+	kind := pendingReceiptKind(receipt.ReceiptID)
+	for range maxCASRetries {
+		rec, err := s.state.Load(ctx, q, kind)
+		if errors.Is(err, state.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		pending, err := decodePendingReceipt(rec)
+		if err != nil {
+			return err
+		}
+		if pending.ReceiptHash != receiptHash(receipt) || pending.Receipt.CanonicalBodyHash != receipt.CanonicalBodyHash {
+			return ErrAttemptConflict
+		}
+		changed, err := s.state.DeleteIf(ctx, state.InternalSlotExpectation(q, kind, rec.ID))
+		if err != nil {
+			return err
+		}
+		if changed {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: pending receipt acknowledgement did not converge", state.ErrConditionFailed)
+}
+
+func (s *Store) ensurePendingReceipt(ctx context.Context, receipt llm.AttemptUsageReceipt) error {
+	q := identity.InternalCoordinationQuadruple()
+	kind := pendingReceiptKind(receipt.ReceiptID)
+	for range maxCASRetries {
+		rec, err := s.state.Load(ctx, q, kind)
+		if err == nil {
+			pending, decodeErr := decodePendingReceipt(rec)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if pending.ReceiptHash != receiptHash(receipt) {
+				return ErrAttemptConflict
+			}
+			return nil
+		}
+		if !errors.Is(err, state.ErrNotFound) {
+			return err
+		}
+		body, err := json.Marshal(pendingReceiptState{AttemptID: receipt.ReceiptID, ReceiptHash: receiptHash(receipt), Receipt: receipt})
+		if err != nil {
+			return err
+		}
+		next := state.NewInternalRecord(state.NewEventID(), q, kind, body)
+		if err := s.state.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(q, kind, "")}, next); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: pending receipt replay did not converge", state.ErrConditionFailed)
+}
+
+func pendingReceiptKind(attemptID string) string {
+	return pendingReceiptPrefix + hex.EncodeToString([]byte(attemptID))
+}
+
+func decodePendingReceipt(rec state.StateRecord) (pendingReceiptState, error) {
+	var pending pendingReceiptState
+	if err := json.Unmarshal(rec.Bytes, &pending); err != nil {
+		return pendingReceiptState{}, fmt.Errorf("llm/leases: decode pending receipt: %w", err)
+	}
+	if rec.Identity != identity.InternalCoordinationQuadruple() || rec.Kind != pendingReceiptKind(pending.AttemptID) || pending.AttemptID == "" || pending.Receipt.ReceiptID != pending.AttemptID || pending.ReceiptHash != receiptHash(pending.Receipt) {
+		return pendingReceiptState{}, ErrAttemptConflict
+	}
+	return pending, nil
 }
 
 type leaseState struct {
@@ -350,6 +446,12 @@ type attemptState struct {
 	Receipt       llm.AttemptUsageReceipt `json:"receipt,omitempty"`
 	ReceiptHash   string                  `json:"receipt_hash,omitempty"`
 	SettledAt     time.Time               `json:"settled_at,omitempty"`
+}
+
+type pendingReceiptState struct {
+	AttemptID   string                  `json:"attempt_id"`
+	ReceiptHash string                  `json:"receipt_hash"`
+	Receipt     llm.AttemptUsageReceipt `json:"receipt"`
 }
 
 func (a attemptState) matches(r llm.LeaseReservationRequest) bool {

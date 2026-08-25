@@ -1722,13 +1722,22 @@ and stable jittered backoff. Disabled/default deployments do no coordinator
 work, and `runtime_default` remains independent of coordinator-managed provider
 credentials and catalogs.
 
+Lease settlement now atomically leaves a removable pending-receipt handoff for
+success, error, and cancellation. The stock outbox consumes that prefix and
+removes an exact handoff only after durable enqueue; retained attempt history
+is never scanned for steady-state recovery. A versioned marker makes the old
+whole receipt-prefix pass an upgrade-only operation, so ordinary ACKed lifetime
+history cannot amplify idle database work or starve later crash-gap facts.
+
 The additive `runtime.info.external_grant` projection reports supported and
 configured modes, accepted and independently ready route shapes,
 verifier/reservation/credential wiring, strict parser readiness, concrete
 receipt transport kind and observed readiness, an explicit unsupported stock
 top-up state, and a fail-closed fully-wired result. No endpoint, token,
 identity, receipt content, provider response, or product-specific vocabulary
-appears in the posture response, logs, or errors. Live top-up remains
+appears in the posture response, logs, or errors. Cadence reconciliation
+failures degrade the projection while retrying and recover only after success;
+the whole readiness object is optional for mixed-version clients. Live top-up remains
 unsupported until a separate phase owns replay-idempotent durable successor
 application after validation.
 

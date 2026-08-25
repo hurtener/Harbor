@@ -3,7 +3,9 @@ package leases_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -169,6 +171,98 @@ func TestStore_FailedSettlementReleasesWithoutConsuming(t *testing.T) {
 	next.AttemptID = "after-failure"
 	if _, err := mgr.Reserve(context.Background(), next); err != nil {
 		t.Fatalf("released capacity was not returned: %v", err)
+	}
+}
+
+func TestStore_PendingReceiptHandoffRecoversAllTerminalOutcomesAcrossDrivers(t *testing.T) {
+	cases := []struct {
+		name string
+		open func(t *testing.T) (*leases.Store, func() error)
+	}{
+		{name: "inmem", open: func(t *testing.T) (*leases.Store, func() error) {
+			st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mgr, func() error { return st.Close(context.Background()) }
+		}},
+		{name: "sqlite", open: func(t *testing.T) (*leases.Store, func() error) {
+			st, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "pending-receipts.sqlite")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mgr, func() error { return st.Close(context.Background()) }
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, closeStore := tc.open(t)
+			t.Cleanup(func() { _ = closeStore() })
+			now := time.Now().UTC()
+			q := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, RunID: "run"}
+			want := make(map[string]string)
+			statuses := []string{"success", "error", "canceled", "success", "error", "canceled"}
+			for i, status := range statuses {
+				id := fmt.Sprintf("pending-%d", i)
+				req := llm.LeaseReservationRequest{AttemptID: id, LogicalCallID: id, AttemptNonce: "nonce-" + id, GrantID: "grant", LeaseID: "lease-" + id, Epoch: 1, Capacity: 10, Units: 10, ExpiresAt: now.Add(time.Minute), Identity: q}
+				if _, err := mgr.Reserve(context.Background(), req); err != nil {
+					t.Fatalf("Reserve %s: %v", id, err)
+				}
+				receipt := testReceipt(id, now)
+				receipt.Status = status
+				receipt.CanonicalBodyHash, _ = llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+				if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: id, LogicalCallID: id, AttemptNonce: req.AttemptNonce, Receipt: receipt, Units: 3, Now: now}); err != nil {
+					t.Fatalf("Settle %s: %v", id, err)
+				}
+				want[id] = status
+			}
+
+			// A crash after the outbox enqueue but before acknowledgement leaves
+			// the same exact handoff visible; acknowledgement itself is replay-safe.
+			first, err := mgr.PendingReceipts(context.Background(), 2)
+			if err != nil || len(first) != 2 {
+				t.Fatalf("first pending page len=%d err=%v", len(first), err)
+			}
+			replayed, err := mgr.PendingReceipts(context.Background(), 2)
+			if err != nil || len(replayed) != len(first) {
+				t.Fatalf("replayed pending page len=%d err=%v", len(replayed), err)
+			}
+
+			got := make(map[string]string)
+			for len(got) < len(want) {
+				page, err := mgr.PendingReceipts(context.Background(), 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page) == 0 {
+					t.Fatalf("pending handoff ended early: got=%v want=%v", got, want)
+				}
+				for _, receipt := range page {
+					got[receipt.ReceiptID] = receipt.Status
+					if err := mgr.AcknowledgePendingReceipt(context.Background(), receipt); err != nil {
+						t.Fatalf("acknowledge %s: %v", receipt.ReceiptID, err)
+					}
+					if err := mgr.AcknowledgePendingReceipt(context.Background(), receipt); err != nil {
+						t.Fatalf("idempotent acknowledge %s: %v", receipt.ReceiptID, err)
+					}
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("terminal receipts=%v want=%v", got, want)
+			}
+			remaining, err := mgr.PendingReceipts(context.Background(), 2)
+			if err != nil || len(remaining) != 0 {
+				t.Fatalf("remaining pending=%+v err=%v", remaining, err)
+			}
+		})
 	}
 }
 

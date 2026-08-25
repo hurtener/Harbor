@@ -14273,13 +14273,25 @@ retry storm. Stock lease top-up remains unsupported: a successor grant cannot
 be called ready until its validated epoch/capacity advances the durable
 reservation store idempotently, including response-loss replay.
 
-The slow legacy scan requests one row beyond its configured work batch and
-refuses an overflow before adopting any page. This is an explicit bounded
-recovery limitation, not keyset pagination: an operator must raise the approved
-bound or perform offline recovery rather than letting an ACKed first page hide
-later pending facts. Stock serve runs this bounded check synchronously so the
-error fails boot. Retry deadlines and enqueue wakes run delivery replay only;
-the maintenance prefix scan keeps an independent reconciliation deadline.
+The old whole receipt-prefix scan is upgrade-only. Its successful completion
+stores a versioned durable reconciliation marker; ordinary ACKed receipt
+history accumulated after that point never re-enters the scan or its batch
+bound. Before the marker exists, the scan requests one row beyond its
+configured work batch and refuses an overflow before adopting any page. This
+is an explicit bounded legacy-recovery limitation, not keyset pagination: an
+operator must raise the approved bound or perform offline recovery. Stock
+serve runs this bounded check synchronously so the error fails boot.
+
+The crash gap between durable lease settlement and outbox enqueue is closed
+without scanning retained attempts. Settlement atomically writes one removable
+pending-receipt handoff for success, error, and cancellation. Reconciliation
+reads only that bounded pending prefix, enqueues idempotently, and conditionally
+removes the exact handoff only after enqueue succeeds; a crash before removal
+replays the same canonical fact. Retry deadlines and enqueue wakes run delivery
+replay only. The maintenance deadline is independent, and a transient
+maintenance failure degrades `runtime.info`, retries with bounded delay, and
+restores readiness only after a successful reconciliation; startup failure
+still fails boot.
 
 The config block is rejected when external grants are disabled. When absent,
 stock boot performs no environment lookup and starts no coordinator client,
@@ -14298,7 +14310,9 @@ enforceable. A
 coordinator-bound runtime without a credential resolver is never called ready;
 a runtime-default one does not falsely require that resolver. The projection
 is content- and secret-free and updates to `degraded` after a failed or partial
-exchange.
+exchange or reconciliation failure. The entire additive object is optional on
+the wire so a client can represent a pre-projection runtime as absent rather
+than fabricating readiness.
 
 **Compatibility boundary.** Protocol version stays `0.1.0`; the readiness
 object is an additive `runtime.info` field. Existing host-injected `Delivery`
@@ -14344,7 +14358,10 @@ The configured verifier owns signing-key trust, signature authenticity,
 request context, and current-time checks. The relationship validator requires
 one exact epoch advance, a positive total-capacity increase no greater than
 the requested provider-call units, non-decreasing consumption, and sufficient
-remaining capacity for that call. Subtraction after monotonicity checks avoids
+remaining capacity for that call. The requested units are the explicit request
+output bound when supplied and the same signed `MaxOutputTokens` cap later
+applied at the provider boundary when omitted; omission never degenerates into
+a one-unit successor request. Subtraction after monotonicity checks avoids
 addition overflow. Grant and lease expiry may remain unchanged or advance,
 while their respective lifetimes may not exceed the durations signed into the
 predecessor. Applying the same successor to the same predecessor is a

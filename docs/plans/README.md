@@ -5609,13 +5609,15 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   D-437 / Phase 257's strict public canonical parser.
 - **What it delivers:** D-438 — opt-in authenticated bounded receipt batches,
   exact ID/hash ACKs, partial/response-loss durable replay, stable jittered
-  backoff, explicit unsupported stock top-up state, and a content-free
+  backoff, atomic removable settlement handoffs, version-marked upgrade-only
+  legacy reconciliation, explicit unsupported stock top-up state, and a content-free
   `runtime.info.external_grant` projection with accepted versus independently
   ready routes and concrete receipt-transport kind/readiness. Disabled/default
   stock boot performs zero coordinator work. `runtime_default` requires no
   coordinator provider credential or catalog.
 - **Evidence:** Focused in-memory/SQLite outbox, HTTP transport, cancellation,
-  concurrent reuse, config, serve-wiring, readiness, Protocol generation, race,
+  lifetime-ACK/restart and crash-gap recovery, concurrent reuse, config,
+  serve-wiring, degraded/recovered readiness, Protocol generation, race,
   vet, docs/drift, and static smoke gates are required. Hosted CI, release
   evidence, external coordinator acceptance, and downstream deployment remain
   separate and unclaimed.

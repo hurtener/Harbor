@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	kindPrefix = state.InternalKindPrefix + "inference.receipt/"
-	dueKind    = state.InternalKindPrefix + "inference.receipt.due"
+	kindPrefix       = state.InternalKindPrefix + "inference.receipt/"
+	dueKind          = state.InternalKindPrefix + "inference.receipt.due"
+	legacyMarkerKind = state.InternalKindPrefix + "inference.receipt.reconciled.v1"
 )
 
 var (
@@ -58,6 +59,14 @@ type BatchDelivery interface {
 // used by Replay's hot path; implementations must return a bounded result.
 type PendingReceiptSource interface {
 	PendingReceipts(context.Context, int) ([]llm.AttemptUsageReceipt, error)
+	AcknowledgePendingReceipt(context.Context, llm.AttemptUsageReceipt) error
+}
+
+// OutboxHealthReporter receives the secret-free liveness of background
+// receipt reconciliation. Stock transports use it to keep runtime.info from
+// reporting strict readiness after the durable worker has degraded.
+type OutboxHealthReporter interface {
+	SetOutboxHealth(bool)
 }
 
 type Config struct {
@@ -114,6 +123,10 @@ type dueEntry struct {
 
 type dueIndex struct {
 	Entries []dueEntry `json:"entries"`
+}
+
+type legacyReconcileMarker struct {
+	Version int `json:"version"`
 }
 
 func New(cfg Config) (*Outbox, error) {
@@ -459,6 +472,7 @@ func (o *Outbox) failBatch(ctx context.Context, now time.Time, items []replayIte
 // reconciles legacy/crash-recovery records only at a slow jittered cadence.
 func (o *Outbox) Run(ctx context.Context) error {
 	if err := o.Prepare(ctx); err != nil {
+		o.reportHealth(false)
 		return err
 	}
 	nextReconcile := o.clock().UTC().Add(o.reconcileInterval)
@@ -511,8 +525,11 @@ func (o *Outbox) Run(ctx context.Context) error {
 			now = o.clock().UTC()
 			if !now.Before(nextReconcile) {
 				if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
-					return err
+					o.reportHealth(false)
+					nextReconcile = now.Add(minDuration(o.baseBackoff, o.reconcileInterval))
+					continue
 				}
+				o.reportHealth(true)
 				nextReconcile = now.Add(o.reconcileInterval)
 			}
 		}
@@ -530,10 +547,25 @@ func (o *Outbox) Prepare(ctx context.Context) error {
 		return nil
 	}
 	if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+		o.reportHealth(false)
 		return err
 	}
 	o.prepared = true
+	o.reportHealth(true)
 	return nil
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func (o *Outbox) reportHealth(healthy bool) {
+	if reporter, ok := o.delivery.(OutboxHealthReporter); ok {
+		reporter.SetOutboxHealth(healthy)
+	}
 }
 
 func durationUntil(now, target time.Time) time.Duration {
@@ -562,7 +594,25 @@ func (o *Outbox) Reconcile(ctx context.Context) error {
 			if err := o.Enqueue(receiptCtx, receipt); err != nil {
 				return err
 			}
+			if err := o.pending.AcknowledgePendingReceipt(ctx, receipt); err != nil {
+				return err
+			}
 		}
+	}
+	return o.reconcileLegacyOnce(ctx)
+}
+
+func (o *Outbox) reconcileLegacyOnce(ctx context.Context) error {
+	marker, err := o.store.Load(ctx, internalQ(), legacyMarkerKind)
+	if err == nil {
+		var value legacyReconcileMarker
+		if jsonErr := json.Unmarshal(marker.Bytes, &value); jsonErr != nil || value.Version != 1 || marker.Kind != legacyMarkerKind || marker.Identity != internalQ() {
+			return fmt.Errorf("%w: invalid legacy reconciliation marker", ErrInvalidReceipt)
+		}
+		return nil
+	}
+	if !errors.Is(err, state.ErrNotFound) {
+		return err
 	}
 	legacy, err := o.store.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, kindPrefix, o.maxBatch+1)
 	if err != nil {
@@ -588,6 +638,17 @@ func (o *Outbox) Reconcile(ctx context.Context) error {
 		if err := o.ensureDue(ctx, rec.Identity, stored.Receipt); err != nil {
 			return err
 		}
+	}
+	body, err := json.Marshal(legacyReconcileMarker{Version: 1})
+	if err != nil {
+		return fmt.Errorf("%w: encode legacy reconciliation marker", ErrInvalidReceipt)
+	}
+	next := state.NewInternalRecord(state.NewEventID(), internalQ(), legacyMarkerKind, body)
+	if err := o.store.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(internalQ(), legacyMarkerKind, "")}, next); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			return o.reconcileLegacyOnce(ctx)
+		}
+		return err
 	}
 	return nil
 }

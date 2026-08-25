@@ -462,7 +462,8 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	// wired-capability subset.
 	out.WireSurfaceDigest = wiresurface.Digest()
 	if s.externalGrant != nil {
-		out.ExternalGrant = s.externalGrant()
+		externalGrant := s.externalGrant()
+		out.ExternalGrant = &externalGrant
 	}
 	// Per-instance wired subset. Conditional
 	// surfaces (`topology_snapshot`, `agent_config`) appear here only when

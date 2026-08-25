@@ -55,7 +55,8 @@ export interface RuntimeInfo {
 	protocol_version: string;
 	capabilities: Capability[];
 	uptime_seconds: number;
-	external_grant: ExternalGrantReadiness;
+	/** Absent on runtimes built before external-grant readiness projection. */
+	external_grant?: ExternalGrantReadiness;
 	/**
 	 * The MCP App (`io.modelcontextprotocol/ui`) display modes this host can
 	 * render, declared by the deployment's `tools.mcp_app_host.display_modes`.

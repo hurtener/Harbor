@@ -252,6 +252,65 @@ func TestWrap_TopsUpBoundedLeaseBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestWrap_OmittedMaxTokensTopUpUsesGrantedOutputCeiling(t *testing.T) {
+	predecessorSigner, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorSigner, err := NewSigner("key-2", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{
+		"key-1": predecessorSigner.PublicKey(),
+		"key-2": successorSigner.PublicKey(),
+	}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := NewBindingStore()
+	if err := binding.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	grant := testGrant()
+	grant.Lease.TokenUnits = 10
+	grant.Lease.LeaseID = "lease-implicit-max"
+	signed, err := predecessorSigner.Sign(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requested int64
+	topUpper := topUpperFunc(func(_ context.Context, old llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
+		requested = needed
+		old.Lease.Epoch++
+		old.Lease.TokenUnits += needed
+		old.IssuedAt = old.IssuedAt.Add(30 * time.Second)
+		old.ExpiresAt = old.ExpiresAt.Add(30 * time.Second)
+		old.Lease.ExpiresAt = old.Lease.ExpiresAt.Add(30 * time.Second)
+		return successorSigner.Sign(old)
+	})
+	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
+	leaseAwareVerifier := verifierFunc(func(ctx context.Context, candidate llm.ExternalGrant, req llm.CompleteRequest) error {
+		if err := verifier.Verify(ctx, candidate, req); err != nil {
+			return err
+		}
+		if candidate.Lease.RemainingTokens() < int64(candidate.MaxOutputTokens) {
+			return llm.ErrExternalGrantLeaseInsufficient
+		}
+		return nil
+	})
+	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: leaseAwareVerifier, Credentials: binding,
+		Reservations: newTestReservations(t), TopUpper: topUpper, ReceiptSink: &recordingSink{}, ReceiptRequired: true,
+	}})
+	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed}); err != nil {
+		t.Fatalf("Complete with implicit output limit top-up: %v", err)
+	}
+	if requested != int64(grant.MaxOutputTokens) || len(inner.requests) != 1 || inner.requests[0].MaxTokens == nil || *inner.requests[0].MaxTokens != grant.MaxOutputTokens {
+		t.Fatalf("top-up requested=%d requests=%+v", requested, inner.requests)
+	}
+}
+
 func TestWrap_TopUpPreservesLegacyBlankRouteBeforeProviderCall(t *testing.T) {
 	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
 	if err != nil {

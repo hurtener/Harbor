@@ -25,15 +25,29 @@ type countingStateStore struct {
 }
 
 type countingPendingSource struct {
-	mu    sync.Mutex
-	calls int
+	mu       sync.Mutex
+	calls    int
+	acks     int
+	failures int
 }
 
 func (s *countingPendingSource) PendingReceipts(context.Context, int) ([]llm.AttemptUsageReceipt, error) {
 	s.mu.Lock()
+	if s.failures > 0 {
+		s.failures--
+		s.mu.Unlock()
+		return nil, errors.New("transient pending source failure")
+	}
 	s.calls++
 	s.mu.Unlock()
 	return nil, nil
+}
+
+func (s *countingPendingSource) AcknowledgePendingReceipt(context.Context, llm.AttemptUsageReceipt) error {
+	s.mu.Lock()
+	s.acks++
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *countingPendingSource) callCount() int {
@@ -44,6 +58,40 @@ func (s *countingPendingSource) callCount() int {
 
 type signalingFailDelivery struct {
 	calls chan struct{}
+}
+
+type healthRecordingDelivery struct {
+	health chan bool
+}
+
+type replayingPendingSource struct {
+	receipt     llm.AttemptUsageReceipt
+	ackFailures int
+	acked       bool
+}
+
+func (s *replayingPendingSource) PendingReceipts(context.Context, int) ([]llm.AttemptUsageReceipt, error) {
+	if s.acked {
+		return nil, nil
+	}
+	return []llm.AttemptUsageReceipt{s.receipt}, nil
+}
+
+func (s *replayingPendingSource) AcknowledgePendingReceipt(context.Context, llm.AttemptUsageReceipt) error {
+	if s.ackFailures > 0 {
+		s.ackFailures--
+		return errors.New("simulated crash before pending acknowledgement")
+	}
+	s.acked = true
+	return nil
+}
+
+func (d *healthRecordingDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error { return nil }
+func (d *healthRecordingDelivery) SetOutboxHealth(healthy bool) {
+	select {
+	case d.health <- healthy:
+	default:
+	}
 }
 
 func (d *signalingFailDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error {
@@ -385,5 +433,133 @@ func TestOutboxPrepareRefusesLegacyOverflowWithoutHidingLaterPending(t *testing.
 				t.Fatalf("overflow partially adopted legacy page: index=%+v err=%v", idx, err)
 			}
 		})
+	}
+}
+
+func TestOutboxAcknowledgedLifetimeHistoryNeverReentersLegacyScan(t *testing.T) {
+	tests := map[string]func(*testing.T) state.StateStore{
+		"inmem": func(t *testing.T) state.StateStore {
+			t.Helper()
+			store, err := inmem.New(config.StateConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+		"sqlite": func(t *testing.T) state.StateStore {
+			t.Helper()
+			store, err := sqlite.New(config.StateConfig{DSN: ":memory:"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+	}
+	for name, open := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			t.Cleanup(func() { _ = store.Close(context.Background()) })
+			o, err := New(Config{Store: store, Delivery: &recordingDelivery{}, MaxBatch: 64})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := o.Prepare(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for i := range 65 {
+				receipt := receiptVariant(i)
+				if err := o.Enqueue(receiptContext(t, receipt), receipt); err != nil {
+					t.Fatalf("enqueue %d: %v", i, err)
+				}
+			}
+			for {
+				stats, err := o.Replay(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stats.Seen == 0 {
+					break
+				}
+			}
+			if err := o.Reconcile(context.Background()); err != nil {
+				t.Fatalf("reconcile after 65 acknowledged receipts: %v", err)
+			}
+			restarted, err := New(Config{Store: store, Delivery: &recordingDelivery{}, MaxBatch: 64})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restarted.Prepare(context.Background()); err != nil {
+				t.Fatalf("restart prepare after 65 acknowledged receipts: %v", err)
+			}
+		})
+	}
+}
+
+func TestOutboxRunReconcileHealthDegradesAndRecovers(t *testing.T) {
+	store, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	pending := &countingPendingSource{}
+	delivery := &healthRecordingDelivery{health: make(chan bool, 8)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, PendingSource: pending,
+		BaseBackoff: 5 * time.Millisecond, ReconcileInterval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-delivery.health // startup wired
+	pending.mu.Lock()
+	pending.failures = 1
+	pending.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	for _, want := range []bool{false, true} {
+		select {
+		case got := <-delivery.health:
+			if got != want {
+				t.Fatalf("outbox health=%t, want %t", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for outbox health=%t", want)
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v", err)
+	}
+}
+
+func TestOutboxReconcile_EnqueueBeforePendingAckConvergesAfterResponseLoss(t *testing.T) {
+	store, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	receipt := testReceipt()
+	pending := &replayingPendingSource{receipt: receipt, ackFailures: 1}
+	delivery := &recordingDelivery{}
+	o, err := New(Config{Store: store, Delivery: delivery, PendingSource: pending})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Reconcile(context.Background()); err == nil {
+		t.Fatal("first reconciliation unexpectedly acknowledged the pending handoff")
+	}
+	if err := o.Reconcile(context.Background()); err != nil {
+		t.Fatalf("response-loss reconciliation did not converge: %v", err)
+	}
+	stats, err := o.Replay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Acknowledged != 1 || len(delivery.receipts) != 1 || delivery.receipts[0].ReceiptID != receipt.ReceiptID {
+		t.Fatalf("replay stats=%+v delivered=%+v", stats, delivery.receipts)
 	}
 }

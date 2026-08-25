@@ -49,7 +49,7 @@ func wireExternalGrant(
 	}
 	if ext.Mode == "" {
 		ext.Mode = configuredMode
-	} else if configuredMode != "" && configuredMode != llm.ExternalGrantDisabled && ext.Mode != configuredMode {
+	} else if configuredMode != "" && ext.Mode != configuredMode {
 		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: injected mode %q conflicts with configured mode %q", ext.Mode, configuredMode)
 	}
 	if ext.RouteMode == "" {
@@ -136,7 +136,7 @@ func wireExternalGrant(
 		runDone = make(chan struct{})
 		go func() {
 			defer close(runDone)
-			if err := outbox.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			if err := outbox.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, llmreceipts.ErrClosed) {
 				slog.Default().Error("external grant receipt outbox stopped", slog.String("error", err.Error()))
 			}
 		}()
@@ -150,11 +150,11 @@ func wireExternalGrant(
 	}
 
 	closeFn := func() {
-		if outbox != nil {
-			_ = outbox.Close()
-		}
 		if runCancel != nil {
 			runCancel()
+		}
+		if outbox != nil {
+			_ = outbox.Close()
 		}
 		if runDone != nil {
 			<-runDone

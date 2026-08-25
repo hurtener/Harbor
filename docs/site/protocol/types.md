@@ -3622,7 +3622,7 @@ Declared in `internal/protocol/types`.
 | `uptime_seconds` | `int64` |  |
 | `mcp_app_display_modes` | `[]string` | optional (`omitempty`) |
 | `wire_surface_digest` | `string` |  |
-| `external_grant` | `types.ExternalGrantReadiness` — see [`ExternalGrantReadiness`](./types.md#externalgrantreadiness) |  |
+| `external_grant` | `*types.ExternalGrantReadiness` — see [`ExternalGrantReadiness`](./types.md#externalgrantreadiness) | optional (`omitempty`) |
 
 ## RuntimeInfoRequest
 

@@ -66,6 +66,9 @@ None.
 - [x] Epoch advances exactly once; total capacity grows positively by no more
   than the requested call; consumption does not rewind; remaining capacity is
   sufficient for the call.
+- [x] When `MaxTokens` is omitted, the wrapper requests the same signed
+  `MaxOutputTokens` ceiling that it later applies at the provider boundary;
+  omission never becomes an accidental one-unit top-up.
 - [x] Grant and lease deadlines never rewind and may remain unchanged or
   advance without lengthening either predecessor lifetime; zero, stale,
   overflow, excessive, and omitted state fail closed.

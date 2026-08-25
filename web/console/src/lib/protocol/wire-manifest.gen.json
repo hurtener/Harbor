@@ -7758,7 +7758,8 @@
         {
           "key": "external_grant",
           "type": "object",
-          "ref": "ExternalGrantReadiness"
+          "ref": "ExternalGrantReadiness",
+          "optional": true
         }
       ]
     },

@@ -241,16 +241,9 @@ func capRequestToGrant(req llm.CompleteRequest, grant llm.ExternalGrant) (llm.Co
 	if req.MaxTokens != nil {
 		return req, nil
 	}
-	remaining := grant.Lease.RemainingTokens()
-	if remaining <= 0 {
-		return llm.CompleteRequest{}, fmt.Errorf("%w: no output lease remains", llm.ErrExternalGrantLeaseInsufficient)
-	}
-	maxTokens := int64(grant.MaxOutputTokens)
-	if remaining < maxTokens {
-		maxTokens = remaining
-	}
-	if maxTokens <= 0 || maxTokens > int64(maxInt()) {
-		return llm.CompleteRequest{}, fmt.Errorf("%w: output lease exceeds local integer range", llm.ErrExternalGrantInvalid)
+	maxTokens, err := boundedOutputUnits(req, grant, true)
+	if err != nil {
+		return llm.CompleteRequest{}, err
 	}
 	value := int(maxTokens)
 	req.MaxTokens = &value
@@ -267,9 +260,9 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 	if c.deps.ExternalGrant.TopUpper == nil || !isLeaseError(err) {
 		return err
 	}
-	needed := int64(1)
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		needed = int64(*req.MaxTokens)
+	needed, neededErr := boundedOutputUnits(req, *grant, false)
+	if neededErr != nil {
+		return neededErr
 	}
 	newGrant, topErr := c.deps.ExternalGrant.TopUpper.TopUp(ctx, *grant, needed)
 	if topErr != nil {
@@ -283,6 +276,29 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 		return err
 	}
 	return nil
+}
+
+func boundedOutputUnits(req llm.CompleteRequest, grant llm.ExternalGrant, constrainToRemaining bool) (int64, error) {
+	if req.MaxTokens != nil {
+		if *req.MaxTokens <= 0 {
+			return 0, fmt.Errorf("%w: output limit must be positive", llm.ErrExternalGrantInvalid)
+		}
+		return int64(*req.MaxTokens), nil
+	}
+	units := int64(grant.MaxOutputTokens)
+	if constrainToRemaining {
+		remaining := grant.Lease.RemainingTokens()
+		if remaining <= 0 {
+			return 0, fmt.Errorf("%w: no output lease remains", llm.ErrExternalGrantLeaseInsufficient)
+		}
+		if remaining < units {
+			units = remaining
+		}
+	}
+	if units <= 0 || units > int64(maxInt()) {
+		return 0, fmt.Errorf("%w: output lease exceeds local integer range", llm.ErrExternalGrantInvalid)
+	}
+	return units, nil
 }
 
 func isLeaseError(err error) bool {

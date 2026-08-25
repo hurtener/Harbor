@@ -61,6 +61,7 @@ type Client struct {
 	maxBatch     int
 	httpClient   *http.Client
 	receiptState atomic.Int32
+	outboxState  atomic.Int32
 }
 
 // New constructs a boot-pinned authenticated client without making a network
@@ -108,9 +109,24 @@ func New(cfg Config) (*Client, error) {
 // Readiness reports whether each configured path is structurally wired or
 // degraded after its most recent attempted exchange.
 func (c *Client) Readiness() Readiness {
-	return Readiness{
-		Receipt: stateName(c.receiptState.Load(), true),
+	state := c.receiptState.Load()
+	if c.outboxState.Load() == transportStateDegraded {
+		state = transportStateDegraded
 	}
+	return Readiness{
+		Receipt: stateName(state, true),
+	}
+}
+
+// SetOutboxHealth receives the secret-free durable-worker health projection.
+// It is called by the outbox after startup and every maintenance retry; no
+// endpoint, credential, receipt, or identity crosses this seam.
+func (c *Client) SetOutboxHealth(healthy bool) {
+	if healthy {
+		c.outboxState.Store(transportStateReady)
+		return
+	}
+	c.outboxState.Store(transportStateDegraded)
 }
 
 // Deliver preserves the transport-neutral single-receipt interface. The
