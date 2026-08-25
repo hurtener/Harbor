@@ -230,7 +230,6 @@ func (c *Client) cached(key string, now time.Time) (llm.ResolvedCredential, bool
 		return llm.ResolvedCredential{}, false
 	}
 	if !entry.expiresAt.After(now) {
-		entry.credential = llm.ResolvedCredential{}
 		delete(c.cache, key)
 		return llm.ResolvedCredential{}, false
 	}
@@ -251,8 +250,6 @@ func (c *Client) storeCached(key string, epoch uint64, resolved llm.ResolvedCred
 				oldestKey, oldest = candidate, entry.insertedAt
 			}
 		}
-		entry := c.cache[oldestKey]
-		entry.credential = llm.ResolvedCredential{}
 		delete(c.cache, oldestKey)
 	}
 	c.cache[key] = cacheEntry{credential: resolved, expiresAt: expiresAt, insertedAt: now}
@@ -269,8 +266,7 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	c.epoch++
-	for key, entry := range c.cache {
-		entry.credential = llm.ResolvedCredential{}
+	for key := range c.cache {
 		delete(c.cache, key)
 	}
 	c.mu.Unlock()

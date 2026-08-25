@@ -54,13 +54,14 @@ type requestWire struct {
 }
 
 type responseWire struct {
-	Version                      int       `json:"version"`
-	Provider                     string    `json:"provider"`
-	CredentialBindingHandle      string    `json:"credential_binding_handle"`
-	CredentialAssetGeneration    uint64    `json:"credential_asset_generation"`
-	ProviderConnectionGeneration uint64    `json:"provider_connection_generation"`
-	Secret                       string    `json:"secret"`
-	ExpiresAt                    time.Time `json:"expires_at"`
+	Version                      int    `json:"version"`
+	Provider                     string `json:"provider"`
+	CredentialBindingHandle      string `json:"credential_binding_handle"`
+	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
+	ProviderConnectionGeneration uint64 `json:"provider_connection_generation"`
+	//nolint:gosec // G117: this canonical credential response requires the fixed public "secret" wire key; it is never logged or persisted.
+	Secret    string    `json:"secret"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // NewRequest validates the coordinator-bound shape before transport.

@@ -19,7 +19,7 @@ import (
 
 const fixtureServiceToken = "fixture-runtime-service-token"
 
-func resolverGrant(org string, generation uint64) llm.ExternalGrant {
+func resolverGrant(org string) llm.ExternalGrant {
 	now := time.Now().UTC().Truncate(time.Second)
 	return llm.ExternalGrant{
 		Version: llm.ExternalGrantVersionAgentBound, KeyID: "key-1", Audience: "runtime",
@@ -28,8 +28,8 @@ func resolverGrant(org string, generation uint64) llm.ExternalGrant {
 		TenantID: "tenant-" + org, UserID: "user-" + org, SessionID: "session-" + org,
 		LogicalRunID: "run-" + org, LogicalCallID: "call-" + org, AttemptNonce: "nonce-" + org,
 		Provider: "provider", ProviderModelID: "model", ProviderConnectionID: "connection-" + org,
-		ProviderConnectionGeneration: generation, RouteID: "route-" + org,
-		CredentialBindingHandle: "opaque-" + org, CredentialAssetGeneration: generation,
+		ProviderConnectionGeneration: 1, RouteID: "route-" + org,
+		CredentialBindingHandle: "opaque-" + org, CredentialAssetGeneration: 1,
 		PolicyGeneration: 1, MaxOutputTokens: 100,
 		Lease:    llm.ComputeLease{LeaseID: "lease-" + org, Epoch: 1, TokenUnits: 1000, ExpiresAt: now.Add(time.Minute)},
 		IssuedAt: now, ExpiresAt: now.Add(time.Minute), Signature: "fixture-signature-" + org,
@@ -87,7 +87,7 @@ func TestClient_ConcurrentTwoOrganizationsSameRuntimeNoBleedAndSingleflight(t *t
 	defer server.Close()
 	client := newResolverClient(t, server.URL)
 
-	grants := []llm.ExternalGrant{resolverGrant("org-a", 1), resolverGrant("org-b", 1)}
+	grants := []llm.ExternalGrant{resolverGrant("org-a"), resolverGrant("org-b")}
 	var wg sync.WaitGroup
 	errs := make(chan error, 200)
 	for i := range 200 {
@@ -130,11 +130,11 @@ func TestClient_RequiresVerifiedExactGrantAndFencesRotation(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newResolverClient(t, server.URL)
-	old := resolverGrant("org-a", 1)
+	old := resolverGrant("org-a")
 	if _, err := client.Resolve(context.Background(), old); !errors.Is(err, ErrResolution) {
 		t.Fatalf("unverified error = %v", err)
 	}
-	wrong := resolverGrant("org-b", 1)
+	wrong := resolverGrant("org-b")
 	if _, err := client.Resolve(verifiedContext(context.Background(), client, wrong), old); !errors.Is(err, ErrResolution) {
 		t.Fatalf("mismatch error = %v", err)
 	}
@@ -169,7 +169,7 @@ func TestClient_CancellationDoesNotCrossSingleflightAndCloseClearsCache(t *testi
 	}))
 	defer server.Close()
 	client := newResolverClient(t, server.URL)
-	grant := resolverGrant("org-a", 1)
+	grant := resolverGrant("org-a")
 	cancelCtx, cancel := context.WithCancel(verifiedContext(context.Background(), client, grant))
 	first := make(chan error, 1)
 	go func() { _, err := client.Resolve(cancelCtx, grant); first <- err }()
@@ -225,7 +225,7 @@ func TestClient_CacheIsBoundedAndExpiresAtThirtySeconds(t *testing.T) {
 	defer client.Close()
 
 	for i := range maxCacheEntries + 1 {
-		grant := resolverGrant(fmt.Sprintf("org-%03d", i), 1)
+		grant := resolverGrant(fmt.Sprintf("org-%03d", i))
 		grant.IssuedAt = now
 		grant.ExpiresAt = now.Add(time.Minute)
 		grant.Lease.ExpiresAt = grant.ExpiresAt
@@ -240,7 +240,7 @@ func TestClient_CacheIsBoundedAndExpiresAtThirtySeconds(t *testing.T) {
 	}
 	client.mu.Unlock()
 
-	grant := resolverGrant("expiry", 1)
+	grant := resolverGrant("expiry")
 	grant.IssuedAt = now
 	grant.ExpiresAt = now.Add(time.Minute)
 	grant.Lease.ExpiresAt = grant.ExpiresAt
@@ -271,7 +271,7 @@ func TestClient_ClosePreventsInflightCacheRepopulation(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newResolverClient(t, server.URL)
-	grant := resolverGrant("org-a", 1)
+	grant := resolverGrant("org-a")
 	done := make(chan error, 1)
 	go func() {
 		_, err := client.Resolve(verifiedContext(context.Background(), client, grant), grant)
@@ -300,7 +300,7 @@ func TestClient_RedactsTransportAndSecretFailures(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newResolverClient(t, server.URL)
-	grant := resolverGrant("org-a", 1)
+	grant := resolverGrant("org-a")
 	_, err := client.Resolve(verifiedContext(context.Background(), client, grant), grant)
 	if !errors.Is(err, ErrResolution) {
 		t.Fatalf("error = %v", err)
@@ -342,7 +342,7 @@ func TestClient_ResolveAfterCloseFailsLoud(t *testing.T) {
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
-	grant := resolverGrant("org-a", 1)
+	grant := resolverGrant("org-a")
 	if _, err := client.Resolve(verifiedContext(context.Background(), client, grant), grant); !errors.Is(err, ErrClosed) {
 		t.Fatalf("error = %v", err)
 	}
