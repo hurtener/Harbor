@@ -44,9 +44,9 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
-| HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Framework-complete candidate — phases 257/258/261, D-437/D-438/D-441; hosted CI/release/downstream acceptance pending |
-| HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Framework-complete candidate — phases 259/261, D-439/D-441; release and downstream acceptance pending |
-| HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Implemented candidate — phase 260 / D-440; release and downstream acceptance pending |
+| HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Accepted for the v1.30.2 release candidate — phases 257/258/261, D-437/D-438/D-441; tag/release/downstream acceptance pending |
+| HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Accepted for the v1.30.2 release candidate — phases 259/261, D-439/D-441; tag/release/downstream acceptance pending |
+| HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Accepted for the v1.30.2 release candidate — phase 260 / D-440; tag/release/downstream acceptance pending |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1691,10 +1691,9 @@ downstream deployment, fleet, database, or acceptance claim is made.
 
 ## HA-72 — stock coordinator receipt transport and grant readiness
 
-**Priority:** High. **Size:** large. **State:** Framework-complete in the
-unreleased Phase 257 / D-437 parser, Phase 258 / D-438 receipt transport, and
-Phase 261 / D-441 stock-renewal implementation candidates. Hosted CI, release
-evidence, downstream deployment, and acceptance remain pending.
+**Priority:** High. **Size:** large. **State:** Accepted for the v1.30.2
+release candidate through Phase 257 / D-437, Phase 258 / D-438, and Phase 261 /
+D-441. Tag, release, downstream deployment, and acceptance remain pending.
 
 **Observed gap.** Harbor v1.30.1 publishes the transport-neutral receipt
 delivery seam and canonical marshal/hash/validation helpers, but an external
@@ -1747,9 +1746,9 @@ durable successor application without adding idle work.
 
 ## HA-74 — top-up successor grant preserves immutable authority and attempt identity
 
-**Priority:** High. **Size:** contained. **State:** Framework-complete in
-Phase 259 / D-439 and Phase 261 / D-441 candidates; hosted CI, release, and
-downstream acceptance remain pending.
+**Priority:** High. **Size:** contained. **State:** Accepted for the v1.30.2
+release candidate through Phase 259 / D-439 and Phase 261 / D-441; tag,
+release, and downstream acceptance remain pending.
 
 **Observed gap.** `LeaseTopUpper.TopUp` returns a newly signed
 `ExternalGrant`, but the v1.30.1 wrapper compared only logical-call id,
@@ -1794,9 +1793,9 @@ and provider execution.
 
 ## HA-75 — reach-admitted effective AgentID bound into external execution grants and receipts
 
-**Priority:** High. **Size:** contained. **State:** Implemented candidate in
-Phase 260 / D-440; hosted CI, release, and downstream acceptance remain
-pending.
+**Priority:** High. **Size:** contained. **State:** Accepted for the v1.30.2
+release candidate through Phase 260 / D-440; tag, release, and downstream
+acceptance remain pending.
 
 **Observed gap.** The deployed external grant binds organization, runtime,
 identity triple, logical run/call, route, credential generation, policy, and
@@ -1823,3 +1822,15 @@ and rolling-summary calls do not currently receive distinct grants; required
 mode blocks ungranted calls before a provider, while optional mode retains its
 compatibility behavior. Arbitrary embedder calls are not described as
 reach-admitted unless their verifier establishes an equivalent trusted context.
+
+**Shared v1.30.2 release-candidate evidence (HA-72, HA-74, HA-75).** PR #747
+head `0992356db24b43776a10a6572e3df56b610cf50e` was squash-merged as
+`459278f7ce599aa6a66f83c3ffbaeb42bb6b7f0c` (tree
+`5b7583150d8e7cd3149da1eb77eda4e68ff63f64`). Candidate docs run
+`32850686252` and post-merge docs run `32852635507` succeeded. At this cut,
+candidate CI `32850686237` and post-merge CI `32852635451` had no failed jobs
+but each final preflight gate was still in progress. Due the one-hour pause
+deadline, the owner authorized proceeding with the release and tag despite
+those pending gates; any late failure will be fixed later that day. As of this
+release-cut commit, no tag, release, downstream deployment, or acceptance is
+claimed.

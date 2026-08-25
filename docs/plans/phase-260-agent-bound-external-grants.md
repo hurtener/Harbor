@@ -128,6 +128,19 @@ projection, compatibility tests, and the unchanged Protocol version.
 - `internal/runtime/serve`: explicit and default reach-admitted integration.
 - `internal/protocol/types` and public SDK: additive wire/compile coverage.
 
+## v1.30.2 release-candidate evidence
+
+PR #747 exact head `0992356db24b43776a10a6572e3df56b610cf50e` was
+squash-merged as `459278f7ce599aa6a66f83c3ffbaeb42bb6b7f0c` (tree
+`5b7583150d8e7cd3149da1eb77eda4e68ff63f64`). Candidate docs run
+`32850686252` and post-merge docs run `32852635507` succeeded. At this cut,
+candidate CI `32850686237` and post-merge CI `32852635451` had no failed jobs
+but each final preflight gate was still in progress. Due the one-hour pause
+deadline, the owner authorized proceeding with the release and tag despite
+those pending gates; any late failure will be fixed later that day. As of this
+release-cut commit, no tag, release, assets, module provenance, post-tag
+cleanup, or downstream deployment or acceptance is claimed.
+
 ## Dependencies
 
 - Phase 254 / D-434 — external grants and receipts.

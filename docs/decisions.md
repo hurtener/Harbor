@@ -14205,9 +14205,9 @@ acceptance remain a separate gate and are not claimed here.
 
 **Date:** 2026-08-25
 
-**Status:** Accepted for Phase 257; implemented as an unreleased candidate.
-Phase 258 / D-438 completes HA-72's stock transport and readiness boundary;
-hosted CI, release, and downstream acceptance remain pending.
+**Status:** Accepted for the v1.30.2 release candidate; tag, release, and
+downstream acceptance remain pending. Phase 258 / D-438 completes HA-72's
+stock transport and readiness boundary.
 
 Harbor's v1.30.1 SDK exposes `AttemptUsageReceipt`, its canonical marshal/hash,
 and validation helpers, but the canonical snake-case wire remains deliberately
@@ -14264,8 +14264,8 @@ explicitly unsupported pending separately owned durable successor application.
 
 **Date:** 2026-08-25
 
-**Status:** Accepted for Phase 258; implementation candidate complete, hosted
-CI and release evidence pending.
+**Status:** Accepted for the v1.30.2 release candidate; tag, release, and
+downstream acceptance remain pending.
 
 The transport-neutral external-grant SDK is necessary but insufficient for a
 stock `harbor serve` deployment: an operator should not have to author a host
@@ -14361,7 +14361,7 @@ acceptance, and downstream deployment remain unclaimed.
 
 **Date:** 2026-08-25
 
-**Status:** Implemented candidate in Phase 259; hosted CI, release, and
+**Status:** Accepted for the v1.30.2 release candidate; tag, release, and
 downstream acceptance remain pending.
 
 The external-grant wrapper no longer treats independent signature validity as
@@ -14414,7 +14414,7 @@ brief 08. Plan: `docs/plans/phase-259-external-grant-topup-successor.md`.
 
 **Date:** 2026-08-25
 
-**Status:** Implemented candidate in Phase 260; hosted CI, release, and
+**Status:** Accepted for the v1.30.2 release candidate; tag, release, and
 downstream acceptance remain pending.
 
 Version 2 of `ExternalGrant` requires a signed AgentID equal to the effective
@@ -14455,7 +14455,7 @@ attempt rather than every arbitrary LLM invocation.
 
 **Date:** 2026-08-25
 
-**Status:** Implemented candidate in Phase 261; hosted CI, release, and
+**Status:** Accepted for the v1.30.2 release candidate; tag, release, and
 downstream acceptance remain pending.
 
 Ordinary external-grant verification remains strict. Expiry is a typed outcome
@@ -14503,3 +14503,16 @@ credential or catalog.
 **Cross-references:** D-025, D-434, D-436, D-438, D-439, D-440, RFC §6.5,
 §6.11, §6.15, brief 03, brief 08. Plan:
 `docs/plans/phase-261-stock-external-grant-renewal.md`.
+
+**Release-candidate evidence (D-437–D-441).** Implementation PR #747 was
+reviewed at exact head `0992356db24b43776a10a6572e3df56b610cf50e` and
+squash-merged as `459278f7ce599aa6a66f83c3ffbaeb42bb6b7f0c` (tree
+`5b7583150d8e7cd3149da1eb77eda4e68ff63f64`). Candidate docs run
+`32850686252` and post-merge docs run `32852635507` completed successfully. At
+this release cut, candidate CI `32850686237` and exact post-merge main CI
+`32852635451` had no failed jobs but each still had its final preflight gate in
+progress. Due the one-hour pause deadline, the owner explicitly authorized
+proceeding with the release and tag despite those pending gates; any late
+failure will be fixed later that day. As of this release-cut commit, no
+v1.30.2 tag, release assets, module provenance, post-tag
+cleanup, or downstream deployment or acceptance is claimed.
