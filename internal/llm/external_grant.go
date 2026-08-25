@@ -396,7 +396,7 @@ func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, 
 		body []byte
 		err  error
 	)
-	if receipt.ParentLogicalCallID == "" && receipt.ParentAttemptNonce == "" && receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == "" {
+	if usesLegacyAttemptUsageReceiptWire(receipt) {
 		// Preserve the v1.30.0 representation for pending receipts written
 		// before this additive identity/mode extension. New receipts use the
 		// explicit canonical wire below.
@@ -415,7 +415,11 @@ func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, 
 // JSON representation for a receipt. HTTP, queue, and file deliveries may use
 // this same shape without importing Harbor internals or re-deriving fields.
 func MarshalCanonicalAttemptUsageReceipt(receipt AttemptUsageReceipt) ([]byte, error) {
-	body, err := json.Marshal(canonicalAttemptUsageReceiptWire(receipt))
+	var wire any = canonicalAttemptUsageReceiptWire(receipt)
+	if usesLegacyAttemptUsageReceiptWire(receipt) {
+		wire = legacyAttemptUsageReceiptFrom(receipt)
+	}
+	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, fmt.Errorf("llm: canonical usage receipt wire: %w", err)
 	}
@@ -467,6 +471,11 @@ func UnmarshalCanonicalAttemptUsageReceipt(data []byte) (AttemptUsageReceipt, er
 		return AttemptUsageReceipt{}, fmt.Errorf("%w: input is not the exact canonical wire", ErrInvalidUsageReceipt)
 	}
 	return receipt, nil
+}
+
+func usesLegacyAttemptUsageReceiptWire(receipt AttemptUsageReceipt) bool {
+	return receipt.ParentLogicalCallID == "" && receipt.ParentAttemptNonce == "" &&
+		receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == ""
 }
 
 // ValidateAttemptUsageReceipt validates content-free shape and the explicit

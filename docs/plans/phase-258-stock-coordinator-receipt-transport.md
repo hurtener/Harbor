@@ -60,6 +60,13 @@ facts. Backoff remains bounded and gains stable receipt-derived jitter; the
 existing circuit breaker prevents an unavailable coordinator from turning into
 a query or request storm.
 
+Retry deadlines and enqueue wakes run delivery replay only. The slow
+maintenance scan has its own deadline. Startup legacy recovery requests one row
+beyond the configured work batch and refuses overflow before adopting a page;
+this hotfix does not claim keyset continuation. Stock serve performs that check
+synchronously and fails boot. Operators must increase the approved bound or use
+offline recovery when retained legacy facts exceed it.
+
 ## Runtime posture
 
 `runtime.info.external_grant` reports:
@@ -71,7 +78,8 @@ a query or request storm.
 - strict canonical receipt-parser readiness;
 - receipt transport kind as stock authenticated HTTP or host injection, with
   disabled, absent, wired, or degraded state;
-- stock top-up transport as `unsupported`;
+- top-up transport as `host_injected` when an embedder supplies the existing
+  seam, otherwise `unsupported` (stock remains unsupported);
 - `strict_ready` only when the chosen route shapes are fully enforceable.
 
 Coordinator-bound acceptance requires a credential resolver. Runtime-default
@@ -88,7 +96,10 @@ transport state to degraded without leaking operational material.
   and parse ACKs strictly within byte/count bounds.
 - Partial ACK, response loss, duplicate ACK, unknown ACK, and hash mismatch
   preserve exactly the unacknowledged durable facts for replay.
-- Stock top-up is not configured or wired and reports `unsupported`.
+- Stock top-up is not configured or wired; host injection is reported
+  truthfully when present and absence reports `unsupported`.
+- Startup refuses a retained legacy backlog larger than the configured bound
+  instead of silently starving later pending facts.
 - `runtime.info` distinguishes support, configured mode, route-specific wiring,
   observed transport/parser readiness, and strict readiness truthfully.
 - In-memory and SQLite outbox behavior, N=100 concurrent reuse, focused race,

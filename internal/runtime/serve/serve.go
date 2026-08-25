@@ -376,6 +376,9 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 		// reservation manager when an external-grant mode is enabled.
 		out.ReservationsWired = true
 		out.CredentialResolverWired = provided.Credentials != nil
+		if provided.TopUpper != nil {
+			out.TopUpTransport = "host_injected"
+		}
 		switch {
 		case stock != nil:
 			ready := stock.Readiness()

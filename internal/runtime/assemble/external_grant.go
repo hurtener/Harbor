@@ -127,6 +127,9 @@ func wireExternalGrant(
 		if err != nil {
 			return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant receipt outbox: %w", err)
 		}
+		if err := outbox.Prepare(ctx); err != nil {
+			return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant receipt startup reconciliation: %w", err)
+		}
 		ext.ReceiptSink = outbox
 		runCtx, cancel := context.WithCancel(context.Background())
 		runCancel = cancel

@@ -32,6 +32,12 @@ func (testCredentialResolver) Resolve(context.Context, llm.ExternalGrant) (llm.R
 	return llm.ResolvedCredential{}, nil
 }
 
+type testTopUpper struct{}
+
+func (testTopUpper) TopUp(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+	return llm.ExternalGrant{}, nil
+}
+
 func TestConfigureStockExternalGrant_DisabledDoesNoWork(t *testing.T) {
 	lookups := 0
 	opts := Options{}
@@ -112,8 +118,9 @@ func TestExternalGrantReadiness_ReportsModeRoutesAndConcreteWiring(t *testing.T)
 		t.Fatalf("coordinator-bound route reported strict-ready without credential resolver: %+v", coordinatorBound)
 	}
 	provided.Credentials = testCredentialResolver{}
+	provided.TopUpper = testTopUpper{}
 	coordinatorBound = externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, provided, testReceiptDelivery{}, nil)()
-	if !coordinatorBound.StrictReady || len(coordinatorBound.ReadyRouteModes) != 1 || coordinatorBound.ReadyRouteModes[0] != "coordinator_bound" {
+	if !coordinatorBound.StrictReady || len(coordinatorBound.ReadyRouteModes) != 1 || coordinatorBound.ReadyRouteModes[0] != "coordinator_bound" || coordinatorBound.TopUpTransport != "host_injected" {
 		t.Fatalf("fully wired coordinator-bound route not ready: %+v", coordinatorBound)
 	}
 }

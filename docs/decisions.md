@@ -14271,6 +14271,14 @@ retry storm. Stock lease top-up remains unsupported: a successor grant cannot
 be called ready until its validated epoch/capacity advances the durable
 reservation store idempotently, including response-loss replay.
 
+The slow legacy scan requests one row beyond its configured work batch and
+refuses an overflow before adopting any page. This is an explicit bounded
+recovery limitation, not keyset pagination: an operator must raise the approved
+bound or perform offline recovery rather than letting an ACKed first page hide
+later pending facts. Stock serve runs this bounded check synchronously so the
+error fails boot. Retry deadlines and enqueue wakes run delivery replay only;
+the maintenance prefix scan keeps an independent reconciliation deadline.
+
 The config block is rejected when external grants are disabled. When absent,
 stock boot performs no environment lookup and starts no coordinator client,
 goroutine, timer, outbox scan, StateStore read, or network request.
@@ -14293,8 +14301,10 @@ exchange.
 **Compatibility boundary.** Protocol version stays `0.1.0`; the readiness
 object is an additive `runtime.info` field. Existing host-injected `Delivery`
 and `TopUpper` interfaces retain ABI compatibility, but Phase 258 does not wire
-or advertise a stock top-up path. Existing single-receipt transports remain
-valid. Disabled and unconfigured defaults retain their zero-work behavior.
+or advertise a stock top-up path. A host-injected `TopUpper` is reported as
+`host_injected`; absence remains `unsupported`. Existing single-receipt
+transports remain valid. Disabled and unconfigured defaults retain their
+zero-work behavior.
 
 **Cross-references.** D-025, D-434, D-436, RFC §5.3, §6.5, §6.11, §6.15.
 Plan: `docs/plans/phase-258-stock-coordinator-receipt-transport.md`.

@@ -28,10 +28,11 @@ const (
 )
 
 var (
-	ErrInvalidReceipt = errors.New("llm/receipts: invalid usage receipt")
-	ErrDeliveryFailed = errors.New("llm/receipts: delivery failed")
-	ErrCircuitOpen    = errors.New("llm/receipts: delivery circuit open")
-	ErrClosed         = errors.New("llm/receipts: outbox closed")
+	ErrInvalidReceipt    = errors.New("llm/receipts: invalid usage receipt")
+	ErrDeliveryFailed    = errors.New("llm/receipts: delivery failed")
+	ErrCircuitOpen       = errors.New("llm/receipts: delivery circuit open")
+	ErrReconcileOverflow = errors.New("llm/receipts: legacy reconciliation bound exceeded")
+	ErrClosed            = errors.New("llm/receipts: outbox closed")
 )
 
 type Delivery interface {
@@ -87,6 +88,8 @@ type Outbox struct {
 	reconcileInterval time.Duration
 	clock             func() time.Time
 	wake              chan struct{}
+	prepareMu         sync.Mutex
+	prepared          bool
 
 	mu             sync.Mutex
 	failures       int
@@ -120,7 +123,10 @@ func New(cfg Config) (*Outbox, error) {
 	if cfg.MaxBatch <= 0 {
 		cfg.MaxBatch = 64
 	}
-	if cfg.MaxBatch > state.MaxStateMaintenanceListLimit {
+	// Reconcile reserves one storage-side row beyond the work batch so it can
+	// refuse an undisclosed legacy backlog instead of rescanning the same first
+	// page forever.
+	if cfg.MaxBatch >= state.MaxStateMaintenanceListLimit {
 		return nil, fmt.Errorf("%w: max batch exceeds state bound", ErrInvalidReceipt)
 	}
 	if cfg.BaseBackoff <= 0 {
@@ -452,9 +458,10 @@ func (o *Outbox) failBatch(ctx context.Context, now time.Time, items []replayIte
 // Run wakes immediately after enqueue, sleeps until the next due item, and
 // reconciles legacy/crash-recovery records only at a slow jittered cadence.
 func (o *Outbox) Run(ctx context.Context) error {
-	if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+	if err := o.Prepare(ctx); err != nil {
 		return err
 	}
+	nextReconcile := o.clock().UTC().Add(o.reconcileInterval)
 	for {
 		// Once the delivery breaker is open, Replay is intentionally a
 		// pure in-memory refusal.  Do not ask the durable due index on every
@@ -467,7 +474,8 @@ func (o *Outbox) Run(ctx context.Context) error {
 		if _, err := o.Replay(ctx); err != nil && !errors.Is(err, ErrCircuitOpen) && !errors.Is(err, ErrDeliveryFailed) {
 			return err
 		}
-		delay := o.reconcileInterval
+		now := o.clock().UTC()
+		wakeAt := nextReconcile
 		if openUntil, open := o.circuitOpenUntil(); open {
 			// A just-opened breaker gets one durable due lookup so that a
 			// later due item can extend the sleep.  An already-open breaker
@@ -477,13 +485,15 @@ func (o *Outbox) Run(ctx context.Context) error {
 					openUntil = due
 				}
 			}
-			delay = durationUntil(o.clock().UTC(), openUntil)
+			if openUntil.Before(wakeAt) {
+				wakeAt = openUntil
+			}
 		} else if due, ok := o.nextDue(ctx); ok {
-			until := durationUntil(o.clock().UTC(), due)
-			if until < delay {
-				delay = until
+			if due.Before(wakeAt) {
+				wakeAt = due
 			}
 		}
+		delay := durationUntil(now, wakeAt)
 		if delay <= 0 {
 			delay = time.Nanosecond
 		}
@@ -498,11 +508,32 @@ func (o *Outbox) Run(ctx context.Context) error {
 				return ErrClosed
 			}
 		case <-timer.C:
-			if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
-				return err
+			now = o.clock().UTC()
+			if !now.Before(nextReconcile) {
+				if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+					return err
+				}
+				nextReconcile = now.Add(o.reconcileInterval)
 			}
 		}
 	}
+}
+
+// Prepare performs the one bounded startup reconciliation exactly once. Stock
+// serve calls it synchronously so an undisclosed legacy backlog or store error
+// fails boot before the outbox is advertised as ready. Direct embedders may
+// call Run alone; Run invokes Prepare before entering the background loop.
+func (o *Outbox) Prepare(ctx context.Context) error {
+	o.prepareMu.Lock()
+	defer o.prepareMu.Unlock()
+	if o.prepared {
+		return nil
+	}
+	if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+		return err
+	}
+	o.prepared = true
+	return nil
 }
 
 func durationUntil(now, target time.Time) time.Duration {
@@ -533,9 +564,12 @@ func (o *Outbox) Reconcile(ctx context.Context) error {
 			}
 		}
 	}
-	legacy, err := o.store.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, kindPrefix, o.maxBatch)
+	legacy, err := o.store.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, kindPrefix, o.maxBatch+1)
 	if err != nil {
 		return err
+	}
+	if len(legacy) > o.maxBatch {
+		return fmt.Errorf("%w: retained receipt records exceed the configured batch", ErrReconcileOverflow)
 	}
 	for _, rec := range legacy {
 		stored, decodeErr := decodeStored(rec.Bytes)

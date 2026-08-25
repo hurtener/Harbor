@@ -504,14 +504,18 @@ Validation: non-negative. Restart-required.
 
 Maximum canonical receipts in one delivery request. Default: `64` when zero.
 Validation: `1` through `1000` when explicitly set. The durable outbox retains
-unacknowledged receipts for bounded replay. Restart-required.
+unacknowledged receipts for bounded replay. Startup legacy recovery requests
+one extra row and fails boot rather than silently skipping later records when
+retained legacy receipts exceed this value. Increase the approved bound or
+perform offline recovery before restarting. Restart-required.
 
 ### llm.external_grant.coordinator.reconcile_interval
 
 Slow crash-recovery reconciliation cadence for durable receipts that predate
 the due index or lost its wake-up. Default: `5m` when zero. Normal receipt
 delivery is enqueue-driven and does not poll this interval. Validation:
-non-negative. Restart-required.
+non-negative. Retry deadlines do not accelerate this maintenance scan.
+Restart-required.
 
 ### llm.network_defaults.timeout
 
