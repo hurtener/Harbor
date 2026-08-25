@@ -2,12 +2,18 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
+	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
 const testCoordinatorToken = "fixture-coordinator-service-token"
@@ -36,6 +42,27 @@ type testTopUpper struct{}
 
 func (testTopUpper) TopUp(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
 	return llm.ExternalGrant{}, nil
+}
+
+// transientDueLoadStore fails one post-startup due-index read. It models a
+// StateStore interruption after serve has already advertised strict readiness.
+type transientDueLoadStore struct {
+	state.StateStore
+	mu       sync.Mutex
+	failures int
+}
+
+func (s *transientDueLoadStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	if q == identity.InternalCoordinationQuadruple() && kind == state.InternalKindPrefix+"inference.receipt.due" {
+		s.mu.Lock()
+		if s.failures > 0 {
+			s.failures--
+			s.mu.Unlock()
+			return state.StateRecord{}, errors.New("transient durable due-index failure")
+		}
+		s.mu.Unlock()
+	}
+	return s.StateStore.Load(ctx, q, kind)
 }
 
 func TestConfigureStockExternalGrant_DisabledDoesNoWork(t *testing.T) {
@@ -149,5 +176,68 @@ func TestExternalGrantReadiness_StockOutboxDegradesAndRecovers(t *testing.T) {
 	stock.SetOutboxHealth(true)
 	if recovered := readiness(); !recovered.StrictReady || recovered.ReceiptTransport != "wired" {
 		t.Fatalf("recovered readiness=%+v", recovered)
+	}
+}
+
+func TestExternalGrantReadiness_StockOutboxReplayFailureDegradesThenRecovers(t *testing.T) {
+	base, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	store := &transientDueLoadStore{StateStore: base, failures: 1}
+	opts := Options{ExternalGrant: llm.ExternalGrantConfig{
+		Mode:      llm.ExternalGrantRequired,
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier:  testGrantVerifier{},
+	}}
+	stock, err := configureStockExternalGrant(config.ExternalGrantCoordinatorConfig{
+		ReceiptURL:   "https://coordinator.example.test/v1/receipts",
+		AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN",
+	}, &opts, func(string) (string, bool) { return testCoordinatorToken, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := llmreceipts.New(llmreceipts.Config{
+		Store: store, Delivery: stock, BaseBackoff: 5 * time.Millisecond,
+		MaxBackoff: 5 * time.Millisecond, ReconcileInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	readiness := externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, opts.ExternalGrant, opts.ExternalGrantDelivery, stock)
+	if got := readiness(); !got.StrictReady || got.ReceiptTransport != "wired" {
+		t.Fatalf("startup readiness=%+v", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- outbox.Run(ctx) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := readiness()
+		if !got.StrictReady && got.ReceiptTransport == "degraded" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replay failure did not degrade runtime readiness: %+v", got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for {
+		got := readiness()
+		if got.StrictReady && got.ReceiptTransport == "wired" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recovered replay did not restore runtime readiness: %+v", got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("outbox Run=%v, want context cancellation", err)
 	}
 }

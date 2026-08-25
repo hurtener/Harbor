@@ -476,6 +476,29 @@ func (o *Outbox) Run(ctx context.Context) error {
 		return err
 	}
 	nextReconcile := o.clock().UTC().Add(o.reconcileInterval)
+	// A delivery failure has a durable per-receipt deadline, while a failed
+	// StateStore read, corrupt due record, or failed recovery handoff has no
+	// trustworthy deadline to consult. Keep the latter on its own bounded
+	// maintenance cadence. In particular, never return from this worker while
+	// leaving runtime.info strict-ready: the assembly deliberately treats a
+	// stopped worker as a degraded runtime, not a successful best effort.
+	var retryAt time.Time
+	maintenanceFailures := 0
+	reconcileDegraded := false
+	replayDegraded := false
+	healthDegraded := false
+	degrade := func() {
+		if !healthDegraded {
+			o.reportHealth(false)
+			healthDegraded = true
+		}
+	}
+	recoverHealth := func() {
+		if healthDegraded && !reconcileDegraded && !replayDegraded {
+			o.reportHealth(true)
+			healthDegraded = false
+		}
+	}
 	for {
 		// Once the delivery breaker is open, Replay is intentionally a
 		// pure in-memory refusal.  Do not ask the durable due index on every
@@ -485,11 +508,37 @@ func (o *Outbox) Run(ctx context.Context) error {
 		// breaker deadline.  Enqueue still wakes the loop if a newer entry
 		// arrives while it is parked.
 		openBefore := o.circuitOpen()
-		if _, err := o.Replay(ctx); err != nil && !errors.Is(err, ErrCircuitOpen) && !errors.Is(err, ErrDeliveryFailed) {
-			return err
-		}
+		stats, replayErr := o.Replay(ctx)
 		now := o.clock().UTC()
+		if replayErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			replayDegraded = true
+			degrade()
+			// Delivery failures already persist a bounded next-attempt deadline
+			// (and ErrCircuitOpen has its own deadline). Any other replay error
+			// may be a transient StateStore outage, but it must not turn a
+			// corrupt record into a tight read loop.
+			if !errors.Is(replayErr, ErrDeliveryFailed) && !errors.Is(replayErr, ErrCircuitOpen) {
+				maintenanceFailures++
+				retryAt = now.Add(backoff(o.baseBackoff, o.maxBackoff, maintenanceFailures, "outbox-replay"))
+			}
+		} else if stats.Failed == 0 && stats.Deferred == 0 && !o.circuitOpen() {
+			// A due receipt that is merely deferred has not recovered a prior
+			// delivery failure. Recovery is observed only after the due work is
+			// clean (or there is no work), not after an intervening no-op read.
+			replayDegraded = false
+			if !reconcileDegraded {
+				maintenanceFailures = 0
+				retryAt = time.Time{}
+			}
+			recoverHealth()
+		}
 		wakeAt := nextReconcile
+		if !retryAt.IsZero() && retryAt.Before(wakeAt) {
+			wakeAt = retryAt
+		}
 		if openUntil, open := o.circuitOpenUntil(); open {
 			// A just-opened breaker gets one durable due lookup so that a
 			// later due item can extend the sleep.  An already-open breaker
@@ -502,8 +551,8 @@ func (o *Outbox) Run(ctx context.Context) error {
 			if openUntil.Before(wakeAt) {
 				wakeAt = openUntil
 			}
-		} else if due, ok := o.nextDue(ctx); ok {
-			if due.Before(wakeAt) {
+		} else if replayErr == nil || errors.Is(replayErr, ErrDeliveryFailed) {
+			if due, ok := o.nextDue(ctx); ok && due.Before(wakeAt) {
 				wakeAt = due
 			}
 		}
@@ -523,13 +572,24 @@ func (o *Outbox) Run(ctx context.Context) error {
 			}
 		case <-timer.C:
 			now = o.clock().UTC()
-			if !now.Before(nextReconcile) {
+			if !now.Before(nextReconcile) || (reconcileDegraded && !retryAt.IsZero() && !now.Before(retryAt)) {
 				if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
-					o.reportHealth(false)
-					nextReconcile = now.Add(minDuration(o.baseBackoff, o.reconcileInterval))
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					reconcileDegraded = true
+					degrade()
+					maintenanceFailures++
+					retryAt = now.Add(backoff(o.baseBackoff, o.maxBackoff, maintenanceFailures, "outbox-reconcile"))
+					nextReconcile = now.Add(o.reconcileInterval)
 					continue
 				}
-				o.reportHealth(true)
+				reconcileDegraded = false
+				if !replayDegraded {
+					maintenanceFailures = 0
+					retryAt = time.Time{}
+					recoverHealth()
+				}
 				nextReconcile = now.Add(o.reconcileInterval)
 			}
 		}
@@ -553,13 +613,6 @@ func (o *Outbox) Prepare(ctx context.Context) error {
 	o.prepared = true
 	o.reportHealth(true)
 	return nil
-}
-
-func minDuration(left, right time.Duration) time.Duration {
-	if left < right {
-		return left
-	}
-	return right
 }
 
 func (o *Outbox) reportHealth(healthy bool) {

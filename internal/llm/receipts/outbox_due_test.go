@@ -24,6 +24,45 @@ type countingStateStore struct {
 	due     int
 }
 
+// replayFaultStore injects only durable due-index read failures. It leaves
+// startup reconciliation alone so tests can prove that a worker which was
+// previously strict-ready degrades on a later replay failure and then recovers
+// without a restart.
+type replayFaultStore struct {
+	state.StateStore
+	mu          sync.Mutex
+	dueFailures int
+	dueErr      error
+	dueLoads    int
+}
+
+func (s *replayFaultStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	if q == internalQ() && kind == dueKind {
+		s.mu.Lock()
+		s.dueLoads++
+		if s.dueFailures > 0 {
+			s.dueFailures--
+			err := s.dueErr
+			s.mu.Unlock()
+			return state.StateRecord{}, err
+		}
+		s.mu.Unlock()
+	}
+	return s.StateStore.Load(ctx, q, kind)
+}
+
+func (s *replayFaultStore) setDueFailures(n int, err error) {
+	s.mu.Lock()
+	s.dueFailures, s.dueErr = n, err
+	s.mu.Unlock()
+}
+
+func (s *replayFaultStore) dueLoadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dueLoads
+}
+
 type countingPendingSource struct {
 	mu       sync.Mutex
 	calls    int
@@ -91,6 +130,18 @@ func (d *healthRecordingDelivery) SetOutboxHealth(healthy bool) {
 	select {
 	case d.health <- healthy:
 	default:
+	}
+}
+
+func requireOutboxHealth(t *testing.T, health <-chan bool, want bool) {
+	t.Helper()
+	select {
+	case got := <-health:
+		if got != want {
+			t.Fatalf("outbox health=%t, want %t", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for outbox health=%t", want)
 	}
 }
 
@@ -513,7 +564,7 @@ func TestOutboxRunReconcileHealthDegradesAndRecovers(t *testing.T) {
 	if err := o.Prepare(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	<-delivery.health // startup wired
+	requireOutboxHealth(t, delivery.health, true) // startup wired
 	pending.mu.Lock()
 	pending.failures = 1
 	pending.mu.Unlock()
@@ -521,18 +572,103 @@ func TestOutboxRunReconcileHealthDegradesAndRecovers(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- o.Run(ctx) }()
 	for _, want := range []bool{false, true} {
-		select {
-		case got := <-delivery.health:
-			if got != want {
-				t.Fatalf("outbox health=%t, want %t", got, want)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for outbox health=%t", want)
-		}
+		requireOutboxHealth(t, delivery.health, want)
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run=%v", err)
+	}
+}
+
+func TestOutboxRunReplayStoreFailureDegradesThenRecovers(t *testing.T) {
+	base, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	store := &replayFaultStore{StateStore: base}
+	delivery := &healthRecordingDelivery{health: make(chan bool, 8)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, BaseBackoff: 5 * time.Millisecond,
+		MaxBackoff: 5 * time.Millisecond, ReconcileInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireOutboxHealth(t, delivery.health, true)
+	store.setDueFailures(1, errors.New("temporary due-index read failure"))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	requireOutboxHealth(t, delivery.health, false)
+	requireOutboxHealth(t, delivery.health, true)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v, want context cancellation", err)
+	}
+	// The recovered pass takes one replay read and one normal next-due read.
+	if got := store.dueLoadCount(); got > 3 {
+		t.Fatalf("temporary replay recovery performed %d due-index loads, want bounded retry", got)
+	}
+}
+
+func TestOutboxRunCorruptDueIndexDegradesWithoutHotLoopAndClosesQuietly(t *testing.T) {
+	base, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	store := &replayFaultStore{StateStore: base}
+	delivery := &healthRecordingDelivery{health: make(chan bool, 8)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, BaseBackoff: 20 * time.Millisecond,
+		MaxBackoff: 40 * time.Millisecond, ReconcileInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireOutboxHealth(t, delivery.health, true)
+	receipt := testReceipt()
+	if err := o.Enqueue(receiptContext(t, receipt), receipt); err != nil {
+		t.Fatal(err)
+	}
+	indexRecord, err := base.Load(context.Background(), internalQ(), dueKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := state.NewInternalRecord(state.NewEventID(), internalQ(), dueKind, []byte(`{"entries":`))
+	if err := base.SaveIf(context.Background(), []state.SlotExpectation{state.InternalSlotExpectation(internalQ(), dueKind, indexRecord.ID)}, corrupt); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	requireOutboxHealth(t, delivery.health, false)
+	// One initial read followed by 20ms/40ms capped maintenance retries is
+	// acceptable; a hot loop would make hundreds of reads in this interval.
+	time.Sleep(90 * time.Millisecond)
+	if got := store.dueLoadCount(); got > 5 {
+		t.Fatalf("corrupt due index caused %d replay reads, want bounded cadence", got)
+	}
+	select {
+	case got := <-delivery.health:
+		if got {
+			t.Fatal("corrupt due index falsely restored outbox health")
+		}
+	default:
+	}
+	if err := o.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrClosed) {
+		t.Fatalf("Run=%v, want quiet ErrClosed shutdown", err)
 	}
 }
 

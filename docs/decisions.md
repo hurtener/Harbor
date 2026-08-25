@@ -14288,10 +14288,13 @@ pending-receipt handoff for success, error, and cancellation. Reconciliation
 reads only that bounded pending prefix, enqueues idempotently, and conditionally
 removes the exact handoff only after enqueue succeeds; a crash before removal
 replays the same canonical fact. Retry deadlines and enqueue wakes run delivery
-replay only. The maintenance deadline is independent, and a transient
-maintenance failure degrades `runtime.info`, retries with bounded delay, and
-restores readiness only after a successful reconciliation; startup failure
-still fails boot.
+replay only. The maintenance deadline is independent. A post-startup durable
+replay/index/read/integrity failure, not only a maintenance failure, degrades
+`runtime.info` immediately and retries with bounded, cancellable delay instead
+of terminating the worker while the runtime remains strict-ready. A
+deterministically corrupt record remains fail-closed/degraded without a hot
+loop; recovery restores readiness only after clean replay or the required
+successful reconciliation. Startup failure still fails boot.
 
 The config block is rejected when external grants are disabled. When absent,
 stock boot performs no environment lookup and starts no coordinator client,

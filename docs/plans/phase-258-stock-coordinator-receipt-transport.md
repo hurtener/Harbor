@@ -77,6 +77,15 @@ facts. Backoff remains bounded and gains stable receipt-derived jitter; the
 existing circuit breaker prevents an unavailable coordinator from turning into
 a query or request storm.
 
+A post-startup due-index read, StateStore operation, or receipt/index integrity
+failure is also an observed outbox failure: it immediately degrades the
+secret-free readiness projection and retries through a bounded, cancellable
+maintenance cadence instead of terminating the worker while `strict_ready`
+remains true. A deterministic corrupt record remains fail-closed/degraded and
+cannot create a hot loop. Readiness returns to wired only after a clean replay
+or a successful required recovery reconciliation; orderly cancellation/close
+remains quiet.
+
 Retry deadlines and enqueue wakes run delivery replay only. The slow
 maintenance path has its own deadline. The old whole receipt-prefix scan runs
 only until a versioned durable legacy-reconciliation marker is committed.
@@ -110,10 +119,11 @@ handoff behind its first page.
 - `strict_ready` only when the chosen route shapes are fully enforceable.
 
 Coordinator-bound acceptance requires a credential resolver. Runtime-default
-acceptance does not. A failed or partial stock exchange or transient
-reconciliation failure changes observed transport state to degraded without
-leaking operational material. Maintenance keeps retrying with bounded delay
-and returns to wired only after a successful reconciliation; startup
+acceptance does not. A failed or partial stock exchange, transient
+reconciliation failure, or durable replay/index integrity failure changes
+observed transport state to degraded without leaking operational material.
+Maintenance keeps retrying with bounded delay and returns to wired only after
+clean replay or the required successful recovery reconciliation; startup
 reconciliation still fails boot. The whole additive readiness object is
 optional so clients can render an older runtime that omitted it as
 pre-projection/unknown rather than ready.
@@ -136,8 +146,10 @@ pre-projection/unknown rather than ready.
   legacy reconciliation after the durable marker, including after restart.
 - Success, error, and cancellation settlements atomically create removable
   pending handoffs; crash-before-removal replay converges in-memory and SQLite.
-- A transient cadence failure degrades readiness, retries, and recovers; an
-  explicit disabled YAML mode conflicts with an injected enabled mode.
+- A transient cadence or replay StateStore failure degrades readiness,
+  retries, and recovers; a corrupt due index remains degraded without a hot
+  loop; an explicit disabled YAML mode conflicts with an injected enabled
+  mode.
 - A v1.30.0 blank-route receipt is delivered in its original legacy canonical
   wire; the strict public parser accepts it and re-emits byte-identical JSON
   with the same body hash.

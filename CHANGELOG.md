@@ -53,8 +53,10 @@ Two versions move independently in Harbor (RFC §5.3):
   fail-closed aggregate strict-ready signal. Durable settlement atomically
   creates removable pending handoffs for success, error, and cancellation;
   legacy receipt-prefix reconciliation is version-marked and upgrade-only, so
-  ACKed lifetime history cannot amplify idle reads. Transient reconciliation
-  failures degrade readiness while retrying and recover only after success.
+  ACKed lifetime history cannot amplify idle reads. Transient reconciliation,
+  durable replay, index-read, and integrity failures degrade readiness while
+  retrying; a corrupt deterministic record stays fail-closed without a hot
+  loop, and readiness recovers only after clean replay or reconciliation.
 
 ### Fixed
 
