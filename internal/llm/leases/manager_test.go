@@ -114,29 +114,96 @@ func TestStore_AtomicReservationSettlementAndReplayAcrossDrivers(t *testing.T) {
 	}
 }
 
-func TestStore_ExpiryReleasesUnsettledReservation(t *testing.T) {
-	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatal(err)
+func TestStore_ExpirePreservesLateUsageAcrossDrivers(t *testing.T) {
+	cases := []struct {
+		name string
+		open func(*testing.T) (*leases.Store, func() error)
+	}{
+		{name: "inmem", open: func(t *testing.T) (*leases.Store, func() error) {
+			st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mgr, func() error { return st.Close(context.Background()) }
+		}},
+		{name: "sqlite", open: func(t *testing.T) (*leases.Store, func() error) {
+			st, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "expire-late.sqlite")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mgr, func() error { return st.Close(context.Background()) }
+		}},
 	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	mgr, err := leases.New(st, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "r"}
-	_, err = mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "expired", LogicalCallID: "expired", AttemptNonce: "nonce-expired", GrantID: "g", LeaseID: "l", OrganizationID: "org", RuntimeID: "runtime", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(-time.Second), Identity: q})
-	if !errors.Is(err, leases.ErrInsufficient) {
-		t.Fatalf("expired reserve=%v", err)
-	}
-	_, err = mgr.Reserve(context.Background(), llm.LeaseReservationRequest{AttemptID: "will-expire", LogicalCallID: "will-expire", AttemptNonce: "nonce-will-expire", GrantID: "g", LeaseID: "l2", OrganizationID: "org", RuntimeID: "runtime", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(time.Second), Identity: q})
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err := mgr.Expire(context.Background(), now.Add(2*time.Second), 10)
-	if err != nil || n != 1 {
-		t.Fatalf("Expire n=%d err=%v", n, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, closeStore := tc.open(t)
+			t.Cleanup(func() { _ = closeStore() })
+			now := time.Now().UTC()
+			q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "r"}
+			expired := llm.LeaseReservationRequest{AttemptID: "expired", LogicalCallID: "expired", AttemptNonce: "nonce-expired", GrantID: "g", LeaseID: "l", OrganizationID: "org", RuntimeID: "runtime", Epoch: 1, Capacity: 4, Units: 4, ExpiresAt: now.Add(-time.Second), Identity: q}
+			if _, err := mgr.Reserve(context.Background(), expired); !errors.Is(err, leases.ErrInsufficient) {
+				t.Fatalf("expired reserve=%v", err)
+			}
+
+			late := expired
+			late.AttemptID, late.LogicalCallID, late.AttemptNonce = "will-expire", "will-expire", "nonce-will-expire"
+			late.LeaseID, late.ExpiresAt = "late-lease", now.Add(time.Second)
+			if _, err := mgr.Reserve(context.Background(), late); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := mgr.Expire(context.Background(), now.Add(2*time.Second), 10); err != nil || n != 1 {
+				t.Fatalf("Expire n=%d err=%v", n, err)
+			}
+			if n, err := mgr.Expire(context.Background(), now.Add(2*time.Second), 10); err != nil || n != 0 {
+				t.Fatalf("duplicate Expire n=%d err=%v", n, err)
+			}
+			replayed, err := mgr.Reserve(context.Background(), late)
+			if err != nil || !replayed.Existing || replayed.Status != "expired" {
+				t.Fatalf("expired replay=%+v err=%v", replayed, err)
+			}
+			receipt := testReceipt(late.AttemptID, now.Add(2*time.Second))
+			receipt.GrantID, receipt.OrganizationID, receipt.RuntimeID = late.GrantID, late.OrganizationID, late.RuntimeID
+			receipt.TenantID, receipt.UserID, receipt.SessionID, receipt.LogicalRunID = q.TenantID, q.UserID, q.SessionID, q.RunID
+			receipt.Status, receipt.TotalTokens = "error", 6
+			receipt.CanonicalBodyHash, _ = llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+			settlement := llm.LeaseSettlement{AttemptID: late.AttemptID, LogicalCallID: late.LogicalCallID, AttemptNonce: late.AttemptNonce, Receipt: receipt, Units: 6, Now: now.Add(2 * time.Second)}
+			if err := mgr.Settle(context.Background(), settlement); err != nil {
+				t.Fatalf("late settlement: %v", err)
+			}
+			if err := mgr.Settle(context.Background(), settlement); err != nil {
+				t.Fatalf("late settlement replay: %v", err)
+			}
+			pending, err := mgr.PendingReceipts(context.Background(), 10)
+			if err != nil || len(pending) != 1 || pending[0].TotalTokens != 6 {
+				t.Fatalf("late pending=%+v err=%v", pending, err)
+			}
+
+			released := late
+			released.AttemptID, released.LogicalCallID, released.AttemptNonce = "released", "released", "nonce-released"
+			released.LeaseID, released.ExpiresAt = "released-lease", now.Add(time.Minute)
+			if _, err := mgr.Reserve(context.Background(), released); err != nil {
+				t.Fatal(err)
+			}
+			if err := mgr.Release(context.Background(), released.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			releasedReceipt := testReceipt(released.AttemptID, now)
+			releasedReceipt.GrantID, releasedReceipt.OrganizationID, releasedReceipt.RuntimeID = released.GrantID, released.OrganizationID, released.RuntimeID
+			releasedReceipt.TenantID, releasedReceipt.UserID, releasedReceipt.SessionID, releasedReceipt.LogicalRunID = q.TenantID, q.UserID, q.SessionID, q.RunID
+			releasedReceipt.TotalTokens = 2
+			releasedReceipt.CanonicalBodyHash, _ = llm.CanonicalAttemptUsageReceiptBodyHash(releasedReceipt)
+			if err := mgr.Settle(context.Background(), llm.LeaseSettlement{AttemptID: released.AttemptID, LogicalCallID: released.LogicalCallID, AttemptNonce: released.AttemptNonce, Receipt: releasedReceipt, Units: 2, Now: now}); !errors.Is(err, leases.ErrAttemptConflict) {
+				t.Fatalf("explicit release settlement=%v, want ErrAttemptConflict", err)
+			}
+		})
 	}
 }
 

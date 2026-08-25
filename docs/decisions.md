@@ -13985,9 +13985,11 @@ charges every nonzero terminal success, error, or cancellation while releasing
 only unused units. Lease state is bound to the exact grant id plus organization,
 runtime, admitted identity/run, and effective agent; the same LeaseID cannot
 share accounting across those scopes, and a top-up must preserve the binding.
-An expired crash-stale reservation is conditionally released on replay and
-becomes terminal rather than remaining permanently in flight; an already
-executed provider call may still settle its late actual usage idempotently.
+Expiry maintenance or an exact replay conditionally returns crash-stale
+reserved capacity and records an `expired` terminal state rather than leaving
+the attempt permanently in flight; an already executed provider call may still
+settle its late actual usage idempotently. An explicit operator release remains
+a distinct `released` outcome and cannot later settle.
 
 **Compatibility and limits.** The grant layer is internal to `LLMClient`; it
 does not add a provider-specific interface or a Protocol version. A coordinator

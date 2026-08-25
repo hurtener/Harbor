@@ -129,9 +129,10 @@ database deployment/acceptance is claimed.
   scope cannot mutate the original accounting, and a top-up preserves the
   complete binding.
 - [ ] Caller cancellation after provider interaction cannot strand settlement
-  or receipt handoff: both use one short detached terminal context. Replaying
-  a crash-stale expired reservation conditionally releases it and converges to
-  a terminal record while late actual usage still settles idempotently.
+  or receipt handoff: both use one short detached terminal context. Expiry
+  maintenance or exact replay returns crash-stale reserved capacity and records
+  an `expired` terminal state while late actual usage still settles
+  idempotently; explicit release remains non-settleable.
 - [ ] Receipts carry only content-free identity/route/generation/usage/outcome
   facts plus a canonical body hash and idempotency key; no prompt, response,
   tool argument, reasoning trace, or credential appears in serialized output.

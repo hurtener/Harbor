@@ -340,9 +340,11 @@ func (s *Store) Release(ctx context.Context, attemptID string) error {
 	return fmt.Errorf("%w: concurrent release did not converge", state.ErrConditionFailed)
 }
 
-// Expire releases reservations whose bounded lease has elapsed. The bounded
-// maintenance scan is intended for a low-frequency reconciler, never the
-// provider-call hot path.
+// Expire marks reservations whose bounded lease has elapsed as expired. This
+// returns their reserved capacity while preserving the distinct terminal state
+// that permits a provider result already in flight to settle its late actual
+// usage. The bounded maintenance scan is intended for a low-frequency
+// reconciler, never the provider-call hot path.
 func (s *Store) Expire(ctx context.Context, now time.Time, limit int) (int, error) {
 	if limit <= 0 || limit > state.MaxStateMaintenanceListLimit {
 		return 0, ErrInvalidRequest
@@ -358,13 +360,62 @@ func (s *Store) Expire(ctx context.Context, now time.Time, limit int) (int, erro
 			return count, err
 		}
 		if attempt.Status == "reserved" && !now.Before(attempt.ExpiresAt) {
-			if err := s.Release(ctx, attempt.AttemptID); err != nil {
+			changed, err := s.expireReservation(ctx, attempt.AttemptID, now)
+			if err != nil {
 				return count, err
 			}
-			count++
+			if changed {
+				count++
+			}
 		}
 	}
 	return count, nil
+}
+
+func (s *Store) expireReservation(ctx context.Context, attemptID string, now time.Time) (bool, error) {
+	q := identity.InternalCoordinationQuadruple()
+	for range maxCASRetries {
+		ar, attempt, err := s.loadAttempt(ctx, q, attemptPrefix+attemptID)
+		if err != nil {
+			return false, err
+		}
+		if attempt.Status != "reserved" || now.Before(attempt.ExpiresAt) {
+			return false, nil
+		}
+		lr, lease, err := s.loadLease(ctx, q, leasePrefix+attempt.LeaseID)
+		if err != nil {
+			return false, err
+		}
+		if !lease.matchesAttempt(attempt) || lease.Reserved < attempt.Units {
+			return false, ErrAttemptConflict
+		}
+		lease.Reserved -= attempt.Units
+		attempt.Status = "expired"
+		attempt.SettledAt = now
+		lb, err := json.Marshal(lease)
+		if err != nil {
+			return false, fmt.Errorf("llm/leases: encode expired lease: %w", err)
+		}
+		ab, err := json.Marshal(attempt)
+		if err != nil {
+			return false, fmt.Errorf("llm/leases: encode expired attempt: %w", err)
+		}
+		ln := state.NewInternalRecord(state.NewEventID(), q, leasePrefix+attempt.LeaseID, lb)
+		an := state.NewInternalRecord(state.NewEventID(), q, attemptPrefix+attemptID, ab)
+		if err := s.state.SaveBatchIf(ctx,
+			[]state.SlotExpectation{
+				state.InternalSlotExpectation(q, leasePrefix+attempt.LeaseID, lr.ID),
+				state.InternalSlotExpectation(q, attemptPrefix+attemptID, ar.ID),
+			},
+			[]state.StateRecord{ln, an}); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return false, fmt.Errorf("llm/leases: expire: %w", err)
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: concurrent expiry did not converge", state.ErrConditionFailed)
 }
 
 // PendingReceipts returns only the bounded, removable handoff records written

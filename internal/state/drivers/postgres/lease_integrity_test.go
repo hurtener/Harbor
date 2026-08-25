@@ -67,6 +67,12 @@ func TestLeaseIntegrity_PostgresAcceptance(t *testing.T) {
 		t.Fatalf("top up around in-flight attempt: %v", err)
 	}
 	current = now.Add(2 * time.Second)
+	if n, err := mgr.Expire(context.Background(), current, 10); err != nil || n != 1 {
+		t.Fatalf("expire crash-stale reservation n=%d err=%v", n, err)
+	}
+	if n, err := mgr.Expire(context.Background(), current, 10); err != nil || n != 0 {
+		t.Fatalf("duplicate expiry n=%d err=%v", n, err)
+	}
 	replayed, err := mgr.Reserve(context.Background(), crash)
 	if err != nil || !replayed.Existing || replayed.Status != "expired" {
 		t.Fatalf("crash replay = %+v, %v, want existing expired", replayed, err)

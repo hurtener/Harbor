@@ -70,9 +70,10 @@ Two versions move independently in Harbor (RFC §5.3):
   identity/run, and effective agent; conflicting reuse of a LeaseID fails
   closed without mutating the original accounting, and top-ups must preserve
   the same binding. Post-provider settlement and receipt handoff share one
-  short context detached from caller cancellation. A replay of an expired
-  crash-stale reservation atomically releases it and converges to a terminal
-  record; late provider usage can still settle idempotently.
+  short context detached from caller cancellation. Expiry maintenance or an
+  exact replay atomically returns crash-stale reserved capacity and records an
+  `expired` terminal state; late provider usage can still settle idempotently,
+  while an explicit release remains a distinct non-settleable outcome.
 
 - HA-74 makes lease top-up successor validation a public SDK contract and
   applies it inside the external-grant wrapper before replacing the verified
