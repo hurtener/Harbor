@@ -113,9 +113,8 @@ type RuntimeInfo struct {
 // ExternalGrantReadiness distinguishes compile-time support, configured
 // posture, and fully wired strict execution paths. Receipt transport state is
 // one of disabled, absent, wired, or degraded; its kind distinguishes the
-// stock authenticated HTTP path from host injection. Stock top-up is
-// unsupported until a successor grant can advance the durable reservation
-// epoch idempotently; an existing host-injected top-upper is reported exactly.
+// stock authenticated HTTP path from host injection. TopUpTransport is one of
+// unsupported, host_injected, or stock_authenticated_http.
 type ExternalGrantReadiness struct {
 	Supported               bool     `json:"supported"`
 	Configured              bool     `json:"configured"`

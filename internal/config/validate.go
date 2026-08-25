@@ -558,7 +558,7 @@ func (c *Config) validateLLMExternalGrant() error {
 }
 
 func coordinatorConfigured(cfg ExternalGrantCoordinatorConfig) bool {
-	return strings.TrimSpace(cfg.ReceiptURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
+	return strings.TrimSpace(cfg.ReceiptURL) != "" || strings.TrimSpace(cfg.TopUpURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
 		cfg.Timeout != 0 || cfg.MaxBatch != 0 || cfg.ReconcileInterval != 0
 }
 
@@ -568,6 +568,11 @@ func validateExternalGrantCoordinator(cfg ExternalGrantCoordinatorConfig) error 
 	}
 	if err := validatePinnedServiceURL("llm.external_grant.coordinator.receipt_url", cfg.ReceiptURL); err != nil {
 		return err
+	}
+	if strings.TrimSpace(cfg.TopUpURL) != "" {
+		if err := validatePinnedServiceURL("llm.external_grant.coordinator.top_up_url", cfg.TopUpURL); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(cfg.AuthTokenEnv) == "" {
 		return fieldError("llm.external_grant.coordinator.auth_token_env", "must name the env var holding the runtime service token")

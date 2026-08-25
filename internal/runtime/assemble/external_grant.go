@@ -78,6 +78,9 @@ func wireExternalGrant(
 		}
 		ext.Verifier = verifier
 	}
+	if ext.RenewalVerifier == nil {
+		ext.RenewalVerifier, _ = ext.Verifier.(llm.ExternalGrantRenewalVerifier)
+	}
 
 	// Every enabled runtime gets a durable reservation manager by default.
 	// Hosts may replace it with a coordinator-backed implementation, but the
@@ -94,6 +97,23 @@ func wireExternalGrant(
 		if pending == nil {
 			pending = reservationStore
 		}
+	}
+	if ext.Successors == nil {
+		if reservationStore != nil {
+			ext.Successors = reservationStore
+		} else {
+			ext.Successors, _ = ext.Reservations.(llm.LeaseSuccessorApplier)
+		}
+	}
+	if ext.SuccessorResolver == nil {
+		if reservationStore != nil {
+			ext.SuccessorResolver = reservationStore
+		} else {
+			ext.SuccessorResolver, _ = ext.Reservations.(llm.LeaseSuccessorResolver)
+		}
+	}
+	if ext.TopUpper != nil && (ext.RenewalVerifier == nil || ext.Successors == nil || ext.SuccessorResolver == nil) {
+		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: top-up needs an authenticated renewal verifier and durable successor store")
 	}
 	// An empty route restriction accepts either explicit signed shape. Do not
 	// collapse it to the legacy coordinator-bound grant shape at boot: a

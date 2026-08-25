@@ -521,6 +521,254 @@ func TestStore_ConcurrentReuse128IndependentLeases(t *testing.T) {
 	}
 }
 
+func TestStore_ApplySuccessorConformanceAndConcurrentReplay(t *testing.T) {
+	type closer interface{ Close(context.Context) error }
+	cases := []struct {
+		name string
+		open func(*testing.T) (closer, *leases.Store)
+	}{
+		{name: "inmem", open: func(t *testing.T) (closer, *leases.Store) {
+			st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return st, mgr
+		}},
+		{name: "sqlite", open: func(t *testing.T) (closer, *leases.Store) {
+			st, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "successor.sqlite")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return st, mgr
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, mgr := tc.open(t)
+			t.Cleanup(func() { _ = st.Close(context.Background()) })
+			predecessor, successor, scope := successorGrantPair(time.Now().UTC())
+			predecessorHash, err := llm.CanonicalExternalGrantHash(predecessor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seed := llm.LeaseReservationRequest{
+				AttemptID: "seed", LogicalCallID: "seed", AttemptNonce: "nonce-seed",
+				GrantID: predecessor.GrantID, LeaseID: predecessor.Lease.LeaseID,
+				OrganizationID: predecessor.OrganizationID, RuntimeID: predecessor.RuntimeID, AgentID: predecessor.AgentID,
+				Epoch: predecessor.Lease.Epoch, Capacity: predecessor.Lease.RemainingTokens(), Units: 20,
+				ExpiresAt: predecessor.Lease.ExpiresAt, Identity: scope, GrantFingerprint: predecessorHash,
+			}
+			if _, err := mgr.Reserve(context.Background(), seed); err != nil {
+				t.Fatal(err)
+			}
+			settled := seed
+			settled.AttemptID, settled.LogicalCallID, settled.AttemptNonce, settled.Units = "settled", "settled", "nonce-settled", 10
+			if _, err := mgr.Reserve(context.Background(), settled); err != nil {
+				t.Fatal(err)
+			}
+			receipt := testReceipt(settled.AttemptID, predecessor.IssuedAt)
+			receipt.GrantID, receipt.LogicalCallID, receipt.AttemptNonce = settled.GrantID, settled.LogicalCallID, settled.AttemptNonce
+			receipt.OrganizationID, receipt.RuntimeID, receipt.AgentID = settled.OrganizationID, settled.RuntimeID, settled.AgentID
+			receipt.TenantID, receipt.UserID, receipt.SessionID, receipt.LogicalRunID = scope.TenantID, scope.UserID, scope.SessionID, scope.RunID
+			receipt.TotalTokens = 7
+			receipt.CanonicalBodyHash, _ = llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+			if err := mgr.Settle(context.Background(), llm.LeaseSettlement{
+				AttemptID: settled.AttemptID, LogicalCallID: settled.LogicalCallID, AttemptNonce: settled.AttemptNonce,
+				Receipt: receipt, Units: 7, Now: predecessor.IssuedAt,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			const concurrent = 128
+			errs := make(chan error, concurrent)
+			var wg sync.WaitGroup
+			for range concurrent {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					errs <- mgr.ApplySuccessor(context.Background(), predecessor, successor)
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatalf("concurrent exact successor: %v", err)
+				}
+			}
+			if err := mgr.ApplySuccessor(context.Background(), predecessor, successor); err != nil {
+				t.Fatalf("response-loss replay: %v", err)
+			}
+			resolved, ok, err := mgr.ResolveSuccessor(context.Background(), predecessor)
+			if err != nil || !ok || resolved != successor {
+				t.Fatalf("resolved successor=%+v ok=%v err=%v", resolved, ok, err)
+			}
+			mutatedRoot := predecessor
+			mutatedRoot.Signature = "mutated-root-signature"
+			if _, _, err := mgr.ResolveSuccessor(context.Background(), mutatedRoot); !errors.Is(err, leases.ErrAttemptConflict) {
+				t.Fatalf("mutated root resolve=%v, want conflict", err)
+			}
+
+			successorHash, err := llm.CanonicalExternalGrantHash(successor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remaining := seed
+			remaining.AttemptID, remaining.LogicalCallID, remaining.AttemptNonce = "remaining", "remaining", "nonce-remaining"
+			remaining.Epoch, remaining.Capacity, remaining.Units = successor.Lease.Epoch, successor.Lease.RemainingTokens(), 116
+			remaining.ExpiresAt, remaining.GrantFingerprint = successor.Lease.ExpiresAt, successorHash
+			if _, err := mgr.Reserve(context.Background(), remaining); err != nil {
+				t.Fatalf("preserved reservation/consumption capacity: %v", err)
+			}
+			over := remaining
+			over.AttemptID, over.LogicalCallID, over.AttemptNonce, over.Units = "over", "over", "nonce-over", 1
+			if _, err := mgr.Reserve(context.Background(), over); !errors.Is(err, leases.ErrInsufficient) {
+				t.Fatalf("capacity after preserved seed/consumption = %v, want ErrInsufficient", err)
+			}
+
+			changed := successor
+			changed.Signature = "different-successor-signature"
+			if err := mgr.ApplySuccessor(context.Background(), predecessor, changed); !errors.Is(err, leases.ErrAttemptConflict) {
+				t.Fatalf("different successor at same epoch = %v, want ErrAttemptConflict", err)
+			}
+
+			absentPredecessor, absentSuccessor, _ := successorGrantPair(time.Now().UTC().Add(time.Second))
+			absentPredecessor.GrantID, absentPredecessor.Lease.LeaseID = "grant-absent", "lease-absent"
+			absentSuccessor.GrantID, absentSuccessor.Lease.LeaseID = "grant-absent", "lease-absent"
+			if err := mgr.ApplySuccessor(context.Background(), absentPredecessor, absentSuccessor); err != nil {
+				t.Fatalf("absent successor create: %v", err)
+			}
+		})
+	}
+}
+
+func TestStore_ResolveSuccessorSurvivesSQLiteRestart(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "successor-restart.sqlite")
+	open := func() (*leases.Store, interface{ Close(context.Context) error }) {
+		st, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mgr, err := leases.New(st, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mgr, st
+	}
+	predecessor, successor, _ := successorGrantPair(time.Now().UTC())
+	mgr, st := open()
+	if err := mgr.ApplySuccessor(context.Background(), predecessor, successor); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mgr, st = open()
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	resolved, ok, err := mgr.ResolveSuccessor(context.Background(), predecessor)
+	if err != nil || !ok || resolved != successor {
+		t.Fatalf("restart resolved=%+v ok=%v err=%v", resolved, ok, err)
+	}
+}
+
+func TestStore_MixedRequestedUnitSuccessorsChooseOneAndLoserReloads(t *testing.T) {
+	type closer interface{ Close(context.Context) error }
+	cases := []struct {
+		name string
+		open func(*testing.T) (closer, *leases.Store)
+	}{
+		{name: "inmem", open: func(t *testing.T) (closer, *leases.Store) {
+			st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return st, mgr
+		}},
+		{name: "sqlite", open: func(t *testing.T) (closer, *leases.Store) {
+			st, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "mixed-successor.sqlite")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mgr, err := leases.New(st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return st, mgr
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, mgr := tc.open(t)
+			defer func() { _ = st.Close(context.Background()) }()
+			root, smaller, _ := successorGrantPair(time.Now().UTC())
+			smaller.Lease.TokenUnits = root.Lease.TokenUnits + 10
+			larger := smaller
+			larger.Lease.TokenUnits = root.Lease.TokenUnits + 20
+			larger.Signature = "signature-larger-request"
+
+			start := make(chan struct{})
+			errs := make(chan error, 2)
+			for _, candidate := range []llm.ExternalGrant{smaller, larger} {
+				candidate := candidate
+				go func() {
+					<-start
+					errs <- mgr.ApplySuccessor(context.Background(), root, candidate)
+				}()
+			}
+			close(start)
+			var success, conflict int
+			for range 2 {
+				err := <-errs
+				switch {
+				case err == nil:
+					success++
+				case errors.Is(err, leases.ErrAttemptConflict):
+					conflict++
+				default:
+					t.Fatalf("mixed successor apply=%v", err)
+				}
+			}
+			if success != 1 || conflict != 1 {
+				t.Fatalf("mixed successor outcomes success=%d conflict=%d", success, conflict)
+			}
+			resolved, ok, err := mgr.ResolveSuccessor(context.Background(), root)
+			if err != nil || !ok || (resolved != smaller && resolved != larger) {
+				t.Fatalf("loser reload resolved=%+v ok=%v err=%v", resolved, ok, err)
+			}
+		})
+	}
+}
+
+func successorGrantPair(now time.Time) (llm.ExternalGrant, llm.ExternalGrant, identity.Quadruple) {
+	scope := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-successor", UserID: "user-successor", SessionID: "session-successor"}, RunID: "run-successor"}
+	predecessor := llm.ExternalGrant{
+		Version: llm.ExternalGrantVersionAgentBound, KeyID: "key-a", Audience: "harbor-runtime", GrantID: "grant-successor",
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault, OrganizationID: "org-successor", RuntimeID: "runtime-successor", AgentID: "agent-successor",
+		TenantID: scope.TenantID, UserID: scope.UserID, SessionID: scope.SessionID, LogicalRunID: scope.RunID,
+		LogicalCallID: "call-successor", AttemptNonce: "nonce-successor", PolicyGeneration: 1,
+		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 100,
+		Lease:    llm.ComputeLease{LeaseID: "lease-successor", Epoch: 1, TokenUnits: 100, ConsumedUnits: 7, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(30 * time.Second), Signature: "signature-a",
+	}
+	successor := predecessor
+	successor.KeyID, successor.Signature = "key-b", "signature-b"
+	successor.Lease.Epoch, successor.Lease.TokenUnits = 2, 150
+	successor.IssuedAt, successor.ExpiresAt, successor.Lease.ExpiresAt = now.Add(10*time.Second), now.Add(40*time.Second), now.Add(70*time.Second)
+	return predecessor, successor, scope
+}
+
 func testReceipt(id string, now time.Time) llm.AttemptUsageReceipt {
 	r := llm.AttemptUsageReceipt{ReceiptID: id, GrantID: "grant", LogicalCallID: id, AttemptNonce: "nonce-" + id, OrganizationID: "org", RuntimeID: "runtime", TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run", Provider: "openai", ProviderModelID: "model", ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, RouteID: "route", CredentialAssetGeneration: 1, PolicyGeneration: 1, AttemptNumber: 1, Status: "success", StartedAt: now, CompletedAt: now.Add(time.Millisecond), IdempotencyKey: id, TotalTokens: 7}
 	h, _ := llm.CanonicalAttemptUsageReceiptBodyHash(r)

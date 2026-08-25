@@ -344,6 +344,7 @@ type LLMExternalGrantConfig struct {
 // ReceiptURL is required when the block is present.
 type ExternalGrantCoordinatorConfig struct {
 	ReceiptURL        string        `yaml:"receipt_url,omitempty"`
+	TopUpURL          string        `yaml:"top_up_url,omitempty"`
 	AuthTokenEnv      string        `yaml:"auth_token_env,omitempty"`
 	Timeout           time.Duration `yaml:"timeout,omitempty"`
 	MaxBatch          int           `yaml:"max_batch,omitempty"`

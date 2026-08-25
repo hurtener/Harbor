@@ -85,6 +85,49 @@ func TestLeaseIntegrity_PostgresAcceptance(t *testing.T) {
 	if err := mgr.Settle(context.Background(), settlement); err != nil {
 		t.Fatalf("late provider usage replay: %v", err)
 	}
+
+	predecessor := llm.ExternalGrant{
+		Version: llm.ExternalGrantVersionAgentBound, KeyID: "pg-key-a", Audience: "harbor-runtime", GrantID: "pg-successor-grant",
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault, OrganizationID: "org-a", RuntimeID: "runtime-a", AgentID: "agent-a",
+		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID, LogicalRunID: q.RunID,
+		LogicalCallID: "pg-successor-call", AttemptNonce: "pg-successor-nonce", PolicyGeneration: 1,
+		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 100,
+		Lease:    llm.ComputeLease{LeaseID: "pg-successor-lease", Epoch: 1, TokenUnits: 100, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(30 * time.Second), Signature: "pg-signature-a",
+	}
+	predecessorHash, err := llm.CanonicalExternalGrantHash(predecessor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := llm.LeaseReservationRequest{
+		AttemptID: "pg-successor-seed", LogicalCallID: predecessor.LogicalCallID, AttemptNonce: predecessor.AttemptNonce,
+		GrantID: predecessor.GrantID, LeaseID: predecessor.Lease.LeaseID, OrganizationID: predecessor.OrganizationID,
+		RuntimeID: predecessor.RuntimeID, AgentID: predecessor.AgentID, Epoch: predecessor.Lease.Epoch,
+		Capacity: predecessor.Lease.TokenUnits, Units: 20, ExpiresAt: predecessor.Lease.ExpiresAt,
+		Identity: q, GrantFingerprint: predecessorHash,
+	}
+	if _, err := mgr.Reserve(context.Background(), seed); err != nil {
+		t.Fatalf("successor seed: %v", err)
+	}
+	successor := predecessor
+	successor.KeyID, successor.Signature = "pg-key-b", "pg-signature-b"
+	successor.Lease.Epoch, successor.Lease.TokenUnits = 2, 150
+	successor.IssuedAt, successor.ExpiresAt, successor.Lease.ExpiresAt = now.Add(10*time.Second), now.Add(40*time.Second), now.Add(70*time.Second)
+	if err := mgr.ApplySuccessor(context.Background(), predecessor, successor); err != nil {
+		t.Fatalf("apply successor: %v", err)
+	}
+	if err := mgr.ApplySuccessor(context.Background(), predecessor, successor); err != nil {
+		t.Fatalf("response-loss successor replay: %v", err)
+	}
+	resolved, ok, err := mgr.ResolveSuccessor(context.Background(), predecessor)
+	if err != nil || !ok || resolved != successor {
+		t.Fatalf("resolved PostgreSQL successor=%+v ok=%v err=%v", resolved, ok, err)
+	}
+	changed := successor
+	changed.Signature = "pg-different-successor"
+	if err := mgr.ApplySuccessor(context.Background(), predecessor, changed); !errors.Is(err, leases.ErrAttemptConflict) {
+		t.Fatalf("changed same-epoch successor = %v, want ErrAttemptConflict", err)
+	}
 }
 
 func postgresLeaseReceipt(req llm.LeaseReservationRequest, q identity.Quadruple, now time.Time, status string, total int) llm.AttemptUsageReceipt {

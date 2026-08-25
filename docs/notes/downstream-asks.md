@@ -44,8 +44,8 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
-| HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Framework-complete candidate — phases 257/258, D-437/D-438; hosted CI/release/downstream acceptance pending |
-| HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Implemented candidate — phase 259 / D-439; release and downstream acceptance pending |
+| HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Framework-complete candidate — phases 257/258/261, D-437/D-438/D-441; hosted CI/release/downstream acceptance pending |
+| HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Framework-complete candidate — phases 259/261, D-439/D-441; release and downstream acceptance pending |
 | HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Implemented candidate — phase 260 / D-440; release and downstream acceptance pending |
 
 The original five were filed by a downstream team building an MCP-Apps server
@@ -1692,9 +1692,9 @@ downstream deployment, fleet, database, or acceptance claim is made.
 ## HA-72 — stock coordinator receipt transport and grant readiness
 
 **Priority:** High. **Size:** large. **State:** Framework-complete in the
-unreleased Phase 257 / D-437 parser and Phase 258 / D-438 transport/readiness
-implementation candidates. Hosted CI, release evidence, downstream deployment,
-and acceptance remain pending.
+unreleased Phase 257 / D-437 parser, Phase 258 / D-438 receipt transport, and
+Phase 261 / D-441 stock-renewal implementation candidates. Hosted CI, release
+evidence, downstream deployment, and acceptance remain pending.
 
 **Observed gap.** Harbor v1.30.1 publishes the transport-neutral receipt
 delivery seam and canonical marshal/hash/validation helpers, but an external
@@ -1733,22 +1733,23 @@ history cannot amplify idle database work or starve later crash-gap facts.
 The additive `runtime.info.external_grant` projection reports supported and
 configured modes, accepted and independently ready route shapes,
 verifier/reservation/credential wiring, strict parser readiness, concrete
-receipt transport kind and observed readiness, an explicit unsupported stock
-top-up state, and a fail-closed fully-wired result. No endpoint, token,
+receipt transport kind and observed readiness, the exact unsupported,
+host-injected, or stock-authenticated-HTTP top-up kind, and a fail-closed
+fully-wired result. No endpoint, token,
 identity, receipt content, provider response, or product-specific vocabulary
 appears in the posture response, logs, or errors. Cadence reconciliation
 failures degrade the projection while retrying and recover only after success;
-the whole readiness object is optional for mixed-version clients. Live top-up remains
-unsupported until a separate phase owns replay-idempotent durable successor
-application after validation.
+the whole readiness object is optional for mixed-version clients. Phase 261
+adds the separately authenticated stock renewal exchange and replay-idempotent
+durable successor application without adding idle work.
 
 ---
 
 ## HA-74 — top-up successor grant preserves immutable authority and attempt identity
 
-**Priority:** High. **Size:** contained. **State:** Implemented candidate in
-Phase 259 / D-439; hosted CI, release, and downstream acceptance remain
-pending.
+**Priority:** High. **Size:** contained. **State:** Framework-complete in
+Phase 259 / D-439 and Phase 261 / D-441 candidates; hosted CI, release, and
+downstream acceptance remain pending.
 
 **Observed gap.** `LeaseTopUpper.TopUp` returns a newly signed
 `ExternalGrant`, but the v1.30.1 wrapper compared only logical-call id,
@@ -1782,13 +1783,12 @@ generic execution-grant safety correction. It adds no transport, quota store,
 billing model, provider catalog, product policy, credential format, Protocol
 method, or Protocol version.
 
-**Operational boundary.** This answer supplies the public relationship
-validator and its optional wrapper consumer only. Stock Harbor still has no
-live top-up transport, and its durable reservation store has no
-post-validation replay-idempotent successor-application hook. Those pieces
-must land together in a separately owned phase before runtime top-up can be
-advertised as supported; advancing durable lease state inside an unverified
-transport callback is explicitly not an acceptable substitute.
+**Operational completion.** Phase 261 adds a public transport-neutral canonical
+exchange, the optional authenticated stock client, narrow predecessor
+authentication, reason-aware expiry renewal, and the replay-idempotent durable
+successor hook. Relationship validation and ordinary successor verification
+still precede durable application, and durable application precedes reservation
+and provider execution.
 
 ---
 

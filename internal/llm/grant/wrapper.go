@@ -13,6 +13,7 @@ import (
 )
 
 const terminalPersistenceTimeout = 5 * time.Second
+const maxReservationRecoveryAttempts = 8
 
 func init() { llm.RegisterExternalGrantWrapper(Wrap) }
 
@@ -56,7 +57,13 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if c.deps.ExternalGrant.Verifier == nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: verifier is not configured", llm.ErrExternalGrantInvalid)
 	}
-	grant := *req.ExternalGrant
+	rootGrant := *req.ExternalGrant
+	grant := rootGrant
+	if resolved, ok, resolveErr := c.resolveSuccessor(ctx, rootGrant); resolveErr != nil {
+		return llm.CompleteResponse{}, resolveErr
+	} else if ok {
+		grant = resolved
+	}
 	grantMode := llm.EffectiveExternalGrantRouteMode(grant.RouteMode)
 	if c.deps.ExternalGrant.RouteMode != "" && grantMode != c.deps.ExternalGrant.RouteMode {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: grant route mode is not enabled", llm.ErrExternalGrantInvalid)
@@ -86,7 +93,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if err != nil {
 		return llm.CompleteResponse{}, err
 	}
-	if err := c.verifyOrTopUp(ctx, &grant, req, callUnits); err != nil {
+	if err := c.prepareGrant(ctx, &grant, rootGrant, req, callUnits); err != nil {
 		return llm.CompleteResponse{}, err
 	}
 	req, err = capRequestToGrant(req, grant)
@@ -110,19 +117,65 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	}
 	var reservation llm.LeaseReservation
 	if c.deps.ExternalGrant.Reservations != nil {
+		grantFingerprint, hashErr := llm.CanonicalExternalGrantHash(grant)
+		if hashErr != nil {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: canonical grant fingerprint", llm.ErrExternalGrantInvalid)
+		}
 		epoch := grant.Lease.Epoch
 		if epoch == 0 {
 			epoch = 1
 		}
-		reservation, err = c.deps.ExternalGrant.Reservations.Reserve(ctx, llm.LeaseReservationRequest{
-			AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
-			GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID, OrganizationID: grant.OrganizationID,
-			RuntimeID: grant.RuntimeID, AgentID: grant.AgentID,
-			Epoch: epoch, Capacity: grant.Lease.RemainingTokens(), Units: callUnits, ExpiresAt: grant.Lease.ExpiresAt,
-			Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
-		})
-		if err != nil {
-			return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %w", llm.ErrExternalGrantLeaseInsufficient, err)
+		reserve := func() (llm.LeaseReservation, error) {
+			grantFingerprint, hashErr = llm.CanonicalExternalGrantHash(grant)
+			if hashErr != nil {
+				return llm.LeaseReservation{}, hashErr
+			}
+			epoch = grant.Lease.Epoch
+			if epoch == 0 {
+				epoch = 1
+			}
+			return c.deps.ExternalGrant.Reservations.Reserve(ctx, llm.LeaseReservationRequest{
+				AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
+				GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID, OrganizationID: grant.OrganizationID,
+				RuntimeID: grant.RuntimeID, AgentID: grant.AgentID,
+				Epoch: epoch, Capacity: grant.Lease.RemainingTokens(), Units: callUnits, ExpiresAt: grant.Lease.ExpiresAt,
+				GrantFingerprint: grantFingerprint,
+				Identity:         identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
+			})
+		}
+		reserved := false
+		var lastReserveErr error
+		for attempt := 0; attempt < maxReservationRecoveryAttempts; attempt++ {
+			reservation, err = reserve()
+			if err == nil {
+				reserved = true
+				break
+			}
+			lastReserveErr = err
+			switch {
+			case errors.Is(err, llm.ErrLeaseConflict):
+				resolved, ok, resolveErr := c.resolveSuccessor(ctx, rootGrant)
+				if resolveErr != nil || !ok {
+					return llm.CompleteResponse{}, fmt.Errorf("%w: resolve current successor: %w", llm.ErrExternalGrantLeaseInsufficient, err)
+				}
+				grant = resolved
+				if err = c.prepareGrant(ctx, &grant, rootGrant, req, callUnits); err != nil {
+					return llm.CompleteResponse{}, err
+				}
+			case errors.Is(err, llm.ErrLeaseInsufficient):
+				if err = c.renewGrant(ctx, &grant, req, callUnits, llm.ExternalGrantRenewalLeaseInsufficient); err != nil {
+					lastReserveErr = err
+					if errors.Is(err, llm.ErrLeaseConflict) {
+						continue
+					}
+					return llm.CompleteResponse{}, err
+				}
+			default:
+				return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %w", llm.ErrExternalGrantLeaseInsufficient, err)
+			}
+		}
+		if !reserved {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: bounded reserve recovery did not converge: %w", llm.ErrExternalGrantLeaseInsufficient, lastReserveErr)
 		}
 		if reservation.Existing {
 			switch reservation.Status {
@@ -258,7 +311,7 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 	if err == nil && grant.Lease.RemainingTokens() >= needed {
 		return nil
 	}
-	if err != nil && !isLeaseError(err) {
+	if err != nil && !isLeaseError(err) && !errors.Is(err, llm.ErrExternalGrantExpired) {
 		return err
 	}
 	if c.deps.ExternalGrant.TopUpper == nil {
@@ -267,21 +320,132 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 		}
 		return fmt.Errorf("%w: total call bound exceeds remaining lease", llm.ErrExternalGrantLeaseInsufficient)
 	}
-	newGrant, topErr := c.deps.ExternalGrant.TopUpper.TopUp(ctx, *grant, needed)
+	renewalReason := llm.ExternalGrantRenewalExpired
+	if grant.Lease.RemainingTokens() < needed {
+		renewalReason = llm.ExternalGrantRenewalLeaseInsufficient
+	}
+	return c.renewGrant(ctx, grant, req, needed, renewalReason)
+}
+
+func (c *client) prepareGrant(ctx context.Context, grant *llm.ExternalGrant, root llm.ExternalGrant, req llm.CompleteRequest, needed int64) error {
+	for range maxReservationRecoveryAttempts {
+		err := c.verifyOrTopUp(ctx, grant, req, needed)
+		if err == nil {
+			return c.verifyCoordinatorCredential(ctx, *grant)
+		}
+		if !errors.Is(err, llm.ErrLeaseConflict) {
+			return err
+		}
+		resolved, ok, resolveErr := c.resolveSuccessor(ctx, root)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !ok {
+			return err
+		}
+		*grant = resolved
+	}
+	return fmt.Errorf("%w: bounded successor preparation did not converge", llm.ErrExternalGrantLeaseInsufficient)
+}
+
+func (c *client) renewGrant(ctx context.Context, grant *llm.ExternalGrant, req llm.CompleteRequest, needed int64, renewalReason llm.ExternalGrantRenewalReason) error {
+	if c.deps.ExternalGrant.TopUpper == nil {
+		return fmt.Errorf("%w: top-up is not configured", llm.ErrExternalGrantLeaseInsufficient)
+	}
+	successorApplier := c.deps.ExternalGrant.Successors
+	if successorApplier == nil {
+		successorApplier, _ = c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorApplier)
+	}
+	if successorApplier == nil {
+		return fmt.Errorf("%w: durable lease successor applier is not configured", llm.ErrExternalGrantInvalid)
+	}
+	renewalVerifier := c.deps.ExternalGrant.RenewalVerifier
+	if renewalVerifier == nil {
+		renewalVerifier, _ = c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier)
+	}
+	if renewalVerifier == nil {
+		return fmt.Errorf("%w: authenticated renewal verifier is not configured", llm.ErrExternalGrantInvalid)
+	}
+	if preflightErr := renewalVerifier.VerifyRenewalPredecessor(ctx, *grant, req); preflightErr != nil {
+		return preflightErr
+	}
+	if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) == llm.ExternalGrantRouteCoordinatorBound {
+		if c.deps.ExternalGrant.Credentials == nil {
+			return fmt.Errorf("%w: credential resolver is not configured", llm.ErrExternalGrantInvalid)
+		}
+		verifiedCtx := llm.WithVerifiedGrantContext(ctx, *grant, c.deps.ExternalGrant.Credentials)
+		if _, resolveErr := c.deps.ExternalGrant.Credentials.Resolve(verifiedCtx, *grant); resolveErr != nil {
+			return resolveErr
+		}
+	}
+	predecessor := *grant
+	var newGrant llm.ExternalGrant
+	var topErr error
+	if reasoned, ok := c.deps.ExternalGrant.TopUpper.(llm.LeaseReasonedTopUpper); ok {
+		newGrant, topErr = reasoned.Renew(ctx, *grant, needed, renewalReason)
+	} else {
+		newGrant, topErr = c.deps.ExternalGrant.TopUpper.TopUp(ctx, *grant, needed)
+	}
 	if topErr != nil {
 		return fmt.Errorf("%w: top-up failed: %w", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
-	if err := llm.ValidateExternalGrantTopUpSuccessor(*grant, newGrant, needed); err != nil {
+	if err := llm.ValidateExternalGrantRenewalSuccessor(predecessor, newGrant, needed, renewalReason); err != nil {
 		return err
 	}
-	*grant = newGrant
-	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req); err != nil {
+	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, newGrant, req); err != nil {
 		return err
 	}
-	if grant.Lease.RemainingTokens() < needed {
+	if llm.EffectiveExternalGrantRouteMode(newGrant.RouteMode) == llm.ExternalGrantRouteCoordinatorBound {
+		verifiedCtx := llm.WithVerifiedGrantContext(ctx, newGrant, c.deps.ExternalGrant.Credentials)
+		if _, resolveErr := c.deps.ExternalGrant.Credentials.Resolve(verifiedCtx, newGrant); resolveErr != nil {
+			return resolveErr
+		}
+	}
+	if newGrant.Lease.RemainingTokens() < needed {
 		return fmt.Errorf("%w: top-up does not cover total call bound", llm.ErrExternalGrantLeaseInsufficient)
 	}
+	if applyErr := successorApplier.ApplySuccessor(ctx, predecessor, newGrant); applyErr != nil {
+		return fmt.Errorf("%w: apply lease successor: %w", llm.ErrExternalGrantLeaseInsufficient, applyErr)
+	}
+	*grant = newGrant
 	return nil
+}
+
+// verifyCoordinatorCredential repeats credential ownership and generation
+// checks for a successor loaded from durable state before it can reserve
+// capacity. Durable successor bytes remain untrusted until both the grant
+// verifier and the credential resolver accept the current authority.
+func (c *client) verifyCoordinatorCredential(ctx context.Context, grant llm.ExternalGrant) error {
+	if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) != llm.ExternalGrantRouteCoordinatorBound {
+		return nil
+	}
+	if c.deps.ExternalGrant.Credentials == nil {
+		return fmt.Errorf("%w: credential resolver is not configured", llm.ErrExternalGrantInvalid)
+	}
+	verifiedCtx := llm.WithVerifiedGrantContext(ctx, grant, c.deps.ExternalGrant.Credentials)
+	_, err := c.deps.ExternalGrant.Credentials.Resolve(verifiedCtx, grant)
+	return err
+}
+
+func (c *client) resolveSuccessor(ctx context.Context, root llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	resolver := c.deps.ExternalGrant.SuccessorResolver
+	if resolver == nil {
+		resolver, _ = c.deps.ExternalGrant.Successors.(llm.LeaseSuccessorResolver)
+	}
+	if resolver == nil {
+		resolver, _ = c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorResolver)
+	}
+	if resolver == nil {
+		return llm.ExternalGrant{}, false, nil
+	}
+	resolved, ok, err := resolver.ResolveSuccessor(ctx, root)
+	if err != nil || !ok {
+		return llm.ExternalGrant{}, ok, err
+	}
+	if err := llm.ValidateExternalGrantRenewalLineage(root, resolved); err != nil {
+		return llm.ExternalGrant{}, false, err
+	}
+	return resolved, true, nil
 }
 
 func boundedCallUnits(req llm.CompleteRequest, grant llm.ExternalGrant, cfg llm.ConfigSnapshot) (int64, error) {

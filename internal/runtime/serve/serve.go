@@ -389,6 +389,9 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 			ready := stock.Readiness()
 			out.ReceiptTransportKind = "stock_authenticated_http"
 			out.ReceiptTransport = ready.Receipt
+			if ready.TopUp != "absent" {
+				out.TopUpTransport = "stock_authenticated_http"
+			}
 		case delivery != nil:
 			out.ReceiptTransportKind = "host_injected_delivery"
 			out.ReceiptTransport = "wired"
@@ -417,12 +420,16 @@ func configureStockExternalGrant(coordinatorCfg config.ExternalGrantCoordinatorC
 	if opts.ExternalGrantDelivery != nil || opts.ExternalGrant.ReceiptSink != nil {
 		return nil, fmt.Errorf("external grant coordinator: configured receipt transport conflicts with injected receipt handling")
 	}
+	if coordinatorCfg.TopUpURL != "" && opts.ExternalGrant.TopUpper != nil {
+		return nil, fmt.Errorf("external grant coordinator: configured top-up transport conflicts with injected top-upper")
+	}
 	token, ok := getenv(coordinatorCfg.AuthTokenEnv)
 	if !ok || strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("external grant coordinator: env var %q (auth_token_env) is unset or empty", coordinatorCfg.AuthTokenEnv)
 	}
 	client, err := receipthttp.New(receipthttp.Config{
 		ReceiptURL: coordinatorCfg.ReceiptURL,
+		TopUpURL:   coordinatorCfg.TopUpURL,
 		AuthToken:  token,
 		Timeout:    coordinatorCfg.Timeout,
 		MaxBatch:   coordinatorCfg.MaxBatch,
@@ -431,6 +438,9 @@ func configureStockExternalGrant(coordinatorCfg config.ExternalGrantCoordinatorC
 		return nil, fmt.Errorf("external grant coordinator: %w", err)
 	}
 	opts.ExternalGrantDelivery = client
+	if coordinatorCfg.TopUpURL != "" {
+		opts.ExternalGrant.TopUpper = client
+	}
 	if opts.ExternalGrantMaxBatch == 0 {
 		opts.ExternalGrantMaxBatch = coordinatorCfg.MaxBatch
 	}

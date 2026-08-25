@@ -402,6 +402,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |258 | Stock coordinator receipt transport and runtime readiness (HA-72, D-438): opt-in authenticated bounded receipt batches, exact ID/hash ACKs, partial/response-loss durable replay, stable jittered backoff, bounded fail-closed replay/index recovery with truthful degraded readiness, zero-work disabled defaults, explicit unsupported stock top-up, and content-free `runtime.info.external_grant` readiness truth for both route modes | llm receipts + runtime serve + config + protocol posture | §5.3, §6.5, §6.11, §6.15 | 254, 256, 257, D-025, D-434, D-436, D-437 | focused race/vet + Protocol generation + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 |259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 |260 | Reach-admitted agent-bound external grants (HA-75, D-440): v2 signs the exact effective agent selected by normal reach admission, reference verification fails before provider side effects, receipts/top-ups preserve the binding, v1 signatures and blank-agent receipt bytes remain exact, and readiness advertises `[1,2]` plus `required_v2` | internal/llm + grant + runtime/serve + protocol posture + sdk/llm | §6.5, §6.11, §6.15 | 254, 256, 257, 258, 259, D-434..D-439 | focused race/vet + real run-loop + public consumer + generators + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
+|261 | Stock authenticated external-grant renewal (D-441): strict typed expiry, full-authority renewal preflight, public canonical `sdk/llm/topup` contract and 128-KiB bounds, optional authenticated HTTP transport, reason-aware no-widen expiry renewal, replay-idempotent durable successor CAS, apply-before-reserve/provider ordering, truthful stock/host/unsupported readiness, and zero idle work | sdk/llm/topup + grant wrapper + leases + receipt HTTP transport + runtime assembly/config/readiness | §6.5, §6.11, §6.15 | 254, 256, 258, 259, 260, D-434..D-440 | focused race/vet + inmem/SQLite/real-PG + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5676,6 +5677,26 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   mode blocks ungranted auxiliary calls; arbitrary optional/embedder calls are
   not described as agent-bound.
 - **Decision:** D-440. **Status:** Implemented candidate; hosted CI, release,
+  and downstream acceptance pending.
+
+### Phase 261 — Stock authenticated external-grant renewal
+
+- **Subsystem:** public top-up SDK, external-grant verifier/wrapper, durable
+  leases, stock authenticated HTTP transport, config, and runtime readiness.
+- **RFC:** §6.5, §6.11, §6.15. **Deps:** phases 254, 256, 258–260 and
+  D-434–D-440.
+- **What it delivers:** D-441 — ordinary verification remains strict, while a
+  narrow authenticated predecessor preflight permits only elapsed deadlines or
+  insufficient capacity to reach the coordinator. The public canonical v1
+  request/response contract, optional stock HTTP path, reason-aware successor
+  validator, and durable successor CAS complete the stock renewal chain before
+  reservation or provider execution. Expiry-only renewal never widens compute;
+  disabled/receipt-only runtimes do no idle renewal work.
+- **Evidence:** public external-package adversaries, authenticated response-loss
+  and N=100 HTTP reuse, invalid/Agent/revoked zero-call refusal, apply-before-
+  provider wrapper tests, in-memory/SQLite plus DSN-gated PostgreSQL successor
+  conformance, config/readiness, race/vet/generator/static smoke/drift gates.
+- **Decision:** D-441. **Status:** Implemented candidate; hosted CI, release,
   and downstream acceptance pending.
 
 ## Notes

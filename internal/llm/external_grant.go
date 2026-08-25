@@ -134,8 +134,15 @@ var (
 	// ErrExternalGrantRequired indicates that strict mode received no grant.
 	ErrExternalGrantRequired = errors.New("llm: external execution grant required")
 	// ErrExternalGrantInvalid indicates a malformed, expired, or mismatched
-	// grant. The wrapped detail is intentionally content-free.
+	// grant. The wrapped detail is intentionally content-free. Expiry has its
+	// own typed error so a caller can enter the narrow authenticated-renewal
+	// path without treating arbitrary invalid authority as renewable.
 	ErrExternalGrantInvalid = errors.New("llm: external execution grant invalid")
+	// ErrExternalGrantExpired indicates that an otherwise authenticated and
+	// request-bound grant has elapsed. It is emitted only after signature,
+	// audience/runtime, identity/run, agent, route, reasoning, and output
+	// checks succeed; future-issued or malformed grants remain invalid.
+	ErrExternalGrantExpired = errors.New("llm: external execution grant expired")
 	// ErrExternalGrantSignature indicates that the grant was not signed by a
 	// configured coordinator key.
 	ErrExternalGrantSignature = errors.New("llm: external execution grant signature invalid")
@@ -145,6 +152,11 @@ var (
 	// ErrExternalGrantLeaseInsufficient indicates that a bounded lease needs a
 	// coordinator top-up before this provider attempt can start.
 	ErrExternalGrantLeaseInsufficient = errors.New("llm: external execution grant lease insufficient")
+	// ErrLeaseInsufficient is the transport-neutral durable reservation outcome
+	// used without importing a concrete lease-store package.
+	ErrLeaseInsufficient = errors.New("llm: durable lease capacity insufficient")
+	// ErrLeaseConflict identifies a stale or different durable lease generation.
+	ErrLeaseConflict = errors.New("llm: durable lease generation conflict")
 	// ErrExternalGrantAttemptInFlight means a duplicate invocation reached the
 	// durable reservation after another process already admitted the exact
 	// logical provider attempt. The duplicate must not call the provider.
@@ -175,6 +187,15 @@ type ExternalGrantVerifier interface {
 	Verify(context.Context, ExternalGrant, CompleteRequest) error
 }
 
+// ExternalGrantRenewalVerifier authenticates an elapsed predecessor without
+// waiving any authority check other than the already-elapsed grant or lease
+// deadline and depleted lease capacity. The stock verifier implements this
+// seam. A top-upper must never be called for an expired predecessor unless
+// this check succeeds.
+type ExternalGrantRenewalVerifier interface {
+	VerifyRenewalPredecessor(context.Context, ExternalGrant, CompleteRequest) error
+}
+
 // CredentialResolver resolves one opaque credential binding only after the
 // grant wrapper has verified the signature and context. Implementations must
 // return a secret only to the provider driver; they must not expose it in
@@ -201,6 +222,84 @@ type LeaseTopUpper interface {
 	TopUp(context.Context, ExternalGrant, int64) (ExternalGrant, error)
 }
 
+// LeaseReasonedTopUpper is the additive renewal seam used when durable
+// settlement, rather than the immutable signed snapshot, proves insufficiency.
+type LeaseReasonedTopUpper interface {
+	Renew(context.Context, ExternalGrant, int64, ExternalGrantRenewalReason) (ExternalGrant, error)
+}
+
+// ExternalGrantRenewalReason distinguishes deadline renewal from additional
+// compute capacity. Expiry-only renewal must not mint units; lease
+// insufficiency may add only the bounded requested amount.
+type ExternalGrantRenewalReason string
+
+const (
+	ExternalGrantRenewalExpired           ExternalGrantRenewalReason = "expired"
+	ExternalGrantRenewalLeaseInsufficient ExternalGrantRenewalReason = "lease_insufficient"
+)
+
+// LeaseSuccessorApplier durably advances the exact predecessor lease to its
+// already-authenticated successor. Implementations must be response-loss and
+// concurrency idempotent: the exact successor is a no-op, while a stale or
+// different successor conflicts. The provider must not run before Apply
+// returns successfully.
+type LeaseSuccessorApplier interface {
+	ApplySuccessor(context.Context, ExternalGrant, ExternalGrant) error
+}
+
+// LeaseSuccessorResolver returns the latest exact canonical successor for one
+// immutable root grant. Callers validate lineage and strictly verify it.
+type LeaseSuccessorResolver interface {
+	ResolveSuccessor(context.Context, ExternalGrant) (ExternalGrant, bool, error)
+}
+
+// MarshalCanonicalExternalGrant returns the deterministic full signed grant
+// bytes used by renewal idempotency and durable successor fingerprints. Time
+// values are normalized to UTC, matching the signing document semantics.
+func MarshalCanonicalExternalGrant(grant ExternalGrant) ([]byte, error) {
+	canonical := grant
+	canonical.IssuedAt = canonical.IssuedAt.UTC()
+	canonical.ExpiresAt = canonical.ExpiresAt.UTC()
+	canonical.Lease.ExpiresAt = canonical.Lease.ExpiresAt.UTC()
+	body, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("llm: canonical external grant: %w", err)
+	}
+	return body, nil
+}
+
+// UnmarshalCanonicalExternalGrant accepts only the exact deterministic full
+// signed grant bytes emitted by MarshalCanonicalExternalGrant. Signature and
+// request authority are deliberately verified by ExternalGrantVerifier after
+// parsing.
+func UnmarshalCanonicalExternalGrant(data []byte) (ExternalGrant, error) {
+	var grant ExternalGrant
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&grant); err != nil {
+		return ExternalGrant{}, fmt.Errorf("%w: malformed canonical grant", ErrExternalGrantInvalid)
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return ExternalGrant{}, fmt.Errorf("%w: trailing canonical grant data", ErrExternalGrantInvalid)
+	}
+	canonical, err := MarshalCanonicalExternalGrant(grant)
+	if err != nil || !bytes.Equal(data, canonical) {
+		return ExternalGrant{}, fmt.Errorf("%w: grant is not exact canonical bytes", ErrExternalGrantInvalid)
+	}
+	return grant, nil
+}
+
+// CanonicalExternalGrantHash fingerprints the complete signed predecessor or
+// successor. It contains no secret bytes and is stable across processes.
+func CanonicalExternalGrantHash(grant ExternalGrant) (string, error) {
+	body, err := MarshalCanonicalExternalGrant(grant)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 // ValidateExternalGrantTopUpSuccessor verifies that successor is a bounded
 // lease top-up of current rather than a different execution authority. The
 // caller must have authenticated current with its configured verifier before
@@ -216,11 +315,23 @@ type LeaseTopUpper interface {
 // a coordinator renew a short-lived grant without turning a top-up response
 // into an unbounded lease or long-lived authority.
 func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, requestedUnits int64) error {
+	return ValidateExternalGrantRenewalSuccessor(current, successor, requestedUnits, ExternalGrantRenewalLeaseInsufficient)
+}
+
+// ValidateExternalGrantRenewalSuccessor validates a bounded successor for the
+// exact renewal trigger. Expiry-only renewal requires enough predecessor
+// capacity for the call and preserves token capacity/consumption exactly;
+// lease insufficiency retains the bounded-increase rules of
+// ValidateExternalGrantTopUpSuccessor.
+func ValidateExternalGrantRenewalSuccessor(current, successor ExternalGrant, requestedUnits int64, reason ExternalGrantRenewalReason) error {
 	invalid := func(detail string) error {
-		return fmt.Errorf("%w: lease top-up successor %s", ErrExternalGrantInvalid, detail)
+		return fmt.Errorf("%w: lease renewal successor %s", ErrExternalGrantInvalid, detail)
 	}
 	if requestedUnits <= 0 {
 		return invalid("has an invalid requested-unit bound")
+	}
+	if reason != ExternalGrantRenewalExpired && reason != ExternalGrantRenewalLeaseInsufficient {
+		return invalid("has an unsupported renewal reason")
 	}
 
 	// Normalize only the explicitly mutable claims, then compare the complete
@@ -259,7 +370,7 @@ func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, reque
 	if current.Lease.Epoch == ^uint64(0) || successor.Lease.Epoch != current.Lease.Epoch+1 {
 		return invalid("did not advance the lease epoch exactly once")
 	}
-	if current.Lease.TokenUnits <= 0 || successor.Lease.TokenUnits <= current.Lease.TokenUnits ||
+	if current.Lease.TokenUnits <= 0 || successor.Lease.TokenUnits < current.Lease.TokenUnits ||
 		current.Lease.ConsumedUnits < 0 || current.Lease.ConsumedUnits > current.Lease.TokenUnits ||
 		successor.Lease.ConsumedUnits < current.Lease.ConsumedUnits ||
 		successor.Lease.ConsumedUnits > successor.Lease.TokenUnits {
@@ -268,9 +379,17 @@ func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, reque
 	capacityIncrease := successor.Lease.TokenUnits - current.Lease.TokenUnits
 	currentRemaining := current.Lease.TokenUnits - current.Lease.ConsumedUnits
 	successorRemaining := successor.Lease.TokenUnits - successor.Lease.ConsumedUnits
-	if capacityIncrease > requestedUnits || successorRemaining < requestedUnits ||
-		successorRemaining <= currentRemaining {
-		return invalid("exceeds the bounded capacity advance")
+	switch reason {
+	case ExternalGrantRenewalExpired:
+		if currentRemaining < requestedUnits || successor.Lease.TokenUnits != current.Lease.TokenUnits ||
+			successor.Lease.ConsumedUnits != current.Lease.ConsumedUnits || successorRemaining != currentRemaining {
+			return invalid("expiry-only renewal changed compute capacity")
+		}
+	case ExternalGrantRenewalLeaseInsufficient:
+		if capacityIncrease <= 0 || capacityIncrease > requestedUnits || successorRemaining < requestedUnits ||
+			successorRemaining <= currentRemaining {
+			return invalid("exceeds the bounded capacity advance")
+		}
 	}
 
 	if current.IssuedAt.IsZero() || successor.IssuedAt.IsZero() || successor.IssuedAt.Before(current.IssuedAt) {
@@ -293,6 +412,34 @@ func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, reque
 	return nil
 }
 
+// ValidateExternalGrantRenewalLineage proves that descendant preserves root's
+// immutable authority across one or more already-applied renewals. Signature
+// trust and current deadline checks remain the ordinary verifier's job.
+func ValidateExternalGrantRenewalLineage(root, descendant ExternalGrant) error {
+	invalid := func(detail string) error {
+		return fmt.Errorf("%w: lease renewal lineage %s", ErrExternalGrantInvalid, detail)
+	}
+	expected := root
+	expected.KeyID = descendant.KeyID
+	expected.IssuedAt = descendant.IssuedAt
+	expected.ExpiresAt = descendant.ExpiresAt
+	expected.Signature = descendant.Signature
+	expected.Lease.Epoch = descendant.Lease.Epoch
+	expected.Lease.TokenUnits = descendant.Lease.TokenUnits
+	expected.Lease.ConsumedUnits = descendant.Lease.ConsumedUnits
+	expected.Lease.ExpiresAt = descendant.Lease.ExpiresAt
+	if expected != descendant {
+		return invalid("changed immutable authority")
+	}
+	if descendant.Lease.Epoch <= root.Lease.Epoch || descendant.Lease.TokenUnits < root.Lease.TokenUnits ||
+		descendant.Lease.ConsumedUnits < root.Lease.ConsumedUnits || descendant.Lease.ConsumedUnits > descendant.Lease.TokenUnits ||
+		descendant.IssuedAt.Before(root.IssuedAt) || descendant.ExpiresAt.Before(root.ExpiresAt) ||
+		descendant.Lease.ExpiresAt.Before(root.Lease.ExpiresAt) {
+		return invalid("rewound renewal state")
+	}
+	return nil
+}
+
 // LeaseReservationRequest is the durable per-attempt reservation request.
 // Implementations must serialize competing requests for the same LeaseID in
 // the StateStore, not in process-local memory, and bind the durable state to
@@ -310,7 +457,11 @@ type LeaseReservationRequest struct {
 	Capacity       int64
 	Units          int64
 	ExpiresAt      time.Time
-	Identity       identity.Quadruple
+	// GrantFingerprint binds the durable lease generation to the complete
+	// canonical signed grant. Empty remains accepted for older embedders; the
+	// stock wrapper always supplies it.
+	GrantFingerprint string
+	Identity         identity.Quadruple
 }
 
 // LeaseReservation is the durable reservation identity returned before the
@@ -791,14 +942,17 @@ type ExternalGrantConfig struct {
 	Mode ExternalGrantMode
 	// RouteMode optionally restricts accepted signed grant shapes. Empty
 	// accepts both explicit route modes; the signed grant remains authoritative.
-	RouteMode       ExternalGrantRouteMode
-	Verifier        ExternalGrantVerifier
-	Credentials     CredentialResolver
-	TopUpper        LeaseTopUpper
-	ReceiptSink     UsageReceiptSink
-	ReceiptRequired bool
-	RuntimeID       string
-	Reservations    LeaseReservationManager
+	RouteMode         ExternalGrantRouteMode
+	Verifier          ExternalGrantVerifier
+	RenewalVerifier   ExternalGrantRenewalVerifier
+	Credentials       CredentialResolver
+	TopUpper          LeaseTopUpper
+	Successors        LeaseSuccessorApplier
+	SuccessorResolver LeaseSuccessorResolver
+	ReceiptSink       UsageReceiptSink
+	ReceiptRequired   bool
+	RuntimeID         string
+	Reservations      LeaseReservationManager
 }
 
 // VerifiedGrantContext is installed only after ExternalGrantVerifier succeeds.

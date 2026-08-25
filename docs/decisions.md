@@ -14448,3 +14448,58 @@ attempt rather than every arbitrary LLM invocation.
 **Cross-references:** D-025, D-434, D-436, D-437, D-438, D-439, RFC §6.5,
 §6.11, §6.15, brief 03, brief 08. Plan:
 `docs/plans/phase-260-agent-bound-external-grants.md`.
+
+---
+
+## D-441 — Stock renewal authenticates the predecessor and durably applies one bounded successor before provider work
+
+**Date:** 2026-08-25
+
+**Status:** Implemented candidate in Phase 261; hosted CI, release, and
+downstream acceptance remain pending.
+
+Ordinary external-grant verification remains strict. Expiry is a typed outcome
+only after signature, audience/runtime, organization, verified identity/run,
+v2 effective AgentID, route/model, reasoning, output, shape, and future-issued
+checks pass. A separate predecessor verifier may waive only already-elapsed
+grant/lease deadlines or insufficient capacity for the purpose of renewal.
+Malformed, untrusted, mismatched, future-issued, or revoked authority never
+reaches a coordinator.
+
+Stock renewal is opt-in authenticated HTTP using the existing pinned endpoint,
+service credential, timeout, bounded response, and redirect-refusal rules. The
+transport-neutral public `sdk/llm/topup` contract owns canonical request and
+response types/codecs, exact bounds, deterministic idempotency over the full
+canonical signed predecessor plus requested units and renewal reason, strict duplicate/unknown/
+noncanonical refusal, and header/body equality. No second consumer needs a
+private Harbor type or constant.
+
+Deadline renewal and compute top-up are distinct. If an expired predecessor
+already covers the call, its successor advances epoch/deadlines without
+changing token capacity or consumption. If capacity is insufficient, the
+successor may add at most the requested units and must cover the call. Every
+other authority claim remains byte-semantically immutable, including v1 raw
+route compatibility and v2 AgentID.
+
+After transport, Harbor validates the predecessor/successor relationship,
+strictly verifies the successor, rechecks current coordinator-bound credential
+generation, and durably applies it. The StateStore lease CAS creates an absent
+successor, advances an exact predecessor while preserving local reservations,
+consumption, and binding, treats exact successor replay as a no-op, and rejects
+stale/different state. It stores the exact root fingerprint and bounded
+canonical current signed successor. Every later call made with the immutable
+run-start root reloads that current authority, checks lineage, strictly verifies
+it, and rechecks credential generation before reservation. A typed stale
+reservation reloads; actual durable insufficiency explicitly renews the current
+successor rather than inferring capacity from stale signed consumption. Only
+after durable convergence may Harbor reserve and invoke the provider.
+
+Readiness reports `unsupported`, `host_injected`, or
+`stock_authenticated_http`. Construction starts no poll, timer, goroutine,
+StateStore read, or network call. Runtime-default and coordinator-bound routes,
+grant v1 and v2, remain supported; runtime-default needs no external provider
+credential or catalog.
+
+**Cross-references:** D-025, D-434, D-436, D-438, D-439, D-440, RFC §6.5,
+§6.11, §6.15, brief 03, brief 08. Plan:
+`docs/plans/phase-261-stock-external-grant-renewal.md`.

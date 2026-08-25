@@ -517,6 +517,21 @@ delivery is enqueue-driven and does not poll this interval. Validation:
 non-negative. Retry deadlines do not accelerate this maintenance scan.
 Restart-required.
 
+### llm.external_grant.coordinator.top_up_url
+
+Optional stock `harbor serve` endpoint for authenticated bounded lease
+successors. It is called only after an otherwise valid grant needs more
+capacity or its signed deadline elapsed; idle runtimes make no top-up calls.
+Requests carry the exact canonical predecessor, requested units, renewal
+reason, and a stable idempotency key covering all three. Responses must return
+the same key and one exact canonical
+successor, which Harbor verifies and durably applies before provider work.
+Harbor retains that signed successor content-free and reuses it across later
+calls and restarts; it does not contact the coordinator while current durable
+capacity remains sufficient.
+HTTPS is required except for loopback HTTP. User info, queries, and fragments
+are rejected. Restart-required.
+
 ### llm.network_defaults.timeout
 
 Default per-provider timeout. Default: `0` → bifrost's package

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -31,8 +32,8 @@ const (
 
 var (
 	ErrInvalidRequest  = errors.New("llm/leases: invalid reservation request")
-	ErrInsufficient    = errors.New("llm/leases: lease capacity is insufficient")
-	ErrAttemptConflict = errors.New("llm/leases: attempt id is already bound to another reservation")
+	ErrInsufficient    = llm.ErrLeaseInsufficient
+	ErrAttemptConflict = llm.ErrLeaseConflict
 )
 
 // TopUpRequest advances a lease epoch. Existing reservations remain bound to
@@ -295,6 +296,148 @@ func (s *Store) TopUp(ctx context.Context, req TopUpRequest) error {
 	return fmt.Errorf("%w: concurrent top-up did not converge", state.ErrConditionFailed)
 }
 
+// ApplySuccessor implements llm.LeaseSuccessorApplier. It advances exactly
+// one already-authenticated grant generation while preserving all local
+// reservations and settled consumption. An absent lease is created at the
+// successor generation; replaying the exact successor is a no-op. A stale or
+// different grant at either epoch fails closed.
+func (s *Store) ApplySuccessor(ctx context.Context, predecessor, successor llm.ExternalGrant) error {
+	predecessorHash, err := llm.CanonicalExternalGrantHash(predecessor)
+	if err != nil {
+		return fmt.Errorf("%w: predecessor fingerprint", ErrInvalidRequest)
+	}
+	successorHash, err := llm.CanonicalExternalGrantHash(successor)
+	if err != nil {
+		return fmt.Errorf("%w: successor fingerprint", ErrInvalidRequest)
+	}
+	successorCanonical, err := llm.MarshalCanonicalExternalGrant(successor)
+	if err != nil {
+		return fmt.Errorf("%w: successor canonical bytes", ErrInvalidRequest)
+	}
+	if predecessor.Lease.LeaseID == "" || successor.Lease.LeaseID != predecessor.Lease.LeaseID ||
+		successor.Lease.Epoch != predecessor.Lease.Epoch+1 || !grantBindingMatches(predecessor, successor) {
+		return ErrInvalidRequest
+	}
+	predecessorRemaining := predecessor.Lease.RemainingTokens()
+	successorRemaining := successor.Lease.RemainingTokens()
+	if successorRemaining < predecessorRemaining {
+		return ErrInvalidRequest
+	}
+	delta := successorRemaining - predecessorRemaining
+	q := identity.InternalCoordinationQuadruple()
+	kind := leasePrefix + predecessor.Lease.LeaseID
+	for range maxCASRetries {
+		rec, lease, loadErr := s.loadLease(ctx, q, kind)
+		if errors.Is(loadErr, state.ErrNotFound) {
+			created := leaseStateFromGrant(predecessorHash, successor, successorHash, successorCanonical)
+			body, marshalErr := json.Marshal(created)
+			if marshalErr != nil {
+				return fmt.Errorf("llm/leases: encode successor lease: %w", marshalErr)
+			}
+			next := state.NewInternalRecord(state.NewEventID(), q, kind, body)
+			if saveErr := s.state.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(q, kind, "")}, next); saveErr != nil {
+				if errors.Is(saveErr, state.ErrConditionFailed) {
+					continue
+				}
+				return fmt.Errorf("llm/leases: create successor: %w", saveErr)
+			}
+			return nil
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if !lease.matchesGrantBinding(predecessor) {
+			return ErrAttemptConflict
+		}
+		if lease.Epoch == successor.Lease.Epoch {
+			if lease.GrantFingerprint == successorHash && lease.ExpiresAt.Equal(successor.Lease.ExpiresAt) {
+				return nil
+			}
+			legacyInitial := predecessor.Lease.Epoch == 0 && successor.Lease.Epoch == 1 &&
+				lease.Epoch == 1 && lease.GrantFingerprint == predecessorHash
+			if !legacyInitial {
+				return ErrAttemptConflict
+			}
+		}
+		expectedPredecessorEpoch := predecessor.Lease.Epoch
+		if expectedPredecessorEpoch == 0 {
+			expectedPredecessorEpoch = 1
+		}
+		if lease.Epoch != expectedPredecessorEpoch ||
+			(lease.GrantFingerprint != "" && lease.GrantFingerprint != predecessorHash) ||
+			!lease.ExpiresAt.Equal(predecessor.Lease.ExpiresAt) ||
+			lease.Capacity <= 0 ||
+			delta > math.MaxInt64-lease.Capacity {
+			return ErrAttemptConflict
+		}
+		lease.Epoch = successor.Lease.Epoch
+		lease.Capacity += delta
+		lease.ExpiresAt = successor.Lease.ExpiresAt
+		if lease.RootGrantFingerprint == "" {
+			lease.RootGrantFingerprint = predecessorHash
+		}
+		lease.GrantFingerprint = successorHash
+		lease.GrantCanonical = append(json.RawMessage(nil), successorCanonical...)
+		body, marshalErr := json.Marshal(lease)
+		if marshalErr != nil {
+			return fmt.Errorf("llm/leases: encode applied successor: %w", marshalErr)
+		}
+		next := state.NewInternalRecord(state.NewEventID(), q, kind, body)
+		if saveErr := s.state.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(q, kind, rec.ID)}, next); saveErr != nil {
+			if errors.Is(saveErr, state.ErrConditionFailed) {
+				continue
+			}
+			return fmt.Errorf("llm/leases: apply successor: %w", saveErr)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: concurrent successor application did not converge", state.ErrConditionFailed)
+}
+
+// ResolveSuccessor returns the latest canonical signed successor for root.
+// The root fingerprint is exact, so a mutated or unrelated caller cannot use
+// a LeaseID as authority. The returned grant remains untrusted: the wrapper
+// validates lineage and runs ordinary strict verification before use.
+func (s *Store) ResolveSuccessor(ctx context.Context, root llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	rootHash, err := llm.CanonicalExternalGrantHash(root)
+	if err != nil || root.Lease.LeaseID == "" {
+		return llm.ExternalGrant{}, false, ErrInvalidRequest
+	}
+	_, lease, err := s.loadLease(ctx, identity.InternalCoordinationQuadruple(), leasePrefix+root.Lease.LeaseID)
+	if errors.Is(err, state.ErrNotFound) {
+		return llm.ExternalGrant{}, false, nil
+	}
+	if err != nil {
+		return llm.ExternalGrant{}, false, err
+	}
+	if !lease.matchesGrantBinding(root) {
+		return llm.ExternalGrant{}, false, fmt.Errorf("%w: root binding mismatch", ErrAttemptConflict)
+	}
+	rootEpoch := root.Lease.Epoch
+	if rootEpoch == 0 {
+		rootEpoch = 1
+	}
+	if lease.RootGrantFingerprint == "" && lease.Epoch == rootEpoch {
+		if lease.GrantFingerprint == "" || lease.GrantFingerprint == rootHash {
+			return llm.ExternalGrant{}, false, nil
+		}
+		return llm.ExternalGrant{}, false, fmt.Errorf("%w: root fingerprint mismatch", ErrAttemptConflict)
+	}
+	if lease.Epoch < rootEpoch || lease.RootGrantFingerprint != rootHash || len(lease.GrantCanonical) == 0 {
+		return llm.ExternalGrant{}, false, fmt.Errorf("%w: successor lineage root mismatch", ErrAttemptConflict)
+	}
+	resolved, err := llm.UnmarshalCanonicalExternalGrant(lease.GrantCanonical)
+	if err != nil {
+		return llm.ExternalGrant{}, false, fmt.Errorf("%w: successor canonical bytes invalid", ErrAttemptConflict)
+	}
+	resolvedHash, err := llm.CanonicalExternalGrantHash(resolved)
+	if err != nil || resolvedHash != lease.GrantFingerprint || resolved.Lease.Epoch != lease.Epoch ||
+		!resolved.Lease.ExpiresAt.Equal(lease.ExpiresAt) || !lease.matchesGrantBinding(resolved) {
+		return llm.ExternalGrant{}, false, fmt.Errorf("%w: successor canonical state mismatch", ErrAttemptConflict)
+	}
+	return resolved, true, nil
+}
+
 // Release returns reserved units without consuming them. It is idempotent for
 // an already closed attempt and is used by cancellation/expiry reconciliation.
 func (s *Store) Release(ctx context.Context, attemptID string) error {
@@ -526,17 +669,20 @@ func decodePendingReceipt(rec state.StateRecord) (pendingReceiptState, error) {
 }
 
 type leaseState struct {
-	GrantID        string             `json:"grant_id"`
-	LeaseID        string             `json:"lease_id"`
-	OrganizationID string             `json:"organization_id"`
-	RuntimeID      string             `json:"runtime_id"`
-	AgentID        string             `json:"agent_id,omitempty"`
-	Identity       identity.Quadruple `json:"identity"`
-	Epoch          uint64             `json:"epoch"`
-	Capacity       int64              `json:"capacity"`
-	Reserved       int64              `json:"reserved"`
-	Consumed       int64              `json:"consumed"`
-	ExpiresAt      time.Time          `json:"expires_at"`
+	GrantID              string             `json:"grant_id"`
+	LeaseID              string             `json:"lease_id"`
+	OrganizationID       string             `json:"organization_id"`
+	RuntimeID            string             `json:"runtime_id"`
+	AgentID              string             `json:"agent_id,omitempty"`
+	Identity             identity.Quadruple `json:"identity"`
+	Epoch                uint64             `json:"epoch"`
+	Capacity             int64              `json:"capacity"`
+	Reserved             int64              `json:"reserved"`
+	Consumed             int64              `json:"consumed"`
+	ExpiresAt            time.Time          `json:"expires_at"`
+	GrantFingerprint     string             `json:"grant_fingerprint,omitempty"`
+	RootGrantFingerprint string             `json:"root_grant_fingerprint,omitempty"`
+	GrantCanonical       json.RawMessage    `json:"grant_canonical,omitempty"`
 }
 type attemptState struct {
 	AttemptID      string                  `json:"attempt_id"`
@@ -616,12 +762,12 @@ func newLeaseState(r llm.LeaseReservationRequest) leaseState {
 	return leaseState{
 		GrantID: r.GrantID, LeaseID: r.LeaseID, OrganizationID: r.OrganizationID,
 		RuntimeID: r.RuntimeID, AgentID: r.AgentID, Identity: r.Identity,
-		Epoch: r.Epoch, Capacity: r.Capacity, ExpiresAt: r.ExpiresAt,
+		Epoch: r.Epoch, Capacity: r.Capacity, ExpiresAt: r.ExpiresAt, GrantFingerprint: r.GrantFingerprint,
 	}
 }
 
 func (l leaseState) matches(r llm.LeaseReservationRequest) bool {
-	return l.GrantID == r.GrantID && l.LeaseID == r.LeaseID && l.OrganizationID == r.OrganizationID && l.RuntimeID == r.RuntimeID && l.AgentID == r.AgentID && l.Identity == r.Identity
+	return l.GrantID == r.GrantID && l.LeaseID == r.LeaseID && l.OrganizationID == r.OrganizationID && l.RuntimeID == r.RuntimeID && l.AgentID == r.AgentID && l.Identity == r.Identity && (r.GrantFingerprint == "" || l.GrantFingerprint == "" || l.GrantFingerprint == r.GrantFingerprint)
 }
 
 func (l leaseState) matchesTopUp(r TopUpRequest) bool {
@@ -630,6 +776,31 @@ func (l leaseState) matchesTopUp(r TopUpRequest) bool {
 
 func (l leaseState) matchesAttempt(a attemptState) bool {
 	return l.GrantID == a.GrantID && l.LeaseID == a.LeaseID && l.OrganizationID == a.OrganizationID && l.RuntimeID == a.RuntimeID && l.AgentID == a.AgentID && l.Identity == a.Identity
+}
+
+func (l leaseState) matchesGrantBinding(g llm.ExternalGrant) bool {
+	return l.GrantID == g.GrantID && l.LeaseID == g.Lease.LeaseID && l.OrganizationID == g.OrganizationID &&
+		l.RuntimeID == g.RuntimeID && l.AgentID == g.AgentID && l.Identity == (identity.Quadruple{
+		Identity: identity.Identity{TenantID: g.TenantID, UserID: g.UserID, SessionID: g.SessionID},
+		RunID:    g.LogicalRunID,
+	})
+}
+
+func leaseStateFromGrant(rootFingerprint string, g llm.ExternalGrant, fingerprint string, canonical []byte) leaseState {
+	return leaseState{
+		GrantID: g.GrantID, LeaseID: g.Lease.LeaseID, OrganizationID: g.OrganizationID,
+		RuntimeID: g.RuntimeID, AgentID: g.AgentID,
+		Identity: identity.Quadruple{Identity: identity.Identity{TenantID: g.TenantID, UserID: g.UserID, SessionID: g.SessionID}, RunID: g.LogicalRunID},
+		Epoch:    g.Lease.Epoch, Capacity: g.Lease.RemainingTokens(), ExpiresAt: g.Lease.ExpiresAt,
+		GrantFingerprint: fingerprint, RootGrantFingerprint: rootFingerprint,
+		GrantCanonical: append(json.RawMessage(nil), canonical...),
+	}
+}
+
+func grantBindingMatches(a, b llm.ExternalGrant) bool {
+	return a.GrantID == b.GrantID && a.Lease.LeaseID == b.Lease.LeaseID && a.OrganizationID == b.OrganizationID &&
+		a.RuntimeID == b.RuntimeID && a.AgentID == b.AgentID && a.TenantID == b.TenantID && a.UserID == b.UserID &&
+		a.SessionID == b.SessionID && a.LogicalRunID == b.LogicalRunID
 }
 
 func (a attemptState) matchesReceipt(r llm.AttemptUsageReceipt) bool {

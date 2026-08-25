@@ -171,6 +171,18 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 // verified identity, not merely a mutable working identity, and checks the
 // exact model/lease/route claims before the driver is reached.
 func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
+	return v.verify(ctx, grant, req, false)
+}
+
+// VerifyRenewalPredecessor authenticates a predecessor for the narrow renewal
+// path. It performs every ordinary authority and request-bound check while
+// allowing only already-elapsed grant/lease deadlines or depleted capacity.
+// Future-issued, malformed, mismatched, or untrusted grants remain invalid.
+func (v *Verifier) VerifyRenewalPredecessor(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
+	return v.verify(ctx, grant, req, true)
+}
+
+func (v *Verifier) verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest, renewal bool) error {
 	if err := validateClaims(grant, true); err != nil {
 		return err
 	}
@@ -194,8 +206,8 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 		return fmt.Errorf("%w: key_id=%q", llm.ErrExternalGrantSignature, grant.KeyID)
 	}
 	now := v.clock().UTC()
-	if now.Before(grant.IssuedAt.Add(-v.clockSkew)) || !now.Before(grant.ExpiresAt) {
-		return fmt.Errorf("%w: grant expired or issued in the future", llm.ErrExternalGrantInvalid)
+	if now.Before(grant.IssuedAt.Add(-v.clockSkew)) {
+		return fmt.Errorf("%w: grant issued in the future", llm.ErrExternalGrantInvalid)
 	}
 	verified, ok := identity.FromVerified(ctx)
 	if !ok {
@@ -235,6 +247,12 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 	}
 	if reasoningRank(req.ReasoningEffort) > reasoningRank(grant.MaxReasoning) {
 		return fmt.Errorf("%w: requested reasoning exceeds grant", llm.ErrExternalGrantInvalid)
+	}
+	if renewal {
+		return nil
+	}
+	if !now.Before(grant.ExpiresAt) {
+		return fmt.Errorf("%w: grant deadline elapsed", llm.ErrExternalGrantExpired)
 	}
 	if grant.Lease.ExpiresAt.IsZero() || !now.Before(grant.Lease.ExpiresAt) || grant.Lease.RemainingTokens() <= 0 {
 		return fmt.Errorf("%w: %w", llm.ErrExternalGrantInvalid, llm.ErrExternalGrantLeaseInsufficient)
@@ -454,10 +472,12 @@ func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 		return fmt.Errorf("%w: missing policy generation", ErrInvalidGrantShape)
 	case g.MaxReasoning == "" || reasoningRank(g.MaxReasoning) >= 99:
 		return fmt.Errorf("%w: unsupported reasoning ceiling", ErrInvalidGrantShape)
-	case g.MaxOutputTokens <= 0 || g.Lease.LeaseID == "" || g.Lease.TokenUnits <= 0 || g.Lease.ConsumedUnits < 0:
+	case g.MaxOutputTokens <= 0 || g.Lease.LeaseID == "" || g.Lease.TokenUnits <= 0 || g.Lease.ConsumedUnits < 0 || g.Lease.ConsumedUnits > g.Lease.TokenUnits || g.Lease.ExpiresAt.IsZero():
 		return fmt.Errorf("%w: invalid output or lease", ErrInvalidGrantShape)
 	case g.IssuedAt.IsZero() || g.ExpiresAt.IsZero() || !g.ExpiresAt.After(g.IssuedAt):
 		return fmt.Errorf("%w: invalid validity interval", ErrInvalidGrantShape)
+	case !g.Lease.ExpiresAt.After(g.IssuedAt):
+		return fmt.Errorf("%w: invalid lease validity interval", ErrInvalidGrantShape)
 	case requireSignature && g.Signature == "":
 		return fmt.Errorf("%w: missing signature", ErrInvalidGrantShape)
 	}

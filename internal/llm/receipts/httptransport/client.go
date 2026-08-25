@@ -18,6 +18,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/llm/receipts"
+	llmtopup "github.com/hurtener/Harbor/sdk/llm/topup"
 )
 
 const (
@@ -36,12 +37,15 @@ var (
 	ErrInvalidConfig = errors.New("llm/receipts/httptransport: invalid configuration")
 	// ErrDelivery identifies a bounded receipt delivery failure.
 	ErrDelivery = errors.New("llm/receipts/httptransport: receipt delivery failed")
+	// ErrTopUp identifies a bounded authenticated lease-renewal failure.
+	ErrTopUp = errors.New("llm/receipts/httptransport: lease top-up failed")
 )
 
 // Config is immutable constructor input. AuthToken is the already-resolved
 // runtime service credential and must never be logged or serialized.
 type Config struct {
 	ReceiptURL string
+	TopUpURL   string
 	AuthToken  string
 	Timeout    time.Duration
 	MaxBatch   int
@@ -51,16 +55,19 @@ type Config struct {
 // Readiness is a secret-free structural/observed transport projection.
 type Readiness struct {
 	Receipt string
+	TopUp   string
 }
 
 // Client is safe for concurrent reuse. Its endpoints and credential are
 // immutable; atomics retain only the latest secret-free transport state.
 type Client struct {
 	receiptURL   string
+	topUpURL     string
 	authToken    string
 	maxBatch     int
 	httpClient   *http.Client
 	receiptState atomic.Int32
+	topUpState   atomic.Int32
 	outboxState  atomic.Int32
 }
 
@@ -69,6 +76,11 @@ type Client struct {
 func New(cfg Config) (*Client, error) {
 	if err := validateEndpoint(cfg.ReceiptURL); err != nil {
 		return nil, fmt.Errorf("%w: receipt endpoint", ErrInvalidConfig)
+	}
+	if cfg.TopUpURL != "" {
+		if err := validateEndpoint(cfg.TopUpURL); err != nil {
+			return nil, fmt.Errorf("%w: top-up endpoint", ErrInvalidConfig)
+		}
 	}
 	if strings.TrimSpace(cfg.AuthToken) == "" {
 		return nil, fmt.Errorf("%w: authentication token is empty", ErrInvalidConfig)
@@ -100,6 +112,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		receiptURL: cfg.ReceiptURL,
+		topUpURL:   cfg.TopUpURL,
 		authToken:  cfg.AuthToken,
 		maxBatch:   maxBatch,
 		httpClient: hc,
@@ -115,6 +128,7 @@ func (c *Client) Readiness() Readiness {
 	}
 	return Readiness{
 		Receipt: stateName(state, true),
+		TopUp:   stateName(c.topUpState.Load(), c.topUpURL != ""),
 	}
 }
 
@@ -140,6 +154,50 @@ func (c *Client) Deliver(ctx context.Context, receipt llm.AttemptUsageReceipt) e
 		return fmt.Errorf("%w: receipt was not acknowledged", ErrDelivery)
 	}
 	return nil
+}
+
+// TopUp implements llm.LeaseTopUpper over the optional boot-pinned
+// authenticated coordinator endpoint. It is invoked only from the provider
+// call path after the predecessor has passed the renewal preflight; the client
+// itself starts no timer, goroutine, poll, or idle read.
+func (c *Client) TopUp(ctx context.Context, predecessor llm.ExternalGrant, requestedUnits int64) (llm.ExternalGrant, error) {
+	reason := llm.ExternalGrantRenewalExpired
+	if predecessor.Lease.RemainingTokens() < requestedUnits {
+		reason = llm.ExternalGrantRenewalLeaseInsufficient
+	}
+	return c.Renew(ctx, predecessor, requestedUnits, reason)
+}
+
+// Renew implements llm.LeaseReasonedTopUpper. The reason is authenticated by
+// the caller's renewal preflight and may reflect durable settlement that is
+// intentionally newer than the immutable signed predecessor snapshot.
+func (c *Client) Renew(ctx context.Context, predecessor llm.ExternalGrant, requestedUnits int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+	if c.topUpURL == "" {
+		return llm.ExternalGrant{}, fmt.Errorf("%w: endpoint is not configured", ErrTopUp)
+	}
+	if requestedUnits <= 0 {
+		return llm.ExternalGrant{}, fmt.Errorf("%w: requested units must be positive", ErrTopUp)
+	}
+	request, err := llmtopup.NewRequestForReason(predecessor, requestedUnits, reason)
+	if err != nil {
+		return llm.ExternalGrant{}, fmt.Errorf("%w: canonical request", ErrTopUp)
+	}
+	payload, err := llmtopup.MarshalCanonicalRequest(request)
+	if err != nil {
+		return llm.ExternalGrant{}, fmt.Errorf("%w: canonical request", ErrTopUp)
+	}
+	raw, err := c.postRaw(ctx, c.topUpURL, payload, request.IdempotencyKey, ErrTopUp, llmtopup.MaxResponseBytes)
+	if err != nil {
+		c.topUpState.Store(transportStateDegraded)
+		return llm.ExternalGrant{}, err
+	}
+	response, err := llmtopup.ParseCanonicalResponse(request, raw)
+	if err != nil {
+		c.topUpState.Store(transportStateDegraded)
+		return llm.ExternalGrant{}, fmt.Errorf("%w: malformed canonical successor", ErrTopUp)
+	}
+	c.topUpState.Store(transportStateReady)
+	return response.Successor, nil
 }
 
 // DeliverBatch sends canonical receipt objects and accepts only exact
@@ -200,32 +258,52 @@ func (c *Client) DeliverBatch(ctx context.Context, batch []llm.AttemptUsageRecei
 }
 
 func (c *Client) post(ctx context.Context, endpoint string, payload []byte, out any, sentinel error) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	return c.postWithIdempotency(ctx, endpoint, payload, "", out, sentinel)
+}
+
+func (c *Client) postWithIdempotency(ctx context.Context, endpoint string, payload []byte, idempotencyKey string, out any, sentinel error) error {
+	raw, err := c.postRaw(ctx, endpoint, payload, idempotencyKey, sentinel, maxResponseBytes)
 	if err != nil {
-		return fmt.Errorf("%w: build request", sentinel)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.authToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("%w: authenticated request failed", sentinel)
-	}
-	defer resp.Body.Close()
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if readErr != nil {
-		return fmt.Errorf("%w: response read failed", sentinel)
-	}
-	if len(raw) > maxResponseBytes {
-		return fmt.Errorf("%w: response exceeds byte bound", sentinel)
-	}
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%w: coordinator returned status %d", sentinel, resp.StatusCode)
+		return err
 	}
 	if err := decodeStrict(raw, out); err != nil {
 		return fmt.Errorf("%w: malformed response", sentinel)
 	}
 	return nil
+}
+
+func (c *Client) postRaw(ctx context.Context, endpoint string, payload []byte, idempotencyKey string, sentinel error, responseLimit int) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("%w: build request", sentinel)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: authenticated request failed", sentinel)
+	}
+	defer resp.Body.Close()
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(responseLimit)+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("%w: response read failed", sentinel)
+	}
+	if len(raw) > responseLimit {
+		return nil, fmt.Errorf("%w: response exceeds byte bound", sentinel)
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("%w: coordinator returned status %d", sentinel, resp.StatusCode)
+	}
+	if idempotencyKey != "" {
+		if err := llmtopup.ValidateIdempotencyHeader(resp.Header.Get("Idempotency-Key"), idempotencyKey); err != nil {
+			return nil, fmt.Errorf("%w: idempotency response mismatch", sentinel)
+		}
+	}
+	return raw, nil
 }
 
 type receiptBatchRequest struct {

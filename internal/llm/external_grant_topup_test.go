@@ -83,6 +83,39 @@ func TestValidateExternalGrantTopUpSuccessor_AcceptsOnlyBoundedLeaseAndSigningRo
 	}
 }
 
+func TestValidateExternalGrantRenewalSuccessor_ExpiryDoesNotWidenCompute(t *testing.T) {
+	current, successor := validTopUpPair()
+	current.Lease.TokenUnits = 200
+	successor.Lease.TokenUnits = current.Lease.TokenUnits
+	successor.Lease.ConsumedUnits = current.Lease.ConsumedUnits
+	if err := ValidateExternalGrantRenewalSuccessor(current, successor, 100, ExternalGrantRenewalExpired); err != nil {
+		t.Fatalf("expiry-only successor: %v", err)
+	}
+
+	widened := successor
+	widened.Lease.TokenUnits++
+	if err := ValidateExternalGrantRenewalSuccessor(current, widened, 100, ExternalGrantRenewalExpired); !errors.Is(err, ErrExternalGrantInvalid) {
+		t.Fatalf("expiry-only capacity widening=%v, want invalid", err)
+	}
+	changedConsumption := successor
+	changedConsumption.Lease.ConsumedUnits++
+	if err := ValidateExternalGrantRenewalSuccessor(current, changedConsumption, 100, ExternalGrantRenewalExpired); !errors.Is(err, ErrExternalGrantInvalid) {
+		t.Fatalf("expiry-only consumption change=%v, want invalid", err)
+	}
+	if err := ValidateExternalGrantRenewalSuccessor(current, successor, 201, ExternalGrantRenewalExpired); !errors.Is(err, ErrExternalGrantInvalid) {
+		t.Fatalf("expiry-only insufficient predecessor=%v, want invalid", err)
+	}
+
+	insufficient, topped := validTopUpPair()
+	if err := ValidateExternalGrantRenewalSuccessor(insufficient, topped, 90, ExternalGrantRenewalLeaseInsufficient); err != nil {
+		t.Fatalf("bounded capacity successor: %v", err)
+	}
+	topped.Lease.TokenUnits++
+	if err := ValidateExternalGrantRenewalSuccessor(insufficient, topped, 90, ExternalGrantRenewalLeaseInsufficient); !errors.Is(err, ErrExternalGrantInvalid) {
+		t.Fatalf("capacity increase beyond requested=%v, want invalid", err)
+	}
+}
+
 func TestValidateExternalGrantTopUpSuccessor_RejectsEveryImmutableClaimDrift(t *testing.T) {
 	tests := map[string]func(*ExternalGrant){
 		"version":                        func(g *ExternalGrant) { g.Version++ },

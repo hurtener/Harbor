@@ -73,6 +73,7 @@ func TestValidateLLMExternalGrant_DisabledNeedsNoKeys(t *testing.T) {
 func TestValidateLLMExternalGrant_CoordinatorTransport(t *testing.T) {
 	valid := ExternalGrantCoordinatorConfig{
 		ReceiptURL:        "https://coordinator.example.test/v1/receipts",
+		TopUpURL:          "https://coordinator.example.test/v1/grants/top-up",
 		AuthTokenEnv:      "HARBOR_COORDINATOR_TOKEN",
 		Timeout:           5 * time.Second,
 		MaxBatch:          100,
@@ -90,6 +91,16 @@ func TestValidateLLMExternalGrant_CoordinatorTransport(t *testing.T) {
 		}()},
 		"missing receipt":  {cfg: func() ExternalGrantCoordinatorConfig { c := valid; c.ReceiptURL = ""; return c }(), wantErr: "receipt_url"},
 		"missing auth env": {cfg: func() ExternalGrantCoordinatorConfig { c := valid; c.AuthTokenEnv = ""; return c }(), wantErr: "auth_token_env"},
+		"top-up remote plaintext": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.TopUpURL = "http://coordinator.example.test/grants/top-up"
+			return c
+		}(), wantErr: "loopback"},
+		"top-up query": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.TopUpURL = "https://coordinator.example.test/grants/top-up?q=1"
+			return c
+		}(), wantErr: "query"},
 		"remote plaintext": {cfg: func() ExternalGrantCoordinatorConfig {
 			c := valid
 			c.ReceiptURL = "http://coordinator.example.test/receipts"

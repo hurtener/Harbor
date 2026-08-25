@@ -3,14 +3,19 @@ package serve
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	llmgrant "github.com/hurtener/Harbor/internal/llm/grant"
+	"github.com/hurtener/Harbor/internal/llm/leases"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -43,6 +48,14 @@ type testTopUpper struct{}
 func (testTopUpper) TopUp(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
 	return llm.ExternalGrant{}, nil
 }
+
+type transportTestProvider struct{}
+
+func (transportTestProvider) Complete(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 1}}, nil
+}
+
+func (transportTestProvider) Close(context.Context) error { return nil }
 
 // transientDueLoadStore fails one post-startup due-index read. It models a
 // StateStore interruption after serve has already advertised strict readiness.
@@ -105,6 +118,83 @@ func TestConfigureStockExternalGrant_WiresReceiptOnly(t *testing.T) {
 	}
 }
 
+func TestConfigureStockExternalGrant_WiresOptionalTopUpWithoutIdleWork(t *testing.T) {
+	cfg := config.ExternalGrantCoordinatorConfig{
+		ReceiptURL:   "https://coordinator.example.test/v1/receipts",
+		TopUpURL:     "https://coordinator.example.test/v1/grants/top-up",
+		AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN",
+	}
+	lookups := 0
+	opts := Options{}
+	client, err := configureStockExternalGrant(cfg, &opts, func(string) (string, bool) {
+		lookups++
+		return testCoordinatorToken, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client == nil || opts.ExternalGrantDelivery != client || opts.ExternalGrant.TopUpper != client || lookups != 1 {
+		t.Fatalf("stock top-up wiring client=%v topup=%T lookups=%d", client, opts.ExternalGrant.TopUpper, lookups)
+	}
+	if ready := client.Readiness(); ready.Receipt != "wired" || ready.TopUp != "wired" {
+		t.Fatalf("constructor readiness=%+v", ready)
+	}
+}
+
+func TestStockTopUpTransport_AmpleValidLeaseMakesZeroCoordinatorCalls(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	opts := Options{}
+	stock, err := configureStockExternalGrant(config.ExternalGrantCoordinatorConfig{
+		ReceiptURL: server.URL, TopUpURL: server.URL, AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN",
+	}, &opts, func(string) (string, bool) { return testCoordinatorToken, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := inmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close(context.Background()) }()
+	durable, err := leases.New(st, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	grant := llm.ExternalGrant{
+		Version: llm.ExternalGrantVersionLegacy, KeyID: "key-a", Audience: "harbor-runtime", GrantID: "grant-ample",
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault, OrganizationID: "org-a", RuntimeID: "runtime-a",
+		TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", LogicalRunID: "run-a",
+		LogicalCallID: "call-a", AttemptNonce: "nonce-a", PolicyGeneration: 1, MaxReasoning: llm.ReasoningLow, MaxOutputTokens: 10,
+		Lease:    llm.ComputeLease{LeaseID: "lease-ample", Epoch: 1, TokenUnits: 100, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute), Signature: "fixture-signature",
+	}
+	client := llmgrant.Wrap(transportTestProvider{}, llm.ConfigSnapshot{Provider: "mock", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier: testGrantVerifier{}, Reservations: durable, Successors: durable, SuccessorResolver: durable,
+		TopUpper: stock, ReceiptSink: testReceiptSink{},
+	}})
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, grant.LogicalRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = llm.WithVerifiedOrganization(ctx, grant.OrganizationID)
+	maxTokens := 10
+	if _, err := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &grant}); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("ample valid lease made %d coordinator HTTP calls", got)
+	}
+}
+
 func TestConfigureStockExternalGrant_FailsLoudWithoutCredentialAndOnConflicts(t *testing.T) {
 	cfg := config.ExternalGrantCoordinatorConfig{ReceiptURL: "https://coordinator.example.test/receipts", AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN"}
 	if _, err := configureStockExternalGrant(cfg, &Options{}, func(string) (string, bool) { return "", false }); err == nil {
@@ -119,6 +209,12 @@ func TestConfigureStockExternalGrant_FailsLoudWithoutCredentialAndOnConflicts(t 
 	opts = Options{ExternalGrant: llm.ExternalGrantConfig{ReceiptSink: testReceiptSink{}}}
 	if _, err := configureStockExternalGrant(cfg, &opts, func(string) (string, bool) { return testCoordinatorToken, true }); err == nil {
 		t.Fatal("configured transport and injected receipt sink were both accepted")
+	}
+	topUpCfg := cfg
+	topUpCfg.TopUpURL = "https://coordinator.example.test/grants/top-up"
+	opts = Options{ExternalGrant: llm.ExternalGrantConfig{TopUpper: testTopUpper{}}}
+	if _, err := configureStockExternalGrant(topUpCfg, &opts, func(string) (string, bool) { return testCoordinatorToken, true }); err == nil {
+		t.Fatal("configured and injected top-up transports were both accepted")
 	}
 }
 
@@ -160,13 +256,14 @@ func TestExternalGrantReadiness_StockOutboxDegradesAndRecovers(t *testing.T) {
 	}}
 	stock, err := configureStockExternalGrant(config.ExternalGrantCoordinatorConfig{
 		ReceiptURL:   "https://coordinator.example.test/v1/receipts",
+		TopUpURL:     "https://coordinator.example.test/v1/grants/top-up",
 		AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN",
 	}, &opts, func(string) (string, bool) { return testCoordinatorToken, true })
 	if err != nil {
 		t.Fatal(err)
 	}
 	readiness := externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, opts.ExternalGrant, opts.ExternalGrantDelivery, stock)
-	if initial := readiness(); !initial.StrictReady || initial.ReceiptTransport != "wired" {
+	if initial := readiness(); !initial.StrictReady || initial.ReceiptTransport != "wired" || initial.TopUpTransport != "stock_authenticated_http" {
 		t.Fatalf("initial readiness=%+v", initial)
 	}
 	stock.SetOutboxHealth(false)

@@ -233,6 +233,7 @@ llm:
   #     coordinator-2026: BASE64URL_ED25519_PUBLIC_KEY
   #   coordinator:
   #     receipt_url: https://coordinator.example.com/v1/usage-receipts
+  #     top_up_url: https://coordinator.example.com/v1/lease-top-ups
   #     # Env var holding this runtime's service credential. Never put the
   #     # credential itself in yaml.
   #     auth_token_env: HARBOR_COORDINATOR_TOKEN

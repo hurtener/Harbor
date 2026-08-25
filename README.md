@@ -41,6 +41,9 @@ It ships two ways, and they are the same runtime:
   The [`sdk/`](sdk/) facade is the supported public surface, and a standing
   CI gate compiles a scaffolded external agent on every commit so "importable
   from outside" stays true rather than aspirational.
+- **Public governed-LLM contracts.** [`sdk/llm`](sdk/llm/) exposes external
+  grants and receipts; [`sdk/llm/topup`](sdk/llm/topup/) exposes the strict
+  canonical renewal exchange and exact bounds for an external coordinator.
 - **A static binary.** `harbor` drives the local dev loop, validation,
   scaffolding, and the Console. CGo-free, no message broker to stand up;
   `harbor dev` boots the whole runtime on your laptop in under a second.

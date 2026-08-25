@@ -18,6 +18,24 @@ import (
 
 type publicReceiptDelivery struct{}
 
+type publicRenewalSeams struct{}
+
+func (publicRenewalSeams) TopUp(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+	return llm.ExternalGrant{}, nil
+}
+
+func (publicRenewalSeams) Renew(context.Context, llm.ExternalGrant, int64, llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+	return llm.ExternalGrant{}, nil
+}
+
+func (publicRenewalSeams) ApplySuccessor(context.Context, llm.ExternalGrant, llm.ExternalGrant) error {
+	return nil
+}
+
+func (publicRenewalSeams) ResolveSuccessor(context.Context, llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	return llm.ExternalGrant{}, false, nil
+}
+
 func (publicReceiptDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error { return nil }
 
 func (publicReceiptDelivery) DeliverBatch(context.Context, []llm.AttemptUsageReceipt) ([]receipts.DeliveryAck, error) {
@@ -26,6 +44,10 @@ func (publicReceiptDelivery) DeliverBatch(context.Context, []llm.AttemptUsageRec
 
 var _ receipts.Delivery = publicReceiptDelivery{}
 var _ receipts.BatchDelivery = publicReceiptDelivery{}
+var _ llm.LeaseTopUpper = publicRenewalSeams{}
+var _ llm.LeaseReasonedTopUpper = publicRenewalSeams{}
+var _ llm.LeaseSuccessorApplier = publicRenewalSeams{}
+var _ llm.LeaseSuccessorResolver = publicRenewalSeams{}
 
 // TestExternalGrantSurfaceIsNameableFromExternalPackage is intentionally in
 // package assemble_test: a downstream embedder must be able to name the

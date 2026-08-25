@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/leases"
 	"github.com/hurtener/Harbor/internal/llm/retry"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	statesqlite "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -112,7 +114,30 @@ func (*blockingClient) Close(context.Context) error { return nil }
 
 type topUpperFunc func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error)
 
+type successorApplierFunc func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error
+
+type signalingSuccessorApplier struct {
+	store        *leases.Store
+	smallApplied chan struct{}
+	once         sync.Once
+	threshold    int64
+}
+
+func (a *signalingSuccessorApplier) ApplySuccessor(ctx context.Context, predecessor, successor llm.ExternalGrant) error {
+	err := a.store.ApplySuccessor(ctx, predecessor, successor)
+	if err == nil && successor.Lease.TokenUnits-predecessor.Lease.TokenUnits <= a.threshold {
+		a.once.Do(func() { close(a.smallApplied) })
+	}
+	return err
+}
+
+func (a *signalingSuccessorApplier) ResolveSuccessor(ctx context.Context, root llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	return a.store.ResolveSuccessor(ctx, root)
+}
+
 type verifierFunc func(context.Context, llm.ExternalGrant, llm.CompleteRequest) error
+
+type renewalVerifierFunc func(context.Context, llm.ExternalGrant, llm.CompleteRequest) error
 
 func newTestReservations(t *testing.T) *leases.Store {
 	t.Helper()
@@ -128,11 +153,48 @@ func newTestReservations(t *testing.T) *leases.Store {
 	return reservations
 }
 
+type successorResolverFunc func(context.Context, llm.ExternalGrant) (llm.ExternalGrant, bool, error)
+
+func (f successorResolverFunc) ResolveSuccessor(ctx context.Context, root llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	return f(ctx, root)
+}
+
+type reasonedTopUpperFunc func(context.Context, llm.ExternalGrant, int64, llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error)
+
+func (f reasonedTopUpperFunc) TopUp(ctx context.Context, grant llm.ExternalGrant, units int64) (llm.ExternalGrant, error) {
+	reason := llm.ExternalGrantRenewalExpired
+	if grant.Lease.RemainingTokens() < units {
+		reason = llm.ExternalGrantRenewalLeaseInsufficient
+	}
+	return f(ctx, grant, units, reason)
+}
+
+func (f reasonedTopUpperFunc) Renew(ctx context.Context, grant llm.ExternalGrant, units int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+	return f(ctx, grant, units, reason)
+}
+
+func newTestBinding(t *testing.T) *BindingStore {
+	t.Helper()
+	bindings := NewBindingStore()
+	if err := bindings.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	return bindings
+}
+
 func (f topUpperFunc) TopUp(ctx context.Context, grant llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
 	return f(ctx, grant, needed)
 }
 
+func (f successorApplierFunc) ApplySuccessor(ctx context.Context, predecessor, successor llm.ExternalGrant) error {
+	return f(ctx, predecessor, successor)
+}
+
 func (f verifierFunc) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
+	return f(ctx, grant, req)
+}
+
+func (f renewalVerifierFunc) VerifyRenewalPredecessor(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
 	return f(ctx, grant, req)
 }
 
@@ -421,6 +483,453 @@ func TestWrap_TopsUpBoundedLeaseBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestWrap_ExpiredGrantRenewsDeadlinesWithoutWideningCapacityAndAppliesBeforeProvider(t *testing.T) {
+	now := testClock()
+	predecessorSigner, err := NewSigner("key-expired", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorNow := now.Add(20 * time.Minute)
+	successorSigner, err := NewSigner("key-renewed", "harbor-runtime", nil, func() time.Time { return successorNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{
+		"key-expired": predecessorSigner.PublicKey(), "key-renewed": successorSigner.PublicKey(),
+	}, Clock: func() time.Time { return successorNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	claims.Provider, claims.ProviderModelID, claims.ProviderConnectionID, claims.RouteID, claims.CredentialBindingHandle = "", "", "", "", ""
+	claims.ProviderConnectionGeneration, claims.CredentialAssetGeneration = 0, 0
+	claims.Lease.TokenUnits = 500
+	claims.IssuedAt = now.Add(-20 * time.Minute)
+	claims.ExpiresAt = now.Add(-15 * time.Minute)
+	claims.Lease.ExpiresAt = now.Add(-10 * time.Minute)
+	predecessor, err := predecessorSigner.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := predecessor
+	successor.Lease.Epoch++
+	successor.IssuedAt = successorNow
+	successor.ExpiresAt = successorNow.Add(5 * time.Minute)
+	successor.Lease.ExpiresAt = successorNow.Add(10 * time.Minute)
+	successor, err = successorSigner.Sign(successor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var topUpCalls, applyCalls atomic.Int32
+	applied := make(chan struct{}, 1)
+	durable := newTestReservations(t)
+	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
+	client := Wrap(completeFunc(func(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		select {
+		case <-applied:
+		default:
+			t.Fatal("provider called before durable successor application")
+		}
+		return inner.Complete(ctx, req)
+	}), llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, Verifier: verifier, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+			topUpCalls.Add(1)
+			return successor, nil
+		}),
+		Reservations: durable,
+		Successors: successorApplierFunc(func(ctx context.Context, old, next llm.ExternalGrant) error {
+			applyCalls.Add(1)
+			if old.Lease.TokenUnits != next.Lease.TokenUnits || old.Lease.ConsumedUnits != next.Lease.ConsumedUnits {
+				t.Fatal("expiry-only renewal widened compute")
+			}
+			if err := durable.ApplySuccessor(ctx, old, next); err != nil {
+				return err
+			}
+			applied <- struct{}{}
+			return nil
+		}),
+	}})
+	maxTokens := 100
+	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &predecessor}); err != nil {
+		t.Fatalf("expired renewal Complete: %v", err)
+	}
+	if topUpCalls.Load() != 1 || applyCalls.Load() != 1 || len(inner.requests) != 1 {
+		t.Fatalf("topup=%d apply=%d provider=%d", topUpCalls.Load(), applyCalls.Load(), len(inner.requests))
+	}
+}
+
+func TestWrap_ImmutableRootReusesDurableSuccessorThenRenewsActualExhaustion(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-multicall", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-multicall": signer.PublicKey()}, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	claims.Provider, claims.ProviderModelID, claims.ProviderConnectionID, claims.RouteID, claims.CredentialBindingHandle = "", "", "", "", ""
+	claims.ProviderConnectionGeneration, claims.CredentialAssetGeneration = 0, 0
+	claims.Lease.TokenUnits, claims.Lease.ConsumedUnits = 5, 0
+	root, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := newTestReservations(t)
+	var renewalCalls atomic.Int32
+	var mu sync.Mutex
+	var reasons []llm.ExternalGrantRenewalReason
+	topUpper := reasonedTopUpperFunc(func(_ context.Context, current llm.ExternalGrant, needed int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+		renewalCalls.Add(1)
+		mu.Lock()
+		reasons = append(reasons, reason)
+		mu.Unlock()
+		current.Lease.Epoch++
+		if reason == llm.ExternalGrantRenewalLeaseInsufficient {
+			current.Lease.TokenUnits += needed
+		}
+		current.IssuedAt = current.IssuedAt.Add(time.Second)
+		current.ExpiresAt = current.ExpiresAt.Add(time.Second)
+		current.Lease.ExpiresAt = current.Lease.ExpiresAt.Add(time.Second)
+		return signer.Sign(current)
+	})
+	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
+	client := Wrap(inner, llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier: verifier, RenewalVerifier: verifier, Reservations: durable,
+		Successors: durable, SuccessorResolver: durable, TopUpper: topUpper,
+	}})
+	maxTokens := 10
+	for step := 1; step <= 3; step++ {
+		ctx := llm.WithAttemptStep(testContext(t, "org-a"), step)
+		if _, err := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &root}); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+		if step == 2 && renewalCalls.Load() != 1 {
+			t.Fatalf("step 2 did not reuse durable successor: renewal calls=%d", renewalCalls.Load())
+		}
+	}
+	if renewalCalls.Load() != 2 || len(inner.requests) != 3 {
+		t.Fatalf("renewal calls=%d provider calls=%d", renewalCalls.Load(), len(inner.requests))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reasons) != 2 || reasons[0] != llm.ExternalGrantRenewalLeaseInsufficient || reasons[1] != llm.ExternalGrantRenewalLeaseInsufficient {
+		t.Fatalf("renewal reasons=%v", reasons)
+	}
+}
+
+func TestWrap_ImmutableRootResolvesCurrentSuccessorAfterSQLiteRestart(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-restart", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-restart": signer.PublicKey()}, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	claims.Provider, claims.ProviderModelID, claims.ProviderConnectionID, claims.RouteID, claims.CredentialBindingHandle = "", "", "", "", ""
+	claims.ProviderConnectionGeneration, claims.CredentialAssetGeneration = 0, 0
+	claims.Lease.TokenUnits, claims.Lease.ConsumedUnits = 5, 0
+	root, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var renewals atomic.Int32
+	topUpper := reasonedTopUpperFunc(func(_ context.Context, current llm.ExternalGrant, needed int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+		renewals.Add(1)
+		current.Lease.Epoch++
+		if reason == llm.ExternalGrantRenewalLeaseInsufficient {
+			current.Lease.TokenUnits += needed
+		}
+		current.IssuedAt = current.IssuedAt.Add(time.Second)
+		current.ExpiresAt = current.ExpiresAt.Add(time.Second)
+		current.Lease.ExpiresAt = current.Lease.ExpiresAt.Add(time.Second)
+		return signer.Sign(current)
+	})
+	dsn := filepath.Join(t.TempDir(), "complete-restart.sqlite")
+	open := func() (*leases.Store, interface{ Close(context.Context) error }) {
+		st, openErr := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		store, openErr := leases.New(st, func() time.Time { return now })
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		return store, st
+	}
+	complete := func(store *leases.Store, step int) {
+		inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
+		client := Wrap(inner, llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+			Mode: llm.ExternalGrantOptional, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+			Verifier: verifier, RenewalVerifier: verifier, Reservations: store,
+			Successors: store, SuccessorResolver: store, TopUpper: topUpper,
+		}})
+		maxTokens := 10
+		ctx := llm.WithAttemptStep(testContext(t, "org-a"), step)
+		if _, completeErr := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &root}); completeErr != nil {
+			t.Fatalf("step %d after restart boundary: %v", step, completeErr)
+		}
+		if len(inner.requests) != 1 {
+			t.Fatalf("step %d provider calls=%d", step, len(inner.requests))
+		}
+	}
+
+	store, st := open()
+	complete(store, 1)
+	if renewals.Load() != 1 {
+		t.Fatalf("initial renewals=%d", renewals.Load())
+	}
+	if err := st.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	store, st = open()
+	defer func() { _ = st.Close(context.Background()) }()
+	complete(store, 2)
+	if renewals.Load() != 1 {
+		t.Fatalf("restart did not reuse current successor: renewals=%d", renewals.Load())
+	}
+	complete(store, 3)
+	if renewals.Load() != 2 {
+		t.Fatalf("actual durable exhaustion did not renew current successor: renewals=%d", renewals.Load())
+	}
+}
+
+func TestWrap_MixedRequestedUnitRenewalsReloadWinnerBeforeProvider(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-mixed", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-mixed": signer.PublicKey()}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	claims.Provider, claims.ProviderModelID, claims.ProviderConnectionID, claims.RouteID, claims.CredentialBindingHandle = "", "", "", "", ""
+	claims.ProviderConnectionGeneration, claims.CredentialAssetGeneration = 0, 0
+	claims.Lease.TokenUnits, claims.Lease.ConsumedUnits = 1, 0
+	root, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := newTestReservations(t)
+	applier := &signalingSuccessorApplier{store: durable, smallApplied: make(chan struct{}), threshold: 2}
+	var entered atomic.Int32
+	firstTwoEntered := make(chan struct{})
+	var enteredOnce sync.Once
+	var renewalCalls atomic.Int32
+	topUpper := reasonedTopUpperFunc(func(ctx context.Context, current llm.ExternalGrant, needed int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+		call := entered.Add(1)
+		if call == 2 {
+			enteredOnce.Do(func() { close(firstTwoEntered) })
+		}
+		if call <= 2 {
+			select {
+			case <-firstTwoEntered:
+			case <-ctx.Done():
+				return llm.ExternalGrant{}, ctx.Err()
+			}
+		}
+		renewalCalls.Add(1)
+		if needed > 2 && current.Lease.Epoch == root.Lease.Epoch {
+			select {
+			case <-applier.smallApplied:
+			case <-ctx.Done():
+				return llm.ExternalGrant{}, ctx.Err()
+			}
+		}
+		current.Lease.Epoch++
+		if reason == llm.ExternalGrantRenewalLeaseInsufficient {
+			current.Lease.TokenUnits += needed
+		}
+		current.IssuedAt = current.IssuedAt.Add(time.Second)
+		current.ExpiresAt = current.ExpiresAt.Add(time.Second)
+		current.Lease.ExpiresAt = current.Lease.ExpiresAt.Add(time.Second)
+		return signer.Sign(current)
+	})
+	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 1}}}
+	client := Wrap(inner, llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier: verifier, RenewalVerifier: verifier, Reservations: durable,
+		Successors: applier, SuccessorResolver: applier, TopUpper: topUpper,
+	}})
+	errCh := make(chan error, 2)
+	contexts := []context.Context{testContext(t, "org-a"), testContext(t, "org-a")}
+	for i, units := range []int{2, 10} {
+		step := i + 1
+		units := units
+		baseCtx := contexts[i]
+		go func() {
+			_, completeErr := client.Complete(llm.WithAttemptStep(baseCtx, step), llm.CompleteRequest{Model: "model-fast", MaxTokens: &units, ExternalGrant: &root})
+			errCh <- completeErr
+		}()
+	}
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("mixed requested-unit Complete: %v", err)
+		}
+	}
+	if got := len(inner.requests); got != 2 {
+		t.Fatalf("provider calls=%d, want 2", got)
+	}
+	if got := renewalCalls.Load(); got != 3 {
+		t.Fatalf("renewal calls=%d, want stale loser plus current retry (3)", got)
+	}
+}
+
+func TestWrap_ResolvedSuccessorStillRequiresStrictSignatureBeforeProvider(t *testing.T) {
+	signer, err := NewSigner("key-resolved", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-resolved": signer.PublicKey()}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootClaims := testGrant()
+	rootClaims.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	rootClaims.Provider, rootClaims.ProviderModelID, rootClaims.ProviderConnectionID, rootClaims.RouteID, rootClaims.CredentialBindingHandle = "", "", "", "", ""
+	rootClaims.ProviderConnectionGeneration, rootClaims.CredentialAssetGeneration = 0, 0
+	rootClaims.Lease.Epoch = 1
+	root, err := signer.Sign(rootClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := root
+	resolved.Lease.Epoch++
+	resolved.IssuedAt, resolved.ExpiresAt, resolved.Lease.ExpiresAt = resolved.IssuedAt.Add(time.Second), resolved.ExpiresAt.Add(time.Second), resolved.Lease.ExpiresAt.Add(time.Second)
+	resolved, err = signer.Sign(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved.Signature = "corrupt-persisted-signature"
+	inner := &recordingClient{}
+	client := Wrap(inner, llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, RouteMode: llm.ExternalGrantRouteRuntimeDefault, Verifier: verifier,
+		SuccessorResolver: successorResolverFunc(func(context.Context, llm.ExternalGrant) (llm.ExternalGrant, bool, error) { return resolved, true, nil }),
+	}})
+	n := 1
+	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &n, ExternalGrant: &root}); !errors.Is(err, llm.ErrExternalGrantSignature) {
+		t.Fatalf("corrupt resolved signature=%v", err)
+	}
+	if len(inner.requests) != 0 {
+		t.Fatalf("provider calls=%d", len(inner.requests))
+	}
+}
+
+func TestWrap_ExpiredInvalidOrAgentMismatchedPredecessorMakesZeroRenewalCalls(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-expired-v2", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyNow := now.Add(20 * time.Minute)
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-expired-v2": signer.PublicKey()}, Clock: func() time.Time { return verifyNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.Version, claims.AgentID = llm.ExternalGrantVersionAgentBound, "agent-a"
+	claims.RouteMode = llm.ExternalGrantRouteRuntimeDefault
+	claims.Provider, claims.ProviderModelID, claims.ProviderConnectionID, claims.RouteID, claims.CredentialBindingHandle = "", "", "", "", ""
+	claims.ProviderConnectionGeneration, claims.CredentialAssetGeneration = 0, 0
+	claims.IssuedAt, claims.ExpiresAt, claims.Lease.ExpiresAt = now.Add(-20*time.Minute), now.Add(-15*time.Minute), now.Add(-10*time.Minute)
+	expired, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badSignature := expired
+	badSignature.Signature = "bad"
+	for name, tc := range map[string]struct {
+		grant llm.ExternalGrant
+		agent string
+	}{
+		"signature": {grant: badSignature, agent: "agent-a"},
+		"agent":     {grant: expired, agent: "agent-b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			client := Wrap(&recordingClient{}, llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+				Mode: llm.ExternalGrantOptional, Verifier: verifier, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+				TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+					calls.Add(1)
+					return llm.ExternalGrant{}, nil
+				}),
+				Successors: successorApplierFunc(func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error { return nil }),
+			}})
+			n := 1
+			if _, err := client.Complete(agentBoundTestContext(t, "org-a", tc.agent), llm.CompleteRequest{Model: "model-fast", MaxTokens: &n, ExternalGrant: &tc.grant}); err == nil {
+				t.Fatal("unsafe expired predecessor accepted")
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("renewal calls=%d, want 0", calls.Load())
+			}
+		})
+	}
+}
+
+func TestWrap_ExpiredRevokedCredentialMakesZeroRenewalCalls(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-expired-revoked", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyNow := now.Add(20 * time.Minute)
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys:  map[string]ed25519.PublicKey{"key-expired-revoked": signer.PublicKey()},
+		Clock: func() time.Time { return verifyNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.IssuedAt, claims.ExpiresAt, claims.Lease.ExpiresAt = now.Add(-20*time.Minute), now.Add(-15*time.Minute), now.Add(-10*time.Minute)
+	expired, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := newTestBinding(t)
+	if err := binding.Revoke(claims.CredentialBindingHandle); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	inner := &recordingClient{}
+	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: binding,
+		TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+			calls.Add(1)
+			return llm.ExternalGrant{}, nil
+		}),
+		Successors: successorApplierFunc(func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error { return nil }),
+	}})
+	maxTokens := 1
+	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &expired}); !errors.Is(err, llm.ErrExternalGrantRevoked) {
+		t.Fatalf("revoked renewal=%v, want ErrExternalGrantRevoked", err)
+	}
+	if calls.Load() != 0 || len(inner.requests) != 0 {
+		t.Fatalf("renewal calls=%d provider calls=%d, want zero", calls.Load(), len(inner.requests))
+	}
+}
+
 func TestWrap_OmittedMaxTokensTopUpUsesGrantedOutputCeiling(t *testing.T) {
 	predecessorSigner, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
 	if err != nil {
@@ -469,7 +978,7 @@ func TestWrap_OmittedMaxTokensTopUpUsesGrantedOutputCeiling(t *testing.T) {
 		return nil
 	})
 	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
-		Mode: llm.ExternalGrantRequired, Verifier: leaseAwareVerifier, Credentials: binding,
+		Mode: llm.ExternalGrantRequired, Verifier: leaseAwareVerifier, RenewalVerifier: verifier, Credentials: binding,
 		Reservations: newTestReservations(t), TopUpper: topUpper, ReceiptSink: &recordingSink{}, ReceiptRequired: true,
 	}})
 	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed}); err != nil {
@@ -525,6 +1034,7 @@ func TestWrap_TopUpPreservesLegacyBlankRouteBeforeProviderCall(t *testing.T) {
 	normalizedInner := &recordingClient{}
 	normalizedClient := Wrap(normalizedInner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
 		Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: binding,
+		Successors: successorApplierFunc(func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error { return nil }),
 		TopUpper: topUpperFunc(func(_ context.Context, old llm.ExternalGrant, _ int64) (llm.ExternalGrant, error) {
 			old.Lease.Epoch++
 			old.Lease.TokenUnits = 110
@@ -603,7 +1113,8 @@ func TestWrap_TopUpRejectsUntrustedOrInvalidRotatingSignatureBeforeProviderCall(
 
 			inner := &recordingClient{}
 			client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
-				Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: NewBindingStore(),
+				Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: newTestBinding(t),
+				Successors: successorApplierFunc(func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error { return nil }),
 				TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
 					return successor, nil
 				}),
@@ -679,7 +1190,9 @@ func TestWrap_TopUpRejectsEveryImmutableSuccessorDriftBeforeProviderCall(t *test
 			})
 			inner := &recordingClient{}
 			client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
-				Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: NewBindingStore(),
+				Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: newTestBinding(t),
+				RenewalVerifier: renewalVerifierFunc(func(context.Context, llm.ExternalGrant, llm.CompleteRequest) error { return nil }),
+				Successors:      successorApplierFunc(func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error { return nil }),
 				TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
 					return successor, nil
 				}),

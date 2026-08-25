@@ -45,6 +45,113 @@ func testContext(t *testing.T, organization string) context.Context {
 	return llm.WithVerifiedOrganization(ctx, organization)
 }
 
+func TestVerifier_ExpiredGrantHasTypedStrictOutcomeAndNarrowRenewalPreflight(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-renew", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-renew": signer.PublicKey()}, Clock: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.IssuedAt = now.Add(-20 * time.Minute)
+	claims.ExpiresAt = now.Add(-15 * time.Minute)
+	claims.Lease.ExpiresAt = now.Add(-10 * time.Minute)
+	expired, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testContext(t, "org-a")
+	req := llm.CompleteRequest{Model: "model-fast"}
+	if err := verifier.Verify(ctx, expired, req); !errors.Is(err, llm.ErrExternalGrantExpired) {
+		t.Fatalf("strict Verify=%v, want ErrExternalGrantExpired", err)
+	}
+	if err := verifier.VerifyRenewalPredecessor(ctx, expired, req); err != nil {
+		t.Fatalf("renewal preflight rejected authenticated elapsed grant: %v", err)
+	}
+
+	tests := map[string]struct {
+		grant llm.ExternalGrant
+		ctx   context.Context
+		req   llm.CompleteRequest
+	}{
+		"bad signature":         {grant: func() llm.ExternalGrant { g := expired; g.Signature = "bad"; return g }(), ctx: ctx, req: req},
+		"audience mismatch":     {grant: func() llm.ExternalGrant { g := expired; g.Audience = "other"; return g }(), ctx: ctx, req: req},
+		"organization mismatch": {grant: expired, ctx: testContext(t, "other-org"), req: req},
+		"identity mismatch": {grant: expired, ctx: func() context.Context {
+			id := identity.Identity{TenantID: "tenant-a", UserID: "other-user", SessionID: "session-a"}
+			bound, bindErr := identity.WithVerified(context.Background(), id)
+			if bindErr != nil {
+				t.Fatal(bindErr)
+			}
+			bound, bindErr = identity.WithRun(bound, id, "run-a")
+			if bindErr != nil {
+				t.Fatal(bindErr)
+			}
+			return llm.WithVerifiedOrganization(bound, "org-a")
+		}(), req: req},
+		"model mismatch":    {grant: expired, ctx: ctx, req: llm.CompleteRequest{Model: "other-model"}},
+		"reasoning exceeds": {grant: expired, ctx: ctx, req: llm.CompleteRequest{Model: "model-fast", ReasoningEffort: llm.ReasoningHigh}},
+		"output exceeds": {grant: expired, ctx: ctx, req: func() llm.CompleteRequest {
+			n := expired.MaxOutputTokens + 1
+			return llm.CompleteRequest{Model: "model-fast", MaxTokens: &n}
+		}()},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := verifier.VerifyRenewalPredecessor(tc.ctx, tc.grant, tc.req); err == nil {
+				t.Fatal("unsafe renewal predecessor accepted")
+			}
+		})
+	}
+
+	futureClaims := claims
+	futureClaims.IssuedAt = now.Add(2 * time.Minute)
+	futureClaims.ExpiresAt = futureClaims.IssuedAt.Add(5 * time.Minute)
+	futureClaims.Lease.ExpiresAt = futureClaims.IssuedAt.Add(10 * time.Minute)
+	future, err := signer.Sign(futureClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.VerifyRenewalPredecessor(ctx, future, req); !errors.Is(err, llm.ErrExternalGrantInvalid) || errors.Is(err, llm.ErrExternalGrantExpired) {
+		t.Fatalf("future-issued renewal=%v, want invalid and not expired", err)
+	}
+}
+
+func TestVerifier_RenewalPreflightPreservesV2EffectiveAgentBinding(t *testing.T) {
+	now := testClock()
+	signer, err := NewSigner("key-v2-renew", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-v2-renew": signer.PublicKey()}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.Version = llm.ExternalGrantVersionAgentBound
+	claims.AgentID = "agent-a"
+	claims.IssuedAt = now.Add(-20 * time.Minute)
+	claims.ExpiresAt = now.Add(-15 * time.Minute)
+	claims.Lease.ExpiresAt = now.Add(-10 * time.Minute)
+	expired, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.CompleteRequest{Model: "model-fast"}
+	if err := verifier.VerifyRenewalPredecessor(agentBoundTestContext(t, "org-a", "agent-a"), expired, req); err != nil {
+		t.Fatalf("matching v2 renewal=%v", err)
+	}
+	if err := verifier.VerifyRenewalPredecessor(agentBoundTestContext(t, "org-a", "agent-b"), expired, req); !errors.Is(err, llm.ErrExternalGrantInvalid) {
+		t.Fatalf("cross-agent renewal=%v, want invalid", err)
+	}
+}
+
 func agentBoundTestContext(t *testing.T, organization, agentID string) context.Context {
 	t.Helper()
 	return tools.WithEffectiveAgentConfig(testContext(t, organization), agentID)

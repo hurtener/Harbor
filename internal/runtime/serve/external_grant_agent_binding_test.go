@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,14 +22,71 @@ import (
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
-type agentBoundProvider struct{ calls atomic.Int32 }
+type agentBoundProvider struct {
+	calls  atomic.Int32
+	tokens int
+}
 
 func (p *agentBoundProvider) Complete(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error) {
 	p.calls.Add(1)
-	return llm.CompleteResponse{Content: "done", Usage: llm.Usage{TotalTokens: 1}}, nil
+	tokens := p.tokens
+	if tokens == 0 {
+		tokens = 1
+	}
+	return llm.CompleteResponse{Content: "done", Usage: llm.Usage{TotalTokens: tokens}}, nil
 }
 
 func (*agentBoundProvider) Close(context.Context) error { return nil }
+
+type runLoopReasonedTopUpper struct {
+	signer *llmgrant.Signer
+	calls  atomic.Int32
+}
+
+func (t *runLoopReasonedTopUpper) TopUp(ctx context.Context, current llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
+	reason := llm.ExternalGrantRenewalExpired
+	if current.Lease.RemainingTokens() < needed {
+		reason = llm.ExternalGrantRenewalLeaseInsufficient
+	}
+	return t.Renew(ctx, current, needed, reason)
+}
+
+func (t *runLoopReasonedTopUpper) Renew(_ context.Context, current llm.ExternalGrant, needed int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+	t.calls.Add(1)
+	current.Lease.Epoch++
+	if reason == llm.ExternalGrantRenewalLeaseInsufficient {
+		current.Lease.TokenUnits += needed
+	}
+	current.IssuedAt = current.IssuedAt.Add(time.Second)
+	current.ExpiresAt = current.ExpiresAt.Add(time.Second)
+	current.Lease.ExpiresAt = current.Lease.ExpiresAt.Add(time.Second)
+	return t.signer.Sign(current)
+}
+
+type immutableGrantRunLoopPlanner struct {
+	client llm.LLMClient
+	raw    json.RawMessage
+}
+
+func (p *immutableGrantRunLoopPlanner) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
+	if string(rc.ExternalGrant) != string(p.raw) {
+		return nil, llm.ErrExternalGrantInvalid
+	}
+	for step := 1; step <= 3; step++ {
+		var root llm.ExternalGrant
+		if err := json.Unmarshal(rc.ExternalGrant, &root); err != nil {
+			return nil, err
+		}
+		maxTokens := 10
+		if _, err := p.client.Complete(llm.WithAttemptStep(ctx, step), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &root}); err != nil {
+			return nil, err
+		}
+		if string(rc.ExternalGrant) != string(p.raw) {
+			return nil, llm.ErrExternalGrantInvalid
+		}
+	}
+	return planner.Finish{Reason: planner.FinishGoal}, nil
+}
 
 type agentBoundPlanner struct {
 	client  llm.LLMClient
@@ -176,6 +234,83 @@ func TestRunLoop_V2GrantBindsExplicitAndDefaultReachAdmissionsAndRejectsForgedTa
 				t.Fatalf("close grant client: %v", err)
 			}
 		})
+	}
+}
+
+// TestRunLoop_ImmutableBaseGrantReusesAndRenewsDurableSuccessors proves the
+// real run-loop Base carrier stays byte-identical while three LLM calls use
+// the durable current successor. The first and third calls renew; the middle
+// call reuses already-applied capacity without contacting the coordinator.
+func TestRunLoop_ImmutableBaseGrantReusesAndRenewsDurableSuccessors(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	signer, err := llmgrant.NewSigner("key-runloop-renewal", "harbor-runtime", nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := llmgrant.NewVerifier(llmgrant.VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-a", AuthorizedOrganizations: []string{"org-a"},
+		Keys: map[string]ed25519.PublicKey{"key-runloop-renewal": signer.PublicKey()}, Clock: func() time.Time { return now },
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-runloop", UserID: "user-runloop", SessionID: "session-runloop"}, RunID: "run-runloop"}
+	root, err := signer.Sign(llm.ExternalGrant{
+		Version: llm.ExternalGrantVersionLegacy, GrantID: "grant-runloop", RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		OrganizationID: "org-a", RuntimeID: "runtime-a", TenantID: q.TenantID, UserID: q.UserID,
+		SessionID: q.SessionID, LogicalRunID: q.RunID, LogicalCallID: "call-runloop", AttemptNonce: "nonce-runloop",
+		PolicyGeneration: 1, MaxReasoning: llm.ReasoningLow, MaxOutputTokens: 10,
+		Lease:    llm.ComputeLease{LeaseID: "lease-runloop", Epoch: 1, TokenUnits: 5, ExpiresAt: now.Add(time.Minute)},
+		IssuedAt: now.Add(-10 * time.Second), ExpiresAt: now.Add(30 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stateStore.Close(context.Background()) }()
+	durable, err := leases.New(stateStore, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &agentBoundProvider{tokens: 4}
+	topUpper := &runLoopReasonedTopUpper{signer: signer}
+	client := llmgrant.Wrap(provider, llm.ConfigSnapshot{Provider: "mock", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier: verifier, RenewalVerifier: verifier, Reservations: durable, Successors: durable, SuccessorResolver: durable,
+		TopUpper: topUpper, ReceiptSink: testReceiptSink{}, ReceiptRequired: true,
+	}})
+	runLoop, err := steering.NewRunLoop(steering.NewRegistry(), pauseresume.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plannerProbe := &immutableGrantRunLoopPlanner{client: client, raw: append(json.RawMessage(nil), raw...)}
+	runCtx, err := identity.WithVerified(context.Background(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, err = identity.WithRun(runCtx, q.Identity, q.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx = llm.WithVerifiedOrganization(runCtx, "org-a")
+	if _, err := runLoop.Run(runCtx, steering.RunSpec{Planner: plannerProbe, Base: planner.RunContext{
+		Quadruple: q, Goal: "exercise immutable grant", ExternalGrant: raw, Trajectory: &planner.Trajectory{Query: "exercise immutable grant"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.calls.Load(); got != 3 {
+		t.Fatalf("provider calls=%d, want 3", got)
+	}
+	if got := topUpper.calls.Load(); got != 2 {
+		t.Fatalf("renewal calls=%d, want 2", got)
 	}
 }
 
