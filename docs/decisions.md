@@ -14523,8 +14523,8 @@ cleanup, or downstream deployment or acceptance is claimed.
 
 **Date:** 2026-08-25
 
-**Status:** Implemented as a local candidate; hosted CI, release, downstream
-deployment, and acceptance remain pending.
+**Status:** Accepted for the v1.30.3 release candidate; tag, release,
+downstream deployment, and acceptance remain pending.
 
 The transport-neutral `sdk/llm/credentials` version-1 exchange carries one
 complete canonical signed external grant and no independently selectable
@@ -14560,3 +14560,17 @@ Protocol shape/version change is needed.
 **Cross-references:** D-025, D-434, D-436, D-438, D-440, RFC §6.5, §6.11,
 §6.15, brief 03, brief 08. Plan:
 `docs/plans/phase-262-stock-external-grant-credential-resolution.md`.
+
+**Release-candidate evidence.** Phase 262 landed at exact current
+`origin/main` `415d353d740ff3c3c2da8e3432eea342f7ccdeb2` through PR #750. Pre-merge PR
+run `32882992600` had two unrelated Go failures: the macOS
+`TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
+36.51 seconds waiting for `HTTP 503`, and the Ubuntu Go job later failed in
+`TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All Phase 262-specific,
+web-lint, and provider-seam jobs were green. Exact post-merge run
+`32883730540` remained in
+progress at this release cut; no successful post-merge CI is claimed. The
+owner explicitly authorized proceeding with the fast v1.30.3 release despite
+the timeout and pending run, with any late failure to be corrected later that
+day. As of this release-cut commit, no tag, release, downstream deployment, or
+acceptance is claimed.

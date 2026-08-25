@@ -45,7 +45,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
 | HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Accepted for the v1.30.2 release candidate — phases 257/258/261, D-437/D-438/D-441; tag/release/downstream acceptance pending |
-| HA-73 | Stock coordinator-bound external-grant credential resolution | llm credential contract + runtime serve + public SDK | High | Contained | Implemented local candidate — phase 262 / D-442; hosted CI/release/downstream acceptance pending |
+| HA-73 | Stock coordinator-bound external-grant credential resolution | llm credential contract + runtime serve + public SDK | High | Contained | Accepted for the v1.30.3 release candidate — phase 262 / D-442; tag/release/downstream acceptance pending |
 | HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Accepted for the v1.30.2 release candidate — phases 259/261, D-439/D-441; tag/release/downstream acceptance pending |
 | HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Accepted for the v1.30.2 release candidate — phase 260 / D-440; tag/release/downstream acceptance pending |
 
@@ -1747,9 +1747,9 @@ durable successor application without adding idle work.
 
 ## HA-73 — stock coordinator-bound external-grant credential resolution
 
-**Priority:** High. **Size:** contained. **State:** Implemented as a local
-candidate through Phase 262 / D-442. Hosted CI, release, downstream deployment,
-and acceptance remain pending.
+**Priority:** High. **Size:** contained. **State:** Accepted for the v1.30.3
+release candidate through Phase 262 / D-442. Tag, release, downstream
+deployment, and acceptance remain pending.
 
 **Observed gap.** The public external-grant SDK exposed a host-injected
 `CredentialResolver`, but stock `harbor serve` had no configuration or public
@@ -1785,6 +1785,20 @@ coordinator model catalog. `runtime.info.external_grant` reports
 `coordinator_bound` ready only when its resolver and the existing verifier,
 reservation, and receipt seams are all concretely wired. No Protocol shape or
 version changes.
+
+**v1.30.3 release-candidate evidence.** Phase 262 landed at exact current
+`origin/main` `415d353d740ff3c3c2da8e3432eea342f7ccdeb2` through PR #750. Pre-merge PR
+run `32882992600` had two unrelated Go failures: the macOS
+`TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
+36.51 seconds waiting for `HTTP 503`, and the Ubuntu Go job later failed in
+`TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All Phase 262-specific,
+web-lint, and provider-seam jobs were green. Exact post-merge run
+`32883730540` remained in
+progress at this release cut; no successful post-merge CI is claimed. The
+owner explicitly authorized proceeding with the fast release despite the
+timeout and pending run, with any late failure to be corrected later that day.
+As of this cut, no tag, release, downstream deployment, or acceptance is
+claimed.
 
 ---
 

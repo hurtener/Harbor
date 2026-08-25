@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.3] — 2026-08-25
+
 ### Added
 
 - Stock `harbor serve` can now resolve coordinator-bound external-grant
@@ -30,6 +32,23 @@ Two versions move independently in Harbor (RFC §5.3):
   30 seconds, singleflight-coalesced, generation-fenced, and cleared on close.
   Disabled deployments perform no work; `runtime_default` remains independent
   of coordinator credentials. Protocol version remains `0.1.0`.
+
+### Release candidate evidence
+
+- Phase 262 / D-442 / HA-73 landed at exact current `origin/main`
+  `415d353d740ff3c3c2da8e3432eea342f7ccdeb2` through PR #750. Pre-merge PR
+  run `32882992600` had two unrelated Go failures: the macOS
+  `TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
+  36.51 seconds waiting for `HTTP 503`, and the Ubuntu Go job later failed in
+  `TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All Phase 262-specific,
+  web-lint, and provider-seam jobs were green. Exact post-merge run
+  `32883730540` remained in
+  progress at this release cut; no successful post-merge CI is claimed. The
+  owner explicitly authorized the fast v1.30.3 release despite the timeout and
+  pending run, with any late failure to be corrected later that day. As of this
+  release-cut commit, no v1.30.3 tag, release assets, module provenance,
+  checksums, attestations, post-tag scaffold cleanup, downstream deployment,
+  or acceptance is claimed.
 
 ## [1.30.2] — 2026-08-25
 
@@ -5063,7 +5082,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.2...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.3...HEAD
+[1.30.3]: https://github.com/hurtener/Harbor/compare/v1.30.2...v1.30.3
 [1.30.2]: https://github.com/hurtener/Harbor/compare/v1.30.1...v1.30.2
 [1.30.1]: https://github.com/hurtener/Harbor/compare/v1.30.0...v1.30.1
 [1.30.0]: https://github.com/hurtener/Harbor/compare/v1.29.5...v1.30.0

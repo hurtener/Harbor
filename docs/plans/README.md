@@ -403,7 +403,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
 |260 | Reach-admitted agent-bound external grants (HA-75, D-440): v2 signs the exact effective agent selected by normal reach admission, reference verification fails before provider side effects, receipts/top-ups preserve the binding, v1 signatures and blank-agent receipt bytes remain exact, and readiness advertises `[1,2]` plus `required_v2` | internal/llm + grant + runtime/serve + protocol posture + sdk/llm | §6.5, §6.11, §6.15 | 254, 256, 257, 258, 259, D-434..D-439 | focused race/vet + real run-loop + public consumer + generators + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
 |261 | Stock authenticated external-grant renewal (D-441): strict typed expiry, full-authority renewal preflight, public canonical `sdk/llm/topup` contract and 128-KiB bounds, optional authenticated HTTP transport, reason-aware no-widen expiry renewal, replay-idempotent durable successor CAS, apply-before-reserve/provider ordering, truthful stock/host/unsupported readiness, and zero idle work | sdk/llm/topup + grant wrapper + leases + receipt HTTP transport + runtime assembly/config/readiness | §6.5, §6.11, §6.15 | 254, 256, 258, 259, 260, D-434..D-440 | focused race/vet + inmem/SQLite/real-PG + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
-|262 | Stock coordinator-bound credential resolution (HA-73, D-442): public canonical `sdk/llm/credentials` exchange, public server injection, optional authenticated stock transport, verified-full-grant authority, exact generation-bound response, bounded TTL/cardinality cache and singleflight isolation, truthful route readiness, and zero idle/default-route work | sdk/llm/credentials + credential HTTP transport + runtime serve/config/readiness + sdk/server | §6.5, §6.11, §6.15 | 254, 256, 258, 260, D-434, D-436, D-438, D-440 | focused race/vet + public consumer + real runtime.info + smoke | Implemented local candidate; hosted CI/release/downstream acceptance pending |
+|262 | Stock coordinator-bound credential resolution (HA-73, D-442): public canonical `sdk/llm/credentials` exchange, public server injection, optional authenticated stock transport, verified-full-grant authority, exact generation-bound response, bounded TTL/cardinality cache and singleflight isolation, truthful route readiness, and zero idle/default-route work | sdk/llm/credentials + credential HTTP transport + runtime serve/config/readiness + sdk/server | §6.5, §6.11, §6.15 | 254, 256, 258, 260, D-434, D-436, D-438, D-440 | focused race/vet + public consumer + real runtime.info + smoke | Accepted for v1.30.3 release candidate; tag/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5711,6 +5711,40 @@ deadline, the owner authorized proceeding with the release and tag despite
 those pending gates; any late failure will be fixed later that day. As of this
 release-cut commit, no tag, release, assets, module provenance, post-tag
 cleanup, or downstream deployment or acceptance is claimed.
+
+### Phase 262 — Stock coordinator-bound credential resolution (HA-73)
+
+- **Subsystem:** public credential exchange, stock authenticated resolver,
+  external-grant wrapper, runtime serve/config/readiness, and public server SDK.
+- **RFC:** §6.5, §6.11, §6.15. **Deps:** phases 254, 256, 258, 260 and
+  D-434, D-436, D-438, D-440.
+- **What it delivers:** D-442 — stock `harbor serve` and public embedding hosts
+  can supply the same coordinator-bound credential resolver. Authority comes
+  only from the already-verified complete signed grant; responses repeat the
+  exact provider, opaque handle, and both generations. The bounded secret cache
+  keys the complete verified grant digest, isolates organizations and
+  cancellation, and clears on close. Disabled and runtime-default paths remain
+  independent and perform no coordinator work.
+- **Evidence:** canonical external-package contract adversaries, verified-
+  context and response-binding refusal, N=200 two-organization concurrent
+  isolation, cache/TTL/cancellation/close tests, stock and injected boot truth,
+  real `runtime.info`, focused race/vet/static smoke, and adversarial review.
+- **Decision:** D-442. **Status:** Accepted for the v1.30.3 release candidate;
+  tag, release, and downstream acceptance remain pending.
+
+**v1.30.3 release-candidate evidence for Phase 262.** PR #750 landed at exact
+current `origin/main` `415d353d740ff3c3c2da8e3432eea342f7ccdeb2`. Pre-merge PR
+run `32882992600` had two unrelated Go failures: the macOS
+`TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
+36.51 seconds waiting for `HTTP 503`, and the Ubuntu Go job later failed in
+`TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All Phase 262-specific,
+web-lint, and provider-seam jobs were green. Exact post-merge run
+`32883730540` remained in
+progress at this release cut; no successful post-merge CI is claimed. The
+owner explicitly authorized proceeding with the fast v1.30.3 release despite
+the timeout and pending run, with any late failure to be corrected later that
+day. As of this cut, no tag, release, assets, module provenance, post-tag
+scaffold cleanup, downstream deployment, or acceptance is claimed.
 
 ## Notes
 
