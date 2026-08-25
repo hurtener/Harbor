@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	credentialhttp "github.com/hurtener/Harbor/internal/llm/credentials/httptransport"
 	llmbifrost "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
 	llmprovider "github.com/hurtener/Harbor/internal/llm/provider"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
@@ -341,7 +342,7 @@ func resolveMCPAttachIdentity(configured identity.Identity) identity.Identity {
 	return configured
 }
 
-func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, provided llm.ExternalGrantConfig, delivery llmreceipts.Delivery, stock *receipthttp.Client) func() protocoltypes.ExternalGrantReadiness {
+func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, provided llm.ExternalGrantConfig, delivery llmreceipts.Delivery, stock *stockExternalGrantClients) func() protocoltypes.ExternalGrantReadiness {
 	mode := strings.TrimSpace(settings.Mode)
 	if mode == "" {
 		mode = strings.TrimSpace(string(provided.Mode))
@@ -387,8 +388,8 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 			out.TopUpState = "wired"
 		}
 		switch {
-		case stock != nil:
-			ready := stock.Readiness()
+		case stock != nil && stock.receipts != nil:
+			ready := stock.receipts.Readiness()
 			out.ReceiptTransportKind = "stock_authenticated_http"
 			out.ReceiptTransport = ready.Receipt
 			if ready.TopUp != "absent" {
@@ -416,33 +417,88 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 	}
 }
 
-func configureStockExternalGrant(coordinatorCfg config.ExternalGrantCoordinatorConfig, opts *Options, getenv func(string) (string, bool)) (*receipthttp.Client, error) {
-	if coordinatorCfg.ReceiptURL == "" {
+type stockExternalGrantClients struct {
+	receipts    *receipthttp.Client
+	credentials *credentialhttp.Client
+}
+
+func (c *stockExternalGrantClients) Deliver(ctx context.Context, receipt llm.AttemptUsageReceipt) error {
+	return c.receipts.Deliver(ctx, receipt)
+}
+
+func (c *stockExternalGrantClients) DeliverBatch(ctx context.Context, batch []llm.AttemptUsageReceipt) ([]llmreceipts.DeliveryAck, error) {
+	return c.receipts.DeliverBatch(ctx, batch)
+}
+
+func (c *stockExternalGrantClients) TopUp(ctx context.Context, grant llm.ExternalGrant, units int64) (llm.ExternalGrant, error) {
+	return c.receipts.TopUp(ctx, grant, units)
+}
+
+func (c *stockExternalGrantClients) Renew(ctx context.Context, grant llm.ExternalGrant, units int64, reason llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+	return c.receipts.Renew(ctx, grant, units, reason)
+}
+
+func (c *stockExternalGrantClients) Readiness() receipthttp.Readiness {
+	return c.receipts.Readiness()
+}
+
+func (c *stockExternalGrantClients) SetOutboxHealth(healthy bool) {
+	c.receipts.SetOutboxHealth(healthy)
+}
+
+func (c *stockExternalGrantClients) Close(context.Context) error {
+	if c == nil || c.credentials == nil {
+		return nil
+	}
+	return c.credentials.Close()
+}
+
+func configureStockExternalGrant(coordinatorCfg config.ExternalGrantCoordinatorConfig, opts *Options, getenv func(string) (string, bool)) (*stockExternalGrantClients, error) {
+	if coordinatorCfg.ReceiptURL == "" && coordinatorCfg.CredentialURL == "" {
 		return nil, nil
 	}
-	if opts.ExternalGrantDelivery != nil || opts.ExternalGrant.ReceiptSink != nil {
+	if coordinatorCfg.ReceiptURL != "" && (opts.ExternalGrantDelivery != nil || opts.ExternalGrant.ReceiptSink != nil) {
 		return nil, fmt.Errorf("external grant coordinator: configured receipt transport conflicts with injected receipt handling")
 	}
 	if coordinatorCfg.TopUpURL != "" && opts.ExternalGrant.TopUpper != nil {
 		return nil, fmt.Errorf("external grant coordinator: configured top-up transport conflicts with injected top-upper")
 	}
+	if coordinatorCfg.CredentialURL != "" && opts.ExternalGrant.Credentials != nil {
+		return nil, fmt.Errorf("external grant coordinator: configured credential transport conflicts with injected credential resolver")
+	}
 	token, ok := getenv(coordinatorCfg.AuthTokenEnv)
 	if !ok || strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("external grant coordinator: env var %q (auth_token_env) is unset or empty", coordinatorCfg.AuthTokenEnv)
 	}
-	client, err := receipthttp.New(receipthttp.Config{
-		ReceiptURL: coordinatorCfg.ReceiptURL,
-		TopUpURL:   coordinatorCfg.TopUpURL,
-		AuthToken:  token,
-		Timeout:    coordinatorCfg.Timeout,
-		MaxBatch:   coordinatorCfg.MaxBatch,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("external grant coordinator: %w", err)
+	clients := &stockExternalGrantClients{}
+	if coordinatorCfg.ReceiptURL != "" {
+		client, err := receipthttp.New(receipthttp.Config{
+			ReceiptURL: coordinatorCfg.ReceiptURL,
+			TopUpURL:   coordinatorCfg.TopUpURL,
+			AuthToken:  token,
+			Timeout:    coordinatorCfg.Timeout,
+			MaxBatch:   coordinatorCfg.MaxBatch,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("external grant coordinator: %w", err)
+		}
+		clients.receipts = client
+		opts.ExternalGrantDelivery = clients
+		if coordinatorCfg.TopUpURL != "" {
+			opts.ExternalGrant.TopUpper = clients
+		}
 	}
-	opts.ExternalGrantDelivery = client
-	if coordinatorCfg.TopUpURL != "" {
-		opts.ExternalGrant.TopUpper = client
+	if coordinatorCfg.CredentialURL != "" {
+		client, err := credentialhttp.New(credentialhttp.Config{
+			CredentialURL: coordinatorCfg.CredentialURL,
+			AuthToken:     token,
+			Timeout:       coordinatorCfg.Timeout,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("external grant coordinator: %w", err)
+		}
+		clients.credentials = client
+		opts.ExternalGrant.Credentials = client
 	}
 	if opts.ExternalGrantMaxBatch == 0 {
 		opts.ExternalGrantMaxBatch = coordinatorCfg.MaxBatch
@@ -450,7 +506,7 @@ func configureStockExternalGrant(coordinatorCfg config.ExternalGrantCoordinatorC
 	if opts.ExternalGrantReconcile == 0 {
 		opts.ExternalGrantReconcile = coordinatorCfg.ReconcileInterval
 	}
-	return client, nil
+	return clients, nil
 }
 
 func Boot(ctx context.Context, opts Options) (*Handle, error) {
@@ -489,6 +545,22 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if stockErr != nil {
 		return nil, stockErr
 	}
+	finalGrantMode := opts.ExternalGrant.Mode
+	if finalGrantMode == "" {
+		finalGrantMode = llm.ExternalGrantMode(strings.TrimSpace(cfg.LLM.ExternalGrant.Mode))
+	}
+	finalGrantRoute := opts.ExternalGrant.RouteMode
+	if finalGrantRoute == "" {
+		finalGrantRoute = llm.ExternalGrantRouteMode(strings.TrimSpace(cfg.LLM.ExternalGrant.RouteMode))
+	}
+	if finalGrantMode == llm.ExternalGrantRequired &&
+		finalGrantRoute == llm.ExternalGrantRouteCoordinatorBound &&
+		opts.ExternalGrant.Credentials == nil {
+		if stockCoordinator != nil {
+			_ = stockCoordinator.Close(ctx)
+		}
+		return nil, fmt.Errorf("external grant: required coordinator_bound mode needs an injected or stock credential resolver")
+	}
 
 	// LLM snapshot — the caller-side builder runs any dev gate + override;
 	// the default projection is the production path.
@@ -516,6 +588,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		RegisterCatalog:        opts.RegisterCatalog,
 	})
 	closers := make([]func(context.Context) error, 0, 8)
+	if stockCoordinator != nil {
+		closers = append(closers, stockCoordinator.Close)
+	}
 	if stack != nil {
 		closers = append(closers, func(closeCtx context.Context) error { return stack.Close(closeCtx) })
 	}

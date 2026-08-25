@@ -14516,3 +14516,47 @@ proceeding with the release and tag despite those pending gates; any late
 failure will be fixed later that day. As of this release-cut commit, no
 v1.30.2 tag, release assets, module provenance, post-tag
 cleanup, or downstream deployment or acceptance is claimed.
+
+---
+
+## D-442 — Stock coordinator-bound credential resolution derives authority only from the verified full grant (HA-73)
+
+**Date:** 2026-08-25
+
+**Status:** Implemented as a local candidate; hosted CI, release, downstream
+deployment, and acceptance remain pending.
+
+The transport-neutral `sdk/llm/credentials` version-1 exchange carries one
+complete canonical signed external grant and no independently selectable
+authority fields. Stock `harbor serve` may configure a boot-pinned
+authenticated credential endpoint, while embedding hosts may inject the same
+public `sdk/server.Options.ExternalGrant` resolver seam. Required
+coordinator-bound mode fails boot without one; optional mode reports that route
+unready. Disabled and runtime-default paths remain independent and perform no
+coordinator work.
+
+The runtime calls the resolver only after the grant wrapper has installed the
+exact verified grant context. The stock client hashes both the argument and the
+verified context canonically and requires equality before transport. The
+coordinator response must repeat the signed provider, opaque binding handle,
+provider-connection generation, and credential-asset generation exactly. A
+secret reaches only the provider-driver edge. There is no runtime-global key
+fallback and no caller-selected organization, identity, route, provider,
+connection, generation, handle, endpoint, or key.
+
+The endpoint is HTTPS or loopback HTTP, refuses redirects and userinfo/query/
+fragment, bounds request/response bytes and duration, and reports only stable
+status/classes without coordinator bodies, endpoints, service tokens, handles,
+or secrets. Its in-memory cache key is the SHA-256 of the complete canonical
+verified grant. Cardinality is capped at 256, lifetime at 30 seconds and the
+earlier response/grant expiry, and singleflight coalesces only the same digest.
+One canceled waiter does not cancel another; close clears all material,
+advances an epoch, and prevents an in-flight response from repopulating it.
+
+The existing `runtime.info.external_grant` projection is sufficient to expose
+whether the resolver is wired and whether `coordinator_bound` is ready; no
+Protocol shape/version change is needed.
+
+**Cross-references:** D-025, D-434, D-436, D-438, D-440, RFC §6.5, §6.11,
+§6.15, brief 03, brief 08. Plan:
+`docs/plans/phase-262-stock-external-grant-credential-resolution.md`.

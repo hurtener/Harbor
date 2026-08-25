@@ -45,6 +45,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
 | HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Accepted for the v1.30.2 release candidate — phases 257/258/261, D-437/D-438/D-441; tag/release/downstream acceptance pending |
+| HA-73 | Stock coordinator-bound external-grant credential resolution | llm credential contract + runtime serve + public SDK | High | Contained | Implemented local candidate — phase 262 / D-442; hosted CI/release/downstream acceptance pending |
 | HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Accepted for the v1.30.2 release candidate — phases 259/261, D-439/D-441; tag/release/downstream acceptance pending |
 | HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Accepted for the v1.30.2 release candidate — phase 260 / D-440; tag/release/downstream acceptance pending |
 
@@ -1741,6 +1742,49 @@ failures degrade the projection while retrying and recover only after success;
 the whole readiness object is optional for mixed-version clients. Phase 261
 adds the separately authenticated stock renewal exchange and replay-idempotent
 durable successor application without adding idle work.
+
+---
+
+## HA-73 — stock coordinator-bound external-grant credential resolution
+
+**Priority:** High. **Size:** contained. **State:** Implemented as a local
+candidate through Phase 262 / D-442. Hosted CI, release, downstream deployment,
+and acceptance remain pending.
+
+**Observed gap.** The public external-grant SDK exposed a host-injected
+`CredentialResolver`, but stock `harbor serve` had no configuration or public
+server option that could supply it. A strict coordinator-bound runtime could
+therefore verify grants and deliver receipts yet still fail boot or remain
+unready unless a custom embedding host rebuilt the serving layer.
+
+**Framework answer.** Phase 262 publishes `sdk/llm/credentials` as the exact
+version-1 canonical exchange and adds two equivalent production doors: a
+public `sdk/server.Options.ExternalGrant` injection for embedding hosts and an
+optional stock authenticated `llm.external_grant.coordinator.credential_url`.
+The request contains only the complete signed grant already installed by the
+verified grant wrapper. It has no separate organization, identity, route,
+provider, connection, generation, handle, endpoint, or secret override. The
+response must exactly match the signed provider, opaque credential handle,
+provider-connection generation, and credential-asset generation before its
+short-lived secret reaches the provider driver.
+
+The stock transport accepts only HTTPS or loopback HTTP, refuses redirects,
+bounds duration and bodies, authenticates with the existing boot-named runtime
+service token, and never reflects an endpoint, response body, token, handle,
+or secret in an error. Its secret-bearing cache is keyed by the SHA-256 of the
+complete canonical verified grant, bounded to 256 entries and 30 seconds (also
+clamped to grant and response expiry), coalesced only for that exact digest,
+generation-fenced, and cleared on close. One caller's cancellation does not
+cancel another exact-binding waiter; different organizations sharing one
+runtime never share a cache key or result.
+
+Absent configuration constructs no client, performs no network or StateStore
+work, and starts no goroutine or timer. `runtime_default` keeps using the
+runtime's configured provider key and requires neither this endpoint nor a
+coordinator model catalog. `runtime.info.external_grant` reports
+`coordinator_bound` ready only when its resolver and the existing verifier,
+reservation, and receipt seams are all concretely wired. No Protocol shape or
+version changes.
 
 ---
 

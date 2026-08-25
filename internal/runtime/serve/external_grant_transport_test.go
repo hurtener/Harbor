@@ -143,6 +143,31 @@ func TestConfigureStockExternalGrant_WiresOptionalTopUpWithoutIdleWork(t *testin
 	}
 }
 
+func TestConfigureStockExternalGrant_WiresCredentialResolverWithoutReceiptWork(t *testing.T) {
+	cfg := config.ExternalGrantCoordinatorConfig{
+		CredentialURL: "https://coordinator.example.test/v1/provider-credential",
+		AuthTokenEnv:  "HARBOR_COORDINATOR_TOKEN",
+	}
+	lookups := 0
+	opts := Options{}
+	stock, err := configureStockExternalGrant(cfg, &opts, func(string) (string, bool) {
+		lookups++
+		return testCoordinatorToken, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stock.Close(context.Background()) }()
+	if stock == nil || stock.credentials == nil || opts.ExternalGrant.Credentials != stock.credentials || opts.ExternalGrantDelivery != nil || opts.ExternalGrant.TopUpper != nil || lookups != 1 {
+		t.Fatalf("credential-only wiring stock=%+v delivery=%T topup=%T lookups=%d", stock, opts.ExternalGrantDelivery, opts.ExternalGrant.TopUpper, lookups)
+	}
+	configured := config.LLMExternalGrantConfig{Mode: "required", RouteMode: "coordinator_bound", PublicKeys: map[string]string{"key": "present"}}
+	ready := externalGrantReadinessProvider(configured, opts.ExternalGrant, nil, stock)()
+	if ready.CredentialResolverWired != true || ready.StrictReady || len(ready.ReadyRouteModes) != 0 || ready.ReceiptTransport != "absent" {
+		t.Fatalf("credential-only readiness = %+v", ready)
+	}
+}
+
 func TestStockTopUpTransport_AmpleValidLeaseMakesZeroCoordinatorCalls(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -217,6 +242,11 @@ func TestConfigureStockExternalGrant_FailsLoudWithoutCredentialAndOnConflicts(t 
 	opts = Options{ExternalGrant: llm.ExternalGrantConfig{TopUpper: testTopUpper{}}}
 	if _, err := configureStockExternalGrant(topUpCfg, &opts, func(string) (string, bool) { return testCoordinatorToken, true }); err == nil {
 		t.Fatal("configured and injected top-up transports were both accepted")
+	}
+	credentialCfg := config.ExternalGrantCoordinatorConfig{CredentialURL: "https://coordinator.example.test/provider-credential", AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN"}
+	opts = Options{ExternalGrant: llm.ExternalGrantConfig{Credentials: testCredentialResolver{}}}
+	if _, err := configureStockExternalGrant(credentialCfg, &opts, func(string) (string, bool) { return testCoordinatorToken, true }); err == nil {
+		t.Fatal("configured and injected credential resolvers were both accepted")
 	}
 }
 

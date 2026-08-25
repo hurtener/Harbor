@@ -558,19 +558,29 @@ func (c *Config) validateLLMExternalGrant() error {
 }
 
 func coordinatorConfigured(cfg ExternalGrantCoordinatorConfig) bool {
-	return strings.TrimSpace(cfg.ReceiptURL) != "" || strings.TrimSpace(cfg.TopUpURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
+	return strings.TrimSpace(cfg.ReceiptURL) != "" || strings.TrimSpace(cfg.TopUpURL) != "" || strings.TrimSpace(cfg.CredentialURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
 		cfg.Timeout != 0 || cfg.MaxBatch != 0 || cfg.ReconcileInterval != 0
 }
 
 func validateExternalGrantCoordinator(cfg ExternalGrantCoordinatorConfig) error {
-	if strings.TrimSpace(cfg.ReceiptURL) == "" {
+	if strings.TrimSpace(cfg.ReceiptURL) == "" && strings.TrimSpace(cfg.CredentialURL) == "" {
 		return fieldError("llm.external_grant.coordinator.receipt_url", "must be set when the coordinator transport is configured")
 	}
-	if err := validatePinnedServiceURL("llm.external_grant.coordinator.receipt_url", cfg.ReceiptURL); err != nil {
-		return err
+	if strings.TrimSpace(cfg.ReceiptURL) != "" {
+		if err := validatePinnedServiceURL("llm.external_grant.coordinator.receipt_url", cfg.ReceiptURL); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(cfg.TopUpURL) != "" {
+		if strings.TrimSpace(cfg.ReceiptURL) == "" {
+			return fieldError("llm.external_grant.coordinator.receipt_url", "must be set when top_up_url is configured")
+		}
 		if err := validatePinnedServiceURL("llm.external_grant.coordinator.top_up_url", cfg.TopUpURL); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(cfg.CredentialURL) != "" {
+		if err := validatePinnedServiceURL("llm.external_grant.coordinator.credential_url", cfg.CredentialURL); err != nil {
 			return err
 		}
 	}
@@ -582,6 +592,9 @@ func validateExternalGrantCoordinator(cfg ExternalGrantCoordinatorConfig) error 
 	}
 	if cfg.MaxBatch < 0 || cfg.MaxBatch > 1000 {
 		return fieldError("llm.external_grant.coordinator.max_batch", "must be between 0 and 1000")
+	}
+	if strings.TrimSpace(cfg.ReceiptURL) == "" && (cfg.MaxBatch != 0 || cfg.ReconcileInterval != 0) {
+		return fieldError("llm.external_grant.coordinator.receipt_url", "must be set when receipt batching or reconciliation is configured")
 	}
 	if cfg.ReconcileInterval < 0 {
 		return fieldError("llm.external_grant.coordinator.reconcile_interval", "must be non-negative")

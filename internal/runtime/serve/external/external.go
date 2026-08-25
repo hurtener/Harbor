@@ -35,6 +35,7 @@ import (
 	"runtime/debug"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -109,7 +110,7 @@ func (h *Handle) WaitReady(ctx context.Context) (string, error) { return h.h.Wai
 // this output (e.g. a co-launch binary that captures stderr so Bubble Tea
 // frames are never overwritten) should call OpenWithStderr instead.
 func Open(ctx context.Context, cfg *config.Config, configPath string, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
-	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog, FrameworkIdentity{})
+	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog, FrameworkIdentity{}, llm.ExternalGrantConfig{})
 }
 
 // OpenWithStderr is Open with an explicit stderr sink. A nil stderr
@@ -119,7 +120,7 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 // buffer so the terminal stays clean for Bubble Tea. The slog logger
 // the serve band builds also writes to this sink when the caller does
 // not inject its own logger.
-func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error, framework FrameworkIdentity) (*Handle, error) {
+func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error, framework FrameworkIdentity, externalGrant llm.ExternalGrantConfig) (*Handle, error) {
 	if cfg == nil {
 		if configPath == "" {
 			return nil, ErrConfigRequired
@@ -150,6 +151,7 @@ func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, 
 		// dev-only seam is composed.
 		AuthValidatorFactory: serve.NewJWKSAuthValidatorFactory(),
 		RegisterCatalog:      registerCatalog,
+		ExternalGrant:        externalGrant,
 		DisplayName:          cfg.Telemetry.ServiceName,
 		InstanceID:           serve.InstanceID("harbor-server"),
 		BuildVersion:         version,

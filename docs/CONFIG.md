@@ -489,10 +489,24 @@ no coordinator client, timer, scan, or network work. HTTPS is required except
 for loopback HTTP. User info, queries, and fragments are rejected.
 Restart-required.
 
+### llm.external_grant.coordinator.credential_url
+
+Optional stock `harbor serve` endpoint for resolving the opaque credential
+binding of an already-verified `coordinator_bound` grant. The authenticated
+request carries only that exact signed grant; it has no separate organization,
+runtime, identity, run, provider, connection, route, handle, or generation
+override. Harbor accepts a response only when its provider, opaque handle,
+connection generation, and credential-asset generation exactly match the
+grant. HTTPS is required except for loopback HTTP. User info, queries, and
+fragments are rejected. A small in-memory cache is keyed by the digest of the
+full verified content-free binding, capped at 256 entries and 30 seconds, never
+past the response or grant expiry; it is cleared when the runtime closes.
+`runtime_default` never calls this endpoint. Restart-required.
+
 ### llm.external_grant.coordinator.auth_token_env
 
 Name of the environment variable containing the runtime's coordinator service
-credential. Required when `receipt_url` is set. The value is read once at boot,
+credential. Required when `receipt_url` or `credential_url` is set. The value is read once at boot,
 never serialized, and never included in logs or errors. Restart-required.
 
 ### llm.external_grant.coordinator.timeout

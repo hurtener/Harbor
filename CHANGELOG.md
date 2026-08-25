@@ -17,6 +17,20 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Stock `harbor serve` can now resolve coordinator-bound external-grant
+  credentials through an optional authenticated, boot-pinned
+  `credential_url`. The public `sdk/llm/credentials` v1 contract carries only
+  the complete signed grant and binds each response to its exact provider,
+  opaque handle, and provider/asset generations. The resolver refuses caller
+  authority, redirects, unsafe endpoints, oversized or noncanonical bodies,
+  and redacts coordinator bodies and secrets from errors. Its in-memory cache
+  is keyed by the complete canonical verified grant, capped at 256 entries and
+  30 seconds, singleflight-coalesced, generation-fenced, and cleared on close.
+  Disabled deployments perform no work; `runtime_default` remains independent
+  of coordinator credentials. Protocol version remains `0.1.0`.
+
 ## [1.30.2] — 2026-08-25
 
 ### Added

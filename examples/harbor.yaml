@@ -234,6 +234,7 @@ llm:
   #   coordinator:
   #     receipt_url: https://coordinator.example.com/v1/usage-receipts
   #     top_up_url: https://coordinator.example.com/v1/lease-top-ups
+  #     credential_url: https://coordinator.example.com/v1/provider-credential
   #     # Env var holding this runtime's service credential. Never put the
   #     # credential itself in yaml.
   #     auth_token_env: HARBOR_COORDINATOR_TOKEN

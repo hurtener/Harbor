@@ -7,6 +7,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/runtime/serve/external"
 	"github.com/hurtener/Harbor/sdk/config"
+	"github.com/hurtener/Harbor/sdk/llm"
 	"github.com/hurtener/Harbor/sdk/tools"
 )
 
@@ -44,6 +45,11 @@ type FrameworkIdentity struct {
 // the production posture (JWKS from cfg.Identity, full config Validate)
 // is not configurable.
 type Options struct {
+	// ExternalGrant supplies host-owned grant seams such as an in-process
+	// credential resolver. Boot configuration remains authoritative for mode,
+	// route, verifier keys, and stock coordinator endpoints.
+	ExternalGrant llm.ExternalGrantConfig
+
 	// RegisterCatalog, when non-nil, registers the served agent's
 	// compiled in-process tools on the runtime catalog at the pre-policy
 	// seam, so each tool receives its declared approval / OAuth / policy
@@ -94,5 +100,5 @@ func Open(ctx context.Context, cfg *config.Config, opts Options) (*Handle, error
 		stderr = os.Stderr
 	}
 	return external.OpenWithStderr(ctx, cfg, opts.ConfigPath, stderr, opts.RegisterCatalog,
-		external.FrameworkIdentity(opts.Framework))
+		external.FrameworkIdentity(opts.Framework), opts.ExternalGrant)
 }

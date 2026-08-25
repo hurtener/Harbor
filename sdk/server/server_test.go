@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,9 +31,20 @@ import (
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 
 	"github.com/hurtener/Harbor/sdk/config"
+	"github.com/hurtener/Harbor/sdk/llm"
 	"github.com/hurtener/Harbor/sdk/server"
 	"github.com/hurtener/Harbor/sdk/tools"
 )
+
+type sdkCredentialResolver struct{}
+
+func (sdkCredentialResolver) Resolve(context.Context, llm.ExternalGrant) (llm.ResolvedCredential, error) {
+	return llm.ResolvedCredential{}, errors.New("not invoked by runtime.info")
+}
+
+type sdkReceiptSink struct{}
+
+func (sdkReceiptSink) Enqueue(context.Context, llm.AttemptUsageReceipt) error { return nil }
 
 // baseYAML is a valid full-binary config with a mock LLM driver and a
 // jwks_file identity source. Callers substitute JWKS_FILE.
@@ -197,6 +210,116 @@ func TestOpen_ProductionBoot_SucceedsAndCloses(t *testing.T) {
 	defer c()
 	if err := h.Close(cc); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestOpen_RuntimeInfoCoordinatorBoundReadyOnlyWithCredentialResolver(t *testing.T) {
+	run := func(t *testing.T, stock bool, resolver llm.CredentialResolver) types.ExternalGrantReadiness {
+		t.Helper()
+		cfg, priv := validConfigAndKey(t)
+		public, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+			Mode: "optional", RouteMode: "coordinator_bound", Audience: "runtime-a", RuntimeID: "runtime-a",
+			PublicKeys: map[string]string{"grant-key": base64.RawURLEncoding.EncodeToString(public)},
+		}
+		if stock {
+			coordinator := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("runtime.info must not resolve a provider credential")
+			}))
+			defer coordinator.Close()
+			t.Setenv("HARBOR_SDKSERVER_COORDINATOR_TOKEN", "fixture-runtime-service-token")
+			cfg.LLM.ExternalGrant.Coordinator = config.ExternalGrantCoordinatorConfig{
+				CredentialURL: coordinator.URL,
+				AuthTokenEnv:  "HARBOR_SDKSERVER_COORDINATOR_TOKEN",
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		h, err := server.Open(ctx, cfg, server.Options{ExternalGrant: llm.ExternalGrantConfig{
+			Credentials: resolver, ReceiptSink: sdkReceiptSink{},
+		}})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer closeCancel()
+			_ = h.Close(closeCtx)
+		}()
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- h.Serve(ctx) }()
+		readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer readyCancel()
+		addr, err := h.WaitReady(readyCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info := readRuntimeInfo(t, addr, priv)
+		if info.ExternalGrant == nil {
+			t.Fatal("runtime.info omitted external-grant readiness")
+		}
+		cancel()
+		if err := <-serveDone; err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+		return *info.ExternalGrant
+	}
+
+	without := run(t, false, nil)
+	if without.CredentialResolverWired || without.StrictReady || len(without.ReadyRouteModes) != 0 {
+		t.Fatalf("unwired readiness = %+v", without)
+	}
+	with := run(t, true, nil)
+	if !with.CredentialResolverWired || !with.StrictReady || len(with.ReadyRouteModes) != 1 || with.ReadyRouteModes[0] != "coordinator_bound" {
+		t.Fatalf("stock-wired readiness = %+v", with)
+	}
+	withInjected := run(t, false, sdkCredentialResolver{})
+	if !withInjected.CredentialResolverWired || !withInjected.StrictReady || len(withInjected.ReadyRouteModes) != 1 || withInjected.ReadyRouteModes[0] != "coordinator_bound" {
+		t.Fatalf("host-wired readiness = %+v", withInjected)
+	}
+}
+
+func TestOpen_RequiredCoordinatorBoundFailsWithoutCredentialResolver(t *testing.T) {
+	cfg := validConfig(t)
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+		Mode: "required", RouteMode: "coordinator_bound", Audience: "runtime-a", RuntimeID: "runtime-a",
+		PublicKeys: map[string]string{"grant-key": base64.RawURLEncoding.EncodeToString(public)},
+	}
+	h, err := server.Open(context.Background(), cfg, server.Options{ExternalGrant: llm.ExternalGrantConfig{
+		ReceiptSink: sdkReceiptSink{},
+	}})
+	if h != nil || err == nil || !strings.Contains(err.Error(), "credential resolver") {
+		t.Fatalf("required coordinator-bound open = handle %v, error %v", h, err)
+	}
+}
+
+func TestOpen_RequiredCoordinatorBoundAcceptsInjectedCredentialResolver(t *testing.T) {
+	cfg := validConfig(t)
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{
+		Mode: "required", RouteMode: "coordinator_bound", Audience: "runtime-a", RuntimeID: "runtime-a",
+		PublicKeys: map[string]string{"grant-key": base64.RawURLEncoding.EncodeToString(public)},
+	}
+	h, err := server.Open(context.Background(), cfg, server.Options{ExternalGrant: llm.ExternalGrantConfig{
+		Credentials: sdkCredentialResolver{}, ReceiptSink: sdkReceiptSink{},
+	}})
+	if err != nil {
+		t.Fatalf("required coordinator-bound injected open: %v", err)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := h.Close(closeCtx); err != nil {
+		t.Fatal(err)
 	}
 }
 

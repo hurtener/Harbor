@@ -339,12 +339,18 @@ type LLMExternalGrantConfig struct {
 }
 
 // ExternalGrantCoordinatorConfig is the boot-pinned HTTP transport for
-// external-grant receipt acknowledgement. The
+// external-grant receipt acknowledgement, renewal, and verified credential
+// resolution. The
 // bearer itself is read from AuthTokenEnv at boot and is never serialized.
-// ReceiptURL is required when the block is present.
+// At least one receipt or credential endpoint is required when the block is
+// present; renewal additionally requires the receipt path.
 type ExternalGrantCoordinatorConfig struct {
-	ReceiptURL        string        `yaml:"receipt_url,omitempty"`
-	TopUpURL          string        `yaml:"top_up_url,omitempty"`
+	ReceiptURL string `yaml:"receipt_url,omitempty"`
+	TopUpURL   string `yaml:"top_up_url,omitempty"`
+	// CredentialURL is the boot-pinned authenticated endpoint used only
+	// after a coordinator-bound grant has been verified. The request carries
+	// that exact signed grant and no independently selectable authority.
+	CredentialURL     string        `yaml:"credential_url,omitempty"`
 	AuthTokenEnv      string        `yaml:"auth_token_env,omitempty"`
 	Timeout           time.Duration `yaml:"timeout,omitempty"`
 	MaxBatch          int           `yaml:"max_batch,omitempty"`

@@ -163,6 +163,29 @@ Rules the boot validator enforces (all fail loud):
 
 **Rotate / install over the Protocol.** An admin can bind (or rotate) a runtime's brokered provider without editing yaml via `agent_config.set_llm_provider` — a ZERO-URL, admin-only write carrying only `{name, provider, credential_source:"remote", inference_broker, model_allow?}`. A write carrying a `credential_url` / `token_url` / `*_env` / secret field is rejected by name at the wire edge; an unknown broker or a `console:fleet`-only (read) token is rejected loud. See the `use-the-harbor-protocol` skill for the request shape.
 
+### Per-run coordinator-bound credentials
+
+External execution grants are a separate, optional per-run path from the
+runtime-level broker above. When `llm.external_grant.route_mode` is
+`coordinator_bound`, stock `harbor serve` can resolve the exact already-verified
+grant's opaque credential binding through:
+
+```yaml
+llm:
+  external_grant:
+    coordinator:
+      credential_url: https://coordinator.example.com/v1/external-grant/credential
+      auth_token_env: HARBOR_COORDINATOR_TOKEN
+```
+
+The endpoint receives Harbor's canonical signed-grant envelope; there is no
+caller-selectable organization, identity, provider, connection, generation,
+route, key, or URL field. Required coordinator-bound mode fails boot if neither
+this stock endpoint nor a host-injected resolver is wired. Omit the block for
+disabled grants or `runtime_default`: those paths keep using the ordinary
+configured provider key and do not call a coordinator or require a model
+catalog.
+
 ## 5. Timeouts + retries
 
 ```yaml

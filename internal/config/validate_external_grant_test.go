@@ -74,6 +74,7 @@ func TestValidateLLMExternalGrant_CoordinatorTransport(t *testing.T) {
 	valid := ExternalGrantCoordinatorConfig{
 		ReceiptURL:        "https://coordinator.example.test/v1/receipts",
 		TopUpURL:          "https://coordinator.example.test/v1/grants/top-up",
+		CredentialURL:     "https://coordinator.example.test/v1/provider-credential",
 		AuthTokenEnv:      "HARBOR_COORDINATOR_TOKEN",
 		Timeout:           5 * time.Second,
 		MaxBatch:          100,
@@ -84,6 +85,10 @@ func TestValidateLLMExternalGrant_CoordinatorTransport(t *testing.T) {
 		wantErr string
 	}{
 		"valid https": {cfg: valid},
+		"valid credential only": {cfg: ExternalGrantCoordinatorConfig{
+			CredentialURL: "https://coordinator.example.test/v1/provider-credential",
+			AuthTokenEnv:  "HARBOR_COORDINATOR_TOKEN",
+		}},
 		"valid loopback": {cfg: func() ExternalGrantCoordinatorConfig {
 			c := valid
 			c.ReceiptURL = "http://127.0.0.1:8080/receipts"
@@ -99,6 +104,16 @@ func TestValidateLLMExternalGrant_CoordinatorTransport(t *testing.T) {
 		"top-up query": {cfg: func() ExternalGrantCoordinatorConfig {
 			c := valid
 			c.TopUpURL = "https://coordinator.example.test/grants/top-up?q=1"
+			return c
+		}(), wantErr: "query"},
+		"credential remote plaintext": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.CredentialURL = "http://coordinator.example.test/provider-credential"
+			return c
+		}(), wantErr: "loopback"},
+		"credential query": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.CredentialURL = "https://coordinator.example.test/provider-credential?q=1"
 			return c
 		}(), wantErr: "query"},
 		"remote plaintext": {cfg: func() ExternalGrantCoordinatorConfig {
@@ -140,5 +155,18 @@ func TestValidateLLMExternalGrant_DisabledRejectsCoordinatorWork(t *testing.T) {
 	c.LLM.ExternalGrant.Coordinator.ReceiptURL = "https://coordinator.example.test/receipts"
 	if err := c.validateLLMExternalGrant(); err == nil || !strings.Contains(err.Error(), "coordinator") {
 		t.Fatalf("error=%v, want disabled coordinator refusal", err)
+	}
+}
+
+func TestValidateLLMExternalGrant_CredentialOnlyRejectsReceiptWorkerSettings(t *testing.T) {
+	grant := validExternalGrantConfig(t)
+	grant.Coordinator = ExternalGrantCoordinatorConfig{
+		CredentialURL: "https://coordinator.example.test/provider-credential",
+		AuthTokenEnv:  "HARBOR_COORDINATOR_TOKEN",
+		MaxBatch:      10,
+	}
+	err := (&Config{LLM: LLMConfig{ExternalGrant: grant}}).validateLLMExternalGrant()
+	if err == nil || !strings.Contains(err.Error(), "receipt_url") {
+		t.Fatalf("error = %v", err)
 	}
 }

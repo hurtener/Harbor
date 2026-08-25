@@ -806,6 +806,26 @@ kind and observed state, an explicit unsupported stock top-up state, and a
 fail-closed fully-wired strict-ready result. Lease-successor application remains outside
 this transport until the durable reservation epoch can advance idempotently.
 
+**Stock coordinator-bound credential resolution (D-442).** `harbor serve` MAY
+also opt into one boot-pinned authenticated credential-resolution endpoint, or
+an embedding host MAY inject the same public resolver through `sdk/server`.
+The transport-neutral `sdk/llm/credentials` request contains only the complete
+signed external grant already accepted by Harbor's verifier; it exposes no
+independent authority selector. A response is accepted only when provider,
+opaque binding handle, provider-connection generation, and credential-asset
+generation equal the signed request, and its secret remains confined to the
+provider-driver edge. The stock client refuses redirects and unsafe endpoints,
+bounds bodies and duration, and never reflects secret material or coordinator
+response bodies in errors. Its in-memory material cache is keyed by the full
+canonical verified-grant digest, capped at 256 entries and 30 seconds, clamped
+to response/grant expiry, singleflight-coalesced only for an exact digest,
+generation-fenced, and cleared on close. Absent configuration performs no
+network, StateStore, polling, timer, or goroutine work. `runtime_default`
+continues to use the configured runtime provider/model without coordinator
+credentials or catalogs. Required `coordinator_bound` mode fails boot without
+an injected or stock resolver; optional mode truthfully reports that route
+unready until one is wired. Protocol version remains `0.1.0`.
+
 **Provider-neutral technical descriptors and runtime-origin model discovery (Planned — HA-71 / D-435).** A provider control-plane consumer may need technical facts from the same Bifrost integration Harbor uses for execution, but those facts must not be re-derived in a second provider registry or mixed with presentation policy. Harbor's typed descriptor reports an opaque provider id/kind, credential modes and logical secret/url/text field kinds, custom-endpoint support, and whether bounded runtime-origin validation or model discovery is available. It carries no logo, friendly label, help copy, endpoint value, environment variable name, credential, provider response body, or identity value. Native provider endpoint handling remains `manual` where provider-specific semantics are not portable; declared OpenAI-compatible custom endpoints are the supported custom-endpoint fact.
 
 The catalog is an immutable local snapshot with bounded, cancellable `Validate` and `Discover` operations. Discovery reuses the same Bifrost account construction as an LLM call, caps page size and page count, rejects malformed or duplicate model rows, and normalizes only reported provider-neutral facts: context/input/output limits, input/output modalities, tool support when a canonical parameter is reported, canonical `off|low|medium|high` reasoning levels when reported, deprecation, and pricing provenance. Missing facts remain `unknown`, absent pricing is `unpriced`, incomplete results are `partial`, cached results are explicitly `stale`, and configured model ids are `manual` when discovery is unavailable or empty. Provider errors map to stable sanitized outcomes rather than raw messages or response bodies. The offline `harbor llm providers` CLI is explicitly non-runtime-origin; the booted runtime also projects descriptor, validation, and discovery through the existing protected `llm.posture` request envelope (`provider_operation=validate|discover`) for admin-tier callers, with shared runtime credential state. No new Protocol method or version is added.
