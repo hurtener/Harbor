@@ -244,6 +244,23 @@ func (c *client) resolveAttemptReplay(ctx context.Context, grant llm.ExternalGra
 	if !ok {
 		return llm.LeaseReservation{}, false, nil
 	}
+	// ResolveAttempt may atomically expire an old reservation. Authenticate
+	// the complete current authority, including coordinator credential
+	// generation/revocation, before even that durable read/mutation seam.
+	renewalVerifier := c.deps.ExternalGrant.RenewalVerifier
+	if renewalVerifier == nil {
+		renewalVerifier, _ = c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier)
+	}
+	if renewalVerifier != nil {
+		if err := renewalVerifier.VerifyRenewalPredecessor(ctx, grant, req); err != nil {
+			return llm.LeaseReservation{}, false, err
+		}
+	} else if err := c.deps.ExternalGrant.Verifier.Verify(ctx, grant, req); err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	if err := c.verifyCoordinatorCredential(ctx, grant); err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
 	units, err := boundedCallUnits(req, grant, c.cfg)
 	if err != nil {
 		return llm.LeaseReservation{}, false, err
@@ -252,26 +269,12 @@ func (c *client) resolveAttemptReplay(ctx context.Context, grant llm.ExternalGra
 	if err != nil {
 		return llm.LeaseReservation{}, false, fmt.Errorf("%w: canonical grant fingerprint", llm.ErrExternalGrantInvalid)
 	}
-	reservation, found, lookupErr := resolver.ResolveAttempt(ctx, llm.LeaseAttemptLookup{
+	return resolver.ResolveAttempt(ctx, llm.LeaseAttemptLookup{
 		AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
 		GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID, OrganizationID: grant.OrganizationID,
 		RuntimeID: grant.RuntimeID, AgentID: grant.AgentID, Units: units, CurrentGrantFingerprint: fingerprint,
 		Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
 	})
-	if !found && lookupErr == nil {
-		return llm.LeaseReservation{}, false, nil
-	}
-	// Authenticate the complete current successor before returning either an
-	// existing outcome or a binding-conflict signal. This prevents the lookup
-	// from becoming an authority-existence oracle.
-	if renewalVerifier, ok := c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
-		if err := renewalVerifier.VerifyRenewalPredecessor(ctx, grant, req); err != nil {
-			return llm.LeaseReservation{}, false, err
-		}
-	} else if err := c.deps.ExternalGrant.Verifier.Verify(ctx, grant, req); err != nil {
-		return llm.LeaseReservation{}, false, err
-	}
-	return reservation, found, lookupErr
 }
 
 func persistedAttemptOutcome(reservation llm.LeaseReservation) (llm.CompleteResponse, error) {

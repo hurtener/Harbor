@@ -55,6 +55,24 @@ type recordingReservations struct {
 	settlementContextErrors []error
 }
 
+type replaySpyReservations struct {
+	inner   *leases.Store
+	lookups atomic.Int32
+}
+
+func (r *replaySpyReservations) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (llm.LeaseReservation, error) {
+	return r.inner.Reserve(ctx, req)
+}
+
+func (r *replaySpyReservations) Settle(ctx context.Context, settlement llm.LeaseSettlement) error {
+	return r.inner.Settle(ctx, settlement)
+}
+
+func (r *replaySpyReservations) ResolveAttempt(ctx context.Context, lookup llm.LeaseAttemptLookup) (llm.LeaseReservation, bool, error) {
+	r.lookups.Add(1)
+	return r.inner.ResolveAttempt(ctx, lookup)
+}
+
 func (r *recordingReservations) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (llm.LeaseReservation, error) {
 	r.mu.Lock()
 	r.requests = append(r.requests, req)
@@ -1328,6 +1346,53 @@ func TestWrap_DurableAttemptIdentityBlocksConcurrentAndResponseLossReplay(t *tes
 	}
 	if got := provider.calls.Load(); got != 1 {
 		t.Fatalf("provider calls after replay = %d, want one", got)
+	}
+}
+
+func TestWrap_ReplayAuthenticatesCoordinatorCredentialBeforeDurableLookup(t *testing.T) {
+	signer, err := NewSigner("key-replay-credential", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-replay-credential": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := newTestBinding(t)
+	grant, err := signer.Sign(testGrant())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservations := &replaySpyReservations{inner: newTestReservations(t)}
+	provider := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 1}}}
+	var topUps atomic.Int32
+	client := Wrap(provider, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, RenewalVerifier: verifier, Credentials: binding,
+		Reservations: reservations, ReceiptSink: &recordingSink{}, ReceiptRequired: true,
+		TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+			topUps.Add(1)
+			return llm.ExternalGrant{}, errors.New("unexpected top-up")
+		}),
+	}})
+	ctx := testContext(t, "org-a")
+	if _, err := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &grant}); err != nil {
+		t.Fatalf("initial Complete: %v", err)
+	}
+	if reservations.lookups.Load() != 1 || len(provider.requests) != 1 {
+		t.Fatalf("initial lookups=%d provider=%d", reservations.lookups.Load(), len(provider.requests))
+	}
+	if err := binding.Revoke(grant.CredentialBindingHandle); err != nil {
+		t.Fatal(err)
+	}
+	reservations.lookups.Store(0)
+	if _, replayErr := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &grant}); !errors.Is(replayErr, llm.ErrExternalGrantRevoked) {
+		t.Fatalf("revoked replay=%v, want ErrExternalGrantRevoked", replayErr)
+	}
+	if reservations.lookups.Load() != 0 || len(provider.requests) != 1 || topUps.Load() != 0 {
+		t.Fatalf("revoked replay did work: lookups=%d provider=%d topups=%d", reservations.lookups.Load(), len(provider.requests), topUps.Load())
 	}
 }
 
