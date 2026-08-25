@@ -1393,6 +1393,19 @@ content-read/impersonation authority exists: admin/fleet observation implies
 no transcript access. `events.list` / `state.history` / `tasks.get` remain
 the raw drill-down and explicit task-detail surfaces.
 
+An optional `projection: "usage"` selector on `sessions.turns.get` is the
+content-free, exact-session lane for a consumer that needs only durable turn
+lifecycle/timing and canonical usage facts (D-443). Its response is
+structurally distinct from both conversation and operations rows and contains
+only turn/task/session/agent identifiers, status/sealed/version/event-sequence
+facts, timestamps, the closed per-measure usage states, and an optional bounded
+reported model. It performs the same one durable indexed turn lookup, exposes
+no query, answer, reasoning, Activity, pause, App, attachment, run-id, message,
+tenant, or user content/authority, and cannot be widened by admin or fleet
+scope. The omitted selector keeps the conversation response unchanged. This
+read adds no poller, worker, receipt path, configuration, schema, or provider
+interaction.
+
 The stock Runtime's root-foreground task/run relationship is part of that
 projection source: the foreground RunLoop uses that TaskID as its canonical
 RunID. Root `task.spawned` intentionally carries only the identity triple,

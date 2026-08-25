@@ -404,6 +404,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |260 | Reach-admitted agent-bound external grants (HA-75, D-440): v2 signs the exact effective agent selected by normal reach admission, reference verification fails before provider side effects, receipts/top-ups preserve the binding, v1 signatures and blank-agent receipt bytes remain exact, and readiness advertises `[1,2]` plus `required_v2` | internal/llm + grant + runtime/serve + protocol posture + sdk/llm | §6.5, §6.11, §6.15 | 254, 256, 257, 258, 259, D-434..D-439 | focused race/vet + real run-loop + public consumer + generators + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
 |261 | Stock authenticated external-grant renewal (D-441): strict typed expiry, full-authority renewal preflight, public canonical `sdk/llm/topup` contract and 128-KiB bounds, optional authenticated HTTP transport, reason-aware no-widen expiry renewal, replay-idempotent durable successor CAS, apply-before-reserve/provider ordering, truthful stock/host/unsupported readiness, and zero idle work | sdk/llm/topup + grant wrapper + leases + receipt HTTP transport + runtime assembly/config/readiness | §6.5, §6.11, §6.15 | 254, 256, 258, 259, 260, D-434..D-440 | focused race/vet + inmem/SQLite/real-PG + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
 |262 | Stock coordinator-bound credential resolution (HA-73, D-442): public canonical `sdk/llm/credentials` exchange, public server injection, optional authenticated stock transport, verified-full-grant authority, exact generation-bound response, bounded TTL/cardinality cache and singleflight isolation, truthful route readiness, and zero idle/default-route work | sdk/llm/credentials + credential HTTP transport + runtime serve/config/readiness + sdk/server | §6.5, §6.11, §6.15 | 254, 256, 258, 260, D-434, D-436, D-438, D-440 | focused race/vet + public consumer + real runtime.info + smoke | Accepted for v1.30.3 release candidate; tag/release/downstream acceptance pending |
+|263 | Content-free user-scoped turn usage projection (D-443): optional `sessions.turns.get projection=usage`, exact-session/effective-agent authority, structurally exclusive lifecycle/timing and canonical usage row, one existing durable indexed read, no admin/fleet widening, and no scans/pollers/workers/receipts/config/schema/provider/grant dependency | sessions/turns projection + Protocol + generated Go/TS/docs + operator skill | §5.2, §5.5, §6.9, §6.13, §7, §9 | 130, 161, 246, D-293, D-425 | focused package/transport/wire/content-free gates + hosted CI | Accepted for v1.30.4 release candidate; final preflight/Playwright, tag/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5745,6 +5746,40 @@ owner explicitly authorized proceeding with the fast v1.30.3 release despite
 the timeout and pending run, with any late failure to be corrected later that
 day. As of this cut, no tag, release, assets, module provenance, post-tag
 scaffold cleanup, downstream deployment, or acceptance is claimed.
+
+### Phase 263 — Content-free user-scoped turn usage projection
+
+- **Subsystem:** durable session turns, Protocol service/transport and
+  canonical Go/TypeScript/generated documentation surfaces.
+- **RFC:** §5.2, §5.5, §6.9, §6.13, §7, §9. **Deps:** phases 130, 161, 246;
+  D-293 and D-425.
+- **What it delivers:** D-443 — an optional `usage` selector on the existing
+  `sessions.turns.get` exact-session consumer read. Its mutually exclusive row
+  carries only durable lifecycle/timing, turn/task/session/agent identifiers,
+  honest canonical usage measures, and an optional bounded reported model.
+  Admin/fleet cannot widen it; omitted/default conversation behavior is
+  unchanged. It performs one existing durable indexed read and adds no scan,
+  polling, worker, receipt, configuration, schema, provider, credential, or
+  external-grant path.
+- **Evidence:** exact-session/effective-agent and cross-identity adversaries;
+  structural content-free JSON exclusion; mutually exclusive response lanes;
+  canonical Go/TypeScript/manifest/docs lockstep; two independent adversarial
+  reviews; and hosted PR CI at exact reviewed head.
+- **Decision:** D-443. **Status:** Accepted for the v1.30.4 release candidate;
+  final preflight/Playwright, tag, release, and downstream acceptance remain
+  pending.
+
+**v1.30.4 release-candidate evidence for Phase 263.** PR #752 exact head
+`87a58c400fa9a553937a2fe02a020cd6b91ddb7b` was squash-merged as exact current
+`origin/main` `4c955b6ad97e35810fda11cec8807fcc05f15a1d`. At the
+owner-authorized fast merge, hosted PR run `32911031711` had both Go
+platforms, lint, frontend, examples, performance, PostgreSQL/S3 conformance,
+isolation, leak, chaos, mirror, and markdown checks green; documentation run
+`32911031604` was also green. Console Playwright and the full preflight gate
+were still in progress with no failed job. This cut claims neither a completed
+final preflight/Playwright result nor a tag, release, assets, provenance,
+checksums, attestations, post-tag cleanup, downstream deployment, or
+acceptance.
 
 ## Notes
 

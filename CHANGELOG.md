@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.4] — 2026-08-25
+
 ### Added
 
 - `sessions.turns.get` now accepts the optional `projection: "usage"`
@@ -28,6 +30,20 @@ Two versions move independently in Harbor (RFC §5.3):
   polling loop, background worker, receipt path, configuration, or schema.
   Elevated administrative scopes neither enable nor widen this projection.
   Protocol version remains `0.1.0`.
+
+### Release candidate evidence
+
+- Phase 263 / D-443 landed through PR #752 at exact current `origin/main`
+  `4c955b6ad97e35810fda11cec8807fcc05f15a1d` from reviewed PR head
+  `87a58c400fa9a553937a2fe02a020cd6b91ddb7b`. At the owner-authorized fast
+  merge, hosted PR run `32911031711` had both Go platforms, lint, frontend,
+  examples, performance, PostgreSQL/S3, isolation, leak, chaos, mirror, and
+  markdown checks green; documentation run `32911031604` was also green.
+  Console Playwright and the full preflight gate were still in progress, with
+  no failed job. No successful final preflight or Playwright result is claimed
+  by this cut. No v1.30.4 tag, release assets, module provenance, checksums,
+  attestations, post-tag cleanup, downstream deployment, or acceptance is
+  claimed.
 
 ## [1.30.3] — 2026-08-25
 
@@ -5094,7 +5110,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.3...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.4...HEAD
+[1.30.4]: https://github.com/hurtener/Harbor/compare/v1.30.3...v1.30.4
 [1.30.3]: https://github.com/hurtener/Harbor/compare/v1.30.2...v1.30.3
 [1.30.2]: https://github.com/hurtener/Harbor/compare/v1.30.1...v1.30.2
 [1.30.1]: https://github.com/hurtener/Harbor/compare/v1.30.0...v1.30.1

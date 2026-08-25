@@ -14574,3 +14574,52 @@ owner explicitly authorized proceeding with the fast v1.30.3 release despite
 the timeout and pending run, with any late failure to be corrected later that
 day. As of this release-cut commit, no tag, release, downstream deployment, or
 acceptance is claimed.
+
+---
+
+## D-443 — User-scoped turn usage is an optional content-free projection of the existing durable row
+
+**Date:** 2026-08-25
+
+**Status:** Accepted for the v1.30.4 release candidate; tag, release,
+downstream deployment, and acceptance remain pending.
+
+`sessions.turns.get` accepts the additive `projection: "usage"` selector for
+one exact verified session and task. The response is structurally exclusive
+with the existing conversation and operations rows. It carries only durable
+turn lifecycle/timing, turn/task/session/agent identifiers, and Harbor's
+canonical usage rollup: prompt, completion, reasoning, cache-read,
+cache-write, and total tokens, cost in micro-USD, latency in nanoseconds, each
+with its exact/estimated/unavailable state, plus an optional bounded reported
+model. Query, answer, reasoning content, Activity, pause data, Apps,
+attachments, run ID, messages, tenant/user identifiers, and content bytes are
+not representable in the usage row.
+
+Authority is unchanged and deliberately narrower than operator observation:
+the caller must satisfy the existing exact-session consumer read and
+effective-agent gates. Admin and fleet scopes neither enable nor widen this
+projection, so insufficient and foreign identities retain the existing
+non-oracular not-found posture. The omitted selector keeps the existing
+conversation response byte shape; `operations` remains independently
+selected and mutually exclusive.
+
+The implementation reuses the existing durable turn projector's single
+indexed `Get`. It adds no list or prefix scan, poller, timer, goroutine,
+background worker, receipt/outbox, StateStore schema, configuration, provider
+call, credential path, or external-grant dependency. Usage availability stays
+honest rather than converting missing measures to zero.
+
+**Cross-references:** D-025, D-293, D-425, RFC §5.2, §5.5, §6.9, §6.13,
+§7, §9, brief 05, brief 06. Plan:
+`docs/plans/phase-263-content-free-turn-usage-projection.md`.
+
+**Release-candidate evidence.** PR #752 reviewed exact head
+`87a58c400fa9a553937a2fe02a020cd6b91ddb7b` and squash-merged at exact current
+`origin/main` `4c955b6ad97e35810fda11cec8807fcc05f15a1d`. At the
+owner-authorized fast merge, hosted PR run `32911031711` had both Go
+platforms, lint, frontend, examples, performance, PostgreSQL/S3 conformance,
+isolation, leak, chaos, mirror, and markdown checks green; documentation run
+`32911031604` was also green. Console Playwright and the full preflight gate
+were still in progress with no failed job. This cut does not claim a completed
+final preflight or Playwright result, tag, release, downstream deployment, or
+acceptance.
