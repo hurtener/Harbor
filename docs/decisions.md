@@ -14243,6 +14243,70 @@ of HA-72.
 
 ---
 
+## D-438 — Stock coordinator receipt transport is opt-in, replay-safe, and truthfully projected
+
+**Date:** 2026-08-25
+
+**Status:** Accepted for Phase 258; implementation candidate complete, hosted
+CI and release evidence pending.
+
+The transport-neutral external-grant SDK is necessary but insufficient for a
+stock `harbor serve` deployment: an operator should not have to author a host
+binary merely to deliver canonical receipts. Harbor therefore owns one
+optional boot-pinned HTTP transport under `llm.external_grant.coordinator`.
+It uses a runtime service credential resolved from a named environment
+variable, refuses redirects and unsafe remote plaintext endpoints, bounds
+duration and body sizes, delivers canonical receipt batches, and accepts only
+exact receipt-id/canonical-body-hash acknowledgements. It is generic framework
+transport; no coordinator product URL, provider presentation, policy name, or
+downstream business object enters Harbor.
+
+The durable outbox detects the optional batch extension. An acknowledged fact
+is removed exactly once; an omitted acknowledgement remains durable, and
+response loss retains the whole unacknowledged set. Unknown, duplicate, or
+hash-mismatched acknowledgements fail the batch closed. Retry uses bounded
+exponential backoff with stable receipt-derived jitter and the existing circuit
+breaker, so a coordinator outage neither loses facts nor creates a synchronized
+retry storm. Stock lease top-up remains unsupported: a successor grant cannot
+be called ready until its validated epoch/capacity advances the durable
+reservation store idempotently, including response-loss replay.
+
+The config block is rejected when external grants are disabled. When absent,
+stock boot performs no environment lookup and starts no coordinator client,
+goroutine, timer, outbox scan, StateStore read, or network request.
+`runtime_default` remains a first-class strict route: it needs no coordinator
+provider credential, provider connection, or model catalog, and can still use
+the same grant ceilings, reservation, receipt, and delivery path.
+
+`runtime.info.external_grant` is the operator truth surface. It reports
+compile-time support; an explicit configured fact and configured mode;
+accepted and independently ready route modes; verifier,
+reservation, and credential-resolver wiring; strict canonical receipt parser;
+concrete receipt transport kind and observed state; explicit unsupported stock
+top-up state; and `strict_ready` only when the selected route shapes are fully
+enforceable. A
+coordinator-bound runtime without a credential resolver is never called ready;
+a runtime-default one does not falsely require that resolver. The projection
+is content- and secret-free and updates to `degraded` after a failed or partial
+exchange.
+
+**Compatibility boundary.** Protocol version stays `0.1.0`; the readiness
+object is an additive `runtime.info` field. Existing host-injected `Delivery`
+and `TopUpper` interfaces retain ABI compatibility, but Phase 258 does not wire
+or advertise a stock top-up path. Existing single-receipt transports remain
+valid. Disabled and unconfigured defaults retain their zero-work behavior.
+
+**Cross-references.** D-025, D-434, D-436, RFC §5.3, §6.5, §6.11, §6.15.
+Plan: `docs/plans/phase-258-stock-coordinator-receipt-transport.md`.
+
+**Evidence boundary.** Focused in-memory/SQLite outbox tests, authenticated
+HTTP transport tests, cancellation/concurrent-reuse tests, config/readiness
+tests, race/vet, Protocol generators, static Phase-258 smoke, and drift/docs
+gates are candidate evidence. Hosted CI, a release/tag, external coordinator
+acceptance, and downstream deployment remain unclaimed.
+
+---
+
 ## D-439 — A lease top-up is a bounded successor of one immutable external execution grant (HA-74)
 
 **Date:** 2026-08-25

@@ -6,6 +6,8 @@ package receipts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +36,21 @@ var (
 
 type Delivery interface {
 	Deliver(context.Context, llm.AttemptUsageReceipt) error
+}
+
+// DeliveryAck is the only acknowledgement fact the outbox accepts. Both
+// fields must match the exact canonical receipt that was delivered.
+type DeliveryAck struct {
+	ReceiptID         string `json:"receipt_id"`
+	CanonicalBodyHash string `json:"canonical_body_hash"`
+}
+
+// BatchDelivery is an optional extension implemented by transports that can
+// acknowledge a bounded receipt batch. Omitting an acknowledgement retains
+// that receipt for replay; an acknowledgement for an unknown identity or a
+// mismatched body hash fails the whole batch closed.
+type BatchDelivery interface {
+	DeliverBatch(context.Context, []llm.AttemptUsageReceipt) ([]DeliveryAck, error)
 }
 
 // PendingReceiptSource is a low-frequency crash-recovery source.  It is not
@@ -247,6 +264,11 @@ func (o *Outbox) enqueueAt(ctx context.Context, q identity.Quadruple, receipt ll
 
 type ReplayStats struct{ Seen, Delivered, Acknowledged, Deferred, Failed int }
 
+type replayItem struct {
+	entry  dueEntry
+	stored storedReceipt
+}
+
 func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 	if err := o.breakerError(); err != nil {
 		return ReplayStats{}, err
@@ -275,6 +297,7 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 	stats := ReplayStats{}
 	now := o.clock().UTC()
 	var firstErr error
+	items := make([]replayItem, 0, o.maxBatch)
 	for i, entry := range idx.Entries {
 		if i >= o.maxBatch {
 			break
@@ -310,9 +333,19 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 			stats.Deferred++
 			continue
 		}
-		if deliveryErr := o.delivery.Deliver(ctx, stored.Receipt); deliveryErr != nil {
+		items = append(items, replayItem{entry: entry, stored: stored})
+	}
+	if len(items) == 0 {
+		return stats, firstErr
+	}
+	if batch, ok := o.delivery.(BatchDelivery); ok {
+		return o.replayBatch(ctx, now, items, stats, firstErr, batch)
+	}
+	for i := range items {
+		item := &items[i]
+		if deliveryErr := o.delivery.Deliver(ctx, item.stored.Receipt); deliveryErr != nil {
 			stats.Failed++
-			if updateErr := o.updateEntry(ctx, entry, &stored, false); updateErr != nil && firstErr == nil {
+			if updateErr := o.updateEntry(ctx, item.entry, &item.stored, false); updateErr != nil && firstErr == nil {
 				firstErr = updateErr
 			} else if firstErr == nil {
 				firstErr = fmt.Errorf("%w: receipt delivery returned an error", ErrDeliveryFailed)
@@ -321,10 +354,10 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 			continue
 		}
 		stats.Delivered++
-		stored.Status = "acked"
-		stored.NextAttemptAt = time.Time{}
-		stored.LastFailureCode = ""
-		if updateErr := o.updateEntry(ctx, entry, &stored, true); updateErr != nil {
+		item.stored.Status = "acked"
+		item.stored.NextAttemptAt = time.Time{}
+		item.stored.LastFailureCode = ""
+		if updateErr := o.updateEntry(ctx, item.entry, &item.stored, true); updateErr != nil {
 			if firstErr == nil {
 				firstErr = updateErr
 			}
@@ -332,6 +365,86 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 		}
 		stats.Acknowledged++
 		o.noteSuccess()
+	}
+	return stats, firstErr
+}
+
+func (o *Outbox) replayBatch(ctx context.Context, now time.Time, items []replayItem, stats ReplayStats, firstErr error, delivery BatchDelivery) (ReplayStats, error) {
+	receipts := make([]llm.AttemptUsageReceipt, len(items))
+	expected := make(map[string]string, len(items))
+	for i := range items {
+		receipts[i] = items[i].stored.Receipt
+		expected[receipts[i].ReceiptID] = receipts[i].CanonicalBodyHash
+	}
+	acks, deliveryErr := delivery.DeliverBatch(ctx, receipts)
+	if deliveryErr != nil {
+		for i := range items {
+			stats.Failed++
+			if updateErr := o.updateEntry(ctx, items[i].entry, &items[i].stored, false); updateErr != nil && firstErr == nil {
+				firstErr = updateErr
+			}
+		}
+		o.noteFailure(now)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%w: receipt batch delivery returned an error", ErrDeliveryFailed)
+		}
+		return stats, firstErr
+	}
+	stats.Delivered += len(items)
+	acked := make(map[string]struct{}, len(acks))
+	for _, ack := range acks {
+		want, ok := expected[ack.ReceiptID]
+		if !ok || want != ack.CanonicalBodyHash {
+			return o.failBatch(ctx, now, items, stats, firstErr, "receipt acknowledgement identity or hash mismatch")
+		}
+		if _, duplicate := acked[ack.ReceiptID]; duplicate {
+			return o.failBatch(ctx, now, items, stats, firstErr, "duplicate receipt acknowledgement")
+		}
+		acked[ack.ReceiptID] = struct{}{}
+	}
+	partial := false
+	for i := range items {
+		item := &items[i]
+		if _, ok := acked[item.stored.Receipt.ReceiptID]; !ok {
+			partial = true
+			stats.Failed++
+			if updateErr := o.updateEntry(ctx, item.entry, &item.stored, false); updateErr != nil && firstErr == nil {
+				firstErr = updateErr
+			}
+			continue
+		}
+		item.stored.Status = "acked"
+		item.stored.NextAttemptAt = time.Time{}
+		item.stored.LastFailureCode = ""
+		if updateErr := o.updateEntry(ctx, item.entry, &item.stored, true); updateErr != nil {
+			if firstErr == nil {
+				firstErr = updateErr
+			}
+			continue
+		}
+		stats.Acknowledged++
+	}
+	if partial {
+		o.noteFailure(now)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%w: receipt batch was only partially acknowledged", ErrDeliveryFailed)
+		}
+	} else {
+		o.noteSuccess()
+	}
+	return stats, firstErr
+}
+
+func (o *Outbox) failBatch(ctx context.Context, now time.Time, items []replayItem, stats ReplayStats, firstErr error, reason string) (ReplayStats, error) {
+	for i := range items {
+		stats.Failed++
+		if updateErr := o.updateEntry(ctx, items[i].entry, &items[i].stored, false); updateErr != nil && firstErr == nil {
+			firstErr = updateErr
+		}
+	}
+	o.noteFailure(now)
+	if firstErr == nil {
+		firstErr = fmt.Errorf("%w: %s", ErrDeliveryFailed, reason)
 	}
 	return stats, firstErr
 }
@@ -496,7 +609,7 @@ func (o *Outbox) updateEntry(ctx context.Context, entry dueEntry, stored *stored
 		stored.Attempts++
 		stored.Status = "pending"
 		stored.LastFailureCode = "delivery_failed"
-		stored.NextAttemptAt = o.clock().UTC().Add(backoff(o.baseBackoff, o.maxBackoff, stored.Attempts))
+		stored.NextAttemptAt = o.clock().UTC().Add(backoff(o.baseBackoff, o.maxBackoff, stored.Attempts, entry.ReceiptID))
 		idx.Entries[pos].NextAttemptAt = stored.NextAttemptAt
 	} else {
 		idx.Entries = append(idx.Entries[:pos], idx.Entries[pos+1:]...)
@@ -611,15 +724,36 @@ func (o *Outbox) noteSuccess() {
 	o.circuitOpenTil = time.Time{}
 	o.mu.Unlock()
 }
-func backoff(base, max time.Duration, attempts int) time.Duration {
+func backoff(base, max time.Duration, attempts int, receiptID string) time.Duration {
 	if attempts <= 1 {
-		return base
+		return jitterBackoff(base, base, max, receiptID, attempts)
 	}
 	d := float64(base) * math.Pow(2, float64(attempts-1))
 	if d >= float64(max) {
+		return jitterBackoff(max, base, max, receiptID, attempts)
+	}
+	return jitterBackoff(time.Duration(d), base, max, receiptID, attempts)
+}
+
+// jitterBackoff adds stable per-receipt jitter so a coordinator recovery does
+// not wake every runtime at once. Stability keeps response-loss replay
+// deterministic while the +/-10% spread avoids synchronized retry bursts.
+func jitterBackoff(value, base, max time.Duration, receiptID string, attempts int) time.Duration {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", receiptID, attempts)))
+	spread := value / 10
+	if spread <= 0 {
+		return value
+	}
+	width := uint64(2*spread + 1)
+	offset := time.Duration(binary.BigEndian.Uint64(digest[:8])%width) - spread
+	value += offset
+	if value < base {
+		return base
+	}
+	if value > max {
 		return max
 	}
-	return time.Duration(d)
+	return value
 }
 
 func decodeStored(body []byte) (storedReceipt, error) {

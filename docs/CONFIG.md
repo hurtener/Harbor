@@ -476,8 +476,42 @@ concurrently without trusting an organization value from the dispatch caller.
 
 Named Ed25519 public keys used to verify signed grants. Values are standard or
 URL-safe base64-encoded public keys; private signing material never belongs in
-the runtime configuration. Credential resolution and receipt delivery are
-injected by the boot host. Restart-required.
+the runtime configuration. Credential resolution remains a boot-host seam;
+receipt delivery may use that seam or the optional stock coordinator transport
+below. Restart-required.
+
+### llm.external_grant.coordinator.receipt_url
+
+Optional stock `harbor serve` endpoint that accepts canonical, content-free
+usage-receipt batches and returns exact receipt-ID/body-hash acknowledgements.
+Setting it opts the runtime into coordinator delivery; leaving it empty starts
+no coordinator client, timer, scan, or network work. HTTPS is required except
+for loopback HTTP. User info, queries, and fragments are rejected.
+Restart-required.
+
+### llm.external_grant.coordinator.auth_token_env
+
+Name of the environment variable containing the runtime's coordinator service
+credential. Required when `receipt_url` is set. The value is read once at boot,
+never serialized, and never included in logs or errors. Restart-required.
+
+### llm.external_grant.coordinator.timeout
+
+Bound for each receipt HTTP exchange. Default: `10s` when zero.
+Validation: non-negative. Restart-required.
+
+### llm.external_grant.coordinator.max_batch
+
+Maximum canonical receipts in one delivery request. Default: `64` when zero.
+Validation: `1` through `1000` when explicitly set. The durable outbox retains
+unacknowledged receipts for bounded replay. Restart-required.
+
+### llm.external_grant.coordinator.reconcile_interval
+
+Slow crash-recovery reconciliation cadence for durable receipts that predate
+the due index or lost its wake-up. Default: `5m` when zero. Normal receipt
+delivery is enqueue-driven and does not poll this interval. Validation:
+non-negative. Restart-required.
 
 ### llm.network_defaults.timeout
 

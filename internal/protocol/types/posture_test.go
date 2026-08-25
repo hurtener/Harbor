@@ -45,6 +45,11 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 		Capabilities:      []types.Capability{types.CapTaskControl, types.CapRuntimePosture},
 		UptimeSeconds:     3600,
 		WireSurfaceDigest: "sha256:" + strings.Repeat("a", 64),
+		ExternalGrant: types.ExternalGrantReadiness{
+			Supported: true, Configured: true, Mode: "required", AcceptedRouteModes: []string{"runtime_default"}, ReadyRouteModes: []string{"runtime_default"},
+			VerifierConfigured: true, ReservationsWired: true, ReceiptTransport: "wired",
+			ReceiptTransportKind: "stock_authenticated_http", ReceiptParser: "strict_canonical_v1", TopUpTransport: "unsupported", StrictReady: true,
+		},
 	}
 	b, err := json.Marshal(in)
 	if err != nil {
@@ -57,6 +62,9 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"wire_surface_digest":"sha256:`) {
 		t.Errorf("RuntimeInfo JSON missing wire_surface_digest key: %s", b)
+	}
+	if !strings.Contains(string(b), `"external_grant":{"supported":true,"configured":true,"mode":"required"`) {
+		t.Errorf("RuntimeInfo JSON missing external_grant readiness: %s", b)
 	}
 	var out types.RuntimeInfo
 	if err := json.Unmarshal(b, &out); err != nil {

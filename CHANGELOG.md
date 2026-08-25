@@ -28,6 +28,17 @@ Two versions move independently in Harbor (RFC §5.3):
   the blank public route mode required to verify a legacy receipt hash while
   re-marshaling the same explicit canonical wire bytes.
 
+- HA-72 adds an opt-in stock `harbor serve` transport for authenticated,
+  bounded batches of canonical content-free usage receipts, exact
+  receipt-ID/body-hash acknowledgements, durable partial/response-loss replay,
+  and stable jittered backoff. Disabled/default runtimes start no coordinator
+  work, and `runtime_default` remains independent of coordinator provider
+  credentials or catalogs. `runtime.info` now reports grant mode, accepted
+  and independently ready route modes, verifier/reservation/credential wiring,
+  strict receipt parser, concrete receipt transport kind and readiness, an
+  explicitly unsupported stock top-up path, and a
+  fail-closed aggregate strict-ready signal.
+
 ### Fixed
 
 - HA-74 makes lease top-up successor validation a public SDK contract and

@@ -4,7 +4,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"strings"
 	"testing"
+	"time"
 )
 
 func validExternalGrantConfig(t *testing.T) LLMExternalGrantConfig {
@@ -65,5 +67,67 @@ func TestValidateLLMExternalGrant_DisabledNeedsNoKeys(t *testing.T) {
 	c.LLM.ExternalGrant.Mode = "disabled"
 	if err := c.validateLLMExternalGrant(); err != nil {
 		t.Fatalf("disabled external-grant config: %v", err)
+	}
+}
+
+func TestValidateLLMExternalGrant_CoordinatorTransport(t *testing.T) {
+	valid := ExternalGrantCoordinatorConfig{
+		ReceiptURL:        "https://coordinator.example.test/v1/receipts",
+		AuthTokenEnv:      "HARBOR_COORDINATOR_TOKEN",
+		Timeout:           5 * time.Second,
+		MaxBatch:          100,
+		ReconcileInterval: time.Minute,
+	}
+	tests := map[string]struct {
+		cfg     ExternalGrantCoordinatorConfig
+		wantErr string
+	}{
+		"valid https": {cfg: valid},
+		"valid loopback": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.ReceiptURL = "http://127.0.0.1:8080/receipts"
+			return c
+		}()},
+		"missing receipt":  {cfg: func() ExternalGrantCoordinatorConfig { c := valid; c.ReceiptURL = ""; return c }(), wantErr: "receipt_url"},
+		"missing auth env": {cfg: func() ExternalGrantCoordinatorConfig { c := valid; c.AuthTokenEnv = ""; return c }(), wantErr: "auth_token_env"},
+		"remote plaintext": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.ReceiptURL = "http://coordinator.example.test/receipts"
+			return c
+		}(), wantErr: "loopback"},
+		"userinfo": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.ReceiptURL = "https://user@coordinator.example.test/receipts"
+			return c
+		}(), wantErr: "user info"},
+		"query": {cfg: func() ExternalGrantCoordinatorConfig {
+			c := valid
+			c.ReceiptURL = "https://coordinator.example.test/receipts?q=1"
+			return c
+		}(), wantErr: "query"},
+		"negative timeout": {cfg: func() ExternalGrantCoordinatorConfig { c := valid; c.Timeout = -time.Second; return c }(), wantErr: "timeout"},
+		"oversize batch":   {cfg: func() ExternalGrantCoordinatorConfig { c := valid; c.MaxBatch = 1001; return c }(), wantErr: "max_batch"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			grant := validExternalGrantConfig(t)
+			grant.Coordinator = tc.cfg
+			err := (&Config{LLM: LLMConfig{ExternalGrant: grant}}).validateLLMExternalGrant()
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("valid config: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("error=%v, want field %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateLLMExternalGrant_DisabledRejectsCoordinatorWork(t *testing.T) {
+	c := &Config{}
+	c.LLM.ExternalGrant.Mode = "disabled"
+	c.LLM.ExternalGrant.Coordinator.ReceiptURL = "https://coordinator.example.test/receipts"
+	if err := c.validateLLMExternalGrant(); err == nil || !strings.Contains(err.Error(), "coordinator") {
+		t.Fatalf("error=%v, want disabled coordinator refusal", err)
 	}
 }

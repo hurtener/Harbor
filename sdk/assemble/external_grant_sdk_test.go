@@ -20,7 +20,12 @@ type publicReceiptDelivery struct{}
 
 func (publicReceiptDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error { return nil }
 
+func (publicReceiptDelivery) DeliverBatch(context.Context, []llm.AttemptUsageReceipt) ([]receipts.DeliveryAck, error) {
+	return nil, nil
+}
+
 var _ receipts.Delivery = publicReceiptDelivery{}
+var _ receipts.BatchDelivery = publicReceiptDelivery{}
 
 // TestExternalGrantSurfaceIsNameableFromExternalPackage is intentionally in
 // package assemble_test: a downstream embedder must be able to name the

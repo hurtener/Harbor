@@ -399,6 +399,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |255 | Provider-neutral technical descriptors and runtime-origin model discovery (HA-71, D-435): credential modes/field kinds, conservative custom-endpoint facts, bounded Bifrost validation/discovery, normalized model capabilities, explicit manual/partial/stale/unknown/unpriced outcomes, redacted errors, offline CLI plus protected existing `llm.posture` runtime projection | llm/provider + bifrost adapter + Protocol posture + CLI + operator docs | §3, §6.5, §6.15, §8 | 03, 06, 08, 25, 33, 33a, D-018, D-025, D-333, D-334, D-434 | focused package/Protocol/CLI gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |256 | Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension, D-436): public grant/config/signer/verifier/receipt delivery seams, canonical receipt JSON/hash and parent/child validation, signed coordinator-bound vs runtime-default route shapes, native configured provider/model receipts, mixed-route and cross-provider fail-closed behavior, assembled runtime and external-package first consumers | sdk/llm + sdk/assemble + grant wrapper + receipt outbox + runtime assembly + config | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-025, D-333, D-334, D-434, D-435 | focused race/vet + public consumer + smoke | Shipped (v1.30.1; hosted CI/release green; downstream acceptance pending) |
 |257 | Strict public canonical attempt-receipt parser (HA-72 parser slice, D-437): exact inverse over the one private snake-case wire, closed unknown/duplicate/missing/trailing/noncanonical input, semantic/hash validation, byte-identical re-marshal, fuzz/adversarial and external-package coverage; no transport or idle work | internal/llm + sdk/llm + sdk/assemble | §6.5, §6.11, §6.15 | 254, 256, D-434, D-436 | focused race/vet + fuzz seeds + public consumer + smoke | Implemented (unreleased candidate; hosted CI/release pending; HA-72 transport/readiness remains open) |
+|258 | Stock coordinator receipt transport and runtime readiness (HA-72, D-438): opt-in authenticated bounded receipt batches, exact ID/hash ACKs, partial/response-loss durable replay, stable jittered backoff, zero-work disabled defaults, explicit unsupported stock top-up, and content-free `runtime.info.external_grant` readiness truth for both route modes | llm receipts + runtime serve + config + protocol posture | §5.3, §6.5, §6.11, §6.15 | 254, 256, 257, D-025, D-434, D-436, D-437 | focused race/vet + Protocol generation + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 |259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
@@ -5598,6 +5599,27 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   static smoke, and documentation gates. Hosted CI and release remain pending.
 - **Decision:** D-437. **Status:** Implemented as an unreleased candidate. The
   stock transport/readiness remainder of HA-72 remains open.
+
+### Phase 258 — Stock coordinator receipt transport and runtime readiness (HA-72)
+
+- **Subsystem:** `internal/llm/receipts`, stock authenticated HTTP transport,
+  `harbor serve` composition/configuration, and `runtime.info` posture.
+- **RFC:** §5.3, §6.5, §6.11, §6.15. **Deps:** D-025, D-434, D-436, and
+  D-437 / Phase 257's strict public canonical parser.
+- **What it delivers:** D-438 — opt-in authenticated bounded receipt batches,
+  exact ID/hash ACKs, partial/response-loss durable replay, stable jittered
+  backoff, explicit unsupported stock top-up state, and a content-free
+  `runtime.info.external_grant` projection with accepted versus independently
+  ready routes and concrete receipt-transport kind/readiness. Disabled/default
+  stock boot performs zero coordinator work. `runtime_default` requires no
+  coordinator provider credential or catalog.
+- **Evidence:** Focused in-memory/SQLite outbox, HTTP transport, cancellation,
+  concurrent reuse, config, serve-wiring, readiness, Protocol generation, race,
+  vet, docs/drift, and static smoke gates are required. Hosted CI, release
+  evidence, external coordinator acceptance, and downstream deployment remain
+  separate and unclaimed.
+- **Decision:** D-438. **Status:** Implementation candidate complete; hosted CI
+  and release evidence pending.
 
 ### Phase 259 — External-grant top-up successor validation (HA-74)
 

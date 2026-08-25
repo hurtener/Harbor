@@ -85,6 +85,7 @@ type PostureSurface struct {
 	bootedAt        time.Time
 	displayName     string
 	instanceID      string
+	externalGrant   func() types.ExternalGrantReadiness
 	// wiredCaps is the per-instance subset of canonical Protocol
 	// capabilities this Runtime actually wires.
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
@@ -173,6 +174,10 @@ type PostureDeps struct {
 	// boot. Mandatory — a Console attached to multiple Runtimes keys
 	// each attachment by it.
 	InstanceID string
+	// ExternalGrant returns the secret-free live readiness of the opt-in
+	// execution-grant edge. Nil reports unsupported for embedders that have not
+	// wired this additive projection.
+	ExternalGrant func() types.ExternalGrantReadiness
 	// TopologyAvailable indicates this Runtime hosts an engine-graph
 	// projection — when true, `runtime.info.capabilities` advertises
 	// `topology_snapshot` so Protocol clients gate their topology
@@ -290,6 +295,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:        bootedAt,
 		displayName:     deps.DisplayName,
 		instanceID:      deps.InstanceID,
+		externalGrant:   deps.ExternalGrant,
 		wiredCaps:       wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable),
 	}, nil
 }
@@ -455,6 +461,9 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	// canonical capability universe, so it is invariant to this instance's
 	// wired-capability subset.
 	out.WireSurfaceDigest = wiresurface.Digest()
+	if s.externalGrant != nil {
+		out.ExternalGrant = s.externalGrant()
+	}
 	// Per-instance wired subset. Conditional
 	// surfaces (`topology_snapshot`, `agent_config`) appear here only when
 	// the matching seam was wired at construction; the static

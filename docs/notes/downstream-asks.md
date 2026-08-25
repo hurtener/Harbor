@@ -44,6 +44,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
+| HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Framework-complete candidate — phases 257/258, D-437/D-438; hosted CI/release/downstream acceptance pending |
 | HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Implemented candidate — phase 259 / D-439; release and downstream acceptance pending |
 
 The original five were filed by a downstream team building an MCP-Apps server
@@ -1689,11 +1690,10 @@ downstream deployment, fleet, database, or acceptance claim is made.
 
 ## HA-72 — stock coordinator receipt transport and grant readiness
 
-**Priority:** High. **Size:** large. **State:** Partially answered by the
-unreleased Phase 257 / D-437 implementation candidate. The public strict
-canonical receipt parser is implemented; stock authenticated delivery/ACK,
-lease top-up transport, and explicit runtime readiness remain open. No release,
-downstream deployment, or acceptance is claimed.
+**Priority:** High. **Size:** large. **State:** Framework-complete in the
+unreleased Phase 257 / D-437 parser and Phase 258 / D-438 transport/readiness
+implementation candidates. Hosted CI, release evidence, downstream deployment,
+and acceptance remain pending.
 
 **Observed gap.** Harbor v1.30.1 publishes the transport-neutral receipt
 delivery seam and canonical marshal/hash/validation helpers, but an external
@@ -1715,14 +1715,22 @@ idle work. Historical blank public route mode is represented as explicit
 validates, parsing restores the blank public value and re-marshal remains
 byte-identical.
 
-**Remaining required shape.** A later framework change must give stock
-`harbor serve` an opt-in authenticated, bounded, replay-safe receipt delivery
-and ACK path (and lease top-up when configured), plus a secret-free
-`runtime.info` projection of the actually mounted verifier, route modes,
-reservation store, receipt transport, credential resolver where required, and
-top-up support. Disabled remains the default with zero coordinator network,
-timer, outbox-scan, or grant-related StateStore activity. `runtime_default`
-continues to require no coordinator provider credential, catalog, or route.
+**Stock transport/readiness completion.** Phase 258 gives stock `harbor serve`
+an opt-in authenticated coordinator transport for bounded canonical receipt
+batches, exact receipt-ID/body-hash ACKs, response-loss-safe durable replay,
+and stable jittered backoff. Disabled/default deployments do no coordinator
+work, and `runtime_default` remains independent of coordinator-managed provider
+credentials and catalogs.
+
+The additive `runtime.info.external_grant` projection reports supported and
+configured modes, accepted and independently ready route shapes,
+verifier/reservation/credential wiring, strict parser readiness, concrete
+receipt transport kind and observed readiness, an explicit unsupported stock
+top-up state, and a fail-closed fully-wired result. No endpoint, token,
+identity, receipt content, provider response, or product-specific vocabulary
+appears in the posture response, logs, or errors. Live top-up remains
+unsupported until a separate phase owns replay-idempotent durable successor
+application after validation.
 
 ---
 

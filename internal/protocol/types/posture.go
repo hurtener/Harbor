@@ -103,6 +103,32 @@ type RuntimeInfo struct {
 	// field shapes over the wire. It covers the SHAPE OF NAMES, not field
 	// shapes and not event-type names.
 	WireSurfaceDigest string `json:"wire_surface_digest"`
+	// ExternalGrant reports the structural and observed readiness of the
+	// opt-in external execution-grant edge. It contains no endpoint, key id,
+	// credential, organization, or identity value.
+	ExternalGrant ExternalGrantReadiness `json:"external_grant"`
+}
+
+// ExternalGrantReadiness distinguishes compile-time support, configured
+// posture, and fully wired strict execution paths. Receipt transport state is
+// one of disabled, absent, wired, or degraded; its kind distinguishes the
+// stock authenticated HTTP path from host injection. Top-up is unsupported
+// until a successor grant can advance the durable reservation epoch
+// idempotently.
+type ExternalGrantReadiness struct {
+	Supported               bool     `json:"supported"`
+	Configured              bool     `json:"configured"`
+	Mode                    string   `json:"mode"`
+	AcceptedRouteModes      []string `json:"accepted_route_modes,omitempty"`
+	ReadyRouteModes         []string `json:"ready_route_modes,omitempty"`
+	VerifierConfigured      bool     `json:"verifier_configured"`
+	ReservationsWired       bool     `json:"reservations_wired"`
+	CredentialResolverWired bool     `json:"credential_resolver_wired"`
+	ReceiptTransportKind    string   `json:"receipt_transport_kind"`
+	ReceiptTransport        string   `json:"receipt_transport"`
+	ReceiptParser           string   `json:"receipt_parser"`
+	TopUpTransport          string   `json:"top_up_transport"`
+	StrictReady             bool     `json:"strict_ready"`
 }
 
 // SubsystemHealth is one subsystem's readiness entry in a RuntimeHealth
