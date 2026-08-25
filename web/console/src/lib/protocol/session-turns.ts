@@ -11,7 +11,8 @@
 // bodies fold identity at the Transport choke point, so the TS request
 // interfaces omit `identity` (the single sanctioned per-field omission).
 //
-// The operations DTO (`SessionOpsTurnRow`) is a STRUCTURALLY DISTINCT
+// The operations DTO (`SessionOpsTurnRow`) and the consumer usage DTO
+// (`SessionUsageTurnRow`) are STRUCTURALLY DISTINCT
 // type: it omits the query, the answer (inline and reference), reasoning
 // summaries, the App resource URI and tool_call_id, App context / input /
 // result, and pause tokens. A widened operations read is gated + audited
@@ -26,7 +27,7 @@ export interface SessionTurnsListRequest {
 	/** Page bound: 0 means the Protocol default (20); above 50 fails loud. */
 	limit?: number;
 	/** The read lane — only the default conversation projection is a list
-	 * surface; "operations" is rejected here (get-only). */
+	 * surface; every other projection is rejected here (get-only). */
 	projection?: string;
 }
 
@@ -73,18 +74,40 @@ export interface SessionTurnsGetRequest {
 	session_id: string;
 	/** The authoritative root foreground task id of the turn — the row key. */
 	task_id: string;
-	/** The read lane: "conversation" (default) or "operations" (admin/fleet). */
+	/** The read lane: "conversation" (default), "operations" (admin/fleet), or
+	 * "usage" (consumer exact-session). */
 	projection?: string;
 }
 
-/** `sessions.turns.get` response — exactly one of `turn` / `ops_turn`. */
+/** `sessions.turns.get` response — exactly one of `turn` / `ops_turn` /
+ * `usage_turn`. */
 export interface SessionTurnsGetResponse {
 	session_id: string;
 	/** The consumer-safe turn row (conversation lane). */
 	turn?: SessionTurnRow;
 	/** The structurally distinct operations DTO (operations lane). */
 	ops_turn?: SessionOpsTurnRow;
+	/** The structurally distinct content-free usage DTO (usage lane). */
+	usage_turn?: SessionUsageTurnRow;
 	protocol_version: string;
+}
+
+/** A content-free consumer usage observation. This type deliberately has no
+ * query, answer, reasoning, activity, pause, app, attachment, run, terminal
+ * message, user, tenant, or content fields. */
+export interface SessionUsageTurnRow {
+	turn_id: string;
+	task_id: string;
+	session_id: string;
+	agent_id?: string;
+	status: string;
+	sealed: boolean;
+	version: number;
+	last_applied_event_seq: number;
+	started_at: string;
+	updated_at: string;
+	finished_at?: string;
+	usage: SessionTurnUsage;
 }
 
 /** The agent binding component of a turn row. */

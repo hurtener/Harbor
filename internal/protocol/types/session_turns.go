@@ -14,12 +14,13 @@ import "time"
 //   - sessions.turns.list — SessionTurnsListRequest →
 //     SessionTurnsListResponse. One newest-first keyset page of the
 //     caller's EXACT session's conversation projection (the consumer
-//     lane). The operations projection is GET-ONLY and rejected here.
+//     lane). Every non-conversation projection is GET-ONLY and rejected here.
 //   - sessions.turns.get — SessionTurnsGetRequest →
 //     SessionTurnsGetResponse. One (session, task) read on either the
 //     consumer conversation lane (exact-session, effective-agent-gated)
 //     or — under a verified admin OR console:fleet claim — the
-//     structurally distinct operations DTO lane (SessionOpsTurnRow).
+//     structurally distinct operations DTO lane (SessionOpsTurnRow), or the
+//     exact-session consumer usage lane (SessionUsageTurnRow).
 //
 // The operations DTO is a DISTINCT structural type: it omits the query,
 // the answer (inline and reference), reasoning summaries, the App
@@ -54,7 +55,7 @@ type SessionTurnsListRequest struct {
 	// values above the maximum (50) fail loud.
 	Limit int `json:"limit,omitempty"`
 	// Projection selects the read lane. Only the conversation projection
-	// is a list surface; "operations" is rejected here (get-only).
+	// is a list surface; every other projection is rejected here (get-only).
 	Projection string `json:"projection,omitempty"`
 }
 
@@ -135,15 +136,16 @@ type SessionTurnsGetRequest struct {
 	// TaskID is the authoritative root foreground task id of the turn —
 	// the turn row key.
 	TaskID string `json:"task_id"`
-	// Projection selects the read lane: "conversation" (default) or
-	// "operations" (admin/fleet-gated, returns the operations DTO).
+	// Projection selects the read lane: "conversation" (default),
+	// "operations" (admin/fleet-gated, returns the operations DTO), or
+	// "usage" (consumer exact-session, returns the content-free usage DTO).
 	Projection string `json:"projection,omitempty"`
 }
 
 // SessionTurnsGetResponse is the `sessions.turns.get` response. Exactly
-// one of Turn / OpsTurn is populated, per the request's projection:
-// Turn for the consumer conversation lane, OpsTurn for the elevated
-// operations lane.
+// one of Turn / OpsTurn / UsageTurn is populated, per the request's
+// projection: Turn for the consumer conversation lane, OpsTurn for the
+// elevated operations lane, and UsageTurn for the consumer usage lane.
 type SessionTurnsGetResponse struct {
 	// SessionID is the session the turn was read from.
 	SessionID string `json:"session_id"`
@@ -155,9 +157,44 @@ type SessionTurnsGetResponse struct {
 	// tool_call_id / App context / pause tokens. Nil on the consumer
 	// lane.
 	OpsTurn *SessionOpsTurnRow `json:"ops_turn,omitempty"`
+	// UsageTurn is the structurally distinct content-free usage DTO
+	// (usage projection). Nil on the conversation and operations lanes.
+	UsageTurn *SessionUsageTurnRow `json:"usage_turn,omitempty"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
 	// under.
 	ProtocolVersion string `json:"protocol_version"`
+}
+
+// SessionUsageTurnRow is the flat wire projection of one consumer-safe,
+// content-free usage observation. It is structurally distinct from both the
+// conversation and operations DTOs: only turn/task/session/agent identifiers,
+// lifecycle/timing facts, and the canonical cumulative usage rollup (measures
+// plus an optional reported model) can appear. No query, answer, reasoning,
+// activity, pause, application,
+// attachment, runtime run identifier, terminal message, user/tenant identity,
+// or content field exists on this type.
+type SessionUsageTurnRow struct {
+	// TurnID is the row key.
+	TurnID string `json:"turn_id"`
+	// TaskID is the authoritative root foreground task id.
+	TaskID string `json:"task_id"`
+	// SessionID is the owning session.
+	SessionID string `json:"session_id"`
+	// AgentID is the effective agent identifier when available.
+	AgentID string `json:"agent_id,omitempty"`
+	// Status / Sealed / Version describe the durable lifecycle snapshot.
+	Status  string `json:"status"`
+	Sealed  bool   `json:"sealed"`
+	Version int    `json:"version"`
+	// LastAppliedEventSeq is the durable sequence of the latest observation
+	// reflected in this snapshot.
+	LastAppliedEventSeq uint64 `json:"last_applied_event_seq"`
+	// StartedAt / UpdatedAt / FinishedAt are lifecycle timing facts.
+	StartedAt  time.Time `json:"started_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	// Usage is the canonical cumulative per-measure token/cost/latency rollup.
+	Usage SessionTurnUsage `json:"usage"`
 }
 
 // SessionTurnRow is the flat wire projection of one consumer

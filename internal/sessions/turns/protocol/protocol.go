@@ -37,7 +37,8 @@
 // # Consumer exact-session reads
 //
 // `sessions.turns.list` / `sessions.turns.get` under the default
-// `ProjectionConversation` are EXACT-SESSION consumer reads. Three
+// `ProjectionConversation`, and `sessions.turns.get` under
+// `ProjectionUsage`, are EXACT-SESSION consumer reads. Three
 // gates run, in order:
 //
 //  1. Verified identity (above).
@@ -89,8 +90,19 @@
 // operations lane observes lifecycle / usage / activity / counts only,
 // and no cross-principal transcript read exists anywhere. There is no
 // operations LIST surface — the projection core ships `OpsTurn`, not
-// an ops list — so `sessions.turns.list` rejects
-// `projection=operations` as invalid.
+// an ops list — so `sessions.turns.list` rejects every non-conversation
+// projection as invalid.
+
+// # The consumer usage lane (get-only)
+
+// `sessions.turns.get` with `ProjectionUsage` is a consumer-only,
+// exact-session read that reuses the same single durable turn-index read as
+// the conversation projection. It needs no operations claim and cannot widen
+// across sessions. The returned UsageTurnRow is structurally content-free:
+// lifecycle/timing, turn/task/session/agent identifiers, and the canonical
+// usage rollup (per-measure states plus an optional reported model). It does
+// not create a second event scan, polling loop, store,
+// or background worker.
 //
 // # Paging, cursors, bounds
 //
@@ -160,7 +172,7 @@ var (
 	ErrIdentityRequired = errors.New("sessions/turns/protocol: verified identity missing or incomplete")
 	// ErrInvalidRequest — the request was structurally invalid (empty
 	// session_id / task_id, an out-of-range limit, an unknown
-	// projection, or an operations projection on the list method).
+	// projection, or any get-only projection on the list method).
 	ErrInvalidRequest = errors.New("sessions/turns/protocol: invalid request")
 	// ErrTurnNotFound — `sessions.turns.get` / `sessions.turns.list`
 	// targeted a turn or session with no row visible to the caller:
@@ -203,11 +215,17 @@ const (
 	// `turns.OpsTurnRow` (no query / answer / reasoning / App URI /
 	// tool_call_id / App context / pause tokens).
 	ProjectionOperations Projection = "operations"
+	// ProjectionUsage is the consumer-safe exact-session usage read. It
+	// serves only the structurally distinct UsageTurnRow: lifecycle
+	// identity and timing plus the canonical usage rollup (per-measure states
+	// and an optional reported model).
+	// It does not require, or admit, an elevated operations scope.
+	ProjectionUsage Projection = "usage"
 )
 
 // Valid reports whether p is one of the declared projections.
 func (p Projection) Valid() bool {
-	return p == ProjectionConversation || p == ProjectionOperations
+	return p == ProjectionConversation || p == ProjectionOperations || p == ProjectionUsage
 }
 
 // parseProjection resolves a request projection selector. An empty
@@ -269,7 +287,7 @@ type ListRequest struct {
 	// values above turns.MaxListLimit (50) fail loud.
 	Limit int
 	// Projection selects the read lane. Only the conversation
-	// projection is a list surface; operations is get-only.
+	// projection is a list surface; every other projection is get-only.
 	Projection Projection
 }
 
@@ -329,15 +347,15 @@ type GetRequest struct {
 	// TaskID is the authoritative root foreground task id of the turn —
 	// the turn row key.
 	TaskID string
-	// Projection selects the read lane: conversation (default) or
-	// operations (admin/fleet-gated, returns the operations DTO).
+	// Projection selects the read lane: conversation (default),
+	// operations (admin/fleet-gated), or usage (consumer exact-session).
 	Projection Projection
 }
 
 // GetResponse is the `sessions.turns.get` response adapter. Exactly one
-// of Turn / OpsTurn is populated, per the request's projection:
+// of Turn / OpsTurn / UsageTurn is populated, per the request's projection:
 // Turn for the consumer conversation lane, OpsTurn for the elevated
-// operations lane.
+// operations lane, and UsageTurn for the consumer usage lane.
 type GetResponse struct {
 	// SessionID is the session the turn was read from.
 	SessionID string
@@ -348,6 +366,40 @@ type GetResponse struct {
 	// / tool_call_id / App context / pause tokens. Nil on the consumer
 	// lane.
 	OpsTurn *turns.OpsTurnRow
+	// UsageTurn is the structurally distinct consumer usage DTO
+	// (ProjectionUsage). It is nil unless the caller selected the exact-session
+	// usage lane.
+	UsageTurn *UsageTurnRow
+}
+
+// UsageTurnRow is the content-free, consumer-safe usage projection of one
+// durable turn. It is structurally distinct from TurnRow: it exposes only
+// stable turn/session/agent identifiers, lifecycle/timing state, and the
+// canonical cumulative usage rollup. Query, answer, reasoning, activity,
+// pause, applications, attachments, run identity, and all terminal messages
+// cannot ride this DTO.
+type UsageTurnRow struct {
+	// TurnID is the row key.
+	TurnID turns.TurnID
+	// TaskID is the authoritative root foreground task id.
+	TaskID string
+	// SessionID is the owning session.
+	SessionID string
+	// AgentID is the effective agent identifier when available.
+	AgentID string
+	// Status / Sealed / Version describe the durable lifecycle snapshot.
+	Status  turns.Status
+	Sealed  bool
+	Version int
+	// LastAppliedEventSeq is the durable sequence of the latest observation
+	// reflected in this snapshot.
+	LastAppliedEventSeq uint64
+	// StartedAt / UpdatedAt / FinishedAt are the lifecycle timing facts.
+	StartedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt time.Time
+	// Usage is the canonical cumulative per-measure token/cost/latency rollup.
+	Usage turns.Usage
 }
 
 // Projector is the read seam the Service depends on (CLAUDE.md §4.4).
@@ -552,9 +604,8 @@ func (s *Service) List(ctx context.Context, req ListRequest) (ListResponse, erro
 	if err != nil {
 		return ListResponse{}, err
 	}
-	if proj == ProjectionOperations {
-		return ListResponse{}, fmt.Errorf("%w: operations is a get-only projection — sessions.turns.list serves the consumer projection only",
-			ErrInvalidRequest)
+	if proj != ProjectionConversation {
+		return ListResponse{}, fmt.Errorf("%w: %q is a get-only projection — sessions.turns.list serves the conversation projection only", ErrInvalidRequest, proj)
 	}
 
 	// Session reach: the effective session must satisfy a present
@@ -729,6 +780,23 @@ func (s *Service) Get(ctx context.Context, req GetRequest) (GetResponse, error) 
 	// reach answers exactly like an absent turn — non-oracular.
 	if !s.rowServed(ctx, row) {
 		return GetResponse{}, fmt.Errorf("%w: turn %q under session %q", ErrTurnNotFound, taskID, sessionID)
+	}
+	if proj == ProjectionUsage {
+		usage := UsageTurnRow{
+			TurnID:              row.TurnID,
+			TaskID:              row.TaskID,
+			SessionID:           row.SessionID,
+			AgentID:             row.Agent.ID,
+			Status:              row.Status,
+			Sealed:              row.Sealed,
+			Version:             row.Version,
+			LastAppliedEventSeq: row.LastAppliedEventSeq,
+			StartedAt:           row.StartedAt,
+			UpdatedAt:           row.UpdatedAt,
+			FinishedAt:          row.FinishedAt,
+			Usage:               row.Usage,
+		}
+		return GetResponse{SessionID: sessionID, UsageTurn: &usage}, nil
 	}
 	// The pause component passes through unmodified; actionability /
 	// tokens are never derived from the projection (see the package

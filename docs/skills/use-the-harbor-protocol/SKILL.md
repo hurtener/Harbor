@@ -500,6 +500,16 @@ from forensic events:
   `sessions.turns.get` is the one
   `(session, task)` terminal reconciliation read. Both are exact-session:
   a foreign session answers typed `not_found` (non-oracular).
+- **Content-free usage read.** A consumer that needs only durable lifecycle
+  and usage facts may call `sessions.turns.get` with `projection: "usage"`.
+  The exact-session response is structurally limited to turn/task/session/
+  agent identifiers, lifecycle and timing, and the canonical usage rollup
+  (per-measure `unavailable`, `exact`, or `estimated` states plus an optional
+  reported model). It does not include
+  conversation text, answers, reasoning, activity, attachments, apps, pause
+  state, runtime run identity, user/tenant identity, or terminal messages.
+  It uses the same durable turn index as the normal reconciliation read; no
+  poller, receipt, or privileged administrative scope is involved.
 - **Page-before-subscribe live handoff.** Chat open is two reads — one
   `projection: "lifecycle"` inspect plus one `sessions.turns.list` page —
   then the SSE subscription: open the EventSource with the page's
