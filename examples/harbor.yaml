@@ -218,6 +218,29 @@ llm:
   #     # cache_ttl: 5m   # caps the in-memory serve horizon (default 5m)
   #     # timeout: 10s    # bounds a single pull (default 30s)
 
+  # External execution grants and coordinator receipt delivery are optional.
+  # Leave this entire block absent to keep the runtime's own provider/model,
+  # start no coordinator delivery work, and preserve ordinary `harbor serve`.
+  # `runtime_default` adds signed limits/accounting without asking a
+  # coordinator to supply provider credentials or a model catalog.
+  #
+  # external_grant:
+  #   mode: required                  # disabled (default) / optional / required
+  #   route_mode: runtime_default     # runtime_default / coordinator_bound
+  #   audience: harbor-runtime
+  #   runtime_id: runtime-1
+  #   public_keys:
+  #     coordinator-2026: BASE64URL_ED25519_PUBLIC_KEY
+  #   coordinator:
+  #     receipt_url: https://coordinator.example.com/v1/usage-receipts
+  #     top_up_url: https://coordinator.example.com/v1/lease-top-ups
+  #     # Env var holding this runtime's service credential. Never put the
+  #     # credential itself in yaml.
+  #     auth_token_env: HARBOR_COORDINATOR_TOKEN
+  #     timeout: 10s
+  #     max_batch: 64
+  #     reconcile_interval: 5m
+
 # Runtime run-lifecycle hooks.
 #
 # The run-completion hook fires exactly once at the run loop's terminal

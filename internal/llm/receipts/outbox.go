@@ -6,6 +6,8 @@ package receipts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,25 +23,50 @@ import (
 )
 
 const (
-	kindPrefix = state.InternalKindPrefix + "inference.receipt/"
-	dueKind    = state.InternalKindPrefix + "inference.receipt.due"
+	kindPrefix       = state.InternalKindPrefix + "inference.receipt/"
+	dueKind          = state.InternalKindPrefix + "inference.receipt.due"
+	legacyMarkerKind = state.InternalKindPrefix + "inference.receipt.reconciled.v1"
 )
 
 var (
-	ErrInvalidReceipt = errors.New("llm/receipts: invalid usage receipt")
-	ErrDeliveryFailed = errors.New("llm/receipts: delivery failed")
-	ErrCircuitOpen    = errors.New("llm/receipts: delivery circuit open")
-	ErrClosed         = errors.New("llm/receipts: outbox closed")
+	ErrInvalidReceipt    = errors.New("llm/receipts: invalid usage receipt")
+	ErrDeliveryFailed    = errors.New("llm/receipts: delivery failed")
+	ErrCircuitOpen       = errors.New("llm/receipts: delivery circuit open")
+	ErrReconcileOverflow = errors.New("llm/receipts: legacy reconciliation bound exceeded")
+	ErrClosed            = errors.New("llm/receipts: outbox closed")
 )
 
 type Delivery interface {
 	Deliver(context.Context, llm.AttemptUsageReceipt) error
 }
 
+// DeliveryAck is the only acknowledgement fact the outbox accepts. Both
+// fields must match the exact canonical receipt that was delivered.
+type DeliveryAck struct {
+	ReceiptID         string `json:"receipt_id"`
+	CanonicalBodyHash string `json:"canonical_body_hash"`
+}
+
+// BatchDelivery is an optional extension implemented by transports that can
+// acknowledge a bounded receipt batch. Omitting an acknowledgement retains
+// that receipt for replay; an acknowledgement for an unknown identity or a
+// mismatched body hash fails the whole batch closed.
+type BatchDelivery interface {
+	DeliverBatch(context.Context, []llm.AttemptUsageReceipt) ([]DeliveryAck, error)
+}
+
 // PendingReceiptSource is a low-frequency crash-recovery source.  It is not
 // used by Replay's hot path; implementations must return a bounded result.
 type PendingReceiptSource interface {
 	PendingReceipts(context.Context, int) ([]llm.AttemptUsageReceipt, error)
+	AcknowledgePendingReceipt(context.Context, llm.AttemptUsageReceipt) error
+}
+
+// OutboxHealthReporter receives the secret-free liveness of background
+// receipt reconciliation. Stock transports use it to keep runtime.info from
+// reporting strict readiness after the durable worker has degraded.
+type OutboxHealthReporter interface {
+	SetOutboxHealth(bool)
 }
 
 type Config struct {
@@ -70,6 +97,8 @@ type Outbox struct {
 	reconcileInterval time.Duration
 	clock             func() time.Time
 	wake              chan struct{}
+	prepareMu         sync.Mutex
+	prepared          bool
 
 	mu             sync.Mutex
 	failures       int
@@ -96,6 +125,10 @@ type dueIndex struct {
 	Entries []dueEntry `json:"entries"`
 }
 
+type legacyReconcileMarker struct {
+	Version int `json:"version"`
+}
+
 func New(cfg Config) (*Outbox, error) {
 	if cfg.Store == nil || cfg.Delivery == nil {
 		return nil, fmt.Errorf("%w: store and delivery are required", llm.ErrUsageReceiptUnavailable)
@@ -103,7 +136,10 @@ func New(cfg Config) (*Outbox, error) {
 	if cfg.MaxBatch <= 0 {
 		cfg.MaxBatch = 64
 	}
-	if cfg.MaxBatch > state.MaxStateMaintenanceListLimit {
+	// Reconcile reserves one storage-side row beyond the work batch so it can
+	// refuse an undisclosed legacy backlog instead of rescanning the same first
+	// page forever.
+	if cfg.MaxBatch >= state.MaxStateMaintenanceListLimit {
 		return nil, fmt.Errorf("%w: max batch exceeds state bound", ErrInvalidReceipt)
 	}
 	if cfg.BaseBackoff <= 0 {
@@ -247,6 +283,11 @@ func (o *Outbox) enqueueAt(ctx context.Context, q identity.Quadruple, receipt ll
 
 type ReplayStats struct{ Seen, Delivered, Acknowledged, Deferred, Failed int }
 
+type replayItem struct {
+	entry  dueEntry
+	stored storedReceipt
+}
+
 func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 	if err := o.breakerError(); err != nil {
 		return ReplayStats{}, err
@@ -275,6 +316,7 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 	stats := ReplayStats{}
 	now := o.clock().UTC()
 	var firstErr error
+	items := make([]replayItem, 0, o.maxBatch)
 	for i, entry := range idx.Entries {
 		if i >= o.maxBatch {
 			break
@@ -310,9 +352,19 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 			stats.Deferred++
 			continue
 		}
-		if deliveryErr := o.delivery.Deliver(ctx, stored.Receipt); deliveryErr != nil {
+		items = append(items, replayItem{entry: entry, stored: stored})
+	}
+	if len(items) == 0 {
+		return stats, firstErr
+	}
+	if batch, ok := o.delivery.(BatchDelivery); ok {
+		return o.replayBatch(ctx, now, items, stats, firstErr, batch)
+	}
+	for i := range items {
+		item := &items[i]
+		if deliveryErr := o.delivery.Deliver(ctx, item.stored.Receipt); deliveryErr != nil {
 			stats.Failed++
-			if updateErr := o.updateEntry(ctx, entry, &stored, false); updateErr != nil && firstErr == nil {
+			if updateErr := o.updateEntry(ctx, item.entry, &item.stored, false); updateErr != nil && firstErr == nil {
 				firstErr = updateErr
 			} else if firstErr == nil {
 				firstErr = fmt.Errorf("%w: receipt delivery returned an error", ErrDeliveryFailed)
@@ -321,10 +373,10 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 			continue
 		}
 		stats.Delivered++
-		stored.Status = "acked"
-		stored.NextAttemptAt = time.Time{}
-		stored.LastFailureCode = ""
-		if updateErr := o.updateEntry(ctx, entry, &stored, true); updateErr != nil {
+		item.stored.Status = "acked"
+		item.stored.NextAttemptAt = time.Time{}
+		item.stored.LastFailureCode = ""
+		if updateErr := o.updateEntry(ctx, item.entry, &item.stored, true); updateErr != nil {
 			if firstErr == nil {
 				firstErr = updateErr
 			}
@@ -336,11 +388,116 @@ func (o *Outbox) Replay(ctx context.Context) (ReplayStats, error) {
 	return stats, firstErr
 }
 
+func (o *Outbox) replayBatch(ctx context.Context, now time.Time, items []replayItem, stats ReplayStats, firstErr error, delivery BatchDelivery) (ReplayStats, error) {
+	receipts := make([]llm.AttemptUsageReceipt, len(items))
+	expected := make(map[string]string, len(items))
+	for i := range items {
+		receipts[i] = items[i].stored.Receipt
+		expected[receipts[i].ReceiptID] = receipts[i].CanonicalBodyHash
+	}
+	acks, deliveryErr := delivery.DeliverBatch(ctx, receipts)
+	if deliveryErr != nil {
+		for i := range items {
+			stats.Failed++
+			if updateErr := o.updateEntry(ctx, items[i].entry, &items[i].stored, false); updateErr != nil && firstErr == nil {
+				firstErr = updateErr
+			}
+		}
+		o.noteFailure(now)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%w: receipt batch delivery returned an error", ErrDeliveryFailed)
+		}
+		return stats, firstErr
+	}
+	stats.Delivered += len(items)
+	acked := make(map[string]struct{}, len(acks))
+	for _, ack := range acks {
+		want, ok := expected[ack.ReceiptID]
+		if !ok || want != ack.CanonicalBodyHash {
+			return o.failBatch(ctx, now, items, stats, firstErr, "receipt acknowledgement identity or hash mismatch")
+		}
+		if _, duplicate := acked[ack.ReceiptID]; duplicate {
+			return o.failBatch(ctx, now, items, stats, firstErr, "duplicate receipt acknowledgement")
+		}
+		acked[ack.ReceiptID] = struct{}{}
+	}
+	partial := false
+	for i := range items {
+		item := &items[i]
+		if _, ok := acked[item.stored.Receipt.ReceiptID]; !ok {
+			partial = true
+			stats.Failed++
+			if updateErr := o.updateEntry(ctx, item.entry, &item.stored, false); updateErr != nil && firstErr == nil {
+				firstErr = updateErr
+			}
+			continue
+		}
+		item.stored.Status = "acked"
+		item.stored.NextAttemptAt = time.Time{}
+		item.stored.LastFailureCode = ""
+		if updateErr := o.updateEntry(ctx, item.entry, &item.stored, true); updateErr != nil {
+			if firstErr == nil {
+				firstErr = updateErr
+			}
+			continue
+		}
+		stats.Acknowledged++
+	}
+	if partial {
+		o.noteFailure(now)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%w: receipt batch was only partially acknowledged", ErrDeliveryFailed)
+		}
+	} else {
+		o.noteSuccess()
+	}
+	return stats, firstErr
+}
+
+func (o *Outbox) failBatch(ctx context.Context, now time.Time, items []replayItem, stats ReplayStats, firstErr error, reason string) (ReplayStats, error) {
+	for i := range items {
+		stats.Failed++
+		if updateErr := o.updateEntry(ctx, items[i].entry, &items[i].stored, false); updateErr != nil && firstErr == nil {
+			firstErr = updateErr
+		}
+	}
+	o.noteFailure(now)
+	if firstErr == nil {
+		firstErr = fmt.Errorf("%w: %s", ErrDeliveryFailed, reason)
+	}
+	return stats, firstErr
+}
+
 // Run wakes immediately after enqueue, sleeps until the next due item, and
 // reconciles legacy/crash-recovery records only at a slow jittered cadence.
 func (o *Outbox) Run(ctx context.Context) error {
-	if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+	if err := o.Prepare(ctx); err != nil {
+		o.reportHealth(false)
 		return err
+	}
+	nextReconcile := o.clock().UTC().Add(o.reconcileInterval)
+	// A delivery failure has a durable per-receipt deadline, while a failed
+	// StateStore read, corrupt due record, or failed recovery handoff has no
+	// trustworthy deadline to consult. Keep the latter on its own bounded
+	// maintenance cadence. In particular, never return from this worker while
+	// leaving runtime.info strict-ready: the assembly deliberately treats a
+	// stopped worker as a degraded runtime, not a successful best effort.
+	var retryAt time.Time
+	maintenanceFailures := 0
+	reconcileDegraded := false
+	replayDegraded := false
+	healthDegraded := false
+	degrade := func() {
+		if !healthDegraded {
+			o.reportHealth(false)
+			healthDegraded = true
+		}
+	}
+	recoverHealth := func() {
+		if healthDegraded && !reconcileDegraded && !replayDegraded {
+			o.reportHealth(true)
+			healthDegraded = false
+		}
 	}
 	for {
 		// Once the delivery breaker is open, Replay is intentionally a
@@ -351,10 +508,37 @@ func (o *Outbox) Run(ctx context.Context) error {
 		// breaker deadline.  Enqueue still wakes the loop if a newer entry
 		// arrives while it is parked.
 		openBefore := o.circuitOpen()
-		if _, err := o.Replay(ctx); err != nil && !errors.Is(err, ErrCircuitOpen) && !errors.Is(err, ErrDeliveryFailed) {
-			return err
+		stats, replayErr := o.Replay(ctx)
+		now := o.clock().UTC()
+		if replayErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			replayDegraded = true
+			degrade()
+			// Delivery failures already persist a bounded next-attempt deadline
+			// (and ErrCircuitOpen has its own deadline). Any other replay error
+			// may be a transient StateStore outage, but it must not turn a
+			// corrupt record into a tight read loop.
+			if !errors.Is(replayErr, ErrDeliveryFailed) && !errors.Is(replayErr, ErrCircuitOpen) {
+				maintenanceFailures++
+				retryAt = now.Add(backoff(o.baseBackoff, o.maxBackoff, maintenanceFailures, "outbox-replay"))
+			}
+		} else if stats.Failed == 0 && stats.Deferred == 0 && !o.circuitOpen() {
+			// A due receipt that is merely deferred has not recovered a prior
+			// delivery failure. Recovery is observed only after the due work is
+			// clean (or there is no work), not after an intervening no-op read.
+			replayDegraded = false
+			if !reconcileDegraded {
+				maintenanceFailures = 0
+				retryAt = time.Time{}
+			}
+			recoverHealth()
 		}
-		delay := o.reconcileInterval
+		wakeAt := nextReconcile
+		if !retryAt.IsZero() && retryAt.Before(wakeAt) {
+			wakeAt = retryAt
+		}
 		if openUntil, open := o.circuitOpenUntil(); open {
 			// A just-opened breaker gets one durable due lookup so that a
 			// later due item can extend the sleep.  An already-open breaker
@@ -364,13 +548,15 @@ func (o *Outbox) Run(ctx context.Context) error {
 					openUntil = due
 				}
 			}
-			delay = durationUntil(o.clock().UTC(), openUntil)
-		} else if due, ok := o.nextDue(ctx); ok {
-			until := durationUntil(o.clock().UTC(), due)
-			if until < delay {
-				delay = until
+			if openUntil.Before(wakeAt) {
+				wakeAt = openUntil
+			}
+		} else if replayErr == nil || errors.Is(replayErr, ErrDeliveryFailed) {
+			if due, ok := o.nextDue(ctx); ok && due.Before(wakeAt) {
+				wakeAt = due
 			}
 		}
+		delay := durationUntil(now, wakeAt)
 		if delay <= 0 {
 			delay = time.Nanosecond
 		}
@@ -385,10 +571,53 @@ func (o *Outbox) Run(ctx context.Context) error {
 				return ErrClosed
 			}
 		case <-timer.C:
-			if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
-				return err
+			now = o.clock().UTC()
+			if !now.Before(nextReconcile) || (reconcileDegraded && !retryAt.IsZero() && !now.Before(retryAt)) {
+				if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					reconcileDegraded = true
+					degrade()
+					maintenanceFailures++
+					retryAt = now.Add(backoff(o.baseBackoff, o.maxBackoff, maintenanceFailures, "outbox-reconcile"))
+					nextReconcile = now.Add(o.reconcileInterval)
+					continue
+				}
+				reconcileDegraded = false
+				if !replayDegraded {
+					maintenanceFailures = 0
+					retryAt = time.Time{}
+					recoverHealth()
+				}
+				nextReconcile = now.Add(o.reconcileInterval)
 			}
 		}
+	}
+}
+
+// Prepare performs the one bounded startup reconciliation exactly once. Stock
+// serve calls it synchronously so an undisclosed legacy backlog or store error
+// fails boot before the outbox is advertised as ready. Direct embedders may
+// call Run alone; Run invokes Prepare before entering the background loop.
+func (o *Outbox) Prepare(ctx context.Context) error {
+	o.prepareMu.Lock()
+	defer o.prepareMu.Unlock()
+	if o.prepared {
+		return nil
+	}
+	if err := o.Reconcile(ctx); err != nil && !errors.Is(err, state.ErrNotFound) {
+		o.reportHealth(false)
+		return err
+	}
+	o.prepared = true
+	o.reportHealth(true)
+	return nil
+}
+
+func (o *Outbox) reportHealth(healthy bool) {
+	if reporter, ok := o.delivery.(OutboxHealthReporter); ok {
+		reporter.SetOutboxHealth(healthy)
 	}
 }
 
@@ -418,11 +647,32 @@ func (o *Outbox) Reconcile(ctx context.Context) error {
 			if err := o.Enqueue(receiptCtx, receipt); err != nil {
 				return err
 			}
+			if err := o.pending.AcknowledgePendingReceipt(ctx, receipt); err != nil {
+				return err
+			}
 		}
 	}
-	legacy, err := o.store.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, kindPrefix, o.maxBatch)
+	return o.reconcileLegacyOnce(ctx)
+}
+
+func (o *Outbox) reconcileLegacyOnce(ctx context.Context) error {
+	marker, err := o.store.Load(ctx, internalQ(), legacyMarkerKind)
+	if err == nil {
+		var value legacyReconcileMarker
+		if jsonErr := json.Unmarshal(marker.Bytes, &value); jsonErr != nil || value.Version != 1 || marker.Kind != legacyMarkerKind || marker.Identity != internalQ() {
+			return fmt.Errorf("%w: invalid legacy reconciliation marker", ErrInvalidReceipt)
+		}
+		return nil
+	}
+	if !errors.Is(err, state.ErrNotFound) {
+		return err
+	}
+	legacy, err := o.store.ListKindBounded(ctx, state.ListScope{MaintenanceScoped: true}, kindPrefix, o.maxBatch+1)
 	if err != nil {
 		return err
+	}
+	if len(legacy) > o.maxBatch {
+		return fmt.Errorf("%w: retained receipt records exceed the configured batch", ErrReconcileOverflow)
 	}
 	for _, rec := range legacy {
 		stored, decodeErr := decodeStored(rec.Bytes)
@@ -441,6 +691,17 @@ func (o *Outbox) Reconcile(ctx context.Context) error {
 		if err := o.ensureDue(ctx, rec.Identity, stored.Receipt); err != nil {
 			return err
 		}
+	}
+	body, err := json.Marshal(legacyReconcileMarker{Version: 1})
+	if err != nil {
+		return fmt.Errorf("%w: encode legacy reconciliation marker", ErrInvalidReceipt)
+	}
+	next := state.NewInternalRecord(state.NewEventID(), internalQ(), legacyMarkerKind, body)
+	if err := o.store.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(internalQ(), legacyMarkerKind, "")}, next); err != nil {
+		if errors.Is(err, state.ErrConditionFailed) {
+			return o.reconcileLegacyOnce(ctx)
+		}
+		return err
 	}
 	return nil
 }
@@ -496,7 +757,7 @@ func (o *Outbox) updateEntry(ctx context.Context, entry dueEntry, stored *stored
 		stored.Attempts++
 		stored.Status = "pending"
 		stored.LastFailureCode = "delivery_failed"
-		stored.NextAttemptAt = o.clock().UTC().Add(backoff(o.baseBackoff, o.maxBackoff, stored.Attempts))
+		stored.NextAttemptAt = o.clock().UTC().Add(backoff(o.baseBackoff, o.maxBackoff, stored.Attempts, entry.ReceiptID))
 		idx.Entries[pos].NextAttemptAt = stored.NextAttemptAt
 	} else {
 		idx.Entries = append(idx.Entries[:pos], idx.Entries[pos+1:]...)
@@ -611,15 +872,39 @@ func (o *Outbox) noteSuccess() {
 	o.circuitOpenTil = time.Time{}
 	o.mu.Unlock()
 }
-func backoff(base, max time.Duration, attempts int) time.Duration {
+func backoff(base, max time.Duration, attempts int, receiptID string) time.Duration {
 	if attempts <= 1 {
-		return base
+		return jitterBackoff(base, base, max, receiptID, attempts)
 	}
 	d := float64(base) * math.Pow(2, float64(attempts-1))
 	if d >= float64(max) {
+		return jitterBackoff(max, base, max, receiptID, attempts)
+	}
+	return jitterBackoff(time.Duration(d), base, max, receiptID, attempts)
+}
+
+// jitterBackoff adds stable per-receipt jitter so a coordinator recovery does
+// not wake every runtime at once. Stability keeps response-loss replay
+// deterministic while the +/-10% spread avoids synchronized retry bursts.
+func jitterBackoff(value, base, max time.Duration, receiptID string, attempts int) time.Duration {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", receiptID, attempts)))
+	spread := value / 10
+	if spread <= 0 {
+		return value
+	}
+	width := uint64(2*spread + 1)
+	rawOffset := binary.BigEndian.Uint64(digest[:8]) % width
+	// rawOffset is strictly below width, and width is at most one fifth of
+	// time.Duration's positive range plus one, so this conversion cannot overflow.
+	offset := time.Duration(rawOffset) - spread // #nosec G115 -- bounded by width above.
+	value += offset
+	if value < base {
+		return base
+	}
+	if value > max {
 		return max
 	}
-	return time.Duration(d)
+	return value
 }
 
 func decodeStored(body []byte) (storedReceipt, error) {

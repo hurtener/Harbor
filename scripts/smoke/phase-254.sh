@@ -58,6 +58,22 @@ assert_grep_present \
     "internal/llm/receipts/outbox_test.go" \
     "receipt replay/idempotency test exists"
 assert_grep_present \
+    'EstimateRequestTokens' \
+    "internal/llm/grant/wrapper.go" \
+    "lease reservation reuses the canonical prompt estimator"
+assert_grep_present \
+    'TestWrap_ReservesCanonicalTotalCallBoundForPromptHeavySuccess' \
+    "internal/llm/grant/wrapper_test.go" \
+    "prompt-heavy total-call reservation is covered"
+assert_grep_present \
+    'TestStore_BindingOvershootAndCrashRecoveryAcrossDrivers' \
+    "internal/llm/leases/manager_test.go" \
+    "lease binding, overshoot, and crash recovery are covered"
+assert_grep_present \
+    'TestLeaseIntegrity_PostgresAcceptance' \
+    "internal/state/drivers/postgres/lease_integrity_test.go" \
+    "real-PostgreSQL lease integrity acceptance exists"
+assert_grep_present \
     'ExternalGrantRequired' \
     "internal/llm/grant/wrapper.go" \
     "strict mode fails closed"

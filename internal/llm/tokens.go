@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 )
 
-// estimateTokens returns a token-count estimate for an assembled
+// EstimateRequestTokens returns Harbor's canonical token-count estimate for an assembled
 // CompleteRequest. The default algorithm (`chars_div_4`
 // §2) is `len(text) / 4 + 1` per text fragment plus a 4-token
 // per-message overhead for role + structural framing.
@@ -30,7 +30,12 @@ import (
 // over a few hundred tokens are real. the downgrade chain
 // will hand-balance schema size vs prompt size; estimates
 // the bytes-rendered schema at chars/4.
-func estimateTokens(req CompleteRequest, profile ModelProfile) int {
+//
+// Callers that reserve a provider-attempt allowance must use this function
+// rather than maintaining a second prompt estimator. The result remains an
+// estimate: provider tokenizers are authoritative, so settlement must record
+// the provider's actual usage even when it exceeds the pre-call estimate.
+func EstimateRequestTokens(req CompleteRequest, profile ModelProfile) int {
 	if profile.TokenEstimator == "" || profile.TokenEstimator == "chars_div_4" {
 		return chars4Estimator(req)
 	}

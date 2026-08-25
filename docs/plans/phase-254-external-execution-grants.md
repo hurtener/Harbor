@@ -120,6 +120,19 @@ database deployment/acceptance is claimed.
   grant; disabled mode preserves the pre-phase local-key behavior.
 - [ ] Retry, structured-output downgrade, and failover provider attempts each
   re-verify the grant and receive distinct deterministic attempt coordinates.
+- [ ] The execution edge reserves the canonical prompt estimate plus the
+  bounded output ceiling before provider invocation. Settlement charges every
+  nonzero success/error/cancellation usage fact, releases only unused units,
+  and records a provider-reported single-call overshoot rather than losing it.
+- [ ] Durable lease state binds the exact grant id, organization, runtime,
+  admitted identity/run, and effective agent. A colliding LeaseID in another
+  scope cannot mutate the original accounting, and a top-up preserves the
+  complete binding.
+- [ ] Caller cancellation after provider interaction cannot strand settlement
+  or receipt handoff: both use one short detached terminal context. Expiry
+  maintenance or exact replay returns crash-stale reserved capacity and records
+  an `expired` terminal state while late actual usage still settles
+  idempotently; explicit release remains non-settleable.
 - [ ] Receipts carry only content-free identity/route/generation/usage/outcome
   facts plus a canonical body hash and idempotency key; no prompt, response,
   tool argument, reasoning trace, or credential appears in serialized output.
@@ -144,6 +157,8 @@ internal/llm/grant/grant.go
 internal/llm/grant/grant_test.go
 internal/llm/grant/wrapper.go
 internal/llm/grant/wrapper_test.go
+internal/llm/leases/manager.go
+internal/llm/leases/manager_test.go
 internal/llm/receipts/outbox.go
 internal/llm/receipts/outbox_test.go
 internal/llm/drivers/bifrost/account.go
@@ -194,9 +209,10 @@ only `AttemptUsageReceipt` values.
 - **Integration:** Bifrost `Account.GetKeysForProvider` resolves the verified
   binding only after the grant wrapper; missing local secret is allowed only in
   required grant mode; retry/downgrade/failover all traverse the wrapper.
-- **Conformance:** StateStore-backed outbox enqueue, duplicate identity,
-  conditional ACK, replay, changed-body refusal, and in-memory/SQLite driver
-  parity; retain the existing PostgreSQL acceptance selector and PASS guard.
+- **Conformance:** StateStore-backed lease/reservation/outbox behavior,
+  duplicate identity, cross-scope LeaseID refusal, terminal usage settlement,
+  crash expiry, conditional ACK, replay, and changed-body refusal across
+  in-memory and SQLite, with the DSN-gated real-PostgreSQL acceptance seam.
 - **Concurrency / leak:** N=100+ two-organization binding resolution under
   `-race`; concurrent grant wrapper calls; outbox replay/enqueue races;
   cancellation joins the bounded replay loop; response-loss delivery is

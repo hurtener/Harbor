@@ -332,6 +332,23 @@ type LLMExternalGrantConfig struct {
 	RuntimeID               string            `yaml:"runtime_id,omitempty"`
 	AuthorizedOrganizations []string          `yaml:"authorized_organizations,omitempty"`
 	PublicKeys              map[string]string `yaml:"public_keys,omitempty"`
+	// Coordinator configures the optional stock authenticated transport used
+	// by serving binaries to deliver durable receipts. An empty block mounts no
+	// client and starts no worker or timer.
+	Coordinator ExternalGrantCoordinatorConfig `yaml:"coordinator,omitempty"`
+}
+
+// ExternalGrantCoordinatorConfig is the boot-pinned HTTP transport for
+// external-grant receipt acknowledgement. The
+// bearer itself is read from AuthTokenEnv at boot and is never serialized.
+// ReceiptURL is required when the block is present.
+type ExternalGrantCoordinatorConfig struct {
+	ReceiptURL        string        `yaml:"receipt_url,omitempty"`
+	TopUpURL          string        `yaml:"top_up_url,omitempty"`
+	AuthTokenEnv      string        `yaml:"auth_token_env,omitempty"`
+	Timeout           time.Duration `yaml:"timeout,omitempty"`
+	MaxBatch          int           `yaml:"max_batch,omitempty"`
+	ReconcileInterval time.Duration `yaml:"reconcile_interval,omitempty"`
 }
 
 // InferenceBrokerConfig declares one NAMED, boot-declared inference-plane

@@ -2,6 +2,7 @@ package receipts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
 
 type countingStateStore struct {
@@ -20,6 +22,135 @@ type countingStateStore struct {
 	bounded int
 	loads   int
 	due     int
+}
+
+// replayFaultStore injects only durable due-index read failures. It leaves
+// startup reconciliation alone so tests can prove that a worker which was
+// previously strict-ready degrades on a later replay failure and then recovers
+// without a restart.
+type replayFaultStore struct {
+	state.StateStore
+	mu          sync.Mutex
+	dueFailures int
+	dueErr      error
+	dueLoads    int
+}
+
+func (s *replayFaultStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	if q == internalQ() && kind == dueKind {
+		s.mu.Lock()
+		s.dueLoads++
+		if s.dueFailures > 0 {
+			s.dueFailures--
+			err := s.dueErr
+			s.mu.Unlock()
+			return state.StateRecord{}, err
+		}
+		s.mu.Unlock()
+	}
+	return s.StateStore.Load(ctx, q, kind)
+}
+
+func (s *replayFaultStore) setDueFailures(n int, err error) {
+	s.mu.Lock()
+	s.dueFailures, s.dueErr = n, err
+	s.mu.Unlock()
+}
+
+func (s *replayFaultStore) dueLoadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dueLoads
+}
+
+type countingPendingSource struct {
+	mu       sync.Mutex
+	calls    int
+	acks     int
+	failures int
+}
+
+func (s *countingPendingSource) PendingReceipts(context.Context, int) ([]llm.AttemptUsageReceipt, error) {
+	s.mu.Lock()
+	if s.failures > 0 {
+		s.failures--
+		s.mu.Unlock()
+		return nil, errors.New("transient pending source failure")
+	}
+	s.calls++
+	s.mu.Unlock()
+	return nil, nil
+}
+
+func (s *countingPendingSource) AcknowledgePendingReceipt(context.Context, llm.AttemptUsageReceipt) error {
+	s.mu.Lock()
+	s.acks++
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *countingPendingSource) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+type signalingFailDelivery struct {
+	calls chan struct{}
+}
+
+type healthRecordingDelivery struct {
+	health chan bool
+}
+
+type replayingPendingSource struct {
+	receipt     llm.AttemptUsageReceipt
+	ackFailures int
+	acked       bool
+}
+
+func (s *replayingPendingSource) PendingReceipts(context.Context, int) ([]llm.AttemptUsageReceipt, error) {
+	if s.acked {
+		return nil, nil
+	}
+	return []llm.AttemptUsageReceipt{s.receipt}, nil
+}
+
+func (s *replayingPendingSource) AcknowledgePendingReceipt(context.Context, llm.AttemptUsageReceipt) error {
+	if s.ackFailures > 0 {
+		s.ackFailures--
+		return errors.New("simulated crash before pending acknowledgement")
+	}
+	s.acked = true
+	return nil
+}
+
+func (d *healthRecordingDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error { return nil }
+func (d *healthRecordingDelivery) SetOutboxHealth(healthy bool) {
+	select {
+	case d.health <- healthy:
+	default:
+	}
+}
+
+func requireOutboxHealth(t *testing.T, health <-chan bool, want bool) {
+	t.Helper()
+	select {
+	case got := <-health:
+		if got != want {
+			t.Fatalf("outbox health=%t, want %t", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for outbox health=%t", want)
+	}
+}
+
+func (d *signalingFailDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error {
+	select {
+	case d.calls <- struct{}{}:
+	default:
+	}
+	return errors.New("coordinator unavailable")
 }
 
 func (s *countingStateStore) ListKindBounded(ctx context.Context, scope state.ListScope, prefix string, limit int) ([]state.StateRecord, error) {
@@ -173,6 +304,52 @@ func TestOutboxRunIdleReconciliationDoesNotGrowQueries(t *testing.T) {
 	}
 }
 
+func TestOutboxRunDueRetriesDoNotAccelerateReconciliation(t *testing.T) {
+	base, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close(context.Background())
+	store := &countingStateStore{StateStore: base}
+	pending := &countingPendingSource{}
+	delivery := &signalingFailDelivery{calls: make(chan struct{}, 16)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, PendingSource: pending,
+		BaseBackoff: 10 * time.Millisecond, MaxBackoff: 10 * time.Millisecond,
+		CircuitFailures: 1000, ReconcileInterval: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := testReceipt()
+	if err := o.Enqueue(receiptContext(t, receipt), receipt); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	for attempt := range 4 {
+		select {
+		case <-delivery.calls:
+		case <-time.After(2 * time.Second):
+			cancel()
+			t.Fatalf("delivery attempt %d did not occur", attempt+1)
+		}
+	}
+	if got := pending.callCount(); got != 1 {
+		cancel()
+		t.Fatalf("pending-source calls=%d, want startup reconciliation only", got)
+	}
+	if got := store.counters(); got != 1 {
+		cancel()
+		t.Fatalf("maintenance prefix scans=%d, want startup reconciliation only", got)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v", err)
+	}
+}
+
 func TestOutboxRunCircuitOpenSleepsWithoutDueIndexSpin(t *testing.T) {
 	base, err := inmem.New(config.StateConfig{})
 	if err != nil {
@@ -254,5 +431,271 @@ func TestOutboxReconcileDoesNotRequeueAcknowledgedReceipts(t *testing.T) {
 	}
 	if len(after.Entries) != 0 {
 		t.Fatalf("reconcile requeued acknowledged receipt: %+v", after.Entries)
+	}
+}
+
+func TestOutboxPrepareRefusesLegacyOverflowWithoutHidingLaterPending(t *testing.T) {
+	tests := map[string]func(*testing.T) state.StateStore{
+		"inmem": func(t *testing.T) state.StateStore {
+			t.Helper()
+			store, err := inmem.New(config.StateConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+		"sqlite": func(t *testing.T) state.StateStore {
+			t.Helper()
+			store, err := sqlite.New(config.StateConfig{DSN: ":memory:"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+	}
+	for name, open := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			t.Cleanup(func() { _ = store.Close(context.Background()) })
+			for i := range 3 {
+				receipt := receiptVariant(i)
+				status := "acked"
+				if i == 2 {
+					status = "pending"
+				}
+				body, err := json.Marshal(storedReceipt{Receipt: receipt, Status: status})
+				if err != nil {
+					t.Fatal(err)
+				}
+				kind := receiptKind(receipt.ReceiptID)
+				next := state.NewInternalRecord(state.NewEventID(), identity.Quadruple{Identity: identity.Identity{TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID}, RunID: receipt.LogicalRunID}, kind, body)
+				if err := store.SaveIf(context.Background(), []state.SlotExpectation{state.InternalSlotExpectation(next.Identity, kind, "")}, next); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o, err := New(Config{Store: store, Delivery: &recordingDelivery{}, MaxBatch: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := o.Prepare(context.Background()); !errors.Is(err, ErrReconcileOverflow) {
+				t.Fatalf("Prepare=%v, want ErrReconcileOverflow", err)
+			}
+			if _, idx, err := o.loadIndex(context.Background()); !errors.Is(err, state.ErrNotFound) && (err != nil || len(idx.Entries) != 0) {
+				t.Fatalf("overflow partially adopted legacy page: index=%+v err=%v", idx, err)
+			}
+		})
+	}
+}
+
+func TestOutboxAcknowledgedLifetimeHistoryNeverReentersLegacyScan(t *testing.T) {
+	tests := map[string]func(*testing.T) state.StateStore{
+		"inmem": func(t *testing.T) state.StateStore {
+			t.Helper()
+			store, err := inmem.New(config.StateConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+		"sqlite": func(t *testing.T) state.StateStore {
+			t.Helper()
+			store, err := sqlite.New(config.StateConfig{DSN: ":memory:"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+	}
+	for name, open := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			t.Cleanup(func() { _ = store.Close(context.Background()) })
+			o, err := New(Config{Store: store, Delivery: &recordingDelivery{}, MaxBatch: 64})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := o.Prepare(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for i := range 65 {
+				receipt := receiptVariant(i)
+				if err := o.Enqueue(receiptContext(t, receipt), receipt); err != nil {
+					t.Fatalf("enqueue %d: %v", i, err)
+				}
+			}
+			for {
+				stats, err := o.Replay(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stats.Seen == 0 {
+					break
+				}
+			}
+			if err := o.Reconcile(context.Background()); err != nil {
+				t.Fatalf("reconcile after 65 acknowledged receipts: %v", err)
+			}
+			restarted, err := New(Config{Store: store, Delivery: &recordingDelivery{}, MaxBatch: 64})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restarted.Prepare(context.Background()); err != nil {
+				t.Fatalf("restart prepare after 65 acknowledged receipts: %v", err)
+			}
+		})
+	}
+}
+
+func TestOutboxRunReconcileHealthDegradesAndRecovers(t *testing.T) {
+	store, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	pending := &countingPendingSource{}
+	delivery := &healthRecordingDelivery{health: make(chan bool, 8)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, PendingSource: pending,
+		BaseBackoff: 5 * time.Millisecond, ReconcileInterval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireOutboxHealth(t, delivery.health, true) // startup wired
+	pending.mu.Lock()
+	pending.failures = 1
+	pending.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	for _, want := range []bool{false, true} {
+		requireOutboxHealth(t, delivery.health, want)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v", err)
+	}
+}
+
+func TestOutboxRunReplayStoreFailureDegradesThenRecovers(t *testing.T) {
+	base, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	store := &replayFaultStore{StateStore: base}
+	delivery := &healthRecordingDelivery{health: make(chan bool, 8)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, BaseBackoff: 5 * time.Millisecond,
+		MaxBackoff: 5 * time.Millisecond, ReconcileInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireOutboxHealth(t, delivery.health, true)
+	store.setDueFailures(1, errors.New("temporary due-index read failure"))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	requireOutboxHealth(t, delivery.health, false)
+	requireOutboxHealth(t, delivery.health, true)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v, want context cancellation", err)
+	}
+	// The recovered pass takes one replay read and one normal next-due read.
+	if got := store.dueLoadCount(); got > 3 {
+		t.Fatalf("temporary replay recovery performed %d due-index loads, want bounded retry", got)
+	}
+}
+
+func TestOutboxRunCorruptDueIndexDegradesWithoutHotLoopAndClosesQuietly(t *testing.T) {
+	base, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	store := &replayFaultStore{StateStore: base}
+	delivery := &healthRecordingDelivery{health: make(chan bool, 8)}
+	o, err := New(Config{
+		Store: store, Delivery: delivery, BaseBackoff: 20 * time.Millisecond,
+		MaxBackoff: 40 * time.Millisecond, ReconcileInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireOutboxHealth(t, delivery.health, true)
+	receipt := testReceipt()
+	if err := o.Enqueue(receiptContext(t, receipt), receipt); err != nil {
+		t.Fatal(err)
+	}
+	indexRecord, err := base.Load(context.Background(), internalQ(), dueKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := state.NewInternalRecord(state.NewEventID(), internalQ(), dueKind, []byte(`{"entries":`))
+	if err := base.SaveIf(context.Background(), []state.SlotExpectation{state.InternalSlotExpectation(internalQ(), dueKind, indexRecord.ID)}, corrupt); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+	requireOutboxHealth(t, delivery.health, false)
+	// One initial read followed by 20ms/40ms capped maintenance retries is
+	// acceptable; a hot loop would make hundreds of reads in this interval.
+	time.Sleep(90 * time.Millisecond)
+	if got := store.dueLoadCount(); got > 5 {
+		t.Fatalf("corrupt due index caused %d replay reads, want bounded cadence", got)
+	}
+	select {
+	case got := <-delivery.health:
+		if got {
+			t.Fatal("corrupt due index falsely restored outbox health")
+		}
+	default:
+	}
+	if err := o.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrClosed) {
+		t.Fatalf("Run=%v, want quiet ErrClosed shutdown", err)
+	}
+}
+
+func TestOutboxReconcile_EnqueueBeforePendingAckConvergesAfterResponseLoss(t *testing.T) {
+	store, err := inmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	receipt := testReceipt()
+	pending := &replayingPendingSource{receipt: receipt, ackFailures: 1}
+	delivery := &recordingDelivery{}
+	o, err := New(Config{Store: store, Delivery: delivery, PendingSource: pending})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Reconcile(context.Background()); err == nil {
+		t.Fatal("first reconciliation unexpectedly acknowledged the pending handoff")
+	}
+	if err := o.Reconcile(context.Background()); err != nil {
+		t.Fatalf("response-loss reconciliation did not converge: %v", err)
+	}
+	stats, err := o.Replay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Acknowledged != 1 || len(delivery.receipts) != 1 || delivery.receipts[0].ReceiptID != receipt.ReceiptID {
+		t.Fatalf("replay stats=%+v delivered=%+v", stats, delivery.receipts)
 	}
 }

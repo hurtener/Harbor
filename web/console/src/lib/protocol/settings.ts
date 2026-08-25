@@ -25,6 +25,26 @@ export interface Capability {
 	version?: string;
 }
 
+/** External-grant enforcement and coordinator transport readiness. */
+export interface ExternalGrantReadiness {
+	supported: boolean;
+	configured: boolean;
+	mode: string;
+	supported_grant_versions: number[];
+	agent_binding: string;
+	accepted_route_modes?: string[];
+	ready_route_modes?: string[];
+	verifier_configured: boolean;
+	reservations_wired: boolean;
+	credential_resolver_wired: boolean;
+	receipt_transport_kind: string;
+	receipt_transport: string;
+	receipt_parser: string;
+	top_up_transport: string;
+	top_up_state: string;
+	strict_ready: boolean;
+}
+
 /** `runtime.info` response — the Runtime's build identity + posture. */
 export interface RuntimeInfo {
 	instance_id: string;
@@ -38,6 +58,8 @@ export interface RuntimeInfo {
 	protocol_version: string;
 	capabilities: Capability[];
 	uptime_seconds: number;
+	/** Absent on runtimes built before external-grant readiness projection. */
+	external_grant?: ExternalGrantReadiness;
 	/**
 	 * The MCP App (`io.modelcontextprotocol/ui`) display modes this host can
 	 * render, declared by the deployment's `tools.mcp_app_host.display_modes`.

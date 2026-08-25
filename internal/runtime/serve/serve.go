@@ -40,6 +40,7 @@ import (
 	"net/http"
 	nhpprof "net/http/pprof"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,12 +56,14 @@ import (
 	llmbifrost "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
 	llmprovider "github.com/hurtener/Harbor/internal/llm/provider"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
+	receipthttp "github.com/hurtener/Harbor/internal/llm/receipts/httptransport"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/observability/rollups"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
+	protocoltypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
@@ -338,6 +341,118 @@ func resolveMCPAttachIdentity(configured identity.Identity) identity.Identity {
 	return configured
 }
 
+func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, provided llm.ExternalGrantConfig, delivery llmreceipts.Delivery, stock *receipthttp.Client) func() protocoltypes.ExternalGrantReadiness {
+	mode := strings.TrimSpace(settings.Mode)
+	if mode == "" {
+		mode = strings.TrimSpace(string(provided.Mode))
+	}
+	if mode == "" {
+		mode = string(llm.ExternalGrantDisabled)
+	}
+	routeMode := strings.TrimSpace(settings.RouteMode)
+	if routeMode == "" {
+		routeMode = strings.TrimSpace(string(provided.RouteMode))
+	}
+	return func() protocoltypes.ExternalGrantReadiness {
+		out := protocoltypes.ExternalGrantReadiness{
+			Supported: true,
+			Mode:      mode,
+			SupportedGrantVersions: []int{
+				llm.ExternalGrantVersionLegacy,
+				llm.ExternalGrantVersionAgentBound,
+			},
+			AgentBinding:         "required_v2",
+			ReceiptParser:        "strict_canonical_v1",
+			ReceiptTransportKind: "none",
+			ReceiptTransport:     "disabled",
+			TopUpTransport:       "unsupported",
+			TopUpState:           "absent",
+		}
+		if mode == string(llm.ExternalGrantDisabled) {
+			return out
+		}
+		out.Configured = true
+		if routeMode == "" {
+			out.AcceptedRouteModes = []string{string(llm.ExternalGrantRouteRuntimeDefault), string(llm.ExternalGrantRouteCoordinatorBound)}
+		} else {
+			out.AcceptedRouteModes = []string{routeMode}
+		}
+		out.VerifierConfigured = provided.Verifier != nil || len(settings.PublicKeys) > 0
+		// Successful serve assembly always supplies the StateStore-backed
+		// reservation manager when an external-grant mode is enabled.
+		out.ReservationsWired = true
+		out.CredentialResolverWired = provided.Credentials != nil
+		if provided.TopUpper != nil {
+			out.TopUpTransport = "host_injected"
+			out.TopUpState = "wired"
+		}
+		switch {
+		case stock != nil:
+			ready := stock.Readiness()
+			out.ReceiptTransportKind = "stock_authenticated_http"
+			out.ReceiptTransport = ready.Receipt
+			if ready.TopUp != "absent" {
+				out.TopUpTransport = "stock_authenticated_http"
+				out.TopUpState = ready.TopUp
+			}
+		case delivery != nil:
+			out.ReceiptTransportKind = "host_injected_delivery"
+			out.ReceiptTransport = "wired"
+		case provided.ReceiptSink != nil:
+			out.ReceiptTransportKind = "host_injected_sink"
+			out.ReceiptTransport = "wired"
+		default:
+			out.ReceiptTransport = "absent"
+		}
+		baseReady := out.VerifierConfigured && out.ReservationsWired && out.ReceiptTransport == "wired"
+		if baseReady && (routeMode == "" || routeMode == string(llm.ExternalGrantRouteRuntimeDefault)) {
+			out.ReadyRouteModes = append(out.ReadyRouteModes, string(llm.ExternalGrantRouteRuntimeDefault))
+		}
+		if baseReady && out.CredentialResolverWired && (routeMode == "" || routeMode == string(llm.ExternalGrantRouteCoordinatorBound)) {
+			out.ReadyRouteModes = append(out.ReadyRouteModes, string(llm.ExternalGrantRouteCoordinatorBound))
+		}
+		out.StrictReady = len(out.ReadyRouteModes) == len(out.AcceptedRouteModes) && out.TopUpState != "degraded"
+		return out
+	}
+}
+
+func configureStockExternalGrant(coordinatorCfg config.ExternalGrantCoordinatorConfig, opts *Options, getenv func(string) (string, bool)) (*receipthttp.Client, error) {
+	if coordinatorCfg.ReceiptURL == "" {
+		return nil, nil
+	}
+	if opts.ExternalGrantDelivery != nil || opts.ExternalGrant.ReceiptSink != nil {
+		return nil, fmt.Errorf("external grant coordinator: configured receipt transport conflicts with injected receipt handling")
+	}
+	if coordinatorCfg.TopUpURL != "" && opts.ExternalGrant.TopUpper != nil {
+		return nil, fmt.Errorf("external grant coordinator: configured top-up transport conflicts with injected top-upper")
+	}
+	token, ok := getenv(coordinatorCfg.AuthTokenEnv)
+	if !ok || strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("external grant coordinator: env var %q (auth_token_env) is unset or empty", coordinatorCfg.AuthTokenEnv)
+	}
+	client, err := receipthttp.New(receipthttp.Config{
+		ReceiptURL: coordinatorCfg.ReceiptURL,
+		TopUpURL:   coordinatorCfg.TopUpURL,
+		AuthToken:  token,
+		Timeout:    coordinatorCfg.Timeout,
+		MaxBatch:   coordinatorCfg.MaxBatch,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("external grant coordinator: %w", err)
+	}
+	opts.ExternalGrantDelivery = client
+	if coordinatorCfg.TopUpURL != "" {
+		opts.ExternalGrant.TopUpper = client
+	}
+	if opts.ExternalGrantMaxBatch == 0 {
+		opts.ExternalGrantMaxBatch = coordinatorCfg.MaxBatch
+	}
+	if opts.ExternalGrantReconcile == 0 {
+		opts.ExternalGrantReconcile = coordinatorCfg.ReconcileInterval
+	}
+	return client, nil
+}
+
 func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if opts.AuthValidatorFactory == nil {
 		return nil, ErrAuthValidatorFactoryRequired
@@ -365,6 +480,14 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			return nil, fmt.Errorf("config: %w", err)
 		}
 		cfg = loaded
+	}
+
+	// The stock coordinator transport is constructed only when its explicit
+	// config block is present. Disabled/default installations reach neither an
+	// environment lookup nor a goroutine, timer, store read, or network call.
+	stockCoordinator, stockErr := configureStockExternalGrant(cfg.LLM.ExternalGrant.Coordinator, &opts, os.LookupEnv)
+	if stockErr != nil {
+		return nil, stockErr
 	}
 
 	// LLM snapshot — the caller-side builder runs any dev gate + override;
@@ -1019,6 +1142,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Metrics:                        metricsReg,
 		LLMSnapshot:                    llmCfg,
 		ProviderCatalog:                providerCatalog,
+		ExternalGrantReadiness:         externalGrantReadinessProvider(cfg.LLM.ExternalGrant, opts.ExternalGrant, opts.ExternalGrantDelivery, stockCoordinator),
 		Tasks:                          taskReg,
 		Sessions:                       sessionRegistry,
 		Agents:                         agentRegistry,

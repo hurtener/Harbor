@@ -17,6 +17,98 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Harbor now provides stock authenticated external-grant renewal. An optional
+  `top_up_url` shares the existing coordinator credential and bounded/no-
+  redirect HTTP client, and is called only after strict verification identifies
+  a safely renewable expiry or insufficient lease. The public
+  `sdk/llm/topup` v1 contract owns canonical request/response codecs, exact
+  64-KiB grant and 128-KiB envelope bounds, deterministic idempotency over the
+  predecessor, requested units, and renewal reason, strict
+  duplicate/unknown/noncanonical refusal, and header/body equality so external
+  coordinators need no private Harbor type. Expiry-only renewal preserves
+  compute capacity exactly; insufficient leases gain at most the requested
+  units. The successor is strictly verified and durably CAS-applied before
+  reservation or provider work, with exact response-loss/concurrent replay.
+  The durable lease record retains the exact current canonical signed successor
+  under the immutable run-start root fingerprint, so later calls and process
+  restarts reuse current authority without HTTP; typed actual durable exhaustion
+  renews that current successor rather than trusting stale signed consumption.
+  `runtime.info` reports `unsupported`, `host_injected`, or
+  `stock_authenticated_http`; disabled and receipt-only runtimes do no idle
+  renewal work. Protocol version remains `0.1.0`.
+
+- HA-75 adds version 2 of the public external execution grant with a required,
+  signed effective AgentID. The stock verifier matches it to the exact agent
+  restored from normal durable reach admission before reservation, credential
+  resolution, or provider execution; explicit and runtime-default selections
+  use the same gate, and runtime-default still needs no coordinator provider
+  credential or catalog. Content-free receipts and bounded top-up successors
+  preserve the binding. Version 1 signatures and blank-agent legacy/current
+  receipt bytes remain exact, while v1 cannot pretend AgentID was signed.
+  `runtime.info` advertises grant versions `[1,2]` and `required_v2` binding.
+  Required mode blocks ungranted auxiliary calls; optional/embedder calls are
+  not represented as agent-bound. Protocol version remains `0.1.0`.
+
+- `sdk/llm.UnmarshalCanonicalAttemptUsageReceipt` is the strict public inverse
+  of Harbor's canonical content-free receipt encoder. It accepts only exact
+  current snake-case bytes or the exact v1.30.0 legacy bytes selected by the
+  encoder, rejects unknown, duplicate, missing,
+  reordered, alternatively encoded, or trailing content, validates the
+  receipt and its body hash, and returns the public receipt without requiring
+  an external consumer to recreate Harbor's private wire struct. It preserves
+  the blank public route mode required to verify a legacy receipt hash while
+  re-marshaling the same exact v1.30.0 legacy bytes.
+
+- HA-72 adds an opt-in stock `harbor serve` transport for authenticated,
+  bounded batches of canonical content-free usage receipts, exact
+  receipt-ID/body-hash acknowledgements, durable partial/response-loss replay,
+  and stable jittered backoff. Disabled/default runtimes start no coordinator
+  work, and `runtime_default` remains independent of coordinator provider
+  credentials or catalogs. `runtime.info` now reports grant mode, accepted
+  and independently ready route modes, verifier/reservation/credential wiring,
+  strict receipt parser, concrete receipt transport kind and readiness, and
+  the concrete stock/host-injected/unsupported top-up transport kind. It also
+  retains a
+  fail-closed aggregate strict-ready signal. Durable settlement atomically
+  creates removable pending handoffs for success, error, and cancellation;
+  legacy receipt-prefix reconciliation is version-marked and upgrade-only, so
+  ACKed lifetime history cannot amplify idle reads. Transient reconciliation,
+  durable replay, index-read, and integrity failures degrade readiness while
+  retrying; a corrupt deterministic record stays fail-closed without a hot
+  loop, and readiness recovers only after clean replay or reconciliation.
+
+### Fixed
+
+- External-grant lease accounting now reserves Harbor's one canonical prompt
+  estimate plus the bounded output ceiling before every provider call, then
+  charges provider-reported nonzero usage for success, error, and cancellation
+  while releasing only unused capacity. Provider tokenizer differences retain
+  the documented single-call overshoot possibility, but actual usage and its
+  durable receipt are never discarded for exceeding the estimate. Durable
+  lease records are bound to the exact grant, organization, runtime, admitted
+  identity/run, and effective agent; conflicting reuse of a LeaseID fails
+  closed without mutating the original accounting, and top-ups must preserve
+  the same binding. Post-provider settlement and receipt handoff share one
+  short context detached from caller cancellation. Expiry maintenance or an
+  exact replay atomically returns crash-stale reserved capacity and records an
+  `expired` terminal state; late provider usage can still settle idempotently,
+  while an explicit release remains a distinct non-settleable outcome.
+
+- HA-74 makes lease top-up successor validation a public SDK contract and
+  applies it inside the external-grant wrapper before replacing the verified
+  predecessor. The relationship check preserves every immutable execution,
+  identity, route, credential, policy, ceiling, and lease-id claim; advances
+  one epoch; bounds usable-capacity growth to the requested provider call; and
+  cannot rewind deadlines or lengthen grant or lease lifetime beyond the
+  predecessor's signed windows. Key rotation and renewed signatures remain
+  subject to the configured grant verifier. Phase 261 supplies the separately
+  authenticated stock transport and replay-idempotent durable application.
+  An omitted request output limit derives top-up need from
+  the same signed output ceiling later applied to the provider call. No
+  Protocol method or version changes.
+
 ## [1.30.1] — 2026-08-24
 
 ### Fixed

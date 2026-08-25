@@ -41,6 +41,9 @@ type (
 	IdentityScope = types.IdentityScope
 	// RuntimeInfo is the runtime.info response.
 	RuntimeInfo = types.RuntimeInfo
+	// ExternalGrantReadiness is runtime.info's content-free external-grant
+	// enforcement and coordinator-transport readiness projection.
+	ExternalGrantReadiness = types.ExternalGrantReadiness
 	// RuntimeHealth is the runtime.health response.
 	RuntimeHealth = types.RuntimeHealth
 	// StartRequest is the start request.

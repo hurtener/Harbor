@@ -117,8 +117,14 @@ func newPostureFixture(t *testing.T) *protocol.PostureSurface {
 				Counters: []types.NamedCounter{{Name: "harbor_events_total", Value: 5}},
 			}
 		},
-		Governance:  newPostureGovernance(),
-		LLM:         newPostureLLM(),
+		Governance: newPostureGovernance(),
+		LLM:        newPostureLLM(),
+		ExternalGrant: func() types.ExternalGrantReadiness {
+			return types.ExternalGrantReadiness{
+				Supported: true, Mode: "disabled", ReceiptTransportKind: "none", ReceiptTransport: "disabled",
+				ReceiptParser: "strict_canonical_v1", TopUpTransport: "unsupported",
+			}
+		},
 		Redactor:    patterns.New(),
 		Bus:         newPostureBus(t),
 		DisplayName: "harbor-test",
@@ -241,6 +247,9 @@ func TestPostureDispatch_RuntimeInfo(t *testing.T) {
 	}
 	if info.BuildVersion != "v0.0.0-dev" || info.BuildCommit != "abc1234" {
 		t.Errorf("build identity wrong: %+v", info)
+	}
+	if info.ExternalGrant == nil || !info.ExternalGrant.Supported || info.ExternalGrant.Mode != "disabled" || info.ExternalGrant.ReceiptParser != "strict_canonical_v1" {
+		t.Errorf("external-grant readiness wrong: %+v", info.ExternalGrant)
 	}
 	// The configured MCP App display modes are projected onto runtime.info so
 	// the Console seeds its host-context availableDisplayModes from the

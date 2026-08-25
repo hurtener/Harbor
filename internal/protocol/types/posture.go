@@ -103,6 +103,36 @@ type RuntimeInfo struct {
 	// field shapes over the wire. It covers the SHAPE OF NAMES, not field
 	// shapes and not event-type names.
 	WireSurfaceDigest string `json:"wire_surface_digest"`
+	// ExternalGrant reports the structural and observed readiness of the
+	// opt-in external execution-grant edge. It contains no endpoint, key id,
+	// credential, organization, or identity value. It is absent on runtimes
+	// built before the readiness projection was introduced.
+	ExternalGrant *ExternalGrantReadiness `json:"external_grant,omitempty"`
+}
+
+// ExternalGrantReadiness distinguishes compile-time support, configured
+// posture, and fully wired strict execution paths. Receipt transport state is
+// one of disabled, absent, wired, or degraded; its kind distinguishes the
+// stock authenticated HTTP path from host injection. TopUpTransport is one of
+// unsupported, host_injected, or stock_authenticated_http. TopUpState is one
+// of absent, wired, or degraded.
+type ExternalGrantReadiness struct {
+	Supported               bool     `json:"supported"`
+	Configured              bool     `json:"configured"`
+	Mode                    string   `json:"mode"`
+	SupportedGrantVersions  []int    `json:"supported_grant_versions"`
+	AgentBinding            string   `json:"agent_binding"`
+	AcceptedRouteModes      []string `json:"accepted_route_modes,omitempty"`
+	ReadyRouteModes         []string `json:"ready_route_modes,omitempty"`
+	VerifierConfigured      bool     `json:"verifier_configured"`
+	ReservationsWired       bool     `json:"reservations_wired"`
+	CredentialResolverWired bool     `json:"credential_resolver_wired"`
+	ReceiptTransportKind    string   `json:"receipt_transport_kind"`
+	ReceiptTransport        string   `json:"receipt_transport"`
+	ReceiptParser           string   `json:"receipt_parser"`
+	TopUpTransport          string   `json:"top_up_transport"`
+	TopUpState              string   `json:"top_up_state"`
+	StrictReady             bool     `json:"strict_ready"`
 }
 
 // SubsystemHealth is one subsystem's readiness entry in a RuntimeHealth

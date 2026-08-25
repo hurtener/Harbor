@@ -44,6 +44,9 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
+| HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Framework-complete candidate — phases 257/258/261, D-437/D-438/D-441; hosted CI/release/downstream acceptance pending |
+| HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Framework-complete candidate — phases 259/261, D-439/D-441; release and downstream acceptance pending |
+| HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Implemented candidate — phase 260 / D-440; release and downstream acceptance pending |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1683,3 +1686,140 @@ public module provenance. The annotated tag object was reissued with the
 canonical maintainer identity without changing its peeled release commit or
 published assets. Post-tag scaffold cleanup is included in the follow-up. No
 downstream deployment, fleet, database, or acceptance claim is made.
+
+---
+
+## HA-72 — stock coordinator receipt transport and grant readiness
+
+**Priority:** High. **Size:** large. **State:** Framework-complete in the
+unreleased Phase 257 / D-437 parser, Phase 258 / D-438 receipt transport, and
+Phase 261 / D-441 stock-renewal implementation candidates. Hosted CI, release
+evidence, downstream deployment, and acceptance remain pending.
+
+**Observed gap.** Harbor v1.30.1 publishes the transport-neutral receipt
+delivery seam and canonical marshal/hash/validation helpers, but an external
+receiver cannot parse the private snake-case canonical wire through the public
+SDK. Separately, stock `harbor serve` injects no authenticated coordinator
+transport, and `runtime.info` cannot distinguish a configured grant toggle from
+a concretely wired strict path.
+
+**Parser slice.** Phase 257 adds the public
+`UnmarshalCanonicalAttemptUsageReceipt([]byte)` inverse beside the existing
+marshal helper. It decodes through Harbor's one private canonical wire,
+validates the projected public receipt and body hash, and then requires
+byte-identical canonical re-encoding. Unknown, duplicate, missing, reordered,
+alternatively encoded, or trailing content fails closed under
+`ErrInvalidUsageReceipt`; malformed input is never reflected in errors or
+logs. The function adds no Protocol method, transport, timer, database read, or
+idle work. Historical blank public route mode is represented as explicit
+`coordinator_bound` on the canonical wire; when its preserved legacy hash
+validates, parsing restores the blank public value and re-marshal remains
+byte-identical.
+
+**Stock transport/readiness completion.** Phase 258 gives stock `harbor serve`
+an opt-in authenticated coordinator transport for bounded canonical receipt
+batches, exact receipt-ID/body-hash ACKs, response-loss-safe durable replay,
+and stable jittered backoff. Disabled/default deployments do no coordinator
+work, and `runtime_default` remains independent of coordinator-managed provider
+credentials and catalogs.
+
+Lease settlement now atomically leaves a removable pending-receipt handoff for
+success, error, and cancellation. The stock outbox consumes that prefix and
+removes an exact handoff only after durable enqueue; retained attempt history
+is never scanned for steady-state recovery. A versioned marker makes the old
+whole receipt-prefix pass an upgrade-only operation, so ordinary ACKed lifetime
+history cannot amplify idle database work or starve later crash-gap facts.
+
+The additive `runtime.info.external_grant` projection reports supported and
+configured modes, accepted and independently ready route shapes,
+verifier/reservation/credential wiring, strict parser readiness, concrete
+receipt transport kind and observed readiness, the exact unsupported,
+host-injected, or stock-authenticated-HTTP top-up kind, and a fail-closed
+fully-wired result. No endpoint, token,
+identity, receipt content, provider response, or product-specific vocabulary
+appears in the posture response, logs, or errors. Cadence reconciliation
+failures degrade the projection while retrying and recover only after success;
+the whole readiness object is optional for mixed-version clients. Phase 261
+adds the separately authenticated stock renewal exchange and replay-idempotent
+durable successor application without adding idle work.
+
+---
+
+## HA-74 — top-up successor grant preserves immutable authority and attempt identity
+
+**Priority:** High. **Size:** contained. **State:** Framework-complete in
+Phase 259 / D-439 and Phase 261 / D-441 candidates; hosted CI, release, and
+downstream acceptance remain pending.
+
+**Observed gap.** `LeaseTopUpper.TopUp` returns a newly signed
+`ExternalGrant`, but the v1.30.1 wrapper compared only logical-call id,
+attempt nonce, and effective route mode before replacing the verified grant.
+Re-verification proved that the returned grant was valid in isolation; it did
+not prove that it was a bounded successor of the original authority. A broken
+top-up service could therefore substitute a different grant, identity, route,
+credential generation, policy, ceiling, or lease id and still reach the
+provider if that replacement independently verified.
+
+**Implemented framework shape.** The public
+`ValidateExternalGrantTopUpSuccessor` helper compares the raw signed route mode
+and every immutable contract field. It permits only rotating key id,
+issued-at, signature, strictly advancing lease state, and non-rewinding
+validity.
+The lease id is immutable; the epoch advances exactly once; total capacity
+increases positively by no more than the provider call's requested units;
+consumption cannot rewind; and remaining capacity is sufficient for the call.
+Grant and lease deadlines may remain unchanged or move forward while retaining
+at most the respective lifetime signed into the predecessor. The wrapper calls
+this helper before it accepts the successor, then runs the configured
+signature/context verifier again. Legacy blank route mode must remain blank
+across a top-up; it cannot be normalized into wider authority.
+
+Table tests mutate every preserved field and prove refusal before the provider
+call. Separate tests cover both route modes, epoch/capacity/consumption and
+validity adversaries, integer overflow, deterministic response replay, stale
+successor refusal, N=100 concurrent reuse under the race detector, fuzzed
+immutable-string drift, and external-package SDK reachability. This is a
+generic execution-grant safety correction. It adds no transport, quota store,
+billing model, provider catalog, product policy, credential format, Protocol
+method, or Protocol version.
+
+**Operational completion.** Phase 261 adds a public transport-neutral canonical
+exchange, the optional authenticated stock client, narrow predecessor
+authentication, reason-aware expiry renewal, and the replay-idempotent durable
+successor hook. Relationship validation and ordinary successor verification
+still precede durable application, and durable application precedes reservation
+and provider execution.
+
+---
+
+## HA-75 — reach-admitted effective AgentID bound into external execution grants and receipts
+
+**Priority:** High. **Size:** contained. **State:** Implemented candidate in
+Phase 260 / D-440; hosted CI, release, and downstream acceptance remain
+pending.
+
+**Observed gap.** The deployed external grant binds organization, runtime,
+identity triple, logical run/call, route, credential generation, policy, and
+lease, but not the effective agent configuration selected by the normal
+signed-reach admission. A coordinator could therefore not prove that one
+receipt and provider attempt belonged to the same admitted agent configuration.
+
+**Implemented framework shape.** Version 2 adds a required signed AgentID. The
+reference verifier reads the private effective-agent capability restored from
+the durable control-start reach receipt and requires an exact match before any
+reservation, credential resolution, or provider call. Explicit and omitted
+runtime-default selections use the same gate. AgentID is immutable across a
+top-up and appears only as a content-free receipt identity fact. Runtime
+readiness advertises grant versions `[1,2]` and `required_v2` binding support.
+
+Version 1 remains exact for deployed signatures and blank-agent receipt bytes,
+but a v1 grant is rejected if it tries to carry AgentID. Runtime-default v2
+grants remain valid without a coordinator-supplied provider credential or model
+catalog. The Protocol version is unchanged.
+
+**Operational boundary.** This answer covers every strict grant-bearing
+provider attempt in the canonical runtime path. Auxiliary naming, compression,
+and rolling-summary calls do not currently receive distinct grants; required
+mode blocks ungranted calls before a provider, while optional mode retains its
+compatibility behavior. Arbitrary embedder calls are not described as
+reach-admitted unless their verifier establishes an equivalent trusted context.

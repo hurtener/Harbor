@@ -9,6 +9,13 @@ import (
 // Delivery sends a canonical usage receipt to a coordinator or other host.
 type Delivery = internal.Delivery
 
+// DeliveryAck identifies one exact canonical receipt accepted by a batch
+// transport.
+type DeliveryAck = internal.DeliveryAck
+
+// BatchDelivery is the optional bounded-batch extension detected by Outbox.
+type BatchDelivery = internal.BatchDelivery
+
 // PendingReceiptSource supplies durable receipts to the outbox replay loop.
 type PendingReceiptSource = internal.PendingReceiptSource
 

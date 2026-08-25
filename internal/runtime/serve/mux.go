@@ -96,8 +96,9 @@ type MuxInput struct {
 	Logger   *slog.Logger
 	Metrics  *telemetry.MetricsRegistry
 	// LLMSnapshot is the resolved snapshot the posture provider projects.
-	LLMSnapshot     llm.ConfigSnapshot
-	ProviderCatalog provider.CatalogSurface
+	LLMSnapshot            llm.ConfigSnapshot
+	ProviderCatalog        provider.CatalogSurface
+	ExternalGrantReadiness func() types.ExternalGrantReadiness
 
 	// Core subsystem handles.
 	Tasks          tasks.TaskRegistry
@@ -368,6 +369,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Bus:                        bus,
 		DisplayName:                in.DisplayName,
 		InstanceID:                 in.InstanceID,
+		ExternalGrant:              in.ExternalGrantReadiness,
 		TopologyAvailable:          in.TopologyAvailable,
 		AgentConfigAvailable:       in.AgentConfig != nil,
 		StateSnapshotsAvailable:    stateSnapshotsAvailable,

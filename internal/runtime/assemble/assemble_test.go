@@ -246,7 +246,7 @@ func TestAssemble_ExternalGrantConfigWiresRealLLMReservationAndOutbox(t *testing
 		Provider: "mock", ProviderModelID: "model-fast", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1,
 		RouteID: "route-a", CredentialBindingHandle: "binding-a", CredentialAssetGeneration: 1, PolicyGeneration: 1,
 		MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 512,
-		Lease:    llm.ComputeLease{LeaseID: "lease-a", TokenUnits: 512, ExpiresAt: now.Add(time.Minute)},
+		Lease:    llm.ComputeLease{LeaseID: "lease-a", TokenUnits: 1024, ExpiresAt: now.Add(time.Minute)},
 		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
 	})
 	if err != nil {

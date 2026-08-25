@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 440 canonical Harbor Protocol wire types, generated from the single-source
+The 441 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2043,6 +2043,29 @@ Declared in `internal/protocol/types`.
 | `has_more` | `bool` |  |
 | `truncated` | `bool` | optional (`omitempty`) |
 
+## ExternalGrantReadiness
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `supported` | `bool` |  |
+| `configured` | `bool` |  |
+| `mode` | `string` |  |
+| `supported_grant_versions` | `[]int` |  |
+| `agent_binding` | `string` |  |
+| `accepted_route_modes` | `[]string` | optional (`omitempty`) |
+| `ready_route_modes` | `[]string` | optional (`omitempty`) |
+| `verifier_configured` | `bool` |  |
+| `reservations_wired` | `bool` |  |
+| `credential_resolver_wired` | `bool` |  |
+| `receipt_transport_kind` | `string` |  |
+| `receipt_transport` | `string` |  |
+| `receipt_parser` | `string` |  |
+| `top_up_transport` | `string` |  |
+| `top_up_state` | `string` |  |
+| `strict_ready` | `bool` |  |
+
 ## Flow
 
 Declared in `internal/protocol/types`.
@@ -3602,6 +3625,7 @@ Declared in `internal/protocol/types`.
 | `uptime_seconds` | `int64` |  |
 | `mcp_app_display_modes` | `[]string` | optional (`omitempty`) |
 | `wire_surface_digest` | `string` |  |
+| `external_grant` | `*types.ExternalGrantReadiness` — see [`ExternalGrantReadiness`](./types.md#externalgrantreadiness) | optional (`omitempty`) |
 
 ## RuntimeInfoRequest
 

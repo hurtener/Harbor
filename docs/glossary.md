@@ -453,6 +453,14 @@ directly regardless of propagation mode. See **Cancel hierarchy**. Phase
 
 **External execution usage receipt** — an immutable, content-free provider-attempt fact emitted after a grant-verified LLM call. It carries stable grant/attempt/idempotency identifiers, policy and asset generations, provider/route/model dimensions, token/cost/latency usage, outcome, and a canonical body hash, but no prompt, response, tool argument, reasoning trace, or credential. HA-70, D-434.
 
+**External-grant coordinator transport** — the opt-in stock `harbor serve`
+HTTP client that sends bounded canonical usage-receipt batches under a
+boot-pinned runtime service credential and accepts only exact receipt-ID/body-
+hash acknowledgements. It does not apply lease successors; stock top-up
+readiness remains explicitly unsupported until durable reservation epochs can
+advance idempotently. With the config block absent it starts no client, timer,
+scan, store read, or network work. HA-72, Phase 258, D-438.
+
 **Erasure cascade** — the ordered, fail-loud, idempotent sequence the `sessions.delete` Protocol method (Phase 130, D-262) runs across a session's three identity-scoped stores plus the SessionRegistry record: refuse-if-running (load+verify the record + probe the running-task seam) → Artifacts (`List` + `Delete` each) → Memory (`Flush`) → State (`StateStore.DeleteScope`, the kind-agnostic scope delete that removes the `session.lifecycle` record + run-scoped trajectories + planner checkpoints + the durable event stream under the triple) → clear the registry's in-memory map + discovery-catalog entry → emit a redacted, content-free `session.erased` audit event under the actor's observability scope. There is no ACID transaction across the independent stores; each per-store delete is idempotent, so a mid-cascade error returns loudly and is safe to re-invoke to convergence. The load+verify + probe run FIRST so a refusal touches nothing. RFC §6.9 / §6.11 / §6.13, D-262.
 
 **Embedding client (`Embedder`)** — Harbor's interface for turning text into vectors (Phase 84d, D-191): `Embed(ctx, texts) ([][]float32, error)` + a lifecycle `Close`, in its own `internal/embeddings` package as a §4.4 driver/factory/registry seam (production driver: `bifrost`, wired to the provider gateway's embedding surface; configured separately from the chat model via the `embeddings` config block). A sibling to `LLMClient`, NOT a method on it — an embeddings-only consumer never inherits the chat client's artifact-store/bus deps. Identity is mandatory at the `Embed` edge (fail closed, mirroring the chat edge); the factory-returned client enforces it by construction. Standalone and à-la-carte-usable (`embeddings.Open` + `Embed` + `Cosine` — docs/recipes/embed-and-retrieve.md); its first consumers are the opt-in semantic-retrieval modes in memory and skills, injected via `Deps.Embedder` with fail-loud guards. RFC §6.5, D-189, D-191.

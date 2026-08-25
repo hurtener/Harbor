@@ -13976,6 +13976,21 @@ receipt id and canonical body hash. No prompt, response, tool arguments,
 reasoning trace, credential bytes, or secret appears in a grant, receipt,
 error, or log.
 
+The pre-call reservation covers Harbor's one canonical prompt-token estimate
+plus the bounded output ceiling, rather than reserving output alone. Provider
+tokenizers remain authoritative, so this is a conservative planning bound, not
+invoice truth: a single call may still report more tokens than estimated.
+Settlement records that actual usage even when it exceeds the reservation and
+charges every nonzero terminal success, error, or cancellation while releasing
+only unused units. Lease state is bound to the exact grant id plus organization,
+runtime, admitted identity/run, and effective agent; the same LeaseID cannot
+share accounting across those scopes, and a top-up must preserve the binding.
+Expiry maintenance or an exact replay conditionally returns crash-stale
+reserved capacity and records an `expired` terminal state rather than leaving
+the attempt permanently in flight; an already executed provider call may still
+settle its late actual usage idempotently. An explicit operator release remains
+a distinct `released` outcome and cannot later settle.
+
 **Compatibility and limits.** The grant layer is internal to `LLMClient`; it
 does not add a provider-specific interface or a Protocol version. A coordinator
 may issue a top-up grant when a bounded lease is insufficient, but Harbor does
@@ -14183,3 +14198,308 @@ is never inferred from missing provider fields. Downstream deployment and
 acceptance remain a separate gate and are not claimed here.
 
 **Plan:** `docs/plans/phase-256-external-grant-sdk-runtime-default.md`.
+
+---
+
+## D-437 — Canonical attempt-receipt decoding is one public exact inverse (HA-72 parser slice)
+
+**Date:** 2026-08-25
+
+**Status:** Accepted for Phase 257; implemented as an unreleased candidate.
+Phase 258 / D-438 completes HA-72's stock transport and readiness boundary;
+hosted CI, release, and downstream acceptance remain pending.
+
+Harbor's v1.30.1 SDK exposes `AttemptUsageReceipt`, its canonical marshal/hash,
+and validation helpers, but the canonical snake-case wire remains deliberately
+private and no public inverse exists. An external receiver otherwise has only
+two unsafe choices: decode the untagged public struct (the wrong CamelCase
+shape), or duplicate the private wire and drift when Harbor changes it.
+
+Harbor therefore exposes exactly
+`UnmarshalCanonicalAttemptUsageReceipt([]byte) (AttemptUsageReceipt, error)`
+beside the existing marshal helper. The implementation decodes directly into
+the private current wire or the exact v1.30.0 legacy wire selected by that
+same marshal/hash predicate, rejects unknown fields, projects every field back
+to the public receipt, applies the existing semantic/body-hash validator, and
+accepts the document only when Harbor's own canonical marshal reproduces the
+input byte-for-byte. That exactness gate is
+load-bearing: it rejects duplicate or missing members, changed member order,
+whitespace, redundant escapes, alternate number/timestamp encodings, explicit
+zero values canonically omitted, and trailing content without introducing a
+second canonicalizer or public wire DTO.
+
+The existing encoder writes a legacy blank public `route_mode` as the explicit
+`coordinator_bound` wire value, while its body hash deliberately preserves the
+pre-extension receipt representation. For that exact no-parent/no-planner/no-
+downgrade shape only, the parser restores the blank public value after the
+legacy hash validates; re-marshaling still emits byte-identical explicit
+`coordinator_bound` wire bytes. New explicit coordinator-bound receipts retain
+their explicit public value. This preserves the documented legacy hash without
+accepting an alternative JSON representation.
+
+Every rejection is comparable through `ErrInvalidUsageReceipt`. Decode errors
+are intentionally fixed and content-free rather than reflecting an untrusted
+field name or value. The parser logs nothing and cannot expose prompt,
+response, tool argument, reasoning trace, credential, or raw coordinator-body
+content. Fuzz seeds pin the invariant that every accepted byte slice validates
+and is exactly its own canonical re-encoding; an external-package consumer
+proves the API is usable without `internal/` imports.
+
+This decision changes no receipt producer, grant verifier, outbox, persistence,
+Protocol method/type/version, provider execution, runtime assembly, config, or
+disabled-mode behavior. It performs no I/O and creates no timer, goroutine,
+network request, StateStore read, or idle work. Integrity parsing does not
+authenticate a sender: stock authenticated delivery/ACK/replay and truthful
+runtime readiness are owned by D-438 / Phase 258. Stock live top-up remains
+explicitly unsupported pending separately owned durable successor application.
+
+**Cross-references.** RFC §6.5, §6.11, §6.15, D-025, D-434, D-436, briefs 03,
+06, and 08.
+
+**Plan:** `docs/plans/phase-257-canonical-attempt-receipt-parser.md`.
+
+---
+
+## D-438 — Stock coordinator receipt transport is opt-in, replay-safe, and truthfully projected
+
+**Date:** 2026-08-25
+
+**Status:** Accepted for Phase 258; implementation candidate complete, hosted
+CI and release evidence pending.
+
+The transport-neutral external-grant SDK is necessary but insufficient for a
+stock `harbor serve` deployment: an operator should not have to author a host
+binary merely to deliver canonical receipts. Harbor therefore owns one
+optional boot-pinned HTTP transport under `llm.external_grant.coordinator`.
+It uses a runtime service credential resolved from a named environment
+variable, refuses redirects and unsafe remote plaintext endpoints, bounds
+duration and body sizes, delivers canonical receipt batches, and accepts only
+exact receipt-id/canonical-body-hash acknowledgements. It is generic framework
+transport; no coordinator product URL, provider presentation, policy name, or
+downstream business object enters Harbor.
+
+The durable outbox detects the optional batch extension. An acknowledged fact
+is removed exactly once; an omitted acknowledgement remains durable, and
+response loss retains the whole unacknowledged set. Unknown, duplicate, or
+hash-mismatched acknowledgements fail the batch closed. Retry uses bounded
+exponential backoff with stable receipt-derived jitter and the existing circuit
+breaker, so a coordinator outage neither loses facts nor creates a synchronized
+retry storm. Stock lease top-up remains unsupported: a successor grant cannot
+be called ready until its validated epoch/capacity advances the durable
+reservation store idempotently, including response-loss replay.
+
+After provider interaction, settlement, the atomic pending-handoff write, and
+the immediate outbox enqueue share one short bounded context derived with
+`context.WithoutCancel`; caller cancellation therefore stops provider work but
+cannot by itself strand the terminal accounting transition. Success, error,
+and cancellation receipts all retain any nonzero provider-reported usage.
+
+The old whole receipt-prefix scan is upgrade-only. Its successful completion
+stores a versioned durable reconciliation marker; ordinary ACKed receipt
+history accumulated after that point never re-enters the scan or its batch
+bound. Before the marker exists, the scan requests one row beyond its
+configured work batch and refuses an overflow before adopting any page. This
+is an explicit bounded legacy-recovery limitation, not keyset pagination: an
+operator must raise the approved bound or perform offline recovery. Stock
+serve runs this bounded check synchronously so the error fails boot.
+
+The crash gap between durable lease settlement and outbox enqueue is closed
+without scanning retained attempts. Settlement atomically writes one removable
+pending-receipt handoff for success, error, and cancellation. Reconciliation
+reads only that bounded pending prefix, enqueues idempotently, and conditionally
+removes the exact handoff only after enqueue succeeds; a crash before removal
+replays the same canonical fact. Retry deadlines and enqueue wakes run delivery
+replay only. The maintenance deadline is independent. A post-startup durable
+replay/index/read/integrity failure, not only a maintenance failure, degrades
+`runtime.info` immediately and retries with bounded, cancellable delay instead
+of terminating the worker while the runtime remains strict-ready. A
+deterministically corrupt record remains fail-closed/degraded without a hot
+loop; recovery restores readiness only after clean replay or the required
+successful reconciliation. Startup failure still fails boot.
+
+The config block is rejected when external grants are disabled. When absent,
+stock boot performs no environment lookup and starts no coordinator client,
+goroutine, timer, outbox scan, StateStore read, or network request.
+`runtime_default` remains a first-class strict route: it needs no coordinator
+provider credential, provider connection, or model catalog, and can still use
+the same grant ceilings, reservation, receipt, and delivery path.
+
+`runtime.info.external_grant` is the operator truth surface. It reports
+compile-time support; an explicit configured fact and configured mode;
+accepted and independently ready route modes; verifier,
+reservation, and credential-resolver wiring; strict canonical receipt parser;
+concrete receipt transport kind and observed state; explicit unsupported stock
+top-up state; and `strict_ready` only when the selected route shapes are fully
+enforceable. A
+coordinator-bound runtime without a credential resolver is never called ready;
+a runtime-default one does not falsely require that resolver. The projection
+is content- and secret-free and updates to `degraded` after a failed or partial
+exchange or reconciliation failure. The entire additive object is optional on
+the wire so a client can represent a pre-projection runtime as absent rather
+than fabricating readiness.
+
+**Compatibility boundary.** Protocol version stays `0.1.0`; the readiness
+object is an additive `runtime.info` field. Existing host-injected `Delivery`
+and `TopUpper` interfaces retain ABI compatibility, but Phase 258 does not wire
+or advertise a stock top-up path. A host-injected `TopUpper` is reported as
+`host_injected`; absence remains `unsupported`. Existing single-receipt
+transports remain valid. Disabled and unconfigured defaults retain their
+zero-work behavior.
+
+**Cross-references.** D-025, D-434, D-436, RFC §5.3, §6.5, §6.11, §6.15.
+Plan: `docs/plans/phase-258-stock-coordinator-receipt-transport.md`.
+
+**Evidence boundary.** Focused in-memory/SQLite outbox tests, authenticated
+HTTP transport tests, cancellation/concurrent-reuse tests, config/readiness
+tests, race/vet, Protocol generators, static Phase-258 smoke, and drift/docs
+gates are candidate evidence. Hosted CI, a release/tag, external coordinator
+acceptance, and downstream deployment remain unclaimed.
+
+---
+
+## D-439 — A lease top-up is a bounded successor of one immutable external execution grant (HA-74)
+
+**Date:** 2026-08-25
+
+**Status:** Implemented candidate in Phase 259; hosted CI, release, and
+downstream acceptance remain pending.
+
+The external-grant wrapper no longer treats independent signature validity as
+proof that a top-up response is the successor of the grant it replaces. One
+public `ValidateExternalGrantTopUpSuccessor` helper is now the relationship
+check and the wrapper is its first production consumer.
+
+The successor preserves exact contract version, audience, grant id, raw route
+mode, organization/runtime and `(tenant,user,session)` identity, logical run,
+logical call and attempt nonce, provider/model/connection generation/route,
+opaque credential binding and asset generation, policy generation, reasoning
+and output ceilings, and lease id. Comparing raw route mode is deliberate: a
+legacy blank coordinator-bound predecessor remains blank, so zero-value
+normalization cannot silently change signed authority during renewal.
+
+Only key id, issued-at, signature, lease accounting, and validity may move.
+The configured verifier owns signing-key trust, signature authenticity,
+request context, and current-time checks. The relationship validator requires
+one exact epoch advance, a positive total-capacity increase no greater than
+the requested provider-call units, non-decreasing consumption, and sufficient
+remaining capacity for that call. The requested units are the explicit request
+output bound when supplied and the same signed `MaxOutputTokens` cap later
+applied at the provider boundary when omitted; omission never degenerates into
+a one-unit successor request. Subtraction after monotonicity checks avoids
+addition overflow. Grant and lease expiry may remain unchanged or advance,
+while their respective lifetimes may not exceed the durations signed into the
+predecessor. Applying the same successor to the same predecessor is a
+deterministic response-loss replay; trying to advance that successor with
+itself is stale and fails.
+
+The validator is publicly nameable through `sdk/llm`, has no credential or
+content fields, and adds no Protocol surface. Phase 259 covers both route
+shapes, every immutable field independently, missing and non-monotonic state,
+epoch overflow, excessive capacity/validity, replay, concurrency, fuzzing, and
+the wrapper's no-provider-call refusal.
+
+This decision is relationship validation only. Harbor's stock assembly has no
+live top-up transport, and the durable reservation store has no
+post-validation replay-idempotent successor-application hook. Until a separate
+phase owns both pieces, an operator must not describe live top-up as supported;
+the runtime must report it as unsupported rather than mutating lease state
+before the successor has passed both relationship and signature verification.
+
+**Cross-references:** D-025, D-434, D-436, RFC §6.5, §6.11, §6.15, brief 03,
+brief 08. Plan: `docs/plans/phase-259-external-grant-topup-successor.md`.
+
+---
+
+## D-440 — Version 2 external grants bind the reach-admitted effective agent
+
+**Date:** 2026-08-25
+
+**Status:** Implemented candidate in Phase 260; hosted CI, release, and
+downstream acceptance remain pending.
+
+Version 2 of `ExternalGrant` requires a signed AgentID equal to the effective
+agent configuration admitted by the normal signed-reach control boundary. The
+reference verifier reads only the private run-context capability restored from
+the durable admission receipt and refuses absence or mismatch before lease
+reservation, credential resolution, or provider invocation. The binding is
+route-neutral: runtime-default and coordinator-bound grants apply it equally,
+and runtime-default still requires no coordinator provider credential or model
+catalog.
+
+AgentID here is execution authority for one effective configuration selection.
+It is not a storage-isolation principal and does not replace the boot-derived
+invoking-agent provenance. The canonical run loop is the authority-bearing
+producer; a raw task AgentID or arbitrary embedder context is not.
+
+Version 1 remains the exact deployed canonical/signature shape and may carry no
+AgentID. This prevents an old signature from being reinterpreted as agent-bound.
+New receipts carry optional `agent_id` in the modern canonical wire; omission
+keeps all legacy/current blank-agent bytes and body hashes exact. Grant-bound
+validation requires the exact field for v2 and rejects unsigned attribution on
+v1. Whole-value top-up successor comparison makes the field immutable.
+
+`runtime.info.external_grant` advertises supported grant versions `[1,2]` and
+the `required_v2` binding contract. This is compatibility/readiness truth, not
+a new Protocol method or version. Required mode refuses auxiliary LLM calls
+that carry no grant before the provider; optional mode retains its documented
+compatibility behavior, so Harbor claims every strict grant-bearing provider
+attempt rather than every arbitrary LLM invocation.
+
+**Cross-references:** D-025, D-434, D-436, D-437, D-438, D-439, RFC §6.5,
+§6.11, §6.15, brief 03, brief 08. Plan:
+`docs/plans/phase-260-agent-bound-external-grants.md`.
+
+---
+
+## D-441 — Stock renewal authenticates the predecessor and durably applies one bounded successor before provider work
+
+**Date:** 2026-08-25
+
+**Status:** Implemented candidate in Phase 261; hosted CI, release, and
+downstream acceptance remain pending.
+
+Ordinary external-grant verification remains strict. Expiry is a typed outcome
+only after signature, audience/runtime, organization, verified identity/run,
+v2 effective AgentID, route/model, reasoning, output, shape, and future-issued
+checks pass. A separate predecessor verifier may waive only already-elapsed
+grant/lease deadlines or insufficient capacity for the purpose of renewal.
+Malformed, untrusted, mismatched, future-issued, or revoked authority never
+reaches a coordinator.
+
+Stock renewal is opt-in authenticated HTTP using the existing pinned endpoint,
+service credential, timeout, bounded response, and redirect-refusal rules. The
+transport-neutral public `sdk/llm/topup` contract owns canonical request and
+response types/codecs, exact bounds, deterministic idempotency over the full
+canonical signed predecessor plus requested units and renewal reason, strict duplicate/unknown/
+noncanonical refusal, and header/body equality. No second consumer needs a
+private Harbor type or constant.
+
+Deadline renewal and compute top-up are distinct. If an expired predecessor
+already covers the call, its successor advances epoch/deadlines without
+changing token capacity or consumption. If capacity is insufficient, the
+successor may add at most the requested units and must cover the call. Every
+other authority claim remains byte-semantically immutable, including v1 raw
+route compatibility and v2 AgentID.
+
+After transport, Harbor validates the predecessor/successor relationship,
+strictly verifies the successor, rechecks current coordinator-bound credential
+generation, and durably applies it. The StateStore lease CAS creates an absent
+successor, advances an exact predecessor while preserving local reservations,
+consumption, and binding, treats exact successor replay as a no-op, and rejects
+stale/different state. It stores the exact root fingerprint and bounded
+canonical current signed successor. Every later call made with the immutable
+run-start root reloads that current authority, checks lineage, strictly verifies
+it, and rechecks credential generation before reservation. A typed stale
+reservation reloads; actual durable insufficiency explicitly renews the current
+successor rather than inferring capacity from stale signed consumption. Only
+after durable convergence may Harbor reserve and invoke the provider.
+
+Readiness reports `unsupported`, `host_injected`, or
+`stock_authenticated_http`. Construction starts no poll, timer, goroutine,
+StateStore read, or network call. Runtime-default and coordinator-bound routes,
+grant v1 and v2, remain supported; runtime-default needs no external provider
+credential or catalog.
+
+**Cross-references:** D-025, D-434, D-436, D-438, D-439, D-440, RFC §6.5,
+§6.11, §6.15, brief 03, brief 08. Plan:
+`docs/plans/phase-261-stock-external-grant-renewal.md`.

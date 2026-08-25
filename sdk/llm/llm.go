@@ -68,14 +68,26 @@ type (
 	// ExternalGrantRouteMode selects runtime-default or coordinator-bound
 	// provider route authority.
 	ExternalGrantRouteMode = internal.ExternalGrantRouteMode
+	// ExternalGrantRenewalReason distinguishes expiry-only renewal from a
+	// bounded compute-capacity increase.
+	ExternalGrantRenewalReason = internal.ExternalGrantRenewalReason
 	// ExternalGrantVerifier verifies a grant against a verified request.
 	ExternalGrantVerifier = internal.ExternalGrantVerifier
+	// ExternalGrantRenewalVerifier authenticates an elapsed predecessor
+	// without widening any non-time authority.
+	ExternalGrantRenewalVerifier = internal.ExternalGrantRenewalVerifier
 	// CredentialResolver resolves an opaque binding after verification.
 	CredentialResolver = internal.CredentialResolver
 	// ResolvedCredential is the short-lived provider secret at the driver edge.
 	ResolvedCredential = internal.ResolvedCredential
 	// LeaseTopUpper requests a coordinator-signed lease extension.
 	LeaseTopUpper = internal.LeaseTopUpper
+	// LeaseReasonedTopUpper distinguishes expiry from durable exhaustion.
+	LeaseReasonedTopUpper = internal.LeaseReasonedTopUpper
+	// LeaseSuccessorApplier durably advances one authenticated successor.
+	LeaseSuccessorApplier = internal.LeaseSuccessorApplier
+	// LeaseSuccessorResolver returns the latest exact canonical successor.
+	LeaseSuccessorResolver = internal.LeaseSuccessorResolver
 	// LeaseReservationRequest is the durable attempt reservation input.
 	LeaseReservationRequest = internal.LeaseReservationRequest
 	// LeaseReservation is the durable attempt reservation result.
@@ -104,6 +116,18 @@ const (
 	ExternalGrantDisabled = internal.ExternalGrantDisabled
 	ExternalGrantOptional = internal.ExternalGrantOptional
 	ExternalGrantRequired = internal.ExternalGrantRequired
+)
+
+// External grant renewal reasons.
+const (
+	ExternalGrantRenewalExpired           = internal.ExternalGrantRenewalExpired
+	ExternalGrantRenewalLeaseInsufficient = internal.ExternalGrantRenewalLeaseInsufficient
+)
+
+// External grant schema versions.
+const (
+	ExternalGrantVersionLegacy     = internal.ExternalGrantVersionLegacy
+	ExternalGrantVersionAgentBound = internal.ExternalGrantVersionAgentBound
 )
 
 // External grant route modes.
@@ -194,12 +218,18 @@ var (
 	ErrExternalGrantRequired = internal.ErrExternalGrantRequired
 	// ErrExternalGrantInvalid — the grant or its binding is invalid.
 	ErrExternalGrantInvalid = internal.ErrExternalGrantInvalid
+	// ErrExternalGrantExpired — an otherwise authenticated grant elapsed.
+	ErrExternalGrantExpired = internal.ErrExternalGrantExpired
 	// ErrExternalGrantSignature — the grant signature is not trusted.
 	ErrExternalGrantSignature = internal.ErrExternalGrantSignature
 	// ErrExternalGrantRevoked — the credential binding is stale or revoked.
 	ErrExternalGrantRevoked = internal.ErrExternalGrantRevoked
 	// ErrExternalGrantLeaseInsufficient — the bounded lease cannot cover a call.
 	ErrExternalGrantLeaseInsufficient = internal.ErrExternalGrantLeaseInsufficient
+	// ErrLeaseInsufficient is the typed durable reservation outcome.
+	ErrLeaseInsufficient = internal.ErrLeaseInsufficient
+	// ErrLeaseConflict is the typed durable generation conflict.
+	ErrLeaseConflict = internal.ErrLeaseConflict
 	// ErrExternalGrantAttemptInFlight — the exact attempt is already reserved.
 	ErrExternalGrantAttemptInFlight = internal.ErrExternalGrantAttemptInFlight
 	// ErrExternalGrantAttemptSettled — the exact attempt already has an outcome.
@@ -231,6 +261,10 @@ var CanonicalAttemptUsageReceiptBodyHash = internal.CanonicalAttemptUsageReceipt
 // receipt JSON representation.
 var MarshalCanonicalAttemptUsageReceipt = internal.MarshalCanonicalAttemptUsageReceipt
 
+// UnmarshalCanonicalAttemptUsageReceipt parses only the exact canonical
+// receipt JSON representation and returns the validated public receipt.
+var UnmarshalCanonicalAttemptUsageReceipt = internal.UnmarshalCanonicalAttemptUsageReceipt
+
 // ValidateAttemptUsageReceipt validates the content-free receipt shape.
 var ValidateAttemptUsageReceipt = internal.ValidateAttemptUsageReceipt
 
@@ -244,6 +278,32 @@ var CanonicalAttemptID = internal.CanonicalAttemptID
 // EffectiveExternalGrantRouteMode normalizes legacy blank route mode to the
 // coordinator-bound shape.
 var EffectiveExternalGrantRouteMode = internal.EffectiveExternalGrantRouteMode
+
+// ValidateExternalGrantTopUpSuccessor verifies that a newly signed grant only
+// advances the bounded lease and validity state of its predecessor. Callers
+// must first authenticate the predecessor with their configured
+// ExternalGrantVerifier, then authenticate the successor after this
+// relationship-only helper succeeds.
+var ValidateExternalGrantTopUpSuccessor = internal.ValidateExternalGrantTopUpSuccessor
+
+// ValidateExternalGrantRenewalSuccessor applies reason-aware deadline versus
+// compute-capacity successor rules.
+var ValidateExternalGrantRenewalSuccessor = internal.ValidateExternalGrantRenewalSuccessor
+
+// ValidateExternalGrantRenewalLineage validates a latest persisted successor
+// against the immutable root grant before strict verification.
+var ValidateExternalGrantRenewalLineage = internal.ValidateExternalGrantRenewalLineage
+
+// MarshalCanonicalExternalGrant returns deterministic complete signed-grant
+// bytes for authenticated renewal and durable fingerprints.
+var MarshalCanonicalExternalGrant = internal.MarshalCanonicalExternalGrant
+
+// UnmarshalCanonicalExternalGrant accepts only exact canonical signed-grant
+// bytes. Signature and request authority still require a verifier.
+var UnmarshalCanonicalExternalGrant = internal.UnmarshalCanonicalExternalGrant
+
+// CanonicalExternalGrantHash fingerprints the exact canonical signed grant.
+var CanonicalExternalGrantHash = internal.CanonicalExternalGrantHash
 
 // WithVerifiedOrganization attaches the server-derived organization scope.
 var WithVerifiedOrganization = internal.WithVerifiedOrganization

@@ -41,6 +41,7 @@ func compile(ctx context.Context) error {
 	})
 	if err != nil { return err }
 	var _ client.Client = c
+	_ = client.ExternalGrantReadiness{Supported: true, Mode: "disabled"}
 	clone := c.WithSession("other")
 	_, _ = clone.RuntimeInfo(ctx)
 	_, _ = clone.RuntimeHealth(ctx)

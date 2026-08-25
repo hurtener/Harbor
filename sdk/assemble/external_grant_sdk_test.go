@@ -1,6 +1,7 @@
 package assemble_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -17,9 +18,36 @@ import (
 
 type publicReceiptDelivery struct{}
 
+type publicRenewalSeams struct{}
+
+func (publicRenewalSeams) TopUp(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+	return llm.ExternalGrant{}, nil
+}
+
+func (publicRenewalSeams) Renew(context.Context, llm.ExternalGrant, int64, llm.ExternalGrantRenewalReason) (llm.ExternalGrant, error) {
+	return llm.ExternalGrant{}, nil
+}
+
+func (publicRenewalSeams) ApplySuccessor(context.Context, llm.ExternalGrant, llm.ExternalGrant) error {
+	return nil
+}
+
+func (publicRenewalSeams) ResolveSuccessor(context.Context, llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	return llm.ExternalGrant{}, false, nil
+}
+
 func (publicReceiptDelivery) Deliver(context.Context, llm.AttemptUsageReceipt) error { return nil }
 
+func (publicReceiptDelivery) DeliverBatch(context.Context, []llm.AttemptUsageReceipt) ([]receipts.DeliveryAck, error) {
+	return nil, nil
+}
+
 var _ receipts.Delivery = publicReceiptDelivery{}
+var _ receipts.BatchDelivery = publicReceiptDelivery{}
+var _ llm.LeaseTopUpper = publicRenewalSeams{}
+var _ llm.LeaseReasonedTopUpper = publicRenewalSeams{}
+var _ llm.LeaseSuccessorApplier = publicRenewalSeams{}
+var _ llm.LeaseSuccessorResolver = publicRenewalSeams{}
 
 // TestExternalGrantSurfaceIsNameableFromExternalPackage is intentionally in
 // package assemble_test: a downstream embedder must be able to name the
@@ -38,7 +66,7 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	signed, err := signer.Sign(llm.ExternalGrant{
-		Version: 1, GrantID: "grant-public", OrganizationID: "org-public", RuntimeID: "runtime-public",
+		Version: llm.ExternalGrantVersionAgentBound, GrantID: "grant-public", OrganizationID: "org-public", RuntimeID: "runtime-public", AgentID: "agent-public",
 		TenantID: "tenant-public", UserID: "user-public", SessionID: "session-public", LogicalRunID: "run-public",
 		RouteMode: llm.ExternalGrantRouteRuntimeDefault, PolicyGeneration: 1,
 		MaxReasoning: llm.ReasoningLow, MaxOutputTokens: 64,
@@ -59,6 +87,16 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	}
 	if signed.RouteMode != llm.ExternalGrantRouteRuntimeDefault || verifier == nil {
 		t.Fatalf("public grant route/verifier = %q/%v", signed.RouteMode, verifier)
+	}
+	successor := signed
+	successor.Lease.Epoch++
+	successor.Lease.TokenUnits += 64
+	successor.IssuedAt = successor.IssuedAt.Add(30 * time.Second)
+	successor.ExpiresAt = successor.ExpiresAt.Add(30 * time.Second)
+	successor.Lease.ExpiresAt = successor.Lease.ExpiresAt.Add(30 * time.Second)
+	successor.Signature = "successor-signature"
+	if err := llm.ValidateExternalGrantTopUpSuccessor(signed, successor, 64); err != nil {
+		t.Fatalf("public top-up successor validator: %v", err)
 	}
 
 	cfg := config.Defaults()
@@ -87,5 +125,83 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	}
 	if err := (publicReceiptDelivery{}).Deliver(context.Background(), llm.AttemptUsageReceipt{}); err != nil {
 		t.Fatal(err)
+	}
+	receipt := llm.AttemptUsageReceipt{
+		ReceiptID:          llm.CanonicalAttemptID(signed.GrantID, signed.LogicalCallID, signed.AttemptNonce, 1, 0, 0, 0),
+		GrantID:            signed.GrantID,
+		RouteMode:          llm.ExternalGrantRouteRuntimeDefault,
+		LogicalCallID:      signed.LogicalCallID,
+		AttemptNonce:       signed.AttemptNonce,
+		OrganizationID:     signed.OrganizationID,
+		RuntimeID:          signed.RuntimeID,
+		AgentID:            signed.AgentID,
+		TenantID:           signed.TenantID,
+		UserID:             signed.UserID,
+		SessionID:          signed.SessionID,
+		LogicalRunID:       signed.LogicalRunID,
+		Provider:           "public-provider",
+		ProviderModelID:    "public-model",
+		PolicyGeneration:   signed.PolicyGeneration,
+		AttemptNumber:      1,
+		RequestedReasoning: llm.ReasoningLow,
+		EffectiveReasoning: llm.ReasoningLow,
+		PromptTokens:       2,
+		CompletionTokens:   3,
+		TotalTokens:        5,
+		Currency:           "USD",
+		LatencyMS:          10,
+		Status:             "success",
+		StartedAt:          now,
+		CompletedAt:        now.Add(10 * time.Millisecond),
+	}
+	receipt.IdempotencyKey = receipt.ReceiptID
+	receipt.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := llm.MarshalCanonicalAttemptUsageReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := llm.UnmarshalCanonicalAttemptUsageReceipt(body)
+	if err != nil {
+		t.Fatalf("public canonical receipt parser: %v", err)
+	}
+	roundTrip, err := llm.MarshalCanonicalAttemptUsageReceipt(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(roundTrip, body) {
+		t.Fatalf("public canonical receipt round-trip differs: %s != %s", roundTrip, body)
+	}
+
+	legacy := receipt
+	legacy.AgentID = ""
+	legacy.RouteMode = ""
+	legacy.ProviderConnectionID = "connection-public-legacy"
+	legacy.ProviderConnectionGeneration = 1
+	legacy.RouteID = "route-public-legacy"
+	legacy.CredentialAssetGeneration = 1
+	legacy.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody, err := llm.MarshalCanonicalAttemptUsageReceipt(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyParsed, err := llm.UnmarshalCanonicalAttemptUsageReceipt(legacyBody)
+	if err != nil {
+		t.Fatalf("public legacy canonical receipt parser: %v", err)
+	}
+	if legacyParsed.RouteMode != "" {
+		t.Fatalf("public legacy parser route mode = %q, want blank legacy value", legacyParsed.RouteMode)
+	}
+	legacyRoundTrip, err := llm.MarshalCanonicalAttemptUsageReceipt(legacyParsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(legacyRoundTrip, legacyBody) {
+		t.Fatalf("public legacy canonical receipt round-trip differs: %s != %s", legacyRoundTrip, legacyBody)
 	}
 }

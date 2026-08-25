@@ -20,6 +20,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 var (
@@ -170,6 +171,18 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 // verified identity, not merely a mutable working identity, and checks the
 // exact model/lease/route claims before the driver is reached.
 func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
+	return v.verify(ctx, grant, req, false)
+}
+
+// VerifyRenewalPredecessor authenticates a predecessor for the narrow renewal
+// path. It performs every ordinary authority and request-bound check while
+// allowing only already-elapsed grant/lease deadlines or depleted capacity.
+// Future-issued, malformed, mismatched, or untrusted grants remain invalid.
+func (v *Verifier) VerifyRenewalPredecessor(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
+	return v.verify(ctx, grant, req, true)
+}
+
+func (v *Verifier) verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest, renewal bool) error {
 	if err := validateClaims(grant, true); err != nil {
 		return err
 	}
@@ -193,8 +206,8 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 		return fmt.Errorf("%w: key_id=%q", llm.ErrExternalGrantSignature, grant.KeyID)
 	}
 	now := v.clock().UTC()
-	if now.Before(grant.IssuedAt.Add(-v.clockSkew)) || !now.Before(grant.ExpiresAt) {
-		return fmt.Errorf("%w: grant expired or issued in the future", llm.ErrExternalGrantInvalid)
+	if now.Before(grant.IssuedAt.Add(-v.clockSkew)) {
+		return fmt.Errorf("%w: grant issued in the future", llm.ErrExternalGrantInvalid)
 	}
 	verified, ok := identity.FromVerified(ctx)
 	if !ok {
@@ -220,6 +233,12 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 		quad.RunID != grant.LogicalRunID || grant.OrganizationID == "" {
 		return fmt.Errorf("%w: grant identity/run binding mismatch", llm.ErrExternalGrantInvalid)
 	}
+	if grant.Version == llm.ExternalGrantVersionAgentBound {
+		effectiveAgentID, admitted := tools.EffectiveAgentConfigFrom(ctx)
+		if !admitted || effectiveAgentID != grant.AgentID {
+			return fmt.Errorf("%w: grant agent binding mismatch", llm.ErrExternalGrantInvalid)
+		}
+	}
 	if grantMode == llm.ExternalGrantRouteCoordinatorBound && req.Model != "" && grant.ProviderModelID != req.Model {
 		return fmt.Errorf("%w: provider model mismatch", llm.ErrExternalGrantInvalid)
 	}
@@ -228,6 +247,12 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 	}
 	if reasoningRank(req.ReasoningEffort) > reasoningRank(grant.MaxReasoning) {
 		return fmt.Errorf("%w: requested reasoning exceeds grant", llm.ErrExternalGrantInvalid)
+	}
+	if renewal {
+		return nil
+	}
+	if !now.Before(grant.ExpiresAt) {
+		return fmt.Errorf("%w: grant deadline elapsed", llm.ErrExternalGrantExpired)
 	}
 	if grant.Lease.ExpiresAt.IsZero() || !now.Before(grant.Lease.ExpiresAt) || grant.Lease.RemainingTokens() <= 0 {
 		return fmt.Errorf("%w: %w", llm.ErrExternalGrantInvalid, llm.ErrExternalGrantLeaseInsufficient)
@@ -391,6 +416,7 @@ type grantDocument struct {
 	RouteMode                    llm.ExternalGrantRouteMode `json:"route_mode,omitempty"`
 	OrganizationID               string                     `json:"organization_id"`
 	RuntimeID                    string                     `json:"runtime_id"`
+	AgentID                      string                     `json:"agent_id,omitempty"`
 	TenantID                     string                     `json:"tenant_id"`
 	UserID                       string                     `json:"user_id"`
 	SessionID                    string                     `json:"session_id"`
@@ -416,7 +442,7 @@ func toDocument(g llm.ExternalGrant) grantDocument {
 	return grantDocument{
 		Version: g.Version, KeyID: g.KeyID, Audience: g.Audience, GrantID: g.GrantID,
 		RouteMode:      g.RouteMode,
-		OrganizationID: g.OrganizationID, RuntimeID: g.RuntimeID, TenantID: g.TenantID,
+		OrganizationID: g.OrganizationID, RuntimeID: g.RuntimeID, AgentID: g.AgentID, TenantID: g.TenantID,
 		UserID: g.UserID, SessionID: g.SessionID, LogicalRunID: g.LogicalRunID,
 		LogicalCallID: g.LogicalCallID, AttemptNonce: g.AttemptNonce,
 		Provider: g.Provider, ProviderModelID: g.ProviderModelID, ProviderConnectionID: g.ProviderConnectionID, ProviderConnectionGeneration: g.ProviderConnectionGeneration,
@@ -432,8 +458,12 @@ func canonicalDocument(g llm.ExternalGrant) ([]byte, error) { return json.Marsha
 func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 	mode := normalizedRouteMode(g.RouteMode)
 	switch {
-	case g.Version != 1:
+	case g.Version != llm.ExternalGrantVersionLegacy && g.Version != llm.ExternalGrantVersionAgentBound:
 		return fmt.Errorf("%w: unsupported version=%d", ErrInvalidGrantShape, g.Version)
+	case g.Version == llm.ExternalGrantVersionLegacy && g.AgentID != "":
+		return fmt.Errorf("%w: legacy grant cannot carry an unsigned agent binding", ErrInvalidGrantShape)
+	case g.Version == llm.ExternalGrantVersionAgentBound && strings.TrimSpace(g.AgentID) == "":
+		return fmt.Errorf("%w: version 2 requires an agent binding", ErrInvalidGrantShape)
 	case g.KeyID == "", g.Audience == "", g.GrantID == "", g.OrganizationID == "", g.RuntimeID == "":
 		return fmt.Errorf("%w: missing signed context claim", ErrInvalidGrantShape)
 	case g.TenantID == "", g.UserID == "", g.SessionID == "", g.LogicalRunID == "", g.LogicalCallID == "", g.AttemptNonce == "":
@@ -442,10 +472,12 @@ func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 		return fmt.Errorf("%w: missing policy generation", ErrInvalidGrantShape)
 	case g.MaxReasoning == "" || reasoningRank(g.MaxReasoning) >= 99:
 		return fmt.Errorf("%w: unsupported reasoning ceiling", ErrInvalidGrantShape)
-	case g.MaxOutputTokens <= 0 || g.Lease.LeaseID == "" || g.Lease.TokenUnits <= 0 || g.Lease.ConsumedUnits < 0:
+	case g.MaxOutputTokens <= 0 || g.Lease.LeaseID == "" || g.Lease.TokenUnits <= 0 || g.Lease.ConsumedUnits < 0 || g.Lease.ConsumedUnits > g.Lease.TokenUnits || g.Lease.ExpiresAt.IsZero():
 		return fmt.Errorf("%w: invalid output or lease", ErrInvalidGrantShape)
 	case g.IssuedAt.IsZero() || g.ExpiresAt.IsZero() || !g.ExpiresAt.After(g.IssuedAt):
 		return fmt.Errorf("%w: invalid validity interval", ErrInvalidGrantShape)
+	case !g.Lease.ExpiresAt.After(g.IssuedAt):
+		return fmt.Errorf("%w: invalid lease validity interval", ErrInvalidGrantShape)
 	case requireSignature && g.Signature == "":
 		return fmt.Errorf("%w: missing signature", ErrInvalidGrantShape)
 	}

@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:77781daaac820833f6038ea3938d93335a9b785a19ca94a6b11378fbec0712a4";
+export const WIRE_SURFACE_DIGEST = "sha256:6a6efe1580f3d10e1ae154fb38d066adc68fb44a98de830503ef8494fd7e8803";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1661,6 +1661,25 @@ export interface EventsListResponse {
   truncated?: boolean;
 }
 
+export interface ExternalGrantReadiness {
+  supported: boolean;
+  configured: boolean;
+  mode: string;
+  supported_grant_versions: number[];
+  agent_binding: string;
+  accepted_route_modes?: string[];
+  ready_route_modes?: string[];
+  verifier_configured: boolean;
+  reservations_wired: boolean;
+  credential_resolver_wired: boolean;
+  receipt_transport_kind: string;
+  receipt_transport: string;
+  receipt_parser: string;
+  top_up_transport: string;
+  top_up_state: string;
+  strict_ready: boolean;
+}
+
 export interface Flow {
   id: string;
   name: string;
@@ -2659,6 +2678,7 @@ export interface RuntimeInfo {
   uptime_seconds: number;
   mcp_app_display_modes?: string[];
   wire_surface_digest: string;
+  external_grant?: ExternalGrantReadiness;
 }
 
 export interface RuntimeInfoRequest {

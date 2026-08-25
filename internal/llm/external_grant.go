@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -30,30 +32,43 @@ type ExternalGrant struct {
 	// RouteMode makes the provider-route authority explicit. A blank value is
 	// accepted only for legacy v1.30.0 coordinator-bound grants; new signers
 	// stamp the explicit coordinator_bound value.
-	RouteMode                    ExternalGrantRouteMode `json:"route_mode,omitempty"`
-	OrganizationID               string                 `json:"organization_id"`
-	RuntimeID                    string                 `json:"runtime_id"`
-	TenantID                     string                 `json:"tenant_id"`
-	UserID                       string                 `json:"user_id"`
-	SessionID                    string                 `json:"session_id"`
-	LogicalRunID                 string                 `json:"logical_run_id"`
-	LogicalCallID                string                 `json:"logical_call_id"`
-	AttemptNonce                 string                 `json:"attempt_nonce"`
-	Provider                     string                 `json:"provider,omitempty"`
-	ProviderModelID              string                 `json:"provider_model_id,omitempty"`
-	ProviderConnectionID         string                 `json:"provider_connection_id,omitempty"`
-	ProviderConnectionGeneration uint64                 `json:"provider_connection_generation,omitempty"`
-	RouteID                      string                 `json:"route_id,omitempty"`
-	CredentialBindingHandle      string                 `json:"credential_binding_handle,omitempty"`
-	CredentialAssetGeneration    uint64                 `json:"credential_asset_generation,omitempty"`
-	PolicyGeneration             uint64                 `json:"policy_generation"`
-	MaxReasoning                 ReasoningEffort        `json:"max_reasoning"`
-	MaxOutputTokens              int                    `json:"max_output_tokens"`
-	Lease                        ComputeLease           `json:"lease"`
-	IssuedAt                     time.Time              `json:"issued_at"`
-	ExpiresAt                    time.Time              `json:"expires_at"`
-	Signature                    string                 `json:"signature"`
+	RouteMode      ExternalGrantRouteMode `json:"route_mode,omitempty"`
+	OrganizationID string                 `json:"organization_id"`
+	RuntimeID      string                 `json:"runtime_id"`
+	// AgentID is required and signed on version 2 grants. It is the exact
+	// reach-admitted effective agent configuration, not the boot-derived
+	// invoking-agent provenance and not a storage-isolation principal.
+	AgentID                      string          `json:"agent_id,omitempty"`
+	TenantID                     string          `json:"tenant_id"`
+	UserID                       string          `json:"user_id"`
+	SessionID                    string          `json:"session_id"`
+	LogicalRunID                 string          `json:"logical_run_id"`
+	LogicalCallID                string          `json:"logical_call_id"`
+	AttemptNonce                 string          `json:"attempt_nonce"`
+	Provider                     string          `json:"provider,omitempty"`
+	ProviderModelID              string          `json:"provider_model_id,omitempty"`
+	ProviderConnectionID         string          `json:"provider_connection_id,omitempty"`
+	ProviderConnectionGeneration uint64          `json:"provider_connection_generation,omitempty"`
+	RouteID                      string          `json:"route_id,omitempty"`
+	CredentialBindingHandle      string          `json:"credential_binding_handle,omitempty"`
+	CredentialAssetGeneration    uint64          `json:"credential_asset_generation,omitempty"`
+	PolicyGeneration             uint64          `json:"policy_generation"`
+	MaxReasoning                 ReasoningEffort `json:"max_reasoning"`
+	MaxOutputTokens              int             `json:"max_output_tokens"`
+	Lease                        ComputeLease    `json:"lease"`
+	IssuedAt                     time.Time       `json:"issued_at"`
+	ExpiresAt                    time.Time       `json:"expires_at"`
+	Signature                    string          `json:"signature"`
 }
+
+const (
+	// ExternalGrantVersionLegacy is the deployed v1.30.0/v1.30.1 grant shape.
+	// It deliberately carries no signed agent binding.
+	ExternalGrantVersionLegacy = 1
+	// ExternalGrantVersionAgentBound requires the reach-admitted effective
+	// agent configuration to be signed into every provider attempt.
+	ExternalGrantVersionAgentBound = 2
+)
 
 // ComputeLease is the bounded local allowance a runtime may consume before
 // asking the coordinator for a top-up. Units are provider-neutral token units;
@@ -119,8 +134,15 @@ var (
 	// ErrExternalGrantRequired indicates that strict mode received no grant.
 	ErrExternalGrantRequired = errors.New("llm: external execution grant required")
 	// ErrExternalGrantInvalid indicates a malformed, expired, or mismatched
-	// grant. The wrapped detail is intentionally content-free.
+	// grant. The wrapped detail is intentionally content-free. Expiry has its
+	// own typed error so a caller can enter the narrow authenticated-renewal
+	// path without treating arbitrary invalid authority as renewable.
 	ErrExternalGrantInvalid = errors.New("llm: external execution grant invalid")
+	// ErrExternalGrantExpired indicates that an otherwise authenticated and
+	// request-bound grant has elapsed. It is emitted only after signature,
+	// audience/runtime, identity/run, agent, route, reasoning, and output
+	// checks succeed; future-issued or malformed grants remain invalid.
+	ErrExternalGrantExpired = errors.New("llm: external execution grant expired")
 	// ErrExternalGrantSignature indicates that the grant was not signed by a
 	// configured coordinator key.
 	ErrExternalGrantSignature = errors.New("llm: external execution grant signature invalid")
@@ -130,6 +152,11 @@ var (
 	// ErrExternalGrantLeaseInsufficient indicates that a bounded lease needs a
 	// coordinator top-up before this provider attempt can start.
 	ErrExternalGrantLeaseInsufficient = errors.New("llm: external execution grant lease insufficient")
+	// ErrLeaseInsufficient is the transport-neutral durable reservation outcome
+	// used without importing a concrete lease-store package.
+	ErrLeaseInsufficient = errors.New("llm: durable lease capacity insufficient")
+	// ErrLeaseConflict identifies a stale or different durable lease generation.
+	ErrLeaseConflict = errors.New("llm: durable lease generation conflict")
 	// ErrExternalGrantAttemptInFlight means a duplicate invocation reached the
 	// durable reservation after another process already admitted the exact
 	// logical provider attempt. The duplicate must not call the provider.
@@ -153,9 +180,20 @@ var (
 
 // ExternalGrantVerifier validates a signed grant against the verified request
 // context and the actual model request. It must never trust caller-provided
-// identity or runtime authority.
+// identity or runtime authority. A verifier accepting version 2 must also bind
+// AgentID to an equivalent host-authenticated effective-agent context; Harbor's
+// reference verifier uses the private reach-admitted run capability.
 type ExternalGrantVerifier interface {
 	Verify(context.Context, ExternalGrant, CompleteRequest) error
+}
+
+// ExternalGrantRenewalVerifier authenticates an elapsed predecessor without
+// waiving any authority check other than the already-elapsed grant or lease
+// deadline and depleted lease capacity. The stock verifier implements this
+// seam. A top-upper must never be called for an expired predecessor unless
+// this check succeeds.
+type ExternalGrantRenewalVerifier interface {
+	VerifyRenewalPredecessor(context.Context, ExternalGrant, CompleteRequest) error
 }
 
 // CredentialResolver resolves one opaque credential binding only after the
@@ -184,20 +222,246 @@ type LeaseTopUpper interface {
 	TopUp(context.Context, ExternalGrant, int64) (ExternalGrant, error)
 }
 
+// LeaseReasonedTopUpper is the additive renewal seam used when durable
+// settlement, rather than the immutable signed snapshot, proves insufficiency.
+type LeaseReasonedTopUpper interface {
+	Renew(context.Context, ExternalGrant, int64, ExternalGrantRenewalReason) (ExternalGrant, error)
+}
+
+// ExternalGrantRenewalReason distinguishes deadline renewal from additional
+// compute capacity. Expiry-only renewal must not mint units; lease
+// insufficiency may add only the bounded requested amount.
+type ExternalGrantRenewalReason string
+
+const (
+	ExternalGrantRenewalExpired           ExternalGrantRenewalReason = "expired"
+	ExternalGrantRenewalLeaseInsufficient ExternalGrantRenewalReason = "lease_insufficient"
+)
+
+// LeaseSuccessorApplier durably advances the exact predecessor lease to its
+// already-authenticated successor. Implementations must be response-loss and
+// concurrency idempotent: the exact successor is a no-op, while a stale or
+// different successor conflicts. The provider must not run before Apply
+// returns successfully.
+type LeaseSuccessorApplier interface {
+	ApplySuccessor(context.Context, ExternalGrant, ExternalGrant) error
+}
+
+// LeaseSuccessorResolver returns the latest exact canonical successor for one
+// immutable root grant. Callers validate lineage and strictly verify it.
+type LeaseSuccessorResolver interface {
+	ResolveSuccessor(context.Context, ExternalGrant) (ExternalGrant, bool, error)
+}
+
+// MarshalCanonicalExternalGrant returns the deterministic full signed grant
+// bytes used by renewal idempotency and durable successor fingerprints. Time
+// values are normalized to UTC, matching the signing document semantics.
+func MarshalCanonicalExternalGrant(grant ExternalGrant) ([]byte, error) {
+	canonical := grant
+	canonical.IssuedAt = canonical.IssuedAt.UTC()
+	canonical.ExpiresAt = canonical.ExpiresAt.UTC()
+	canonical.Lease.ExpiresAt = canonical.Lease.ExpiresAt.UTC()
+	body, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("llm: canonical external grant: %w", err)
+	}
+	return body, nil
+}
+
+// UnmarshalCanonicalExternalGrant accepts only the exact deterministic full
+// signed grant bytes emitted by MarshalCanonicalExternalGrant. Signature and
+// request authority are deliberately verified by ExternalGrantVerifier after
+// parsing.
+func UnmarshalCanonicalExternalGrant(data []byte) (ExternalGrant, error) {
+	var grant ExternalGrant
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&grant); err != nil {
+		return ExternalGrant{}, fmt.Errorf("%w: malformed canonical grant", ErrExternalGrantInvalid)
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return ExternalGrant{}, fmt.Errorf("%w: trailing canonical grant data", ErrExternalGrantInvalid)
+	}
+	canonical, err := MarshalCanonicalExternalGrant(grant)
+	if err != nil || !bytes.Equal(data, canonical) {
+		return ExternalGrant{}, fmt.Errorf("%w: grant is not exact canonical bytes", ErrExternalGrantInvalid)
+	}
+	return grant, nil
+}
+
+// CanonicalExternalGrantHash fingerprints the complete signed predecessor or
+// successor. It contains no secret bytes and is stable across processes.
+func CanonicalExternalGrantHash(grant ExternalGrant) (string, error) {
+	body, err := MarshalCanonicalExternalGrant(grant)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// ValidateExternalGrantTopUpSuccessor verifies that successor is a bounded
+// lease top-up of current rather than a different execution authority. The
+// caller must have authenticated current with its configured verifier before
+// calling this relationship-only helper, and must authenticate successor with
+// that verifier after this helper succeeds. The only claims allowed to rotate
+// are KeyID, IssuedAt, Signature, the lease capacity/accounting epoch, and the
+// two validity deadlines.
+//
+// requestedUnits is both the minimum remaining capacity the successor must
+// provide and the maximum increase in total capacity. Validity may move
+// forward, but a successor may not lengthen either the grant or lease lifetime
+// beyond the respective duration signed into current. These local bounds let
+// a coordinator renew a short-lived grant without turning a top-up response
+// into an unbounded lease or long-lived authority.
+func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, requestedUnits int64) error {
+	return ValidateExternalGrantRenewalSuccessor(current, successor, requestedUnits, ExternalGrantRenewalLeaseInsufficient)
+}
+
+// ValidateExternalGrantRenewalSuccessor validates a bounded successor for the
+// exact renewal trigger. Expiry-only renewal requires enough predecessor
+// capacity for the call and preserves token capacity/consumption exactly;
+// lease insufficiency retains the bounded-increase rules of
+// ValidateExternalGrantTopUpSuccessor.
+func ValidateExternalGrantRenewalSuccessor(current, successor ExternalGrant, requestedUnits int64, reason ExternalGrantRenewalReason) error {
+	invalid := func(detail string) error {
+		return fmt.Errorf("%w: lease renewal successor %s", ErrExternalGrantInvalid, detail)
+	}
+	if requestedUnits <= 0 {
+		return invalid("has an invalid requested-unit bound")
+	}
+	if reason != ExternalGrantRenewalExpired && reason != ExternalGrantRenewalLeaseInsufficient {
+		return invalid("has an unsupported renewal reason")
+	}
+
+	// Normalize only the explicitly mutable claims, then compare the complete
+	// value. This makes every present and future comparable field immutable by
+	// default. Adding a non-comparable field to ExternalGrant deliberately
+	// fails compilation here until its successor semantics are reviewed. The
+	// raw route mode remains part of the comparison: a legacy blank
+	// coordinator-bound predecessor cannot become an explicit mode during a
+	// top-up because omission is itself part of the signed authority.
+	expected := current
+	expected.KeyID = successor.KeyID
+	expected.IssuedAt = successor.IssuedAt
+	expected.ExpiresAt = successor.ExpiresAt
+	expected.Signature = successor.Signature
+	expected.Lease.Epoch = successor.Lease.Epoch
+	expected.Lease.TokenUnits = successor.Lease.TokenUnits
+	expected.Lease.ConsumedUnits = successor.Lease.ConsumedUnits
+	expected.Lease.ExpiresAt = successor.Lease.ExpiresAt
+	if expected != successor {
+		return invalid("changed immutable authority")
+	}
+	if successor.Version <= 0 || successor.Audience == "" || successor.GrantID == "" ||
+		successor.OrganizationID == "" || successor.RuntimeID == "" || successor.TenantID == "" ||
+		successor.UserID == "" || successor.SessionID == "" || successor.LogicalRunID == "" ||
+		successor.LogicalCallID == "" || successor.AttemptNonce == "" || successor.PolicyGeneration == 0 ||
+		successor.MaxReasoning == "" || successor.MaxOutputTokens <= 0 || successor.Lease.LeaseID == "" {
+		return invalid("omitted a required immutable claim")
+	}
+	if successor.Version == ExternalGrantVersionAgentBound && successor.AgentID == "" {
+		return invalid("omitted the required agent binding")
+	}
+	if successor.KeyID == "" || successor.Signature == "" {
+		return invalid("omitted rotating signing metadata")
+	}
+
+	if current.Lease.Epoch == ^uint64(0) || successor.Lease.Epoch != current.Lease.Epoch+1 {
+		return invalid("did not advance the lease epoch exactly once")
+	}
+	if current.Lease.TokenUnits <= 0 || successor.Lease.TokenUnits < current.Lease.TokenUnits ||
+		current.Lease.ConsumedUnits < 0 || current.Lease.ConsumedUnits > current.Lease.TokenUnits ||
+		successor.Lease.ConsumedUnits < current.Lease.ConsumedUnits ||
+		successor.Lease.ConsumedUnits > successor.Lease.TokenUnits {
+		return invalid("has non-monotonic lease capacity or consumption")
+	}
+	capacityIncrease := successor.Lease.TokenUnits - current.Lease.TokenUnits
+	currentRemaining := current.Lease.TokenUnits - current.Lease.ConsumedUnits
+	successorRemaining := successor.Lease.TokenUnits - successor.Lease.ConsumedUnits
+	switch reason {
+	case ExternalGrantRenewalExpired:
+		if currentRemaining < requestedUnits || successor.Lease.TokenUnits != current.Lease.TokenUnits ||
+			successor.Lease.ConsumedUnits != current.Lease.ConsumedUnits || successorRemaining != currentRemaining {
+			return invalid("expiry-only renewal changed compute capacity")
+		}
+	case ExternalGrantRenewalLeaseInsufficient:
+		if capacityIncrease <= 0 || capacityIncrease > requestedUnits || successorRemaining < requestedUnits ||
+			successorRemaining <= currentRemaining {
+			return invalid("exceeds the bounded capacity advance")
+		}
+	}
+
+	if current.IssuedAt.IsZero() || successor.IssuedAt.IsZero() || successor.IssuedAt.Before(current.IssuedAt) {
+		return invalid("has a non-monotonic issued-at value")
+	}
+	exactLifetime := func(issuedAt, expiresAt time.Time) (time.Duration, bool) {
+		lifetime := expiresAt.Sub(issuedAt)
+		return lifetime, lifetime > 0 && issuedAt.Add(lifetime).Equal(expiresAt)
+	}
+	grantLifetime, validGrantLifetime := exactLifetime(current.IssuedAt, current.ExpiresAt)
+	leaseLifetime, validLeaseLifetime := exactLifetime(current.IssuedAt, current.Lease.ExpiresAt)
+	successorGrantLifetime, validSuccessorGrantLifetime := exactLifetime(successor.IssuedAt, successor.ExpiresAt)
+	successorLeaseLifetime, validSuccessorLeaseLifetime := exactLifetime(successor.IssuedAt, successor.Lease.ExpiresAt)
+	if !validGrantLifetime || !validLeaseLifetime || !validSuccessorGrantLifetime || !validSuccessorLeaseLifetime ||
+		successor.ExpiresAt.Before(current.ExpiresAt) ||
+		successor.Lease.ExpiresAt.Before(current.Lease.ExpiresAt) ||
+		successorGrantLifetime > grantLifetime || successorLeaseLifetime > leaseLifetime {
+		return invalid("exceeds the predecessor validity bounds")
+	}
+	return nil
+}
+
+// ValidateExternalGrantRenewalLineage proves that descendant preserves root's
+// immutable authority across one or more already-applied renewals. Signature
+// trust and current deadline checks remain the ordinary verifier's job.
+func ValidateExternalGrantRenewalLineage(root, descendant ExternalGrant) error {
+	invalid := func(detail string) error {
+		return fmt.Errorf("%w: lease renewal lineage %s", ErrExternalGrantInvalid, detail)
+	}
+	expected := root
+	expected.KeyID = descendant.KeyID
+	expected.IssuedAt = descendant.IssuedAt
+	expected.ExpiresAt = descendant.ExpiresAt
+	expected.Signature = descendant.Signature
+	expected.Lease.Epoch = descendant.Lease.Epoch
+	expected.Lease.TokenUnits = descendant.Lease.TokenUnits
+	expected.Lease.ConsumedUnits = descendant.Lease.ConsumedUnits
+	expected.Lease.ExpiresAt = descendant.Lease.ExpiresAt
+	if expected != descendant {
+		return invalid("changed immutable authority")
+	}
+	if descendant.Lease.Epoch <= root.Lease.Epoch || descendant.Lease.TokenUnits < root.Lease.TokenUnits ||
+		descendant.Lease.ConsumedUnits < root.Lease.ConsumedUnits || descendant.Lease.ConsumedUnits > descendant.Lease.TokenUnits ||
+		descendant.IssuedAt.Before(root.IssuedAt) || descendant.ExpiresAt.Before(root.ExpiresAt) ||
+		descendant.Lease.ExpiresAt.Before(root.Lease.ExpiresAt) {
+		return invalid("rewound renewal state")
+	}
+	return nil
+}
+
 // LeaseReservationRequest is the durable per-attempt reservation request.
 // Implementations must serialize competing requests for the same LeaseID in
-// the StateStore, not in process-local memory.
+// the StateStore, not in process-local memory, and bind the durable state to
+// the exact grant plus organization, runtime, admitted identity, and agent.
 type LeaseReservationRequest struct {
-	AttemptID     string
-	LogicalCallID string
-	AttemptNonce  string
-	GrantID       string
-	LeaseID       string
-	Epoch         uint64
-	Capacity      int64
-	Units         int64
-	ExpiresAt     time.Time
-	Identity      identity.Quadruple
+	AttemptID      string
+	LogicalCallID  string
+	AttemptNonce   string
+	GrantID        string
+	LeaseID        string
+	OrganizationID string
+	RuntimeID      string
+	AgentID        string
+	Epoch          uint64
+	Capacity       int64
+	Units          int64
+	ExpiresAt      time.Time
+	// GrantFingerprint binds the durable lease generation to the complete
+	// canonical signed grant. Empty remains accepted for older embedders; the
+	// stock wrapper always supplies it.
+	GrantFingerprint string
+	Identity         identity.Quadruple
 }
 
 // LeaseReservation is the durable reservation identity returned before the
@@ -214,6 +478,31 @@ type LeaseReservation struct {
 	Status        string
 	Existing      bool
 	Receipt       AttemptUsageReceipt
+}
+
+// LeaseAttemptLookup identifies one previously reserved provider attempt
+// without coupling replay to the lease generation that happens to be current
+// now. Every authority and execution coordinate remains mandatory so a lookup
+// cannot cross an organization, runtime, agent, identity, run, or lease.
+type LeaseAttemptLookup struct {
+	AttemptID               string
+	LogicalCallID           string
+	AttemptNonce            string
+	GrantID                 string
+	LeaseID                 string
+	OrganizationID          string
+	RuntimeID               string
+	AgentID                 string
+	Units                   int64
+	CurrentGrantFingerprint string
+	Identity                identity.Quadruple
+}
+
+// LeaseAttemptResolver resolves an exact durable attempt before lease renewal.
+// It lets response-loss and in-flight replays return their persisted outcome
+// even after later calls have advanced the durable lease generation.
+type LeaseAttemptResolver interface {
+	ResolveAttempt(context.Context, LeaseAttemptLookup) (LeaseReservation, bool, error)
 }
 
 // LeaseSettlement closes a reservation with the content-free attempt receipt.
@@ -251,6 +540,7 @@ type AttemptUsageReceipt struct {
 	PlannerStep                  int
 	OrganizationID               string
 	RuntimeID                    string
+	AgentID                      string
 	TenantID                     string
 	UserID                       string
 	SessionID                    string
@@ -305,7 +595,7 @@ func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, 
 		body []byte
 		err  error
 	)
-	if receipt.ParentLogicalCallID == "" && receipt.ParentAttemptNonce == "" && receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == "" {
+	if usesLegacyAttemptUsageReceiptWire(receipt) {
 		// Preserve the v1.30.0 representation for pending receipts written
 		// before this additive identity/mode extension. New receipts use the
 		// explicit canonical wire below.
@@ -324,11 +614,76 @@ func CanonicalAttemptUsageReceiptBodyHash(receipt AttemptUsageReceipt) (string, 
 // JSON representation for a receipt. HTTP, queue, and file deliveries may use
 // this same shape without importing Harbor internals or re-deriving fields.
 func MarshalCanonicalAttemptUsageReceipt(receipt AttemptUsageReceipt) ([]byte, error) {
-	body, err := json.Marshal(canonicalAttemptUsageReceiptWire(receipt))
+	var wire any = canonicalAttemptUsageReceiptWire(receipt)
+	if usesLegacyAttemptUsageReceiptWire(receipt) {
+		wire = legacyAttemptUsageReceiptFrom(receipt)
+	}
+	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, fmt.Errorf("llm: canonical usage receipt wire: %w", err)
 	}
 	return body, nil
+}
+
+// UnmarshalCanonicalAttemptUsageReceipt reconstructs a validated receipt from
+// the exact canonical JSON emitted by MarshalCanonicalAttemptUsageReceipt.
+// It rejects unknown, duplicate, missing, reordered, alternatively encoded,
+// or trailing content rather than accepting a merely equivalent JSON value.
+// This keeps external receipt consumers on Harbor's one private wire shape.
+func UnmarshalCanonicalAttemptUsageReceipt(data []byte) (AttemptUsageReceipt, error) {
+	var wire canonicalAttemptUsageReceiptWirePayload
+	if decodeExactReceiptWire(data, &wire) {
+		return validateExactCanonicalReceipt(data, attemptUsageReceiptFromCanonicalWire(wire))
+	}
+
+	var legacy legacyAttemptUsageReceipt
+	if decodeExactReceiptWire(data, &legacy) {
+		return validateExactCanonicalReceipt(data, attemptUsageReceiptFromLegacyWire(legacy))
+	}
+	return AttemptUsageReceipt{}, fmt.Errorf("%w: malformed canonical wire", ErrInvalidUsageReceipt)
+}
+
+func decodeExactReceiptWire(data []byte, wire any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(wire); err != nil {
+		return false
+	}
+	_, err := decoder.Token()
+	return err == io.EOF
+}
+
+func validateExactCanonicalReceipt(data []byte, receipt AttemptUsageReceipt) (AttemptUsageReceipt, error) {
+	if err := ValidateAttemptUsageReceipt(receipt); err != nil {
+		// v1.30.0 receipts predate RouteMode. Retain the blank public value only
+		// for that exact historical shape when it validates with the preserved
+		// legacy body hash. The byte-identity gate below still requires the
+		// matching historical wire and does not admit an alternative encoding.
+		legacy, ok := legacyAttemptUsageReceiptFromCanonicalWire(receipt)
+		if !ok {
+			return AttemptUsageReceipt{}, err
+		}
+		if legacyErr := ValidateAttemptUsageReceipt(legacy); legacyErr != nil {
+			return AttemptUsageReceipt{}, err
+		}
+		receipt = legacy
+	}
+	if receipt.ReceiptID != CanonicalAttemptID(receipt.GrantID, receipt.LogicalCallID, receipt.AttemptNonce, receipt.AttemptNumber, receipt.RetryNumber, receipt.DowngradeNumber, receipt.FallbackHop) || receipt.IdempotencyKey != receipt.ReceiptID {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: attempt identity is not canonical", ErrInvalidUsageReceipt)
+	}
+	canonical, err := MarshalCanonicalAttemptUsageReceipt(receipt)
+	if err != nil {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: canonical re-encode failed", ErrInvalidUsageReceipt)
+	}
+	if !bytes.Equal(data, canonical) {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: input is not the exact canonical wire", ErrInvalidUsageReceipt)
+	}
+	return receipt, nil
+}
+
+func usesLegacyAttemptUsageReceiptWire(receipt AttemptUsageReceipt) bool {
+	return receipt.ParentLogicalCallID == "" && receipt.ParentAttemptNonce == "" &&
+		receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == "" && receipt.AgentID == ""
 }
 
 // ValidateAttemptUsageReceipt validates content-free shape and the explicit
@@ -400,6 +755,13 @@ func ValidateAttemptUsageReceiptAgainstGrant(receipt AttemptUsageReceipt, grant 
 		receipt.TenantID != grant.TenantID || receipt.UserID != grant.UserID || receipt.SessionID != grant.SessionID || receipt.LogicalRunID != grant.LogicalRunID ||
 		receipt.PolicyGeneration != grant.PolicyGeneration {
 		return fmt.Errorf("%w: grant identity mismatch", ErrInvalidUsageReceipt)
+	}
+	if grant.Version == ExternalGrantVersionAgentBound {
+		if grant.AgentID == "" || receipt.AgentID == "" || receipt.AgentID != grant.AgentID {
+			return fmt.Errorf("%w: grant agent binding mismatch", ErrInvalidUsageReceipt)
+		}
+	} else if receipt.AgentID != "" {
+		return fmt.Errorf("%w: legacy grant receipt carries an unsigned agent binding", ErrInvalidUsageReceipt)
 	}
 	mode := grant.RouteMode
 	if mode == "" {
@@ -499,6 +861,24 @@ func legacyAttemptUsageReceiptFrom(receipt AttemptUsageReceipt) legacyAttemptUsa
 	return legacyAttemptUsageReceipt{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
 }
 
+func attemptUsageReceiptFromLegacyWire(wire legacyAttemptUsageReceipt) AttemptUsageReceipt {
+	return AttemptUsageReceipt{
+		ReceiptID: wire.ReceiptID, GrantID: wire.GrantID, LogicalCallID: wire.LogicalCallID, AttemptNonce: wire.AttemptNonce,
+		OrganizationID: wire.OrganizationID, RuntimeID: wire.RuntimeID, TenantID: wire.TenantID, UserID: wire.UserID,
+		SessionID: wire.SessionID, LogicalRunID: wire.LogicalRunID, Provider: wire.Provider, ProviderModelID: wire.ProviderModelID,
+		ProviderConnectionID: wire.ProviderConnectionID, ProviderConnectionGeneration: wire.ProviderConnectionGeneration,
+		RouteID: wire.RouteID, CredentialAssetGeneration: wire.CredentialAssetGeneration, PolicyGeneration: wire.PolicyGeneration,
+		AttemptNumber: wire.AttemptNumber, RetryNumber: wire.RetryNumber, FallbackHop: wire.FallbackHop,
+		RequestedReasoning: wire.RequestedReasoning, EffectiveReasoning: wire.EffectiveReasoning,
+		PromptTokens: wire.PromptTokens, CompletionTokens: wire.CompletionTokens, ReasoningTokens: wire.ReasoningTokens,
+		TotalTokens: wire.TotalTokens, CacheReadTokens: wire.CacheReadTokens, CacheWriteTokens: wire.CacheWriteTokens,
+		InputCostMicros: wire.InputCostMicros, OutputCostMicros: wire.OutputCostMicros,
+		ReasoningCostMicros: wire.ReasoningCostMicros, TotalCostMicros: wire.TotalCostMicros,
+		Currency: wire.Currency, LatencyMS: wire.LatencyMS, Status: wire.Status, StartedAt: wire.StartedAt,
+		CompletedAt: wire.CompletedAt, IdempotencyKey: wire.IdempotencyKey, CanonicalBodyHash: wire.CanonicalBodyHash,
+	}
+}
+
 // canonicalAttemptUsageReceiptWire is the stable public JSON contract. The
 // internal struct remains untagged for backwards-compatible persistence.
 type canonicalAttemptUsageReceiptWirePayload struct {
@@ -512,6 +892,7 @@ type canonicalAttemptUsageReceiptWirePayload struct {
 	PlannerStep                  int                    `json:"planner_step,omitempty"`
 	OrganizationID               string                 `json:"organization_id"`
 	RuntimeID                    string                 `json:"runtime_id"`
+	AgentID                      string                 `json:"agent_id,omitempty"`
 	TenantID                     string                 `json:"tenant_id"`
 	UserID                       string                 `json:"user_id"`
 	SessionID                    string                 `json:"session_id"`
@@ -553,7 +934,31 @@ func canonicalAttemptUsageReceiptWire(receipt AttemptUsageReceipt) canonicalAtte
 	if mode == "" {
 		mode = ExternalGrantRouteCoordinatorBound
 	}
-	return canonicalAttemptUsageReceiptWirePayload{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, RouteMode: mode, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, ParentLogicalCallID: receipt.ParentLogicalCallID, ParentAttemptNonce: receipt.ParentAttemptNonce, PlannerStep: receipt.PlannerStep, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, DowngradeNumber: receipt.DowngradeNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
+	return canonicalAttemptUsageReceiptWirePayload{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, RouteMode: mode, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, ParentLogicalCallID: receipt.ParentLogicalCallID, ParentAttemptNonce: receipt.ParentAttemptNonce, PlannerStep: receipt.PlannerStep, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, AgentID: receipt.AgentID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, DowngradeNumber: receipt.DowngradeNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
+}
+
+func attemptUsageReceiptFromCanonicalWire(wire canonicalAttemptUsageReceiptWirePayload) AttemptUsageReceipt {
+	// Direct conversion is intentional: the private wire and public receipt must
+	// stay field-for-field identical (JSON tags do not affect conversion). A
+	// field/type/order drift now fails compilation instead of silently dropping a
+	// canonical receipt fact in a handwritten reverse projection.
+	return AttemptUsageReceipt(wire)
+}
+
+// legacyAttemptUsageReceiptFromCanonicalWire restores the blank public route
+// mode only for a receipt whose canonical wire is the historical projection of
+// the v1.30.0 receipt shape. That shape has no parent/planner identity and no
+// downgrade coordinate; its body hash intentionally predates those additive
+// fields. The public marshal helper still canonicalizes the restored value to
+// coordinator_bound, preserving byte-identical delivery replay.
+func legacyAttemptUsageReceiptFromCanonicalWire(receipt AttemptUsageReceipt) (AttemptUsageReceipt, bool) {
+	if receipt.RouteMode != ExternalGrantRouteCoordinatorBound ||
+		receipt.ParentLogicalCallID != "" || receipt.ParentAttemptNonce != "" ||
+		receipt.PlannerStep != 0 || receipt.DowngradeNumber != 0 || receipt.AgentID != "" {
+		return AttemptUsageReceipt{}, false
+	}
+	receipt.RouteMode = ""
+	return receipt, true
 }
 
 // ExternalGrantConfig wires the opt-in grant and receipt seams into llm.Open.
@@ -562,14 +967,17 @@ type ExternalGrantConfig struct {
 	Mode ExternalGrantMode
 	// RouteMode optionally restricts accepted signed grant shapes. Empty
 	// accepts both explicit route modes; the signed grant remains authoritative.
-	RouteMode       ExternalGrantRouteMode
-	Verifier        ExternalGrantVerifier
-	Credentials     CredentialResolver
-	TopUpper        LeaseTopUpper
-	ReceiptSink     UsageReceiptSink
-	ReceiptRequired bool
-	RuntimeID       string
-	Reservations    LeaseReservationManager
+	RouteMode         ExternalGrantRouteMode
+	Verifier          ExternalGrantVerifier
+	RenewalVerifier   ExternalGrantRenewalVerifier
+	Credentials       CredentialResolver
+	TopUpper          LeaseTopUpper
+	Successors        LeaseSuccessorApplier
+	SuccessorResolver LeaseSuccessorResolver
+	ReceiptSink       UsageReceiptSink
+	ReceiptRequired   bool
+	RuntimeID         string
+	Reservations      LeaseReservationManager
 }
 
 // VerifiedGrantContext is installed only after ExternalGrantVerifier succeeds.

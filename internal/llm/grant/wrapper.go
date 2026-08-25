@@ -12,7 +12,8 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
-const receiptEnqueueTimeout = 5 * time.Second
+const terminalPersistenceTimeout = 5 * time.Second
+const maxReservationRecoveryAttempts = 8
 
 func init() { llm.RegisterExternalGrantWrapper(Wrap) }
 
@@ -56,7 +57,13 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if c.deps.ExternalGrant.Verifier == nil {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: verifier is not configured", llm.ErrExternalGrantInvalid)
 	}
-	grant := *req.ExternalGrant
+	rootGrant := *req.ExternalGrant
+	grant := rootGrant
+	if resolved, ok, resolveErr := c.resolveSuccessor(ctx, rootGrant); resolveErr != nil {
+		return llm.CompleteResponse{}, resolveErr
+	} else if ok {
+		grant = resolved
+	}
 	grantMode := llm.EffectiveExternalGrantRouteMode(grant.RouteMode)
 	if c.deps.ExternalGrant.RouteMode != "" && grantMode != c.deps.ExternalGrant.RouteMode {
 		return llm.CompleteResponse{}, fmt.Errorf("%w: grant route mode is not enabled", llm.ErrExternalGrantInvalid)
@@ -82,17 +89,30 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if err != nil {
 		return llm.CompleteResponse{}, err
 	}
-	if err := c.verifyOrTopUp(ctx, &grant, req); err != nil {
+	callUnits, err := boundedCallUnits(req, grant, c.cfg)
+	if err != nil {
+		return llm.CompleteResponse{}, err
+	}
+	var scope *llm.AttemptScope
+	ctx, scope, err = llm.EnsureGrantAttemptScope(ctx, rootGrant)
+	if err != nil {
+		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %w", llm.ErrExternalGrantInvalid, err)
+	}
+	if existing, ok, lookupErr := c.resolveAttemptReplay(ctx, grant, req, scope); lookupErr != nil {
+		return llm.CompleteResponse{}, lookupErr
+	} else if ok {
+		return llm.CompleteResponse{}, persistedAttemptOutcome(existing)
+	}
+	if err := c.prepareGrant(ctx, &grant, rootGrant, req, callUnits); err != nil {
 		return llm.CompleteResponse{}, err
 	}
 	req, err = capRequestToGrant(req, grant)
 	if err != nil {
 		return llm.CompleteResponse{}, err
 	}
-	var scope *llm.AttemptScope
-	ctx, scope, err = llm.EnsureGrantAttemptScope(ctx, grant)
+	callUnits, err = boundedCallUnits(req, grant, c.cfg)
 	if err != nil {
-		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %w", llm.ErrExternalGrantInvalid, err)
+		return llm.CompleteResponse{}, err
 	}
 	if scope.FallbackHop > 0 {
 		return llm.CompleteResponse{}, llm.ErrExternalGrantCrossProviderFallback
@@ -102,38 +122,68 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	}
 	var reservation llm.LeaseReservation
 	if c.deps.ExternalGrant.Reservations != nil {
+		grantFingerprint, hashErr := llm.CanonicalExternalGrantHash(grant)
+		if hashErr != nil {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: canonical grant fingerprint", llm.ErrExternalGrantInvalid)
+		}
 		epoch := grant.Lease.Epoch
 		if epoch == 0 {
 			epoch = 1
 		}
-		units := grant.Lease.RemainingTokens()
-		// Reserve only the bounded provider-call ceiling, not the entire
-		// remaining grant lease. The remainder stays available for later
-		// planner steps and true response-loss replays after settlement.
-		if req.MaxTokens != nil && int64(*req.MaxTokens) < units {
-			units = int64(*req.MaxTokens)
+		reserve := func() (llm.LeaseReservation, error) {
+			grantFingerprint, hashErr = llm.CanonicalExternalGrantHash(grant)
+			if hashErr != nil {
+				return llm.LeaseReservation{}, hashErr
+			}
+			epoch = grant.Lease.Epoch
+			if epoch == 0 {
+				epoch = 1
+			}
+			return c.deps.ExternalGrant.Reservations.Reserve(ctx, llm.LeaseReservationRequest{
+				AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
+				GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID, OrganizationID: grant.OrganizationID,
+				RuntimeID: grant.RuntimeID, AgentID: grant.AgentID,
+				Epoch: epoch, Capacity: grant.Lease.RemainingTokens(), Units: callUnits, ExpiresAt: grant.Lease.ExpiresAt,
+				GrantFingerprint: grantFingerprint,
+				Identity:         identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
+			})
 		}
-		if units <= 0 {
-			return llm.CompleteResponse{}, llm.ErrExternalGrantLeaseInsufficient
+		reserved := false
+		var lastReserveErr error
+		for range maxReservationRecoveryAttempts {
+			reservation, err = reserve()
+			if err == nil {
+				reserved = true
+				break
+			}
+			lastReserveErr = err
+			switch {
+			case errors.Is(err, llm.ErrLeaseConflict):
+				resolved, ok, resolveErr := c.resolveSuccessor(ctx, rootGrant)
+				if resolveErr != nil || !ok {
+					return llm.CompleteResponse{}, fmt.Errorf("%w: resolve current successor: %w", llm.ErrExternalGrantLeaseInsufficient, err)
+				}
+				grant = resolved
+				if err = c.prepareGrant(ctx, &grant, rootGrant, req, callUnits); err != nil {
+					return llm.CompleteResponse{}, err
+				}
+			case errors.Is(err, llm.ErrLeaseInsufficient):
+				if err = c.renewGrant(ctx, &grant, req, callUnits, llm.ExternalGrantRenewalLeaseInsufficient); err != nil {
+					lastReserveErr = err
+					if errors.Is(err, llm.ErrLeaseConflict) {
+						continue
+					}
+					return llm.CompleteResponse{}, err
+				}
+			default:
+				return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %w", llm.ErrExternalGrantLeaseInsufficient, err)
+			}
 		}
-		reservation, err = c.deps.ExternalGrant.Reservations.Reserve(ctx, llm.LeaseReservationRequest{
-			AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
-			GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID,
-			Epoch: epoch, Capacity: grant.Lease.TokenUnits, Units: units, ExpiresAt: grant.Lease.ExpiresAt,
-			Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
-		})
-		if err != nil {
-			return llm.CompleteResponse{}, fmt.Errorf("%w: reserve attempt: %w", llm.ErrExternalGrantLeaseInsufficient, err)
+		if !reserved {
+			return llm.CompleteResponse{}, fmt.Errorf("%w: bounded reserve recovery did not converge: %w", llm.ErrExternalGrantLeaseInsufficient, lastReserveErr)
 		}
 		if reservation.Existing {
-			switch reservation.Status {
-			case "reserved":
-				return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptInFlight
-			case "consumed", "released", "expired":
-				return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptSettled
-			default:
-				return llm.CompleteResponse{}, fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
-			}
+			return llm.CompleteResponse{}, persistedAttemptOutcome(reservation)
 		}
 	}
 	// Never let an unverified caller-provided request field reach the driver;
@@ -147,7 +197,9 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	}())
 	started := time.Now().UTC()
 	resp, callErr := c.inner.Complete(ctx, req)
-	if c.deps.ExternalGrant.ReceiptSink == nil {
+	terminalCtx, cancelTerminal := context.WithTimeout(context.WithoutCancel(ctx), terminalPersistenceTimeout)
+	defer cancelTerminal()
+	if c.deps.ExternalGrant.ReceiptSink == nil && c.deps.ExternalGrant.Reservations == nil {
 		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
 			return resp, fmt.Errorf("%w: receipt sink is not configured", llm.ErrUsageReceiptUnavailable)
 		}
@@ -156,14 +208,14 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	receipt := makeReceipt(grant, req, resp, callErr, started, time.Now().UTC(), scope, c.cfg)
 	hash, err := llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
 	if err != nil {
-		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
+		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired || c.deps.ExternalGrant.Reservations != nil {
 			return resp, fmt.Errorf("%w: canonical body: %w", llm.ErrUsageReceiptUnavailable, err)
 		}
 		return resp, callErr
 	}
 	receipt.CanonicalBodyHash = hash
 	if err := llm.ValidateAttemptUsageReceiptAgainstGrant(receipt, grant); err != nil {
-		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
+		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired || c.deps.ExternalGrant.Reservations != nil {
 			return resp, fmt.Errorf("%w: validate receipt: %w", llm.ErrUsageReceiptUnavailable, err)
 		}
 		return resp, callErr
@@ -173,18 +225,69 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		if used < 0 {
 			used = 0
 		}
-		if err := c.deps.ExternalGrant.Reservations.Settle(ctx, llm.LeaseSettlement{AttemptID: reservation.AttemptID, LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce, Receipt: receipt, Units: used, Now: receipt.CompletedAt}); err != nil {
+		if err := c.deps.ExternalGrant.Reservations.Settle(terminalCtx, llm.LeaseSettlement{AttemptID: reservation.AttemptID, LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce, Receipt: receipt, Units: used, Now: receipt.CompletedAt}); err != nil {
 			return resp, fmt.Errorf("%w: settle attempt: %w", llm.ErrUsageReceiptUnavailable, err)
 		}
 	}
-	receiptCtx, cancelReceipt := context.WithTimeout(context.WithoutCancel(ctx), receiptEnqueueTimeout)
-	defer cancelReceipt()
-	if err := c.deps.ExternalGrant.ReceiptSink.Enqueue(receiptCtx, receipt); err != nil {
-		if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
-			return resp, fmt.Errorf("%w: %w", llm.ErrUsageReceiptUnavailable, err)
+	if c.deps.ExternalGrant.ReceiptSink != nil {
+		if err := c.deps.ExternalGrant.ReceiptSink.Enqueue(terminalCtx, receipt); err != nil {
+			if c.deps.ExternalGrant.ReceiptRequired || mode == llm.ExternalGrantRequired {
+				return resp, fmt.Errorf("%w: %w", llm.ErrUsageReceiptUnavailable, err)
+			}
 		}
 	}
 	return resp, callErr
+}
+
+func (c *client) resolveAttemptReplay(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest, scope *llm.AttemptScope) (llm.LeaseReservation, bool, error) {
+	resolver, ok := c.deps.ExternalGrant.Reservations.(llm.LeaseAttemptResolver)
+	if !ok {
+		return llm.LeaseReservation{}, false, nil
+	}
+	// ResolveAttempt may atomically expire an old reservation. Authenticate
+	// the complete current authority, including coordinator credential
+	// generation/revocation, before even that durable read/mutation seam.
+	renewalVerifier := c.deps.ExternalGrant.RenewalVerifier
+	if renewalVerifier == nil {
+		if verifier, ok := c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
+			renewalVerifier = verifier
+		}
+	}
+	if renewalVerifier != nil {
+		if err := renewalVerifier.VerifyRenewalPredecessor(ctx, grant, req); err != nil {
+			return llm.LeaseReservation{}, false, err
+		}
+	} else if err := c.deps.ExternalGrant.Verifier.Verify(ctx, grant, req); err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	if err := c.verifyCoordinatorCredential(ctx, grant); err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	units, err := boundedCallUnits(req, grant, c.cfg)
+	if err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	fingerprint, err := llm.CanonicalExternalGrantHash(grant)
+	if err != nil {
+		return llm.LeaseReservation{}, false, fmt.Errorf("%w: canonical grant fingerprint", llm.ErrExternalGrantInvalid)
+	}
+	return resolver.ResolveAttempt(ctx, llm.LeaseAttemptLookup{
+		AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
+		GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID, OrganizationID: grant.OrganizationID,
+		RuntimeID: grant.RuntimeID, AgentID: grant.AgentID, Units: units, CurrentGrantFingerprint: fingerprint,
+		Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
+	})
+}
+
+func persistedAttemptOutcome(reservation llm.LeaseReservation) error {
+	switch reservation.Status {
+	case "reserved":
+		return llm.ErrExternalGrantAttemptInFlight
+	case "consumed", "released", "expired":
+		return llm.ErrExternalGrantAttemptSettled
+	default:
+		return fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
+	}
 }
 
 func attemptID(grant llm.ExternalGrant, scope *llm.AttemptScope) string {
@@ -241,16 +344,9 @@ func capRequestToGrant(req llm.CompleteRequest, grant llm.ExternalGrant) (llm.Co
 	if req.MaxTokens != nil {
 		return req, nil
 	}
-	remaining := grant.Lease.RemainingTokens()
-	if remaining <= 0 {
-		return llm.CompleteRequest{}, fmt.Errorf("%w: no output lease remains", llm.ErrExternalGrantLeaseInsufficient)
-	}
-	maxTokens := int64(grant.MaxOutputTokens)
-	if remaining < maxTokens {
-		maxTokens = remaining
-	}
-	if maxTokens <= 0 || maxTokens > int64(maxInt()) {
-		return llm.CompleteRequest{}, fmt.Errorf("%w: output lease exceeds local integer range", llm.ErrExternalGrantInvalid)
+	maxTokens, err := boundedOutputUnits(req, grant, true)
+	if err != nil {
+		return llm.CompleteRequest{}, err
 	}
 	value := int(maxTokens)
 	req.MaxTokens = &value
@@ -259,31 +355,193 @@ func capRequestToGrant(req llm.CompleteRequest, grant llm.ExternalGrant) (llm.Co
 
 func maxInt() int { return int(^uint(0) >> 1) }
 
-func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, req llm.CompleteRequest) error {
-	originalMode := llm.EffectiveExternalGrantRouteMode(grant.RouteMode)
+func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, req llm.CompleteRequest, needed int64) error {
 	err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req)
-	if err == nil {
+	if err == nil && grant.Lease.RemainingTokens() >= needed {
 		return nil
 	}
-	if c.deps.ExternalGrant.TopUpper == nil || !isLeaseError(err) {
+	if err != nil && !isLeaseError(err) && !errors.Is(err, llm.ErrExternalGrantExpired) {
 		return err
 	}
-	needed := int64(1)
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		needed = int64(*req.MaxTokens)
+	if c.deps.ExternalGrant.TopUpper == nil {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: total call bound exceeds remaining lease", llm.ErrExternalGrantLeaseInsufficient)
 	}
-	newGrant, topErr := c.deps.ExternalGrant.TopUpper.TopUp(ctx, *grant, needed)
+	renewalReason := llm.ExternalGrantRenewalExpired
+	if grant.Lease.RemainingTokens() < needed {
+		renewalReason = llm.ExternalGrantRenewalLeaseInsufficient
+	}
+	return c.renewGrant(ctx, grant, req, needed, renewalReason)
+}
+
+func (c *client) prepareGrant(ctx context.Context, grant *llm.ExternalGrant, root llm.ExternalGrant, req llm.CompleteRequest, needed int64) error {
+	for range maxReservationRecoveryAttempts {
+		err := c.verifyOrTopUp(ctx, grant, req, needed)
+		if err == nil {
+			return c.verifyCoordinatorCredential(ctx, *grant)
+		}
+		if !errors.Is(err, llm.ErrLeaseConflict) {
+			return err
+		}
+		resolved, ok, resolveErr := c.resolveSuccessor(ctx, root)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !ok {
+			return err
+		}
+		*grant = resolved
+	}
+	return fmt.Errorf("%w: bounded successor preparation did not converge", llm.ErrExternalGrantLeaseInsufficient)
+}
+
+func (c *client) renewGrant(ctx context.Context, grant *llm.ExternalGrant, req llm.CompleteRequest, needed int64, renewalReason llm.ExternalGrantRenewalReason) error {
+	if c.deps.ExternalGrant.TopUpper == nil {
+		return fmt.Errorf("%w: top-up is not configured", llm.ErrExternalGrantLeaseInsufficient)
+	}
+	successorApplier := c.deps.ExternalGrant.Successors
+	if successorApplier == nil {
+		if applier, ok := c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorApplier); ok {
+			successorApplier = applier
+		}
+	}
+	if successorApplier == nil {
+		return fmt.Errorf("%w: durable lease successor applier is not configured", llm.ErrExternalGrantInvalid)
+	}
+	renewalVerifier := c.deps.ExternalGrant.RenewalVerifier
+	if renewalVerifier == nil {
+		if verifier, ok := c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
+			renewalVerifier = verifier
+		}
+	}
+	if renewalVerifier == nil {
+		return fmt.Errorf("%w: authenticated renewal verifier is not configured", llm.ErrExternalGrantInvalid)
+	}
+	if preflightErr := renewalVerifier.VerifyRenewalPredecessor(ctx, *grant, req); preflightErr != nil {
+		return preflightErr
+	}
+	if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) == llm.ExternalGrantRouteCoordinatorBound {
+		if c.deps.ExternalGrant.Credentials == nil {
+			return fmt.Errorf("%w: credential resolver is not configured", llm.ErrExternalGrantInvalid)
+		}
+		verifiedCtx := llm.WithVerifiedGrantContext(ctx, *grant, c.deps.ExternalGrant.Credentials)
+		if _, resolveErr := c.deps.ExternalGrant.Credentials.Resolve(verifiedCtx, *grant); resolveErr != nil {
+			return resolveErr
+		}
+	}
+	predecessor := *grant
+	var newGrant llm.ExternalGrant
+	var topErr error
+	if reasoned, ok := c.deps.ExternalGrant.TopUpper.(llm.LeaseReasonedTopUpper); ok {
+		newGrant, topErr = reasoned.Renew(ctx, *grant, needed, renewalReason)
+	} else {
+		newGrant, topErr = c.deps.ExternalGrant.TopUpper.TopUp(ctx, *grant, needed)
+	}
 	if topErr != nil {
 		return fmt.Errorf("%w: top-up failed: %w", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
-	if newGrant.LogicalCallID != grant.LogicalCallID || newGrant.AttemptNonce != grant.AttemptNonce || llm.EffectiveExternalGrantRouteMode(newGrant.RouteMode) != originalMode {
-		return fmt.Errorf("%w: lease top-up changed attempt identity or route mode", llm.ErrExternalGrantInvalid)
-	}
-	*grant = newGrant
-	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req); err != nil {
+	if err := llm.ValidateExternalGrantRenewalSuccessor(predecessor, newGrant, needed, renewalReason); err != nil {
 		return err
 	}
+	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, newGrant, req); err != nil {
+		return err
+	}
+	if llm.EffectiveExternalGrantRouteMode(newGrant.RouteMode) == llm.ExternalGrantRouteCoordinatorBound {
+		verifiedCtx := llm.WithVerifiedGrantContext(ctx, newGrant, c.deps.ExternalGrant.Credentials)
+		if _, resolveErr := c.deps.ExternalGrant.Credentials.Resolve(verifiedCtx, newGrant); resolveErr != nil {
+			return resolveErr
+		}
+	}
+	if newGrant.Lease.RemainingTokens() < needed {
+		return fmt.Errorf("%w: top-up does not cover total call bound", llm.ErrExternalGrantLeaseInsufficient)
+	}
+	if applyErr := successorApplier.ApplySuccessor(ctx, predecessor, newGrant); applyErr != nil {
+		return fmt.Errorf("%w: apply lease successor: %w", llm.ErrExternalGrantLeaseInsufficient, applyErr)
+	}
+	*grant = newGrant
 	return nil
+}
+
+// verifyCoordinatorCredential repeats credential ownership and generation
+// checks for a successor loaded from durable state before it can reserve
+// capacity. Durable successor bytes remain untrusted until both the grant
+// verifier and the credential resolver accept the current authority.
+func (c *client) verifyCoordinatorCredential(ctx context.Context, grant llm.ExternalGrant) error {
+	if llm.EffectiveExternalGrantRouteMode(grant.RouteMode) != llm.ExternalGrantRouteCoordinatorBound {
+		return nil
+	}
+	if c.deps.ExternalGrant.Credentials == nil {
+		return fmt.Errorf("%w: credential resolver is not configured", llm.ErrExternalGrantInvalid)
+	}
+	verifiedCtx := llm.WithVerifiedGrantContext(ctx, grant, c.deps.ExternalGrant.Credentials)
+	_, err := c.deps.ExternalGrant.Credentials.Resolve(verifiedCtx, grant)
+	return err
+}
+
+func (c *client) resolveSuccessor(ctx context.Context, root llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
+	resolver := c.deps.ExternalGrant.SuccessorResolver
+	if resolver == nil {
+		if successorResolver, ok := c.deps.ExternalGrant.Successors.(llm.LeaseSuccessorResolver); ok {
+			resolver = successorResolver
+		}
+	}
+	if resolver == nil {
+		if successorResolver, ok := c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorResolver); ok {
+			resolver = successorResolver
+		}
+	}
+	if resolver == nil {
+		return llm.ExternalGrant{}, false, nil
+	}
+	resolved, ok, err := resolver.ResolveSuccessor(ctx, root)
+	if err != nil || !ok {
+		return llm.ExternalGrant{}, ok, err
+	}
+	if err := llm.ValidateExternalGrantRenewalLineage(root, resolved); err != nil {
+		return llm.ExternalGrant{}, false, err
+	}
+	return resolved, true, nil
+}
+
+func boundedCallUnits(req llm.CompleteRequest, grant llm.ExternalGrant, cfg llm.ConfigSnapshot) (int64, error) {
+	output, err := boundedOutputUnits(req, grant, false)
+	if err != nil {
+		return 0, err
+	}
+	prompt := int64(llm.EstimateRequestTokens(req, cfg.ModelProfiles[req.Model]))
+	if prompt < 0 || output > math.MaxInt64-prompt {
+		return 0, fmt.Errorf("%w: total call bound exceeds local integer range", llm.ErrExternalGrantInvalid)
+	}
+	total := prompt + output
+	if total <= 0 {
+		return 0, fmt.Errorf("%w: total call bound must be positive", llm.ErrExternalGrantInvalid)
+	}
+	return total, nil
+}
+
+func boundedOutputUnits(req llm.CompleteRequest, grant llm.ExternalGrant, constrainToRemaining bool) (int64, error) {
+	if req.MaxTokens != nil {
+		if *req.MaxTokens <= 0 {
+			return 0, fmt.Errorf("%w: output limit must be positive", llm.ErrExternalGrantInvalid)
+		}
+		return int64(*req.MaxTokens), nil
+	}
+	units := int64(grant.MaxOutputTokens)
+	if constrainToRemaining {
+		remaining := grant.Lease.RemainingTokens()
+		if remaining <= 0 {
+			return 0, fmt.Errorf("%w: no output lease remains", llm.ErrExternalGrantLeaseInsufficient)
+		}
+		if remaining < units {
+			units = remaining
+		}
+	}
+	if units <= 0 || units > int64(maxInt()) {
+		return 0, fmt.Errorf("%w: output lease exceeds local integer range", llm.ErrExternalGrantInvalid)
+	}
+	return units, nil
 }
 
 func isLeaseError(err error) bool {
@@ -341,7 +599,7 @@ func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.Comp
 	receipt := llm.AttemptUsageReceipt{
 		ReceiptID: idempotency, GrantID: grant.GrantID, RouteMode: grant.RouteMode, LogicalCallID: logicalCallID, AttemptNonce: attemptNonce,
 		ParentLogicalCallID: parentLogicalCallID, ParentAttemptNonce: parentAttemptNonce, PlannerStep: plannerStep, OrganizationID: grant.OrganizationID,
-		RuntimeID: grant.RuntimeID, TenantID: grant.TenantID, UserID: grant.UserID,
+		RuntimeID: grant.RuntimeID, AgentID: grant.AgentID, TenantID: grant.TenantID, UserID: grant.UserID,
 		SessionID: grant.SessionID, LogicalRunID: grant.LogicalRunID, Provider: provider,
 		ProviderModelID: model, ProviderConnectionID: grant.ProviderConnectionID,
 		ProviderConnectionGeneration: grant.ProviderConnectionGeneration,

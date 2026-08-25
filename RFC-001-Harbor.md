@@ -788,6 +788,24 @@ The grant wrapper is composed inside the retry, structured-output downgrade, and
 
 Each attempted provider call emits an immutable, content-free usage receipt containing stable grant/attempt/idempotency identifiers, policy and asset generations, provider/route/model dimensions, token/cost/latency usage, outcome, and canonical body hash. Receipts are durably queued through StateStore before strict-mode success is reported. The outbox uses conditional writes, response-loss-safe receipt identity, bounded exponential backoff, acknowledgement, and a circuit breaker; a coordinator delivery endpoint must deduplicate by receipt id and body hash. Receipts contain no prompt, response, tool argument, reasoning trace, secret, or credential bytes. Disabled mode preserves legacy behavior, optional mode supports mixed fleets, and required mode fails closed when grant verification or durable receipt enqueue cannot complete. This is a runtime execution-edge contract; coordinator policy and credential custody remain outside Harbor.
 
+**Stock coordinator transport and readiness (D-438).** `harbor serve` MAY opt
+into one boot-pinned authenticated HTTP transport for bounded canonical receipt
+batches. The coordinator acknowledges each accepted fact by exact receipt id
+plus canonical body hash; omitted acknowledgements,
+response loss, and transport failure retain the durable fact for jittered
+bounded replay, while unknown, duplicate, or mismatched acknowledgements fail
+closed. The transport refuses redirects, bounds request/response size and
+duration, and exposes no endpoint, credential, content, or identity in logs or
+errors. With the block absent, Harbor starts no client, timer, outbox scan,
+store read, or network work. `runtime_default` grants continue to use the
+runtime's configured provider/model and need no coordinator credential or
+catalog. The additive `runtime.info.external_grant` projection distinguishes
+support, configured mode, accepted and ready route shapes, verifier/reservation/
+credential wiring, strict receipt-parser readiness, concrete receipt transport
+kind and observed state, an explicit unsupported stock top-up state, and a
+fail-closed fully-wired strict-ready result. Lease-successor application remains outside
+this transport until the durable reservation epoch can advance idempotently.
+
 **Provider-neutral technical descriptors and runtime-origin model discovery (Planned — HA-71 / D-435).** A provider control-plane consumer may need technical facts from the same Bifrost integration Harbor uses for execution, but those facts must not be re-derived in a second provider registry or mixed with presentation policy. Harbor's typed descriptor reports an opaque provider id/kind, credential modes and logical secret/url/text field kinds, custom-endpoint support, and whether bounded runtime-origin validation or model discovery is available. It carries no logo, friendly label, help copy, endpoint value, environment variable name, credential, provider response body, or identity value. Native provider endpoint handling remains `manual` where provider-specific semantics are not portable; declared OpenAI-compatible custom endpoints are the supported custom-endpoint fact.
 
 The catalog is an immutable local snapshot with bounded, cancellable `Validate` and `Discover` operations. Discovery reuses the same Bifrost account construction as an LLM call, caps page size and page count, rejects malformed or duplicate model rows, and normalizes only reported provider-neutral facts: context/input/output limits, input/output modalities, tool support when a canonical parameter is reported, canonical `off|low|medium|high` reasoning levels when reported, deprecation, and pricing provenance. Missing facts remain `unknown`, absent pricing is `unpriced`, incomplete results are `partial`, cached results are explicitly `stale`, and configured model ids are `manual` when discovery is unavailable or empty. Provider errors map to stable sanitized outcomes rather than raw messages or response bodies. The offline `harbor llm providers` CLI is explicitly non-runtime-origin; the booted runtime also projects descriptor, validation, and discovery through the existing protected `llm.posture` request envelope (`provider_operation=validate|discover`) for admin-tier callers, with shared runtime credential state. No new Protocol method or version is added.

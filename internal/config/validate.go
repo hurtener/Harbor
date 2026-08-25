@@ -501,6 +501,9 @@ func (c *Config) validateLLM() error {
 func (c *Config) validateLLMExternalGrant() error {
 	g := c.LLM.ExternalGrant
 	if g.Mode == "" || g.Mode == "disabled" {
+		if coordinatorConfigured(g.Coordinator) {
+			return fieldError("llm.external_grant.coordinator", "requires external grants to be optional or required")
+		}
 		return nil
 	}
 	if g.Mode != "optional" && g.Mode != "required" {
@@ -545,6 +548,57 @@ func (c *Config) validateLLMExternalGrant() error {
 		if len(decoded) != ed25519.PublicKeySize {
 			return fieldError(fmt.Sprintf("llm.external_grant.public_keys[%q]", id), "must be a base64-encoded Ed25519 public key")
 		}
+	}
+	if coordinatorConfigured(g.Coordinator) {
+		if err := validateExternalGrantCoordinator(g.Coordinator); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func coordinatorConfigured(cfg ExternalGrantCoordinatorConfig) bool {
+	return strings.TrimSpace(cfg.ReceiptURL) != "" || strings.TrimSpace(cfg.TopUpURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
+		cfg.Timeout != 0 || cfg.MaxBatch != 0 || cfg.ReconcileInterval != 0
+}
+
+func validateExternalGrantCoordinator(cfg ExternalGrantCoordinatorConfig) error {
+	if strings.TrimSpace(cfg.ReceiptURL) == "" {
+		return fieldError("llm.external_grant.coordinator.receipt_url", "must be set when the coordinator transport is configured")
+	}
+	if err := validatePinnedServiceURL("llm.external_grant.coordinator.receipt_url", cfg.ReceiptURL); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.TopUpURL) != "" {
+		if err := validatePinnedServiceURL("llm.external_grant.coordinator.top_up_url", cfg.TopUpURL); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(cfg.AuthTokenEnv) == "" {
+		return fieldError("llm.external_grant.coordinator.auth_token_env", "must name the env var holding the runtime service token")
+	}
+	if cfg.Timeout < 0 {
+		return fieldError("llm.external_grant.coordinator.timeout", "must be non-negative")
+	}
+	if cfg.MaxBatch < 0 || cfg.MaxBatch > 1000 {
+		return fieldError("llm.external_grant.coordinator.max_batch", "must be between 0 and 1000")
+	}
+	if cfg.ReconcileInterval < 0 {
+		return fieldError("llm.external_grant.coordinator.reconcile_interval", "must be non-negative")
+	}
+	return nil
+}
+
+func validatePinnedServiceURL(path, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fieldError(path, "must be a valid http(s) URL with a host")
+	}
+	if u.User != nil || u.Fragment != "" || u.RawQuery != "" {
+		return fieldError(path, "must not contain user info, a query, or a fragment")
+	}
+	if u.Scheme == "http" && !isLoopbackHostname(u.Hostname()) {
+		return fieldError(path, "must use https unless the host is loopback")
 	}
 	return nil
 }

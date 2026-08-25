@@ -49,7 +49,7 @@ func wireExternalGrant(
 	}
 	if ext.Mode == "" {
 		ext.Mode = configuredMode
-	} else if configuredMode != "" && configuredMode != llm.ExternalGrantDisabled && ext.Mode != configuredMode {
+	} else if configuredMode != "" && ext.Mode != configuredMode {
 		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: injected mode %q conflicts with configured mode %q", ext.Mode, configuredMode)
 	}
 	if ext.RouteMode == "" {
@@ -78,6 +78,11 @@ func wireExternalGrant(
 		}
 		ext.Verifier = verifier
 	}
+	if ext.RenewalVerifier == nil {
+		if verifier, ok := ext.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
+			ext.RenewalVerifier = verifier
+		}
+	}
 
 	// Every enabled runtime gets a durable reservation manager by default.
 	// Hosts may replace it with a coordinator-backed implementation, but the
@@ -94,6 +99,27 @@ func wireExternalGrant(
 		if pending == nil {
 			pending = reservationStore
 		}
+	}
+	if ext.Successors == nil {
+		if reservationStore != nil {
+			ext.Successors = reservationStore
+		} else {
+			if applier, ok := ext.Reservations.(llm.LeaseSuccessorApplier); ok {
+				ext.Successors = applier
+			}
+		}
+	}
+	if ext.SuccessorResolver == nil {
+		if reservationStore != nil {
+			ext.SuccessorResolver = reservationStore
+		} else {
+			if resolver, ok := ext.Reservations.(llm.LeaseSuccessorResolver); ok {
+				ext.SuccessorResolver = resolver
+			}
+		}
+	}
+	if ext.TopUpper != nil && (ext.RenewalVerifier == nil || ext.Successors == nil || ext.SuccessorResolver == nil) {
+		return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant: top-up needs an authenticated renewal verifier and durable successor store")
 	}
 	// An empty route restriction accepts either explicit signed shape. Do not
 	// collapse it to the legacy coordinator-bound grant shape at boot: a
@@ -127,13 +153,16 @@ func wireExternalGrant(
 		if err != nil {
 			return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant receipt outbox: %w", err)
 		}
+		if err := outbox.Prepare(ctx); err != nil {
+			return llm.ExternalGrantConfig{}, func() {}, fmt.Errorf("external grant receipt startup reconciliation: %w", err)
+		}
 		ext.ReceiptSink = outbox
 		runCtx, cancel := context.WithCancel(context.Background())
 		runCancel = cancel
 		runDone = make(chan struct{})
 		go func() {
 			defer close(runDone)
-			if err := outbox.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			if err := outbox.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, llmreceipts.ErrClosed) {
 				slog.Default().Error("external grant receipt outbox stopped", slog.String("error", err.Error()))
 			}
 		}()
@@ -147,11 +176,11 @@ func wireExternalGrant(
 	}
 
 	closeFn := func() {
-		if outbox != nil {
-			_ = outbox.Close()
-		}
 		if runCancel != nil {
 			runCancel()
+		}
+		if outbox != nil {
+			_ = outbox.Close()
 		}
 		if runDone != nil {
 			<-runDone
