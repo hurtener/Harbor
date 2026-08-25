@@ -399,6 +399,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |255 | Provider-neutral technical descriptors and runtime-origin model discovery (HA-71, D-435): credential modes/field kinds, conservative custom-endpoint facts, bounded Bifrost validation/discovery, normalized model capabilities, explicit manual/partial/stale/unknown/unpriced outcomes, redacted errors, offline CLI plus protected existing `llm.posture` runtime projection | llm/provider + bifrost adapter + Protocol posture + CLI + operator docs | §3, §6.5, §6.15, §8 | 03, 06, 08, 25, 33, 33a, D-018, D-025, D-333, D-334, D-434 | focused package/Protocol/CLI gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |256 | Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension, D-436): public grant/config/signer/verifier/receipt delivery seams, canonical receipt JSON/hash and parent/child validation, signed coordinator-bound vs runtime-default route shapes, native configured provider/model receipts, mixed-route and cross-provider fail-closed behavior, assembled runtime and external-package first consumers | sdk/llm + sdk/assemble + grant wrapper + receipt outbox + runtime assembly + config | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-025, D-333, D-334, D-434, D-435 | focused race/vet + public consumer + smoke | Shipped (v1.30.1; hosted CI/release green; downstream acceptance pending) |
 |257 | Strict public canonical attempt-receipt parser (HA-72 parser slice, D-437): exact inverse over the one private snake-case wire, closed unknown/duplicate/missing/trailing/noncanonical input, semantic/hash validation, byte-identical re-marshal, fuzz/adversarial and external-package coverage; no transport or idle work | internal/llm + sdk/llm + sdk/assemble | §6.5, §6.11, §6.15 | 254, 256, D-434, D-436 | focused race/vet + fuzz seeds + public consumer + smoke | Implemented (unreleased candidate; hosted CI/release pending; HA-72 transport/readiness remains open) |
+|259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5597,6 +5598,30 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   static smoke, and documentation gates. Hosted CI and release remain pending.
 - **Decision:** D-437. **Status:** Implemented as an unreleased candidate. The
   stock transport/readiness remainder of HA-72 remains open.
+
+### Phase 259 — External-grant top-up successor validation (HA-74)
+
+- **Subsystem:** `internal/llm`, external-grant wrapper, and public `sdk/llm`.
+- **RFC:** §6.5, §6.11, §6.15. **Deps:** phases 254 and 256; D-025, D-434,
+  D-436.
+- **What it delivers:** D-439 — one public relationship validator that makes a
+  top-up a bounded successor of its exact predecessor. Immutable execution,
+  identity, route, credential, policy, ceiling, and lease-id claims remain
+  exact; raw legacy route omission cannot be normalized. Only trusted signing
+  metadata, one epoch, bounded total capacity, monotonic consumption, and
+  non-rewinding predecessor-duration-bounded validity may advance. The
+  existing optional wrapper seam is the first production consumer and refuses
+  drift before another provider call. Stock live top-up transport and durable
+  successor application remain unsupported. No Protocol or provider-specific
+  surface is added.
+- **Evidence:** focused unit/table/fuzz coverage mutates every preserved field;
+  the wrapper integration proves no provider call; both route modes, response
+  replay, stale epoch, overflow, excessive validity, N=100 concurrent reuse,
+  external-package SDK reachability, race/vet/static smoke, and drift/mirror
+  gates are required. Hosted CI, release, and downstream acceptance remain
+  separate and unclaimed.
+- **Decision:** D-439. **Status:** Implemented candidate; hosted CI, release,
+  and downstream acceptance pending.
 
 ## Notes
 

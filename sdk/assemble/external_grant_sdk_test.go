@@ -61,6 +61,16 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	if signed.RouteMode != llm.ExternalGrantRouteRuntimeDefault || verifier == nil {
 		t.Fatalf("public grant route/verifier = %q/%v", signed.RouteMode, verifier)
 	}
+	successor := signed
+	successor.Lease.Epoch++
+	successor.Lease.TokenUnits += 64
+	successor.IssuedAt = successor.IssuedAt.Add(30 * time.Second)
+	successor.ExpiresAt = successor.ExpiresAt.Add(30 * time.Second)
+	successor.Lease.ExpiresAt = successor.Lease.ExpiresAt.Add(30 * time.Second)
+	successor.Signature = "successor-signature"
+	if err := llm.ValidateExternalGrantTopUpSuccessor(signed, successor, 64); err != nil {
+		t.Fatalf("public top-up successor validator: %v", err)
+	}
 
 	cfg := config.Defaults()
 	cfg.LLM.ExternalGrant = config.LLMExternalGrantConfig{

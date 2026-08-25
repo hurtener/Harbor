@@ -3,6 +3,7 @@ package grant
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -67,6 +68,8 @@ func (*blockingClient) Close(context.Context) error { return nil }
 
 type topUpperFunc func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error)
 
+type verifierFunc func(context.Context, llm.ExternalGrant, llm.CompleteRequest) error
+
 func newTestReservations(t *testing.T) *leases.Store {
 	t.Helper()
 	stateStore, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
@@ -83,6 +86,25 @@ func newTestReservations(t *testing.T) *leases.Store {
 
 func (f topUpperFunc) TopUp(ctx context.Context, grant llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
 	return f(ctx, grant, needed)
+}
+
+func (f verifierFunc) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest) error {
+	return f(ctx, grant, req)
+}
+
+func signLegacyBlankRoute(t *testing.T, signer *Signer, grant llm.ExternalGrant) llm.ExternalGrant {
+	t.Helper()
+	signed, err := signer.Sign(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed.RouteMode = ""
+	document, err := canonicalDocument(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.private, document))
+	return signed
 }
 
 func (s *recordingSink) Enqueue(_ context.Context, receipt llm.AttemptUsageReceipt) error {
@@ -180,6 +202,57 @@ func TestWrap_StrictModeRejectsMissingAndStaleGrant(t *testing.T) {
 }
 
 func TestWrap_TopsUpBoundedLeaseBeforeProviderCall(t *testing.T) {
+	predecessorSigner, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorSigner, err := NewSigner("key-2", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{
+		"key-1": predecessorSigner.PublicKey(),
+		"key-2": successorSigner.PublicKey(),
+	}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := NewBindingStore()
+	if err := binding.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	grant := testGrant()
+	grant.Lease.TokenUnits = 10
+	grant.Lease.LeaseID = "lease-small"
+	signed, err := predecessorSigner.Sign(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requested int64
+	topUpper := topUpperFunc(func(_ context.Context, old llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
+		requested = needed
+		old.Lease.Epoch++
+		old.Lease.TokenUnits = 110
+		old.IssuedAt = old.IssuedAt.Add(30 * time.Second)
+		old.ExpiresAt = old.ExpiresAt.Add(30 * time.Second)
+		old.Lease.ExpiresAt = old.Lease.ExpiresAt.Add(30 * time.Second)
+		return successorSigner.Sign(old)
+	})
+	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
+	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding,
+		Reservations: newTestReservations(t), TopUpper: topUpper, ReceiptSink: &recordingSink{}, ReceiptRequired: true,
+	}})
+	maxTokens := 100
+	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &signed}); err != nil {
+		t.Fatalf("Complete with top-up: %v", err)
+	}
+	if requested != 100 || len(inner.requests) != 1 || inner.requests[0].MaxTokens == nil || *inner.requests[0].MaxTokens != 100 {
+		t.Fatalf("top-up requested=%d requests=%+v", requested, inner.requests)
+	}
+}
+
+func TestWrap_TopUpPreservesLegacyBlankRouteBeforeProviderCall(t *testing.T) {
 	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
 	if err != nil {
 		t.Fatal(err)
@@ -194,17 +267,15 @@ func TestWrap_TopsUpBoundedLeaseBeforeProviderCall(t *testing.T) {
 	}
 	grant := testGrant()
 	grant.Lease.TokenUnits = 10
-	grant.Lease.LeaseID = "lease-small"
-	signed, err := signer.Sign(grant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var requested int64
-	topUpper := topUpperFunc(func(_ context.Context, old llm.ExternalGrant, needed int64) (llm.ExternalGrant, error) {
-		requested = needed
-		old.Lease.TokenUnits = 200
-		old.Lease.LeaseID = "lease-topup"
-		return signer.Sign(old)
+	grant.Lease.LeaseID = "lease-legacy-blank"
+	signed := signLegacyBlankRoute(t, signer, grant)
+	topUpper := topUpperFunc(func(_ context.Context, old llm.ExternalGrant, _ int64) (llm.ExternalGrant, error) {
+		old.Lease.Epoch++
+		old.Lease.TokenUnits = 110
+		old.IssuedAt = old.IssuedAt.Add(30 * time.Second)
+		old.ExpiresAt = old.ExpiresAt.Add(30 * time.Second)
+		old.Lease.ExpiresAt = old.Lease.ExpiresAt.Add(30 * time.Second)
+		return signLegacyBlankRoute(t, signer, old), nil
 	})
 	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{TotalTokens: 4}}}
 	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
@@ -213,10 +284,189 @@ func TestWrap_TopsUpBoundedLeaseBeforeProviderCall(t *testing.T) {
 	}})
 	maxTokens := 100
 	if _, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &signed}); err != nil {
-		t.Fatalf("Complete with top-up: %v", err)
+		t.Fatalf("Complete with legacy blank route top-up: %v", err)
 	}
-	if requested != 100 || len(inner.requests) != 1 || inner.requests[0].MaxTokens == nil || *inner.requests[0].MaxTokens != 100 {
-		t.Fatalf("top-up requested=%d requests=%+v", requested, inner.requests)
+	if len(inner.requests) != 1 || inner.requests[0].ExternalGrant == nil || inner.requests[0].ExternalGrant.RouteMode != "" {
+		t.Fatalf("provider requests=%+v, want one preserved legacy blank route", inner.requests)
+	}
+
+	// A top-up service that re-signs through the modern defaulting boundary
+	// changes blank to explicit coordinator_bound. Even though the resulting
+	// grant has a valid signature, the relationship validator must reject that
+	// raw signed-authority change before another provider call.
+	normalizedInner := &recordingClient{}
+	normalizedClient := Wrap(normalizedInner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: binding,
+		TopUpper: topUpperFunc(func(_ context.Context, old llm.ExternalGrant, _ int64) (llm.ExternalGrant, error) {
+			old.Lease.Epoch++
+			old.Lease.TokenUnits = 110
+			old.IssuedAt = old.IssuedAt.Add(30 * time.Second)
+			old.ExpiresAt = old.ExpiresAt.Add(30 * time.Second)
+			old.Lease.ExpiresAt = old.Lease.ExpiresAt.Add(30 * time.Second)
+			return signer.Sign(old)
+		}),
+	}})
+	_, err = normalizedClient.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &signed})
+	if !errors.Is(err, llm.ErrExternalGrantInvalid) {
+		t.Fatalf("normalized legacy route Complete = %v, want ErrExternalGrantInvalid", err)
+	}
+	if len(normalizedInner.requests) != 0 {
+		t.Fatalf("normalized legacy route provider calls=%d, want 0", len(normalizedInner.requests))
+	}
+}
+
+func TestWrap_TopUpRejectsUntrustedOrInvalidRotatingSignatureBeforeProviderCall(t *testing.T) {
+	predecessorSigner, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedSuccessorSigner, err := NewSigner("key-2", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownSigner, err := NewSigner("unknown-key", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{
+		"key-1": predecessorSigner.PublicKey(),
+		"key-2": trustedSuccessorSigner.PublicKey(),
+	}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := testGrant()
+	grant.Lease.TokenUnits = 10
+	grant.Lease.LeaseID = "lease-signature-refusal"
+	predecessor, err := predecessorSigner.Sign(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]func(llm.ExternalGrant) llm.ExternalGrant{
+		"unknown rotating key": func(successor llm.ExternalGrant) llm.ExternalGrant {
+			signed, signErr := unknownSigner.Sign(successor)
+			if signErr != nil {
+				t.Fatal(signErr)
+			}
+			return signed
+		},
+		"invalid rotating signature": func(successor llm.ExternalGrant) llm.ExternalGrant {
+			signed, signErr := trustedSuccessorSigner.Sign(successor)
+			if signErr != nil {
+				t.Fatal(signErr)
+			}
+			signed.Signature = "invalid-signature"
+			return signed
+		},
+	}
+	for name, sign := range tests {
+		t.Run(name, func(t *testing.T) {
+			successor := predecessor
+			successor.Lease.Epoch++
+			successor.Lease.TokenUnits = 110
+			successor.IssuedAt = successor.IssuedAt.Add(30 * time.Second)
+			successor.ExpiresAt = successor.ExpiresAt.Add(30 * time.Second)
+			successor.Lease.ExpiresAt = successor.Lease.ExpiresAt.Add(30 * time.Second)
+			successor = sign(successor)
+			if err := llm.ValidateExternalGrantTopUpSuccessor(predecessor, successor, 100); err != nil {
+				t.Fatalf("relationship should be valid before signature verification: %v", err)
+			}
+
+			inner := &recordingClient{}
+			client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+				Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: NewBindingStore(),
+				TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+					return successor, nil
+				}),
+			}})
+			maxTokens := 100
+			_, completeErr := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &predecessor})
+			if !errors.Is(completeErr, llm.ErrExternalGrantSignature) {
+				t.Fatalf("Complete = %v, want ErrExternalGrantSignature", completeErr)
+			}
+			if len(inner.requests) != 0 {
+				t.Fatalf("provider calls=%d, want 0", len(inner.requests))
+			}
+		})
+	}
+}
+
+func TestWrap_TopUpRejectsEveryImmutableSuccessorDriftBeforeProviderCall(t *testing.T) {
+	signer, err := NewSigner("key-1", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := testGrant()
+	original.Lease.TokenUnits = 10
+	original.Lease.LeaseID = "lease-topup"
+	original, err = signer.Sign(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mutations := map[string]func(*llm.ExternalGrant){
+		"version":                        func(g *llm.ExternalGrant) { g.Version++ },
+		"audience":                       func(g *llm.ExternalGrant) { g.Audience = "other-audience" },
+		"grant id":                       func(g *llm.ExternalGrant) { g.GrantID = "other-grant" },
+		"route mode":                     func(g *llm.ExternalGrant) { g.RouteMode = llm.ExternalGrantRouteRuntimeDefault },
+		"organization":                   func(g *llm.ExternalGrant) { g.OrganizationID = "other-org" },
+		"runtime":                        func(g *llm.ExternalGrant) { g.RuntimeID = "other-runtime" },
+		"tenant":                         func(g *llm.ExternalGrant) { g.TenantID = "other-tenant" },
+		"user":                           func(g *llm.ExternalGrant) { g.UserID = "other-user" },
+		"session":                        func(g *llm.ExternalGrant) { g.SessionID = "other-session" },
+		"logical run":                    func(g *llm.ExternalGrant) { g.LogicalRunID = "other-run" },
+		"logical call":                   func(g *llm.ExternalGrant) { g.LogicalCallID = "other-call" },
+		"attempt nonce":                  func(g *llm.ExternalGrant) { g.AttemptNonce = "other-nonce" },
+		"provider":                       func(g *llm.ExternalGrant) { g.Provider = "other-provider" },
+		"provider model":                 func(g *llm.ExternalGrant) { g.ProviderModelID = "other-model" },
+		"provider connection":            func(g *llm.ExternalGrant) { g.ProviderConnectionID = "other-connection" },
+		"provider connection generation": func(g *llm.ExternalGrant) { g.ProviderConnectionGeneration++ },
+		"route":                          func(g *llm.ExternalGrant) { g.RouteID = "other-route" },
+		"credential binding":             func(g *llm.ExternalGrant) { g.CredentialBindingHandle = "other-binding" },
+		"credential asset generation":    func(g *llm.ExternalGrant) { g.CredentialAssetGeneration++ },
+		"policy generation":              func(g *llm.ExternalGrant) { g.PolicyGeneration++ },
+		"reasoning ceiling":              func(g *llm.ExternalGrant) { g.MaxReasoning = llm.ReasoningHigh },
+		"output ceiling":                 func(g *llm.ExternalGrant) { g.MaxOutputTokens++ },
+		"lease id":                       func(g *llm.ExternalGrant) { g.Lease.LeaseID = "other-lease" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			successor := original
+			successor.Lease.Epoch++
+			successor.Lease.TokenUnits = 110
+			successor.IssuedAt = successor.IssuedAt.Add(30 * time.Second)
+			successor.ExpiresAt = successor.ExpiresAt.Add(30 * time.Second)
+			successor.Lease.ExpiresAt = successor.Lease.ExpiresAt.Add(30 * time.Second)
+			successor.Signature = "successor-signature"
+			mutate(&successor)
+
+			verifierCalls := 0
+			verifier := verifierFunc(func(context.Context, llm.ExternalGrant, llm.CompleteRequest) error {
+				verifierCalls++
+				if verifierCalls == 1 {
+					return llm.ErrExternalGrantLeaseInsufficient
+				}
+				return nil
+			})
+			inner := &recordingClient{}
+			client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+				Mode: llm.ExternalGrantOptional, Verifier: verifier, Credentials: NewBindingStore(),
+				TopUpper: topUpperFunc(func(context.Context, llm.ExternalGrant, int64) (llm.ExternalGrant, error) {
+					return successor, nil
+				}),
+			}})
+			maxTokens := 100
+			_, err := client.Complete(testContext(t, "org-a"), llm.CompleteRequest{
+				Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &original,
+			})
+			if !errors.Is(err, llm.ErrExternalGrantInvalid) {
+				t.Fatalf("Complete = %v, want ErrExternalGrantInvalid", err)
+			}
+			if verifierCalls != 1 || len(inner.requests) != 0 {
+				t.Fatalf("verifier calls=%d provider calls=%d, want 1/0", verifierCalls, len(inner.requests))
+			}
+		})
 	}
 }
 

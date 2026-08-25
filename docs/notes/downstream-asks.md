@@ -44,6 +44,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-67 | Optional per-parameter MCP artifact-egress mapping | tools/artifactegress + MCP driver | Medium | Small | Shipped (unreleased candidate; focused evidence only) — phase 249 / D-429 |
 | HA-68 | Same-runtime organization skill publications with immutable revisions and exact agent references | skills/publication + StateStore + Protocol + runtime composition | High | Medium | Implemented (unreleased candidate; focused evidence only; hosted CI pending) — phase 250 / D-430 |
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
+| HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Implemented candidate — phase 259 / D-439; release and downstream acceptance pending |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1722,3 +1723,51 @@ reservation store, receipt transport, credential resolver where required, and
 top-up support. Disabled remains the default with zero coordinator network,
 timer, outbox-scan, or grant-related StateStore activity. `runtime_default`
 continues to require no coordinator provider credential, catalog, or route.
+
+---
+
+## HA-74 — top-up successor grant preserves immutable authority and attempt identity
+
+**Priority:** High. **Size:** contained. **State:** Implemented candidate in
+Phase 259 / D-439; hosted CI, release, and downstream acceptance remain
+pending.
+
+**Observed gap.** `LeaseTopUpper.TopUp` returns a newly signed
+`ExternalGrant`, but the v1.30.1 wrapper compared only logical-call id,
+attempt nonce, and effective route mode before replacing the verified grant.
+Re-verification proved that the returned grant was valid in isolation; it did
+not prove that it was a bounded successor of the original authority. A broken
+top-up service could therefore substitute a different grant, identity, route,
+credential generation, policy, ceiling, or lease id and still reach the
+provider if that replacement independently verified.
+
+**Implemented framework shape.** The public
+`ValidateExternalGrantTopUpSuccessor` helper compares the raw signed route mode
+and every immutable contract field. It permits only rotating key id,
+issued-at, signature, strictly advancing lease state, and non-rewinding
+validity.
+The lease id is immutable; the epoch advances exactly once; total capacity
+increases positively by no more than the provider call's requested units;
+consumption cannot rewind; and remaining capacity is sufficient for the call.
+Grant and lease deadlines may remain unchanged or move forward while retaining
+at most the respective lifetime signed into the predecessor. The wrapper calls
+this helper before it accepts the successor, then runs the configured
+signature/context verifier again. Legacy blank route mode must remain blank
+across a top-up; it cannot be normalized into wider authority.
+
+Table tests mutate every preserved field and prove refusal before the provider
+call. Separate tests cover both route modes, epoch/capacity/consumption and
+validity adversaries, integer overflow, deterministic response replay, stale
+successor refusal, N=100 concurrent reuse under the race detector, fuzzed
+immutable-string drift, and external-package SDK reachability. This is a
+generic execution-grant safety correction. It adds no transport, quota store,
+billing model, provider catalog, product policy, credential format, Protocol
+method, or Protocol version.
+
+**Operational boundary.** This answer supplies the public relationship
+validator and its optional wrapper consumer only. Stock Harbor still has no
+live top-up transport, and its durable reservation store has no
+post-validation replay-idempotent successor-application hook. Those pieces
+must land together in a separately owned phase before runtime top-up can be
+advertised as supported; advancing durable lease state inside an unverified
+transport callback is explicitly not an acceptable substitute.

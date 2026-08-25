@@ -249,6 +249,13 @@ var CanonicalAttemptID = internal.CanonicalAttemptID
 // coordinator-bound shape.
 var EffectiveExternalGrantRouteMode = internal.EffectiveExternalGrantRouteMode
 
+// ValidateExternalGrantTopUpSuccessor verifies that a newly signed grant only
+// advances the bounded lease and validity state of its predecessor. Callers
+// must first authenticate the predecessor with their configured
+// ExternalGrantVerifier, then authenticate the successor after this
+// relationship-only helper succeeds.
+var ValidateExternalGrantTopUpSuccessor = internal.ValidateExternalGrantTopUpSuccessor
+
 // WithVerifiedOrganization attaches the server-derived organization scope.
 var WithVerifiedOrganization = internal.WithVerifiedOrganization
 

@@ -260,7 +260,6 @@ func capRequestToGrant(req llm.CompleteRequest, grant llm.ExternalGrant) (llm.Co
 func maxInt() int { return int(^uint(0) >> 1) }
 
 func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, req llm.CompleteRequest) error {
-	originalMode := llm.EffectiveExternalGrantRouteMode(grant.RouteMode)
 	err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req)
 	if err == nil {
 		return nil
@@ -276,8 +275,8 @@ func (c *client) verifyOrTopUp(ctx context.Context, grant *llm.ExternalGrant, re
 	if topErr != nil {
 		return fmt.Errorf("%w: top-up failed: %w", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
-	if newGrant.LogicalCallID != grant.LogicalCallID || newGrant.AttemptNonce != grant.AttemptNonce || llm.EffectiveExternalGrantRouteMode(newGrant.RouteMode) != originalMode {
-		return fmt.Errorf("%w: lease top-up changed attempt identity or route mode", llm.ErrExternalGrantInvalid)
+	if err := llm.ValidateExternalGrantTopUpSuccessor(*grant, newGrant, needed); err != nil {
+		return err
 	}
 	*grant = newGrant
 	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, *grant, req); err != nil {

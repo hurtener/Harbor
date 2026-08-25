@@ -186,6 +186,95 @@ type LeaseTopUpper interface {
 	TopUp(context.Context, ExternalGrant, int64) (ExternalGrant, error)
 }
 
+// ValidateExternalGrantTopUpSuccessor verifies that successor is a bounded
+// lease top-up of current rather than a different execution authority. The
+// caller must have authenticated current with its configured verifier before
+// calling this relationship-only helper, and must authenticate successor with
+// that verifier after this helper succeeds. The only claims allowed to rotate
+// are KeyID, IssuedAt, Signature, the lease capacity/accounting epoch, and the
+// two validity deadlines.
+//
+// requestedUnits is both the minimum remaining capacity the successor must
+// provide and the maximum increase in total capacity. Validity may move
+// forward, but a successor may not lengthen either the grant or lease lifetime
+// beyond the respective duration signed into current. These local bounds let
+// a coordinator renew a short-lived grant without turning a top-up response
+// into an unbounded lease or long-lived authority.
+func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, requestedUnits int64) error {
+	invalid := func(detail string) error {
+		return fmt.Errorf("%w: lease top-up successor %s", ErrExternalGrantInvalid, detail)
+	}
+	if requestedUnits <= 0 {
+		return invalid("has an invalid requested-unit bound")
+	}
+
+	// Normalize only the explicitly mutable claims, then compare the complete
+	// value. This makes every present and future comparable field immutable by
+	// default. Adding a non-comparable field to ExternalGrant deliberately
+	// fails compilation here until its successor semantics are reviewed. The
+	// raw route mode remains part of the comparison: a legacy blank
+	// coordinator-bound predecessor cannot become an explicit mode during a
+	// top-up because omission is itself part of the signed authority.
+	expected := current
+	expected.KeyID = successor.KeyID
+	expected.IssuedAt = successor.IssuedAt
+	expected.ExpiresAt = successor.ExpiresAt
+	expected.Signature = successor.Signature
+	expected.Lease.Epoch = successor.Lease.Epoch
+	expected.Lease.TokenUnits = successor.Lease.TokenUnits
+	expected.Lease.ConsumedUnits = successor.Lease.ConsumedUnits
+	expected.Lease.ExpiresAt = successor.Lease.ExpiresAt
+	if expected != successor {
+		return invalid("changed immutable authority")
+	}
+	if successor.Version <= 0 || successor.Audience == "" || successor.GrantID == "" ||
+		successor.OrganizationID == "" || successor.RuntimeID == "" || successor.TenantID == "" ||
+		successor.UserID == "" || successor.SessionID == "" || successor.LogicalRunID == "" ||
+		successor.LogicalCallID == "" || successor.AttemptNonce == "" || successor.PolicyGeneration == 0 ||
+		successor.MaxReasoning == "" || successor.MaxOutputTokens <= 0 || successor.Lease.LeaseID == "" {
+		return invalid("omitted a required immutable claim")
+	}
+	if successor.KeyID == "" || successor.Signature == "" {
+		return invalid("omitted rotating signing metadata")
+	}
+
+	if current.Lease.Epoch == ^uint64(0) || successor.Lease.Epoch != current.Lease.Epoch+1 {
+		return invalid("did not advance the lease epoch exactly once")
+	}
+	if current.Lease.TokenUnits <= 0 || successor.Lease.TokenUnits <= current.Lease.TokenUnits ||
+		current.Lease.ConsumedUnits < 0 || current.Lease.ConsumedUnits > current.Lease.TokenUnits ||
+		successor.Lease.ConsumedUnits < current.Lease.ConsumedUnits ||
+		successor.Lease.ConsumedUnits > successor.Lease.TokenUnits {
+		return invalid("has non-monotonic lease capacity or consumption")
+	}
+	capacityIncrease := successor.Lease.TokenUnits - current.Lease.TokenUnits
+	currentRemaining := current.Lease.TokenUnits - current.Lease.ConsumedUnits
+	successorRemaining := successor.Lease.TokenUnits - successor.Lease.ConsumedUnits
+	if capacityIncrease > requestedUnits || successorRemaining < requestedUnits ||
+		successorRemaining <= currentRemaining {
+		return invalid("exceeds the bounded capacity advance")
+	}
+
+	if current.IssuedAt.IsZero() || successor.IssuedAt.IsZero() || successor.IssuedAt.Before(current.IssuedAt) {
+		return invalid("has a non-monotonic issued-at value")
+	}
+	exactLifetime := func(issuedAt, expiresAt time.Time) (time.Duration, bool) {
+		lifetime := expiresAt.Sub(issuedAt)
+		return lifetime, lifetime > 0 && issuedAt.Add(lifetime).Equal(expiresAt)
+	}
+	grantLifetime, validGrantLifetime := exactLifetime(current.IssuedAt, current.ExpiresAt)
+	leaseLifetime, validLeaseLifetime := exactLifetime(current.IssuedAt, current.Lease.ExpiresAt)
+	successorGrantLifetime, validSuccessorGrantLifetime := exactLifetime(successor.IssuedAt, successor.ExpiresAt)
+	successorLeaseLifetime, validSuccessorLeaseLifetime := exactLifetime(successor.IssuedAt, successor.Lease.ExpiresAt)
+	if !validGrantLifetime || !validLeaseLifetime || !validSuccessorGrantLifetime || !validSuccessorLeaseLifetime ||
+		successor.ExpiresAt.Before(current.ExpiresAt) ||
+		successor.Lease.ExpiresAt.Before(current.Lease.ExpiresAt) ||
+		successorGrantLifetime > grantLifetime || successorLeaseLifetime > leaseLifetime {
+		return invalid("exceeds the predecessor validity bounds")
+	}
+	return nil
+}
+
 // LeaseReservationRequest is the durable per-attempt reservation request.
 // Implementations must serialize competing requests for the same LeaseID in
 // the StateStore, not in process-local memory.

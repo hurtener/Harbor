@@ -28,6 +28,19 @@ Two versions move independently in Harbor (RFC §5.3):
   the blank public route mode required to verify a legacy receipt hash while
   re-marshaling the same explicit canonical wire bytes.
 
+### Fixed
+
+- HA-74 makes lease top-up successor validation a public SDK contract and
+  applies it inside the external-grant wrapper before replacing the verified
+  predecessor. The relationship check preserves every immutable execution,
+  identity, route, credential, policy, ceiling, and lease-id claim; advances
+  one epoch; bounds usable-capacity growth to the requested provider call; and
+  cannot rewind deadlines or lengthen grant or lease lifetime beyond the
+  predecessor's signed windows. Key rotation and renewed signatures remain
+  subject to the configured grant verifier. Stock live top-up transport and
+  replay-idempotent durable lease advancement remain unsupported; this change
+  does not claim them. No Protocol method or version changes.
+
 ## [1.30.1] — 2026-08-24
 
 ### Fixed

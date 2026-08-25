@@ -14240,3 +14240,53 @@ of HA-72.
 06, and 08.
 
 **Plan:** `docs/plans/phase-257-canonical-attempt-receipt-parser.md`.
+
+---
+
+## D-439 — A lease top-up is a bounded successor of one immutable external execution grant (HA-74)
+
+**Date:** 2026-08-25
+
+**Status:** Implemented candidate in Phase 259; hosted CI, release, and
+downstream acceptance remain pending.
+
+The external-grant wrapper no longer treats independent signature validity as
+proof that a top-up response is the successor of the grant it replaces. One
+public `ValidateExternalGrantTopUpSuccessor` helper is now the relationship
+check and the wrapper is its first production consumer.
+
+The successor preserves exact contract version, audience, grant id, raw route
+mode, organization/runtime and `(tenant,user,session)` identity, logical run,
+logical call and attempt nonce, provider/model/connection generation/route,
+opaque credential binding and asset generation, policy generation, reasoning
+and output ceilings, and lease id. Comparing raw route mode is deliberate: a
+legacy blank coordinator-bound predecessor remains blank, so zero-value
+normalization cannot silently change signed authority during renewal.
+
+Only key id, issued-at, signature, lease accounting, and validity may move.
+The configured verifier owns signing-key trust, signature authenticity,
+request context, and current-time checks. The relationship validator requires
+one exact epoch advance, a positive total-capacity increase no greater than
+the requested provider-call units, non-decreasing consumption, and sufficient
+remaining capacity for that call. Subtraction after monotonicity checks avoids
+addition overflow. Grant and lease expiry may remain unchanged or advance,
+while their respective lifetimes may not exceed the durations signed into the
+predecessor. Applying the same successor to the same predecessor is a
+deterministic response-loss replay; trying to advance that successor with
+itself is stale and fails.
+
+The validator is publicly nameable through `sdk/llm`, has no credential or
+content fields, and adds no Protocol surface. Phase 259 covers both route
+shapes, every immutable field independently, missing and non-monotonic state,
+epoch overflow, excessive capacity/validity, replay, concurrency, fuzzing, and
+the wrapper's no-provider-call refusal.
+
+This decision is relationship validation only. Harbor's stock assembly has no
+live top-up transport, and the durable reservation store has no
+post-validation replay-idempotent successor-application hook. Until a separate
+phase owns both pieces, an operator must not describe live top-up as supported;
+the runtime must report it as unsupported rather than mutating lease state
+before the successor has passed both relationship and signature verification.
+
+**Cross-references:** D-025, D-434, D-436, RFC §6.5, §6.11, §6.15, brief 03,
+brief 08. Plan: `docs/plans/phase-259-external-grant-topup-successor.md`.
