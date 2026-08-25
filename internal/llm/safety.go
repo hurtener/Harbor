@@ -101,7 +101,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	}
 
 	// Step 3: token-budget guard.
-	estimated := estimateTokens(materialized, profile)
+	estimated := EstimateRequestTokens(materialized, profile)
 	windowCap := profile.ContextWindowTokens
 	// Reserve margin: fail when estimated >= windowCap * (1 - reserve).
 	// Equivalently: fail when (windowCap - estimated) < windowCap * reserve.

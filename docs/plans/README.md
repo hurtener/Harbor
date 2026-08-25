@@ -5485,9 +5485,14 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   verified and emits a content-free receipt. The StateStore outbox
   conditionally queues/ACKs receipts, safely replays response-loss duplicates,
   backs off, and circuit-breaks delivery. Disabled, optional, and required
-  modes preserve compatibility and fail-closed strict behavior.
-- **Evidence:** Focused grant, Bifrost, retry, receipt, in-memory, and SQLite
-  tests cover identity/generation fencing, two-organization concurrent reuse,
+  modes preserve compatibility and fail-closed strict behavior. The execution
+  edge reserves the canonical prompt estimate plus bounded output, binds the
+  durable lease to the exact grant and admitted identity/agent scope, charges
+  nonzero usage on every terminal outcome, and converges expired crash-stale
+  attempts without discarding late actual usage.
+- **Evidence:** Focused grant, Bifrost, retry, receipt, in-memory, SQLite, and
+  DSN-gated real-PostgreSQL tests cover identity/generation fencing,
+  two-organization concurrent reuse,
   missing/invalid grants, no-secret receipts, retry coordinates, ACK/replay,
   changed-body refusal, and bounded delivery failure. Race/vet/smoke evidence
   and any hosted PostgreSQL/provider acceptance must be recorded on the
@@ -5615,7 +5620,8 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   `runtime.info.external_grant` projection with accepted versus independently
   ready routes and concrete receipt-transport kind/readiness. Disabled/default
   stock boot performs zero coordinator work. `runtime_default` requires no
-  coordinator provider credential or catalog.
+  coordinator provider credential or catalog. Post-provider settlement and
+  immediate enqueue share one short caller-cancellation-detached context.
 - **Evidence:** Focused in-memory/SQLite outbox, HTTP transport, cancellation,
   lifetime-ACK/restart and crash-gap recovery, concurrent reuse, config,
   serve-wiring, degraded/recovered readiness, Protocol generation, race,

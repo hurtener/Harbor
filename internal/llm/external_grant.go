@@ -295,18 +295,22 @@ func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, reque
 
 // LeaseReservationRequest is the durable per-attempt reservation request.
 // Implementations must serialize competing requests for the same LeaseID in
-// the StateStore, not in process-local memory.
+// the StateStore, not in process-local memory, and bind the durable state to
+// the exact grant plus organization, runtime, admitted identity, and agent.
 type LeaseReservationRequest struct {
-	AttemptID     string
-	LogicalCallID string
-	AttemptNonce  string
-	GrantID       string
-	LeaseID       string
-	Epoch         uint64
-	Capacity      int64
-	Units         int64
-	ExpiresAt     time.Time
-	Identity      identity.Quadruple
+	AttemptID      string
+	LogicalCallID  string
+	AttemptNonce   string
+	GrantID        string
+	LeaseID        string
+	OrganizationID string
+	RuntimeID      string
+	AgentID        string
+	Epoch          uint64
+	Capacity       int64
+	Units          int64
+	ExpiresAt      time.Time
+	Identity       identity.Quadruple
 }
 
 // LeaseReservation is the durable reservation identity returned before the

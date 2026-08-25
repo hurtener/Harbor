@@ -13976,6 +13976,19 @@ receipt id and canonical body hash. No prompt, response, tool arguments,
 reasoning trace, credential bytes, or secret appears in a grant, receipt,
 error, or log.
 
+The pre-call reservation covers Harbor's one canonical prompt-token estimate
+plus the bounded output ceiling, rather than reserving output alone. Provider
+tokenizers remain authoritative, so this is a conservative planning bound, not
+invoice truth: a single call may still report more tokens than estimated.
+Settlement records that actual usage even when it exceeds the reservation and
+charges every nonzero terminal success, error, or cancellation while releasing
+only unused units. Lease state is bound to the exact grant id plus organization,
+runtime, admitted identity/run, and effective agent; the same LeaseID cannot
+share accounting across those scopes, and a top-up must preserve the binding.
+An expired crash-stale reservation is conditionally released on replay and
+becomes terminal rather than remaining permanently in flight; an already
+executed provider call may still settle its late actual usage idempotently.
+
 **Compatibility and limits.** The grant layer is internal to `LLMClient`; it
 does not add a provider-specific interface or a Protocol version. A coordinator
 may issue a top-up grant when a bounded lease is insufficient, but Harbor does
@@ -14272,6 +14285,12 @@ breaker, so a coordinator outage neither loses facts nor creates a synchronized
 retry storm. Stock lease top-up remains unsupported: a successor grant cannot
 be called ready until its validated epoch/capacity advances the durable
 reservation store idempotently, including response-loss replay.
+
+After provider interaction, settlement, the atomic pending-handoff write, and
+the immediate outbox enqueue share one short bounded context derived with
+`context.WithoutCancel`; caller cancellation therefore stops provider work but
+cannot by itself strand the terminal accounting transition. Success, error,
+and cancellation receipts all retain any nonzero provider-reported usage.
 
 The old whole receipt-prefix scan is upgrade-only. Its successful completion
 stores a versioned durable reconciliation marker; ordinary ACKed receipt

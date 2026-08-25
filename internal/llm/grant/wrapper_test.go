@@ -46,6 +46,49 @@ type recordingSink struct {
 	err      error
 }
 
+type recordingReservations struct {
+	inner                   *leases.Store
+	mu                      sync.Mutex
+	requests                []llm.LeaseReservationRequest
+	settlementContextErrors []error
+}
+
+func (r *recordingReservations) Reserve(ctx context.Context, req llm.LeaseReservationRequest) (llm.LeaseReservation, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, req)
+	r.mu.Unlock()
+	return r.inner.Reserve(ctx, req)
+}
+
+func (r *recordingReservations) Settle(ctx context.Context, settlement llm.LeaseSettlement) error {
+	r.mu.Lock()
+	r.settlementContextErrors = append(r.settlementContextErrors, ctx.Err())
+	r.mu.Unlock()
+	return r.inner.Settle(ctx, settlement)
+}
+
+type completeFunc func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error)
+
+func (f completeFunc) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return f(ctx, req)
+}
+
+func (completeFunc) Close(context.Context) error { return nil }
+
+type contextRecordingSink struct {
+	mu            sync.Mutex
+	receipts      []llm.AttemptUsageReceipt
+	contextErrors []error
+}
+
+func (s *contextRecordingSink) Enqueue(ctx context.Context, receipt llm.AttemptUsageReceipt) error {
+	s.mu.Lock()
+	s.receipts = append(s.receipts, receipt)
+	s.contextErrors = append(s.contextErrors, ctx.Err())
+	s.mu.Unlock()
+	return nil
+}
+
 type blockingClient struct {
 	started   chan struct{}
 	release   chan struct{}
@@ -173,6 +216,96 @@ func TestWrap_RequiredGrantResolvesOnlyVerifiedContextAndEmitsContentFreeReceipt
 	}
 	if got := string(mustJSON(t, receipt)); containsSecret(got, "credential-a") {
 		t.Fatalf("receipt contains provider secret: %s", got)
+	}
+}
+
+func TestWrap_ReservesCanonicalTotalCallBoundForPromptHeavySuccess(t *testing.T) {
+	signer, err := NewSigner("key-total", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-total": signer.PublicKey()}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := NewBindingStore()
+	if err := binding.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	grant := testGrant()
+	grant.Lease.LeaseID = "lease-prompt-heavy"
+	signed, err := signer.Sign(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservations := &recordingReservations{inner: newTestReservations(t)}
+	sink := &recordingSink{}
+	inner := &recordingClient{response: llm.CompleteResponse{Usage: llm.Usage{PromptTokens: 520, CompletionTokens: 980, TotalTokens: 1500}}}
+	client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding,
+		Reservations: reservations, ReceiptSink: sink, ReceiptRequired: true,
+	}})
+	textContent := strings.Repeat("abcdefgh", 250)
+	req := llm.CompleteRequest{Model: "model-fast", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &textContent}}}, ExternalGrant: &signed}
+	if _, err := client.Complete(testContext(t, "org-a"), req); err != nil {
+		t.Fatalf("prompt-heavy Complete: %v", err)
+	}
+	want := int64(llm.EstimateRequestTokens(req, llm.ModelProfile{}) + grant.MaxOutputTokens)
+	reservations.mu.Lock()
+	defer reservations.mu.Unlock()
+	if len(reservations.requests) != 1 || reservations.requests[0].Units != want {
+		t.Fatalf("reservation = %+v, want total-call units %d", reservations.requests, want)
+	}
+	if reservations.requests[0].Units <= int64(grant.MaxOutputTokens) {
+		t.Fatalf("reservation omitted prompt estimate: %+v", reservations.requests[0])
+	}
+}
+
+func TestWrap_PersistsCanceledProviderUsageAfterCallerCancellation(t *testing.T) {
+	signer, err := NewSigner("key-cancel", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-cancel": signer.PublicKey()}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := NewBindingStore()
+	if err := binding.Put(Binding{Handle: "binding-a", OrganizationID: "org-a", RuntimeID: "runtime-1", Provider: "openai", ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 1, Generation: 1, Secret: "credential-a"}); err != nil {
+		t.Fatal(err)
+	}
+	grant := testGrant()
+	grant.Lease.LeaseID = "lease-canceled-usage"
+	signed, err := signer.Sign(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(testContext(t, "org-a"))
+	reservations := &recordingReservations{inner: newTestReservations(t)}
+	sink := &contextRecordingSink{}
+	provider := completeFunc(func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error) {
+		cancel()
+		return llm.CompleteResponse{Usage: llm.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}}, context.Canceled
+	})
+	client := Wrap(provider, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, Verifier: verifier, Credentials: binding,
+		Reservations: reservations, ReceiptSink: sink, ReceiptRequired: true,
+	}})
+	if _, err := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Complete = %v, want context.Canceled", err)
+	}
+	reservations.mu.Lock()
+	settleErrors := append([]error(nil), reservations.settlementContextErrors...)
+	reservations.mu.Unlock()
+	sink.mu.Lock()
+	receipts := append([]llm.AttemptUsageReceipt(nil), sink.receipts...)
+	sinkErrors := append([]error(nil), sink.contextErrors...)
+	sink.mu.Unlock()
+	if len(settleErrors) != 1 || settleErrors[0] != nil || len(sinkErrors) != 1 || sinkErrors[0] != nil {
+		t.Fatalf("terminal contexts: settle=%v sink=%v", settleErrors, sinkErrors)
+	}
+	if len(receipts) != 1 || receipts[0].Status != "canceled" || receipts[0].TotalTokens != 5 {
+		t.Fatalf("canceled receipt = %+v", receipts)
 	}
 }
 

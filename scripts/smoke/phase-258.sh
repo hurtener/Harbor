@@ -29,6 +29,7 @@ assert_grep_present 'TestOutboxRunCorruptDueIndexDegradesWithoutHotLoopAndCloses
 assert_grep_present 'TestOutboxAcknowledgedLifetimeHistoryNeverReentersLegacyScan' "internal/llm/receipts/outbox_due_test.go" "ACKed lifetime history stays outside upgrade reconciliation"
 assert_grep_present 'TestOutboxReconcile_EnqueueBeforePendingAckConvergesAfterResponseLoss' "internal/llm/receipts/outbox_due_test.go" "enqueue-before-pending-ACK response loss converges"
 assert_grep_present 'TestStore_PendingReceiptHandoffRecoversAllTerminalOutcomesAcrossDrivers' "internal/llm/leases/manager_test.go" "atomic terminal receipt handoff recovery covered"
+assert_grep_present 'TestWrap_PersistsCanceledProviderUsageAfterCallerCancellation' "internal/llm/grant/wrapper_test.go" "canceled provider usage uses detached terminal persistence"
 assert_grep_present 'external_grant\?: ExternalGrantReadiness' "web/console/src/lib/protocol/settings.ts" "Console runtime.info optional mirror updated"
 assert_grep_present 'llm.external_grant.coordinator.receipt_url' "docs/CONFIG.md" "operator config documented"
 assert_grep_present 'never require coordinator provider credentials or a model catalog' "docs/plans/phase-258-stock-coordinator-receipt-transport.md" "runtime-default independence explicit"

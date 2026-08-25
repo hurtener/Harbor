@@ -103,6 +103,12 @@ same canonical receipt and converges through outbox idempotency. Retained
 attempt history is never a recovery queue and cannot hide a later pending
 handoff behind its first page.
 
+After provider interaction, settlement and immediate enqueue share one short
+bounded context derived without the caller's cancellation. Cancellation still
+stops provider work, but it does not by itself strand a terminal settlement or
+pending handoff. Every terminal outcome charges provider-reported nonzero
+usage; only unused reserved units are released.
+
 ## Runtime posture
 
 `runtime.info.external_grant` reports:
@@ -146,6 +152,9 @@ pre-projection/unknown rather than ready.
   legacy reconciliation after the durable marker, including after restart.
 - Success, error, and cancellation settlements atomically create removable
   pending handoffs; crash-before-removal replay converges in-memory and SQLite.
+- Caller cancellation after provider interaction still permits bounded
+  settlement and handoff; provider-reported usage is retained on every
+  terminal status.
 - A transient cadence or replay StateStore failure degrades readiness,
   retries, and recovers; a corrupt due index remains degraded without a hot
   loop; an explicit disabled YAML mode conflicts with an injected enabled

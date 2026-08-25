@@ -60,6 +60,20 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- External-grant lease accounting now reserves Harbor's one canonical prompt
+  estimate plus the bounded output ceiling before every provider call, then
+  charges provider-reported nonzero usage for success, error, and cancellation
+  while releasing only unused capacity. Provider tokenizer differences retain
+  the documented single-call overshoot possibility, but actual usage and its
+  durable receipt are never discarded for exceeding the estimate. Durable
+  lease records are bound to the exact grant, organization, runtime, admitted
+  identity/run, and effective agent; conflicting reuse of a LeaseID fails
+  closed without mutating the original accounting, and top-ups must preserve
+  the same binding. Post-provider settlement and receipt handoff share one
+  short context detached from caller cancellation. A replay of an expired
+  crash-stale reservation atomically releases it and converges to a terminal
+  record; late provider usage can still settle idempotently.
+
 - HA-74 makes lease top-up successor validation a public SDK contract and
   applies it inside the external-grant wrapper before replacing the verified
   predecessor. The relationship check preserves every immutable execution,
