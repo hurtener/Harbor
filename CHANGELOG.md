@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.2] — 2026-08-25
+
 ### Added
 
 - Harbor now provides stock authenticated external-grant renewal. An optional
@@ -108,6 +110,22 @@ Two versions move independently in Harbor (RFC §5.3):
   An omitted request output limit derives top-up need from
   the same signed output ceiling later applied to the provider call. No
   Protocol method or version changes.
+
+### Release candidate evidence
+
+- Implementation PR #747 was reviewed at exact head
+  `0992356db24b43776a10a6572e3df56b610cf50e` and squash-merged as
+  `459278f7ce599aa6a66f83c3ffbaeb42bb6b7f0c` (tree
+  `5b7583150d8e7cd3149da1eb77eda4e68ff63f64`). Candidate docs run
+  `32850686252` and post-merge docs run `32852635507` completed successfully.
+  At this release cut, candidate CI `32850686237` and exact post-merge main CI
+  `32852635451` had no failed jobs but each still had its final preflight gate
+  in progress. Due the one-hour pause deadline, the owner explicitly authorized
+  proceeding with the release and tag despite those pending gates; any late
+  failure will be fixed later that day. As of this release-cut commit, no
+  v1.30.2 tag, assets, module provenance,
+  checksums/attestations, post-tag scaffold cleanup, or downstream runtime,
+  fleet, database, deployment, or acceptance is claimed.
 
 ## [1.30.1] — 2026-08-24
 
@@ -5031,7 +5049,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.1...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.2...HEAD
+[1.30.2]: https://github.com/hurtener/Harbor/compare/v1.30.1...v1.30.2
 [1.30.1]: https://github.com/hurtener/Harbor/compare/v1.30.0...v1.30.1
 [1.30.0]: https://github.com/hurtener/Harbor/compare/v1.29.5...v1.30.0
 [1.29.5]: https://github.com/hurtener/Harbor/compare/v1.29.4...v1.29.5

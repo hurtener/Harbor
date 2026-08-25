@@ -398,11 +398,11 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |254 | Context-bound external execution grants and durable attempt receipts (HA-70, D-434): signed verified-context grants, generation-fenced credential handles, bounded leases, retry/downgrade/failover coverage, content-free receipt outbox, idempotent replay, bounded backoff, and strict compatibility modes | llm edge + Bifrost account + retry/failover + StateStore receipt outbox | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-333, D-334 | focused package/race gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |255 | Provider-neutral technical descriptors and runtime-origin model discovery (HA-71, D-435): credential modes/field kinds, conservative custom-endpoint facts, bounded Bifrost validation/discovery, normalized model capabilities, explicit manual/partial/stale/unknown/unpriced outcomes, redacted errors, offline CLI plus protected existing `llm.posture` runtime projection | llm/provider + bifrost adapter + Protocol posture + CLI + operator docs | §3, §6.5, §6.15, §8 | 03, 06, 08, 25, 33, 33a, D-018, D-025, D-333, D-334, D-434 | focused package/Protocol/CLI gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |256 | Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension, D-436): public grant/config/signer/verifier/receipt delivery seams, canonical receipt JSON/hash and parent/child validation, signed coordinator-bound vs runtime-default route shapes, native configured provider/model receipts, mixed-route and cross-provider fail-closed behavior, assembled runtime and external-package first consumers | sdk/llm + sdk/assemble + grant wrapper + receipt outbox + runtime assembly + config | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-025, D-333, D-334, D-434, D-435 | focused race/vet + public consumer + smoke | Shipped (v1.30.1; hosted CI/release green; downstream acceptance pending) |
-|257 | Strict public canonical attempt-receipt parser (HA-72 parser slice, D-437): exact inverse over the canonical current and preserved legacy receipt wires, closed unknown/duplicate/missing/trailing/noncanonical input, semantic/hash validation, byte-identical re-marshal, fuzz/adversarial and external-package coverage; no transport or idle work | internal/llm + sdk/llm + sdk/assemble | §6.5, §6.11, §6.15 | 254, 256, D-434, D-436 | focused race/vet + fuzz seeds + public consumer + smoke | Implemented candidate; Phase 258 completes HA-72 transport/readiness; hosted CI/release/downstream acceptance pending |
-|258 | Stock coordinator receipt transport and runtime readiness (HA-72, D-438): opt-in authenticated bounded receipt batches, exact ID/hash ACKs, partial/response-loss durable replay, stable jittered backoff, bounded fail-closed replay/index recovery with truthful degraded readiness, zero-work disabled defaults, explicit unsupported stock top-up, and content-free `runtime.info.external_grant` readiness truth for both route modes | llm receipts + runtime serve + config + protocol posture | §5.3, §6.5, §6.11, §6.15 | 254, 256, 257, D-025, D-434, D-436, D-437 | focused race/vet + Protocol generation + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
-|259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
-|260 | Reach-admitted agent-bound external grants (HA-75, D-440): v2 signs the exact effective agent selected by normal reach admission, reference verification fails before provider side effects, receipts/top-ups preserve the binding, v1 signatures and blank-agent receipt bytes remain exact, and readiness advertises `[1,2]` plus `required_v2` | internal/llm + grant + runtime/serve + protocol posture + sdk/llm | §6.5, §6.11, §6.15 | 254, 256, 257, 258, 259, D-434..D-439 | focused race/vet + real run-loop + public consumer + generators + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
-|261 | Stock authenticated external-grant renewal (D-441): strict typed expiry, full-authority renewal preflight, public canonical `sdk/llm/topup` contract and 128-KiB bounds, optional authenticated HTTP transport, reason-aware no-widen expiry renewal, replay-idempotent durable successor CAS, apply-before-reserve/provider ordering, truthful stock/host/unsupported readiness, and zero idle work | sdk/llm/topup + grant wrapper + leases + receipt HTTP transport + runtime assembly/config/readiness | §6.5, §6.11, §6.15 | 254, 256, 258, 259, 260, D-434..D-440 | focused race/vet + inmem/SQLite/real-PG + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
+|257 | Strict public canonical attempt-receipt parser (HA-72 parser slice, D-437): exact inverse over the canonical current and preserved legacy receipt wires, closed unknown/duplicate/missing/trailing/noncanonical input, semantic/hash validation, byte-identical re-marshal, fuzz/adversarial and external-package coverage; no transport or idle work | internal/llm + sdk/llm + sdk/assemble | §6.5, §6.11, §6.15 | 254, 256, D-434, D-436 | focused race/vet + fuzz seeds + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
+|258 | Stock coordinator receipt transport and runtime readiness (HA-72, D-438): opt-in authenticated bounded receipt batches, exact ID/hash ACKs, partial/response-loss durable replay, stable jittered backoff, bounded fail-closed replay/index recovery with truthful degraded readiness, zero-work disabled defaults, explicit unsupported stock top-up, and content-free `runtime.info.external_grant` readiness truth for both route modes | llm receipts + runtime serve + config + protocol posture | §5.3, §6.5, §6.11, §6.15 | 254, 256, 257, D-025, D-434, D-436, D-437 | focused race/vet + Protocol generation + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
+|259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
+|260 | Reach-admitted agent-bound external grants (HA-75, D-440): v2 signs the exact effective agent selected by normal reach admission, reference verification fails before provider side effects, receipts/top-ups preserve the binding, v1 signatures and blank-agent receipt bytes remain exact, and readiness advertises `[1,2]` plus `required_v2` | internal/llm + grant + runtime/serve + protocol posture + sdk/llm | §6.5, §6.11, §6.15 | 254, 256, 257, 258, 259, D-434..D-439 | focused race/vet + real run-loop + public consumer + generators + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
+|261 | Stock authenticated external-grant renewal (D-441): strict typed expiry, full-authority renewal preflight, public canonical `sdk/llm/topup` contract and 128-KiB bounds, optional authenticated HTTP transport, reason-aware no-widen expiry renewal, replay-idempotent durable successor CAS, apply-before-reserve/provider ordering, truthful stock/host/unsupported readiness, and zero idle work | sdk/llm/topup + grant wrapper + leases + receipt HTTP transport + runtime assembly/config/readiness | §6.5, §6.11, §6.15 | 254, 256, 258, 259, 260, D-434..D-440 | focused race/vet + inmem/SQLite/real-PG + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5604,9 +5604,9 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
 - **Evidence:** Exact round-trip, mutation-shaped adversarial and semantic/hash
   tests, fuzz seeds, external-package compilation/execution, focused race/vet,
   static smoke, and documentation gates. Hosted CI and release remain pending.
-- **Decision:** D-437. **Status:** Implemented as an unreleased candidate.
-  Phase 258 / D-438 completes HA-72's stock transport/readiness boundary;
-  hosted CI, release, and downstream acceptance remain pending.
+- **Decision:** D-437. **Status:** Accepted for the v1.30.2 release candidate;
+  tag, release, and downstream acceptance remain pending. Phase 258 / D-438
+  completes HA-72's stock transport/readiness boundary.
 
 ### Phase 258 — Stock coordinator receipt transport and runtime readiness (HA-72)
 
@@ -5629,8 +5629,8 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   vet, docs/drift, and static smoke gates are required. Hosted CI, release
   evidence, external coordinator acceptance, and downstream deployment remain
   separate and unclaimed.
-- **Decision:** D-438. **Status:** Implementation candidate complete; hosted CI
-  and release evidence pending.
+- **Decision:** D-438. **Status:** Accepted for the v1.30.2 release candidate;
+  tag, release, and downstream acceptance remain pending.
 
 ### Phase 259 — External-grant top-up successor validation (HA-74)
 
@@ -5653,8 +5653,8 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   external-package SDK reachability, race/vet/static smoke, and drift/mirror
   gates are required. Hosted CI, release, and downstream acceptance remain
   separate and unclaimed.
-- **Decision:** D-439. **Status:** Implemented candidate; hosted CI, release,
-  and downstream acceptance pending.
+- **Decision:** D-439. **Status:** Accepted for the v1.30.2 release candidate;
+  tag, release, and downstream acceptance remain pending.
 
 ### Phase 260 — Reach-admitted agent-bound external grants (HA-75)
 
@@ -5676,8 +5676,8 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   generation, focused race/vet/static smoke, and drift/mirror gates. Required
   mode blocks ungranted auxiliary calls; arbitrary optional/embedder calls are
   not described as agent-bound.
-- **Decision:** D-440. **Status:** Implemented candidate; hosted CI, release,
-  and downstream acceptance pending.
+- **Decision:** D-440. **Status:** Accepted for the v1.30.2 release candidate;
+  tag, release, and downstream acceptance remain pending.
 
 ### Phase 261 — Stock authenticated external-grant renewal
 
@@ -5696,8 +5696,20 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   and N=100 HTTP reuse, invalid/Agent/revoked zero-call refusal, apply-before-
   provider wrapper tests, in-memory/SQLite plus DSN-gated PostgreSQL successor
   conformance, config/readiness, race/vet/generator/static smoke/drift gates.
-- **Decision:** D-441. **Status:** Implemented candidate; hosted CI, release,
-  and downstream acceptance pending.
+- **Decision:** D-441. **Status:** Accepted for the v1.30.2 release candidate;
+  tag, release, and downstream acceptance remain pending.
+
+**v1.30.2 release-candidate evidence for Phases 257–261.** PR #747 exact head
+`0992356db24b43776a10a6572e3df56b610cf50e` was squash-merged as
+`459278f7ce599aa6a66f83c3ffbaeb42bb6b7f0c` (tree
+`5b7583150d8e7cd3149da1eb77eda4e68ff63f64`). Candidate docs run
+`32850686252` and post-merge docs run `32852635507` succeeded. At this cut,
+candidate CI `32850686237` and post-merge CI `32852635451` had no failed jobs
+but each final preflight gate was still in progress. Due the one-hour pause
+deadline, the owner authorized proceeding with the release and tag despite
+those pending gates; any late failure will be fixed later that day. As of this
+release-cut commit, no tag, release, assets, module provenance, post-tag
+cleanup, or downstream deployment or acceptance is claimed.
 
 ## Notes
 
