@@ -366,6 +366,7 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 			ReceiptTransportKind: "none",
 			ReceiptTransport:     "disabled",
 			TopUpTransport:       "unsupported",
+			TopUpState:           "absent",
 		}
 		if mode == string(llm.ExternalGrantDisabled) {
 			return out
@@ -383,6 +384,7 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 		out.CredentialResolverWired = provided.Credentials != nil
 		if provided.TopUpper != nil {
 			out.TopUpTransport = "host_injected"
+			out.TopUpState = "wired"
 		}
 		switch {
 		case stock != nil:
@@ -391,6 +393,7 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 			out.ReceiptTransport = ready.Receipt
 			if ready.TopUp != "absent" {
 				out.TopUpTransport = "stock_authenticated_http"
+				out.TopUpState = ready.TopUp
 			}
 		case delivery != nil:
 			out.ReceiptTransportKind = "host_injected_delivery"
@@ -408,7 +411,7 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 		if baseReady && out.CredentialResolverWired && (routeMode == "" || routeMode == string(llm.ExternalGrantRouteCoordinatorBound)) {
 			out.ReadyRouteModes = append(out.ReadyRouteModes, string(llm.ExternalGrantRouteCoordinatorBound))
 		}
-		out.StrictReady = len(out.ReadyRouteModes) == len(out.AcceptedRouteModes)
+		out.StrictReady = len(out.ReadyRouteModes) == len(out.AcceptedRouteModes) && out.TopUpState != "degraded"
 		return out
 	}
 }

@@ -48,7 +48,7 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 		ExternalGrant: &types.ExternalGrantReadiness{
 			Supported: true, Configured: true, Mode: "required", SupportedGrantVersions: []int{1, 2}, AgentBinding: "required_v2", AcceptedRouteModes: []string{"runtime_default"}, ReadyRouteModes: []string{"runtime_default"},
 			VerifierConfigured: true, ReservationsWired: true, ReceiptTransport: "wired",
-			ReceiptTransportKind: "stock_authenticated_http", ReceiptParser: "strict_canonical_v1", TopUpTransport: "unsupported", StrictReady: true,
+			ReceiptTransportKind: "stock_authenticated_http", ReceiptParser: "strict_canonical_v1", TopUpTransport: "stock_authenticated_http", TopUpState: "wired", StrictReady: true,
 		},
 	}
 	b, err := json.Marshal(in)

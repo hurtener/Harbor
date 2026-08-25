@@ -207,6 +207,47 @@ func TestStore_ExpirePreservesLateUsageAcrossDrivers(t *testing.T) {
 	}
 }
 
+func TestStore_ResolveAttemptExpiresInFlightAfterLeaseAdvances(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	mgr, err := leases.New(st, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, RunID: "run"}
+	reserve := llm.LeaseReservationRequest{
+		AttemptID: "attempt", LogicalCallID: "call", AttemptNonce: "nonce", GrantID: "grant", LeaseID: "lease",
+		OrganizationID: "org", RuntimeID: "runtime", Epoch: 1, Capacity: 10, Units: 4,
+		ExpiresAt: now.Add(time.Second), GrantFingerprint: "current-fingerprint", Identity: q,
+	}
+	if _, err := mgr.Reserve(context.Background(), reserve); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.TopUp(context.Background(), leases.TopUpRequest{
+		GrantID: "grant", LeaseID: "lease", OrganizationID: "org", RuntimeID: "runtime", Identity: q,
+		Epoch: 2, Capacity: 20, ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lookup := llm.LeaseAttemptLookup{
+		AttemptID: "attempt", LogicalCallID: "call", AttemptNonce: "nonce", GrantID: "grant", LeaseID: "lease",
+		OrganizationID: "org", RuntimeID: "runtime", Units: 4, CurrentGrantFingerprint: "current-fingerprint", Identity: q,
+	}
+	inFlight, found, err := mgr.ResolveAttempt(context.Background(), lookup)
+	if err != nil || !found || inFlight.Status != "reserved" {
+		t.Fatalf("in-flight resolved=%+v found=%v err=%v", inFlight, found, err)
+	}
+	now = now.Add(2 * time.Second)
+	resolved, found, err := mgr.ResolveAttempt(context.Background(), lookup)
+	if err != nil || !found || resolved.Status != "expired" {
+		t.Fatalf("resolved=%+v found=%v err=%v", resolved, found, err)
+	}
+}
+
 func TestStore_FailedSettlementChargesObservedUsageAndReleasesOnlyUnused(t *testing.T) {
 	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {

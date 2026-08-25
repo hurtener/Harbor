@@ -709,6 +709,20 @@ func TestWrap_ImmutableRootResolvesCurrentSuccessorAfterSQLiteRestart(t *testing
 	if renewals.Load() != 2 {
 		t.Fatalf("actual durable exhaustion did not renew current successor: renewals=%d", renewals.Load())
 	}
+	provider := &recordingClient{}
+	replayClient := Wrap(provider, llm.ConfigSnapshot{Provider: "openai", Model: "model-fast"}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantOptional, RouteMode: llm.ExternalGrantRouteRuntimeDefault,
+		Verifier: verifier, RenewalVerifier: verifier, Reservations: store,
+		Successors: store, SuccessorResolver: store, TopUpper: topUpper,
+	}})
+	maxTokens := 10
+	replayCtx := llm.WithAttemptStep(testContext(t, "org-a"), 1)
+	if _, replayErr := replayClient.Complete(replayCtx, llm.CompleteRequest{Model: "model-fast", MaxTokens: &maxTokens, ExternalGrant: &root}); !errors.Is(replayErr, llm.ErrExternalGrantAttemptSettled) {
+		t.Fatalf("settled step 1 replay after restart and later renewals = %v", replayErr)
+	}
+	if len(provider.requests) != 0 || renewals.Load() != 2 {
+		t.Fatalf("delayed replay performed work: provider=%d renewals=%d", len(provider.requests), renewals.Load())
+	}
 }
 
 func TestWrap_MixedRequestedUnitRenewalsReloadWinnerBeforeProvider(t *testing.T) {

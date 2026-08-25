@@ -114,7 +114,8 @@ type RuntimeInfo struct {
 // posture, and fully wired strict execution paths. Receipt transport state is
 // one of disabled, absent, wired, or degraded; its kind distinguishes the
 // stock authenticated HTTP path from host injection. TopUpTransport is one of
-// unsupported, host_injected, or stock_authenticated_http.
+// unsupported, host_injected, or stock_authenticated_http. TopUpState is one
+// of absent, wired, or degraded.
 type ExternalGrantReadiness struct {
 	Supported               bool     `json:"supported"`
 	Configured              bool     `json:"configured"`
@@ -130,6 +131,7 @@ type ExternalGrantReadiness struct {
 	ReceiptTransport        string   `json:"receipt_transport"`
 	ReceiptParser           string   `json:"receipt_parser"`
 	TopUpTransport          string   `json:"top_up_transport"`
+	TopUpState              string   `json:"top_up_state"`
 	StrictReady             bool     `json:"strict_ready"`
 }
 

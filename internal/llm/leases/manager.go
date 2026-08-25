@@ -70,6 +70,69 @@ func New(st state.StateStore, clock func() time.Time) (*Store, error) {
 	return &Store{state: st, clock: clock}, nil
 }
 
+// ResolveAttempt returns an exact persisted attempt independently of the
+// lease's current generation. The current lease must still carry the same
+// complete authority binding, so a caller cannot use replay to cross scope.
+func (s *Store) ResolveAttempt(ctx context.Context, req llm.LeaseAttemptLookup) (llm.LeaseReservation, bool, error) {
+	if err := validateAttemptLookup(req); err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	q := identity.InternalCoordinationQuadruple()
+	attemptKind, leaseKind := attemptPrefix+req.AttemptID, leasePrefix+req.LeaseID
+	for range maxCASRetries {
+		attemptRec, attempt, err := s.loadAttempt(ctx, q, attemptKind)
+		if errors.Is(err, state.ErrNotFound) {
+			return llm.LeaseReservation{}, false, nil
+		}
+		if err != nil {
+			return llm.LeaseReservation{}, false, err
+		}
+		if !attempt.matchesLookup(req) {
+			return llm.LeaseReservation{}, false, ErrAttemptConflict
+		}
+		leaseRec, lease, err := s.loadLease(ctx, q, leaseKind)
+		if err != nil {
+			return llm.LeaseReservation{}, false, err
+		}
+		if !lease.matchesAttempt(attempt) || lease.GrantFingerprint != req.CurrentGrantFingerprint {
+			return llm.LeaseReservation{}, false, ErrAttemptConflict
+		}
+		if attempt.Status != "reserved" || s.clock().UTC().Before(attempt.ExpiresAt) {
+			return attempt.reservation(true), true, nil
+		}
+		if lease.Reserved < attempt.Units {
+			return llm.LeaseReservation{}, false, ErrAttemptConflict
+		}
+		now := s.clock().UTC()
+		lease.Reserved -= attempt.Units
+		attempt.Status = "expired"
+		attempt.SettledAt = now
+		leaseBody, err := json.Marshal(lease)
+		if err != nil {
+			return llm.LeaseReservation{}, false, fmt.Errorf("llm/leases: encode expired replay lease: %w", err)
+		}
+		attemptBody, err := json.Marshal(attempt)
+		if err != nil {
+			return llm.LeaseReservation{}, false, fmt.Errorf("llm/leases: encode expired replay attempt: %w", err)
+		}
+		leaseNext := state.NewInternalRecord(state.NewEventID(), q, leaseKind, leaseBody)
+		attemptNext := state.NewInternalRecord(state.NewEventID(), q, attemptKind, attemptBody)
+		if err := s.state.SaveBatchIf(ctx,
+			[]state.SlotExpectation{
+				state.InternalSlotExpectation(q, leaseKind, leaseRec.ID),
+				state.InternalSlotExpectation(q, attemptKind, attemptRec.ID),
+			},
+			[]state.StateRecord{leaseNext, attemptNext}); err != nil {
+			if errors.Is(err, state.ErrConditionFailed) {
+				continue
+			}
+			return llm.LeaseReservation{}, false, fmt.Errorf("llm/leases: expire replayed reservation: %w", err)
+		}
+		return attempt.reservation(true), true, nil
+	}
+	return llm.LeaseReservation{}, false, fmt.Errorf("%w: concurrent replay expiry did not converge", state.ErrConditionFailed)
+}
+
 // Reserve atomically claims units for AttemptID. Replaying the same attempt
 // returns the original reservation; reusing it with different claims fails.
 // A replay after the reservation expiry atomically releases the stale claim
@@ -714,6 +777,11 @@ type pendingReceiptState struct {
 func (a attemptState) matches(r llm.LeaseReservationRequest) bool {
 	return a.AttemptID == r.AttemptID && a.LogicalCallID == r.LogicalCallID && a.AttemptNonce == r.AttemptNonce && a.GrantID == r.GrantID && a.LeaseID == r.LeaseID && a.OrganizationID == r.OrganizationID && a.RuntimeID == r.RuntimeID && a.AgentID == r.AgentID && a.Epoch == r.Epoch && a.Capacity == r.Capacity && a.Units == r.Units && a.ExpiresAt.Equal(r.ExpiresAt) && a.Identity == r.Identity
 }
+func (a attemptState) matchesLookup(r llm.LeaseAttemptLookup) bool {
+	return a.AttemptID == r.AttemptID && a.LogicalCallID == r.LogicalCallID && a.AttemptNonce == r.AttemptNonce &&
+		a.GrantID == r.GrantID && a.LeaseID == r.LeaseID && a.OrganizationID == r.OrganizationID &&
+		a.RuntimeID == r.RuntimeID && a.AgentID == r.AgentID && a.Identity == r.Identity && a.Units == r.Units
+}
 func (a attemptState) reservation(existing bool) llm.LeaseReservation {
 	return llm.LeaseReservation{AttemptID: a.AttemptID, LogicalCallID: a.LogicalCallID, AttemptNonce: a.AttemptNonce, GrantID: a.GrantID, LeaseID: a.LeaseID, Epoch: a.Epoch, Units: a.Units, ExpiresAt: a.ExpiresAt, Status: a.Status, Existing: existing, Receipt: a.Receipt}
 }
@@ -749,6 +817,15 @@ func validateRequest(r llm.LeaseReservationRequest) error {
 		return err
 	}
 	return nil
+}
+
+func validateAttemptLookup(r llm.LeaseAttemptLookup) error {
+	if strings.TrimSpace(r.AttemptID) == "" || strings.TrimSpace(r.LogicalCallID) == "" || strings.TrimSpace(r.AttemptNonce) == "" ||
+		strings.TrimSpace(r.GrantID) == "" || strings.TrimSpace(r.LeaseID) == "" || strings.TrimSpace(r.OrganizationID) == "" || strings.TrimSpace(r.RuntimeID) == "" ||
+		r.Units <= 0 || strings.TrimSpace(r.CurrentGrantFingerprint) == "" {
+		return ErrInvalidRequest
+	}
+	return identity.Validate(r.Identity.Identity)
 }
 
 func validateTopUpRequest(r TopUpRequest) error {

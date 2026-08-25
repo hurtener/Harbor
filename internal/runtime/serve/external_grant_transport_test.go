@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	llmtopup "github.com/hurtener/Harbor/sdk/llm/topup"
 )
 
 const testCoordinatorToken = "fixture-coordinator-service-token"
@@ -272,6 +274,83 @@ func TestExternalGrantReadiness_StockOutboxDegradesAndRecovers(t *testing.T) {
 	}
 	stock.SetOutboxHealth(true)
 	if recovered := readiness(); !recovered.StrictReady || recovered.ReceiptTransport != "wired" {
+		t.Fatalf("recovered readiness=%+v", recovered)
+	}
+}
+
+func TestExternalGrantReadiness_StockTopUpFailureDegradesAndSuccessRecovers(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		request, err := llmtopup.ParseCanonicalRequest(body)
+		if err != nil {
+			t.Errorf("parse request: %v", err)
+			return
+		}
+		successor := request.Predecessor
+		successor.KeyID, successor.Signature = "key-b", "signature-b"
+		successor.Lease.Epoch++
+		successor.Lease.TokenUnits += request.RequestedUnits
+		successor.IssuedAt = successor.IssuedAt.Add(time.Second)
+		successor.ExpiresAt = successor.ExpiresAt.Add(time.Second)
+		successor.Lease.ExpiresAt = successor.Lease.ExpiresAt.Add(time.Second)
+		response, err := llmtopup.NewResponse(request, successor)
+		if err != nil {
+			t.Errorf("response: %v", err)
+			return
+		}
+		payload, err := llmtopup.MarshalCanonicalResponse(request, response)
+		if err != nil {
+			t.Errorf("marshal response: %v", err)
+			return
+		}
+		w.Header().Set("Idempotency-Key", request.IdempotencyKey)
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	opts := Options{ExternalGrant: llm.ExternalGrantConfig{
+		Mode: llm.ExternalGrantRequired, RouteMode: llm.ExternalGrantRouteRuntimeDefault, Verifier: testGrantVerifier{},
+	}}
+	stock, err := configureStockExternalGrant(config.ExternalGrantCoordinatorConfig{
+		ReceiptURL: server.URL, TopUpURL: server.URL, AuthTokenEnv: "HARBOR_COORDINATOR_TOKEN",
+	}, &opts, func(string) (string, bool) { return testCoordinatorToken, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	readiness := externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, opts.ExternalGrant, opts.ExternalGrantDelivery, stock)
+	if initial := readiness(); !initial.StrictReady || initial.TopUpState != "wired" {
+		t.Fatalf("initial readiness=%+v", initial)
+	}
+	issued := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	grant := llm.ExternalGrant{
+		Version: llm.ExternalGrantVersionAgentBound, KeyID: "key-a", Audience: "harbor-runtime", GrantID: "grant-top-up",
+		RouteMode: llm.ExternalGrantRouteRuntimeDefault, OrganizationID: "org-a", RuntimeID: "runtime-a", AgentID: "agent-a",
+		TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", LogicalRunID: "run-a", LogicalCallID: "call-a", AttemptNonce: "nonce-a",
+		PolicyGeneration: 1, MaxReasoning: llm.ReasoningMedium, MaxOutputTokens: 100,
+		Lease:    llm.ComputeLease{LeaseID: "lease-a", Epoch: 1, TokenUnits: 200, ExpiresAt: issued.Add(10 * time.Minute)},
+		IssuedAt: issued, ExpiresAt: issued.Add(5 * time.Minute), Signature: "signature-a",
+	}
+	if _, err := stock.Renew(context.Background(), grant, 100, llm.ExternalGrantRenewalLeaseInsufficient); err == nil {
+		t.Fatal("failed top-up unexpectedly succeeded")
+	}
+	if degraded := readiness(); degraded.StrictReady || degraded.TopUpState != "degraded" {
+		t.Fatalf("degraded readiness=%+v", degraded)
+	}
+	fail.Store(false)
+	if _, err := stock.Renew(context.Background(), grant, 100, llm.ExternalGrantRenewalLeaseInsufficient); err != nil {
+		t.Fatalf("recovery top-up: %v", err)
+	}
+	if recovered := readiness(); !recovered.StrictReady || recovered.TopUpState != "wired" {
 		t.Fatalf("recovered readiness=%+v", recovered)
 	}
 }

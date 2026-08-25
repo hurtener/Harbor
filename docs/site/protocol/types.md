@@ -2063,6 +2063,7 @@ Declared in `internal/protocol/types`.
 | `receipt_transport` | `string` |  |
 | `receipt_parser` | `string` |  |
 | `top_up_transport` | `string` |  |
+| `top_up_state` | `string` |  |
 | `strict_ready` | `bool` |  |
 
 ## Flow

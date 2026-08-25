@@ -480,6 +480,31 @@ type LeaseReservation struct {
 	Receipt       AttemptUsageReceipt
 }
 
+// LeaseAttemptLookup identifies one previously reserved provider attempt
+// without coupling replay to the lease generation that happens to be current
+// now. Every authority and execution coordinate remains mandatory so a lookup
+// cannot cross an organization, runtime, agent, identity, run, or lease.
+type LeaseAttemptLookup struct {
+	AttemptID               string
+	LogicalCallID           string
+	AttemptNonce            string
+	GrantID                 string
+	LeaseID                 string
+	OrganizationID          string
+	RuntimeID               string
+	AgentID                 string
+	Units                   int64
+	CurrentGrantFingerprint string
+	Identity                identity.Quadruple
+}
+
+// LeaseAttemptResolver resolves an exact durable attempt before lease renewal.
+// It lets response-loss and in-flight replays return their persisted outcome
+// even after later calls have advanced the durable lease generation.
+type LeaseAttemptResolver interface {
+	ResolveAttempt(context.Context, LeaseAttemptLookup) (LeaseReservation, bool, error)
+}
+
 // LeaseSettlement closes a reservation with the content-free attempt receipt.
 type LeaseSettlement struct {
 	AttemptID     string

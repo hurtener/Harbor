@@ -93,6 +93,16 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if err != nil {
 		return llm.CompleteResponse{}, err
 	}
+	var scope *llm.AttemptScope
+	ctx, scope, err = llm.EnsureGrantAttemptScope(ctx, rootGrant)
+	if err != nil {
+		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %w", llm.ErrExternalGrantInvalid, err)
+	}
+	if existing, ok, lookupErr := c.resolveAttemptReplay(ctx, grant, req, scope); lookupErr != nil {
+		return llm.CompleteResponse{}, lookupErr
+	} else if ok {
+		return persistedAttemptOutcome(existing)
+	}
 	if err := c.prepareGrant(ctx, &grant, rootGrant, req, callUnits); err != nil {
 		return llm.CompleteResponse{}, err
 	}
@@ -103,11 +113,6 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	callUnits, err = boundedCallUnits(req, grant, c.cfg)
 	if err != nil {
 		return llm.CompleteResponse{}, err
-	}
-	var scope *llm.AttemptScope
-	ctx, scope, err = llm.EnsureGrantAttemptScope(ctx, grant)
-	if err != nil {
-		return llm.CompleteResponse{}, fmt.Errorf("%w: call identity: %w", llm.ErrExternalGrantInvalid, err)
 	}
 	if scope.FallbackHop > 0 {
 		return llm.CompleteResponse{}, llm.ErrExternalGrantCrossProviderFallback
@@ -178,14 +183,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			return llm.CompleteResponse{}, fmt.Errorf("%w: bounded reserve recovery did not converge: %w", llm.ErrExternalGrantLeaseInsufficient, lastReserveErr)
 		}
 		if reservation.Existing {
-			switch reservation.Status {
-			case "reserved":
-				return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptInFlight
-			case "consumed", "released", "expired":
-				return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptSettled
-			default:
-				return llm.CompleteResponse{}, fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
-			}
+			return persistedAttemptOutcome(reservation)
 		}
 	}
 	// Never let an unverified caller-provided request field reach the driver;
@@ -239,6 +237,52 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		}
 	}
 	return resp, callErr
+}
+
+func (c *client) resolveAttemptReplay(ctx context.Context, grant llm.ExternalGrant, req llm.CompleteRequest, scope *llm.AttemptScope) (llm.LeaseReservation, bool, error) {
+	resolver, ok := c.deps.ExternalGrant.Reservations.(llm.LeaseAttemptResolver)
+	if !ok {
+		return llm.LeaseReservation{}, false, nil
+	}
+	units, err := boundedCallUnits(req, grant, c.cfg)
+	if err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	fingerprint, err := llm.CanonicalExternalGrantHash(grant)
+	if err != nil {
+		return llm.LeaseReservation{}, false, fmt.Errorf("%w: canonical grant fingerprint", llm.ErrExternalGrantInvalid)
+	}
+	reservation, found, lookupErr := resolver.ResolveAttempt(ctx, llm.LeaseAttemptLookup{
+		AttemptID: attemptID(grant, scope), LogicalCallID: scope.LogicalCallID, AttemptNonce: scope.AttemptNonce,
+		GrantID: grant.GrantID, LeaseID: grant.Lease.LeaseID, OrganizationID: grant.OrganizationID,
+		RuntimeID: grant.RuntimeID, AgentID: grant.AgentID, Units: units, CurrentGrantFingerprint: fingerprint,
+		Identity: identity.Quadruple{Identity: identity.Identity{TenantID: grant.TenantID, UserID: grant.UserID, SessionID: grant.SessionID}, RunID: grant.LogicalRunID},
+	})
+	if !found && lookupErr == nil {
+		return llm.LeaseReservation{}, false, nil
+	}
+	// Authenticate the complete current successor before returning either an
+	// existing outcome or a binding-conflict signal. This prevents the lookup
+	// from becoming an authority-existence oracle.
+	if renewalVerifier, ok := c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
+		if err := renewalVerifier.VerifyRenewalPredecessor(ctx, grant, req); err != nil {
+			return llm.LeaseReservation{}, false, err
+		}
+	} else if err := c.deps.ExternalGrant.Verifier.Verify(ctx, grant, req); err != nil {
+		return llm.LeaseReservation{}, false, err
+	}
+	return reservation, found, lookupErr
+}
+
+func persistedAttemptOutcome(reservation llm.LeaseReservation) (llm.CompleteResponse, error) {
+	switch reservation.Status {
+	case "reserved":
+		return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptInFlight
+	case "consumed", "released", "expired":
+		return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptSettled
+	default:
+		return llm.CompleteResponse{}, fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
+	}
 }
 
 func attemptID(grant llm.ExternalGrant, scope *llm.AttemptScope) string {

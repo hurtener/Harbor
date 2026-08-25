@@ -4441,6 +4441,10 @@
           "type": "string"
         },
         {
+          "key": "top_up_state",
+          "type": "string"
+        },
+        {
           "key": "strict_ready",
           "type": "boolean"
         }
