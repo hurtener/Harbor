@@ -762,7 +762,6 @@ func TestStore_MixedRequestedUnitSuccessorsChooseOneAndLoserReloads(t *testing.T
 			start := make(chan struct{})
 			errs := make(chan error, 2)
 			for _, candidate := range []llm.ExternalGrant{smaller, larger} {
-				candidate := candidate
 				go func() {
 					<-start
 					errs <- mgr.ApplySuccessor(context.Background(), root, candidate)

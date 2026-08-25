@@ -328,7 +328,7 @@ func TestOutboxRunDueRetriesDoNotAccelerateReconciliation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- o.Run(ctx) }()
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := range 4 {
 		select {
 		case <-delivery.calls:
 		case <-time.After(2 * time.Second):

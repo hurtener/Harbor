@@ -807,7 +807,6 @@ func TestWrap_MixedRequestedUnitRenewalsReloadWinnerBeforeProvider(t *testing.T)
 	contexts := []context.Context{testContext(t, "org-a"), testContext(t, "org-a")}
 	for i, units := range []int{2, 10} {
 		step := i + 1
-		units := units
 		baseCtx := contexts[i]
 		go func() {
 			_, completeErr := client.Complete(llm.WithAttemptStep(baseCtx, step), llm.CompleteRequest{Model: "model-fast", MaxTokens: &units, ExternalGrant: &root})
@@ -908,7 +907,7 @@ func TestWrap_ExpiredInvalidOrAgentMismatchedPredecessorMakesZeroRenewalCalls(t 
 				Successors: successorApplierFunc(func(context.Context, llm.ExternalGrant, llm.ExternalGrant) error { return nil }),
 			}})
 			n := 1
-			if _, err := client.Complete(agentBoundTestContext(t, "org-a", tc.agent), llm.CompleteRequest{Model: "model-fast", MaxTokens: &n, ExternalGrant: &tc.grant}); err == nil {
+			if _, err := client.Complete(agentBoundTestContext(t, tc.agent), llm.CompleteRequest{Model: "model-fast", MaxTokens: &n, ExternalGrant: &tc.grant}); err == nil {
 				t.Fatal("unsafe expired predecessor accepted")
 			}
 			if calls.Load() != 0 {

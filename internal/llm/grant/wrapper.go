@@ -101,7 +101,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	if existing, ok, lookupErr := c.resolveAttemptReplay(ctx, grant, req, scope); lookupErr != nil {
 		return llm.CompleteResponse{}, lookupErr
 	} else if ok {
-		return persistedAttemptOutcome(existing)
+		return llm.CompleteResponse{}, persistedAttemptOutcome(existing)
 	}
 	if err := c.prepareGrant(ctx, &grant, rootGrant, req, callUnits); err != nil {
 		return llm.CompleteResponse{}, err
@@ -150,7 +150,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		}
 		reserved := false
 		var lastReserveErr error
-		for attempt := 0; attempt < maxReservationRecoveryAttempts; attempt++ {
+		for range maxReservationRecoveryAttempts {
 			reservation, err = reserve()
 			if err == nil {
 				reserved = true
@@ -183,7 +183,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			return llm.CompleteResponse{}, fmt.Errorf("%w: bounded reserve recovery did not converge: %w", llm.ErrExternalGrantLeaseInsufficient, lastReserveErr)
 		}
 		if reservation.Existing {
-			return persistedAttemptOutcome(reservation)
+			return llm.CompleteResponse{}, persistedAttemptOutcome(reservation)
 		}
 	}
 	// Never let an unverified caller-provided request field reach the driver;
@@ -249,7 +249,9 @@ func (c *client) resolveAttemptReplay(ctx context.Context, grant llm.ExternalGra
 	// generation/revocation, before even that durable read/mutation seam.
 	renewalVerifier := c.deps.ExternalGrant.RenewalVerifier
 	if renewalVerifier == nil {
-		renewalVerifier, _ = c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier)
+		if verifier, ok := c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
+			renewalVerifier = verifier
+		}
 	}
 	if renewalVerifier != nil {
 		if err := renewalVerifier.VerifyRenewalPredecessor(ctx, grant, req); err != nil {
@@ -277,14 +279,14 @@ func (c *client) resolveAttemptReplay(ctx context.Context, grant llm.ExternalGra
 	})
 }
 
-func persistedAttemptOutcome(reservation llm.LeaseReservation) (llm.CompleteResponse, error) {
+func persistedAttemptOutcome(reservation llm.LeaseReservation) error {
 	switch reservation.Status {
 	case "reserved":
-		return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptInFlight
+		return llm.ErrExternalGrantAttemptInFlight
 	case "consumed", "released", "expired":
-		return llm.CompleteResponse{}, llm.ErrExternalGrantAttemptSettled
+		return llm.ErrExternalGrantAttemptSettled
 	default:
-		return llm.CompleteResponse{}, fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
+		return fmt.Errorf("%w: unknown persisted attempt status", llm.ErrExternalGrantAttemptSettled)
 	}
 }
 
@@ -401,14 +403,18 @@ func (c *client) renewGrant(ctx context.Context, grant *llm.ExternalGrant, req l
 	}
 	successorApplier := c.deps.ExternalGrant.Successors
 	if successorApplier == nil {
-		successorApplier, _ = c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorApplier)
+		if applier, ok := c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorApplier); ok {
+			successorApplier = applier
+		}
 	}
 	if successorApplier == nil {
 		return fmt.Errorf("%w: durable lease successor applier is not configured", llm.ErrExternalGrantInvalid)
 	}
 	renewalVerifier := c.deps.ExternalGrant.RenewalVerifier
 	if renewalVerifier == nil {
-		renewalVerifier, _ = c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier)
+		if verifier, ok := c.deps.ExternalGrant.Verifier.(llm.ExternalGrantRenewalVerifier); ok {
+			renewalVerifier = verifier
+		}
 	}
 	if renewalVerifier == nil {
 		return fmt.Errorf("%w: authenticated renewal verifier is not configured", llm.ErrExternalGrantInvalid)
@@ -477,10 +483,14 @@ func (c *client) verifyCoordinatorCredential(ctx context.Context, grant llm.Exte
 func (c *client) resolveSuccessor(ctx context.Context, root llm.ExternalGrant) (llm.ExternalGrant, bool, error) {
 	resolver := c.deps.ExternalGrant.SuccessorResolver
 	if resolver == nil {
-		resolver, _ = c.deps.ExternalGrant.Successors.(llm.LeaseSuccessorResolver)
+		if successorResolver, ok := c.deps.ExternalGrant.Successors.(llm.LeaseSuccessorResolver); ok {
+			resolver = successorResolver
+		}
 	}
 	if resolver == nil {
-		resolver, _ = c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorResolver)
+		if successorResolver, ok := c.deps.ExternalGrant.Reservations.(llm.LeaseSuccessorResolver); ok {
+			resolver = successorResolver
+		}
 	}
 	if resolver == nil {
 		return llm.ExternalGrant{}, false, nil

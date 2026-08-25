@@ -893,7 +893,10 @@ func jitterBackoff(value, base, max time.Duration, receiptID string, attempts in
 		return value
 	}
 	width := uint64(2*spread + 1)
-	offset := time.Duration(binary.BigEndian.Uint64(digest[:8])%width) - spread
+	rawOffset := binary.BigEndian.Uint64(digest[:8]) % width
+	// rawOffset is strictly below width, and width is at most one fifth of
+	// time.Duration's positive range plus one, so this conversion cannot overflow.
+	offset := time.Duration(rawOffset) - spread // #nosec G115 -- bounded by width above.
 	value += offset
 	if value < base {
 		return base

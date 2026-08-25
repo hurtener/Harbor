@@ -144,17 +144,17 @@ func TestVerifier_RenewalPreflightPreservesV2EffectiveAgentBinding(t *testing.T)
 		t.Fatal(err)
 	}
 	req := llm.CompleteRequest{Model: "model-fast"}
-	if err := verifier.VerifyRenewalPredecessor(agentBoundTestContext(t, "org-a", "agent-a"), expired, req); err != nil {
+	if err := verifier.VerifyRenewalPredecessor(agentBoundTestContext(t, "agent-a"), expired, req); err != nil {
 		t.Fatalf("matching v2 renewal=%v", err)
 	}
-	if err := verifier.VerifyRenewalPredecessor(agentBoundTestContext(t, "org-a", "agent-b"), expired, req); !errors.Is(err, llm.ErrExternalGrantInvalid) {
+	if err := verifier.VerifyRenewalPredecessor(agentBoundTestContext(t, "agent-b"), expired, req); !errors.Is(err, llm.ErrExternalGrantInvalid) {
 		t.Fatalf("cross-agent renewal=%v, want invalid", err)
 	}
 }
 
-func agentBoundTestContext(t *testing.T, organization, agentID string) context.Context {
+func agentBoundTestContext(t *testing.T, agentID string) context.Context {
 	t.Helper()
-	return tools.WithEffectiveAgentConfig(testContext(t, organization), agentID)
+	return tools.WithEffectiveAgentConfig(testContext(t, "org-a"), agentID)
 }
 
 func signedTestGrant(t *testing.T) llm.ExternalGrant {
@@ -391,7 +391,7 @@ func TestSignerVerifier_V2RequiresExactReachAdmittedAgentForBothRoutes(t *testin
 				t.Fatal(signErr)
 			}
 			request := llm.CompleteRequest{Model: "model-fast"}
-			if err := verifier.Verify(agentBoundTestContext(t, "org-a", "agent-a"), signed, request); err != nil {
+			if err := verifier.Verify(agentBoundTestContext(t, "agent-a"), signed, request); err != nil {
 				t.Fatalf("matching admitted agent: %v", err)
 			}
 			receipt := receiptForGrant(t, signed, 1)
@@ -409,7 +409,7 @@ func TestSignerVerifier_V2RequiresExactReachAdmittedAgentForBothRoutes(t *testin
 			}
 			for name, ctx := range map[string]context.Context{
 				"missing":  testContext(t, "org-a"),
-				"mismatch": agentBoundTestContext(t, "org-a", "agent-b"),
+				"mismatch": agentBoundTestContext(t, "agent-b"),
 			} {
 				if err := verifier.Verify(ctx, signed, request); !errors.Is(err, llm.ErrExternalGrantInvalid) {
 					t.Fatalf("%s agent context = %v, want ErrExternalGrantInvalid", name, err)
@@ -417,7 +417,7 @@ func TestSignerVerifier_V2RequiresExactReachAdmittedAgentForBothRoutes(t *testin
 			}
 			tampered := signed
 			tampered.AgentID = "agent-b"
-			if err := verifier.Verify(agentBoundTestContext(t, "org-a", "agent-b"), tampered, request); !errors.Is(err, llm.ErrExternalGrantSignature) {
+			if err := verifier.Verify(agentBoundTestContext(t, "agent-b"), tampered, request); !errors.Is(err, llm.ErrExternalGrantSignature) {
 				t.Fatalf("tampered signed agent = %v, want signature failure", err)
 			}
 		})
@@ -458,8 +458,8 @@ func TestVerifier_V2ConcurrentAgentsDoNotBleed(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 100)
 	contexts := map[string]context.Context{
-		"agent-a": agentBoundTestContext(t, "org-a", "agent-a"),
-		"agent-b": agentBoundTestContext(t, "org-a", "agent-b"),
+		"agent-a": agentBoundTestContext(t, "agent-a"),
+		"agent-b": agentBoundTestContext(t, "agent-b"),
 	}
 	for i := range 100 {
 		wg.Add(1)
