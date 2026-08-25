@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -331,6 +333,53 @@ func MarshalCanonicalAttemptUsageReceipt(receipt AttemptUsageReceipt) ([]byte, e
 	return body, nil
 }
 
+// UnmarshalCanonicalAttemptUsageReceipt reconstructs a validated receipt from
+// the exact canonical JSON emitted by MarshalCanonicalAttemptUsageReceipt.
+// It rejects unknown, duplicate, missing, reordered, alternatively encoded,
+// or trailing content rather than accepting a merely equivalent JSON value.
+// This keeps external receipt consumers on Harbor's one private wire shape.
+func UnmarshalCanonicalAttemptUsageReceipt(data []byte) (AttemptUsageReceipt, error) {
+	var wire canonicalAttemptUsageReceiptWirePayload
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: malformed canonical wire", ErrInvalidUsageReceipt)
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: trailing canonical wire content", ErrInvalidUsageReceipt)
+	}
+
+	receipt := attemptUsageReceiptFromCanonicalWire(wire)
+	if err := ValidateAttemptUsageReceipt(receipt); err != nil {
+		// v1.30.0 receipts predate RouteMode, but the existing canonical
+		// marshal helper necessarily projects their blank public value as the
+		// explicit coordinator_bound wire value. Retain the public blank value
+		// only for that exact historical shape when it validates with the
+		// preserved legacy body hash. Re-marshal still emits the same canonical
+		// coordinator_bound wire, so this does not admit an alternative JSON
+		// representation or weaken the exact-byte gate below.
+		legacy, ok := legacyAttemptUsageReceiptFromCanonicalWire(receipt)
+		if !ok {
+			return AttemptUsageReceipt{}, err
+		}
+		if legacyErr := ValidateAttemptUsageReceipt(legacy); legacyErr != nil {
+			return AttemptUsageReceipt{}, err
+		}
+		receipt = legacy
+	}
+	if receipt.ReceiptID != CanonicalAttemptID(receipt.GrantID, receipt.LogicalCallID, receipt.AttemptNonce, receipt.AttemptNumber, receipt.RetryNumber, receipt.DowngradeNumber, receipt.FallbackHop) || receipt.IdempotencyKey != receipt.ReceiptID {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: attempt identity is not canonical", ErrInvalidUsageReceipt)
+	}
+	canonical, err := MarshalCanonicalAttemptUsageReceipt(receipt)
+	if err != nil {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: canonical re-encode failed", ErrInvalidUsageReceipt)
+	}
+	if !bytes.Equal(data, canonical) {
+		return AttemptUsageReceipt{}, fmt.Errorf("%w: input is not the exact canonical wire", ErrInvalidUsageReceipt)
+	}
+	return receipt, nil
+}
+
 // ValidateAttemptUsageReceipt validates content-free shape and the explicit
 // route boundary. It intentionally does not authenticate a grant; use
 // ValidateAttemptUsageReceiptAgainstGrant after the signed grant has been
@@ -554,6 +603,30 @@ func canonicalAttemptUsageReceiptWire(receipt AttemptUsageReceipt) canonicalAtte
 		mode = ExternalGrantRouteCoordinatorBound
 	}
 	return canonicalAttemptUsageReceiptWirePayload{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, RouteMode: mode, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, ParentLogicalCallID: receipt.ParentLogicalCallID, ParentAttemptNonce: receipt.ParentAttemptNonce, PlannerStep: receipt.PlannerStep, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, DowngradeNumber: receipt.DowngradeNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
+}
+
+func attemptUsageReceiptFromCanonicalWire(wire canonicalAttemptUsageReceiptWirePayload) AttemptUsageReceipt {
+	// Direct conversion is intentional: the private wire and public receipt must
+	// stay field-for-field identical (JSON tags do not affect conversion). A
+	// field/type/order drift now fails compilation instead of silently dropping a
+	// canonical receipt fact in a handwritten reverse projection.
+	return AttemptUsageReceipt(wire)
+}
+
+// legacyAttemptUsageReceiptFromCanonicalWire restores the blank public route
+// mode only for a receipt whose canonical wire is the historical projection of
+// the v1.30.0 receipt shape. That shape has no parent/planner identity and no
+// downgrade coordinate; its body hash intentionally predates those additive
+// fields. The public marshal helper still canonicalizes the restored value to
+// coordinator_bound, preserving byte-identical delivery replay.
+func legacyAttemptUsageReceiptFromCanonicalWire(receipt AttemptUsageReceipt) (AttemptUsageReceipt, bool) {
+	if receipt.RouteMode != ExternalGrantRouteCoordinatorBound ||
+		receipt.ParentLogicalCallID != "" || receipt.ParentAttemptNonce != "" ||
+		receipt.PlannerStep != 0 || receipt.DowngradeNumber != 0 {
+		return AttemptUsageReceipt{}, false
+	}
+	receipt.RouteMode = ""
+	return receipt, true
 }
 
 // ExternalGrantConfig wires the opt-in grant and receipt seams into llm.Open.

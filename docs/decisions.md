@@ -14183,3 +14183,60 @@ is never inferred from missing provider fields. Downstream deployment and
 acceptance remain a separate gate and are not claimed here.
 
 **Plan:** `docs/plans/phase-256-external-grant-sdk-runtime-default.md`.
+
+---
+
+## D-437 — Canonical attempt-receipt decoding is one public exact inverse (HA-72 parser slice)
+
+**Date:** 2026-08-25
+
+**Status:** Accepted for Phase 257; implemented as an unreleased candidate.
+The stock transport/readiness remainder of HA-72 remains open.
+
+Harbor's v1.30.1 SDK exposes `AttemptUsageReceipt`, its canonical marshal/hash,
+and validation helpers, but the canonical snake-case wire remains deliberately
+private and no public inverse exists. An external receiver otherwise has only
+two unsafe choices: decode the untagged public struct (the wrong CamelCase
+shape), or duplicate the private wire and drift when Harbor changes it.
+
+Harbor therefore exposes exactly
+`UnmarshalCanonicalAttemptUsageReceipt([]byte) (AttemptUsageReceipt, error)`
+beside the existing marshal helper. The implementation decodes directly into
+the one private `canonicalAttemptUsageReceiptWirePayload`, rejects unknown
+fields, projects every field back to the public receipt, applies the existing
+semantic/body-hash validator, and accepts the document only when Harbor's own
+canonical marshal reproduces the input byte-for-byte. That exactness gate is
+load-bearing: it rejects duplicate or missing members, changed member order,
+whitespace, redundant escapes, alternate number/timestamp encodings, explicit
+zero values canonically omitted, and trailing content without introducing a
+second canonicalizer or public wire DTO.
+
+The existing encoder writes a legacy blank public `route_mode` as the explicit
+`coordinator_bound` wire value, while its body hash deliberately preserves the
+pre-extension receipt representation. For that exact no-parent/no-planner/no-
+downgrade shape only, the parser restores the blank public value after the
+legacy hash validates; re-marshaling still emits byte-identical explicit
+`coordinator_bound` wire bytes. New explicit coordinator-bound receipts retain
+their explicit public value. This preserves the documented legacy hash without
+accepting an alternative JSON representation.
+
+Every rejection is comparable through `ErrInvalidUsageReceipt`. Decode errors
+are intentionally fixed and content-free rather than reflecting an untrusted
+field name or value. The parser logs nothing and cannot expose prompt,
+response, tool argument, reasoning trace, credential, or raw coordinator-body
+content. Fuzz seeds pin the invariant that every accepted byte slice validates
+and is exactly its own canonical re-encoding; an external-package consumer
+proves the API is usable without `internal/` imports.
+
+This decision changes no receipt producer, grant verifier, outbox, persistence,
+Protocol method/type/version, provider execution, runtime assembly, config, or
+disabled-mode behavior. It performs no I/O and creates no timer, goroutine,
+network request, StateStore read, or idle work. Integrity parsing does not
+authenticate a sender: stock authenticated delivery/ACK/replay, optional lease
+top-up, and truthful runtime readiness remain the separate unresolved portion
+of HA-72.
+
+**Cross-references.** RFC §6.5, §6.11, §6.15, D-025, D-434, D-436, briefs 03,
+06, and 08.
+
+**Plan:** `docs/plans/phase-257-canonical-attempt-receipt-parser.md`.

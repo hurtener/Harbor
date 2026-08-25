@@ -1683,3 +1683,42 @@ public module provenance. The annotated tag object was reissued with the
 canonical maintainer identity without changing its peeled release commit or
 published assets. Post-tag scaffold cleanup is included in the follow-up. No
 downstream deployment, fleet, database, or acceptance claim is made.
+
+---
+
+## HA-72 — stock coordinator receipt transport and grant readiness
+
+**Priority:** High. **Size:** large. **State:** Partially answered by the
+unreleased Phase 257 / D-437 implementation candidate. The public strict
+canonical receipt parser is implemented; stock authenticated delivery/ACK,
+lease top-up transport, and explicit runtime readiness remain open. No release,
+downstream deployment, or acceptance is claimed.
+
+**Observed gap.** Harbor v1.30.1 publishes the transport-neutral receipt
+delivery seam and canonical marshal/hash/validation helpers, but an external
+receiver cannot parse the private snake-case canonical wire through the public
+SDK. Separately, stock `harbor serve` injects no authenticated coordinator
+transport, and `runtime.info` cannot distinguish a configured grant toggle from
+a concretely wired strict path.
+
+**Parser slice.** Phase 257 adds the public
+`UnmarshalCanonicalAttemptUsageReceipt([]byte)` inverse beside the existing
+marshal helper. It decodes through Harbor's one private canonical wire,
+validates the projected public receipt and body hash, and then requires
+byte-identical canonical re-encoding. Unknown, duplicate, missing, reordered,
+alternatively encoded, or trailing content fails closed under
+`ErrInvalidUsageReceipt`; malformed input is never reflected in errors or
+logs. The function adds no Protocol method, transport, timer, database read, or
+idle work. Historical blank public route mode is represented as explicit
+`coordinator_bound` on the canonical wire; when its preserved legacy hash
+validates, parsing restores the blank public value and re-marshal remains
+byte-identical.
+
+**Remaining required shape.** A later framework change must give stock
+`harbor serve` an opt-in authenticated, bounded, replay-safe receipt delivery
+and ACK path (and lease top-up when configured), plus a secret-free
+`runtime.info` projection of the actually mounted verifier, route modes,
+reservation store, receipt transport, credential resolver where required, and
+top-up support. Disabled remains the default with zero coordinator network,
+timer, outbox-scan, or grant-related StateStore activity. `runtime_default`
+continues to require no coordinator provider credential, catalog, or route.

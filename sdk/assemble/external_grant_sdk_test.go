@@ -1,6 +1,7 @@
 package assemble_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -87,5 +88,81 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	}
 	if err := (publicReceiptDelivery{}).Deliver(context.Background(), llm.AttemptUsageReceipt{}); err != nil {
 		t.Fatal(err)
+	}
+	receipt := llm.AttemptUsageReceipt{
+		ReceiptID:          llm.CanonicalAttemptID(signed.GrantID, signed.LogicalCallID, signed.AttemptNonce, 1, 0, 0, 0),
+		GrantID:            signed.GrantID,
+		RouteMode:          llm.ExternalGrantRouteRuntimeDefault,
+		LogicalCallID:      signed.LogicalCallID,
+		AttemptNonce:       signed.AttemptNonce,
+		OrganizationID:     signed.OrganizationID,
+		RuntimeID:          signed.RuntimeID,
+		TenantID:           signed.TenantID,
+		UserID:             signed.UserID,
+		SessionID:          signed.SessionID,
+		LogicalRunID:       signed.LogicalRunID,
+		Provider:           "public-provider",
+		ProviderModelID:    "public-model",
+		PolicyGeneration:   signed.PolicyGeneration,
+		AttemptNumber:      1,
+		RequestedReasoning: llm.ReasoningLow,
+		EffectiveReasoning: llm.ReasoningLow,
+		PromptTokens:       2,
+		CompletionTokens:   3,
+		TotalTokens:        5,
+		Currency:           "USD",
+		LatencyMS:          10,
+		Status:             "success",
+		StartedAt:          now,
+		CompletedAt:        now.Add(10 * time.Millisecond),
+	}
+	receipt.IdempotencyKey = receipt.ReceiptID
+	receipt.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := llm.MarshalCanonicalAttemptUsageReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := llm.UnmarshalCanonicalAttemptUsageReceipt(body)
+	if err != nil {
+		t.Fatalf("public canonical receipt parser: %v", err)
+	}
+	roundTrip, err := llm.MarshalCanonicalAttemptUsageReceipt(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(roundTrip, body) {
+		t.Fatalf("public canonical receipt round-trip differs: %s != %s", roundTrip, body)
+	}
+
+	legacy := receipt
+	legacy.RouteMode = ""
+	legacy.ProviderConnectionID = "connection-public-legacy"
+	legacy.ProviderConnectionGeneration = 1
+	legacy.RouteID = "route-public-legacy"
+	legacy.CredentialAssetGeneration = 1
+	legacy.CanonicalBodyHash, err = llm.CanonicalAttemptUsageReceiptBodyHash(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody, err := llm.MarshalCanonicalAttemptUsageReceipt(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyParsed, err := llm.UnmarshalCanonicalAttemptUsageReceipt(legacyBody)
+	if err != nil {
+		t.Fatalf("public legacy canonical receipt parser: %v", err)
+	}
+	if legacyParsed.RouteMode != "" {
+		t.Fatalf("public legacy parser route mode = %q, want blank legacy value", legacyParsed.RouteMode)
+	}
+	legacyRoundTrip, err := llm.MarshalCanonicalAttemptUsageReceipt(legacyParsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(legacyRoundTrip, legacyBody) {
+		t.Fatalf("public legacy canonical receipt round-trip differs: %s != %s", legacyRoundTrip, legacyBody)
 	}
 }

@@ -231,6 +231,10 @@ var CanonicalAttemptUsageReceiptBodyHash = internal.CanonicalAttemptUsageReceipt
 // receipt JSON representation.
 var MarshalCanonicalAttemptUsageReceipt = internal.MarshalCanonicalAttemptUsageReceipt
 
+// UnmarshalCanonicalAttemptUsageReceipt parses only the exact canonical
+// receipt JSON representation and returns the validated public receipt.
+var UnmarshalCanonicalAttemptUsageReceipt = internal.UnmarshalCanonicalAttemptUsageReceipt
+
 // ValidateAttemptUsageReceipt validates the content-free receipt shape.
 var ValidateAttemptUsageReceipt = internal.ValidateAttemptUsageReceipt
 

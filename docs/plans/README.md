@@ -398,6 +398,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |254 | Context-bound external execution grants and durable attempt receipts (HA-70, D-434): signed verified-context grants, generation-fenced credential handles, bounded leases, retry/downgrade/failover coverage, content-free receipt outbox, idempotent replay, bounded backoff, and strict compatibility modes | llm edge + Bifrost account + retry/failover + StateStore receipt outbox | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-333, D-334 | focused package/race gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |255 | Provider-neutral technical descriptors and runtime-origin model discovery (HA-71, D-435): credential modes/field kinds, conservative custom-endpoint facts, bounded Bifrost validation/discovery, normalized model capabilities, explicit manual/partial/stale/unknown/unpriced outcomes, redacted errors, offline CLI plus protected existing `llm.posture` runtime projection | llm/provider + bifrost adapter + Protocol posture + CLI + operator docs | §3, §6.5, §6.15, §8 | 03, 06, 08, 25, 33, 33a, D-018, D-025, D-333, D-334, D-434 | focused package/Protocol/CLI gates | Shipped (v1.30.0; hosted CI and release workflow green; downstream deployment/acceptance pending) |
 |256 | Public external-grant SDK and explicit runtime-default route (HA-70 compatibility extension, D-436): public grant/config/signer/verifier/receipt delivery seams, canonical receipt JSON/hash and parent/child validation, signed coordinator-bound vs runtime-default route shapes, native configured provider/model receipts, mixed-route and cross-provider fail-closed behavior, assembled runtime and external-package first consumers | sdk/llm + sdk/assemble + grant wrapper + receipt outbox + runtime assembly + config | §6.5, §6.11, §6.15 | 33, 36a, 57, 91, 93, D-025, D-333, D-334, D-434, D-435 | focused race/vet + public consumer + smoke | Shipped (v1.30.1; hosted CI/release green; downstream acceptance pending) |
+|257 | Strict public canonical attempt-receipt parser (HA-72 parser slice, D-437): exact inverse over the one private snake-case wire, closed unknown/duplicate/missing/trailing/noncanonical input, semantic/hash validation, byte-identical re-marshal, fuzz/adversarial and external-package coverage; no transport or idle work | internal/llm + sdk/llm + sdk/assemble | §6.5, §6.11, §6.15 | 254, 256, D-434, D-436 | focused race/vet + fuzz seeds + public consumer + smoke | Implemented (unreleased candidate; hosted CI/release pending; HA-72 transport/readiness remains open) |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5578,6 +5579,24 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   in the follow-up; downstream acceptance remains unclaimed.
 - **Decision:** D-436. **Status:** Shipped in Harbor v1.30.1; downstream
   acceptance pending.
+
+### Phase 257 — Strict public canonical attempt-receipt parser (HA-72 parser slice)
+
+- **Subsystem:** internal LLM canonical receipt codec, public LLM SDK, and
+  external-package SDK consumer.
+- **RFC:** §6.5, §6.11, §6.15. **Deps:** Phase 254, Phase 256, D-434, and
+  D-436.
+- **What it delivers:** D-437 — one public exact inverse over Harbor's existing
+  private snake-case attempt-receipt wire. It rejects unknown, duplicate,
+  missing, reordered, alternatively encoded, malformed, and trailing input;
+  validates content-free receipt semantics and body hash; and accepts only a
+  byte-identical canonical re-marshal. It adds no transport, Protocol surface,
+  persistence, runtime behavior, timer, network call, or idle work.
+- **Evidence:** Exact round-trip, mutation-shaped adversarial and semantic/hash
+  tests, fuzz seeds, external-package compilation/execution, focused race/vet,
+  static smoke, and documentation gates. Hosted CI and release remain pending.
+- **Decision:** D-437. **Status:** Implemented as an unreleased candidate. The
+  stock transport/readiness remainder of HA-72 remains open.
 
 ## Notes
 
