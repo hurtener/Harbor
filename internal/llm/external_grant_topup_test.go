@@ -91,6 +91,7 @@ func TestValidateExternalGrantTopUpSuccessor_RejectsEveryImmutableClaimDrift(t *
 		"route mode":                     func(g *ExternalGrant) { g.RouteMode = ExternalGrantRouteRuntimeDefault },
 		"organization":                   func(g *ExternalGrant) { g.OrganizationID = "other-org" },
 		"runtime":                        func(g *ExternalGrant) { g.RuntimeID = "other-runtime" },
+		"agent":                          func(g *ExternalGrant) { g.AgentID = "other-agent" },
 		"tenant":                         func(g *ExternalGrant) { g.TenantID = "other-tenant" },
 		"user":                           func(g *ExternalGrant) { g.UserID = "other-user" },
 		"session":                        func(g *ExternalGrant) { g.SessionID = "other-session" },
@@ -117,6 +118,19 @@ func TestValidateExternalGrantTopUpSuccessor_RejectsEveryImmutableClaimDrift(t *
 				t.Fatalf("Validate = %v, want ErrExternalGrantInvalid", err)
 			}
 		})
+	}
+}
+
+func TestValidateExternalGrantTopUpSuccessor_V2PreservesRequiredAgent(t *testing.T) {
+	current, successor := validTopUpPair()
+	current.Version, successor.Version = ExternalGrantVersionAgentBound, ExternalGrantVersionAgentBound
+	current.AgentID, successor.AgentID = "agent-a", "agent-a"
+	if err := ValidateExternalGrantTopUpSuccessor(current, successor, 100); err != nil {
+		t.Fatalf("valid v2 successor: %v", err)
+	}
+	successor.AgentID = ""
+	if err := ValidateExternalGrantTopUpSuccessor(current, successor, 100); !errors.Is(err, ErrExternalGrantInvalid) {
+		t.Fatalf("missing successor AgentID = %v, want ErrExternalGrantInvalid", err)
 	}
 }
 

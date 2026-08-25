@@ -44,7 +44,7 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	signed, err := signer.Sign(llm.ExternalGrant{
-		Version: 1, GrantID: "grant-public", OrganizationID: "org-public", RuntimeID: "runtime-public",
+		Version: llm.ExternalGrantVersionAgentBound, GrantID: "grant-public", OrganizationID: "org-public", RuntimeID: "runtime-public", AgentID: "agent-public",
 		TenantID: "tenant-public", UserID: "user-public", SessionID: "session-public", LogicalRunID: "run-public",
 		RouteMode: llm.ExternalGrantRouteRuntimeDefault, PolicyGeneration: 1,
 		MaxReasoning: llm.ReasoningLow, MaxOutputTokens: 64,
@@ -112,6 +112,7 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 		AttemptNonce:       signed.AttemptNonce,
 		OrganizationID:     signed.OrganizationID,
 		RuntimeID:          signed.RuntimeID,
+		AgentID:            signed.AgentID,
 		TenantID:           signed.TenantID,
 		UserID:             signed.UserID,
 		SessionID:          signed.SessionID,
@@ -153,6 +154,7 @@ func TestExternalGrantSurfaceIsNameableFromExternalPackage(t *testing.T) {
 	}
 
 	legacy := receipt
+	legacy.AgentID = ""
 	legacy.RouteMode = ""
 	legacy.ProviderConnectionID = "connection-public-legacy"
 	legacy.ProviderConnectionGeneration = 1

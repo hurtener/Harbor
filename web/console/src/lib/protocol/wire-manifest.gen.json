@@ -4395,6 +4395,14 @@
           "type": "string"
         },
         {
+          "key": "supported_grant_versions",
+          "type": "array"
+        },
+        {
+          "key": "agent_binding",
+          "type": "string"
+        },
+        {
           "key": "accepted_route_modes",
           "type": "array",
           "optional": true

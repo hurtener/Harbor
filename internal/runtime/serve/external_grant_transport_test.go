@@ -97,7 +97,7 @@ func TestConfigureStockExternalGrant_FailsLoudWithoutCredentialAndOnConflicts(t 
 
 func TestExternalGrantReadiness_ReportsModeRoutesAndConcreteWiring(t *testing.T) {
 	disabled := externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, llm.ExternalGrantConfig{}, nil, nil)()
-	if !disabled.Supported || disabled.Configured || disabled.Mode != "disabled" || disabled.ReceiptTransportKind != "none" || disabled.ReceiptTransport != "disabled" || disabled.TopUpTransport != "unsupported" || disabled.StrictReady {
+	if !disabled.Supported || disabled.Configured || disabled.Mode != "disabled" || disabled.ReceiptTransportKind != "none" || disabled.ReceiptTransport != "disabled" || disabled.TopUpTransport != "unsupported" || disabled.StrictReady || disabled.AgentBinding != "required_v2" || len(disabled.SupportedGrantVersions) != 2 || disabled.SupportedGrantVersions[0] != llm.ExternalGrantVersionLegacy || disabled.SupportedGrantVersions[1] != llm.ExternalGrantVersionAgentBound {
 		t.Fatalf("disabled readiness=%+v", disabled)
 	}
 
@@ -108,7 +108,7 @@ func TestExternalGrantReadiness_ReportsModeRoutesAndConcreteWiring(t *testing.T)
 		ReceiptSink: nil,
 	}
 	runtimeDefault := externalGrantReadinessProvider(config.LLMExternalGrantConfig{}, provided, testReceiptDelivery{}, nil)()
-	if !runtimeDefault.Configured || runtimeDefault.Mode != "required" || len(runtimeDefault.AcceptedRouteModes) != 1 || runtimeDefault.AcceptedRouteModes[0] != "runtime_default" || len(runtimeDefault.ReadyRouteModes) != 1 || runtimeDefault.ReadyRouteModes[0] != "runtime_default" || runtimeDefault.ReceiptTransportKind != "host_injected_delivery" || !runtimeDefault.StrictReady || runtimeDefault.CredentialResolverWired {
+	if !runtimeDefault.Configured || runtimeDefault.Mode != "required" || len(runtimeDefault.AcceptedRouteModes) != 1 || runtimeDefault.AcceptedRouteModes[0] != "runtime_default" || len(runtimeDefault.ReadyRouteModes) != 1 || runtimeDefault.ReadyRouteModes[0] != "runtime_default" || runtimeDefault.ReceiptTransportKind != "host_injected_delivery" || !runtimeDefault.StrictReady || runtimeDefault.CredentialResolverWired || runtimeDefault.AgentBinding != "required_v2" {
 		t.Fatalf("runtime-default readiness=%+v", runtimeDefault)
 	}
 

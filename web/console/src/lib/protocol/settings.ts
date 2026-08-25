@@ -30,6 +30,8 @@ export interface ExternalGrantReadiness {
 	supported: boolean;
 	configured: boolean;
 	mode: string;
+	supported_grant_versions: number[];
+	agent_binding: string;
 	accepted_route_modes?: string[];
 	ready_route_modes?: string[];
 	verifier_configured: boolean;

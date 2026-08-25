@@ -355,8 +355,13 @@ func externalGrantReadinessProvider(settings config.LLMExternalGrantConfig, prov
 	}
 	return func() protocoltypes.ExternalGrantReadiness {
 		out := protocoltypes.ExternalGrantReadiness{
-			Supported:            true,
-			Mode:                 mode,
+			Supported: true,
+			Mode:      mode,
+			SupportedGrantVersions: []int{
+				llm.ExternalGrantVersionLegacy,
+				llm.ExternalGrantVersionAgentBound,
+			},
+			AgentBinding:         "required_v2",
 			ReceiptParser:        "strict_canonical_v1",
 			ReceiptTransportKind: "none",
 			ReceiptTransport:     "disabled",

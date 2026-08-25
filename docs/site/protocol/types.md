@@ -2052,6 +2052,8 @@ Declared in `internal/protocol/types`.
 | `supported` | `bool` |  |
 | `configured` | `bool` |  |
 | `mode` | `string` |  |
+| `supported_grant_versions` | `[]int` |  |
+| `agent_binding` | `string` |  |
 | `accepted_route_modes` | `[]string` | optional (`omitempty`) |
 | `ready_route_modes` | `[]string` | optional (`omitempty`) |
 | `verifier_configured` | `bool` |  |

@@ -32,30 +32,43 @@ type ExternalGrant struct {
 	// RouteMode makes the provider-route authority explicit. A blank value is
 	// accepted only for legacy v1.30.0 coordinator-bound grants; new signers
 	// stamp the explicit coordinator_bound value.
-	RouteMode                    ExternalGrantRouteMode `json:"route_mode,omitempty"`
-	OrganizationID               string                 `json:"organization_id"`
-	RuntimeID                    string                 `json:"runtime_id"`
-	TenantID                     string                 `json:"tenant_id"`
-	UserID                       string                 `json:"user_id"`
-	SessionID                    string                 `json:"session_id"`
-	LogicalRunID                 string                 `json:"logical_run_id"`
-	LogicalCallID                string                 `json:"logical_call_id"`
-	AttemptNonce                 string                 `json:"attempt_nonce"`
-	Provider                     string                 `json:"provider,omitempty"`
-	ProviderModelID              string                 `json:"provider_model_id,omitempty"`
-	ProviderConnectionID         string                 `json:"provider_connection_id,omitempty"`
-	ProviderConnectionGeneration uint64                 `json:"provider_connection_generation,omitempty"`
-	RouteID                      string                 `json:"route_id,omitempty"`
-	CredentialBindingHandle      string                 `json:"credential_binding_handle,omitempty"`
-	CredentialAssetGeneration    uint64                 `json:"credential_asset_generation,omitempty"`
-	PolicyGeneration             uint64                 `json:"policy_generation"`
-	MaxReasoning                 ReasoningEffort        `json:"max_reasoning"`
-	MaxOutputTokens              int                    `json:"max_output_tokens"`
-	Lease                        ComputeLease           `json:"lease"`
-	IssuedAt                     time.Time              `json:"issued_at"`
-	ExpiresAt                    time.Time              `json:"expires_at"`
-	Signature                    string                 `json:"signature"`
+	RouteMode      ExternalGrantRouteMode `json:"route_mode,omitempty"`
+	OrganizationID string                 `json:"organization_id"`
+	RuntimeID      string                 `json:"runtime_id"`
+	// AgentID is required and signed on version 2 grants. It is the exact
+	// reach-admitted effective agent configuration, not the boot-derived
+	// invoking-agent provenance and not a storage-isolation principal.
+	AgentID                      string          `json:"agent_id,omitempty"`
+	TenantID                     string          `json:"tenant_id"`
+	UserID                       string          `json:"user_id"`
+	SessionID                    string          `json:"session_id"`
+	LogicalRunID                 string          `json:"logical_run_id"`
+	LogicalCallID                string          `json:"logical_call_id"`
+	AttemptNonce                 string          `json:"attempt_nonce"`
+	Provider                     string          `json:"provider,omitempty"`
+	ProviderModelID              string          `json:"provider_model_id,omitempty"`
+	ProviderConnectionID         string          `json:"provider_connection_id,omitempty"`
+	ProviderConnectionGeneration uint64          `json:"provider_connection_generation,omitempty"`
+	RouteID                      string          `json:"route_id,omitempty"`
+	CredentialBindingHandle      string          `json:"credential_binding_handle,omitempty"`
+	CredentialAssetGeneration    uint64          `json:"credential_asset_generation,omitempty"`
+	PolicyGeneration             uint64          `json:"policy_generation"`
+	MaxReasoning                 ReasoningEffort `json:"max_reasoning"`
+	MaxOutputTokens              int             `json:"max_output_tokens"`
+	Lease                        ComputeLease    `json:"lease"`
+	IssuedAt                     time.Time       `json:"issued_at"`
+	ExpiresAt                    time.Time       `json:"expires_at"`
+	Signature                    string          `json:"signature"`
 }
+
+const (
+	// ExternalGrantVersionLegacy is the deployed v1.30.0/v1.30.1 grant shape.
+	// It deliberately carries no signed agent binding.
+	ExternalGrantVersionLegacy = 1
+	// ExternalGrantVersionAgentBound requires the reach-admitted effective
+	// agent configuration to be signed into every provider attempt.
+	ExternalGrantVersionAgentBound = 2
+)
 
 // ComputeLease is the bounded local allowance a runtime may consume before
 // asking the coordinator for a top-up. Units are provider-neutral token units;
@@ -155,7 +168,9 @@ var (
 
 // ExternalGrantVerifier validates a signed grant against the verified request
 // context and the actual model request. It must never trust caller-provided
-// identity or runtime authority.
+// identity or runtime authority. A verifier accepting version 2 must also bind
+// AgentID to an equivalent host-authenticated effective-agent context; Harbor's
+// reference verifier uses the private reach-admitted run capability.
 type ExternalGrantVerifier interface {
 	Verify(context.Context, ExternalGrant, CompleteRequest) error
 }
@@ -233,6 +248,9 @@ func ValidateExternalGrantTopUpSuccessor(current, successor ExternalGrant, reque
 		successor.LogicalCallID == "" || successor.AttemptNonce == "" || successor.PolicyGeneration == 0 ||
 		successor.MaxReasoning == "" || successor.MaxOutputTokens <= 0 || successor.Lease.LeaseID == "" {
 		return invalid("omitted a required immutable claim")
+	}
+	if successor.Version == ExternalGrantVersionAgentBound && successor.AgentID == "" {
+		return invalid("omitted the required agent binding")
 	}
 	if successor.KeyID == "" || successor.Signature == "" {
 		return invalid("omitted rotating signing metadata")
@@ -342,6 +360,7 @@ type AttemptUsageReceipt struct {
 	PlannerStep                  int
 	OrganizationID               string
 	RuntimeID                    string
+	AgentID                      string
 	TenantID                     string
 	UserID                       string
 	SessionID                    string
@@ -484,7 +503,7 @@ func validateExactCanonicalReceipt(data []byte, receipt AttemptUsageReceipt) (At
 
 func usesLegacyAttemptUsageReceiptWire(receipt AttemptUsageReceipt) bool {
 	return receipt.ParentLogicalCallID == "" && receipt.ParentAttemptNonce == "" &&
-		receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == ""
+		receipt.PlannerStep == 0 && receipt.DowngradeNumber == 0 && receipt.RouteMode == "" && receipt.AgentID == ""
 }
 
 // ValidateAttemptUsageReceipt validates content-free shape and the explicit
@@ -556,6 +575,13 @@ func ValidateAttemptUsageReceiptAgainstGrant(receipt AttemptUsageReceipt, grant 
 		receipt.TenantID != grant.TenantID || receipt.UserID != grant.UserID || receipt.SessionID != grant.SessionID || receipt.LogicalRunID != grant.LogicalRunID ||
 		receipt.PolicyGeneration != grant.PolicyGeneration {
 		return fmt.Errorf("%w: grant identity mismatch", ErrInvalidUsageReceipt)
+	}
+	if grant.Version == ExternalGrantVersionAgentBound {
+		if grant.AgentID == "" || receipt.AgentID == "" || receipt.AgentID != grant.AgentID {
+			return fmt.Errorf("%w: grant agent binding mismatch", ErrInvalidUsageReceipt)
+		}
+	} else if receipt.AgentID != "" {
+		return fmt.Errorf("%w: legacy grant receipt carries an unsigned agent binding", ErrInvalidUsageReceipt)
 	}
 	mode := grant.RouteMode
 	if mode == "" {
@@ -686,6 +712,7 @@ type canonicalAttemptUsageReceiptWirePayload struct {
 	PlannerStep                  int                    `json:"planner_step,omitempty"`
 	OrganizationID               string                 `json:"organization_id"`
 	RuntimeID                    string                 `json:"runtime_id"`
+	AgentID                      string                 `json:"agent_id,omitempty"`
 	TenantID                     string                 `json:"tenant_id"`
 	UserID                       string                 `json:"user_id"`
 	SessionID                    string                 `json:"session_id"`
@@ -727,7 +754,7 @@ func canonicalAttemptUsageReceiptWire(receipt AttemptUsageReceipt) canonicalAtte
 	if mode == "" {
 		mode = ExternalGrantRouteCoordinatorBound
 	}
-	return canonicalAttemptUsageReceiptWirePayload{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, RouteMode: mode, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, ParentLogicalCallID: receipt.ParentLogicalCallID, ParentAttemptNonce: receipt.ParentAttemptNonce, PlannerStep: receipt.PlannerStep, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, DowngradeNumber: receipt.DowngradeNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
+	return canonicalAttemptUsageReceiptWirePayload{ReceiptID: receipt.ReceiptID, GrantID: receipt.GrantID, RouteMode: mode, LogicalCallID: receipt.LogicalCallID, AttemptNonce: receipt.AttemptNonce, ParentLogicalCallID: receipt.ParentLogicalCallID, ParentAttemptNonce: receipt.ParentAttemptNonce, PlannerStep: receipt.PlannerStep, OrganizationID: receipt.OrganizationID, RuntimeID: receipt.RuntimeID, AgentID: receipt.AgentID, TenantID: receipt.TenantID, UserID: receipt.UserID, SessionID: receipt.SessionID, LogicalRunID: receipt.LogicalRunID, Provider: receipt.Provider, ProviderModelID: receipt.ProviderModelID, ProviderConnectionID: receipt.ProviderConnectionID, ProviderConnectionGeneration: receipt.ProviderConnectionGeneration, RouteID: receipt.RouteID, CredentialAssetGeneration: receipt.CredentialAssetGeneration, PolicyGeneration: receipt.PolicyGeneration, AttemptNumber: receipt.AttemptNumber, RetryNumber: receipt.RetryNumber, DowngradeNumber: receipt.DowngradeNumber, FallbackHop: receipt.FallbackHop, RequestedReasoning: receipt.RequestedReasoning, EffectiveReasoning: receipt.EffectiveReasoning, PromptTokens: receipt.PromptTokens, CompletionTokens: receipt.CompletionTokens, ReasoningTokens: receipt.ReasoningTokens, TotalTokens: receipt.TotalTokens, CacheReadTokens: receipt.CacheReadTokens, CacheWriteTokens: receipt.CacheWriteTokens, InputCostMicros: receipt.InputCostMicros, OutputCostMicros: receipt.OutputCostMicros, ReasoningCostMicros: receipt.ReasoningCostMicros, TotalCostMicros: receipt.TotalCostMicros, Currency: receipt.Currency, LatencyMS: receipt.LatencyMS, Status: receipt.Status, StartedAt: receipt.StartedAt, CompletedAt: receipt.CompletedAt, IdempotencyKey: receipt.IdempotencyKey, CanonicalBodyHash: receipt.CanonicalBodyHash}
 }
 
 func attemptUsageReceiptFromCanonicalWire(wire canonicalAttemptUsageReceiptWirePayload) AttemptUsageReceipt {
@@ -747,7 +774,7 @@ func attemptUsageReceiptFromCanonicalWire(wire canonicalAttemptUsageReceiptWireP
 func legacyAttemptUsageReceiptFromCanonicalWire(receipt AttemptUsageReceipt) (AttemptUsageReceipt, bool) {
 	if receipt.RouteMode != ExternalGrantRouteCoordinatorBound ||
 		receipt.ParentLogicalCallID != "" || receipt.ParentAttemptNonce != "" ||
-		receipt.PlannerStep != 0 || receipt.DowngradeNumber != 0 {
+		receipt.PlannerStep != 0 || receipt.DowngradeNumber != 0 || receipt.AgentID != "" {
 		return AttemptUsageReceipt{}, false
 	}
 	receipt.RouteMode = ""

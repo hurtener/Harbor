@@ -46,6 +46,7 @@ Reading order for a triager: this file → the cited `file:line` evidence → `d
 | HA-69 | v1.29.1 event metadata index and six-store PostgreSQL fleet safety | events + persistence + runtime pool/migrations + cutover | Release blocker | Large | v1.29.3 shipped; legacy-head repair extension closed — phases 251/252/253, D-431/D-432/D-433; HA-13 historical collision recorded |
 | HA-72 | Stock coordinator receipt transport and grant readiness | llm receipts + runtime serve + protocol posture | High | Large | Framework-complete candidate — phases 257/258, D-437/D-438; hosted CI/release/downstream acceptance pending |
 | HA-74 | Top-up successor grant preserves immutable authority and attempt identity | internal/llm + public SDK | High | Contained | Implemented candidate — phase 259 / D-439; release and downstream acceptance pending |
+| HA-75 | Reach-admitted effective AgentID bound into external execution grants and receipts | internal/llm + runtime/serve + protocol posture + public SDK | High | Contained | Implemented candidate — phase 260 / D-440; release and downstream acceptance pending |
 
 The original five were filed by a downstream team building an MCP-Apps server
 against Harbor. HA-51 is a separate release-blocking fidelity report; HA-54
@@ -1788,3 +1789,37 @@ post-validation replay-idempotent successor-application hook. Those pieces
 must land together in a separately owned phase before runtime top-up can be
 advertised as supported; advancing durable lease state inside an unverified
 transport callback is explicitly not an acceptable substitute.
+
+---
+
+## HA-75 — reach-admitted effective AgentID bound into external execution grants and receipts
+
+**Priority:** High. **Size:** contained. **State:** Implemented candidate in
+Phase 260 / D-440; hosted CI, release, and downstream acceptance remain
+pending.
+
+**Observed gap.** The deployed external grant binds organization, runtime,
+identity triple, logical run/call, route, credential generation, policy, and
+lease, but not the effective agent configuration selected by the normal
+signed-reach admission. A coordinator could therefore not prove that one
+receipt and provider attempt belonged to the same admitted agent configuration.
+
+**Implemented framework shape.** Version 2 adds a required signed AgentID. The
+reference verifier reads the private effective-agent capability restored from
+the durable control-start reach receipt and requires an exact match before any
+reservation, credential resolution, or provider call. Explicit and omitted
+runtime-default selections use the same gate. AgentID is immutable across a
+top-up and appears only as a content-free receipt identity fact. Runtime
+readiness advertises grant versions `[1,2]` and `required_v2` binding support.
+
+Version 1 remains exact for deployed signatures and blank-agent receipt bytes,
+but a v1 grant is rejected if it tries to carry AgentID. Runtime-default v2
+grants remain valid without a coordinator-supplied provider credential or model
+catalog. The Protocol version is unchanged.
+
+**Operational boundary.** This answer covers every strict grant-bearing
+provider attempt in the canonical runtime path. Auxiliary naming, compression,
+and rolling-summary calls do not currently receive distinct grants; required
+mode blocks ungranted calls before a provider, while optional mode retains its
+compatibility behavior. Arbitrary embedder calls are not described as
+reach-admitted unless their verifier establishes an equivalent trusted context.

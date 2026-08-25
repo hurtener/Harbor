@@ -20,6 +20,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 var (
@@ -220,6 +221,12 @@ func (v *Verifier) Verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 		quad.RunID != grant.LogicalRunID || grant.OrganizationID == "" {
 		return fmt.Errorf("%w: grant identity/run binding mismatch", llm.ErrExternalGrantInvalid)
 	}
+	if grant.Version == llm.ExternalGrantVersionAgentBound {
+		effectiveAgentID, admitted := tools.EffectiveAgentConfigFrom(ctx)
+		if !admitted || effectiveAgentID != grant.AgentID {
+			return fmt.Errorf("%w: grant agent binding mismatch", llm.ErrExternalGrantInvalid)
+		}
+	}
 	if grantMode == llm.ExternalGrantRouteCoordinatorBound && req.Model != "" && grant.ProviderModelID != req.Model {
 		return fmt.Errorf("%w: provider model mismatch", llm.ErrExternalGrantInvalid)
 	}
@@ -391,6 +398,7 @@ type grantDocument struct {
 	RouteMode                    llm.ExternalGrantRouteMode `json:"route_mode,omitempty"`
 	OrganizationID               string                     `json:"organization_id"`
 	RuntimeID                    string                     `json:"runtime_id"`
+	AgentID                      string                     `json:"agent_id,omitempty"`
 	TenantID                     string                     `json:"tenant_id"`
 	UserID                       string                     `json:"user_id"`
 	SessionID                    string                     `json:"session_id"`
@@ -416,7 +424,7 @@ func toDocument(g llm.ExternalGrant) grantDocument {
 	return grantDocument{
 		Version: g.Version, KeyID: g.KeyID, Audience: g.Audience, GrantID: g.GrantID,
 		RouteMode:      g.RouteMode,
-		OrganizationID: g.OrganizationID, RuntimeID: g.RuntimeID, TenantID: g.TenantID,
+		OrganizationID: g.OrganizationID, RuntimeID: g.RuntimeID, AgentID: g.AgentID, TenantID: g.TenantID,
 		UserID: g.UserID, SessionID: g.SessionID, LogicalRunID: g.LogicalRunID,
 		LogicalCallID: g.LogicalCallID, AttemptNonce: g.AttemptNonce,
 		Provider: g.Provider, ProviderModelID: g.ProviderModelID, ProviderConnectionID: g.ProviderConnectionID, ProviderConnectionGeneration: g.ProviderConnectionGeneration,
@@ -432,8 +440,12 @@ func canonicalDocument(g llm.ExternalGrant) ([]byte, error) { return json.Marsha
 func validateClaims(g llm.ExternalGrant, requireSignature bool) error {
 	mode := normalizedRouteMode(g.RouteMode)
 	switch {
-	case g.Version != 1:
+	case g.Version != llm.ExternalGrantVersionLegacy && g.Version != llm.ExternalGrantVersionAgentBound:
 		return fmt.Errorf("%w: unsupported version=%d", ErrInvalidGrantShape, g.Version)
+	case g.Version == llm.ExternalGrantVersionLegacy && g.AgentID != "":
+		return fmt.Errorf("%w: legacy grant cannot carry an unsigned agent binding", ErrInvalidGrantShape)
+	case g.Version == llm.ExternalGrantVersionAgentBound && strings.TrimSpace(g.AgentID) == "":
+		return fmt.Errorf("%w: version 2 requires an agent binding", ErrInvalidGrantShape)
 	case g.KeyID == "", g.Audience == "", g.GrantID == "", g.OrganizationID == "", g.RuntimeID == "":
 		return fmt.Errorf("%w: missing signed context claim", ErrInvalidGrantShape)
 	case g.TenantID == "", g.UserID == "", g.SessionID == "", g.LogicalRunID == "", g.LogicalCallID == "", g.AttemptNonce == "":

@@ -356,7 +356,7 @@ func makeReceipt(grant llm.ExternalGrant, req llm.CompleteRequest, resp llm.Comp
 	receipt := llm.AttemptUsageReceipt{
 		ReceiptID: idempotency, GrantID: grant.GrantID, RouteMode: grant.RouteMode, LogicalCallID: logicalCallID, AttemptNonce: attemptNonce,
 		ParentLogicalCallID: parentLogicalCallID, ParentAttemptNonce: parentAttemptNonce, PlannerStep: plannerStep, OrganizationID: grant.OrganizationID,
-		RuntimeID: grant.RuntimeID, TenantID: grant.TenantID, UserID: grant.UserID,
+		RuntimeID: grant.RuntimeID, AgentID: grant.AgentID, TenantID: grant.TenantID, UserID: grant.UserID,
 		SessionID: grant.SessionID, LogicalRunID: grant.LogicalRunID, Provider: provider,
 		ProviderModelID: model, ProviderConnectionID: grant.ProviderConnectionID,
 		ProviderConnectionGeneration: grant.ProviderConnectionGeneration,

@@ -14383,3 +14383,44 @@ before the successor has passed both relationship and signature verification.
 
 **Cross-references:** D-025, D-434, D-436, RFC §6.5, §6.11, §6.15, brief 03,
 brief 08. Plan: `docs/plans/phase-259-external-grant-topup-successor.md`.
+
+---
+
+## D-440 — Version 2 external grants bind the reach-admitted effective agent
+
+**Date:** 2026-08-25
+
+**Status:** Implemented candidate in Phase 260; hosted CI, release, and
+downstream acceptance remain pending.
+
+Version 2 of `ExternalGrant` requires a signed AgentID equal to the effective
+agent configuration admitted by the normal signed-reach control boundary. The
+reference verifier reads only the private run-context capability restored from
+the durable admission receipt and refuses absence or mismatch before lease
+reservation, credential resolution, or provider invocation. The binding is
+route-neutral: runtime-default and coordinator-bound grants apply it equally,
+and runtime-default still requires no coordinator provider credential or model
+catalog.
+
+AgentID here is execution authority for one effective configuration selection.
+It is not a storage-isolation principal and does not replace the boot-derived
+invoking-agent provenance. The canonical run loop is the authority-bearing
+producer; a raw task AgentID or arbitrary embedder context is not.
+
+Version 1 remains the exact deployed canonical/signature shape and may carry no
+AgentID. This prevents an old signature from being reinterpreted as agent-bound.
+New receipts carry optional `agent_id` in the modern canonical wire; omission
+keeps all legacy/current blank-agent bytes and body hashes exact. Grant-bound
+validation requires the exact field for v2 and rejects unsigned attribution on
+v1. Whole-value top-up successor comparison makes the field immutable.
+
+`runtime.info.external_grant` advertises supported grant versions `[1,2]` and
+the `required_v2` binding contract. This is compatibility/readiness truth, not
+a new Protocol method or version. Required mode refuses auxiliary LLM calls
+that carry no grant before the provider; optional mode retains its documented
+compatibility behavior, so Harbor claims every strict grant-bearing provider
+attempt rather than every arbitrary LLM invocation.
+
+**Cross-references:** D-025, D-434, D-436, D-437, D-438, D-439, RFC §6.5,
+§6.11, §6.15, brief 03, brief 08. Plan:
+`docs/plans/phase-260-agent-bound-external-grants.md`.

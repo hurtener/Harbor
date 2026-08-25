@@ -120,6 +120,8 @@ type ExternalGrantReadiness struct {
 	Supported               bool     `json:"supported"`
 	Configured              bool     `json:"configured"`
 	Mode                    string   `json:"mode"`
+	SupportedGrantVersions  []int    `json:"supported_grant_versions"`
+	AgentBinding            string   `json:"agent_binding"`
 	AcceptedRouteModes      []string `json:"accepted_route_modes,omitempty"`
 	ReadyRouteModes         []string `json:"ready_route_modes,omitempty"`
 	VerifierConfigured      bool     `json:"verifier_configured"`

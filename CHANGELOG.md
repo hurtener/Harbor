@@ -19,6 +19,18 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Added
 
+- HA-75 adds version 2 of the public external execution grant with a required,
+  signed effective AgentID. The stock verifier matches it to the exact agent
+  restored from normal durable reach admission before reservation, credential
+  resolution, or provider execution; explicit and runtime-default selections
+  use the same gate, and runtime-default still needs no coordinator provider
+  credential or catalog. Content-free receipts and bounded top-up successors
+  preserve the binding. Version 1 signatures and blank-agent legacy/current
+  receipt bytes remain exact, while v1 cannot pretend AgentID was signed.
+  `runtime.info` advertises grant versions `[1,2]` and `required_v2` binding.
+  Required mode blocks ungranted auxiliary calls; optional/embedder calls are
+  not represented as agent-bound. Protocol version remains `0.1.0`.
+
 - `sdk/llm.UnmarshalCanonicalAttemptUsageReceipt` is the strict public inverse
   of Harbor's canonical content-free receipt encoder. It accepts only exact
   current snake-case bytes or the exact v1.30.0 legacy bytes selected by the

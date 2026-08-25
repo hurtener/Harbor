@@ -401,6 +401,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |257 | Strict public canonical attempt-receipt parser (HA-72 parser slice, D-437): exact inverse over the canonical current and preserved legacy receipt wires, closed unknown/duplicate/missing/trailing/noncanonical input, semantic/hash validation, byte-identical re-marshal, fuzz/adversarial and external-package coverage; no transport or idle work | internal/llm + sdk/llm + sdk/assemble | §6.5, §6.11, §6.15 | 254, 256, D-434, D-436 | focused race/vet + fuzz seeds + public consumer + smoke | Implemented candidate; Phase 258 completes HA-72 transport/readiness; hosted CI/release/downstream acceptance pending |
 |258 | Stock coordinator receipt transport and runtime readiness (HA-72, D-438): opt-in authenticated bounded receipt batches, exact ID/hash ACKs, partial/response-loss durable replay, stable jittered backoff, zero-work disabled defaults, explicit unsupported stock top-up, and content-free `runtime.info.external_grant` readiness truth for both route modes | llm receipts + runtime serve + config + protocol posture | §5.3, §6.5, §6.11, §6.15 | 254, 256, 257, D-025, D-434, D-436, D-437 | focused race/vet + Protocol generation + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 |259 | External-grant top-up successor validation (HA-74, D-439): public relationship-only validator preserves whole immutable grant authority, permits one bounded lease epoch and non-rewinding duration-bounded validity, then requires configured successor verification before provider invocation; stock live top-up transport and durable successor application remain unsupported | sdk/llm + grant wrapper | §6.5, §6.11, §6.15 | 254, 256, D-025, D-434, D-436 | focused race/vet + public consumer + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
+|260 | Reach-admitted agent-bound external grants (HA-75, D-440): v2 signs the exact effective agent selected by normal reach admission, reference verification fails before provider side effects, receipts/top-ups preserve the binding, v1 signatures and blank-agent receipt bytes remain exact, and readiness advertises `[1,2]` plus `required_v2` | internal/llm + grant + runtime/serve + protocol posture + sdk/llm | §6.5, §6.11, §6.15 | 254, 256, 257, 258, 259, D-434..D-439 | focused race/vet + real run-loop + public consumer + generators + smoke | Implemented candidate; hosted CI/release/downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5646,6 +5647,29 @@ Recorded because the lapse is now cumulative and worth being visible: **v1.19, v
   gates are required. Hosted CI, release, and downstream acceptance remain
   separate and unclaimed.
 - **Decision:** D-439. **Status:** Implemented candidate; hosted CI, release,
+  and downstream acceptance pending.
+
+### Phase 260 — Reach-admitted agent-bound external grants (HA-75)
+
+- **Subsystem:** external grant/receipt contract, reference grant verifier,
+  canonical run loop, readiness projection, and public LLM SDK.
+- **RFC:** §6.5, §6.11, §6.15. **Deps:** phases 254–259 and D-434–D-439.
+- **What it delivers:** D-440 — version 2 signs the exact effective AgentID
+  restored from normal durable reach admission. The reference verifier matches
+  it against the private run context before reservation, credential resolution,
+  or provider execution. Receipts carry the content-free binding and top-up
+  successors preserve it. Version 1 remains signature- and receipt-byte exact
+  but cannot claim signed AgentID authority. Both runtime-default and
+  coordinator-bound routes are supported; runtime-default requires no external
+  provider credential or catalog. Readiness advertises grant versions and the
+  v2 binding contract without changing Protocol version.
+- **Evidence:** signer/verifier and wrapper adversaries, exact old/new receipt
+  parser/hash coverage, top-up drift, N=100 two-agent reuse, real durable
+  explicit/default run-loop acceptance, public SDK compilation, Protocol/TS
+  generation, focused race/vet/static smoke, and drift/mirror gates. Required
+  mode blocks ungranted auxiliary calls; arbitrary optional/embedder calls are
+  not described as agent-bound.
+- **Decision:** D-440. **Status:** Implemented candidate; hosted CI, release,
   and downstream acceptance pending.
 
 ## Notes

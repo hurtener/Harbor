@@ -17,6 +17,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/leases"
 	"github.com/hurtener/Harbor/internal/llm/retry"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 type recordingClient struct {
@@ -198,6 +199,41 @@ func TestWrap_StrictModeRejectsMissingAndStaleGrant(t *testing.T) {
 	}
 	if _, err := client.Complete(testContext(t, "org-b"), llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed}); !errors.Is(err, llm.ErrExternalGrantInvalid) {
 		t.Fatalf("wrong organization = %v, want ErrExternalGrantInvalid", err)
+	}
+}
+
+func TestWrap_V2AgentBindingRefusesBeforeProviderSideEffects(t *testing.T) {
+	signer, err := NewSigner("key-v2", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-v2": signer.PublicKey()}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := testGrant()
+	claims.Version, claims.AgentID = llm.ExternalGrantVersionAgentBound, "agent-a"
+	signed, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, ctx := range map[string]context.Context{
+		"missing":  testContext(t, "org-a"),
+		"mismatch": tools.WithEffectiveAgentConfig(testContext(t, "org-a"), "agent-b"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := &recordingClient{}
+			client := Wrap(inner, llm.ConfigSnapshot{}, llm.Deps{ExternalGrant: llm.ExternalGrantConfig{
+				Mode: llm.ExternalGrantRequired, Verifier: verifier, Reservations: newTestReservations(t), ReceiptSink: &recordingSink{}, ReceiptRequired: true,
+			}})
+			_, err := client.Complete(ctx, llm.CompleteRequest{Model: "model-fast", ExternalGrant: &signed})
+			if !errors.Is(err, llm.ErrExternalGrantInvalid) {
+				t.Fatalf("Complete = %v, want ErrExternalGrantInvalid", err)
+			}
+			if len(inner.requests) != 0 {
+				t.Fatalf("provider calls=%d, want 0", len(inner.requests))
+			}
+		})
 	}
 }
 

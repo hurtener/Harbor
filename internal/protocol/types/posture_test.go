@@ -46,7 +46,7 @@ func TestRuntimeInfo_JSONRoundTrip(t *testing.T) {
 		UptimeSeconds:     3600,
 		WireSurfaceDigest: "sha256:" + strings.Repeat("a", 64),
 		ExternalGrant: &types.ExternalGrantReadiness{
-			Supported: true, Configured: true, Mode: "required", AcceptedRouteModes: []string{"runtime_default"}, ReadyRouteModes: []string{"runtime_default"},
+			Supported: true, Configured: true, Mode: "required", SupportedGrantVersions: []int{1, 2}, AgentBinding: "required_v2", AcceptedRouteModes: []string{"runtime_default"}, ReadyRouteModes: []string{"runtime_default"},
 			VerifierConfigured: true, ReservationsWired: true, ReceiptTransport: "wired",
 			ReceiptTransportKind: "stock_authenticated_http", ReceiptParser: "strict_canonical_v1", TopUpTransport: "unsupported", StrictReady: true,
 		},

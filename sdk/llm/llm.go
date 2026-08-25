@@ -106,6 +106,12 @@ const (
 	ExternalGrantRequired = internal.ExternalGrantRequired
 )
 
+// External grant schema versions.
+const (
+	ExternalGrantVersionLegacy     = internal.ExternalGrantVersionLegacy
+	ExternalGrantVersionAgentBound = internal.ExternalGrantVersionAgentBound
+)
+
 // External grant route modes.
 const (
 	ExternalGrantRouteRuntimeDefault   = internal.ExternalGrantRouteRuntimeDefault

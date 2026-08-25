@@ -91,6 +91,34 @@ func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsExactCanonicalWire(t *t
 	}
 }
 
+func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsAgentBoundWireWithoutChangingOldBytes(t *testing.T) {
+	legacyCompatible, oldBody := canonicalReceiptFixture(t)
+	agentBound := legacyCompatible
+	agentBound.AgentID = "agent-a"
+	agentBody := marshalReceiptWithFreshHash(t, agentBound)
+	if bytes.Equal(agentBody, oldBody) || !bytes.Contains(agentBody, []byte(`"agent_id":"agent-a"`)) {
+		t.Fatalf("agent-bound wire did not add exact agent claim: %s", agentBody)
+	}
+	parsed, err := UnmarshalCanonicalAttemptUsageReceipt(agentBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.AgentID != "agent-a" {
+		t.Fatalf("parsed AgentID=%q", parsed.AgentID)
+	}
+	remarshaled, err := MarshalCanonicalAttemptUsageReceipt(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(remarshaled, agentBody) {
+		t.Fatalf("agent-bound bytes changed: %s != %s", remarshaled, agentBody)
+	}
+	_, unchangedOldBody := canonicalReceiptFixture(t)
+	if !bytes.Equal(unchangedOldBody, oldBody) {
+		t.Fatalf("blank-AgentID canonical bytes changed: %s != %s", unchangedOldBody, oldBody)
+	}
+}
+
 func TestUnmarshalCanonicalAttemptUsageReceipt_RoundTripsExactLegacyWire(t *testing.T) {
 	want, _ := canonicalReceiptFixture(t)
 	want.RouteMode = ""

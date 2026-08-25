@@ -1,6 +1,7 @@
 package grant
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 func testClock() time.Time { return time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC) }
@@ -41,6 +43,11 @@ func testContext(t *testing.T, organization string) context.Context {
 		t.Fatal(err)
 	}
 	return llm.WithVerifiedOrganization(ctx, organization)
+}
+
+func agentBoundTestContext(t *testing.T, organization, agentID string) context.Context {
+	t.Helper()
+	return tools.WithEffectiveAgentConfig(testContext(t, organization), agentID)
 }
 
 func signedTestGrant(t *testing.T) llm.ExternalGrant {
@@ -78,6 +85,7 @@ func receiptForGrant(t *testing.T, grant llm.ExternalGrant, step int) llm.Attemp
 		PlannerStep:                  scope.PlannerStep,
 		OrganizationID:               grant.OrganizationID,
 		RuntimeID:                    grant.RuntimeID,
+		AgentID:                      grant.AgentID,
 		TenantID:                     grant.TenantID,
 		UserID:                       grant.UserID,
 		SessionID:                    grant.SessionID,
@@ -203,6 +211,9 @@ func TestVerifierAcceptsLegacyV1300CoordinatorBoundSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bytes.Contains(document, []byte(`"agent_id"`)) {
+		t.Fatalf("legacy canonical document gained agent_id: %s", document)
+	}
 	legacy.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.private, document))
 	verifier, err := NewVerifier(VerifierConfig{
 		Audience: "harbor-runtime", RuntimeID: "runtime-1",
@@ -242,6 +253,121 @@ func TestSignerVerifier_BindsVerifiedContextAndRoute(t *testing.T) {
 	wrongModel.ProviderModelID = "model-other"
 	if err := verifier.Verify(ctx, wrongModel, llm.CompleteRequest{Model: "model-fast"}); !errors.Is(err, llm.ErrExternalGrantSignature) {
 		t.Fatalf("Verify tampered model = %v, want signature failure", err)
+	}
+}
+
+func TestSignerVerifier_V2RequiresExactReachAdmittedAgentForBothRoutes(t *testing.T) {
+	signer, err := NewSigner("key-v2", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{
+		Audience: "harbor-runtime", RuntimeID: "runtime-1",
+		Keys: map[string]ed25519.PublicKey{"key-v2": signer.PublicKey()}, Clock: testClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []llm.ExternalGrantRouteMode{llm.ExternalGrantRouteCoordinatorBound, llm.ExternalGrantRouteRuntimeDefault} {
+		t.Run(string(mode), func(t *testing.T) {
+			claims := testGrant()
+			claims.Version = llm.ExternalGrantVersionAgentBound
+			claims.AgentID = "agent-a"
+			claims.RouteMode = mode
+			if mode == llm.ExternalGrantRouteRuntimeDefault {
+				claims.Provider, claims.ProviderModelID, claims.ProviderConnectionID = "", "", ""
+				claims.ProviderConnectionGeneration, claims.RouteID = 0, ""
+				claims.CredentialBindingHandle, claims.CredentialAssetGeneration = "", 0
+			}
+			signed, signErr := signer.Sign(claims)
+			if signErr != nil {
+				t.Fatal(signErr)
+			}
+			request := llm.CompleteRequest{Model: "model-fast"}
+			if err := verifier.Verify(agentBoundTestContext(t, "org-a", "agent-a"), signed, request); err != nil {
+				t.Fatalf("matching admitted agent: %v", err)
+			}
+			receipt := receiptForGrant(t, signed, 1)
+			if err := llm.ValidateAttemptUsageReceiptAgainstGrant(receipt, signed); err != nil {
+				t.Fatalf("matching agent-bound receipt: %v", err)
+			}
+			wrongReceipt := receipt
+			wrongReceipt.AgentID = "agent-b"
+			wrongReceipt.CanonicalBodyHash, signErr = llm.CanonicalAttemptUsageReceiptBodyHash(wrongReceipt)
+			if signErr != nil {
+				t.Fatal(signErr)
+			}
+			if err := llm.ValidateAttemptUsageReceiptAgainstGrant(wrongReceipt, signed); !errors.Is(err, llm.ErrInvalidUsageReceipt) {
+				t.Fatalf("mismatched agent-bound receipt = %v, want ErrInvalidUsageReceipt", err)
+			}
+			for name, ctx := range map[string]context.Context{
+				"missing":  testContext(t, "org-a"),
+				"mismatch": agentBoundTestContext(t, "org-a", "agent-b"),
+			} {
+				if err := verifier.Verify(ctx, signed, request); !errors.Is(err, llm.ErrExternalGrantInvalid) {
+					t.Fatalf("%s agent context = %v, want ErrExternalGrantInvalid", name, err)
+				}
+			}
+			tampered := signed
+			tampered.AgentID = "agent-b"
+			if err := verifier.Verify(agentBoundTestContext(t, "org-a", "agent-b"), tampered, request); !errors.Is(err, llm.ErrExternalGrantSignature) {
+				t.Fatalf("tampered signed agent = %v, want signature failure", err)
+			}
+		})
+	}
+
+	v1Pretender := testGrant()
+	v1Pretender.AgentID = "agent-a"
+	if _, err := signer.Sign(v1Pretender); !errors.Is(err, ErrInvalidGrantShape) {
+		t.Fatalf("v1 grant pretending signed AgentID = %v, want ErrInvalidGrantShape", err)
+	}
+	v2Missing := testGrant()
+	v2Missing.Version = llm.ExternalGrantVersionAgentBound
+	if _, err := signer.Sign(v2Missing); !errors.Is(err, ErrInvalidGrantShape) {
+		t.Fatalf("v2 grant missing AgentID = %v, want ErrInvalidGrantShape", err)
+	}
+}
+
+func TestVerifier_V2ConcurrentAgentsDoNotBleed(t *testing.T) {
+	signer, err := NewSigner("key-v2", "harbor-runtime", nil, testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewVerifier(VerifierConfig{Audience: "harbor-runtime", RuntimeID: "runtime-1", Keys: map[string]ed25519.PublicKey{"key-v2": signer.PublicKey()}, Clock: testClock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := make(map[string]llm.ExternalGrant, 2)
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		claims := testGrant()
+		claims.Version, claims.AgentID = llm.ExternalGrantVersionAgentBound, agentID
+		claims.GrantID, claims.Lease.LeaseID = "grant-"+agentID, "lease-"+agentID
+		claims.LogicalCallID, claims.AttemptNonce = "", ""
+		grants[agentID], err = signer.Sign(claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 100)
+	contexts := map[string]context.Context{
+		"agent-a": agentBoundTestContext(t, "org-a", "agent-a"),
+		"agent-b": agentBoundTestContext(t, "org-a", "agent-b"),
+	}
+	for i := range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			agentID := []string{"agent-a", "agent-b"}[i%2]
+			errs <- verifier.Verify(contexts[agentID], grants[agentID], llm.CompleteRequest{Model: "model-fast"})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
