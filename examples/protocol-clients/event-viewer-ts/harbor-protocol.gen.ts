@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:6a6efe1580f3d10e1ae154fb38d066adc68fb44a98de830503ef8494fd7e8803";
+export const WIRE_SURFACE_DIGEST = "sha256:a2107113601cc23ef6599dfcdb61cbfed9c8fb2a82cc2c4d11e85570b0993fa3";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2982,6 +2982,7 @@ export interface SessionTurnsGetResponse {
   session_id: string;
   turn?: SessionTurnRow;
   ops_turn?: SessionOpsTurnRow;
+  usage_turn?: SessionUsageTurnRow;
   protocol_version: string;
 }
 
@@ -3005,6 +3006,21 @@ export interface SessionTurnsListResponse {
   page_completeness: string;
   partial_reason?: string;
   protocol_version: string;
+}
+
+export interface SessionUsageTurnRow {
+  turn_id: string;
+  task_id: string;
+  session_id: string;
+  agent_id?: string;
+  status: string;
+  sealed: boolean;
+  version: number;
+  last_applied_event_seq: number;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  usage: SessionTurnUsage;
 }
 
 export interface SessionsDeleteRequest {

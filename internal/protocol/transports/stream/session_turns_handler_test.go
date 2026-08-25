@@ -11,6 +11,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	turns "github.com/hurtener/Harbor/internal/sessions/turns"
 	turnsprotocol "github.com/hurtener/Harbor/internal/sessions/turns/protocol"
@@ -167,6 +168,14 @@ func TestSessionTurnsHandler_List_OperationsProjectionRejected(t *testing.T) {
 	}
 }
 
+func TestSessionTurnsHandler_List_UsageProjectionRejected(t *testing.T) {
+	h := newTurnsHandler(t, &turnsFakeProjector{})
+	code, body := doTurnsRequest(t, h, "list", `{"session_id":"s-tr","projection":"usage"}`, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("list(usage) status = %d, want 400; body=%s", code, body)
+	}
+}
+
 func TestSessionTurnsHandler_List_ForeignSessionIsNotFound(t *testing.T) {
 	h := newTurnsHandler(t, &turnsFakeProjector{})
 	code, body := doTurnsRequest(t, h, "list", `{"session_id":"s-foreign"}`, nil)
@@ -197,6 +206,96 @@ func TestSessionTurnsHandler_Get_ConsumerLane(t *testing.T) {
 	}
 	if out.OpsTurn != nil {
 		t.Error("consumer lane must not populate ops_turn")
+	}
+}
+
+func TestSessionTurnsHandler_Get_UsageLane_ContentFreeAndConsumerScoped(t *testing.T) {
+	exact := int64(33)
+	estimated := int64(9)
+	row := turns.TurnRow{
+		TurnID: turns.TurnID("task-usage"), TaskID: "task-usage", SessionID: "s-tr", Sequence: 2, TieBreaker: "task-usage",
+		Status: turns.StatusComplete, Sealed: true, Version: 3, LastAppliedEventSeq: 11,
+		StartedAt:  time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 8, 25, 10, 1, 0, 0, time.UTC),
+		Query:      turns.Query{Text: "must not appear"},
+		Answer:     turns.Answer{State: turns.AnswerStateInline, Inline: "must not appear"},
+		Reasoning:  turns.Reasoning{Steps: []turns.ReasoningStep{{Index: 0, Kind: turns.ReasoningKindToolCall}}},
+		Activity:   turns.Activity{Rows: []turns.ActivityRow{{Tool: "must-not-appear"}}},
+		Usage: turns.Usage{
+			PromptTokens: turns.UsageMeasure{State: turns.UsageUnavailable},
+			TotalTokens:  turns.UsageMeasure{State: turns.UsageExact, Value: &exact},
+			CostMicroUSD: turns.UsageMeasure{State: turns.UsageEstimated, Value: &estimated},
+		},
+	}
+	h := newTurnsHandler(t, &turnsFakeProjector{rows: []turns.TurnRow{row}})
+	code, body := doTurnsRequest(t, h, "get", `{"session_id":"s-tr","task_id":"task-usage","projection":"usage"}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("usage get status = %d, body=%s", code, body)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if _, ok := envelope["turn"]; ok {
+		t.Error("usage lane must not populate consumer turn")
+	}
+	if _, ok := envelope["ops_turn"]; ok {
+		t.Error("usage lane must not populate operations turn")
+	}
+	raw, ok := envelope["usage_turn"]
+	if !ok {
+		t.Fatalf("usage lane returned no usage_turn: %s", body)
+	}
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		t.Fatalf("decode usage turn: %v", err)
+	}
+	forbidden := []string{"query", "answer", "reasoning", "activity", string(methods.MethodPause), "apps", "inputs", "outputs", "run_id", "finish_message", "error_message", "tenant_id", "user_id"}
+	for _, key := range forbidden {
+		if _, ok := usage[key]; ok {
+			t.Errorf("usage turn leaked forbidden key %q", key)
+		}
+	}
+	if _, ok := usage["usage"]; !ok {
+		t.Fatal("usage turn omitted canonical usage")
+	}
+	var projected struct {
+		Status string `json:"status"`
+		Sealed bool   `json:"sealed"`
+		Usage  struct {
+			PromptTokens struct {
+				State string `json:"state"`
+				Value *int64 `json:"value"`
+			} `json:"prompt_tokens"`
+			TotalTokens struct {
+				State string `json:"state"`
+				Value *int64 `json:"value"`
+			} `json:"total_tokens"`
+			CostMicroUSD struct {
+				State string `json:"state"`
+				Value *int64 `json:"value"`
+			} `json:"cost_micro_usd"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &projected); err != nil {
+		t.Fatalf("decode projected usage: %v", err)
+	}
+	if projected.Status != "complete" || !projected.Sealed {
+		t.Fatalf("terminal lifecycle changed: %+v", projected)
+	}
+	if projected.Usage.PromptTokens.State != "unavailable" || projected.Usage.PromptTokens.Value != nil {
+		t.Fatalf("unavailable measure changed: %+v", projected.Usage.PromptTokens)
+	}
+	if projected.Usage.TotalTokens.State != "exact" || projected.Usage.TotalTokens.Value == nil || *projected.Usage.TotalTokens.Value != exact {
+		t.Fatalf("exact measure changed: %+v", projected.Usage.TotalTokens)
+	}
+	if projected.Usage.CostMicroUSD.State != "estimated" || projected.Usage.CostMicroUSD.Value == nil || *projected.Usage.CostMicroUSD.Value != estimated {
+		t.Fatalf("estimated measure changed: %+v", projected.Usage.CostMicroUSD)
+	}
+
+	code, _ = doTurnsRequest(t, h, "get", `{"session_id":"s-foreign","task_id":"task-usage","projection":"usage"}`, []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusNotFound {
+		t.Fatalf("foreign usage get with admin scope = %d, want 404", code)
 	}
 }
 

@@ -70,7 +70,10 @@ func TestClient_SessionTurnsRoutesArePinnedExplicitly(t *testing.T) {
 			"header":{"session_id":"session","snapshot_id":3,"as_of":"2026-05-19T09:00:00Z"},
 			"turns":[],"order":"newest_first","has_more":false,"count_exact":true,
 			"live_resume_seq":0,"page_completeness":"complete","protocol_version":"0.1.0"}`,
-		"/v1/sessions/turns/get": `{"session_id":"session","protocol_version":"0.1.0"}`,
+		"/v1/sessions/turns/get": `{
+			"session_id":"session",
+			"usage_turn":{"turn_id":"task-1","task_id":"task-1","session_id":"session","status":"complete","sealed":true,"version":1,"last_applied_event_seq":4,"started_at":"2026-08-25T10:00:00Z","updated_at":"2026-08-25T10:00:00Z","usage":{"prompt_tokens":{"state":"unavailable"},"completion_tokens":{"state":"unavailable"},"reasoning_tokens":{"state":"unavailable"},"cache_read_tokens":{"state":"unavailable"},"cache_write_tokens":{"state":"unavailable"},"total_tokens":{"state":"exact","value":12},"cost_micro_usd":{"state":"estimated","value":3},"latency_ns":{"state":"unavailable"}}},
+			"protocol_version":"0.1.0"}`,
 	})
 	c := v128(t, srv)
 
@@ -84,11 +87,21 @@ func TestClient_SessionTurnsRoutesArePinnedExplicitly(t *testing.T) {
 		t.Errorf("turns.list body session_id = %v, want the client's own session", (*body)["session_id"])
 	}
 
-	if _, err := c.SessionTurnsGet(context.Background(), types.SessionTurnsGetRequest{TaskID: "task-1"}); err != nil {
+	got, err := c.SessionTurnsGet(context.Background(), types.SessionTurnsGetRequest{TaskID: "task-1", Projection: "usage"})
+	if err != nil {
 		t.Fatalf("SessionTurnsGet: %v", err)
 	}
 	if *path != "/v1/sessions/turns/get" {
 		t.Errorf("turns.get path = %q, want the PINNED /v1/sessions/turns/get", *path)
+	}
+	if (*body)["projection"] != "usage" {
+		t.Errorf("turns.get projection = %v, want usage", (*body)["projection"])
+	}
+	if got.UsageTurn == nil || got.Turn != nil || got.OpsTurn != nil {
+		t.Fatalf("usage response lane = %+v, want exactly UsageTurn", got)
+	}
+	if got.UsageTurn.Usage.TotalTokens.State != "exact" || got.UsageTurn.Usage.TotalTokens.Value == nil || *got.UsageTurn.Usage.TotalTokens.Value != 12 {
+		t.Fatalf("usage total tokens decoded incorrectly: %+v", got.UsageTurn.Usage.TotalTokens)
 	}
 }
 

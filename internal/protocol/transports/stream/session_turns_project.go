@@ -41,21 +41,45 @@ func projectSessionTurnsList(resp turnsprotocol.ListResponse) types.SessionTurns
 }
 
 // projectSessionTurnsGet maps the service's get response onto the wire:
-// exactly one of Turn / OpsTurn is populated, per the request's
+// exactly one of Turn / OpsTurn / UsageTurn is populated, per the request's
 // projection lane.
 func projectSessionTurnsGet(resp turnsprotocol.GetResponse) types.SessionTurnsGetResponse {
 	out := types.SessionTurnsGetResponse{
 		SessionID:       resp.SessionID,
 		ProtocolVersion: types.ProtocolVersion,
 	}
-	if resp.OpsTurn != nil {
+	switch {
+	case resp.OpsTurn != nil:
 		ops := projectSessionOpsTurnRow(*resp.OpsTurn)
 		out.OpsTurn = &ops
-	} else {
+	case resp.UsageTurn != nil:
+		usage := projectSessionUsageTurnRow(*resp.UsageTurn)
+		out.UsageTurn = &usage
+	default:
 		row := projectSessionTurnRow(resp.Turn)
 		out.Turn = &row
 	}
 	return out
+}
+
+// projectSessionUsageTurnRow maps the structurally content-free consumer
+// usage DTO onto the wire. It cannot project conversation/operations content
+// because UsageTurnRow has no such fields.
+func projectSessionUsageTurnRow(row turnsprotocol.UsageTurnRow) types.SessionUsageTurnRow {
+	return types.SessionUsageTurnRow{
+		TurnID:              string(row.TurnID),
+		TaskID:              row.TaskID,
+		SessionID:           row.SessionID,
+		AgentID:             row.AgentID,
+		Status:              string(row.Status),
+		Sealed:              row.Sealed,
+		Version:             row.Version,
+		LastAppliedEventSeq: row.LastAppliedEventSeq,
+		StartedAt:           row.StartedAt,
+		UpdatedAt:           row.UpdatedAt,
+		FinishedAt:          row.FinishedAt,
+		Usage:               projectSessionTurnUsage(row.Usage),
+	}
 }
 
 // projectSessionTurnRow maps one consumer turn row onto the wire. Every

@@ -17,6 +17,18 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- `sessions.turns.get` now accepts the optional `projection: "usage"`
+  selector. It is an exact-session consumer read with a structurally distinct,
+  content-free response that carries only durable turn lifecycle/timing,
+  turn/task/session/agent identifiers, and the canonical usage rollup
+  (per-measure states plus an optional reported model). It reuses the existing
+  durable turn index and does not introduce a
+  polling loop, background worker, receipt path, configuration, or schema.
+  Elevated administrative scopes neither enable nor widen this projection.
+  Protocol version remains `0.1.0`.
+
 ## [1.30.3] — 2026-08-25
 
 ### Added

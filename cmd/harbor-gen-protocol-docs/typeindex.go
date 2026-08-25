@@ -356,6 +356,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"SessionTurnsListResponse":                      reflect.TypeOf(types.SessionTurnsListResponse{}),
 	"SessionTurnsGetRequest":                        reflect.TypeOf(types.SessionTurnsGetRequest{}),
 	"SessionTurnsGetResponse":                       reflect.TypeOf(types.SessionTurnsGetResponse{}),
+	"SessionUsageTurnRow":                           reflect.TypeOf(types.SessionUsageTurnRow{}),
 	"SessionTurnRow":                                reflect.TypeOf(types.SessionTurnRow{}),
 	"SessionTurnAgent":                              reflect.TypeOf(types.SessionTurnAgent{}),
 	"SessionTurnQuery":                              reflect.TypeOf(types.SessionTurnQuery{}),
