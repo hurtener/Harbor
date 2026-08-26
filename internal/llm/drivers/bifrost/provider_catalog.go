@@ -245,7 +245,7 @@ func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Cont
 	if err := llm.ValidateProviderRoute(trusted.Route); err != nil || trusted.Route.RouteID == "" {
 		return ctx, "", observation, llm.ErrProviderRouteInvalid
 	}
-	if c.route.Resolver == nil || trusted.RuntimeID == "" || trusted.RuntimeID != c.route.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" {
+	if c.route.Resolver == nil || trusted.RuntimeID == "" || trusted.RuntimeID != c.route.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposePosture {
 		return ctx, "", observation, llm.ErrProviderRouteResolverUnavailable
 	}
 	id, ok := identity.From(ctx)
@@ -268,6 +268,7 @@ func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Cont
 		ProviderConnectionID:         trusted.Route.ProviderConnectionID,
 		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
+		Purpose: trusted.Purpose,
 	}, time.Now())
 	providerID := bfschemas.ModelProvider(resolved.Provider)
 	if err != nil || !curatedRouteProvider(providerID) || validateCuratedRouteEndpoint(providerID, resolved.Endpoint) != nil {

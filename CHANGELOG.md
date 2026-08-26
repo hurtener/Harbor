@@ -84,7 +84,7 @@ Two versions move independently in Harbor (RFC §5.3):
   run `32882992600` had two unrelated Go failures: the macOS
   `TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
   36.51 seconds waiting for `HTTP 503`, and the Ubuntu Go job later failed in
-  `TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All Phase 262-specific,
+  `TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All release-specific,
   web-lint, and provider-seam jobs were green. Exact post-merge run
   `32883730540` remained in
   progress at this release cut; no successful post-merge CI is claimed. The

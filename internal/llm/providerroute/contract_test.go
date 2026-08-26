@@ -15,6 +15,7 @@ func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 2, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 3, CredentialAssetGeneration: 4, ModelSelector: "fast",
+		Purpose: llm.ProviderRoutePurposeRun,
 	}
 	requestBody, err := MarshalSelectionRequest(req)
 	if err != nil {
@@ -23,6 +24,9 @@ func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 	operation, decoded, err := UnmarshalOperationRequest(requestBody)
 	if err != nil || operation != OperationSelect || decoded != req {
 		t.Fatalf("selection request operation=%q decoded=%+v err=%v", operation, decoded, err)
+	}
+	if decoded.Purpose != llm.ProviderRoutePurposeRun {
+		t.Fatalf("decoded purpose = %q, want run", decoded.Purpose)
 	}
 	selected := llm.SelectedProviderRoute{
 		Provider: "openai", Model: "selected-model", KeyName: "route key", RouteID: req.RouteID, RouteGeneration: req.RouteGeneration,

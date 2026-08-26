@@ -763,6 +763,7 @@ func (s *PostureSurface) handleProviderOperation(
 		ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
 			Route: route, EffectiveAgentID: request.ProviderAgentID,
 			RuntimeID: s.providerRouteRuntimeID, TaskID: newProviderOperationID(),
+			Purpose: llm.ProviderRoutePurposePosture,
 		})
 	}
 	result := types.LLMProviderOperationResponse{

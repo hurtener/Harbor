@@ -27,7 +27,7 @@ type routeAwareCatalogFixture struct{ providerCatalogFixture }
 
 func (routeAwareCatalogFixture) Validate(ctx context.Context, req provider.ValidationRequest) provider.ValidationResult {
 	trusted, ok := llm.TrustedProviderRouteFrom(ctx)
-	if !ok || trusted.EffectiveAgentID != "agent-a" || trusted.RuntimeID != "runtime-a" || trusted.TaskID == "" {
+	if !ok || trusted.EffectiveAgentID != "agent-a" || trusted.RuntimeID != "runtime-a" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposePosture {
 		return provider.ValidationResult{Outcome: provider.Outcome{State: provider.SupportUnavailable}}
 	}
 	return provider.ValidationResult{ProviderID: "openai", Outcome: provider.Outcome{State: provider.SupportSupported}, Route: &provider.RouteObservation{

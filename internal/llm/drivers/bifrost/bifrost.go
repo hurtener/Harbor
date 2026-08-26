@@ -183,7 +183,7 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		if d.providerRoute.Resolver == nil {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteResolverUnavailable
 		}
-		if !selectedOK || !selected.ExpiresAt.After(time.Now()) || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || req.Model != selected.Model {
+		if !selectedOK || !selected.ExpiresAt.After(time.Now()) || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
 		}
 		var scope *llm.AttemptScope
@@ -199,6 +199,7 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
 			ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
 			CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
+			Purpose: trusted.Purpose,
 		}, time.Now())
 		if err != nil {
 			return llm.CompleteResponse{}, err

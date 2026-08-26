@@ -106,6 +106,8 @@ type (
 	ProviderRoute = internal.ProviderRoute
 	// ProviderRouteRequest is the fully verified resolver input.
 	ProviderRouteRequest = internal.ProviderRouteRequest
+	// ProviderRoutePurpose binds a request to the trusted runtime use.
+	ProviderRoutePurpose = internal.ProviderRoutePurpose
 	// ResolvedProviderRoute is the exact-bound short-lived route result.
 	ResolvedProviderRoute = internal.ResolvedProviderRoute
 	// SelectedProviderRoute is the credential-free pre-policy route decision.
@@ -126,6 +128,13 @@ type (
 
 // DefaultDriver is the production LLM driver name.
 const DefaultDriver = internal.DefaultDriver
+
+const (
+	// ProviderRoutePurposeRun is the admitted Bifrost execution purpose.
+	ProviderRoutePurposeRun = internal.ProviderRoutePurposeRun
+	// ProviderRoutePurposePosture is the admin provider validation purpose.
+	ProviderRoutePurposePosture = internal.ProviderRoutePurposePosture
+)
 
 // ExternalGrant modes.
 const (

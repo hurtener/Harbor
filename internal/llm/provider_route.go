@@ -51,6 +51,17 @@ type ProviderRoute struct {
 	ModelSelector                string `json:"model_selector"`
 }
 
+// ProviderRoutePurpose binds a resolver request to its trusted runtime use.
+// Run is the admitted Bifrost execution path; Posture is the admin-only
+// provider validation/discovery path. Callers cannot select this from wire
+// input because the runtime derives it from the trusted route context.
+type ProviderRoutePurpose string
+
+const (
+	ProviderRoutePurposeRun     ProviderRoutePurpose = "run"
+	ProviderRoutePurposePosture ProviderRoutePurpose = "posture"
+)
+
 // ProviderRouteRequest is assembled by the runtime after identity and
 // effective-Agent admission. None of its authority-bearing fields come from
 // an unverified request body.
@@ -69,6 +80,7 @@ type ProviderRouteRequest struct {
 	ProviderConnectionGeneration uint64
 	CredentialAssetGeneration    uint64
 	ModelSelector                string
+	Purpose                      ProviderRoutePurpose
 }
 
 // ProviderEndpointKind identifies one supported typed endpoint projection.
@@ -240,6 +252,7 @@ type TrustedProviderRouteContext struct {
 	EffectiveAgentID string
 	RuntimeID        string
 	TaskID           string
+	Purpose          ProviderRoutePurpose
 }
 
 // WithTrustedProviderRoute installs a server-derived route context.

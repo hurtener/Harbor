@@ -1951,6 +1951,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			EffectiveAgentID: effectiveAgentID,
 			RuntimeID:        d.providerRouteRuntimeID,
 			TaskID:           string(taskID),
+			Purpose:          llm.ProviderRoutePurposeRun,
 		})
 	}
 	if hasSkillSnapshot {

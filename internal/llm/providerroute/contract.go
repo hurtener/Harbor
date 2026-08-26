@@ -38,6 +38,7 @@ type requestWire struct {
 	ProviderConnectionGeneration uint64 `json:"provider_connection_generation"`
 	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
 	ModelSelector                string `json:"model_selector"`
+	Purpose                      string `json:"purpose"`
 }
 
 type responseWire struct {
@@ -81,8 +82,10 @@ func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, err
 		RouteGeneration: req.RouteGeneration, ProviderConnectionID: req.ProviderConnectionID,
 		ProviderConnectionGeneration: req.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    req.CredentialAssetGeneration, ModelSelector: req.ModelSelector,
+		Purpose: string(req.Purpose),
 	}
 	if (w.Operation != OperationSelect && w.Operation != OperationResolve) ||
+		(w.Purpose != string(llm.ProviderRoutePurposeRun) && w.Purpose != string(llm.ProviderRoutePurposePosture)) ||
 		w.TenantID == "" || w.UserID == "" || w.SessionID == "" || w.LogicalRunID == "" ||
 		w.EffectiveAgentID == "" || w.RuntimeID == "" || w.TaskID == "" || w.LogicalCallID == "" ||
 		w.RouteID == "" || w.RouteGeneration == 0 || w.ProviderConnectionID == "" ||
@@ -125,6 +128,7 @@ func UnmarshalOperationRequest(body []byte) (string, llm.ProviderRouteRequest, e
 		RouteID: w.RouteID, RouteGeneration: w.RouteGeneration, ProviderConnectionID: w.ProviderConnectionID,
 		ProviderConnectionGeneration: w.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    w.CredentialAssetGeneration, ModelSelector: w.ModelSelector,
+		Purpose: llm.ProviderRoutePurpose(w.Purpose),
 	}
 	if _, err := MarshalRequest(req); err != nil {
 		return "", llm.ProviderRouteRequest{}, err

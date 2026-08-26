@@ -52,7 +52,8 @@ func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, t
 		return ctx, ProviderRouteRequest{}, ErrProviderRouteResolverUnavailable
 	}
 	if err := ValidateProviderRoute(trusted.Route); err != nil || trusted.Route.RouteID == "" ||
-		trusted.RuntimeID == "" || trusted.RuntimeID != cfg.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" {
+		trusted.RuntimeID == "" || trusted.RuntimeID != cfg.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" ||
+		trusted.Purpose != ProviderRoutePurposeRun {
 		return ctx, ProviderRouteRequest{}, ErrProviderRouteInvalid
 	}
 	q, ok := identity.QuadrupleFrom(ctx)
@@ -77,5 +78,6 @@ func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, t
 		RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
 		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
+		Purpose: ProviderRoutePurposeRun,
 	}, nil
 }

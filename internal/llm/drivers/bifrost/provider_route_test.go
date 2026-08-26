@@ -141,8 +141,12 @@ func TestDriver_RoutedAttemptsResolveEveryTimeAndRevocationFailsClosed(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task"})
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun})
 	ctx = llm.WithSelectedProviderRoute(ctx, resolver.selected)
+	postureCtx := llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: llm.ProviderRoutePurposePosture})
+	if _, err := driver.Complete(postureCtx, llm.CompleteRequest{Model: "model"}); !errors.Is(err, llm.ErrProviderRouteInvalid) {
+		t.Fatalf("posture-purpose run error = %v, want ErrProviderRouteInvalid", err)
+	}
 	if _, err := driver.Complete(ctx, llm.CompleteRequest{Model: "model"}); err != nil {
 		t.Fatalf("first routed attempt: %v", err)
 	}
@@ -196,6 +200,7 @@ func TestDriver_RoutedProviderFailureIsContentFree(t *testing.T) {
 	}
 	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
 		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task",
+		Purpose: llm.ProviderRoutePurposeRun,
 	})
 	ctx = llm.WithSelectedProviderRoute(ctx, resolver.selected)
 

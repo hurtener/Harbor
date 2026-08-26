@@ -70,7 +70,7 @@ func TestProviderRouteClient_SelectedModelReachesModelSensitivePolicy(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task"})
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 	text := strings.Repeat("x", 80)
 	_, err = client.Complete(ctx, CompleteRequest{Model: "runtime-large", Messages: []ChatMessage{{Role: RoleUser, Content: Content{Text: &text}}}})
 	if !errors.Is(err, ErrContextWindowExceeded) {
@@ -97,7 +97,7 @@ func TestProviderRouteClient_UnpermittedSelectionNeverReachesPolicyChain(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task"})
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 	if _, err := client.Complete(ctx, CompleteRequest{}); !errors.Is(err, ErrProviderRouteInvalid) {
 		t.Fatalf("unpermitted selection error = %v, want ErrProviderRouteInvalid", err)
 	}
