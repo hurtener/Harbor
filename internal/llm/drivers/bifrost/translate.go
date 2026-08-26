@@ -32,6 +32,7 @@
 package bifrost
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -704,6 +705,21 @@ func translateError(berr *bfschemas.BifrostError, kind string) error {
 		return fmt.Errorf("%s: bifrost: status %d: %s", kind, status, msg)
 	}
 	return fmt.Errorf("%s: bifrost: %s", kind, msg)
+}
+
+// translateErrorForContext keeps provider diagnostics content-free when the
+// call carries a resolved external route. Bifrost/provider text can contain
+// the route endpoint, credential, or response body; this error reaches the
+// run loop and is therefore also the value used by persistence and logging.
+// Calls without a resolved route retain the ordinary Bifrost translation.
+func translateErrorForContext(ctx context.Context, berr *bfschemas.BifrostError, kind string) error {
+	if berr == nil {
+		return nil
+	}
+	if _, routed := llm.ResolvedProviderRouteFrom(ctx); routed {
+		return llm.ErrProviderRouteProviderFailed
+	}
+	return translateError(berr, kind)
 }
 
 // native tool-calling translation helpers.

@@ -384,6 +384,11 @@ const (
 	// descriptor/validate/discover operation. It is conditional: a runtime
 	// only advertises it when its provider catalog is wired at boot.
 	CapLLMProviderCatalog Capability = "llm_provider_catalog"
+	// CapLLMProviderRoute advertises that this runtime is booted with the
+	// optional grant-free provider-route resolver and can safely accept the
+	// provider_route member on control.start. Absence means unsupported or not
+	// configured; coordinators must not activate route assignments.
+	CapLLMProviderRoute Capability = "llm_provider_route"
 	// CapTopologySnapshot — the engine-graph topology projection
 	// (`topology.snapshot`,). Conditional: a runtime
 	// only advertises this capability when it hosts an engine (the
@@ -490,16 +495,18 @@ const (
 // `topology_snapshot` is in the canonical set, but only runtimes
 // hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
-	CapTaskControl:       {},
-	CapEventsSubscribe:   {},
-	CapRuntimePosture:    {},
-	CapTopologySnapshot:  {},
-	CapStateSnapshots:    {},
-	CapAgentConfig:       {},
-	CapSessionLifecycle:  {},
-	CapToolAnnotations:   {},
-	CapCallerMemory:      {},
-	CapSkillPublications: {},
+	CapTaskControl:        {},
+	CapEventsSubscribe:    {},
+	CapRuntimePosture:     {},
+	CapTopologySnapshot:   {},
+	CapStateSnapshots:     {},
+	CapAgentConfig:        {},
+	CapSessionLifecycle:   {},
+	CapToolAnnotations:    {},
+	CapCallerMemory:       {},
+	CapSkillPublications:  {},
+	CapLLMProviderCatalog: {},
+	CapLLMProviderRoute:   {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

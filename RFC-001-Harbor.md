@@ -826,6 +826,41 @@ credentials or catalogs. Required `coordinator_bound` mode fails boot without
 an injected or stock resolver; optional mode truthfully reports that route
 unready until one is wired. Protocol version remains `0.1.0`.
 
+**Optional grant-free external provider routes (D-444).** A serving runtime may
+wire one Bifrost-specific route resolver independently of external execution
+grants. The default remains the boot-declared provider and model: without an
+explicit route, Harbor does not call a resolver, read route configuration,
+start work, or change credential selection. An explicit route is accepted only
+after normal JWT identity and effective-Agent reach checks. It contains only an
+opaque route, connection, immutable generations, and model selector. The
+runtime constructs the resolver request from verified tenant, user, session,
+logical run, effective Agent, runtime, task, and logical-call context.
+
+The two-stage exact-bound response chooses a provider/model, non-secret key
+display name, immutable generations, expiry, and an optional typed endpoint,
+then returns one expiring credential only for the actual attempt. Harbor boots
+a finite Bifrost v1.7.4 chat-capable route set and excludes non-chat and
+advanced cloud-credential shapes. Azure, vLLM, Ollama, SGLang, and
+OpenAI-compatible endpoints use explicit typed mappings; generic endpoint or
+credential bundles are not representable. OpenAI-compatible egress uses a
+bounded immutable client pool keyed by exact tenant/runtime/route/connection/
+credential generations and normalized endpoint digest. A mismatch, expiry,
+revocation, unsupported provider, or missing resolver fails the explicit route
+without falling back to the runtime key. Bifrost-internal retry is disabled for
+routed clients so every retry re-enters Harbor and resolves again. Credential
+and endpoint values are excluded from ordinary JSON, events, logs, task state,
+and Protocol results. The stock HTTPS
+(or loopback HTTP) transport is boot-pinned, authenticated, redirect-refusing,
+bounded, and deliberately uncached so generation changes are observed on the
+next attempt. An embedding host may inject the same public resolver seam.
+
+Route-aware provider validation and discovery reuse the protected
+`llm.posture` operation, require admin scope plus signed reach to the effective
+Agent, and return only observed opaque generations and readiness. They never
+return the credential or endpoint value. This additive route contract does not
+authorize a run, meter usage, or duplicate JWT/reach policy, and has no
+dependency on `ExternalGrant`.
+
 **Provider-neutral technical descriptors and runtime-origin model discovery (Planned — HA-71 / D-435).** A provider control-plane consumer may need technical facts from the same Bifrost integration Harbor uses for execution, but those facts must not be re-derived in a second provider registry or mixed with presentation policy. Harbor's typed descriptor reports an opaque provider id/kind, credential modes and logical secret/url/text field kinds, custom-endpoint support, and whether bounded runtime-origin validation or model discovery is available. It carries no logo, friendly label, help copy, endpoint value, environment variable name, credential, provider response body, or identity value. Native provider endpoint handling remains `manual` where provider-specific semantics are not portable; declared OpenAI-compatible custom endpoints are the supported custom-endpoint fact.
 
 The catalog is an immutable local snapshot with bounded, cancellable `Validate` and `Discover` operations. Discovery reuses the same Bifrost account construction as an LLM call, caps page size and page count, rejects malformed or duplicate model rows, and normalizes only reported provider-neutral facts: context/input/output limits, input/output modalities, tool support when a canonical parameter is reported, canonical `off|low|medium|high` reasoning levels when reported, deprecation, and pricing provenance. Missing facts remain `unknown`, absent pricing is `unpriced`, incomplete results are `partial`, cached results are explicitly `stale`, and configured model ids are `manual` when discovery is unavailable or empty. Provider errors map to stable sanitized outcomes rather than raw messages or response bodies. The offline `harbor llm providers` CLI is explicitly non-runtime-origin; the booted runtime also projects descriptor, validation, and discovery through the existing protected `llm.posture` request envelope (`provider_operation=validate|discover`) for admin-tier callers, with shared runtime credential state. No new Protocol method or version is added.

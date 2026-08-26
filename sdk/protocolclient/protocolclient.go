@@ -48,6 +48,9 @@ type (
 	RuntimeHealth = types.RuntimeHealth
 	// StartRequest is the start request.
 	StartRequest = types.StartRequest
+	// LLMProviderRouteSelector is the opaque provider-route selector carried by
+	// an optional start request.
+	LLMProviderRouteSelector = types.LLMProviderRouteSelector
 	// StartResponse is the start response.
 	StartResponse = types.StartResponse
 	// TaskListRequest is the tasks.list request.

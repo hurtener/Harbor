@@ -10,8 +10,12 @@
 #   HARBOR_DEV_PORT=18080       legacy override; pins a specific dev port instead
 #                               of the ephemeral-port default. Two sibling
 #                               worktrees pinning the same port still collide.
-#   MAX_PARALLEL_SMOKES=8       cap on the parallel batch fan-out. Defaults to
-#                               the number of CPU cores (sysctl/nproc fallback).
+#   MAX_PARALLEL_SMOKES=8       cap on the static/live parallel batch fan-out.
+#                               Defaults to the number of CPU cores
+#                               (sysctl/nproc fallback).
+#   MAX_PARALLEL_UNIT_TESTS=1   cap on the unit-test smoke fan-out. Defaults to
+#                               one because overlapping race suites contend for
+#                               shared packages; operators may raise it.
 #
 # Wall-time + concurrency contract (D-104):
 #
@@ -248,6 +252,7 @@ phase_status_arm() {
         Superseded*|superseded*)                    printf 'not-shipped' ;;
         Reverted*|reverted*)                        printf 'not-shipped' ;;
         Deprecated*|deprecated*)                    printf 'not-shipped' ;;
+        Accepted*|accepted*)                        printf 'not-shipped' ;;
         *)                                          printf 'unknown' ;;
     esac
 }
@@ -334,10 +339,9 @@ fi
 
 # ----------------------------------------------------------------------
 # Parallel batch — static-only smokes need NO dev server, so we run
-# them BEFORE the boot. The `unit-tests` batch (pure `go test`) also
-# parallelises here; `go test` schedules its own internal parallelism
-# but the bash-level fan-out lets multiple unrelated packages compile
-# concurrently.
+# them BEFORE the boot. The `unit-tests` batch (pure `go test`) is separately
+# capped below because overlapping race suites contend for shared packages;
+# `go test` still schedules its own internal parallelism.
 # ----------------------------------------------------------------------
 
 # CPU-count-aware fan-out cap. macOS uses sysctl, Linux uses nproc; the
@@ -441,18 +445,16 @@ run_parallel_batch() {
 
 run_parallel_batch 'static-only' ${STATIC_ONLY[@]+"${STATIC_ONLY[@]}"}
 
-# unit-tests batch — `go test` already schedules internal parallelism,
-# but the bash-level fan-out lets multiple unrelated packages compile
-# concurrently (5 smokes — phase 63/67/68/69/70 — all run
-# `go test ./cmd/harbor/...`; concurrent compiles share the build cache
-# but don't redundantly recompile under -count=1). Default cap is the
-# full CPU count; an operator with a noisy machine can lower it via
-# `MAX_PARALLEL_UNIT_TESTS=N`. The previous timing-flake under load (a
+# unit-tests batch — `go test` already schedules internal parallelism. The
+# bash-level fan-out defaults to one because multiple race suites contend for
+# shared packages and can become nondeterministic under load. Operators may
+# raise it via `MAX_PARALLEL_UNIT_TESTS=N` when the environment is isolated.
+# The previous timing-flake under load (a
 # leaked HARBOR_BIND env var causing cmd/harbor tests to bind the
 # preflight server's port) was fixed at the source — `bootDevStack` no
 # longer reads HARBOR_BIND from env; `runDev` threads it through
 # `devBootOptions.bindAddr` explicitly (see cmd/harbor/cmd_dev.go).
-MAX_PARALLEL_UNIT_TESTS="${MAX_PARALLEL_UNIT_TESTS:-${DEFAULT_PARALLEL}}"
+MAX_PARALLEL_UNIT_TESTS="${MAX_PARALLEL_UNIT_TESTS:-1}"
 # Save the static-only cap, swap in the unit-tests cap for the batch.
 SAVED_CAP="${MAX_PARALLEL_SMOKES}"
 MAX_PARALLEL_SMOKES="${MAX_PARALLEL_UNIT_TESTS}"

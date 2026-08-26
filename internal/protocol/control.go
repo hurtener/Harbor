@@ -9,6 +9,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -582,6 +583,13 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err := validateExternalGrant(string(method), sr.ExternalGrant); err != nil {
 		return nil, err
 	}
+	if sr.ProviderRoute != nil {
+		providerRoute := providerRouteFromWire(sr.ProviderRoute)
+		if err := llm.ValidateProviderRoute(*providerRoute); err != nil || providerRoute.RouteID == "" {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: provider_route requires opaque route, connection, generation, and model selector fields", string(method))
+		}
+	}
 
 	spawnCtx := ctx
 	if s.reachAdmissions != nil {
@@ -605,6 +613,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		AgentID:                   sr.AgentID,
 		CallerMemory:              sr.CallerMemory,
 		ExternalGrant:             append([]byte(nil), sr.ExternalGrant...),
+		ProviderRoute:             providerRouteFromWire(sr.ProviderRoute),
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)
@@ -615,6 +624,20 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		Reused:          handle.Reused,
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+func providerRouteFromWire(route *types.LLMProviderRouteSelector) *llm.ProviderRoute {
+	if route == nil {
+		return nil
+	}
+	return &llm.ProviderRoute{
+		RouteID:                      route.RouteID,
+		RouteGeneration:              route.RouteGeneration,
+		ProviderConnectionID:         route.ProviderConnectionID,
+		ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    route.CredentialAssetGeneration,
+		ModelSelector:                route.ModelSelector,
+	}
 }
 
 // dispatchControl handles the nine steering-control methods. It builds a

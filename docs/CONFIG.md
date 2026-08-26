@@ -406,6 +406,35 @@ vLLM / ollama / lm-studio / in-house gateways). Each entry needs
 `name` / `base_url` / `api_key_env_var` / `models`. See the
 `LLMCustomProviderConfig` godoc for the full surface.
 
+### llm.provider_route.resolver_url
+
+Boot-pinned URL for the optional external provider-route resolver. HTTPS is
+required for remote endpoints; loopback HTTP is allowed for local development
+and tests. The resolver is called only for an explicitly routed request; an
+empty `provider_route` block does no environment lookup, network work, or
+goroutine setup. Userinfo, queries, and fragments are rejected.
+Restart-required.
+
+### llm.provider_route.auth_token_env
+
+Name of the environment variable containing the resolver's authentication
+token. Required when `provider_route` is configured. The value is read once at
+boot, never serialized, logged, or returned in an error, and is sent only to
+the boot-pinned resolver endpoint. Restart-required.
+
+### llm.provider_route.runtime_id
+
+Opaque runtime identifier sent with an explicit route-resolution request. It
+must be non-empty when `provider_route` is configured and is used to bind the
+resolver call to this runtime. It is not a caller-controlled provider or
+credential selector. Restart-required.
+
+### llm.provider_route.timeout
+
+Maximum duration for each provider-route resolver exchange. Default: `10s`
+when zero. Validation: non-negative. Runtime-default requests never consult
+the resolver. Restart-required.
+
 ### llm.credential_source
 
 Where the PRIMARY provider's API key is sourced: `""` / `"local"`

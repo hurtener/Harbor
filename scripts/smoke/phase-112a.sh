@@ -102,6 +102,7 @@ fi
 # an allow-listed file fail — behavior cannot silently accrete.
 allowed_func_specs='sdk/tools/inproc/inproc.go|^func RegisterFunc\[|RegisterFunc|1
 sdk/assemble/runtyped.go|^func RunTyped\[|RunTyped|1
+sdk/llm/topup/topup.go|^func |Top-up forwards|13
 sdk/server/server.go|^func Open\(|Open|1
 sdk/protocolclient/protocolclient.go|^func New\(|Protocol client forwards|3
 sdk/tui/tui.go|^func Run\(|Run|1'

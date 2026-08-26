@@ -195,7 +195,8 @@ type MuxInput struct {
 	AuthSurface *auth.RotateSurface
 	// AgentReach is the gate shared with the control surface by runtime
 	// assembly. Nil still builds fail-closed stream projections.
-	AgentReach auth.AgentReachAuthorizer
+	AgentReach             auth.AgentReachAuthorizer
+	ProviderRouteRuntimeID string
 	// PublicationStore is the one authorized StateStore-backed store shared by
 	// the Protocol surface and the run-loop driver's exact-reference resolver.
 	// Nil leaves the publication surface unmounted.
@@ -365,6 +366,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Governance:                 governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
 		LLM:                        llm.NewPostureProvider(in.LLMSnapshot),
 		ProviderCatalog:            in.ProviderCatalog,
+		AgentReach:                 in.AgentReach,
+		ProviderRouteRuntimeID:     in.ProviderRouteRuntimeID,
 		Redactor:                   red,
 		Bus:                        bus,
 		DisplayName:                in.DisplayName,

@@ -14623,3 +14623,43 @@ isolation, leak, chaos, mirror, and markdown checks green; documentation run
 were still in progress with no failed job. This cut does not claim a completed
 final preflight or Playwright result, tag, release, downstream deployment, or
 acceptance.
+
+---
+
+## D-444 — External provider routes are optional, grant-free, and exact-context resolved
+
+**Date:** 2026-08-26
+
+**Status:** Accepted for implementation; hosted CI, merge, release, deployment,
+and downstream acceptance remain pending.
+
+Harbor adds one Bifrost-specific resolver for an explicitly selected opaque
+provider route. It is not a run-authorization grant and has no dependency on
+`ExternalGrant`: JWT identity and effective-Agent reach remain the sole Harbor
+admission checks. The runtime constructs the resolver input only after those
+checks from verified tenant/user/session/logical-run, effective Agent,
+runtime/task/logical-call, route/connection generations, and model selector.
+
+The two-stage response exact-binds the opaque IDs and generations, provider,
+model, non-secret key display name, expiry, and an optional typed endpoint; the
+resolve leg alone carries one short-lived credential. Harbor initializes a
+finite Bifrost v1.7.4 chat-capable route set and excludes non-chat providers and
+advanced cloud credential shapes. Azure, vLLM, Ollama, SGLang, and
+OpenAI-compatible endpoints have explicit mappings; no generic credential JSON
+or endpoint kind exists. OpenAI-compatible endpoint clients are immutable,
+bounded, and keyed by exact tenant/runtime/route/connection/credential
+generations plus normalized endpoint digest. Routed Bifrost internal retry is
+zero so every retry returns through Harbor and resolves again. Credential and
+endpoint values are excluded from ordinary JSON, events, logs, task state, and
+Protocol responses; credentials are never cached. Any explicit route failure
+is loud and never falls back to the runtime LiveKey.
+
+The zero/default posture remains fully latent: no resolver config, environment
+lookup, goroutine, timer, store read, cache, or network work. Protected
+route-aware provider validation/discovery additionally requires admin scope and
+signed reach to the effective Agent, then echoes only opaque generations and
+readiness. No remove-provider method is added because this seam persists no
+provider assignment.
+
+**Cross-references:** D-025, D-333, D-434, D-435, D-442, RFC §5.5, §6.5,
+§6.15. Plan: `docs/plans/phase-264-optional-provider-route-resolver.md`.

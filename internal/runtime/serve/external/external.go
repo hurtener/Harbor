@@ -110,7 +110,7 @@ func (h *Handle) WaitReady(ctx context.Context) (string, error) { return h.h.Wai
 // this output (e.g. a co-launch binary that captures stderr so Bubble Tea
 // frames are never overwritten) should call OpenWithStderr instead.
 func Open(ctx context.Context, cfg *config.Config, configPath string, registerCatalog func(catalog tools.ToolCatalog) error) (*Handle, error) {
-	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog, FrameworkIdentity{}, llm.ExternalGrantConfig{})
+	return OpenWithStderr(ctx, cfg, configPath, os.Stderr, registerCatalog, FrameworkIdentity{}, llm.ExternalGrantConfig{}, llm.ProviderRouteConfig{})
 }
 
 // OpenWithStderr is Open with an explicit stderr sink. A nil stderr
@@ -120,7 +120,7 @@ func Open(ctx context.Context, cfg *config.Config, configPath string, registerCa
 // buffer so the terminal stays clean for Bubble Tea. The slog logger
 // the serve band builds also writes to this sink when the caller does
 // not inject its own logger.
-func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error, framework FrameworkIdentity, externalGrant llm.ExternalGrantConfig) (*Handle, error) {
+func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, stderr io.Writer, registerCatalog func(catalog tools.ToolCatalog) error, framework FrameworkIdentity, externalGrant llm.ExternalGrantConfig, providerRoute llm.ProviderRouteConfig) (*Handle, error) {
 	if cfg == nil {
 		if configPath == "" {
 			return nil, ErrConfigRequired
@@ -152,6 +152,7 @@ func OpenWithStderr(ctx context.Context, cfg *config.Config, configPath string, 
 		AuthValidatorFactory: serve.NewJWKSAuthValidatorFactory(),
 		RegisterCatalog:      registerCatalog,
 		ExternalGrant:        externalGrant,
+		ProviderRoute:        providerRoute,
 		DisplayName:          cfg.Telemetry.ServiceName,
 		InstanceID:           serve.InstanceID("harbor-server"),
 		BuildVersion:         version,

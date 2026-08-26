@@ -10,6 +10,15 @@ metadata:
 
 # Use the Harbor Protocol
 
+## Route-aware provider checks
+
+The existing admin-scoped `llm.posture` provider `validate` and `discover`
+operations accept an optional opaque provider-route selector plus an effective
+Agent ID. The Agent must be in the caller's signed reach. A successful response
+echoes only route/connection generations and readiness; credentials, endpoints,
+provider bodies, and identity values are never returned. Omitting the route
+keeps the runtime-default provider-catalog behavior.
+
 ## Operator-managed agent packs
 
 ## Same-runtime organization skill publications (HA-68 / D-430)

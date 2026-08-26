@@ -99,6 +99,12 @@ type StartRequest struct {
 	// runtime carries it to the LLM edge but never treats caller fields as
 	// authority; the grant verifier binds it to the verified request identity.
 	ExternalGrant json.RawMessage `json:"external_grant,omitempty"`
+	// ProviderRoute is an optional opaque external-provider selector. It
+	// carries no provider name, endpoint, or credential. The runtime admits it
+	// only after the normal verified identity and Agent-reach checks, then an
+	// optional resolver exact-binds it at the LLM edge. Omitted preserves the
+	// runtime-configured provider path without consulting a resolver.
+	ProviderRoute *LLMProviderRouteSelector `json:"provider_route,omitempty"`
 	// Query is the user-facing query that starts the run. Optional —
 	// some runs are kicked off without a natural-language query.
 	Query string `json:"query,omitempty"`

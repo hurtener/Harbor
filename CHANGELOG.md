@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Optional grant-free external provider routing resolves only an explicit
+  opaque route after verified identity and effective-Agent reach. Default
+  runtime provider/model calls remain unchanged and perform no resolver work.
+  Exact-bound, expiring credentials are confined to one Bifrost attempt;
+  standard providers use their SDK endpoints and typed custom endpoints are
+  resolved only within the exact selected route. Route-aware provider
+  validation/discovery echoes only opaque generations and readiness. The
+  resolver is independent of external grants, is optional at boot, and never
+  falls back after an explicit-route failure. Its authenticated stock
+  transport is boot-pinned, accepts HTTPS (or loopback HTTP), refuses
+  redirects, userinfo, fragments, all query strings (including secret-bearing
+  values), non-http(s) schemes, and control characters, and bounds request /
+  response bytes and duration.
+
 ## [1.30.4] — 2026-08-25
 
 ### Added
@@ -33,7 +49,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release candidate evidence
 
-- Phase 263 / D-443 landed through PR #752 at exact current `origin/main`
+- D-443 landed through PR #752 at exact current `origin/main`
   `4c955b6ad97e35810fda11cec8807fcc05f15a1d` from reviewed PR head
   `87a58c400fa9a553937a2fe02a020cd6b91ddb7b`. At the owner-authorized fast
   merge, hosted PR run `32911031711` had both Go platforms, lint, frontend,
@@ -63,12 +79,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release candidate evidence
 
-- Phase 262 / D-442 / HA-73 landed at exact current `origin/main`
+- D-442 / HA-73 landed at exact current `origin/main`
   `415d353d740ff3c3c2da8e3432eea342f7ccdeb2` through PR #750. Pre-merge PR
   run `32882992600` had two unrelated Go failures: the macOS
   `TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
   36.51 seconds waiting for `HTTP 503`, and the Ubuntu Go job later failed in
-  `TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All Phase 262-specific,
+  `TestMaterialize_RunLoop_WakeStaysPrimaryWithPoll`. All release-specific,
   web-lint, and provider-seam jobs were green. Exact post-merge run
   `32883730540` remained in
   progress at this release cut; no successful post-merge CI is claimed. The
@@ -166,7 +182,7 @@ Two versions move independently in Harbor (RFC §5.3):
   one epoch; bounds usable-capacity growth to the requested provider call; and
   cannot rewind deadlines or lengthen grant or lease lifetime beyond the
   predecessor's signed windows. Key rotation and renewed signatures remain
-  subject to the configured grant verifier. Phase 261 supplies the separately
+  subject to the configured grant verifier. The preceding release supplies the separately
   authenticated stock transport and replay-idempotent durable application.
   An omitted request output limit derives top-up need from
   the same signed output ceiling later applied to the provider call. No

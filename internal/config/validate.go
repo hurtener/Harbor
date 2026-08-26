@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
@@ -487,8 +488,35 @@ func (c *Config) validateLLM() error {
 	if err := c.validateInferenceBrokers(); err != nil {
 		return err
 	}
+	if err := validateLLMProviderRoute(c.LLM.ProviderRoute); err != nil {
+		return err
+	}
 	if err := c.validateLLMExternalGrant(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateLLMProviderRoute(cfg LLMProviderRouteConfig) error {
+	configured := strings.TrimSpace(cfg.ResolverURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
+		strings.TrimSpace(cfg.RuntimeID) != "" || cfg.Timeout != 0
+	if !configured {
+		return nil
+	}
+	if strings.TrimSpace(cfg.ResolverURL) == "" {
+		return fieldError("llm.provider_route.resolver_url", "must be set when provider_route is configured")
+	}
+	if err := validatePinnedServiceURL("llm.provider_route.resolver_url", cfg.ResolverURL); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.AuthTokenEnv) == "" {
+		return fieldError("llm.provider_route.auth_token_env", "must name the env var holding the runtime service token")
+	}
+	if strings.TrimSpace(cfg.RuntimeID) == "" {
+		return fieldError("llm.provider_route.runtime_id", "must be set when provider_route is configured")
+	}
+	if cfg.Timeout < 0 {
+		return fieldError("llm.provider_route.timeout", "must be non-negative")
 	}
 	return nil
 }
@@ -604,7 +632,7 @@ func validateExternalGrantCoordinator(cfg ExternalGrantCoordinatorConfig) error 
 
 func validatePinnedServiceURL(path, raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if strings.IndexFunc(raw, unicode.IsControl) >= 0 || err != nil || u.Host == "" || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return fieldError(path, "must be a valid http(s) URL with a host")
 	}
 	if u.User != nil || u.Fragment != "" || u.RawQuery != "" {

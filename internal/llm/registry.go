@@ -46,6 +46,9 @@ type Deps struct {
 	// bounded lease, and content-free receipt seams. A zero value preserves
 	// legacy deployments that do not require coordinator grants.
 	ExternalGrant ExternalGrantConfig
+	// ProviderRoute is an independent, optional external route resolver. It is
+	// consulted only when the trusted run context carries an explicit route.
+	ProviderRoute ProviderRouteConfig
 }
 
 // ConfigSnapshot is the strict subset of `config.LLMConfig` the LLM
@@ -519,6 +522,12 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	if err := validateSnapshot(cfg); err != nil {
 		return nil, err
 	}
+	if err := ValidateProviderRouteConfig(deps.ProviderRoute); err != nil {
+		return nil, fmt.Errorf("%w: provider route: %w", ErrInvalidConfig, err)
+	}
+	if deps.ProviderRoute.Resolver != nil && cfg.Driver != "bifrost" {
+		return nil, fmt.Errorf("%w: provider route requires llm driver %q (got %q)", ErrInvalidConfig, "bifrost", cfg.Driver)
+	}
 
 	name := cfg.Driver
 	factoriesMu.RLock()
@@ -531,6 +540,15 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	drv, err := f(cfg, deps)
 	if err != nil {
 		return nil, fmt.Errorf("llm: driver %q construction failed: %w", name, err)
+	}
+	var routeValidator ProviderRouteSelectionValidator
+	if deps.ProviderRoute.Resolver != nil {
+		var ok bool
+		routeValidator, ok = drv.(ProviderRouteSelectionValidator)
+		if !ok {
+			_ = drv.Close(context.Background())
+			return nil, fmt.Errorf("%w: driver %q does not implement provider route selection validation", ErrInvalidConfig, name)
+		}
 	}
 
 	client := LLMClient(newSafetyClient(drv, cfg, deps))
@@ -609,6 +627,13 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		} else {
 			warnUnseatedWrapper("governance", "github.com/hurtener/Harbor/internal/governance")
 		}
+	}
+	// Route selection is deliberately OUTSIDE governance and the entire
+	// model-sensitive chain. It returns no credential; the Bifrost leaf
+	// independently resolves and exact-confirms a credential for every actual
+	// attempt, including retries and structured-output downgrades.
+	if deps.ProviderRoute.Resolver != nil {
+		client = newProviderRouteClient(client, deps.ProviderRoute, routeValidator)
 	}
 	return client, nil
 }

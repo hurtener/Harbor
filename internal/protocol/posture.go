@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	stderrors "errors"
 	"fmt"
 	"sort"
@@ -19,6 +21,16 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/protocol/wiresurface"
 )
+
+func newProviderOperationID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		// The resolver will reject the missing task context. Keeping failure
+		// content-free is preferable to surfacing entropy-provider details.
+		return ""
+	}
+	return "provider-operation-" + hex.EncodeToString(raw[:])
+}
 
 // PostureSurface is the transport-agnostic Harbor Protocol posture
 // handler. It owns the seven read-only posture methods:
@@ -70,22 +82,24 @@ import (
 // Runtime wires at boot; PostureSurface translates their output into
 // the wire shape and returns it.
 type PostureSurface struct {
-	build           types.RuntimeInfo
-	clock           func() time.Time
-	health          func(ctx context.Context) []types.SubsystemHealth
-	retention       func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
-	counters        func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
-	drivers         func() []types.SubsystemDriver
-	metrics         func(ctx context.Context) types.MetricsSnapshot
-	governance      *governance.PostureProvider
-	llm             *llm.PostureProvider
-	providerCatalog provider.CatalogSurface
-	redactor        audit.Redactor
-	bus             events.EventBus
-	bootedAt        time.Time
-	displayName     string
-	instanceID      string
-	externalGrant   func() types.ExternalGrantReadiness
+	build                  types.RuntimeInfo
+	clock                  func() time.Time
+	health                 func(ctx context.Context) []types.SubsystemHealth
+	retention              func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
+	counters               func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
+	drivers                func() []types.SubsystemDriver
+	metrics                func(ctx context.Context) types.MetricsSnapshot
+	governance             *governance.PostureProvider
+	llm                    *llm.PostureProvider
+	providerCatalog        provider.CatalogSurface
+	agentReach             auth.AgentReachAuthorizer
+	providerRouteRuntimeID string
+	redactor               audit.Redactor
+	bus                    events.EventBus
+	bootedAt               time.Time
+	displayName            string
+	instanceID             string
+	externalGrant          func() types.ExternalGrantReadiness
 	// wiredCaps is the per-instance subset of canonical Protocol
 	// capabilities this Runtime actually wires.
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
@@ -159,6 +173,10 @@ type PostureDeps struct {
 	// descriptor/validation/discovery seam. It is optional because runtimes
 	// without an LLM provider must advertise the capability as absent.
 	ProviderCatalog provider.CatalogSurface
+	// AgentReach gates route-aware provider operations against verified JWT
+	// reach. It may be nil only when route-aware operations are unused.
+	AgentReach             auth.AgentReachAuthorizer
+	ProviderRouteRuntimeID string
 	// Redactor is the audit Redactor every cross-tenant
 	// `*.posture_read_admin` payload runs through before the bus
 	// publish (CLAUDE.md §7 rule 6). Mandatory.
@@ -280,23 +298,25 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt = deps.Clock()
 	}
 	return &PostureSurface{
-		build:           deps.Build,
-		clock:           deps.Clock,
-		health:          deps.Health,
-		retention:       deps.Retention,
-		counters:        deps.Counters,
-		drivers:         deps.Drivers,
-		metrics:         deps.Metrics,
-		governance:      deps.Governance,
-		llm:             deps.LLM,
-		providerCatalog: deps.ProviderCatalog,
-		redactor:        deps.Redactor,
-		bus:             deps.Bus,
-		bootedAt:        bootedAt,
-		displayName:     deps.DisplayName,
-		instanceID:      deps.InstanceID,
-		externalGrant:   deps.ExternalGrant,
-		wiredCaps:       wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable),
+		build:                  deps.Build,
+		clock:                  deps.Clock,
+		health:                 deps.Health,
+		retention:              deps.Retention,
+		counters:               deps.Counters,
+		drivers:                deps.Drivers,
+		metrics:                deps.Metrics,
+		governance:             deps.Governance,
+		llm:                    deps.LLM,
+		providerCatalog:        deps.ProviderCatalog,
+		agentReach:             deps.AgentReach,
+		providerRouteRuntimeID: deps.ProviderRouteRuntimeID,
+		redactor:               deps.Redactor,
+		bus:                    deps.Bus,
+		bootedAt:               bootedAt,
+		displayName:            deps.DisplayName,
+		instanceID:             deps.InstanceID,
+		externalGrant:          deps.ExternalGrant,
+		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != ""),
 	}, nil
 }
 
@@ -309,7 +329,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -341,6 +361,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 	}
 	if providerCatalogAvailable {
 		caps = append(caps, types.CapLLMProviderCatalog)
+	}
+	if providerRouteAvailable {
+		caps = append(caps, types.CapLLMProviderRoute)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps
@@ -713,6 +736,36 @@ func (s *PostureSurface) handleProviderOperation(
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: unsupported provider operation %q", string(method), operation)
 	}
+	if request.ProviderRoute != nil {
+		if !auth.HasScope(ctx, auth.ScopeAdmin) {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: external provider routes require the admin scope claim", string(method))
+		}
+		if s.agentReach == nil || s.providerRouteRuntimeID == "" || request.ProviderAgentID == "" {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: external provider route capability is not wired", string(method))
+		}
+		if err := s.agentReach.AuthorizeAgentReach(ctx, request.ProviderAgentID); err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: effective agent is outside verified reach", string(method))
+		}
+		route := llm.ProviderRoute{
+			RouteID: request.ProviderRoute.RouteID, RouteGeneration: request.ProviderRoute.RouteGeneration,
+			ProviderConnectionID:         request.ProviderRoute.ProviderConnectionID,
+			ProviderConnectionGeneration: request.ProviderRoute.ProviderConnectionGeneration,
+			CredentialAssetGeneration:    request.ProviderRoute.CredentialAssetGeneration,
+			ModelSelector:                request.ProviderRoute.ModelSelector,
+		}
+		if err := llm.ValidateProviderRoute(route); err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: external provider route is invalid", string(method))
+		}
+		ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
+			Route: route, EffectiveAgentID: request.ProviderAgentID,
+			RuntimeID: s.providerRouteRuntimeID, TaskID: newProviderOperationID(),
+			Purpose: llm.ProviderRoutePurposePosture,
+		})
+	}
 	result := types.LLMProviderOperationResponse{
 		Operation: operation, RuntimeOrigin: true, ProviderID: request.ProviderID,
 		Descriptors: projectProviderDescriptors(s.providerCatalog.Descriptors(ctx)),
@@ -724,6 +777,7 @@ func (s *PostureSurface) handleProviderOperation(
 			ProviderID: validation.ProviderID,
 			Outcome:    projectProviderOutcome(validation.Outcome),
 		}
+		result.Route = projectProviderRouteObservation(validation.Route)
 	case "discover":
 		pageSize, maxPages := request.ProviderPageSize, request.ProviderMaxPages
 		if pageSize == 0 {
@@ -745,8 +799,21 @@ func (s *PostureSurface) handleProviderOperation(
 			Pages:      discovery.Pages, ModelCount: discovery.ModelCount,
 			Models: projectProviderModels(discovery.Models),
 		}
+		result.Route = projectProviderRouteObservation(discovery.Route)
 	}
 	return result, nil
+}
+
+func projectProviderRouteObservation(in *provider.RouteObservation) *types.LLMProviderRouteObservation {
+	if in == nil {
+		return nil
+	}
+	return &types.LLMProviderRouteObservation{
+		RouteID: in.RouteID, RouteGeneration: in.RouteGeneration,
+		ProviderConnectionID:         in.ProviderConnectionID,
+		ProviderConnectionGeneration: in.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    in.CredentialAssetGeneration, Ready: in.Ready,
+	}
 }
 
 func projectProviderDescriptors(in []provider.ProviderDescriptor) []types.LLMProviderDescriptor {

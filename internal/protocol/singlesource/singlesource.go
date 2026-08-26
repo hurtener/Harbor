@@ -314,20 +314,21 @@ var CanonicalWireTypes = map[string]string{
 	"SearchArtifactRef": "types",
 	// runtime-posture wire types — all live in
 	// internal/protocol/types (internal/protocol/types/posture.go).
-	"RuntimeInfoRequest":     "types",
-	"RuntimeInfo":            "types",
-	"ExternalGrantReadiness": "types",
-	"SubsystemHealth":        "types",
-	"RetentionHorizon":       "types",
-	"RuntimeHealth":          "types",
-	"RuntimeCounters":        "types",
-	"SubsystemDriver":        "types",
-	"RuntimeDrivers":         "types",
-	"NamedCounter":           "types",
-	"HistogramBucket":        "types",
-	"NamedHistogram":         "types",
-	"NamedGauge":             "types",
-	"MetricsSnapshot":        "types",
+	"RuntimeInfoRequest":       "types",
+	"LLMProviderRouteSelector": "types",
+	"RuntimeInfo":              "types",
+	"ExternalGrantReadiness":   "types",
+	"SubsystemHealth":          "types",
+	"RetentionHorizon":         "types",
+	"RuntimeHealth":            "types",
+	"RuntimeCounters":          "types",
+	"SubsystemDriver":          "types",
+	"RuntimeDrivers":           "types",
+	"NamedCounter":             "types",
+	"HistogramBucket":          "types",
+	"NamedHistogram":           "types",
+	"NamedGauge":               "types",
+	"MetricsSnapshot":          "types",
 	// posture-pair wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	// No `GovernancePostureRequest` / `LLMPostureRequest`: both methods take
@@ -341,6 +342,7 @@ var CanonicalWireTypes = map[string]string{
 	// admin Protocol responses and remain canonical wire shapes so the
 	// consumer manifest cannot drift from Harbor's runtime surface.
 	"LLMProviderOperationResponse":   "types",
+	"LLMProviderRouteObservation":    "types",
 	"LLMProviderDescriptor":          "types",
 	"LLMProviderOperation":           "types",
 	"LLMProviderValidation":          "types",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	bf "github.com/maximhq/bifrost/core"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
@@ -65,13 +66,28 @@ type Driver struct {
 	// files is the identity-scoped provider file_id cache — the
 	// driver-owned lifecycle (TTL + LRU evict with remote delete, plus
 	// a Close-time sweep). Internally synchronized.
-	files *providerFileCache
+	files         *providerFileCache
+	account       *Account
+	providerRoute llm.ProviderRouteConfig
+	routeClient   bifrostClient
+	routePool     *routeClientPool
 
 	closed atomic.Bool
 }
 
 // Compile-time assertion: *Driver implements llm.Driver.
 var _ llm.Driver = (*Driver)(nil)
+var _ llm.ProviderRouteSelectionValidator = (*Driver)(nil)
+
+// ValidateProviderRouteSelection rejects unsupported provider/endpoint shapes
+// before governance and model-sensitive wrappers observe the selected model.
+func (d *Driver) ValidateProviderRouteSelection(selected llm.SelectedProviderRoute) error {
+	provider := bfschemas.ModelProvider(selected.Provider)
+	if !curatedRouteProvider(provider) {
+		return llm.ErrProviderRouteInvalid
+	}
+	return validateCuratedRouteEndpoint(provider, selected.Endpoint)
+}
 
 // New constructs a bifrost-backed `llm.Driver`. The safety
 // pass wraps the returned driver; operators reach this via
@@ -100,13 +116,30 @@ func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bifrost: Init: %w", err)
 	}
-	return &Driver{
-		client:    inner,
-		provider:  account.provider,
-		bus:       deps.Bus,
-		artifacts: deps.Artifacts,
-		files:     newProviderFileCache(defaultFileCacheCapacity, defaultFileCacheTTL),
-	}, nil
+	driver := &Driver{
+		client:        inner,
+		provider:      account.provider,
+		bus:           deps.Bus,
+		artifacts:     deps.Artifacts,
+		files:         newProviderFileCache(defaultFileCacheCapacity, defaultFileCacheTTL),
+		account:       account,
+		providerRoute: deps.ProviderRoute,
+	}
+	if deps.ProviderRoute.Resolver != nil {
+		routeAccount, routeErr := newRouteAccount(cfg.NetworkDefaults)
+		if routeErr != nil {
+			inner.Shutdown()
+			return nil, fmt.Errorf("bifrost: initialize curated provider routes: %w", routeErr)
+		}
+		routeInner, routeErr := bf.Init(context.Background(), bfschemas.BifrostConfig{Account: routeAccount})
+		if routeErr != nil {
+			inner.Shutdown()
+			return nil, fmt.Errorf("bifrost: initialize curated provider route workers: %w", routeErr)
+		}
+		driver.routeClient = routeInner
+		driver.routePool = newRouteClientPool(defaultRouteClientPoolCapacity, cfg.NetworkDefaults)
+	}
+	return driver, nil
 }
 
 // init self-registers the bifrost driver under `"bifrost"` with the
@@ -136,6 +169,67 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return llm.CompleteResponse{}, llm.ErrIdentityMissing
 	}
 	id := identityQuad(ctx)
+	providerID := d.provider
+	callClient := d.client
+	var releaseRouteClient func()
+	if trusted, explicit := llm.TrustedProviderRouteFrom(ctx); explicit {
+		selected, selectedOK := llm.SelectedProviderRouteFrom(ctx)
+		if err := llm.ValidateProviderRoute(trusted.Route); err != nil {
+			return llm.CompleteResponse{}, err
+		}
+		if requestHasProviderNativeWork(req) {
+			return llm.CompleteResponse{}, fmt.Errorf("bifrost: provider-native uploads are unavailable for an external provider route")
+		}
+		if d.providerRoute.Resolver == nil {
+			return llm.CompleteResponse{}, llm.ErrProviderRouteResolverUnavailable
+		}
+		if !selectedOK || !selected.ExpiresAt.After(time.Now()) || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
+			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
+		}
+		var scope *llm.AttemptScope
+		var err error
+		ctx, scope, err = llm.EnsureAttemptScope(ctx)
+		if err != nil {
+			return llm.CompleteResponse{}, err
+		}
+		resolved, err := llm.ResolveProviderRoute(ctx, d.providerRoute, llm.ProviderRouteRequest{
+			TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LogicalRunID: id.RunID,
+			EffectiveAgentID: trusted.EffectiveAgentID, RuntimeID: trusted.RuntimeID, TaskID: trusted.TaskID,
+			LogicalCallID: scope.LogicalCallID, RouteID: trusted.Route.RouteID,
+			RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
+			ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
+			CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
+			Purpose: trusted.Purpose,
+		}, time.Now())
+		if err != nil {
+			return llm.CompleteResponse{}, err
+		}
+		if !llm.ProviderRouteResolutionMatchesSelection(resolved, selected) {
+			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
+		}
+		providerID = bfschemas.ModelProvider(resolved.Provider)
+		if !curatedRouteProvider(providerID) || d.routeClient == nil {
+			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
+		}
+		ctx = llm.WithResolvedProviderRoute(ctx, resolved)
+		callClient = d.routeClient
+		if resolved.Endpoint != nil && resolved.Endpoint.Kind == llm.ProviderEndpointOpenAICompatible {
+			if d.routePool == nil {
+				return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
+			}
+			callClient, releaseRouteClient, err = d.routePool.acquire(ctx, routeClientPoolKey{
+				TenantID: id.TenantID, RuntimeID: trusted.RuntimeID, RouteID: resolved.RouteID,
+				RouteGeneration: resolved.RouteGeneration, ProviderConnectionID: resolved.ProviderConnectionID,
+				ProviderConnectionGeneration: resolved.ProviderConnectionGeneration,
+				CredentialAssetGeneration:    resolved.CredentialAssetGeneration,
+				Provider:                     resolved.Provider, EndpointDigest: resolved.Endpoint.Digest,
+			}, resolved.Endpoint.Value)
+			if err != nil {
+				return llm.CompleteResponse{}, err
+			}
+			defer releaseRouteClient()
+		}
+	}
 
 	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
 
@@ -150,25 +244,27 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return llm.CompleteResponse{}, err
 	}
 
-	bfReq, err := translateRequest(d.provider, req)
+	bfReq, err := translateRequest(providerID, req)
 	if err != nil {
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: translate request: %w", err)
 	}
 
 	if req.Stream {
-		return d.streamComplete(ctx, bctx, bfReq, req)
+		return d.streamComplete(callClient, ctx, bctx, bfReq, req)
 	}
-	return d.unaryComplete(bctx, bfReq)
+	return d.unaryComplete(callClient, ctx, bctx, bfReq)
 }
 
 // unaryComplete runs a non-streaming chat completion.
 func (d *Driver) unaryComplete(
+	client bifrostClient,
+	ctx context.Context,
 	bctx *bfschemas.BifrostContext,
 	bfReq *bfschemas.BifrostChatRequest,
 ) (llm.CompleteResponse, error) {
-	resp, berr := d.client.ChatCompletionRequest(bctx, bfReq)
+	resp, berr := client.ChatCompletionRequest(bctx, bfReq)
 	if berr != nil {
-		return llm.CompleteResponse{}, translateError(berr, "ChatCompletionRequest")
+		return llm.CompleteResponse{}, translateErrorForContext(ctx, berr, "ChatCompletionRequest")
 	}
 	out := translateResponse(resp)
 	return out, nil
@@ -187,14 +283,15 @@ func (d *Driver) unaryComplete(
 // channel closes, and the runtime's goroutine-leak test asserts
 // baseline restoration.
 func (d *Driver) streamComplete(
+	client bifrostClient,
 	ctx context.Context,
 	bctx *bfschemas.BifrostContext,
 	bfReq *bfschemas.BifrostChatRequest,
 	req llm.CompleteRequest,
 ) (llm.CompleteResponse, error) {
-	ch, berr := d.client.ChatCompletionStreamRequest(bctx, bfReq)
+	ch, berr := client.ChatCompletionStreamRequest(bctx, bfReq)
 	if berr != nil {
-		return llm.CompleteResponse{}, translateError(berr, "ChatCompletionStreamRequest")
+		return llm.CompleteResponse{}, translateErrorForContext(ctx, berr, "ChatCompletionStreamRequest")
 	}
 
 	var (
@@ -227,7 +324,7 @@ readLoop:
 			}
 			gotAnyChunk = true
 			if chunk.BifrostError != nil {
-				streamErr = translateError(chunk.BifrostError, "stream chunk")
+				streamErr = translateErrorForContext(ctx, chunk.BifrostError, "stream chunk")
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
@@ -379,6 +476,12 @@ func (d *Driver) Close(ctx context.Context) error {
 		return nil
 	}
 	d.cleanupProviderFiles(ctx)
+	if d.routePool != nil {
+		d.routePool.Close()
+	}
+	if c, ok := d.routeClient.(interface{ Shutdown() }); ok {
+		c.Shutdown()
+	}
 	switch c := d.client.(type) {
 	case interface{ Cleanup() error }:
 		return c.Cleanup()

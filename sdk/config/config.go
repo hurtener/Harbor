@@ -49,6 +49,8 @@ type (
 	// LLMExternalGrantConfig configures signed external-grant verification and
 	// the accepted provider-route mode.
 	LLMExternalGrantConfig = internal.LLMExternalGrantConfig
+	// LLMProviderRouteConfig configures the optional external provider-route resolver.
+	LLMProviderRouteConfig = internal.LLMProviderRouteConfig
 	// ExternalGrantCoordinatorConfig configures the stock authenticated
 	// receipt transport. Stock lease top-up is intentionally unsupported.
 	ExternalGrantCoordinatorConfig = internal.ExternalGrantCoordinatorConfig

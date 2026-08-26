@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 442 canonical Harbor Protocol wire types, generated from the single-source
+The 444 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2583,6 +2583,7 @@ Declared in `internal/protocol/types`.
 | `descriptors` | `[]types.LLMProviderDescriptor` — see [`LLMProviderDescriptor`](./types.md#llmproviderdescriptor) | optional (`omitempty`) |
 | `validation` | `*types.LLMProviderValidation` — see [`LLMProviderValidation`](./types.md#llmprovidervalidation) | optional (`omitempty`) |
 | `discovery` | `*types.LLMProviderDiscovery` — see [`LLMProviderDiscovery`](./types.md#llmproviderdiscovery) | optional (`omitempty`) |
+| `route` | `*types.LLMProviderRouteObservation` — see [`LLMProviderRouteObservation`](./types.md#llmproviderrouteobservation) | optional (`omitempty`) |
 
 ## LLMProviderOutcome
 
@@ -2615,6 +2616,32 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `state` | `string` |  |
 | `levels` | `[]string` | optional (`omitempty`) |
+
+## LLMProviderRouteObservation
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `route_id` | `string` |  |
+| `route_generation` | `uint64` |  |
+| `provider_connection_id` | `string` |  |
+| `provider_connection_generation` | `uint64` |  |
+| `credential_asset_generation` | `uint64` |  |
+| `ready` | `bool` |  |
+
+## LLMProviderRouteSelector
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `route_id` | `string` |  |
+| `route_generation` | `uint64` |  |
+| `provider_connection_id` | `string` |  |
+| `provider_connection_generation` | `uint64` |  |
+| `credential_asset_generation` | `uint64` |  |
+| `model_selector` | `string` |  |
 
 ## LLMProviderSetCapability
 
@@ -3638,6 +3665,8 @@ Declared in `internal/protocol/types`.
 | `provider_id` | `string` | optional (`omitempty`) |
 | `provider_page_size` | `int` | optional (`omitempty`) |
 | `provider_max_pages` | `int` | optional (`omitempty`) |
+| `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
+| `provider_agent_id` | `string` | optional (`omitempty`) |
 
 ## SearchArtifactRef
 
@@ -4460,6 +4489,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `external_grant` | `json.RawMessage` | optional (`omitempty`) |
+| `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
 | `description` | `string` | optional (`omitempty`) |
 | `priority` | `int` | optional (`omitempty`) |
