@@ -57,25 +57,25 @@ func newWithNetwork(cfg Config, lookupIP func(context.Context, string) ([]net.IP
 		return nil, ErrInvalidConfig
 	}
 	hostIP := net.ParseIP(strings.Trim(u.Hostname(), "[]"))
-	if hostIP != nil && ((unsafeDestination(hostIP) && !(u.Scheme == "http" && hostIP.IsLoopback())) || (u.Scheme == "https" && hostIP.IsLoopback())) {
-		return nil, ErrInvalidConfig
+	if hostIP != nil {
+		httpLoopback := u.Scheme == "http" && hostIP.IsLoopback()
+		httpsLoopback := u.Scheme == "https" && hostIP.IsLoopback()
+		if (unsafeDestination(hostIP) && !httpLoopback) || httpsLoopback {
+			return nil, ErrInvalidConfig
+		}
 	}
 	timeout := cfg.Timeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
 	hc := &http.Client{Timeout: timeout}
-	transport, ok := hc.Transport.(*http.Transport)
-	if hc.Transport == nil {
-		transport = http.DefaultTransport.(*http.Transport).Clone()
-	} else if !ok {
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
 		return nil, ErrInvalidConfig
-	} else {
-		transport = transport.Clone()
 	}
+	transport := baseTransport.Clone()
 	transport.Proxy = nil
 	transport.DialTLSContext = nil
-	transport.DialTLS = nil
 	transport.DialContext = safeDialContext(u.Scheme, u.Hostname(), lookupIP, dialContext)
 	hc.Transport = transport
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("provider route redirect refused") }

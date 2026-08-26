@@ -135,7 +135,11 @@ func TestClientRefusesRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.httpClient.Do(req); err == nil || !strings.Contains(err.Error(), "redirect refused") {
+	resp, err := client.httpClient.Do(req)
+	if resp != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	if err == nil || !strings.Contains(err.Error(), "redirect refused") {
 		t.Fatalf("redirect error = %v", err)
 	}
 }
