@@ -7,6 +7,23 @@ opaque route after ordinary JWT identity and effective-Agent reach admission.
 It is independent of external grants and leaves runtime-default execution fully
 latent and unchanged.
 
+## RFC anchor
+
+- RFC §6.4
+- RFC §6.11
+
+## Briefs informing this phase
+
+- Provider route resolution and Bifrost isolation brief.
+
+## Brief findings incorporated
+
+- Resolution is explicit-route-only and credential-free until the Bifrost leaf.
+
+## Findings I'm departing from (if any)
+
+None.
+
 ## Goals
 
 - Preserve nil-resolver/no-route execution with no boot requirement, worker,
@@ -49,6 +66,41 @@ latent and unchanged.
   lockstep; hosted CI owns all Go, race, lint, build, conformance, and smoke
   execution for this change.
 - Two independent adversarial reviews report P0=0/P1=0 at exact candidate.
+
+## Acceptance criteria
+
+- [x] Runtime-default and explicit-route paths are independently tested.
+- [x] Route identity, generation, endpoint, credential, and failure boundaries
+      are validated at the runtime and Bifrost seams.
+- [x] Protocol source, clients, generated references, and operator guidance
+      remain aligned.
+
+## Files added or changed
+
+- Provider-route resolver, transport, Bifrost account/pool, runtime admission,
+  Protocol posture, SDK, generated references, tests, and smoke coverage.
+
+## Test plan
+
+- Focused resolver, transport, Bifrost, runtime admission, protocol, and
+  concurrent tenant-isolation tests; hosted CI owns execution.
+
+## Smoke script additions
+
+- Static zero-work, closed-provider, route-admission, and transport assertions.
+
+## Coverage target
+
+- Every new route branch has a focused test; no unrelated coverage claim.
+
+## Dependencies
+
+- Existing Bifrost v1.7.4 driver, Protocol posture, and Agent-reach admission.
+
+## Risks / open questions
+
+- Hosted generation and full CI remain authoritative for generated artifacts
+  and platform-specific validation.
 
 ## Public surface
 

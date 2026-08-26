@@ -442,8 +442,14 @@ func (c *client) renewGrant(ctx context.Context, grant *llm.ExternalGrant, req l
 	if topErr != nil {
 		return fmt.Errorf("%w: top-up failed: %w", llm.ErrExternalGrantLeaseInsufficient, topErr)
 	}
-	if err := llm.ValidateExternalGrantRenewalSuccessor(predecessor, newGrant, needed, renewalReason); err != nil {
-		return err
+	var successorErr error
+	if renewalReason == llm.ExternalGrantRenewalLeaseInsufficient {
+		successorErr = llm.ValidateExternalGrantTopUpSuccessor(predecessor, newGrant, needed)
+	} else {
+		successorErr = llm.ValidateExternalGrantRenewalSuccessor(predecessor, newGrant, needed, renewalReason)
+	}
+	if successorErr != nil {
+		return successorErr
 	}
 	if err := c.deps.ExternalGrant.Verifier.Verify(ctx, newGrant, req); err != nil {
 		return err

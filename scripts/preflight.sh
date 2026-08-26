@@ -248,6 +248,7 @@ phase_status_arm() {
         Superseded*|superseded*)                    printf 'not-shipped' ;;
         Reverted*|reverted*)                        printf 'not-shipped' ;;
         Deprecated*|deprecated*)                    printf 'not-shipped' ;;
+        Accepted*|accepted*)                        printf 'not-shipped' ;;
         *)                                          printf 'unknown' ;;
     esac
 }

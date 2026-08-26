@@ -49,7 +49,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release candidate evidence
 
-- Phase 263 / D-443 landed through PR #752 at exact current `origin/main`
+- D-443 landed through PR #752 at exact current `origin/main`
   `4c955b6ad97e35810fda11cec8807fcc05f15a1d` from reviewed PR head
   `87a58c400fa9a553937a2fe02a020cd6b91ddb7b`. At the owner-authorized fast
   merge, hosted PR run `32911031711` had both Go platforms, lint, frontend,
@@ -79,7 +79,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release candidate evidence
 
-- Phase 262 / D-442 / HA-73 landed at exact current `origin/main`
+- D-442 / HA-73 landed at exact current `origin/main`
   `415d353d740ff3c3c2da8e3432eea342f7ccdeb2` through PR #750. Pre-merge PR
   run `32882992600` had two unrelated Go failures: the macOS
   `TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow` timed out after
@@ -182,7 +182,7 @@ Two versions move independently in Harbor (RFC §5.3):
   one epoch; bounds usable-capacity growth to the requested provider call; and
   cannot rewind deadlines or lengthen grant or lease lifetime beyond the
   predecessor's signed windows. Key rotation and renewed signatures remain
-  subject to the configured grant verifier. Phase 261 supplies the separately
+  subject to the configured grant verifier. The preceding release supplies the separately
   authenticated stock transport and replay-idempotent durable application.
   An omitted request output limit derives top-up need from
   the same signed output ceiling later applied to the provider call. No
