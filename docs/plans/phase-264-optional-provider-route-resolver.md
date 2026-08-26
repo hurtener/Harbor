@@ -121,6 +121,16 @@ None.
 
 ## Evidence status
 
-Implementation candidate only. No local Go/test/build/lint command is run by
-owner instruction; hosted web CI is authoritative. No merge, tag, release,
-deployment, or downstream acceptance is claimed by this phase document.
+Release candidate for v1.30.5. PR #753 was reviewed at exact head
+`39e8c09782b5731c20782c936b982f9c35fd6863` and landed at exact current
+`origin/main` `162226e6a68df79c4a9ea5ad66d32a29428076b8`. Hosted PR CI run
+`32967906833` completed successfully with both Go platforms, lint, frontend,
+examples, performance, PostgreSQL/S3 conformance, isolation, leak, chaos,
+mirror, markdown, Console Playwright, and full preflight checks green; PR docs
+run `32967906795` completed successfully. Exact post-merge docs run
+`32974645976` completed successfully. Exact post-merge main CI run
+`32974645903` remained in progress with no failed job at this release cut.
+No local Harbor Go/test/build/lint/generator command is run by owner
+instruction; hosted CI is authoritative. No successful post-merge full
+CI/preflight result, tag, release, downstream/runtime deployment, or
+downstream acceptance is claimed by this phase document.

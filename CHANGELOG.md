@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.5] — 2026-08-26
+
 ### Added
 
 - Optional grant-free external provider routing resolves only an explicit
@@ -32,6 +34,22 @@ Two versions move independently in Harbor (RFC §5.3):
   redirects, userinfo, fragments, all query strings (including secret-bearing
   values), non-http(s) schemes, and control characters, and bounds request /
   response bytes and duration.
+
+### Release candidate evidence
+
+- D-444 landed through PR #753 at exact current `origin/main`
+  `162226e6a68df79c4a9ea5ad66d32a29428076b8` from reviewed PR head
+  `39e8c09782b5731c20782c936b982f9c35fd6863`. Hosted PR CI run
+  `32967906833` completed successfully with both Go platforms, lint, frontend,
+  examples, performance, PostgreSQL/S3, isolation, leak, chaos, mirror,
+  markdown, Console Playwright, and full preflight checks green; documentation
+  run `32967906795` was also green. Exact post-merge documentation run
+  `32974645976` completed successfully. Exact post-merge main CI run
+  `32974645903` remained in progress at this release cut, with no failed job.
+  No successful post-merge full CI/preflight result is claimed by this cut. No
+  v1.30.5 tag, release assets, module provenance, checksums, attestations,
+  post-tag cleanup, downstream/runtime deployment, or downstream acceptance is
+  claimed.
 
 ## [1.30.4] — 2026-08-25
 
@@ -5126,7 +5144,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.4...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.5...HEAD
+[1.30.5]: https://github.com/hurtener/Harbor/compare/v1.30.4...v1.30.5
 [1.30.4]: https://github.com/hurtener/Harbor/compare/v1.30.3...v1.30.4
 [1.30.3]: https://github.com/hurtener/Harbor/compare/v1.30.2...v1.30.3
 [1.30.2]: https://github.com/hurtener/Harbor/compare/v1.30.1...v1.30.2

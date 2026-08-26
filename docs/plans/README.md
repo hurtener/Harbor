@@ -5785,14 +5785,35 @@ acceptance.
 
 - **Subsystem:** LLM provider routing, Bifrost account, task/run admission,
   protected provider catalog, public SDK/config and Protocol wire.
+- **RFC:** §6.4, §6.11. **Deps:** Existing Bifrost v1.7.4 driver, Protocol
+  posture, and Agent-reach admission.
 - **What it delivers:** D-444 — an explicit opaque route is resolved only after
   normal JWT and effective-Agent reach checks. Runtime-default remains zero-work;
   explicit failure never falls back; short-lived credentials remain confined
   to one provider attempt; typed custom egress is supplied only by the exact
   selected route.
-- **Evidence:** focused source tests, dual adversarial review, and hosted web CI.
-- **Status:** implementation candidate; no CI, merge, release, or deployment
-  acceptance claimed.
+- **Evidence:** focused source tests, dual adversarial review, hosted PR CI run
+  `32967906833` and documentation run `32967906795` green at reviewed head
+  `39e8c09782b5731c20782c936b982f9c35fd6863`; exact post-merge documentation
+  run `32974645976` green at `162226e6a68df79c4a9ea5ad66d32a29428076b8`; exact
+  post-merge main CI run `32974645903` remained in progress with no failed job
+  at this cut.
+- **Status:** Accepted for the v1.30.5 release candidate; no successful
+  post-merge full CI/preflight result, tag, release, downstream/runtime
+  deployment, or downstream acceptance is claimed.
+
+**v1.30.5 release-candidate evidence for Phase 264.** PR #753 reviewed exact
+head `39e8c09782b5731c20782c936b982f9c35fd6863` landed at exact current
+`origin/main` `162226e6a68df79c4a9ea5ad66d32a29428076b8`. Hosted PR CI run
+`32967906833` completed successfully with both Go platforms, lint, frontend,
+examples, performance, PostgreSQL/S3 conformance, isolation, leak, chaos,
+mirror, markdown, Console Playwright, and full preflight checks green; PR docs
+run `32967906795` completed successfully. Exact post-merge docs run
+`32974645976` completed successfully; exact post-merge main CI run
+`32974645903` remained in progress with no failed job at this release cut. No
+successful post-merge full CI/preflight result, tag, release, assets,
+provenance, checksums, attestations, post-tag cleanup, downstream/runtime
+deployment, or downstream acceptance is claimed.
 
 ## Notes
 

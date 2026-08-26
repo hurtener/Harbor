@@ -14630,8 +14630,8 @@ acceptance.
 
 **Date:** 2026-08-26
 
-**Status:** Accepted for implementation; hosted CI, merge, release, deployment,
-and downstream acceptance remain pending.
+**Status:** Accepted for the v1.30.5 release candidate; tag, release,
+downstream/runtime deployment, and downstream acceptance remain pending.
 
 Harbor adds one Bifrost-specific resolver for an explicitly selected opaque
 provider route. It is not a run-authorization grant and has no dependency on
@@ -14663,3 +14663,16 @@ provider assignment.
 
 **Cross-references:** D-025, D-333, D-434, D-435, D-442, RFC §5.5, §6.5,
 §6.15. Plan: `docs/plans/phase-264-optional-provider-route-resolver.md`.
+
+**Release-candidate evidence.** PR #753 was reviewed at exact head
+`39e8c09782b5731c20782c936b982f9c35fd6863` and landed at exact current
+`origin/main` `162226e6a68df79c4a9ea5ad66d32a29428076b8`. Hosted PR CI run
+`32967906833` completed successfully with both Go platforms, lint, frontend,
+examples, performance, PostgreSQL/S3 conformance, isolation, leak, chaos,
+mirror, markdown, Console Playwright, and full preflight checks green; PR
+documentation run `32967906795` completed successfully. Exact post-merge
+documentation run `32974645976` completed successfully. Exact post-merge main
+CI run `32974645903` remained in progress at this release cut with no failed
+job. No successful post-merge full CI/preflight result, v1.30.5 tag, release,
+assets, module provenance, checksums, attestations, post-tag cleanup,
+downstream/runtime deployment, or downstream acceptance is claimed.
