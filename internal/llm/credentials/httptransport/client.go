@@ -145,6 +145,13 @@ func (c *Client) Resolve(ctx context.Context, grant llm.ExternalGrant) (llm.Reso
 	c.mu.Unlock()
 
 	result := c.group.DoChan(key, func() (any, error) {
+		// A caller can observe a cache miss, be descheduled while another
+		// caller completes the fetch, and then become the next singleflight
+		// leader after that call is removed. Re-check the cache here so that
+		// late entrants do not fetch the same exact binding again.
+		if cached, ok := c.cached(key, c.clock().UTC()); ok {
+			return cached, nil
+		}
 		// One caller's cancellation must not cancel another caller sharing this
 		// exact verified binding. The immutable client timeout bounds the fetch.
 		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
