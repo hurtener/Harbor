@@ -121,6 +121,46 @@ func TestNewWithNetworkOwnsTransportEgressHooks(t *testing.T) {
 	}
 }
 
+func TestNewWithNetworkClearsInheritedLegacyDialTLS(t *testing.T) {
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	legacyCalls := 0
+	http.DefaultTransport = &http.Transport{
+		DialTLS: func(string, string) (net.Conn, error) {
+			legacyCalls++
+			return nil, errors.New("legacy DialTLS hook called")
+		},
+	}
+	lookup := func(context.Context, string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34")}, nil }
+	safeDialCalls := 0
+	dial := func(context.Context, string, string) (net.Conn, error) {
+		safeDialCalls++
+		return nil, errors.New("safe dial failed")
+	}
+	client, err := newWithNetwork(Config{ResolverURL: "https://resolver.example.test", AuthToken: "fixture-token"}, lookup, dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://resolver.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.httpClient.Do(req)
+	if resp != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	if err == nil {
+		t.Fatal("request unexpectedly succeeded")
+	}
+	if legacyCalls != 0 {
+		t.Fatalf("legacy DialTLS calls = %d, want 0", legacyCalls)
+	}
+	if safeDialCalls != 1 {
+		t.Fatalf("safe dial calls = %d, want 1", safeDialCalls)
+	}
+}
+
 func TestClientRefusesRedirects(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/other", http.StatusFound)

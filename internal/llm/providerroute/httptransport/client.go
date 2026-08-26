@@ -76,6 +76,10 @@ func newWithNetwork(cfg Config, lookupIP func(context.Context, string) ([]net.IP
 	transport := baseTransport.Clone()
 	transport.Proxy = nil
 	transport.DialTLSContext = nil
+	// DialTLS is deprecated, but a cloned default transport can still carry this
+	// legacy hook; clear it so every HTTPS connection uses safeDialContext.
+	//nolint:staticcheck // the deprecated hook must be scrubbed from the cloned transport for egress policy
+	transport.DialTLS = nil
 	transport.DialContext = safeDialContext(u.Scheme, u.Hostname(), lookupIP, dialContext)
 	hc.Transport = transport
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("provider route redirect refused") }
