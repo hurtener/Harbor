@@ -84,6 +84,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -214,8 +215,13 @@ type Task struct {
 	// Protocol start to the run's LLM edge. It contains no credential bytes;
 	// the verifier, not the task record, establishes authority.
 	ExternalGrant json.RawMessage `json:",omitempty"`
-	CreatedAt     int64           // unix nanoseconds; matches sessions / events convention
-	UpdatedAt     int64           // unix nanoseconds
+	// ProviderRoute is the optional opaque external-provider selector carried
+	// from Protocol start to the run's LLM edge. It contains no provider name,
+	// endpoint, or credential; only the server-installed trusted context can
+	// make the persisted intent available to a resolver.
+	ProviderRoute *llm.ProviderRoute `json:",omitempty"`
+	CreatedAt     int64              // unix nanoseconds; matches sessions / events convention
+	UpdatedAt     int64              // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
 	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
@@ -372,6 +378,10 @@ type SpawnRequest struct {
 	// ExternalGrant carries the signed, content-free runtime grant through
 	// task persistence to the run loop. It is included in idempotency identity.
 	ExternalGrant json.RawMessage
+	// ProviderRoute carries an optional opaque external-provider selector to
+	// task persistence. It is included in idempotency identity and does not
+	// itself confer authority.
+	ProviderRoute *llm.ProviderRoute
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
 	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
@@ -1070,6 +1080,11 @@ func ValidateRequest(req SpawnRequest) error {
 		}
 		if req.ParentTaskID == nil || *req.ParentTaskID == "" {
 			return fmt.Errorf("%w: virtual profile child requires a parent task", ErrInvalidRequest)
+		}
+	}
+	if req.ProviderRoute != nil {
+		if err := llm.ValidateProviderRoute(*req.ProviderRoute); err != nil || req.ProviderRoute.RouteID == "" {
+			return fmt.Errorf("%w: invalid provider route", ErrInvalidRequest)
 		}
 	}
 	return nil

@@ -249,6 +249,55 @@ func TestDispatch_Start_RejectsMalformedExternalGrantBeforeSpawn(t *testing.T) {
 	}
 }
 
+func TestDispatch_Start_CarriesOpaqueProviderRouteToRealTask(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	route := &types.LLMProviderRouteSelector{
+		RouteID: "route-a", RouteGeneration: 4,
+		ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 3,
+		CredentialAssetGeneration: 2, ModelSelector: "balanced",
+	}
+	resp, err := fx.surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+		Identity:      types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"},
+		Query:         "route carrier",
+		ProviderRoute: route,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(start with provider route): %v", err)
+	}
+	start := resp.(*types.StartResponse)
+	ctx, err := identity.WithVerified(context.Background(), identity.Identity{TenantID: "tenant-a", UserID: "user-1", SessionID: "session-x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := fx.tasks.Get(ctx, tasks.TaskID(start.TaskID))
+	if err != nil {
+		t.Fatalf("tasks.Get: %v", err)
+	}
+	if got.ProviderRoute == nil {
+		t.Fatalf("task provider route = %+v, want %+v", got.ProviderRoute, route)
+	}
+	gotRoute := got.ProviderRoute
+	if gotRoute.RouteID != route.RouteID ||
+		gotRoute.RouteGeneration != route.RouteGeneration ||
+		gotRoute.ProviderConnectionID != route.ProviderConnectionID ||
+		gotRoute.ProviderConnectionGeneration != route.ProviderConnectionGeneration ||
+		gotRoute.CredentialAssetGeneration != route.CredentialAssetGeneration ||
+		gotRoute.ModelSelector != route.ModelSelector {
+		t.Fatalf("task provider route = %+v, want %+v", got.ProviderRoute, route)
+	}
+}
+
+func TestDispatch_Start_RejectsPartialProviderRouteBeforeSpawn(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	_, err := fx.surface.Dispatch(context.Background(), methods.MethodStart, &types.StartRequest{
+		Identity:      types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"},
+		ProviderRoute: &types.LLMProviderRouteSelector{RouteID: "route-a"},
+	})
+	if got := codeOf(t, err); got != protoerrors.CodeInvalidRequest {
+		t.Fatalf("partial provider route code = %q, want %q", got, protoerrors.CodeInvalidRequest)
+	}
+}
+
 func TestDispatch_Start_Idempotency(t *testing.T) {
 	fx := newSurfaceFixture(t)
 	req := &types.StartRequest{

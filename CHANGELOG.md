@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Optional grant-free external provider routing resolves only an explicit
+  opaque route after verified identity and effective-Agent reach. Default
+  runtime provider/model calls remain unchanged and perform no resolver work.
+  Exact-bound, expiring credentials are confined to one Bifrost attempt;
+  standard providers use their SDK endpoints and typed custom endpoints are
+  resolved only within the exact selected route. Route-aware provider
+  validation/discovery echoes only opaque generations and readiness. The
+  resolver is independent of external grants, is optional at boot, and never
+  falls back after an explicit-route failure. Its authenticated stock
+  transport is boot-pinned, accepts HTTPS (or loopback HTTP), refuses
+  redirects, userinfo, fragments, all query strings (including secret-bearing
+  values), non-http(s) schemes, and control characters, and bounds request /
+  response bytes and duration.
+
 ## [1.30.4] — 2026-08-25
 
 ### Added

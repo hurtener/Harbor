@@ -61,6 +61,7 @@ var nonMethodRootedTypes = map[string]string{
 	"LLMProviderSetCapability":       "nested in alternate runtime-origin model capabilities",
 	"LLMProviderReasoningCapability": "nested in alternate runtime-origin model capabilities",
 	"LLMProviderPricingCapability":   "nested in alternate runtime-origin model capabilities",
+	"LLMProviderRouteObservation":    "nested in alternate runtime-origin llm.posture provider operation response",
 }
 
 // TestManifest_NoOrphanWireTypes fails when a canonical wire type is published

@@ -6,10 +6,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	bf "github.com/maximhq/bifrost/core"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/llm/provider"
 )
@@ -19,10 +21,13 @@ import (
 // Bifrost setup as ordinary LLM execution; it never exposes the resolved key
 // or a provider response body.
 type ProviderCatalog struct {
-	catalog *provider.Catalog
-	client  *bf.Bifrost
-	mu      sync.RWMutex
-	closed  bool
+	catalog     *provider.Catalog
+	client      *bf.Bifrost
+	routeClient *bf.Bifrost
+	routePool   *routeClientPool
+	mu          sync.RWMutex
+	closed      bool
+	route       llm.ProviderRouteConfig
 }
 
 // NewProviderCatalog constructs a catalog from the exact LLM snapshot used by
@@ -39,6 +44,9 @@ func NewProviderCatalog(cfg llm.ConfigSnapshot) (*ProviderCatalog, error) {
 // and both provider calls and catalog probes observe the same value without
 // copying a secret through Protocol or the catalog surface.
 func NewProviderCatalogWithDeps(cfg llm.ConfigSnapshot, deps llm.Deps) (*ProviderCatalog, error) {
+	if err := llm.ValidateProviderRouteConfig(deps.ProviderRoute); err != nil {
+		return nil, err
+	}
 	account, err := newAccount(cfg, deps)
 	if err != nil {
 		return nil, err
@@ -47,18 +55,44 @@ func NewProviderCatalogWithDeps(cfg llm.ConfigSnapshot, deps llm.Deps) (*Provide
 	if err != nil {
 		return nil, fmt.Errorf("bifrost provider catalog: init: %w", err)
 	}
+	var routeClient *bf.Bifrost
+	var routePool *routeClientPool
+	if deps.ProviderRoute.Resolver != nil {
+		routeAccount, routeErr := newRouteAccount(cfg.NetworkDefaults)
+		if routeErr != nil {
+			client.Shutdown()
+			return nil, fmt.Errorf("bifrost provider catalog: initialize curated provider routes: %w", routeErr)
+		}
+		routeClient, routeErr = bf.Init(context.Background(), bfschemas.BifrostConfig{Account: routeAccount})
+		if routeErr != nil {
+			client.Shutdown()
+			return nil, fmt.Errorf("bifrost provider catalog: initialize curated provider route workers: %w", routeErr)
+		}
+		routePool = newRouteClientPool(defaultRouteClientPoolCapacity, cfg.NetworkDefaults)
+	}
 	descriptors := StaticProviderDescriptors(cfg.CustomProviders)
 	active := []string{cfg.Provider}
 	manual := make(map[string][]string)
 	for _, custom := range cfg.CustomProviders {
 		manual[custom.Name] = append([]string(nil), custom.Models...)
 	}
-	catalog, err := provider.NewCatalog(&bifrostModelLister{client: client}, descriptors, active, manual)
+	catalog, err := provider.NewCatalog(&bifrostModelLister{
+		client: client, routeClient: routeClient, routePool: routePool,
+	}, descriptors, active, manual)
 	if err != nil {
+		if routePool != nil {
+			routePool.Close()
+		}
+		if routeClient != nil {
+			routeClient.Shutdown()
+		}
 		client.Shutdown()
 		return nil, fmt.Errorf("bifrost provider catalog: descriptors: %w", err)
 	}
-	return &ProviderCatalog{catalog: catalog, client: client}, nil
+	return &ProviderCatalog{
+		catalog: catalog, client: client, routeClient: routeClient, routePool: routePool,
+		route: deps.ProviderRoute,
+	}, nil
 }
 
 // StaticProviderDescriptors returns the technical descriptor registry for the
@@ -149,7 +183,21 @@ func (c *ProviderCatalog) Validate(ctx context.Context, req provider.ValidationR
 			State: provider.SupportUnavailable, Code: "provider_catalog_closed", Message: "provider catalog is closed",
 		}}
 	}
-	return c.catalog.Validate(ctx, req)
+	routeCtx, providerID, observation, err := c.resolveCatalogRoute(ctx)
+	if err != nil {
+		return provider.ValidationResult{ProviderID: req.ProviderID, Route: observation, Outcome: provider.Outcome{
+			State: provider.SupportUnavailable, Code: "provider_route_unavailable", Message: "external provider route is unavailable",
+		}}
+	}
+	if observation != nil {
+		req.ProviderID, req.ExternalRoute = providerID, true
+	}
+	result := c.catalog.Validate(routeCtx, req)
+	result.Route = observation
+	if result.Route != nil {
+		result.Route.Ready = result.Outcome.State == provider.SupportSupported || result.Outcome.State == provider.SupportPartial
+	}
+	return result
 }
 
 // Discover executes bounded runtime-origin model discovery.
@@ -166,7 +214,66 @@ func (c *ProviderCatalog) Discover(ctx context.Context, req provider.DiscoveryRe
 			State: provider.SupportUnavailable, Code: "provider_catalog_closed", Message: "provider catalog is closed",
 		}}, nil
 	}
-	return c.catalog.Discover(ctx, req)
+	routeCtx, providerID, observation, routeErr := c.resolveCatalogRoute(ctx)
+	if routeErr != nil {
+		return provider.DiscoveryResult{ProviderID: req.ProviderID, Route: observation, Outcome: provider.Outcome{
+			State: provider.SupportUnavailable, Code: "provider_route_unavailable", Message: "external provider route is unavailable",
+		}}, nil
+	}
+	if observation != nil {
+		req.ProviderID, req.ExternalRoute = providerID, true
+	}
+	result, err := c.catalog.Discover(routeCtx, req)
+	result.Route = observation
+	if result.Route != nil {
+		result.Route.Ready = result.Outcome.State == provider.SupportSupported || result.Outcome.State == provider.SupportPartial || result.Outcome.State == provider.SupportManual
+	}
+	return result, err
+}
+
+func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Context, string, *provider.RouteObservation, error) {
+	trusted, explicit := llm.TrustedProviderRouteFrom(ctx)
+	if !explicit {
+		return ctx, "", nil, nil
+	}
+	observation := &provider.RouteObservation{
+		RouteID: trusted.Route.RouteID, RouteGeneration: trusted.Route.RouteGeneration,
+		ProviderConnectionID:         trusted.Route.ProviderConnectionID,
+		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration,
+	}
+	if err := llm.ValidateProviderRoute(trusted.Route); err != nil || trusted.Route.RouteID == "" {
+		return ctx, "", observation, llm.ErrProviderRouteInvalid
+	}
+	if c.route.Resolver == nil || trusted.RuntimeID == "" || trusted.RuntimeID != c.route.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" {
+		return ctx, "", observation, llm.ErrProviderRouteResolverUnavailable
+	}
+	id, ok := identity.From(ctx)
+	if !ok || id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
+		return ctx, "", observation, llm.ErrProviderRouteInvalid
+	}
+	logicalRunID := trusted.TaskID
+	if q, qOK := identity.QuadrupleFrom(ctx); qOK && q.Identity == id && q.RunID != "" {
+		logicalRunID = q.RunID
+	}
+	callCtx, scope, err := llm.EnsureAttemptScope(ctx)
+	if err != nil {
+		return ctx, "", observation, err
+	}
+	resolved, err := llm.ResolveProviderRoute(callCtx, c.route, llm.ProviderRouteRequest{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+		LogicalRunID: logicalRunID, EffectiveAgentID: trusted.EffectiveAgentID, RuntimeID: trusted.RuntimeID,
+		TaskID: trusted.TaskID, LogicalCallID: scope.LogicalCallID,
+		RouteID: trusted.Route.RouteID, RouteGeneration: trusted.Route.RouteGeneration,
+		ProviderConnectionID:         trusted.Route.ProviderConnectionID,
+		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
+	}, time.Now())
+	providerID := bfschemas.ModelProvider(resolved.Provider)
+	if err != nil || !curatedRouteProvider(providerID) || validateCuratedRouteEndpoint(providerID, resolved.Endpoint) != nil {
+		return ctx, "", observation, llm.ErrProviderRouteInvalid
+	}
+	return llm.WithResolvedProviderRoute(callCtx, resolved), resolved.Provider, observation, nil
 }
 
 // Close shuts down the Bifrost catalog client. Bifrost's Shutdown is
@@ -183,17 +290,64 @@ func (c *ProviderCatalog) Close(_ context.Context) error {
 	}
 	c.closed = true
 	c.mu.Unlock()
-	c.client.Shutdown()
+	if c.routePool != nil {
+		c.routePool.Close()
+	}
+	if c.routeClient != nil {
+		c.routeClient.Shutdown()
+	}
+	if c.client != nil {
+		c.client.Shutdown()
+	}
 	return nil
 }
 
 type bifrostModelLister struct {
-	client *bf.Bifrost
+	client      *bf.Bifrost
+	routeClient *bf.Bifrost
+	routePool   *routeClientPool
 }
 
 func (l *bifrostModelLister) ListModels(ctx context.Context, providerID string, pageSize int, pageToken string) (provider.ModelPage, error) {
 	if err := ctx.Err(); err != nil {
 		return provider.ModelPage{}, err
+	}
+	client := l.client
+	var release func()
+	if route, explicit := llm.ResolvedProviderRouteFrom(ctx); explicit {
+		trusted, trustedOK := llm.TrustedProviderRouteFrom(ctx)
+		if l.routeClient == nil || route.Provider != providerID || !trustedOK || trusted.RuntimeID == "" || trusted.EffectiveAgentID == "" || trusted.TaskID == "" ||
+			trusted.Route.RouteID != route.RouteID || trusted.Route.RouteGeneration != route.RouteGeneration ||
+			trusted.Route.ProviderConnectionID != route.ProviderConnectionID || trusted.Route.ProviderConnectionGeneration != route.ProviderConnectionGeneration ||
+			trusted.Route.CredentialAssetGeneration != route.CredentialAssetGeneration || trusted.Route.ModelSelector != route.ModelSelector ||
+			!route.ExpiresAt.After(time.Now()) || validateCuratedRouteEndpoint(bfschemas.ModelProvider(route.Provider), route.Endpoint) != nil {
+			return provider.ModelPage{}, llm.ErrProviderRouteInvalid
+		}
+		client = l.routeClient
+		if route.Endpoint != nil && route.Endpoint.Kind == llm.ProviderEndpointOpenAICompatible {
+			if l.routePool == nil {
+				return provider.ModelPage{}, llm.ErrProviderRouteInvalid
+			}
+			id, identityOK := identity.From(ctx)
+			if !identityOK || id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
+				return provider.ModelPage{}, llm.ErrProviderRouteInvalid
+			}
+			var err error
+			client, release, err = l.routePool.acquire(ctx, routeClientPoolKey{
+				TenantID: id.TenantID, RuntimeID: trusted.RuntimeID, RouteID: route.RouteID,
+				RouteGeneration: route.RouteGeneration, ProviderConnectionID: route.ProviderConnectionID,
+				ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+				CredentialAssetGeneration:    route.CredentialAssetGeneration,
+				Provider:                     route.Provider, EndpointDigest: route.Endpoint.Digest,
+			}, route.Endpoint.Value)
+			if err != nil {
+				return provider.ModelPage{}, err
+			}
+			defer release()
+		}
+	}
+	if client == nil {
+		return provider.ModelPage{}, provider.NewProviderError("provider_unavailable", 0, false)
 	}
 	request := &bfschemas.BifrostListModelsRequest{
 		Provider:   bfschemas.ModelProvider(providerID),
@@ -201,7 +355,7 @@ func (l *bifrostModelLister) ListModels(ctx context.Context, providerID string, 
 		PageToken:  pageToken,
 		Unfiltered: true,
 	}
-	response, bifrostErr := l.client.ListModelsRequest(bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline), request)
+	response, bifrostErr := client.ListModelsRequest(bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline), request)
 	if bifrostErr != nil {
 		return provider.ModelPage{}, classifyBifrostError(bifrostErr)
 	}

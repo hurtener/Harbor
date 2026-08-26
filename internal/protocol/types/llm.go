@@ -50,12 +50,23 @@ type LLMPostureResponse struct {
 // runtime-origin provider catalog operation. Provider credentials, endpoint
 // values, and raw provider response bodies never cross this wire boundary.
 type LLMProviderOperationResponse struct {
-	Operation     string                  `json:"operation"`
-	RuntimeOrigin bool                    `json:"runtime_origin"`
-	ProviderID    string                  `json:"provider_id,omitempty"`
-	Descriptors   []LLMProviderDescriptor `json:"descriptors,omitempty"`
-	Validation    *LLMProviderValidation  `json:"validation,omitempty"`
-	Discovery     *LLMProviderDiscovery   `json:"discovery,omitempty"`
+	Operation     string                       `json:"operation"`
+	RuntimeOrigin bool                         `json:"runtime_origin"`
+	ProviderID    string                       `json:"provider_id,omitempty"`
+	Descriptors   []LLMProviderDescriptor      `json:"descriptors,omitempty"`
+	Validation    *LLMProviderValidation       `json:"validation,omitempty"`
+	Discovery     *LLMProviderDiscovery        `json:"discovery,omitempty"`
+	Route         *LLMProviderRouteObservation `json:"route,omitempty"`
+}
+
+// LLMProviderRouteObservation echoes only exact generations and readiness.
+type LLMProviderRouteObservation struct {
+	RouteID                      string `json:"route_id"`
+	RouteGeneration              uint64 `json:"route_generation"`
+	ProviderConnectionID         string `json:"provider_connection_id"`
+	ProviderConnectionGeneration uint64 `json:"provider_connection_generation"`
+	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
+	Ready                        bool   `json:"ready"`
 }
 
 type LLMProviderDescriptor struct {

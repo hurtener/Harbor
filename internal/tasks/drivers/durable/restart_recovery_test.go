@@ -7,6 +7,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tasks/engine"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -56,7 +57,15 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending, err := r1.Spawn(admittedCtx, tasks.SpawnRequest{Identity: id, Kind: tasks.KindForeground, Description: "pending-task"})
+	route := &llm.ProviderRoute{
+		RouteID: "route-restart", RouteGeneration: 4,
+		ProviderConnectionID: "connection-restart", ProviderConnectionGeneration: 3,
+		CredentialAssetGeneration: 2, ModelSelector: "balanced",
+	}
+	pending, err := r1.Spawn(admittedCtx, tasks.SpawnRequest{
+		Identity: id, Kind: tasks.KindForeground, Description: "pending-task",
+		ProviderRoute: route,
+	})
 	if err != nil {
 		t.Fatalf("Spawn pending: %v", err)
 	}
@@ -111,6 +120,9 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	}
 	if _, gotAgent, admitted := authority.Restore(context.Background(), gotPending); !admitted || gotAgent != "agent-restart" {
 		t.Errorf("pending task admission after restart = (%q, %v), want (agent-restart, true)", gotAgent, admitted)
+	}
+	if gotPending.ProviderRoute == nil || *gotPending.ProviderRoute != *route {
+		t.Errorf("pending task provider route after restart = %+v, want %+v", gotPending.ProviderRoute, route)
 	}
 
 	// List returns all three tasks.

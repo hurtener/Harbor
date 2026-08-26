@@ -5781,6 +5781,19 @@ final preflight/Playwright result nor a tag, release, assets, provenance,
 checksums, attestations, post-tag cleanup, downstream deployment, or
 acceptance.
 
+### Phase 264 — Optional grant-free provider route resolver
+
+- **Subsystem:** LLM provider routing, Bifrost account, task/run admission,
+  protected provider catalog, public SDK/config and Protocol wire.
+- **What it delivers:** D-444 — an explicit opaque route is resolved only after
+  normal JWT and effective-Agent reach checks. Runtime-default remains zero-work;
+  explicit failure never falls back; short-lived credentials remain confined
+  to one provider attempt; typed custom egress is supplied only by the exact
+  selected route.
+- **Evidence:** focused source tests, dual adversarial review, and hosted web CI.
+- **Status:** implementation candidate; no CI, merge, release, or deployment
+  acceptance claimed.
+
 ## Notes
 
 - **Phase numbers are stable once shipped.** A phase number is reused only via a `phase-NN-supersedes-MM.md` PR per AGENTS.md §15.

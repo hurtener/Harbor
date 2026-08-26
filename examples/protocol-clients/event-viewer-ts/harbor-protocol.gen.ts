@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:a2107113601cc23ef6599dfcdb61cbfed9c8fb2a82cc2c4d11e85570b0993fa3";
+export const WIRE_SURFACE_DIGEST = "sha256:42e65ef859ba71535ad0f5ade9652c0850651c00505be6cf9a24e342a3f1b7d3";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2012,6 +2012,7 @@ export interface LLMProviderOperationResponse {
   descriptors?: LLMProviderDescriptor[];
   validation?: LLMProviderValidation;
   discovery?: LLMProviderDiscovery;
+  route?: LLMProviderRouteObservation;
 }
 
 export interface LLMProviderOutcome {
@@ -2032,6 +2033,24 @@ export interface LLMProviderPricingCapability {
 export interface LLMProviderReasoningCapability {
   state: string;
   levels?: string[];
+}
+
+export interface LLMProviderRouteObservation {
+  route_id: string;
+  route_generation: number;
+  provider_connection_id: string;
+  provider_connection_generation: number;
+  credential_asset_generation: number;
+  ready: boolean;
+}
+
+export interface LLMProviderRouteSelector {
+  route_id: string;
+  route_generation: number;
+  provider_connection_id: string;
+  provider_connection_generation: number;
+  credential_asset_generation: number;
+  model_selector: string;
 }
 
 export interface LLMProviderSetCapability {
@@ -2687,6 +2706,8 @@ export interface RuntimeInfoRequest {
   provider_id?: string;
   provider_page_size?: number;
   provider_max_pages?: number;
+  provider_route?: LLMProviderRouteSelector;
+  provider_agent_id?: string;
 }
 
 export interface SearchArtifactRef {
@@ -3249,6 +3270,7 @@ export interface SkillPublicationUpdateResponse {
 export interface StartRequest {
   identity: IdentityScope;
   external_grant?: unknown;
+  provider_route?: LLMProviderRouteSelector;
   query?: string;
   description?: string;
   priority?: number;

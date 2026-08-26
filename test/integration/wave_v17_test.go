@@ -553,7 +553,7 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 	// ===================================================================
 	// (1) Both capabilities coexist — runtime.info advertises agent_config
 	//     (128) AND session_lifecycle (130) in one capabilities projection,
-	//     and the canonical universe is internally consistent (10 caps).
+	//     and the canonical universe is internally consistent (12 caps).
 	// ===================================================================
 	t.Run("BothCapabilitiesCoexist", func(t *testing.T) {
 		id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-info"}
@@ -570,16 +570,17 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 			t.Fatalf("runtime.info Capabilities %v must advertise skill_publications", info.Capabilities)
 		}
 		// The conformance universe is internally consistent: every
-		// advertised capability is canonical, and the canonical set is 10
+		// advertised capability is canonical, and the canonical set is 12
 		// (Phase 177 / D-313 added tool_annotations; D-374 added
-		// caller_memory; HA-68 added skill_publications — all additive).
+		// caller_memory; HA-68 added skill_publications; the provider
+		// catalog and route surfaces are additive as well).
 		for _, c := range info.Capabilities {
 			if !prototypes.IsValidCapability(c) {
 				t.Errorf("advertised capability %q is not in the canonical universe", c)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 10 {
-			t.Errorf("canonical capability universe has %d entries, want 10", n)
+		if n := len(prototypes.Capabilities()); n != 12 {
+			t.Errorf("canonical capability universe has %d entries, want 12", n)
 		}
 	})
 

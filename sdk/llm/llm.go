@@ -102,6 +102,22 @@ type (
 	UsageReceiptSink = internal.UsageReceiptSink
 	// ExternalGrantConfig wires the execution-edge grant seams.
 	ExternalGrantConfig = internal.ExternalGrantConfig
+	// ProviderRoute is an opaque external provider-route selector.
+	ProviderRoute = internal.ProviderRoute
+	// ProviderRouteRequest is the fully verified resolver input.
+	ProviderRouteRequest = internal.ProviderRouteRequest
+	// ResolvedProviderRoute is the exact-bound short-lived route result.
+	ResolvedProviderRoute = internal.ResolvedProviderRoute
+	// SelectedProviderRoute is the credential-free pre-policy route decision.
+	SelectedProviderRoute   = internal.SelectedProviderRoute
+	ProviderEndpointBinding = internal.ProviderEndpointBinding
+	ProviderEndpointKind    = internal.ProviderEndpointKind
+	// ProviderRouteResolver is the optional external route seam.
+	ProviderRouteResolver = internal.ProviderRouteResolver
+	// ProviderRouteConfig wires the optional route seam.
+	ProviderRouteConfig = internal.ProviderRouteConfig
+	// TrustedProviderRouteContext is installed after runtime admission.
+	TrustedProviderRouteContext = internal.TrustedProviderRouteContext
 	// VerifiedGrantContext is the verified grant available at the driver edge.
 	VerifiedGrantContext = internal.VerifiedGrantContext
 	// AttemptScope carries server-derived logical call and retry coordinates.

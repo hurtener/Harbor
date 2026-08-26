@@ -41,6 +41,21 @@ type RuntimeInfoRequest struct {
 	ProviderID        string `json:"provider_id,omitempty"`
 	ProviderPageSize  int    `json:"provider_page_size,omitempty"`
 	ProviderMaxPages  int    `json:"provider_max_pages,omitempty"`
+	// ProviderRoute is an opaque external route selector. It carries no
+	// provider, endpoint, or credential. AgentID is separately checked against
+	// the caller's verified signed reach before resolution.
+	ProviderRoute   *LLMProviderRouteSelector `json:"provider_route,omitempty"`
+	ProviderAgentID string                    `json:"provider_agent_id,omitempty"`
+}
+
+// LLMProviderRouteSelector is the additive grant-free provider-route wire.
+type LLMProviderRouteSelector struct {
+	RouteID                      string `json:"route_id"`
+	RouteGeneration              uint64 `json:"route_generation"`
+	ProviderConnectionID         string `json:"provider_connection_id"`
+	ProviderConnectionGeneration uint64 `json:"provider_connection_generation"`
+	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
+	ModelSelector                string `json:"model_selector"`
 }
 
 // RuntimeInfo is the runtime.info response: the Runtime's build

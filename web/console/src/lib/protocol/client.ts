@@ -142,6 +142,16 @@ export interface StartResponse {
 	protocol_version: string;
 }
 
+/** Opaque external provider-route selector accepted by `control.start`. */
+export interface LLMProviderRouteSelector {
+	route_id: string;
+	route_generation: number;
+	provider_connection_id: string;
+	provider_connection_generation: number;
+	credential_asset_generation: number;
+	model_selector: string;
+}
+
 /** Options the `HarborClient` is constructed with. */
 export interface HarborClientOptions {
 	/** The resolved Runtime connection (base URL + token + identity triple). */
@@ -867,6 +877,12 @@ export class ControlNamespace {
 			 * redaction is the caller's job.
 			 */
 			callerMemory?: unknown;
+			/**
+			 * Optional opaque external provider route. It contains no provider
+			 * name, endpoint, or credential; omitted preserves the runtime's
+			 * configured default provider path.
+			 */
+			providerRoute?: LLMProviderRouteSelector;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
@@ -915,6 +931,9 @@ export class ControlNamespace {
 		// absent, and swallowing it here would hide that from the caller.
 		if (opts.callerMemory !== undefined) {
 			body.caller_memory = opts.callerMemory;
+		}
+		if (opts.providerRoute !== undefined) {
+			body.provider_route = opts.providerRoute;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}

@@ -265,6 +265,7 @@ func TestSnapshotFromConfig_FieldParity_LLMConfig(t *testing.T) {
 	excluded := map[string]string{
 		"InferenceBrokers": "boundary-wired: the boot builds the broker-pull InferenceKeySource; the LLM client reads the seeded LiveKey, not the broker list",
 		"ExternalGrant":    "assembly-wired: the runtime constructs the verifier, credential resolver, reservation manager, and receipt outbox around the LLM client; it is not part of the provider snapshot",
+		"ProviderRoute":    "assembly-wired: serve constructs the optional resolver transport and injects it through llm.Open; it is not an LLM client snapshot field",
 	}
 	assertFieldParity(t, reflect.TypeOf(config.LLMConfig{}), projected, excluded)
 }

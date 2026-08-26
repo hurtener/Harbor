@@ -8,6 +8,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/llm/provider"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -20,6 +21,21 @@ type providerCatalogFixture struct{}
 
 func (providerCatalogFixture) Descriptors(context.Context) []provider.ProviderDescriptor {
 	return []provider.ProviderDescriptor{{ID: "openai", Kind: "native", Validation: provider.OperationSupport{State: provider.SupportSupported, RuntimeOrigin: true, Bounded: true}, Discovery: provider.OperationSupport{State: provider.SupportSupported, RuntimeOrigin: true, Bounded: true}}}
+}
+
+type routeAwareCatalogFixture struct{ providerCatalogFixture }
+
+func (routeAwareCatalogFixture) Validate(ctx context.Context, req provider.ValidationRequest) provider.ValidationResult {
+	trusted, ok := llm.TrustedProviderRouteFrom(ctx)
+	if !ok || trusted.EffectiveAgentID != "agent-a" || trusted.RuntimeID != "runtime-a" || trusted.TaskID == "" {
+		return provider.ValidationResult{Outcome: provider.Outcome{State: provider.SupportUnavailable}}
+	}
+	return provider.ValidationResult{ProviderID: "openai", Outcome: provider.Outcome{State: provider.SupportSupported}, Route: &provider.RouteObservation{
+		RouteID: trusted.Route.RouteID, RouteGeneration: trusted.Route.RouteGeneration,
+		ProviderConnectionID:         trusted.Route.ProviderConnectionID,
+		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, Ready: true,
+	}}
 }
 
 func (providerCatalogFixture) Validate(context.Context, provider.ValidationRequest) provider.ValidationResult {
@@ -95,6 +111,45 @@ func TestProviderCatalogOperationFailsClosedWhenNotWired(t *testing.T) {
 	var pe *protoerrors.Error
 	if !asProtocolError(err, &pe) || pe.Code != protoerrors.CodeRuntimeError {
 		t.Fatalf("error=%v, want runtime_error", err)
+	}
+}
+
+func TestProviderCatalogRouteRequiresSignedAgentReachAndEchoesGenerations(t *testing.T) {
+	bus := newPostureBus(t)
+	surface, err := protocol.NewPostureSurface(protocol.PostureDeps{
+		Clock: fixedClock, Health: func(context.Context) []types.SubsystemHealth { return nil },
+		Counters: func(context.Context, identity.Identity) types.RuntimeCounters { return types.RuntimeCounters{} },
+		Drivers:  func() []types.SubsystemDriver { return nil }, Metrics: func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+		Governance: newPostureGovernance(), LLM: newPostureLLM(), ProviderCatalog: routeAwareCatalogFixture{},
+		AgentReach: auth.NewAgentReachAuthorizer(), ProviderRouteRuntimeID: "runtime-a",
+		Redactor: patterns.New(), Bus: bus, InstanceID: "provider-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &types.RuntimeInfoRequest{
+		Identity:          types.IdentityScope{Tenant: "tenant-a", User: "user-a", Session: "session-a"},
+		ProviderOperation: "validate", ProviderAgentID: "agent-a",
+		ProviderRoute: &types.LLMProviderRouteSelector{RouteID: "route-a", RouteGeneration: 2,
+			ProviderConnectionID: "connection-a", ProviderConnectionGeneration: 3,
+			CredentialAssetGeneration: 4, ModelSelector: "fast"},
+	}
+	admin := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
+	if _, err := surface.Dispatch(admin, methods.MethodLLMPosture, req); err == nil {
+		t.Fatal("route operation without signed Agent reach succeeded")
+	}
+	fleet := auth.WithAgentReach(auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeConsoleFleet}), []string{"agent-a"})
+	if _, err := surface.Dispatch(fleet, methods.MethodLLMPosture, req); err == nil {
+		t.Fatal("route operation with fleet-only scope succeeded")
+	}
+	ctx := auth.WithAgentReach(admin, []string{"agent-a"})
+	response, err := surface.Dispatch(ctx, methods.MethodLLMPosture, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.(types.LLMProviderOperationResponse)
+	if got.Route == nil || !got.Route.Ready || got.Route.RouteGeneration != 2 || got.Route.ProviderConnectionGeneration != 3 || got.Route.CredentialAssetGeneration != 4 {
+		t.Fatalf("route observation = %#v", got.Route)
 	}
 }
 

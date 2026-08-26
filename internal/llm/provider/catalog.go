@@ -222,30 +222,47 @@ type Model struct {
 // validation probe.
 type ValidationRequest struct {
 	ProviderID string
+	// ExternalRoute is set only by the runtime adapter after resolving a
+	// trusted opaque route. It is not a public authority field.
+	ExternalRoute bool
 }
 
 // ValidationResult confirms only the provider operation, not a global account
 // or billing state. It is safe to persist as a content-free observation.
 type ValidationResult struct {
-	ProviderID string  `json:"provider_id"`
-	Outcome    Outcome `json:"outcome"`
+	ProviderID string            `json:"provider_id"`
+	Outcome    Outcome           `json:"outcome"`
+	Route      *RouteObservation `json:"route,omitempty"`
 }
 
 // DiscoveryRequest bounds one runtime-origin model discovery operation.
 type DiscoveryRequest struct {
-	ProviderID string
-	PageSize   int
-	MaxPages   int
+	ProviderID    string
+	PageSize      int
+	MaxPages      int
+	ExternalRoute bool
 }
 
 // DiscoveryResult is bounded by MaxPages and contains normalized model facts
 // only. A partial/stale result must not be treated as a complete catalog.
 type DiscoveryResult struct {
-	ProviderID string  `json:"provider_id"`
-	Outcome    Outcome `json:"outcome"`
-	Models     []Model `json:"models,omitempty"`
-	Pages      int     `json:"pages"`
-	ModelCount int     `json:"model_count"`
+	ProviderID string            `json:"provider_id"`
+	Outcome    Outcome           `json:"outcome"`
+	Models     []Model           `json:"models,omitempty"`
+	Pages      int               `json:"pages"`
+	ModelCount int               `json:"model_count"`
+	Route      *RouteObservation `json:"route,omitempty"`
+}
+
+// RouteObservation is the content-free exact generation/readiness projection
+// for a route-aware provider operation.
+type RouteObservation struct {
+	RouteID                      string `json:"route_id"`
+	RouteGeneration              uint64 `json:"route_generation"`
+	ProviderConnectionID         string `json:"provider_connection_id"`
+	ProviderConnectionGeneration uint64 `json:"provider_connection_generation"`
+	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
+	Ready                        bool   `json:"ready"`
 }
 
 const (
@@ -357,7 +374,7 @@ func (c *Catalog) Validate(ctx context.Context, req ValidationRequest) Validatio
 		result.Outcome = fixedOutcome(SupportUnsupported, "provider_unknown", "provider is not in the Harbor provider registry", false)
 		return result
 	}
-	if c.source == nil || !c.isActive(providerID) {
+	if c.source == nil || (!req.ExternalRoute && !c.isActive(providerID)) {
 		result.Outcome = fixedOutcome(SupportUnavailable, "provider_not_configured", "provider is not configured for this runtime", false)
 		return result
 	}
@@ -408,7 +425,7 @@ func (c *Catalog) Discover(ctx context.Context, req DiscoveryRequest) (Discovery
 		result.Outcome = fixedOutcome(SupportUnsupported, "model_discovery_unsupported", "provider does not expose model discovery through Harbor", false)
 		return result, nil
 	}
-	if c.source == nil || !c.isActive(providerID) {
+	if c.source == nil || (!req.ExternalRoute && !c.isActive(providerID)) {
 		result.Outcome = fixedOutcome(SupportUnavailable, "provider_not_configured", "provider is not configured for this runtime", false)
 		return result, nil
 	}

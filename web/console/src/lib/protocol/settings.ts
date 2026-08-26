@@ -197,6 +197,16 @@ export interface LLMProviderDiscovery {
 	model_count: number;
 }
 
+/** Opaque route generations and readiness returned by route-aware checks. */
+export interface LLMProviderRouteObservation {
+	route_id: string;
+	route_generation: number;
+	provider_connection_id: string;
+	provider_connection_generation: number;
+	credential_asset_generation: number;
+	ready: boolean;
+}
+
 /** Runtime-origin provider catalog response selected from the posture envelope. */
 export interface LLMProviderOperationResponse {
 	operation: string;
@@ -205,6 +215,7 @@ export interface LLMProviderOperationResponse {
 	descriptors?: LLMProviderDescriptor[];
 	validation?: LLMProviderValidation;
 	discovery?: LLMProviderDiscovery;
+	route?: LLMProviderRouteObservation;
 }
 
 /** A discovered/configured provider model and normalized capabilities. */

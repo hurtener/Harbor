@@ -49,6 +49,8 @@ type Options struct {
 	// credential resolver. Boot configuration remains authoritative for mode,
 	// route, verifier keys, and stock coordinator endpoints.
 	ExternalGrant llm.ExternalGrantConfig
+	// ProviderRoute supplies an optional host-owned grant-free route resolver.
+	ProviderRoute llm.ProviderRouteConfig
 
 	// RegisterCatalog, when non-nil, registers the served agent's
 	// compiled in-process tools on the runtime catalog at the pre-policy
@@ -100,5 +102,5 @@ func Open(ctx context.Context, cfg *config.Config, opts Options) (*Handle, error
 		stderr = os.Stderr
 	}
 	return external.OpenWithStderr(ctx, cfg, opts.ConfigPath, stderr, opts.RegisterCatalog,
-		external.FrameworkIdentity(opts.Framework), opts.ExternalGrant)
+		external.FrameworkIdentity(opts.Framework), opts.ExternalGrant, opts.ProviderRoute)
 }

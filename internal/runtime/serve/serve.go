@@ -56,6 +56,7 @@ import (
 	credentialhttp "github.com/hurtener/Harbor/internal/llm/credentials/httptransport"
 	llmbifrost "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
 	llmprovider "github.com/hurtener/Harbor/internal/llm/provider"
+	providerroutehttp "github.com/hurtener/Harbor/internal/llm/providerroute/httptransport"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	receipthttp "github.com/hurtener/Harbor/internal/llm/receipts/httptransport"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -259,9 +260,33 @@ type Options struct {
 	ExternalGrantPending   llmreceipts.PendingReceiptSource
 	ExternalGrantMaxBatch  int
 	ExternalGrantReconcile time.Duration
-	BuildAuthSurface       AuthSurfaceBuilder
-	ExtraRoutes            ExtraRoutesFunc
-	PostBoot               PostBootFunc
+	// ProviderRoute injects an optional host-owned route resolver. It conflicts
+	// with a configured stock provider_route transport.
+	ProviderRoute    llm.ProviderRouteConfig
+	BuildAuthSurface AuthSurfaceBuilder
+	ExtraRoutes      ExtraRoutesFunc
+	PostBoot         PostBootFunc
+}
+
+func configureStockProviderRoute(cfg config.LLMProviderRouteConfig, opts *Options, getenv func(string) (string, bool)) (*providerroutehttp.Client, error) {
+	configured := strings.TrimSpace(cfg.ResolverURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
+		strings.TrimSpace(cfg.RuntimeID) != "" || cfg.Timeout != 0
+	if !configured {
+		return nil, nil
+	}
+	if opts.ProviderRoute.Resolver != nil {
+		return nil, fmt.Errorf("provider route: configured stock resolver conflicts with injected resolver")
+	}
+	token, ok := getenv(cfg.AuthTokenEnv)
+	if !ok || strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("provider route: auth token env %q is unset", cfg.AuthTokenEnv)
+	}
+	client, err := providerroutehttp.New(providerroutehttp.Config{ResolverURL: cfg.ResolverURL, AuthToken: token, Timeout: cfg.Timeout})
+	if err != nil {
+		return nil, fmt.Errorf("provider route: construct stock resolver: %w", err)
+	}
+	opts.ProviderRoute = llm.ProviderRouteConfig{Resolver: client, RuntimeID: cfg.RuntimeID}
+	return client, nil
 }
 
 // Handle is the running serve band a successful Boot returns. Serve binds the
@@ -545,6 +570,13 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if stockErr != nil {
 		return nil, stockErr
 	}
+	stockProviderRoute, routeErr := configureStockProviderRoute(cfg.LLM.ProviderRoute, &opts, os.LookupEnv)
+	if routeErr != nil {
+		if stockCoordinator != nil {
+			_ = stockCoordinator.Close(ctx)
+		}
+		return nil, routeErr
+	}
 	finalGrantMode := opts.ExternalGrant.Mode
 	if finalGrantMode == "" {
 		finalGrantMode = llm.ExternalGrantMode(strings.TrimSpace(cfg.LLM.ExternalGrant.Mode))
@@ -583,6 +615,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		ExternalGrantPending:   opts.ExternalGrantPending,
 		ExternalGrantMaxBatch:  opts.ExternalGrantMaxBatch,
 		ExternalGrantReconcile: opts.ExternalGrantReconcile,
+		ProviderRoute:          opts.ProviderRoute,
 		MCPDefaultIdentity:     opts.MCPDefaultIdentity,
 		ApprovalAuthorizer:     server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
 		RegisterCatalog:        opts.RegisterCatalog,
@@ -590,6 +623,9 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	closers := make([]func(context.Context) error, 0, 8)
 	if stockCoordinator != nil {
 		closers = append(closers, stockCoordinator.Close)
+	}
+	if stockProviderRoute != nil {
+		closers = append(closers, func(context.Context) error { return stockProviderRoute.Close() })
 	}
 	if stack != nil {
 		closers = append(closers, func(closeCtx context.Context) error { return stack.Close(closeCtx) })
@@ -612,7 +648,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	var providerCatalog llmprovider.CatalogSurface
 	if stack != nil && stack.LLM != nil && llmCfg.Driver == "bifrost" && llmCfg.Provider != "" {
 		catalog, catalogErr := llmbifrost.NewProviderCatalogWithDeps(llmCfg, llm.Deps{
-			LiveKey: stack.LLMLiveKey,
+			LiveKey:       stack.LLMLiveKey,
+			ProviderRoute: opts.ProviderRoute,
 		})
 		if catalogErr != nil {
 			closeAll(ctx)
@@ -716,16 +753,6 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		}
 	}
 	agentResolver := NewAgentResolverAdapter(agentConfigRegistry, devAgentConfigID, WithBootLifecycleEnsurer(bootLifecycleEnsurer))
-	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
-		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
-		protocol.WithAgentResolver(agentResolver),
-		protocol.WithAgentReachAuthorizer(agentReach),
-		protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
-	)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("protocol: %w", err)
-	}
 
 	// ── v1.28 projection + admission + boot-baseline band ─────────────
 	// The HA-56 render-admission surface, HA-64 turns projection, HA-65
@@ -759,6 +786,20 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			closeAll(ctx)
 			return nil, fmt.Errorf("agent reach admission authority: %w", err)
 		}
+	}
+	// Construct the control surface only after the shared-sealer fallback has
+	// resolved. Otherwise a runtime without an OAuth provider would capture a
+	// nil admission authority here even though the same boot later wires the
+	// run-loop authority, making every route-bearing start unverifiable.
+	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
+		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
+		protocol.WithAgentResolver(agentResolver),
+		protocol.WithAgentReachAuthorizer(agentReach),
+		protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("protocol: %w", err)
 	}
 	// The publication store is mounted only when the same restart-stable
 	// admission authority that authenticates control.start is available. This
@@ -1148,6 +1189,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,
+		ProviderRouteRuntimeID:   opts.ProviderRoute.RuntimeID,
 		PublicationStore:         publicationStore,
 		PublicationRuntimeID:     publicationRuntimeID,
 		SessionOverlay:           sessionOverlayStore,
@@ -1256,6 +1298,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Validator:                      validator,
 		AuthSurface:                    authSurface,
 		AgentReach:                     agentReach,
+		ProviderRouteRuntimeID:         opts.ProviderRoute.RuntimeID,
 		PublicationStore:               publicationStore,
 		PublicationRuntimeID:           publicationRuntimeID,
 		DisplayName:                    opts.DisplayName,

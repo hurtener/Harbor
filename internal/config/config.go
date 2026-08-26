@@ -314,6 +314,19 @@ type LLMConfig struct {
 	// equivalent verifier behind the assembly seam instead of putting a URL
 	// on the grant wire.
 	ExternalGrant LLMExternalGrantConfig `yaml:"external_grant,omitempty"`
+	// ProviderRoute configures the optional grant-free external provider-route
+	// resolver. An empty block is fully latent and requires no environment.
+	ProviderRoute LLMProviderRouteConfig `yaml:"provider_route,omitempty"`
+}
+
+// LLMProviderRouteConfig is one boot-pinned authenticated resolver endpoint.
+// Provider endpoints and provider credentials never appear here or on the
+// public Protocol route selector.
+type LLMProviderRouteConfig struct {
+	ResolverURL  string        `yaml:"resolver_url,omitempty"`
+	AuthTokenEnv string        `yaml:"auth_token_env,omitempty"`
+	RuntimeID    string        `yaml:"runtime_id,omitempty"`
+	Timeout      time.Duration `yaml:"timeout,omitempty"`
 }
 
 // LLMExternalGrantConfig is the non-secret runtime posture for external

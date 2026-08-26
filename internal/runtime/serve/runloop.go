@@ -81,6 +81,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -254,6 +255,10 @@ type RunLoopDriverOptions struct {
 	// AgentReachAdmissions authenticates durable control.start reach receipts
 	// before any effective agent context can authorize signed credentials.
 	AgentReachAdmissions *tasks.AgentReachAdmissionAuthority
+	// ProviderRouteRuntimeID is the boot-derived runtime identity stamped into
+	// trusted external provider-route contexts. Empty is valid only while no
+	// task selects an external route.
+	ProviderRouteRuntimeID string
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -410,6 +415,7 @@ type RunLoopDriver struct {
 	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 	runSnapshots             *runsnapshot.Gate
 	agentReachAdmissions     *tasks.AgentReachAdmissionAuthority
+	providerRouteRuntimeID   string
 
 	// session-scoped safe-subset overlay store, read once at run start to
 	// compose the session user layer + narrow-only disables + personal skills
@@ -544,6 +550,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
 		runSnapshots:             opts.RunSnapshots,
 		agentReachAdmissions:     opts.AgentReachAdmissions,
+		providerRouteRuntimeID:   opts.ProviderRouteRuntimeID,
 		sessionOverlay:           opts.SessionOverlay,
 		bootPackReader:           opts.BootPackReader,
 		runCompletionHook:        opts.RunCompletionHook,
@@ -1237,6 +1244,38 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		taskCtx = admissionCtx
 		effectiveAgentID = admittedAgentID
 	}
+	var providerRoute *llm.ProviderRoute
+	if task.ProviderRoute != nil {
+		if !agentReachAdmitted {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "provider_route_unauthorized",
+				Message: "external provider route requires verified Agent reach",
+			}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist provider-route reach rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		if err := llm.ValidateProviderRoute(*task.ProviderRoute); err != nil || strings.TrimSpace(task.ProviderRoute.RouteID) == "" {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "provider_route_invalid",
+				Message: "external provider route is invalid",
+			}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist invalid provider-route rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		if strings.TrimSpace(d.providerRouteRuntimeID) == "" {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "provider_route_unavailable",
+				Message: "external provider route resolver is unavailable",
+			}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: failed to persist unavailable provider-route rejection", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		copyRoute := *task.ProviderRoute
+		providerRoute = &copyRoute
+	}
 	// A virtual child is admitted only through the verified reach receipt and
 	// only against the currently active, identity-scoped revision. Resolve the
 	// section once, freeze it, and validate every receipt pin before the run can
@@ -1346,20 +1385,23 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
-	if hasSkillSnapshot {
-		var runIdentityErr error
-		taskCtx, runIdentityErr = identity.WithRun(taskCtx, q.Identity, q.RunID)
-		if runIdentityErr != nil {
-			d.logger.ErrorContext(taskCtx, "RunLoopDriver: skill snapshot identity failed; failing run",
-				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", runIdentityErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "skills snapshot identity: " + runIdentityErr.Error()}); fErr != nil {
-				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)), slog.String("err", fErr.Error()))
-			}
-			return
+	// Every planner run needs its run-scoped quadruple in context. Route
+	// resolution uses the run ID to bind the resolver request, even when no
+	// skill snapshot was produced for this agent.
+	var runIdentityErr error
+	taskCtx, runIdentityErr = identity.WithRun(taskCtx, q.Identity, q.RunID)
+	if runIdentityErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run identity failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", runIdentityErr.Error()))
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "run identity: " + runIdentityErr.Error()}); fErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				slog.String("task_id", string(taskID)), slog.String("err", fErr.Error()))
 		}
+		return
+	}
+	if hasSkillSnapshot {
 		taskCtx = skills.WithRunSkillReaderSnapshot(taskCtx, skillSnapshot)
 	}
 
@@ -1886,7 +1928,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// silently nondeterministic across a cached TTL. A caller-named agent
 	// selects CONFIGURATION only — the two agent-id carriers on a run have
 	// different provenance and MUST NOT be unified by a tidying refactor.
-	runCtx := tools.WithInvokingAgent(admissionCtx, d.agentConfigID)
+	// Continue from taskCtx, not the pre-restoration admissionCtx: taskCtx now
+	// carries both the verified reach context and the run-scoped quadruple.
+	runCtx := tools.WithInvokingAgent(taskCtx, d.agentConfigID)
 	if frozenProfiles != nil {
 		runCtx = virtualagent.WithFrozenMap(runCtx, frozenProfiles)
 	}
@@ -1900,6 +1944,14 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// agent_id an isolation principal or changing the actor token contract.
 	if agentReachAdmitted {
 		runCtx = tools.WithEffectiveAgentConfig(runCtx, effectiveAgentID)
+	}
+	if providerRoute != nil {
+		runCtx = llm.WithTrustedProviderRoute(runCtx, llm.TrustedProviderRouteContext{
+			Route:            *providerRoute,
+			EffectiveAgentID: effectiveAgentID,
+			RuntimeID:        d.providerRouteRuntimeID,
+			TaskID:           string(taskID),
+		})
 	}
 	if hasSkillSnapshot {
 		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)

@@ -242,6 +242,17 @@ llm:
   #     max_batch: 64
   #     reconcile_interval: 5m
 
+  # Optional grant-free external provider routes. Leave absent for the normal
+  # runtime provider/model path: there is no environment lookup, resolver call,
+  # cache, timer, or worker. The resolver URL is boot-pinned and never accepted
+  # from Protocol. Harbor exposes a finite Bifrost chat-provider set when this
+  # seam is enabled; unsupported cloud credential bundles remain unavailable.
+  # provider_route:
+  #   resolver_url: https://coordinator.example.com/v1/provider-route
+  #   auth_token_env: HARBOR_PROVIDER_ROUTE_TOKEN
+  #   runtime_id: runtime-1
+  #   timeout: 10s
+
 # Runtime run-lifecycle hooks.
 #
 # The run-completion hook fires exactly once at the run loop's terminal

@@ -55,6 +55,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -397,6 +398,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		NotifyOnComplete:  req.NotifyOnComplete,
 		IdempotencyKey:    req.IdempotencyKey,
 		ExternalGrant:     append([]byte(nil), req.ExternalGrant...),
+		ProviderRoute:     cloneProviderRoute(req.ProviderRoute),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		InputArtifactIDs:  inputArtifactIDs,
@@ -556,6 +558,7 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 	}
 	cp := *t
 	cp.ExternalGrant = append([]byte(nil), t.ExternalGrant...)
+	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -733,6 +736,7 @@ func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 // in-place after Spawn).
 func copyTask(t *tasks.Task) *tasks.Task {
 	cp := *t
+	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1378,6 +1382,9 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if !bytes.Equal(existing.ExternalGrant, req.ExternalGrant) {
 		return false
 	}
+	if !providerRoutesEqual(existing.ProviderRoute, req.ProviderRoute) {
+		return false
+	}
 	// input artifact attachments are part of the
 	// task's content identity. Same key, different attachments → conflict.
 	if !stringSliceEqual(existing.InputArtifactIDs, req.InputArtifactIDs) {
@@ -1551,9 +1558,37 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 		h.Write([]byte{0x1F})
 		h.Write(req.ExternalGrant)
 	}
+	// The opaque route selector is also part of the task's content identity.
+	// A caller retrying one idempotency key with a different route or
+	// generation must never silently reuse the first task.
+	if req.ProviderRoute != nil {
+		h.Write([]byte{0x1F})
+		_, _ = fmt.Fprintf(h, "%s\x1e%d\x1e%s\x1e%d\x1e%d\x1e%s",
+			req.ProviderRoute.RouteID,
+			req.ProviderRoute.RouteGeneration,
+			req.ProviderRoute.ProviderConnectionID,
+			req.ProviderRoute.ProviderConnectionGeneration,
+			req.ProviderRoute.CredentialAssetGeneration,
+			req.ProviderRoute.ModelSelector)
+	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out
+}
+
+func cloneProviderRoute(route *llm.ProviderRoute) *llm.ProviderRoute {
+	if route == nil {
+		return nil
+	}
+	copyRoute := *route
+	return &copyRoute
+}
+
+func providerRoutesEqual(a, b *llm.ProviderRoute) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func taskIDPtrEqual(a, b *tasks.TaskID) bool {

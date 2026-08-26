@@ -125,6 +125,8 @@ type Options struct {
 	ExternalGrantPending   llmreceipts.PendingReceiptSource
 	ExternalGrantMaxBatch  int
 	ExternalGrantReconcile time.Duration
+	// ProviderRoute is an independent optional external route resolver.
+	ProviderRoute llm.ProviderRouteConfig
 
 	// PlannerOverride, when non-nil, replaces the registry-resolved
 	// planner concrete. Tests inject stub / scripted / pausing
@@ -632,6 +634,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			Bus:           bus,
 			LiveKey:       liveKey,
 			ExternalGrant: externalGrant,
+			ProviderRoute: opts.ProviderRoute,
 		})
 		if llmErr != nil {
 			return stack, fmt.Errorf("llm: %w", llmErr)

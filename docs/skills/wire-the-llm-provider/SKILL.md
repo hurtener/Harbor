@@ -10,6 +10,29 @@ metadata:
 
 # Wire the LLM provider
 
+## Optional external provider routes
+
+The normal setup below remains the default and needs no route resolver. A host
+that already authenticates callers and wants per-run provider selection may
+configure the optional `llm.provider_route` block with a boot-pinned resolver
+URL, runtime ID, and service-token environment-variable name. Protocol callers
+send only opaque route/connection IDs, immutable generations, a model selector,
+and an effective Agent within their signed reach. They never send a provider,
+endpoint, or credential. An explicit route fails when resolution fails; Harbor
+never falls back to the runtime key. The resolver may choose Harbor's finite
+Bifrost chat-provider set. Azure, vLLM, Ollama, SGLang, and OpenAI-compatible
+routes use their typed endpoint binding; generic endpoint or cloud credential
+objects are refused.
+
+```yaml
+llm:
+  provider_route:
+    resolver_url: https://coordinator.example.com/v1/provider-route
+    auth_token_env: HARBOR_PROVIDER_ROUTE_TOKEN
+    runtime_id: runtime-1
+    timeout: 10s
+```
+
 Bifrost is Harbor's LLM driver — one wire surface that speaks many providers. You don't change Go code to swap providers; you change the `llm:` block in `harbor.yaml`. This skill walks the four common postures + the dev-mock escape hatch + the `model_profiles` block the planner needs for context budgeting.
 
 ## 1. The four canonical postures
