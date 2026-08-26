@@ -8,6 +8,9 @@ import (
 )
 
 type Request = llm.ProviderRouteRequest
+
+// Purpose binds a resolver request to its trusted runtime use.
+type Purpose = llm.ProviderRoutePurpose
 type Response = llm.ResolvedProviderRoute
 type SelectedResponse = llm.SelectedProviderRoute
 type SelectedProviderRoute = llm.SelectedProviderRoute
@@ -15,6 +18,11 @@ type EndpointBinding = llm.ProviderEndpointBinding
 type EndpointKind = llm.ProviderEndpointKind
 
 const (
+	// PurposeRun is the admitted Bifrost execution purpose.
+	PurposeRun = llm.ProviderRoutePurposeRun
+	// PurposePosture is the admin provider validation purpose.
+	PurposePosture = llm.ProviderRoutePurposePosture
+
 	EndpointAzure            = llm.ProviderEndpointAzure
 	EndpointVLLM             = llm.ProviderEndpointVLLM
 	EndpointOllama           = llm.ProviderEndpointOllama

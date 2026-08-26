@@ -17,6 +17,7 @@ func TestPublicContractRoundTrip(t *testing.T) {
 		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 2, CredentialAssetGeneration: 3, ModelSelector: "fast",
+		Purpose: providerroute.PurposeRun,
 	}
 	body, err := providerroute.MarshalRequest(req)
 	if err != nil {
@@ -91,6 +92,7 @@ func TestPublicHandlerServesSelectionAndResolutionWithoutInternalImports(t *test
 		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 2, CredentialAssetGeneration: 3, ModelSelector: "fast",
+		Purpose: providerroute.PurposeRun,
 	}
 	selectionBody, err := providerroute.MarshalSelectionRequest(req)
 	if err != nil {
