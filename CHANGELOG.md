@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.6] — 2026-08-27
+
 ### Fixed
 
 - Optional MCP artifact-egress parameters now treat empty or whitespace-only
@@ -29,6 +31,18 @@ Two versions move independently in Harbor (RFC §5.3):
   through their owning server's App dispatch catalog. Exact app-only
   callbacks retain their planner exclusion and all existing admission and
   policy gates.
+
+### Release candidate evidence
+
+- D-445 and D-446 landed through PR #754 at exact current `origin/main`
+  `bd6e2428dad79df32d6d6140da5dc229395aa036` from reviewed PR head
+  `100acb86c4c09037ab7fe433dc04a5905a6059bb`. Hosted PR CI run
+  `33112088775` has all checks green except the full preflight gate, which
+  remained in progress at this release cut; documentation run `33112088783`
+  completed successfully. No successful post-merge CI/preflight result,
+  v1.30.6 tag, release assets, module provenance, checksums, attestations,
+  post-tag cleanup, downstream/runtime deployment, or downstream acceptance
+  is claimed.
 
 ## [1.30.5] — 2026-08-26
 
@@ -5157,7 +5171,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.5...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.6...HEAD
+[1.30.6]: https://github.com/hurtener/Harbor/compare/v1.30.5...v1.30.6
 [1.30.5]: https://github.com/hurtener/Harbor/compare/v1.30.4...v1.30.5
 [1.30.4]: https://github.com/hurtener/Harbor/compare/v1.30.3...v1.30.4
 [1.30.3]: https://github.com/hurtener/Harbor/compare/v1.30.2...v1.30.3
