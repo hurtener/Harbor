@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Optional MCP artifact-egress parameters now treat empty or whitespace-only
+  strings as omitted values. This accommodates schema adapters that materialize
+  an omitted optional string as `""`; required mappings and non-empty optional
+  values retain their existing strict validation and resolver behavior.
+
 ## [1.30.5] — 2026-08-26
 
 ### Added

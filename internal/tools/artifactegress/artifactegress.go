@@ -145,10 +145,13 @@ var ErrMappedArgumentMissing = errors.New("artifactegress: mapped artifact param
 // argument rather than a value to coerce.
 var ErrMappedArgumentNotString = errors.New("artifactegress: mapped artifact parameter is not a string artifact id")
 
-// ErrEmptyArtifactID is returned when a mapped parameter carries an
-// empty artifact id. An omitted parameter and an explicitly empty one
-// are different facts and both are refused, with different causes so an
-// operator can tell them apart.
+// ErrEmptyArtifactID is returned when a required mapped parameter carries
+// an empty artifact id. An omitted parameter and an explicitly empty one
+// are different facts for required mappings and both are refused, with
+// different causes so an operator can tell them apart. Optional mappings
+// treat an empty or whitespace-only string as an omitted value because MCP
+// schema adapters may materialize an omitted optional string property as
+// an empty string.
 var ErrEmptyArtifactID = errors.New("artifactegress: mapped artifact parameter carries an empty artifact id")
 
 // ErrInvalidMapping is returned by [CompileMapping] for a mapping that
@@ -369,9 +372,11 @@ func (m Mapping) IsEmpty() bool { return len(m.byTool) == 0 }
 // ctx, and writes the resulting [Payload] back into args IN PLACE at
 // the same key. It returns one [Record] per substitution for the caller
 // to emit and to stamp on the observation. A parameter compiled from a
-// trailing `?` marker is optional: a missing key or nil value is skipped,
-// while a present value follows the same validation and resolution path as
-// a required parameter.
+// trailing `?` marker is optional: a missing key, nil value, or empty /
+// whitespace-only string is skipped, while a non-empty value follows the
+// same validation and resolution path as a required parameter. The
+// empty-string rule is important because MCP/schema adapters may materialize
+// an omitted optional string property as `""`.
 //
 // args MUST be the DECODED argument map, never the raw argument JSON.
 // The raw JSON is what the trajectory persists, what the observation
@@ -389,7 +394,7 @@ func (m Mapping) IsEmpty() bool { return len(m.byTool) == 0 }
 //     ([ErrMappedArgumentMissing]);
 //   - a mapped parameter supplied as something other than a string
 //     ([ErrMappedArgumentNotString]);
-//   - an empty artifact id ([ErrEmptyArtifactID]);
+//   - an empty artifact id on a required mapping ([ErrEmptyArtifactID]);
 //   - a resolver error, wrapped with the id that produced it — including
 //     the not-found a cross-identity id produces;
 //   - a resolved value above maxBytes ([ErrEgressTooLarge]), naming the
@@ -420,15 +425,18 @@ func Encode(ctx context.Context, args map[string]any, m Mapping, tool string, ma
 			}
 			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrMappedArgumentMissing, tool, param.name)
 		}
+		id, isString := raw.(string)
+		if isString && strings.TrimSpace(id) == "" {
+			if param.optional {
+				continue
+			}
+			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrEmptyArtifactID, tool, param.name)
+		}
 		if maxBytes <= 0 {
 			return nil, fmt.Errorf("%w: tool %q got %d", ErrInvalidCeiling, tool, maxBytes)
 		}
-		id, isString := raw.(string)
 		if !isString {
 			return nil, fmt.Errorf("%w: tool %q parameter %q is %T", ErrMappedArgumentNotString, tool, param.name, raw)
-		}
-		if strings.TrimSpace(id) == "" {
-			return nil, fmt.Errorf("%w: tool %q parameter %q", ErrEmptyArtifactID, tool, param.name)
 		}
 		if !resolverSeated {
 			var ok bool

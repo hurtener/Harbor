@@ -14676,3 +14676,35 @@ CI run `32974645903` remained in progress at this release cut with no failed
 job. No successful post-merge full CI/preflight result, v1.30.5 tag, release,
 assets, module provenance, checksums, attestations, post-tag cleanup,
 downstream/runtime deployment, or downstream acceptance is claimed.
+
+---
+
+## D-445 — Optional MCP artifact-egress empty strings are absence at dispatch
+
+**Date:** 2026-08-27
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The optional artifact-egress marker from D-429 remains a local mapping
+contract. In addition to a missing key or JSON `null`, an optional mapped
+parameter whose decoded value is an empty or whitespace-only string is treated
+as absent and is left untouched. This accommodates MCP/schema adapters that
+materialize an omitted optional string property as `""`; treating that adapter
+representation as a missing artifact id would reject legitimate text-only
+calls before the remote tool could run.
+
+Required mapped parameters retain the existing empty-id refusal. A present
+non-empty optional value still must be a string artifact id, resolve through the
+dispatching run's identity-scoped resolver, fit the byte ceiling, and produce
+the existing content-free substitution record before the wire call. Non-string
+values remain refusals. Empty/whitespace optional values do not require a
+resolver and do not consume the egress ceiling because no substitution occurs.
+
+This is a dispatch semantic clarification for the existing config mapping,
+not a new Protocol method, wire shape, transport capability, or artifact-store
+policy. The unit and real MCP-driver tests cover empty and whitespace values,
+resolver-less text-only calls, unchanged arguments, no substitution records,
+and preservation of required/strict paths.
+
+**Cross-references:** D-429, D-022, D-347, RFC §6.10, §7.

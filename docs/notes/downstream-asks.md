@@ -1277,10 +1277,12 @@ a placeholder or weakening the supplied-reference validation path.
 
 **Required shape.** One trailing `?` marks a mapping parameter optional at the
 shared compiler boundary. The compiler strips it before remote schema checks
-and `ParamsFor`, so a server sees the bare property name. Missing or JSON
-`null` optional values skip substitution; present values still require a
-string, a non-empty id, and successful identity-scoped resolution with the
-existing digest/encoding/ceiling behavior. Required mappings remain unchanged.
+and `ParamsFor`, so a server sees the bare property name. Missing, JSON
+`null`, or empty / whitespace-only string optional values skip substitution;
+non-empty values still require a string, a non-empty id, and successful
+identity-scoped resolution with the existing digest/encoding/ceiling behavior.
+Required mappings remain unchanged. The empty-string rule accommodates
+adapters that materialize omitted optional string properties as `""`.
 
 **Evidence and guardrails.** Unit and MCP adapter tests cover marker parsing,
 duplicate rejection, missing/null skip, present-value refusal/success, and

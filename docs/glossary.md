@@ -2110,8 +2110,9 @@ all use it. D-427.
 **Optional artifact-egress parameter** — a mapping parameter written with one
 trailing `?` at the shared `artifactegress.CompileMapping` boundary. The marker
 is removed from the remote schema and `ParamsFor` projections; absent or
-`null` values skip substitution, while supplied values retain the existing
-type, non-empty-id, resolver, digest, and byte-ceiling checks. D-429.
+`null`, or empty / whitespace-only string values skip substitution, while
+non-empty supplied values retain the existing type, non-empty-id, resolver,
+digest, and byte-ceiling checks. D-429, D-445.
 
 **Organization skill publication** — a tenant-owned, immutable,
 content-addressed skill revision made available to callers through signed

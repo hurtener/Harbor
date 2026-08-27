@@ -1602,9 +1602,11 @@ A window is a *contract*, not a cost claim. The `Store` read above returns whole
 **Optional MCP artifact-egress parameters (HA-67, settled by D-429).** The
 existing flat artifact-egress mapping accepts one trailing `?` marker on a
 parameter name. The shared compiler strips it before schema validation and
-`ParamsFor`, preserving the bare remote property name. Missing or `null`
-optional values omit substitution without requiring a resolver; a supplied
-value follows the existing strict type, non-empty-id, identity-scoped
+`ParamsFor`, preserving the bare remote property name. Missing, `null`, or
+empty / whitespace-only string optional values omit substitution without
+requiring a resolver. The empty-string rule accommodates MCP/schema adapters
+that materialize an omitted optional string property as `""`; a non-empty
+supplied value follows the existing strict type, non-empty-id, identity-scoped
 resolution, digest, encoding, and byte-ceiling checks. Required parameters are
 unchanged. The marker is a local config/mapping concern, not a new Protocol
 shape or a remote capability, and resolved bytes remain dispatch-local.
