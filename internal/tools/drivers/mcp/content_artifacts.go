@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/artifactcontent"
 )
 
@@ -14,7 +16,16 @@ import (
 // carried only as ArtifactScope.TaskID provenance. This helper is called
 // before planner observation or MCP App context capture, so neither path can
 // retain raw ImageContent, AudioContent, or embedded-resource bytes.
-func (p *Provider) materializeValue(ctx context.Context, value MCPToolValue, producer string) (MCPToolValue, error) {
+func (p *Provider) materializeValue(ctx context.Context, value MCPToolValue, producer string) (out MCPToolValue, err error) {
+	// A remote call can have completed before this local conversion fails.
+	// Mark every provider-side materialization error terminal so the enclosing
+	// reliability shell never reissues a stateful MCP operation to recover a
+	// local ArtifactStore/projection problem.
+	defer func() {
+		if err != nil && !errors.Is(err, tools.ErrToolResultMaterialization) {
+			err = fmt.Errorf("%w: %w", tools.ErrToolResultMaterialization, err)
+		}
+	}()
 	id, ok := identity.From(ctx)
 	if !ok {
 		return MCPToolValue{}, fmt.Errorf("mcp: materialize binary content: %w", identity.ErrIdentityMissing)
@@ -31,7 +42,7 @@ func (p *Provider) materializeValue(ctx context.Context, value MCPToolValue, pro
 	if err != nil {
 		return MCPToolValue{}, fmt.Errorf("mcp: materialize binary content: %w", err)
 	}
-	out, ok := projected.(MCPToolValue)
+	out, ok = projected.(MCPToolValue)
 	if !ok {
 		return MCPToolValue{}, fmt.Errorf("mcp: materialize binary content returned %T, want MCPToolValue", projected)
 	}

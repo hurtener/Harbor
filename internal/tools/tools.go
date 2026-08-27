@@ -533,6 +533,12 @@ var (
 	// exhausted; the wrapped cause carries the last attempt's
 	// failure.
 	ErrToolPolicyExhausted = errors.New("tools: policy retries exhausted")
+	// ErrToolResultMaterialization marks a failure while converting
+	// protocol-native binary result content into ArtifactStore references.
+	// It is terminal for the reliability shell: retrying a completed remote
+	// tool call can duplicate its side effects, while the local storage or
+	// projection failure cannot be repaired by issuing that call again.
+	ErrToolResultMaterialization = errors.New("tools: tool result materialization failed")
 	// ErrToolDuplicateName — Register called with a Name already
 	// in the catalog.
 	ErrToolDuplicateName = errors.New("tools: duplicate tool name")

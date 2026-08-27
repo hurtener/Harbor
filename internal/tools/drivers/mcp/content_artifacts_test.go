@@ -16,6 +16,7 @@ import (
 	artinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/artifactcontent"
 )
 
@@ -168,6 +169,57 @@ func sourceContentIndex(ref artifacts.ArtifactRef) int {
 	return -1
 }
 
+// TestMCPTypedContent_CanonicalizesMIMEParametersWithoutNamespaceSplit keeps
+// the stored MIME metadata useful to consumers while proving that equivalent
+// declarations still share one base-media-type namespace and content ref.
+func TestMCPTypedContent_CanonicalizesMIMEParametersWithoutNamespaceSplit(t *testing.T) {
+	t.Parallel()
+	store := newContentArtifactStore(t)
+	scope := contentArtifactScope()
+	data := []byte{1, 2, 3}
+
+	first, err := artifactcontent.Materialize(context.Background(), store, scope, MCPToolValue{
+		Parts: []ContentPart{{Kind: ContentKindImage, Image: &ImageRef{
+			Data: data, MIMEType: " IMAGE/PNG ; Charset=UTF-8 ",
+		}}},
+	}, "mcp")
+	if err != nil {
+		t.Fatalf("first Materialize: %v", err)
+	}
+	firstValue := first.(MCPToolValue)
+	firstRef := firstValue.Parts[0].Image.Artifact
+	if firstRef == nil {
+		t.Fatal("first projection did not contain an artifact ref")
+	}
+	if firstRef.MIMEType != "image/png; charset=UTF-8" {
+		t.Fatalf("canonical MIME = %q, want image/png; charset=UTF-8", firstRef.MIMEType)
+	}
+
+	second, err := artifactcontent.Materialize(context.Background(), store, scope, MCPToolValue{
+		Parts: []ContentPart{{Kind: ContentKindImage, Image: &ImageRef{
+			Data: data, MIMEType: "image/png",
+		}}},
+	}, "mcp")
+	if err != nil {
+		t.Fatalf("second Materialize: %v", err)
+	}
+	secondValue := second.(MCPToolValue)
+	secondRef := secondValue.Parts[0].Image.Artifact
+	if secondRef == nil {
+		t.Fatal("second projection did not contain an artifact ref")
+	}
+	if firstRef.ID != secondRef.ID {
+		t.Fatalf("MIME parameter variant split content namespace: first ID %q, second ID %q", firstRef.ID, secondRef.ID)
+	}
+	refs, err := store.List(context.Background(), scope.Triple())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("canonical MIME variants created %d refs, want one", len(refs))
+	}
+}
+
 type failingContentStore struct {
 	artifacts.ArtifactStore
 	err error
@@ -311,5 +363,87 @@ func TestMCPMaterializeValue_UsesIdentityAndRunScope(t *testing.T) {
 	}
 	if refs[0].Scope.TaskID != "run" {
 		t.Errorf("TaskID provenance = %q, want run", refs[0].Scope.TaskID)
+	}
+}
+
+// TestProvider_TypedContentMaterializationFailureIsPermanent proves a
+// successful remote CallTool is not reissued when local artifact storage
+// fails. The returned ToolResult is empty so no raw binary reaches the caller.
+func TestProvider_TypedContentMaterializationFailureIsPermanent(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus(t)
+	m := newMockServer()
+	mcpsdk.AddTool(m.server, &mcpsdk.Tool{
+		Name: "binary_materialization_failure",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
+	}, func(context.Context, *mcpsdk.CallToolRequest, any) (*mcpsdk.CallToolResult, any, error) {
+		m.alwaysFailCount.Add(1)
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{
+			&mcpsdk.ImageContent{Data: []byte("secret"), MIMEType: "image/png"},
+		}}, nil, nil
+	})
+	base := newContentArtifactStore(t)
+	forced := errors.New("forced materialization failure")
+	p, err := New(Config{
+		Name:            "materialize-retry",
+		URL:             "http://example.invalid",
+		TransportMode:   TransportAuto,
+		Bus:             bus,
+		DefaultIdentity: defaultIdentity(),
+		ArtifactStore:   failingContentStore{ArtifactStore: base, err: forced},
+		// Zero-valued policy deliberately exercises the production defaults:
+		// transport/result failures are normally retryable, but materialization
+		// is terminal because the remote call has already completed.
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cleanup := pairProvider(t, m, p)
+	defer func() {
+		_ = p.Close(context.Background())
+		cleanup()
+	}()
+
+	descs, err := p.Discover(mustIdentity(t))
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	d := findByName(descs, "materialize-retry_binary_materialization_failure")
+	if d == nil {
+		t.Fatalf("missing binary test tool; got %s", names(descs))
+	}
+	result, err := d.Invoke(mustIdentity(t), []byte(`{}`))
+	if err == nil {
+		t.Fatal("Invoke unexpectedly succeeded despite ArtifactStore failure")
+	}
+	if !errors.Is(err, forced) {
+		t.Fatalf("Invoke error = %v, want underlying storage failure", err)
+	}
+	if !errors.Is(err, tools.ErrToolResultMaterialization) {
+		t.Fatalf("Invoke error = %v, want materialization marker", err)
+	}
+	var policyErr *tools.PolicyError
+	if !errors.As(err, &policyErr) {
+		t.Fatalf("Invoke error = %T %v, want PolicyError", err, err)
+	}
+	if policyErr.Class != tools.ErrClassPermanent {
+		t.Fatalf("policy class = %q, want permanent", policyErr.Class)
+	}
+	if got := m.alwaysFailCount.Load(); got != 1 {
+		t.Fatalf("remote CallTool attempts = %d, want exactly one", got)
+	}
+	if result.Value != nil || result.Meta != nil {
+		t.Fatalf("failed result carried planner-visible value: %#v", result)
+	}
+	encoded, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		t.Fatalf("marshal failed result: %v", marshalErr)
+	}
+	if strings.Contains(string(encoded), "secret") {
+		t.Fatalf("failed result leaked raw binary content: %s", encoded)
 	}
 }

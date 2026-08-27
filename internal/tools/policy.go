@@ -540,6 +540,8 @@ func nextBackoff(attempt int, base, max time.Duration, mult float64, rand func()
 //     ctx died → ErrClassPermanent (caller-driven).
 //   - context.Canceled: ErrClassPermanent.
 //   - ErrToolInvalidArgs / ErrToolNotFound wrapped: ErrClassPermanent.
+//   - ErrToolResultMaterialization wrapped: ErrClassPermanent (a remote call
+//     may already have completed before local artifact projection failed).
 //   - HTTP-status-shaped error strings ("status 5xx", "500", "503"):
 //     ErrClass5xx.
 //   - "timeout" / "deadline exceeded" / "context canceled" string
@@ -549,6 +551,14 @@ func nextBackoff(attempt int, base, max time.Duration, mult float64, rand func()
 func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 	if err == nil {
 		return ErrClassPermanent // not used; defensive.
+	}
+	// A remote tool invocation may already have completed successfully when
+	// local result materialization fails. Retrying that invocation can repeat
+	// stateful work and App/result events, so this marker must take precedence
+	// over context and message heuristics (including a per-attempt timeout
+	// observed while writing the local artifact).
+	if errors.Is(err, ErrToolResultMaterialization) {
+		return ErrClassPermanent
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		if perAttemptTimeout {

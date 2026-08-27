@@ -68,7 +68,16 @@ var (
 // fallback. ArtifactStore has no transaction/rollback contract; if a later
 // part fails, earlier content-addressed writes may remain in the session
 // manifest. They are identity-scoped and deduplicated on retry.
-func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artifacts.ArtifactScope, value any, provenance string) (any, error) {
+func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artifacts.ArtifactScope, value any, provenance string) (projected any, err error) {
+	// Preserve the underlying sentinel (store, cancellation, validation, or
+	// projection) while marking every materialization failure terminal for the
+	// reliability shell. A remote tool call can have completed before this
+	// local phase fails; reissuing it is not a safe recovery strategy.
+	defer func() {
+		if err != nil && !errors.Is(err, tools.ErrToolResultMaterialization) {
+			err = fmt.Errorf("%w: %w", tools.ErrToolResultMaterialization, err)
+		}
+	}()
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: nil context", ErrInvalidResult)
 	}
@@ -89,6 +98,7 @@ func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artif
 
 	var total int64
 	mimeTypes := make([]string, len(parts))
+	mimeBases := make([]string, len(parts))
 	filenames := make([]string, len(parts))
 	for i, part := range parts {
 		if err := ctx.Err(); err != nil {
@@ -104,11 +114,12 @@ func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artif
 		if size > DefaultMaxBytesPerResult-total {
 			return nil, fmt.Errorf("%w: result exceeds %d bytes at part %d", ErrTooLarge, DefaultMaxBytesPerResult, i)
 		}
-		mimeType, err := normalizeMIME(part.MIMEType)
+		mimeType, mimeBase, err := normalizeMIME(part.MIMEType)
 		if err != nil {
 			return nil, fmt.Errorf("artifact content: part %d MIME type: %w", i, err)
 		}
 		mimeTypes[i] = mimeType
+		mimeBases[i] = mimeBase
 		filenames[i] = safeFilename(i, mimeType, part.Filename)
 		total += size
 	}
@@ -143,13 +154,13 @@ func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artif
 		ref, err := store.PutBytes(ctx, scope, part.Data, artifacts.PutOpts{
 			MimeType:  mimeType,
 			Filename:  filename,
-			Namespace: namespaceForMIME(mimeType),
+			Namespace: namespaceForMIME(mimeBases[i]),
 			Source:    source,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("artifact content: store part %d: %w", i, err)
 		}
-		if err := validateRef(ref, scope, mimeType, filename, part.Data); err != nil {
+		if err := validateRef(ref, scope, mimeType, mimeBases[i], filename, part.Data); err != nil {
 			return nil, fmt.Errorf("artifact content: store part %d returned invalid ref: %w", i, err)
 		}
 		refs[i] = tools.ArtifactContentRef{
@@ -165,28 +176,39 @@ func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artif
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("artifact content: before projection: %w", err)
 	}
-	projected, err := result.WithArtifactContentRefs(refs)
+	projectedResult, err := result.WithArtifactContentRefs(refs)
 	if err != nil {
 		return nil, fmt.Errorf("%w: driver projection: %w", ErrInvalidResult, err)
 	}
-	if projected == nil {
+	if projectedResult == nil {
 		return nil, fmt.Errorf("%w: driver returned nil projection", ErrInvalidResult)
 	}
-	if remaining := projected.ArtifactContentParts(); len(remaining) != 0 {
+	if remaining := projectedResult.ArtifactContentParts(); len(remaining) != 0 {
 		return nil, fmt.Errorf("%w: %d binary candidate(s) remain after projection", ErrInvalidResult, len(remaining))
 	}
+	projected = projectedResult
 	return projected, nil
 }
 
-func normalizeMIME(raw string) (string, error) {
+func normalizeMIME(raw string) (canonical, base string, err error) {
 	mimeType := strings.TrimSpace(raw)
 	if mimeType == "" {
-		return "application/octet-stream", nil
+		return "application/octet-stream", "application/octet-stream", nil
 	}
-	if _, _, err := mime.ParseMediaType(mimeType); err != nil {
-		return "", fmt.Errorf("%q is not a valid media type: %w", mimeType, err)
+	base, params, err := mime.ParseMediaType(mimeType)
+	if err != nil {
+		return "", "", fmt.Errorf("%q is not a valid media type: %w", mimeType, err)
 	}
-	return mimeType, nil
+	canonical = mime.FormatMediaType(base, params)
+	if canonical == "" {
+		return "", "", fmt.Errorf("%q cannot be represented as a canonical media type", mimeType)
+	}
+	// Artifact routing and content-addressed namespaces use the canonical base
+	// media type. Parameters are retained in the ref's MIME metadata because a
+	// consumer may need charset/profile semantics, while the namespace ignores
+	// them so harmless parameter/casing variants do not split one binary kind
+	// across distinct content-addressed buckets.
+	return canonical, base, nil
 }
 
 func safeFilename(index int, mimeType, requested string) string {
@@ -258,15 +280,19 @@ func namespaceForMIME(mimeType string) string {
 	return "artifact.content." + hex.EncodeToString(digest[:4])
 }
 
-func validateRef(ref artifacts.ArtifactRef, scope artifacts.ArtifactScope, mimeType, filename string, data []byte) error {
+func validateRef(ref artifacts.ArtifactRef, scope artifacts.ArtifactScope, mimeType, mimeBase, filename string, data []byte) error {
 	if ref.ID == "" {
 		return errors.New("empty id")
 	}
 	if !ref.Scope.EqualTriple(scope) {
 		return fmt.Errorf("scope %q/%q/%q, want %q/%q/%q", ref.Scope.TenantID, ref.Scope.UserID, ref.Scope.SessionID, scope.TenantID, scope.UserID, scope.SessionID)
 	}
-	if ref.MimeType != mimeType {
-		return fmt.Errorf("MIME type %q, want %q", ref.MimeType, mimeType)
+	_, refBase, err := normalizeMIME(ref.MimeType)
+	if err != nil {
+		return fmt.Errorf("MIME type %q is invalid: %w", ref.MimeType, err)
+	}
+	if refBase != mimeBase {
+		return fmt.Errorf("MIME base type %q, want %q (canonical request %q)", refBase, mimeBase, mimeType)
 	}
 	size := int64(len(data))
 	if ref.SizeBytes != size {
