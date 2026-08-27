@@ -1113,6 +1113,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			Closers:          &stack.closers,
 			HostDisplayModes: hostDisplayModes,
 			ToolContext:      toolCtxStore,
+			ArtifactStore:    stack.Artifacts,
 			// per-identity southbound OAuth binding resolution
 			// (`oauth_provider` names a declared provider; fail loud on an
 			// unknown name). The runtime provider SET takes precedence so a

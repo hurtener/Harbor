@@ -1589,6 +1589,24 @@ type Store interface {
 
 **Heavy-output threshold — Settled at 32 KB default, runtime-configurable, per-tool overridable.** (Resolves brief 05 Q-1.)
 
+**Protocol-native binary tool content (Settled — D-447).** A tool result that
+contains a standard typed binary content block is materialized into the
+identity-scoped `ArtifactStore` regardless of the heavy-output threshold.
+Each binary block becomes its own content-addressed artifact with bounded
+size, canonical MIME metadata, a safe filename, full hash, producer
+provenance, and deterministic content index. The tool result returned to the
+dispatcher, trajectory, LLM projection, and MCP App tool-context capture
+contains only the corresponding artifact metadata/ref; text, structured
+content, and `ResourceLink` metadata remain intact, and `ResourceLink` is
+never fetched automatically. Missing identity/store, empty or oversized
+content, cancellation, and storage/projection failures are loud and never
+fall back to raw bytes or a truncated JSON value. The materialization seam is
+transport-neutral so MCP and future protocol adapters implement the same
+contract; the dispatcher does not branch on a server or driver name. The
+`ArtifactStore` interface is not transactional, so a later multi-part write
+failure may leave earlier identity-scoped, content-addressed artifacts in the
+session manifest; retries deduplicate them.
+
 **The read side — by reference, by window, and by routing (Settled — D-347).** Offload is only half the contract. An agent that receives an `ArtifactStub` must be able to act on it without pulling the bytes back through the model, and the read side is settled in four parts.
 
 **Discovery is metadata-only, and the read key is the isolation triple.** `ArtifactScope` carries `(TenantID, UserID, SessionID, TaskID)`, and the fourth field is a **provenance annotation, not an isolation principal** — the boundary is and stays `(tenant, user, session)`, exactly as `ArtifactScope.Validate` already declares by requiring the three and accepting an empty `TaskID`. A task runs *within* the tuple and does not widen it, the same reading §6.16 gives `agent_id`. Two consequences: reads (`Get` / `GetRef` / `Exists` / `Delete`) resolve on `(tenant, user, session, id)`, so discovery and read agree by construction and an enumerable ref is a fetchable one; and `List` keeps `TaskID` as a *filter* — where an empty field stays a wildcard — because a predicate over a result set and an identity are different things. `List` carries the same mandatory-identity precondition as every sibling method; a wildcard tenant is reached only through the audited elevation verb (§4, §5.4), never by omission. Because IDs are content-addressed, narrowing the read key cannot merge distinct content — it can only stop an artifact from being hidden from itself.

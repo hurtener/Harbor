@@ -900,6 +900,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			}
 			att := serve.NewMCPConnectionAttacher(stack.Catalog, stack.MCPRegistry, bus, opts.Logger,
 				resolveDevIdentity(opts), stack.OAuthProviders, stack.OAuthProviderSet, mcpToolCtx,
+				serve.WithArtifactStore(stack.Artifacts),
 				// The same CURRENT-boot-policy gates production threads: the
 				// fail-closed stdio allowlist and the credential-injection opt-in,
 				// re-applied at every run-start re-attach.

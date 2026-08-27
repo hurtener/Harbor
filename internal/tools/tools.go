@@ -249,6 +249,66 @@ type ToolResult struct {
 	Meta  map[string]any
 }
 
+// ArtifactContentPart is one binary content candidate returned by a tool.
+//
+// Drivers use this transport-neutral seam for protocol-native binary
+// content (for example, MCP ImageContent, AudioContent, or an embedded
+// resource blob). The bytes are available only while the artifact
+// materializer writes the result into ArtifactStore; a planner-facing
+// projection must contain ArtifactContentRef values instead.
+//
+// Concurrent reuse: this is a value type. A driver must not retain or mutate
+// the Data slice after returning it from ArtifactContentParts.
+type ArtifactContentPart struct {
+	// Kind is the producer's stable content discriminator (for example,
+	// "image", "audio", or "embedded"). It is metadata only and is never
+	// used to select a storage driver.
+	Kind string
+	// MIMEType is the declared media type. An empty value is stored as
+	// application/octet-stream because that is the only truthful fallback.
+	MIMEType string
+	// Filename is optional producer metadata. The materializer sanitizes it
+	// before storing it and falls back to a deterministic name when it is
+	// absent or unusable. It is never used to construct a storage path.
+	Filename string
+	// SourceURI is optional producer metadata (for example, an embedded
+	// resource URI). It is recorded in ArtifactRef.Source only; the
+	// materializer never dereferences it.
+	SourceURI string
+	// Data is the binary payload to persist. It never belongs in a
+	// ToolResult observation or planner prompt.
+	Data []byte
+}
+
+// ArtifactContentRef is the metadata-only replacement for one
+// ArtifactContentPart after ArtifactStore materialization. It intentionally
+// mirrors the content-addressed ArtifactRef fields the model needs to choose
+// a prior artifact without exposing bytes.
+type ArtifactContentRef struct {
+	ID           string `json:"id"`
+	MIMEType     string `json:"mime_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Filename     string `json:"filename"`
+	SHA256       string `json:"sha256"`
+	Provenance   string `json:"provenance"`
+	ContentIndex int    `json:"content_index"`
+}
+
+// ArtifactContentResult is implemented by a ToolResult.Value that contains
+// protocol-native binary content. The dispatcher calls ArtifactContentParts
+// before recording either the raw trajectory observation or the LLM-facing
+// projection, stores every returned part under the run's identity scope, and
+// calls WithArtifactContentRefs to obtain the safe replacement value.
+//
+// WithArtifactContentRefs MUST return an equivalent value with every binary
+// candidate replaced by its corresponding ref and no raw bytes remaining.
+// Returning an error for a mismatched ref count or malformed value is the
+// fail-closed behavior; silently dropping a content part is not permitted.
+type ArtifactContentResult interface {
+	ArtifactContentParts() []ArtifactContentPart
+	WithArtifactContentRefs([]ArtifactContentRef) (ArtifactContentResult, error)
+}
+
 // ToolDescriptor is the callable binding produced by a driver.
 // The planner sees Tool; the dispatcher uses ToolDescriptor.
 //

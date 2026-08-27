@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -73,6 +74,16 @@ const (
 // unchanged — a caller that threads no options gets the fail-closed defaults
 // (empty stdio allowlist, injection opt-in off).
 type MCPAttacherOption func(*MCPConnectionAttacher)
+
+// WithArtifactStore threads the runtime's identity-scoped ArtifactStore into
+// every runtime-added and run-start-reattached MCP provider. Typed binary MCP
+// content is persisted before planner/App exposure; nil remains a valid
+// degraded embedder input and makes a binary result fail closed.
+func WithArtifactStore(store artifacts.ArtifactStore) MCPAttacherOption {
+	return func(a *MCPConnectionAttacher) {
+		a.artifactStore = store
+	}
+}
 
 // WithReattachGates threads the CURRENT boot policy the run-start re-attach leg
 // re-applies: the stdio command allowlist and the effective per-user
@@ -155,6 +166,9 @@ type MCPConnectionAttacher struct {
 	// not set it still gets a real ceiling rather than an unbounded one.
 	// Set once at construction.
 	artifactEgressMaxBytes int
+	// artifactStore is the runtime's identity-scoped store used by MCP typed
+	// content materialization. Set once and carried through both attach doors.
+	artifactStore artifacts.ArtifactStore
 	// stdioAllowlist is the CURRENT boot stdio-command allowlist the run-start
 	// re-attach re-applies (the same fail-closed RCE gate the admin add door
 	// applies before it dials). Nil / empty refuses every stdio re-attach. Set
@@ -399,6 +413,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		// a runtime-added server renders with its real data instead of an
 		// empty shell.
 		ToolContext:           a.toolContext,
+		ArtifactStore:         a.artifactStore,
 		Owner:                 owner,
 		DescriptorFingerprint: descriptorFingerprint,
 		// The deployment's egress ceiling. Zero leaves mcpdrv.Attach on

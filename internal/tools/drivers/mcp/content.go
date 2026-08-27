@@ -24,14 +24,30 @@ import (
 
 // ImageRef is the lowered form of an MCP ImageContent.
 type ImageRef struct {
-	Data     []byte
-	MIMEType string
+	// Data is transient driver state. It is consumed by the generic
+	// artifact-content materializer and is deliberately excluded from every
+	// JSON projection so a missed planner edge cannot base64-encode bytes.
+	Data     []byte `json:"-"`
+	MIMEType string `json:"mime_type"`
+	// Filename and SourceURI are transient producer metadata. The generic
+	// materializer sanitizes/records them with the artifact and the
+	// planner-facing value exposes only the resulting safe ref.
+	Filename  string `json:"-"`
+	SourceURI string `json:"-"`
+	// Artifact is the metadata-only replacement populated after the bytes
+	// are stored in Harbor's identity-scoped ArtifactStore.
+	Artifact *tools.ArtifactContentRef `json:"artifact,omitempty"`
 }
 
 // AudioRef is the lowered form of an MCP AudioContent.
 type AudioRef struct {
-	Data     []byte
-	MIMEType string
+	// Data is transient driver state; see ImageRef.Data.
+	Data      []byte `json:"-"`
+	MIMEType  string `json:"mime_type"`
+	Filename  string `json:"-"`
+	SourceURI string `json:"-"`
+	// Artifact is the metadata-only replacement populated after storage.
+	Artifact *tools.ArtifactContentRef `json:"artifact,omitempty"`
 }
 
 // LinkRef is the lowered form of an MCP ResourceLink (a pointer to
@@ -48,10 +64,15 @@ type LinkRef struct {
 // EmbeddedRef is the lowered form of an MCP EmbeddedResource (a
 // resource embedded directly in the tool call result).
 type EmbeddedRef struct {
-	URI      string
-	MIMEType string
-	Text     string
-	Blob     []byte
+	URI      string `json:"uri,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Filename string `json:"-"`
+	// Blob is transient driver state; it is deliberately excluded from JSON
+	// so a raw embedded resource can never reach a planner observation.
+	Blob []byte `json:"-"`
+	// Artifact is the metadata-only replacement populated after storage.
+	Artifact *tools.ArtifactContentRef `json:"artifact,omitempty"`
 }
 
 // MCPToolValue is the typed shape returned from `Invoke` when the
@@ -440,6 +461,146 @@ const (
 	ContentKindEmbedded ContentKind = "embedded"
 )
 
+// ArtifactContentParts implements tools.ArtifactContentResult. It exposes
+// only binary MCP content that the generic artifact materializer must persist;
+// ResourceLink remains metadata-only and is never fetched. A non-nil Artifact
+// with no bytes is already materialized and is therefore not returned again.
+func (v MCPToolValue) ArtifactContentParts() []tools.ArtifactContentPart {
+	if len(v.Parts) == 0 {
+		return nil
+	}
+	parts := make([]tools.ArtifactContentPart, 0, len(v.Parts))
+	for _, part := range v.Parts {
+		switch part.Kind {
+		case ContentKindImage:
+			if part.Image != nil && (part.Image.Artifact == nil || len(part.Image.Data) > 0) {
+				parts = append(parts, tools.ArtifactContentPart{
+					Kind:      string(ContentKindImage),
+					MIMEType:  part.Image.MIMEType,
+					Filename:  part.Image.Filename,
+					SourceURI: part.Image.SourceURI,
+					Data:      append([]byte(nil), part.Image.Data...),
+				})
+			}
+		case ContentKindAudio:
+			if part.Audio != nil && (part.Audio.Artifact == nil || len(part.Audio.Data) > 0) {
+				parts = append(parts, tools.ArtifactContentPart{
+					Kind:      string(ContentKindAudio),
+					MIMEType:  part.Audio.MIMEType,
+					Filename:  part.Audio.Filename,
+					SourceURI: part.Audio.SourceURI,
+					Data:      append([]byte(nil), part.Audio.Data...),
+				})
+			}
+		case ContentKindEmbedded:
+			if part.Embedded != nil && (part.Embedded.Artifact == nil || len(part.Embedded.Blob) > 0) && part.Embedded.Blob != nil {
+				parts = append(parts, tools.ArtifactContentPart{
+					Kind:      string(ContentKindEmbedded),
+					MIMEType:  part.Embedded.MIMEType,
+					Filename:  part.Embedded.Filename,
+					SourceURI: part.Embedded.URI,
+					Data:      append([]byte(nil), part.Embedded.Blob...),
+				})
+			}
+		}
+	}
+	return parts
+}
+
+// WithArtifactContentRefs implements tools.ArtifactContentResult. It returns
+// a copy of the lowered value with each binary MCP part replaced by its
+// corresponding ArtifactContentRef, preserving all text, structured content,
+// ResourceLink metadata, AppRef, and part ordering.
+func (v MCPToolValue) WithArtifactContentRefs(refs []tools.ArtifactContentRef) (tools.ArtifactContentResult, error) {
+	parts := v.ArtifactContentParts()
+	if len(parts) != len(refs) {
+		return nil, fmt.Errorf("binary part count=%d, artifact ref count=%d", len(parts), len(refs))
+	}
+	copyValue := v
+	copyValue.Parts = make([]ContentPart, len(v.Parts))
+	copy(copyValue.Parts, v.Parts)
+	refIndex := 0
+	for i, part := range copyValue.Parts {
+		switch part.Kind {
+		case ContentKindImage:
+			if part.Image != nil && (part.Image.Artifact == nil || len(part.Image.Data) > 0) {
+				if refIndex >= len(refs) {
+					return nil, fmt.Errorf("missing artifact ref for image part %d", i)
+				}
+				image := *part.Image
+				image.Data = nil
+				image.Filename = ""
+				image.SourceURI = ""
+				ref := refs[refIndex]
+				image.Artifact = &ref
+				copyValue.Parts[i].Image = &image
+				refIndex++
+			}
+		case ContentKindAudio:
+			if part.Audio != nil && (part.Audio.Artifact == nil || len(part.Audio.Data) > 0) {
+				if refIndex >= len(refs) {
+					return nil, fmt.Errorf("missing artifact ref for audio part %d", i)
+				}
+				audio := *part.Audio
+				audio.Data = nil
+				audio.Filename = ""
+				audio.SourceURI = ""
+				ref := refs[refIndex]
+				audio.Artifact = &ref
+				copyValue.Parts[i].Audio = &audio
+				refIndex++
+			}
+		case ContentKindEmbedded:
+			if part.Embedded != nil && (part.Embedded.Artifact == nil || len(part.Embedded.Blob) > 0) && part.Embedded.Blob != nil {
+				if refIndex >= len(refs) {
+					return nil, fmt.Errorf("missing artifact ref for embedded part %d", i)
+				}
+				embedded := *part.Embedded
+				embedded.Blob = nil
+				embedded.Filename = ""
+				ref := refs[refIndex]
+				embedded.Artifact = &ref
+				copyValue.Parts[i].Embedded = &embedded
+				refIndex++
+			}
+		}
+	}
+	if refIndex != len(refs) {
+		return nil, fmt.Errorf("%d artifact ref(s) were not attached", len(refs)-refIndex)
+	}
+	return copyValue, nil
+}
+
+var _ tools.ArtifactContentResult = MCPToolValue{}
+
+func firstMetadataString(primary, secondary mcpsdk.Meta, keys ...string) string {
+	if value := metadataString(primary, keys...); value != "" {
+		return value
+	}
+	return metadataString(secondary, keys...)
+}
+
+func metadataString(meta mcpsdk.Meta, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := meta[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// cloneBytes preserves a producer's nil-vs-empty distinction. An empty blob
+// is still a binary content candidate and must fail through the generic
+// materializer rather than silently becoming an absent embedded resource.
+func cloneBytes(data []byte) []byte {
+	if data == nil {
+		return nil
+	}
+	out := make([]byte, len(data))
+	copy(out, data)
+	return out
+}
+
 // lowerCallToolResult converts an mcpsdk.CallToolResult into a
 // Harbor-shaped MCPToolValue plus the IsError signal lifted into a
 // returned error. `IsError == true` is mapped to ErrMCPToolError
@@ -472,13 +633,23 @@ func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 			}
 		case *mcpsdk.ImageContent:
 			value.Parts = append(value.Parts, ContentPart{
-				Kind:  ContentKindImage,
-				Image: &ImageRef{Data: append([]byte(nil), v.Data...), MIMEType: v.MIMEType},
+				Kind: ContentKindImage,
+				Image: &ImageRef{
+					Data:      cloneBytes(v.Data),
+					MIMEType:  v.MIMEType,
+					Filename:  metadataString(v.Meta, "filename", "file_name", "name"),
+					SourceURI: metadataString(v.Meta, "source_uri", "uri"),
+				},
 			})
 		case *mcpsdk.AudioContent:
 			value.Parts = append(value.Parts, ContentPart{
-				Kind:  ContentKindAudio,
-				Audio: &AudioRef{Data: append([]byte(nil), v.Data...), MIMEType: v.MIMEType},
+				Kind: ContentKindAudio,
+				Audio: &AudioRef{
+					Data:      cloneBytes(v.Data),
+					MIMEType:  v.MIMEType,
+					Filename:  metadataString(v.Meta, "filename", "file_name", "name"),
+					SourceURI: metadataString(v.Meta, "source_uri", "uri"),
+				},
 			})
 		case *mcpsdk.ResourceLink:
 			value.Parts = append(value.Parts, ContentPart{
@@ -497,8 +668,9 @@ func lowerCallToolResult(res *mcpsdk.CallToolResult) (MCPToolValue, error) {
 				ref.URI = v.Resource.URI
 				ref.MIMEType = v.Resource.MIMEType
 				ref.Text = v.Resource.Text
-				if len(v.Resource.Blob) > 0 {
-					ref.Blob = append([]byte(nil), v.Resource.Blob...)
+				ref.Filename = firstMetadataString(v.Resource.Meta, v.Meta, "filename", "file_name", "name")
+				if v.Resource.Blob != nil {
+					ref.Blob = cloneBytes(v.Resource.Blob)
 				}
 			}
 			value.Parts = append(value.Parts, ContentPart{
@@ -550,9 +722,10 @@ func lowerReadResourceResult(res *mcpsdk.ReadResourceResult) MCPToolValue {
 			URI:      rc.URI,
 			MIMEType: rc.MIMEType,
 			Text:     rc.Text,
+			Filename: metadataString(rc.Meta, "filename", "file_name", "name"),
 		}
-		if len(rc.Blob) > 0 {
-			ref.Blob = append([]byte(nil), rc.Blob...)
+		if rc.Blob != nil {
+			ref.Blob = cloneBytes(rc.Blob)
 		}
 		value.Parts = append(value.Parts, ContentPart{
 			Kind:     ContentKindEmbedded,
@@ -568,7 +741,9 @@ func lowerReadResourceResult(res *mcpsdk.ReadResourceResult) MCPToolValue {
 // lowerGetPromptResult converts an mcpsdk.GetPromptResult into a
 // Harbor-shaped MCPToolValue. Each prompt message renders into the
 // Text field with role prefixes so downstream LLM context
-// assembly can reconstruct turns deterministically.
+// assembly can reconstruct turns deterministically. Binary content is
+// retained as typed Parts so it follows the same ArtifactStore path as a
+// CallToolResult instead of being base64-encoded into prompt text.
 func lowerGetPromptResult(res *mcpsdk.GetPromptResult) MCPToolValue {
 	if res == nil {
 		return MCPToolValue{}
@@ -581,10 +756,59 @@ func lowerGetPromptResult(res *mcpsdk.GetPromptResult) MCPToolValue {
 		}
 		_, _ = fmt.Fprintf(&b, "[%s] ", m.Role)
 		if m.Content != nil {
-			if tc, ok := m.Content.(*mcpsdk.TextContent); ok {
-				b.WriteString(tc.Text)
-			} else if data, err := m.Content.MarshalJSON(); err == nil {
-				b.Write(data)
+			switch c := m.Content.(type) {
+			case *mcpsdk.TextContent:
+				b.WriteString(c.Text)
+			case *mcpsdk.ImageContent:
+				value.Parts = append(value.Parts, ContentPart{
+					Kind: ContentKindImage,
+					Image: &ImageRef{
+						Data:      cloneBytes(c.Data),
+						MIMEType:  c.MIMEType,
+						Filename:  metadataString(c.Meta, "filename", "file_name", "name"),
+						SourceURI: metadataString(c.Meta, "source_uri", "uri"),
+					},
+				})
+			case *mcpsdk.AudioContent:
+				value.Parts = append(value.Parts, ContentPart{
+					Kind: ContentKindAudio,
+					Audio: &AudioRef{
+						Data:      cloneBytes(c.Data),
+						MIMEType:  c.MIMEType,
+						Filename:  metadataString(c.Meta, "filename", "file_name", "name"),
+						SourceURI: metadataString(c.Meta, "source_uri", "uri"),
+					},
+				})
+			case *mcpsdk.ResourceLink:
+				value.Parts = append(value.Parts, ContentPart{
+					Kind: ContentKindLink,
+					Link: &LinkRef{
+						URI:         c.URI,
+						Name:        c.Name,
+						Title:       c.Title,
+						Description: c.Description,
+						MIMEType:    c.MIMEType,
+					},
+				})
+			case *mcpsdk.EmbeddedResource:
+				ref := &EmbeddedRef{}
+				if c.Resource != nil {
+					ref.URI = c.Resource.URI
+					ref.MIMEType = c.Resource.MIMEType
+					ref.Text = c.Resource.Text
+					ref.Filename = firstMetadataString(c.Resource.Meta, c.Meta, "filename", "file_name", "name")
+					if c.Resource.Blob != nil {
+						ref.Blob = cloneBytes(c.Resource.Blob)
+					}
+				}
+				value.Parts = append(value.Parts, ContentPart{
+					Kind:     ContentKindEmbedded,
+					Embedded: ref,
+				})
+			default:
+				if data, err := m.Content.MarshalJSON(); err == nil {
+					b.Write(data)
+				}
 			}
 		}
 		b.WriteString("\n")
