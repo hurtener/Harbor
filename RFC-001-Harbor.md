@@ -1479,13 +1479,15 @@ does any identity, task-id, or run-id disagreement.
 ### 6.10 Artifacts
 
 **MCP App callback and tool-context contracts (settled).** MCP discovery
-preserves provider-authored `_meta.ui.visibility: ["app"]` as an internal
-per-server callback catalog separate from the planner projection. App-only
-entries are not planner-visible or generically callable; a rendered App may
-dispatch only through its host-derived server identity and remains subject
-to identity, agent reach, capability, approval, OAuth, state, redaction, and
-audit gates. Refresh, reconnect, replacement, and detach rebuild both views
-from one server snapshot.
+preserves provider-authored `_meta.ui.visibility` declarations containing
+`app` in an internal per-server callback catalog alongside the planner
+projection. Exact app-only entries (`["app"]`, with no model-facing entry)
+are not planner-visible or generically callable; mixed entries such as
+`["model", "app"]` remain planner-visible while also being callable by the
+rendered App. Every App dispatch uses its host-derived server identity and
+remains subject to identity, agent reach, capability, approval, OAuth, state,
+redaction, and audit gates. Refresh, reconnect, replacement, and detach
+rebuild both views from one server snapshot.
 
 **Fresh render-admission contract (Settled — D-412 amendment; HA-56 stays
 phase 238 / D-412, Shipped v1.28).** A rendered MCP App has exactly two
@@ -1602,9 +1604,11 @@ A window is a *contract*, not a cost claim. The `Store` read above returns whole
 **Optional MCP artifact-egress parameters (HA-67, settled by D-429).** The
 existing flat artifact-egress mapping accepts one trailing `?` marker on a
 parameter name. The shared compiler strips it before schema validation and
-`ParamsFor`, preserving the bare remote property name. Missing or `null`
-optional values omit substitution without requiring a resolver; a supplied
-value follows the existing strict type, non-empty-id, identity-scoped
+`ParamsFor`, preserving the bare remote property name. Missing, `null`, or
+empty / whitespace-only string optional values omit substitution without
+requiring a resolver. The empty-string rule accommodates MCP/schema adapters
+that materialize an omitted optional string property as `""`; a non-empty
+supplied value follows the existing strict type, non-empty-id, identity-scoped
 resolution, digest, encoding, and byte-ceiling checks. Required parameters are
 unchanged. The marker is a local config/mapping concern, not a new Protocol
 shape or a remote capability, and resolved bytes remain dispatch-local.

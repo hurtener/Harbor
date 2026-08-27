@@ -1053,8 +1053,9 @@ tools:
   #     #   summarize: [document]
   #     #   generate_image: [reference_image_base64_1?, reference_image_base64_2?]
   #     # A trailing `?` marks an optional artifact slot. Harbor strips it
-  #     # before matching the server schema; an omitted or null optional slot
-  #     # is skipped, while an explicitly empty id still fails closed.
+  #     # before matching the server schema; an omitted, null, or empty /
+  #     # whitespace-only optional slot is skipped, while a non-empty id is
+  #     # resolved under the run identity. Required empty ids still fail loud.
   #
   #   - name: filesystem
   #     transport_mode: stdio

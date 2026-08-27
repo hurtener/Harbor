@@ -2,7 +2,11 @@
 
 ## Summary
 
-Retain App-only callbacks at discovery while keeping them out of the planner projection. Dispatch them only through the matching Harbor host-derived server catalog and existing policy gates.
+Retain App-only callbacks at discovery while keeping them out of the planner
+projection. Dispatch them only through the matching Harbor host-derived
+server catalog and existing policy gates. A mixed visibility declaration such
+as `["model", "app"]` remains in the planner projection and is also admitted
+to that same-server App catalog.
 
 ## RFC anchor
 
@@ -37,7 +41,10 @@ Retain App-only callbacks at discovery while keeping them out of the planner pro
 
 ## Acceptance criteria
 
-- [ ] Real SDK/spec-derived fixture publishes ordinary plus `_meta.ui.visibility:["app"]`; only ordinary is planner-visible and matching App callback succeeds.
+- [ ] Real SDK/spec-derived fixture publishes ordinary plus
+  `_meta.ui.visibility:["app"]` and a mixed `["model","app"]` callback;
+  only the exact app-only callback is absent from the planner projection,
+  while both matching App callbacks succeed.
 - [ ] Cross-server, generic planner, missing/mismatched server identity fail before invocation with zero callback executions.
 - [ ] Attach/reconnect/refresh/replacement/detach update both views atomically for HTTP and stdio; no stale entry.
 - [ ] Paused/disabled/scope-filtered sources cannot bypass filtering; OAuth/approval gates still execute.
@@ -239,7 +246,9 @@ decision, or HA.
 
 ## Glossary additions
 
-- **App-only callback catalog** — Harbor's per-server callback lookup retained beside, but never merged into, the planner projection.
+- **App dispatch catalog** — Harbor's per-server App-visible callback lookup
+  retained beside the planner projection; exact app-only callbacks are absent
+  from the planner view, while mixed model/App callbacks remain in both views.
 - **Fresh render admission** — the stateless, integrity-protected, shared-KEK admission minted for an MCP App on embedded/durable reopen; never a restored live binding, never a persisted token, never minted by ordinary resource reads, and bound to the current provider/catalog generation (deterministic and replica-stable; a process-local discovery counter is never the generation source). D-412.
 
 ## Pre-merge checklist

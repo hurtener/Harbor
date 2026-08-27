@@ -66,6 +66,21 @@ func admissionAppDesc(name string, source tools.ToolSourceID, calls *atomic.Int6
 	}
 }
 
+// admissionMixedAppDesc builds a callback visible to both the model and the
+// rendered App. It is the regression shape for providers such as the media
+// server that declare `_meta.ui.visibility: ["model", "app"]`: the ordinary
+// catalog must retain the tool while the App dispatch catalog must also
+// resolve it.
+func admissionMixedAppDesc(name string, source tools.ToolSourceID, calls *atomic.Int64) tools.ToolDescriptor {
+	return tools.ToolDescriptor{
+		Tool: tools.Tool{Name: name, Source: source, Transport: tools.TransportMCP, AppVisible: true},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			calls.Add(1)
+			return tools.ToolResult{Value: map[string]any{"ok": name}}, nil
+		},
+	}
+}
+
 // admissionResourceDesc builds the `ui://` resource descriptor the mint
 // path reads through the accessor.
 func admissionResourceDesc(name string, source tools.ToolSourceID) tools.ToolDescriptor {
@@ -191,7 +206,7 @@ func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, descs []tools.ToolDe
 	calls := new(atomic.Int64)
 	counted := make([]tools.ToolDescriptor, 0, len(descs))
 	for _, d := range descs {
-		if d.Tool.AppOnly {
+		if d.Tool.AppOnly || d.Tool.AppVisible {
 			d.Invoke = func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 				calls.Add(1)
 				return tools.ToolResult{Value: map[string]any{"ok": d.Tool.Name}}, nil
@@ -232,15 +247,16 @@ func buildAdmissionSurface(t *testing.T, reg *mcp.Registry, descs []tools.ToolDe
 
 // TestAdmissionPath_RealRegistry_MintsViaSurfaceAndInvokesExactlyOnce is
 // the focused REAL-path success test the review demanded: sealed
-// admission → same-server app-only ResolveAppTool → wrapped invocation
-// EXACTLY ONCE, with NO legacy ValidateAppBinding requirement (the
-// provider does not implement appBindingProvider, so the legacy path
-// could never validate it).
+// admission → same-server App-visible ResolveAppTool → wrapped invocation
+// EXACTLY ONCE. The callback uses mixed model/App visibility, proving the
+// App path admits it without removing it from the model projection, and
+// there is NO legacy ValidateAppBinding requirement (the provider does not
+// implement appBindingProvider, so the legacy path could never validate it).
 func TestAdmissionPath_RealRegistry_MintsViaSurfaceAndInvokesExactlyOnce(t *testing.T) {
 	reg := mcp.NewRegistry()
 	descs := []tools.ToolDescriptor{
 		admissionResourceDesc("srv-a__resource.ui://srv-a/app.html", "srv-a"),
-		admissionAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
+		admissionMixedAppDesc("srv-a_cb", "srv-a", new(atomic.Int64)),
 	}
 	s, calls, _, _ := buildAdmissionSurface(t, reg, descs, nil)
 

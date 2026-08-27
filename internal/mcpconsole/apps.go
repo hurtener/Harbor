@@ -267,12 +267,13 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 // (the pre-existing path — ordinary tools, including ones that declare a
 // `ui://` app for a rendered App to re-invoke). When the name does NOT
 // resolve there, the only remaining authority is the serverID-named
-// server's App dispatch catalog — the app-only callbacks the provider
-// declared with `_meta.ui.visibility: ["app"]` and the attach path kept
-// OUT of the ordinary catalog. That catalog is keyed by the host-derived
+// server's App dispatch catalog — the App-visible callbacks the provider
+// declared with `_meta.ui.visibility` containing `app`. Exact app-only
+// callbacks are kept OUT of the ordinary catalog; mixed model/App tools
+// remain in both projections. That catalog is keyed by the host-derived
 // server identity, not by any string prefix or remembered global name:
 //
-//   - an app-only callback is NOT resolvable without its own serverID
+//   - an App-visible callback is NOT resolvable without its own serverID
 //     (missing server identity → typed not-found before invocation);
 //   - a serverID that does not hold the name answers not-found, so one
 //     server's rendered App can never invoke another server's callback;
@@ -291,7 +292,7 @@ func (a *AppsAccessor) CallTool(ctx context.Context, serverID, tool string, args
 // CallToolWithBinding dispatches an app callback using its opaque render
 // capability while preserving the ordinary invoker compatibility seam.
 // It is the LEGACY live-binding path (HA-56): the binding is passed to
-// the provider-local ValidateAppBinding for app-only resolution. A
+// the provider-local ValidateAppBinding for App callback resolution. A
 // render-admission-backed call NEVER rides here — it rides the distinct
 // admission-aware seam (CallToolAdmitted).
 func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
@@ -318,7 +319,7 @@ func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, bindin
 // zero callbacks. The proof can only be minted by the Protocol surface
 // after it opened the sealed admission AND re-verified the current render
 // tuple, so a call that did not ride the surface's verified path can
-// never resolve an app-only callback.
+// never resolve an App-visible callback.
 //
 // # The generation closes the TOCTOU window
 //
@@ -329,7 +330,7 @@ func (a *AppsAccessor) CallToolWithBinding(ctx context.Context, serverID, bindin
 // refused with zero callbacks. Even the window between this generation
 // read and the descriptor lookup is closed: resolution goes through the
 // registry's atomic ResolveAppToolAtGeneration, which compares the exact
-// generation and resolves the app-only descriptor under ONE read lock, so
+// generation and resolves the App-visible descriptor under ONE read lock, so
 // a race that changes the generation mid-call fails typed and never
 // returns (never executes) a newer-generation row.
 //
@@ -389,7 +390,7 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 			protocol.ErrAccessorScopeDenied, serverID, resourceURI)
 	}
 	// The atomic compare+resolve: ONE registry read lock re-verifies the
-	// exact current generation and resolves the app-only descriptor in the
+	// exact current generation and resolves the App-visible descriptor in the
 	// same critical section. A refresh/replacement between the generation
 	// read above and this call fails typed (ErrGenerationMismatch) — the
 	// new row is never returned and never invoked.
@@ -402,7 +403,7 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: %w", protocol.ErrAccessorScopeDenied, err)
 	}
 	if !ok {
-		// The server is absent, or does not hold an app-only callback
+		// The server is absent, or does not hold an App-visible callback
 		// under this name at the exact verified generation. Same typed
 		// not-found — the App renders it as a permanent "there is no such
 		// action on this server".
@@ -416,7 +417,7 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
 		// Not in the ordinary planner/model catalog. The only authority
-		// left is the named server's App dispatch catalog — an app-only
+		// left is the named server's App dispatch catalog — an App-visible
 		// callback. Without a host-derived server identity there is
 		// deliberately NO way to reach it (no string prefix or remembered
 		// global name may select another server's callback).
@@ -429,7 +430,7 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 			appOK = false
 		}
 		if !appOK {
-			// The server is absent, or does not hold an app-only callback
+			// The server is absent, or does not hold an App-visible callback
 			// under this name. Same typed not-found — the App renders it as
 			// a permanent "there is no such action on this server".
 			return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q (server %q)",
@@ -568,7 +569,7 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 // CurrentGeneration returns the deterministic current provider/catalog
 // generation fingerprint for the named server, delegating to the MCP
 // registry. The value is content-derived from the canonical CURRENT
-// descriptor set (resources + app-only callbacks + ordinary catalog), so
+// descriptor set (resources + App callbacks + ordinary catalog), so
 // it changes on detach, replacement, and every successful discovery
 // change, and is stable across replicas with the same canonical current
 // descriptor set. Unknown/empty fails closed (false) — a render

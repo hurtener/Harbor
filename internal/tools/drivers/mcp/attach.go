@@ -503,14 +503,15 @@ func filterDiscoveredTools(descriptors []tools.ToolDescriptor, source string, al
 
 // ordinaryDescriptors returns the subset of a discovered descriptor
 // snapshot that the ordinary planner/model catalog publishes — every
-// non-app-only descriptor. App-only callbacks (provider-authored
+// non-app-only descriptor. Exact app-only callbacks (provider-authored
 // `_meta.ui.visibility: ["app"]`) are partitioned OUT here so they never
 // enter the ordinary catalog; they ride the registry's per-server App
-// dispatch catalog instead (partitioned from the SAME snapshot by
-// registrationEntry). This is the single place the two views diverge, and
-// it runs at the attach publication linearization point, so a callback is
-// either absent from BOTH views or present in exactly one (the App
-// dispatch catalog) — never in planner context.
+// dispatch catalog instead. Mixed visibility declarations (for example
+// `["model", "app"]`) remain in this ordinary projection and are also
+// partitioned into the App dispatch catalog. Both views derive from the
+// SAME snapshot at the attach publication linearization point, so a
+// callback is never exposed to a different server or an unrelated
+// catalog.
 func ordinaryDescriptors(descs []tools.ToolDescriptor) []tools.ToolDescriptor {
 	out := make([]tools.ToolDescriptor, 0, len(descs))
 	for _, d := range descs {
@@ -600,17 +601,20 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 		defer cancel()
 		published, publishErr = p.registrySwap.Publish(cleanupCtx, func() error {
 			// Publish ONLY the ordinary (non-app-only) descriptors to the
-			// planner/model catalog. The app-only callbacks — provider-
+			// planner/model catalog. Exact app-only callbacks — provider-
 			// authored `_meta.ui.visibility: ["app"]` — ride the registry's
-			// per-server App dispatch catalog instead (partitioned from the
-			// SAME discovered snapshot by registrationEntry, staged above).
+			// per-server App dispatch catalog instead; mixed App/model tools
+			// are intentionally published to both views. Both are partitioned
+			// from the SAME discovered snapshot by registrationEntry, staged
+			// above.
 			// Both views therefore always derive from ONE discovered set and
 			// publish inside this single registry-locked critical section,
 			// so attach / reconnect / replacement move them together: an
-			// app-only callback is absent from planner context / tools/list
-			// / search / resolve / ordinary invocation by construction while
-			// the App of this same server resolves it through
-			// Registry.ResolveAppTool.
+			// an exact app-only callback is absent from planner context /
+			// tools/list / search / resolve / ordinary invocation by
+			// construction while the App of this same server resolves it
+			// through Registry.ResolveAppTool; a mixed tool remains ordinary
+			// visible and also resolves through that App catalog.
 			var err error
 			catalogSwap, err = p.deps.Catalog.StageSource(tools.ToolSourceID(p.ms.Name), ordinaryDescriptors(p.descriptors), priorExists)
 			if err != nil {

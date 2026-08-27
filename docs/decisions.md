@@ -14676,3 +14676,62 @@ CI run `32974645903` remained in progress at this release cut with no failed
 job. No successful post-merge full CI/preflight result, v1.30.5 tag, release,
 assets, module provenance, checksums, attestations, post-tag cleanup,
 downstream/runtime deployment, or downstream acceptance is claimed.
+
+---
+
+## D-445 — Optional MCP artifact-egress empty strings are absence at dispatch
+
+**Date:** 2026-08-27
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The optional artifact-egress marker from D-429 remains a local mapping
+contract. In addition to a missing key or JSON `null`, an optional mapped
+parameter whose decoded value is an empty or whitespace-only string is treated
+as absent and is left untouched. This accommodates MCP/schema adapters that
+materialize an omitted optional string property as `""`; treating that adapter
+representation as a missing artifact id would reject legitimate text-only
+calls before the remote tool could run.
+
+Required mapped parameters retain the existing empty-id refusal. A present
+non-empty optional value still must be a string artifact id, resolve through the
+dispatching run's identity-scoped resolver, fit the byte ceiling, and produce
+the existing content-free substitution record before the wire call. Non-string
+values remain refusals. Empty/whitespace optional values do not require a
+resolver and do not consume the egress ceiling because no substitution occurs.
+
+This is a dispatch semantic clarification for the existing config mapping,
+not a new Protocol method, wire shape, transport capability, or artifact-store
+policy. The unit and real MCP-driver tests cover empty and whitespace values,
+resolver-less text-only calls, unchanged arguments, no substitution records,
+and preservation of required/strict paths.
+
+**Cross-references:** D-429, D-022, D-347, RFC §6.10, §7.
+
+## D-446 — MCP App dispatch admits mixed model/App visibility without widening model exposure
+
+**Date:** 2026-08-27
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The MCP driver's discovery classification carries two independent internal
+facts for `_meta.ui.visibility`: `AppOnly` means the exact app-only callback
+shape that must stay out of the ordinary planner/model projection, while
+`AppVisible` means the visibility list contains `app`, including mixed forms
+such as `["model", "app"]`. The per-server App dispatch catalog includes
+every App-visible descriptor. The ordinary catalog continues to exclude only
+AppOnly descriptors, so a mixed tool remains available to the model and to its
+own rendered App.
+
+This is classification and catalog partitioning, not authorization. Same-
+server confinement, exact current provider/catalog generation, identity,
+reach, approval, OAuth, policy, redaction, retry, and audit gates remain
+unchanged. The deterministic generation fingerprint includes both
+classification facts, and refresh/reconnect/replacement/detach continue to
+rebuild both projections from one discovered snapshot. The discovery,
+HTTP/stdio attach, registry-generation, and real render-admission tests cover
+exact app-only, mixed, ordinary, cross-server, and stale-generation behavior.
+
+**Cross-references:** D-412, D-425, RFC §6.10, Phase 238.

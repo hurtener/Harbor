@@ -6,9 +6,9 @@ Extend the existing MCP artifact-egress mapping with a per-parameter optional
 marker. A trailing `?` is parsed and removed by `artifactegress.CompileMapping`,
 so the remote schema and every operator-facing parameter list keep the bare
 name. Required mappings retain their existing refusal behavior; optional
-omissions (missing key or JSON `null`) skip substitution while present values
-still pass the existing type, empty-id, resolver, digest, and byte-ceiling
-checks.
+omissions (missing key, JSON `null`, or empty / whitespace-only string) skip
+substitution while non-empty values still pass the existing type, empty-id,
+resolver, digest, and byte-ceiling checks.
 
 ## RFC anchor
 
@@ -45,8 +45,9 @@ None.
 - Accept `?` as a per-parameter optional marker in the existing flat
   `map[string][]string` mapping.
 - Preserve required mappings byte-for-byte in behavior and error taxonomy.
-- Skip optional missing or `nil` values without requiring a resolver, while
-  refusing explicit empty ids and non-string values exactly as today.
+- Skip optional missing, `nil`, or empty / whitespace-only string values
+  without requiring a resolver, while refusing required empty ids and
+  non-string values exactly as today.
 - Keep `ParamsFor` and MCP attach/schema errors on bare parameter names.
 - Prove the contract through unit, MCP-driver, and concurrent-reuse tests and
   document the config spelling for operators.
@@ -73,7 +74,7 @@ None.
       and resolution behavior.
 - [ ] An optional mapping skips an absent or `nil` argument, including when
       every mapped parameter is optional and no resolver is seated.
-- [ ] An optional present empty string returns `ErrEmptyArtifactID`, a
+- [ ] An optional present empty / whitespace-only string skips as absence; a
       non-string returns `ErrMappedArgumentNotString`, and a valid id resolves
       to a `Payload` plus the existing content-free `Record`.
 - [ ] A real in-memory MCP driver call proves zero-image/omitted optional

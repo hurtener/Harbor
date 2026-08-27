@@ -411,10 +411,32 @@ func TestEncode_OptionalParameters(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit empty optional parameter is refused", func(t *testing.T) {
-		_, err := artifactegress.Encode(seated, map[string]any{"required": "art-required", "reference_image": "  "}, mapping, "generate_image", 1024)
-		if !errors.Is(err, artifactegress.ErrEmptyArtifactID) {
-			t.Fatalf("err = %v, want ErrEmptyArtifactID", err)
+	t.Run("empty optional parameter skips as absence", func(t *testing.T) {
+		for _, empty := range []string{"", "  \t\n  "} {
+			args := map[string]any{"required": "art-required", "reference_image": empty}
+			records, err := artifactegress.Encode(seated, args, mapping, "generate_image", 1024)
+			if err != nil {
+				t.Fatalf("Encode(%q): %v", empty, err)
+			}
+			if len(records) != 1 || records[0].Param != "required" {
+				t.Fatalf("Encode(%q) records = %+v, want only the required substitution", empty, records)
+			}
+			if got := args["reference_image"]; got != empty {
+				t.Fatalf("Encode(%q) rewrote the optional absence: %#v", empty, got)
+			}
+		}
+	})
+
+	t.Run("empty optional parameter skips without resolver", func(t *testing.T) {
+		for _, empty := range []string{"", " \t "} {
+			args := map[string]any{"reference_image": empty}
+			records, err := artifactegress.Encode(context.Background(), args, mustMapping(t, map[string][]string{"generate_image": {"reference_image?"}}), "generate_image", 0)
+			if err != nil {
+				t.Fatalf("Encode(%q): %v", empty, err)
+			}
+			if records != nil || args["reference_image"] != empty {
+				t.Fatalf("Encode(%q) = records=%+v args=%v, want an untouched optional absence", empty, records, args)
+			}
 		}
 	})
 

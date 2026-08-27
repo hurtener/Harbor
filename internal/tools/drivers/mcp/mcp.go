@@ -1060,6 +1060,7 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	// the pinned precedence order (see agentcfg.ToolExposure godoc). Form
 	// stays zero-valued (ToolFormTool) — only the resource/prompt wrappers
 	// below stamp a non-default Form.
+	appVisible, appOnly := appVisibilityFlags(t.Meta)
 	tool := tools.Tool{
 		Name:        fmt.Sprintf("%s_%s", string(p.source), t.Name),
 		Description: t.Description,
@@ -1070,17 +1071,18 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		Transport:   tools.TransportMCP,
 		Policy:      policy,
 		Loading:     tools.LoadingAlways,
-		// AppOnly preserves the provider-authored
-		// `_meta.ui.visibility: ["app"]` classification (a callback for the
-		// tool's rendered App, not an operation for the model to select).
-		// It is stamped at discovery so the attach path can partition ONE
-		// discovered snapshot into the ordinary planner/model projection
-		// (which excludes the callback by construction) and the per-server
-		// App dispatch catalog (through which the App of the SAME server
-		// still invokes it, under the unchanged identity / reach / OAuth /
-		// approval / current-state gates). Classification-only — never an
-		// authorization shortcut.
-		AppOnly: appVisibilityOnly(t.Meta),
+		// AppVisible preserves the provider-authored `_meta.ui.visibility`
+		// declaration for every tool visible to a rendered App, including a
+		// mixed `["model", "app"]` declaration. AppOnly is the narrower
+		// exact-callback classification used to keep app-only tools out of
+		// the ordinary planner/model projection. Both are stamped at
+		// discovery so the attach path can partition ONE discovered snapshot
+		// into the ordinary projection and the per-server App dispatch
+		// catalog, under the unchanged identity / reach / OAuth / approval /
+		// current-state gates. Classification-only — never an authorization
+		// shortcut.
+		AppVisible: appVisible,
+		AppOnly:    appOnly,
 	}
 
 	mcpName := t.Name

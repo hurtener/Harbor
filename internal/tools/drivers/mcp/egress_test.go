@@ -862,6 +862,41 @@ func TestEgress_OptionalMappedParameterSkipsWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestEgress_OptionalMappedParameterSkipsEmptyString(t *testing.T) {
+	bus := newRecordingBus(t)
+	p, fixture := newEgressProvider(t, Config{
+		Bus:            bus,
+		DefaultPolicy:  tools.DefaultPolicy(),
+		ArtifactEgress: egressMapping(t, map[string][]string{"ingest": {"doc?"}}),
+	})
+	desc := resolveTool(t, p, "egress-server_ingest")
+	ctx := egressRunCtx(t, identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}, "run-empty-optional")
+
+	// Some MCP/schema adapters materialize an omitted optional string as an
+	// empty string. Harbor treats that representation as absence too, so a
+	// text-only call can proceed without a resolver or substitution record.
+	for _, empty := range []string{"", " \t\n "} {
+		before := fixture.frames.Load()
+		if _, err := desc.Invoke(ctx, json.RawMessage(fmt.Sprintf(`{"doc":%q,"note":"only"}`, empty))); err != nil {
+			t.Fatalf("optional value %q failed: %v", empty, err)
+		}
+		if after := fixture.frames.Load(); after != before+1 {
+			t.Fatalf("optional value %q produced %d wire requests, want 1", empty, after-before)
+		}
+		got := fixture.last(t)
+		var received map[string]any
+		if err := json.Unmarshal(got.Args, &received); err != nil {
+			t.Fatalf("decode received args for %q: %v", empty, err)
+		}
+		if received["doc"] != empty || received["note"] != "only" || len(received) != 2 {
+			t.Fatalf("received args for %q = %v, want untouched arguments", empty, received)
+		}
+		if evs := bus.egressRecords(); len(evs) != 0 {
+			t.Fatalf("optional value %q emitted substitution records: %d", empty, len(evs))
+		}
+	}
+}
+
 // ---------------------------------------------------------------------
 // The attach-time schema check.
 // ---------------------------------------------------------------------

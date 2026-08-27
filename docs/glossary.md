@@ -1899,12 +1899,13 @@ never masks them. D-410.
 selected by agent configuration and composed with caller-owned skills at run
 start. The agent is not an isolation principal. D-411.
 
-**App dispatch catalog** — a per-MCP-server callback lookup retained beside,
-but not merged into, the planner's tool projection. App visibility is not a
-grant: the callback stays absent from planner context, `tools.list`, search,
-and generic resolution, and dispatches only through the same-server
-`ResolveAppTool` path under the existing approval/OAuth/policy/redaction/
-retry/audit gates. D-412.
+**App dispatch catalog** — a per-MCP-server callback lookup retained beside
+the planner's tool projection. Exact app-only callbacks stay absent from
+planner context, `tools.list`, search, and generic resolution; a mixed
+model/App declaration remains in the planner projection while also resolving
+through this catalog. App visibility is not a grant: every callback dispatches
+only through the same-server `ResolveAppTool` path under the existing
+approval/OAuth/policy/redaction/retry/audit gates. D-412.
 
 **Fresh render admission** — the stateless, integrity-protected, shared-KEK
 admission the Runtime mints for an MCP App on embedded/durable reopen; it is
@@ -2110,8 +2111,9 @@ all use it. D-427.
 **Optional artifact-egress parameter** — a mapping parameter written with one
 trailing `?` at the shared `artifactegress.CompileMapping` boundary. The marker
 is removed from the remote schema and `ParamsFor` projections; absent or
-`null` values skip substitution, while supplied values retain the existing
-type, non-empty-id, resolver, digest, and byte-ceiling checks. D-429.
+`null`, or empty / whitespace-only string values skip substitution, while
+non-empty supplied values retain the existing type, non-empty-id, resolver,
+digest, and byte-ceiling checks. D-429, D-445.
 
 **Organization skill publication** — a tenant-owned, immutable,
 content-addressed skill revision made available to callers through signed

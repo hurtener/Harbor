@@ -232,34 +232,34 @@ var modelFacingVisibilityValues = map[string]struct{}{
 	"all":     {},
 }
 
-// appVisibilityOnly reports whether an MCP tool's `_meta.ui.visibility`
-// array declares it APP-ONLY — a callback for the tool's rendered App, not
-// an operation for the model to select. The canonical
-// `io.modelcontextprotocol/ui` (ext-apps) dialect carries the visibility
-// list on the tool DEFINITION's `_meta.ui` slot, alongside `resourceUri`.
+// appVisibilityFlags reads the canonical `io.modelcontextprotocol/ui`
+// (ext-apps) visibility list from a tool definition and returns whether the
+// tool is App-visible and whether it is App-only. The visibility list lives
+// on the tool definition's `_meta.ui` slot, alongside `resourceUri`.
 //
-// The rule is conjunctive: the array must contain `app` AND contain no
-// model-facing entry. `["app"]` is app-only; `["app", "tool"]` (or
-// `["app", "all"]`) is visible to both; `["tool"]` and an absent or empty
-// `visibility` are ordinary model-facing tools (the pre-existing default).
-// A malformed slot (wrong types) is treated as absent — a present-but-
-// broken `_meta` must not poison an otherwise-valid tool.
+// App-visible means the list contains `app`, including mixed declarations
+// such as `["model", "app"]`. App-only additionally requires that the list
+// contain no model-facing entry. `["app"]` is app-only; `["app", "tool"]`
+// (or `["app", "all"]`) is visible to both. `["tool"]` and an absent or
+// empty `visibility` are ordinary model-facing tools (the pre-existing
+// default). A malformed slot (wrong types) is treated as absent — a
+// present-but-broken `_meta` must not poison an otherwise-valid tool.
 //
 // This classification is DISCOVERY metadata, never an authorization
-// shortcut: an app-only tool is still invoked only under the identity /
+// shortcut: an App-visible tool is still invoked only under the identity /
 // reach / OAuth / approval / current-state gates, exactly like an ordinary
-// tool. It only decides WHICH catalog view the tool is published into.
-func appVisibilityOnly(meta mcpsdk.Meta) bool {
+// tool. It only decides WHICH catalog views the tool is published into.
+func appVisibilityFlags(meta mcpsdk.Meta) (appVisible, appOnly bool) {
 	if len(meta) == 0 {
-		return false
+		return false, false
 	}
 	uiMap, ok := meta["ui"].(map[string]any)
 	if !ok {
-		return false
+		return false, false
 	}
 	raw, ok := uiMap["visibility"]
 	if !ok {
-		return false
+		return false, false
 	}
 	var entries []string
 	switch v := raw.(type) {
@@ -272,19 +272,41 @@ func appVisibilityOnly(meta mcpsdk.Meta) bool {
 	case []string:
 		entries = v
 	default:
-		return false
+		return false, false
 	}
-	hasApp := false
+	hasModelFacing := false
 	for _, e := range entries {
 		if e == "app" {
-			hasApp = true
 			continue
 		}
 		if _, modelFacing := modelFacingVisibilityValues[e]; modelFacing {
-			return false
+			hasModelFacing = true
 		}
 	}
-	return hasApp
+	for _, e := range entries {
+		if e == "app" {
+			appVisible = true
+			break
+		}
+	}
+	return appVisible, appVisible && !hasModelFacing
+}
+
+// appVisibilityOnly reports whether an MCP tool's visibility declaration is
+// an App-only callback rather than an operation for the model to select.
+func appVisibilityOnly(meta mcpsdk.Meta) bool {
+	_, appOnly := appVisibilityFlags(meta)
+	return appOnly
+}
+
+// appVisibilityContainsApp reports whether an MCP tool's visibility
+// declaration includes the App surface, whether or not it is also visible
+// to the model. It is used for App callback dispatch; ordinary catalog
+// filtering continues to use appVisibilityOnly so mixed tools remain model
+// visible.
+func appVisibilityContainsApp(meta mcpsdk.Meta) bool {
+	appVisible, _ := appVisibilityFlags(meta)
+	return appVisible
 }
 
 // reconcileAppRef combines the tool-DEFINITION app binding (the

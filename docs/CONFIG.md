@@ -2133,6 +2133,14 @@ the same shape `tool_policies` and `tool_oauth_providers` use (the
 server-side MCP tool name, not the `<source>_<tool>` Harbor-facing one).
 It requires `artifact_byte_eligible` on the same connection.
 
+A parameter name ending in one trailing `?` is optional. Harbor strips the
+marker before matching the server schema; an optional value that is missing,
+`null`, or an empty / whitespace-only string is treated as absent and is not
+substituted. This empty-string case accommodates MCP/schema adapters that
+materialize omitted optional string properties as `""`. Non-empty optional
+values and all required values retain strict type, non-empty-id,
+identity-scoped resolution, and byte-ceiling checks.
+
 The mapping is canonicalized and bounded at config validation: at most 32
 methods, at most 8 parameters per method, at most 128 UTF-8 bytes per method or
 parameter name, and at most 8 KiB of canonical JSON. Values above a boundary

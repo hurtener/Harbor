@@ -49,6 +49,34 @@ func TestAppVisibilityOnly(t *testing.T) {
 	}
 }
 
+// TestAppVisibilityContainsApp pins the broader dispatch classification:
+// every visibility list containing `app` is App-visible, including a mixed
+// model/App declaration. The narrower AppOnly classification remains false
+// for those mixed declarations so the ordinary planner/model projection
+// still retains them.
+func TestAppVisibilityContainsApp(t *testing.T) {
+	cases := []struct {
+		name string
+		meta mcpsdk.Meta
+		want bool
+	}{
+		{"canonical app-only", mcpsdk.Meta{"ui": map[string]any{"visibility": []any{"app"}}}, true},
+		{"model and app", mcpsdk.Meta{"ui": map[string]any{"visibility": []any{"model", "app"}}}, true},
+		{"tool and app", mcpsdk.Meta{"ui": map[string]any{"visibility": []string{"app", "tool"}}}, true},
+		{"model only", mcpsdk.Meta{"ui": map[string]any{"visibility": []any{"model"}}}, false},
+		{"no visibility", mcpsdk.Meta{"ui": map[string]any{"resourceUri": "ui://x/y.html"}}, false},
+		{"visibility malformed as string", mcpsdk.Meta{"ui": map[string]any{"visibility": "app"}}, false},
+		{"ui not an object", mcpsdk.Meta{"ui": "ui://nope"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appVisibilityContainsApp(tc.meta); got != tc.want {
+				t.Errorf("appVisibilityContainsApp(%v) = %v, want %v", tc.meta, got, tc.want)
+			}
+		})
+	}
+}
+
 // appCatalogFixtureServer builds the HA-56 acceptance fixture server: one
 // ordinary tool, one `_meta.ui.visibility: ["app"]` callback, and one tool
 // visible to BOTH app and model — all from the same server, so one
@@ -152,13 +180,13 @@ func newAppCatalogProvider(t *testing.T, name string, srv *mcpsdk.Server) *Provi
 	return p
 }
 
-// TestProvider_Discover_StampsAppOnlyFromVisibility proves the provider
-// preserves the provider-authored `_meta.ui.visibility` classification on
-// the discovered Tool, so the attach path can partition ONE snapshot into
-// the ordinary planner/model projection and the per-server App dispatch
-// catalog. `plain` and `both` stay ordinary (model-visible); the app-only
-// `callback` is marked AppOnly.
-func TestProvider_Discover_StampsAppOnlyFromVisibility(t *testing.T) {
+// TestProvider_Discover_StampsAppVisibilityFromVisibility proves the
+// provider preserves the provider-authored `_meta.ui.visibility`
+// classifications on the discovered Tool, so the attach path can partition
+// ONE snapshot into the ordinary planner/model projection and the
+// per-server App dispatch catalog. `plain` stays ordinary, `callback` is
+// AppOnly and AppVisible, and `both` is model-visible plus AppVisible.
+func TestProvider_Discover_StampsAppVisibilityFromVisibility(t *testing.T) {
 	p := newAppCatalogProvider(t, "fixture", appCatalogFixtureServer())
 	descs, err := p.Discover(context.Background())
 	if err != nil {
@@ -169,12 +197,13 @@ func TestProvider_Discover_StampsAppOnlyFromVisibility(t *testing.T) {
 		byName[d.Tool.Name] = d.Tool
 	}
 	cases := []struct {
-		name    string
-		appOnly bool
+		name       string
+		appOnly    bool
+		appVisible bool
 	}{
-		{"fixture_plain", false},
-		{"fixture_callback", true},
-		{"fixture_both", false},
+		{"fixture_plain", false, false},
+		{"fixture_callback", true, true},
+		{"fixture_both", false, true},
 	}
 	for _, tc := range cases {
 		tool, ok := byName[tc.name]
@@ -184,6 +213,9 @@ func TestProvider_Discover_StampsAppOnlyFromVisibility(t *testing.T) {
 		}
 		if tool.AppOnly != tc.appOnly {
 			t.Errorf("%s AppOnly = %v, want %v", tc.name, tool.AppOnly, tc.appOnly)
+		}
+		if tool.AppVisible != tc.appVisible {
+			t.Errorf("%s AppVisible = %v, want %v", tc.name, tool.AppVisible, tc.appVisible)
 		}
 		if tool.Source != "fixture" || tool.Transport != tools.TransportMCP {
 			t.Errorf("%s Source/Transport = %q/%q, want fixture/mcp", tc.name, tool.Source, tool.Transport)
