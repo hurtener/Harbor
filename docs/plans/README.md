@@ -584,21 +584,22 @@ real two-client race under `-race`.
 - **Subsystem:** MCP discovery metadata, tool catalog/planner projection,
   `internal/mcpconsole` App dispatch, and Protocol/Console lockstep.
 - **RFC:** §6.4, §7.3, §5.2, §7. **Deps:** 207, 204, 109k, 109l.
-- **What it delivers:** D-412 — at MCP discovery, preserve the provider's
-  `_meta.ui.visibility: ["app"]` classification and construct an internal,
-  per-MCP-server App dispatch catalog alongside the ordinary planner/model
-  projection. App-only entries are absent from planner context, generic
-  `tools/list`, search/resolve, and ordinary invocation, and remain callable
-  only by the rendered App of the same host-derived server identity through a
-  host/App dispatch surface — no string prefix or remembered global name
-  selects another server's callback. The dispatch path keeps the exact
-  identity triple, effective-agent capability filtering, OAuth/approval
-  wrappers, current-state checks, redaction, and audit; visibility is not a
-  grant, and cross-server/cross-identity calls fail typed before execution.
-  Dynamic attach/reconnect/refresh rebuild both views atomically from one
-  discovered snapshot for HTTP and stdio, with no stale callback surviving
-  replacement or detach. Non-goals: no authorization shortcut, no
-  ordinary-caller exposure, no provider-specific exceptions.
+- **What it delivers:** D-412 — at MCP discovery, preserve provider-authored
+  `_meta.ui.visibility` declarations containing `app` and construct an
+  internal, per-MCP-server App dispatch catalog alongside the ordinary
+  planner/model projection. Exact app-only entries are absent from planner
+  context, generic `tools/list`, search/resolve, and ordinary invocation;
+  mixed entries such as `["model", "app"]` remain planner-visible while also
+  being callable only by the rendered App of the same host-derived server
+  identity through a host/App dispatch surface — no string prefix or
+  remembered global name selects another server's callback. The dispatch path
+  keeps the exact identity triple, effective-agent capability filtering,
+  OAuth/approval wrappers, current-state checks, redaction, and audit;
+  visibility is not a grant, and cross-server/cross-identity calls fail typed
+  before execution. Dynamic attach/reconnect/refresh rebuild both views
+  atomically from one discovered snapshot for HTTP and stdio, with no stale
+  callback surviving replacement or detach. Non-goals: no authorization
+  shortcut, no ordinary-caller exposure, no provider-specific exceptions.
 - **Fresh render-admission acceptance (governance amendment, Shipped (v1.28);
   HA-56 stays phase 238 / D-412, no new phase or decision):** the corrected
   render-admission contract is authoritative for the v1.28 wave. The live
@@ -621,16 +622,17 @@ real two-client race under `-race`.
   mints no authority), the current `ui://` read explicitly requesting one
   fresh admission (`request_render_admission: true` — the only minting read;
   ordinary and AppBridge-secondary resource reads never mint), the
-  iframe/AppBridge mount, and then same-server app-only callback dispatch
+  iframe/AppBridge mount, and then same-server App callback dispatch
   through the existing wrapped invocation (`ResolveAppTool` + approval/OAuth/
   policy/redaction/retry/audit) echoing the fresh admission as the distinct
   `render_admission` authority. Claims bind schema/time/triple/effective-agent/
   server/resource/current provider/catalog generation and carry no
   raw args, secrets, provider output, callback name, or general capability.
   Ordinary resource reads never mint; only the explicit admission-requesting
-  read path does. Callbacks stay absent from planner/`tools.list`/search/
-  generic resolution and dispatch via same-server `ResolveAppTool` + existing
-  approval/OAuth/policy/redaction/retry/audit. HA-64 rows retain
+  read path does. Exact app-only callbacks stay absent from planner/
+  `tools.list`/search/generic resolution; mixed model/App tools remain
+  planner-visible, and both forms dispatch via same-server `ResolveAppTool` +
+  existing approval/OAuth/policy/redaction/retry/audit. HA-64 rows retain
   metadata/component availability only, no token; `mcp.apps.tool_context`
   replay is unchanged and never reruns the originating tool. Typed
   unavailable/expired is explicit; refresh re-runs fresh checks. Production/

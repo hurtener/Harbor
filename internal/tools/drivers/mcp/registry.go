@@ -265,7 +265,7 @@ var (
 	// generation, or was refreshed/replaced between an earlier generation
 	// read and the atomic compare+resolve. It is a refusal (the render
 	// admission is stale), never a resolution of a newer-generation row.
-	ErrGenerationMismatch = errors.New("mcp: app-only resolution raced a catalog generation change")
+	ErrGenerationMismatch = errors.New("mcp: App callback resolution raced a catalog generation change")
 )
 
 // DiscoveryStaleError is the bounded, retryable outcome for a refresh whose
@@ -310,33 +310,35 @@ type serverEntry struct {
 	// runtime-added descriptor that produced this registration. Empty for
 	// boot-declared registrations. Read-only after registration.
 	descriptorFingerprint string
-	// appOnly is the per-server App dispatch catalog: the app-only callbacks
-	// (provider-authored `_meta.ui.visibility: ["app"]`) discovered on THIS
-	// server, keyed by their full Harbor catalog name (`<source>_<tool>`).
+	// appVisible is the per-server App dispatch catalog: the App-visible
+	// callbacks (provider-authored `_meta.ui.visibility` containing `app`)
+	// discovered on THIS server, keyed by their full Harbor catalog name
+	// (`<source>_<tool>`).
 	// It is deliberately a SEPARATE view from the ordinary planner/model
 	// projection (the tool catalog): the attach path publishes only the
 	// non-app-only descriptors to the catalog, so an app-only callback is
 	// absent from planner context / tools/list / search / resolve / ordinary
-	// invocation by construction, while a rendered App of this SAME server
-	// resolves it here, still under the identity / reach / OAuth / approval
-	// / current-state gates. Guarded by the Registry's mu (RWMutex) exactly
+	// invocation by construction. A mixed-visibility tool remains in that
+	// ordinary projection and is also resolved here by a rendered App of this
+	// SAME server, still under the identity / reach / OAuth / approval /
+	// current-state gates. Guarded by the Registry's mu (RWMutex) exactly
 	// like stats: written only while mu is held for writing, read only
 	// while held for reading. Populated from the SAME discovered descriptor
 	// snapshot that seeds the catalog publication, so attach / reconnect /
 	// refresh / replacement / detach move both views together.
-	appOnly map[string]tools.ToolDescriptor
-	// catalog is the ordinary planner/model projection paired with appOnly.
+	appVisible map[string]tools.ToolDescriptor
+	// catalog is the ordinary planner/model projection paired with appVisible.
 	// Refreshes reconcile both views from one filtered discovery snapshot.
 	catalog       tools.ToolCatalog
 	toolAllowlist []string
 	toolDenylist  []string
 	// currentGeneration is the DETERMINISTIC current provider/catalog
 	// generation fingerprint for this server: a content digest of the
-	// canonical CURRENT descriptor set (resources + app-only callbacks +
+	// canonical CURRENT descriptor set (resources + App callbacks +
 	// ordinary catalog), recomputed whenever a successful discovery
 	// snapshot rebuilds either view. It changes on detach (entry removed
 	// → unknown → fail closed), replacement (new descriptor set), and
-	// every successful discovery change to resources / app-only /
+	// every successful discovery change to resources / App callbacks /
 	// ordinary catalog — even when the deployment registration
 	// descriptor (`descriptorFingerprint`) did not change. It is stable
 	// across replicas with the same canonical current descriptor set
@@ -642,14 +644,15 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 			promptCount:       pc,
 		},
 	}
-	// Partition the SAME discovered snapshot into the two views: the
-	// app-only callbacks stay HERE on the per-server App dispatch catalog
-	// (read via ResolveAppTool), while the attach path publishes only the
-	// remaining descriptors to the ordinary planner/model catalog. Both
-	// views therefore always derive from one discovered set — a refresh /
-	// replacement swaps the appOnly set exactly when it swaps the catalog
+	// Partition the SAME discovered snapshot into the two views: App-visible
+	// callbacks stay HERE on the per-server App dispatch catalog (read via
+	// ResolveAppTool), while the attach path publishes only the non-app-only
+	// descriptors to the ordinary planner/model catalog. Mixed visibility
+	// tools therefore appear in BOTH views; exact app-only callbacks appear
+	// only here. Both views always derive from one discovered set — a refresh
+	// / replacement swaps the appVisible set exactly when it swaps the catalog
 	// publication, so no stale callback can survive either direction.
-	entry.appOnly = partitionAppOnly(descs)
+	entry.appVisible = partitionAppVisible(descs)
 	entry.currentGeneration = currentGenerationFor(descs)
 	if descs != nil {
 		entry.stats.lastDiscoveryAt = now
@@ -658,18 +661,19 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 
 }
 
-// partitionAppOnly splits a discovered descriptor snapshot into the
+// partitionAppVisible splits a discovered descriptor snapshot into the
 // per-server App dispatch catalog — every descriptor whose Tool carries
-// the provider-authored app-only classification (`_meta.ui.visibility:
-// ["app"]`), keyed by full catalog name. A duplicate name within the set
-// is impossible for a single provider's discovery (the MCP server's own
-// tool names are unique), so a collision is skipped defensively rather
-// than panicking; the ordinary catalog's StageSource enforces the real
-// uniqueness gate for the other view.
-func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescriptor {
+// the provider-authored App-visible classification (including mixed
+// `_meta.ui.visibility` such as `["model", "app"]`), keyed by full catalog
+// name. A duplicate name within the set is impossible for a single
+// provider's discovery (the MCP server's own tool names are unique), so a
+// collision is skipped defensively rather than panicking; the ordinary
+// catalog's StageSource enforces the real uniqueness gate for the other
+// view.
+func partitionAppVisible(descs []tools.ToolDescriptor) map[string]tools.ToolDescriptor {
 	var out map[string]tools.ToolDescriptor
 	for _, d := range descs {
-		if !d.Tool.AppOnly {
+		if !d.Tool.AppOnly && !d.Tool.AppVisible {
 			continue
 		}
 		if out == nil {
@@ -689,14 +693,14 @@ func partitionAppOnly(descs []tools.ToolDescriptor) map[string]tools.ToolDescrip
 // semantic field of every current tools.Tool descriptor.
 //
 // # Covered fields — every stable semantic field that can affect
-// ordinary / app-only / resource / prompt catalog meaning
+// ordinary / App / resource / prompt catalog meaning
 //
 // name, description, ArgsSchema and OutSchema, SideEffects, Tags,
 // AuthScopes, CostHint, LatencyHint, SafetyNotes, Loading, Examples (in
 // order, each with its canonical JSON Args, Description, and Tags),
 // Source, Transport, Policy (TimeoutMS, MaxRetries, BackoffBase,
 // BackoffMult, BackoffMax, RetryOn, Validate), HandlesMIME, Form, and
-// AppOnly.
+// AppOnly and AppVisible.
 //
 // # Excluded
 //
@@ -907,6 +911,11 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 	}
 	writeField(string(t.Form))
 	if t.AppOnly {
+		writeField("1")
+	} else {
+		writeField("0")
+	}
+	if t.AppVisible {
 		writeField("1")
 	} else {
 		writeField("0")
@@ -1156,9 +1165,9 @@ func finiteDecimalFactors(d *big.Int) (twos, fives int, ok bool) {
 	return twos, fives, div.Cmp(big.NewInt(1)) == 0
 }
 
-// ResolveAppTool resolves an app-only callback from the named server's App
+// ResolveAppTool resolves an App-visible callback from the named server's App
 // dispatch catalog — the ONLY authority a rendered App may invoke an
-// app-only callback through. The server identity is the host-derived key:
+// App callback through. The server identity is the host-derived key:
 // a callback name is NEVER resolvable here without its own server, and a
 // name that lives on a DIFFERENT server answers not-found, so no string
 // prefix or remembered global tool name can select another server's
@@ -1167,7 +1176,7 @@ func finiteDecimalFactors(d *big.Int) (twos, fives int, ok bool) {
 // triple before this is reachable.
 //
 // The returned descriptor is the SAME wrapped descriptor the ordinary
-// catalog would hold for a non-app-only tool, so invoking it re-enters the
+// catalog would hold for a mixed-visibility tool, so invoking it re-enters the
 // existing approval / OAuth / identity / current-state path — the App
 // dispatch surface applies those gates exactly as a planner call does.
 func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescriptor, bool) {
@@ -1177,11 +1186,11 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 	if !ok {
 		return tools.ToolDescriptor{}, false
 	}
-	d, ok := e.appOnly[toolName]
+	d, ok := e.appVisible[toolName]
 	return d, ok
 }
 
-// ResolveAppToolAtGeneration resolves an app-only callback from the named
+// ResolveAppToolAtGeneration resolves an App-visible callback from the named
 // server's App dispatch catalog ONLY when the server's CURRENT generation
 // exactly equals expectedGeneration. The generation compare and the
 // descriptor lookup happen under ONE registry read lock, so a
@@ -1194,7 +1203,7 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 // Outcomes are typed:
 //
 //   - (descriptor, true, nil): the server's current generation equals
-//     expectedGeneration and it holds an app-only callback under
+//     expectedGeneration and it holds an App-visible callback under
 //     toolName — resolved under the exact expected generation.
 //   - ("", false, error wrapping ErrGenerationMismatch): the server is
 //     absent, has no established current generation, or its current
@@ -1205,7 +1214,7 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 //     refusal), and a digest in the message would leak catalog state to
 //     whoever probes the refusal (CLAUDE.md §7).
 //   - ("", false, nil): the server's current generation equals
-//     expectedGeneration, but the server does not hold an app-only
+//     expectedGeneration, but the server does not hold an App-visible
 //     callback under toolName (a plain not-found within the exact
 //     generation).
 func (r *Registry) ResolveAppToolAtGeneration(serverID, toolName, expectedGeneration string) (tools.ToolDescriptor, bool, error) {
@@ -1224,13 +1233,13 @@ func (r *Registry) ResolveAppToolAtGeneration(serverID, toolName, expectedGenera
 		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q current generation changed while resolving",
 			ErrGenerationMismatch, serverID)
 	}
-	d, ok := e.appOnly[toolName]
+	d, ok := e.appVisible[toolName]
 	return d, ok, nil
 }
 
 // CurrentGeneration returns the deterministic current provider/catalog
 // generation fingerprint for the named server: a content digest of the
-// canonical CURRENT descriptor set (resources + app-only callbacks +
+// canonical CURRENT descriptor set (resources + App callbacks +
 // ordinary catalog). It changes on detach (server absent → unknown),
 // replacement, and every successful discovery change — even when the
 // deployment registration descriptor did not change. It is stable across
@@ -2325,8 +2334,9 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 //
 // The fresh descriptor set rebuilds BOTH projections under the registry write
 // lock: the ordinary planner/model catalog and the server's App dispatch
-// catalog (entry.appOnly). A refresh therefore picks up and removes callbacks
-// in either visibility direction without leaving a stale projection behind.
+// catalog (entry.appVisible). A refresh therefore picks up and removes App
+// callbacks in either visibility direction without leaving a stale projection
+// behind.
 func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*DiscoveryResult, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
@@ -2377,10 +2387,10 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	// Rebuild the App dispatch view from the SAME fresh snapshot that just
 	// re-derived the counts — one discovered set, two views. The
 	// deterministic current provider/catalog generation recomputes with
-	// the snapshot, so a refresh that changes resources / app-only /
+	// the snapshot, so a refresh that changes resources / App callbacks /
 	// ordinary catalog rows bumps the generation even when the deployment
 	// registration descriptor did not change.
-	e.appOnly = partitionAppOnly(descs)
+	e.appVisible = partitionAppVisible(descs)
 	e.currentGeneration = currentGenerationFor(descs)
 	r.mu.Unlock()
 
@@ -2678,15 +2688,15 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	e.stats.lastDiscoveryAt = r.clock()
 	e.stats.state = ServerStateOnline
 	// The boot-time descriptor snapshot also establishes BOTH projections
-	// from the SAME set: the App dispatch catalog (entry.appOnly) and the
+	// from the SAME set: the App dispatch catalog (entry.appVisible) and the
 	// deterministic current provider/catalog generation. RecordDiscovery is
 	// the no-network counterpart to RefreshDiscovery, so it must seed the
 	// same two views the refresh path maintains together, under one write
-	// lock — a subsequent generation-bound app-only resolution
+	// lock — a subsequent generation-bound App callback resolution
 	// (ResolveAppToolAtGeneration) must see the refreshed partition under
 	// the refreshed generation, never stale descriptors from the
 	// pre-discovery stage.
-	e.appOnly = partitionAppOnly(descs)
+	e.appVisible = partitionAppVisible(descs)
 	e.currentGeneration = currentGenerationFor(descs)
 	return nil
 }

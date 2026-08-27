@@ -21,7 +21,7 @@ import (
 // per-server App dispatch catalog. The two attach legs below exercise the
 // REAL wire transports the ask names — HTTP (SSE) and stdio — with the
 // same fixture server (one ordinary tool, one `["app"]` callback, one
-// tool visible to both).
+// `["app","tool"]` callback visible to both).
 
 // assertAttachPartition is the shared assertion body both transport legs
 // run: the ordinary view (generic resolve + planner view + tools/list
@@ -72,6 +72,16 @@ func assertAttachPartition(t *testing.T, cat tools.ToolCatalog, reg *Registry, s
 	// --- App dispatch view (the SAME discovered snapshot) ---
 	if _, ok := reg.ResolveAppTool(serverID, serverID+"_callback"); !ok {
 		t.Fatal("app-only callback did not resolve through its own server's App dispatch catalog")
+	}
+	mixed, ok := reg.ResolveAppTool(serverID, serverID+"_both")
+	if !ok {
+		t.Fatal("mixed model/App callback did not resolve through its own server's App dispatch catalog")
+	}
+	if mixed.Tool.AppOnly {
+		t.Fatal("mixed model/App callback was incorrectly classified as AppOnly")
+	}
+	if !mixed.Tool.AppVisible {
+		t.Fatal("mixed model/App callback lost its AppVisible classification")
 	}
 	if _, ok := reg.ResolveAppTool(serverID, serverID+"_plain"); ok {
 		t.Fatal("ordinary tool resolved as an app-only callback")

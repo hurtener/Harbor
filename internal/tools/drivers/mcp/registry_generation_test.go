@@ -44,6 +44,7 @@ func genBaseTool() tools.Tool {
 		HandlesMIME: []string{"image/*", "text/plain"},
 		Form:        tools.ToolFormTool,
 		AppOnly:     true,
+		AppVisible:  true,
 	}
 }
 
@@ -57,7 +58,7 @@ func genBaseSet() []tools.ToolDescriptor {
 // field family — including schemas, side effects, tags / scopes,
 // cost / latency / safety hints, loading, examples (description / tags /
 // canonical JSON args), source, transport, every policy field, MIME
-// handling, form, and the app-only / resource classification — changes
+// handling, form, and the App-only / App-visible / resource classification — changes
 // the deterministic generation. A covered field that fails to move the
 // generation is a lossy digest, exactly the P1 defect this replaces.
 func TestCurrentGenerationFor_EverySemanticFieldFamilyMatters(t *testing.T) {
@@ -100,6 +101,7 @@ func TestCurrentGenerationFor_EverySemanticFieldFamilyMatters(t *testing.T) {
 		{"mime handling", func(d *tools.ToolDescriptor) { d.Tool.HandlesMIME = []string{"audio/*"} }},
 		{"form (resource classification)", func(d *tools.ToolDescriptor) { d.Tool.Form = tools.ToolFormResource }},
 		{"app-only classification", func(d *tools.ToolDescriptor) { d.Tool.AppOnly = false }},
+		{"app-visible classification", func(d *tools.ToolDescriptor) { d.Tool.AppVisible = false }},
 	}
 
 	for _, tc := range cases {
@@ -760,7 +762,7 @@ func TestRegistry_ResolveAppToolAtGeneration_MismatchErrorHidesDigests(t *testin
 // pins the P2 latent-path fix: RecordDiscovery is the no-network
 // counterpart to RefreshDiscovery, so it must rebuild BOTH projections
 // from the SAME fresh descriptor set — the App dispatch catalog
-// (entry.appOnly) AND the deterministic current generation — under one
+// (entry.appVisible) AND the deterministic current generation — under one
 // write lock. A subsequent generation-bound app-only resolution
 // (ResolveAppToolAtGeneration) must see the refreshed partition: the new
 // app-only callback resolves under the new generation, the stale callback

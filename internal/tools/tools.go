@@ -199,6 +199,15 @@ type Tool struct {
 	// Stamped by the MCP driver at discovery; every other driver leaves it
 	// zero-valued. See AppOnly on the MCP driver's app-visibility parsing.
 	AppOnly bool
+	// AppVisible marks a tool whose provider declared a rendered MCP App
+	// visibility, including a mixed declaration such as
+	// `_meta.ui.visibility: ["model", "app"]`. Classification-only, like
+	// AppOnly: it is not an authorization input. The MCP attach path uses it
+	// to retain mixed tools in the ordinary planner/model projection while
+	// also making them available to the same-server App dispatch catalog.
+	// Exact app-only declarations set both AppVisible and AppOnly. Stamped by
+	// the MCP driver at discovery; every other driver leaves it zero-valued.
+	AppVisible bool
 }
 
 // MatchesMIME reports whether the tool's HandlesMIME declaration

@@ -24,6 +24,12 @@ Two versions move independently in Harbor (RFC §5.3):
   an omitted optional string as `""`; required mappings and non-empty optional
   values retain their existing strict validation and resolver behavior.
 
+- MCP App callbacks declared with mixed visibility such as
+  `["model", "app"]` now remain in the model catalog and are also admitted
+  through their owning server's App dispatch catalog. Exact app-only
+  callbacks retain their planner exclusion and all existing admission and
+  policy gates.
+
 ## [1.30.5] — 2026-08-26
 
 ### Added
