@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactcontent"
 	"github.com/hurtener/Harbor/internal/tools/artifactref"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -483,6 +484,12 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 			if raw == nil && len(result.Meta) > 0 {
 				raw = map[string]any{"meta": result.Meta}
 			}
+			var materializeErr error
+			raw, materializeErr = e.materializeContent(ctx, rc, raw, d.Tool)
+			if materializeErr != nil {
+				return nil, nil, fmt.Errorf("tool %q error result materialization: %w", d.Tool, materializeErr)
+			}
+			setMCPResultValue(err, raw)
 			return raw, e.projectForLLM(ctx, rc, d.Tool, raw), classified
 		}
 		return nil, nil, classified
@@ -490,6 +497,10 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	raw := result.Value
 	if raw == nil && len(result.Meta) > 0 {
 		raw = map[string]any{"meta": result.Meta}
+	}
+	raw, err = e.materializeContent(ctx, rc, raw, d.Tool)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tool %q result materialization: %w", d.Tool, err)
 	}
 	llmObs := e.projectForLLM(ctx, rc, d.Tool, raw)
 	return raw, llmObs, nil
@@ -501,6 +512,31 @@ func mcpResultFromError(err error) (tools.ToolResult, bool) {
 		return tools.ToolResult{}, false
 	}
 	return mcpErr.Result, true
+}
+
+// setMCPResultValue keeps the typed error envelope in lockstep with the safe
+// value returned to the trajectory. MCP drivers normally materialize before
+// returning; this second assignment protects generic descriptor wrappers that
+// carry an MCPToolResultError without using the driver path.
+func setMCPResultValue(err error, value any) {
+	var mcpErr *tools.MCPToolResultError
+	if errors.As(err, &mcpErr) {
+		mcpErr.Result.Value = value
+	}
+}
+
+// materializeContent is the transport-neutral dispatch safety belt. Any tool
+// driver that implements tools.ArtifactContentResult gets the same identity
+// scope and fail-closed ArtifactStore treatment; dispatch never switches on a
+// concrete MCP/server type.
+func (e *toolExecutor) materializeContent(ctx context.Context, rc planner.RunContext, value any, producer string) (any, error) {
+	scope := artifacts.ArtifactScope{
+		TenantID:  rc.Quadruple.TenantID,
+		UserID:    rc.Quadruple.UserID,
+		SessionID: rc.Quadruple.SessionID,
+		TaskID:    rc.Quadruple.RunID,
+	}
+	return artifactcontent.Materialize(ctx, e.artifacts, scope, value, producer)
 }
 
 func (e *toolExecutor) resolveForRun(ctx context.Context, rc planner.RunContext, name string) (tools.ToolDescriptor, bool, error) {
@@ -564,7 +600,10 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
-	rawBranches, llmBranches := e.branchObservations(ctx, rc, d.Branches, results)
+	rawBranches, llmBranches, materializeErr := e.branchObservations(ctx, rc, d.Branches, results)
+	if materializeErr != nil {
+		return nil, nil, fmt.Errorf("parallel result materialization: %w", materializeErr)
+	}
 	return planner.ParallelObservation{Branches: rawBranches},
 		planner.ParallelObservation{Branches: llmBranches}, nil
 }
@@ -581,7 +620,7 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 // branch never trips the LLM-edge context-leak guard. Shared by the
 // CallParallel path and the Batch decision's tool half so both preserve
 // the identical non-atomic, JoinAll-only native posture.
-func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunContext, branches []planner.CallTool, results []parallel.Result) (raw, llm []planner.ParallelBranchObservation) {
+func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunContext, branches []planner.CallTool, results []parallel.Result) (raw, llm []planner.ParallelBranchObservation, materializeErr error) {
 	raw = make([]planner.ParallelBranchObservation, 0, len(results))
 	llm = make([]planner.ParallelBranchObservation, 0, len(results))
 	for _, r := range results {
@@ -605,6 +644,11 @@ func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunCon
 					mcpResult = *r.Result
 				}
 				branchErr.Value = mcpResult.Value
+				branchErr.Value, materializeErr = e.materializeContent(ctx, rc, branchErr.Value, r.Tool)
+				if materializeErr != nil {
+					return nil, nil, fmt.Errorf("branch %d error result: %w", r.Index, materializeErr)
+				}
+				setMCPResultValue(r.Err, branchErr.Value)
 			}
 			raw = append(raw, branchErr)
 			llmBranch := branchErr
@@ -618,6 +662,10 @@ func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunCon
 			if rawVal == nil && len(r.Result.Meta) > 0 {
 				rawVal = map[string]any{"meta": r.Result.Meta}
 			}
+		}
+		rawVal, materializeErr = e.materializeContent(ctx, rc, rawVal, r.Tool)
+		if materializeErr != nil {
+			return nil, nil, fmt.Errorf("branch %d result: %w", r.Index, materializeErr)
 		}
 		raw = append(raw, planner.ParallelBranchObservation{
 			CallID: callID,
@@ -634,7 +682,7 @@ func (e *toolExecutor) branchObservations(ctx context.Context, rc planner.RunCon
 			Value:  e.projectForLLM(ctx, rc, r.Tool, rawVal),
 		})
 	}
-	return raw, llm
+	return raw, llm, nil
 }
 
 // spawnTask dispatches a planner.SpawnTask.
@@ -1023,7 +1071,11 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		if err != nil {
 			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}
-		raw.Tools, llm.Tools = e.branchObservations(ctx, rc, d.Tools, results)
+		var materializeErr error
+		raw.Tools, llm.Tools, materializeErr = e.branchObservations(ctx, rc, d.Tools, results)
+		if materializeErr != nil {
+			return nil, nil, fmt.Errorf("batch tool result materialization: %w", materializeErr)
+		}
 	}
 
 	// Persist progress only after every structural validation has passed and

@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -138,6 +139,13 @@ type Config struct {
 	// tool-invocation path whenever a result declares a `ui://` app; a
 	// Capture error is logged loudly but never fails the tool call.
 	ToolContext ToolContextCapturer
+	// ArtifactStore receives standard binary content returned by a tool,
+	// resource, or prompt. The MCP driver never passes those bytes to the
+	// planner or an MCP App context; it replaces each part with metadata-only
+	// ArtifactContentRef values before returning. Nil is tolerated for
+	// connections that never return binary content, but a binary result fails
+	// loudly at invocation time.
+	ArtifactStore artifacts.ArtifactStore
 	// DefaultPolicy is the ToolPolicy applied to descriptors built
 	// from this provider. Zero-valued → tools.DefaultPolicy().
 	DefaultPolicy tools.ToolPolicy
@@ -1259,6 +1267,14 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
+	// Materialize typed MCP binary parts before either planner observation or
+	// MCP App context capture. A store failure is terminal for this result:
+	// returning the lowered bytes (or a JSON/truncated fallback) would leak
+	// content across the planner boundary.
+	value, err = p.materializeValue(ctx, value, p.contentProducer("tool", name))
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
 	// The substitution RECORD rides the observation — ids, sizes and a
 	// digest, never the bytes. It is deliberately an EXPORTED, marshalled
 	// field (contrast AppRef, which is `json:"-"` and deliberately kept
@@ -1464,7 +1480,11 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, err)
 				}
-				return tools.ToolResult{Value: lowerReadResourceResult(res)}, nil
+				value, materializeErr := p.materializeValue(ctx, lowerReadResourceResult(res), p.contentProducer("resource", uri))
+				if materializeErr != nil {
+					return tools.ToolResult{}, materializeErr
+				}
+				return tools.ToolResult{Value: value}, nil
 			},
 			nil, nil, tool.Policy,
 		)
@@ -1521,7 +1541,11 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %w", ErrTransportFailed, name, err)
 				}
-				return tools.ToolResult{Value: lowerGetPromptResult(res)}, nil
+				value, materializeErr := p.materializeValue(ctx, lowerGetPromptResult(res), p.contentProducer("prompt", name))
+				if materializeErr != nil {
+					return tools.ToolResult{}, materializeErr
+				}
+				return tools.ToolResult{Value: value}, nil
 			},
 			nil, nil, tool.Policy,
 		)

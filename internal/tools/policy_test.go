@@ -206,6 +206,7 @@ func TestClassifyError_Heuristics(t *testing.T) {
 		{"DeadlineExceeded+parent", context.DeadlineExceeded, false, tools.ErrClassPermanent},
 		{"Canceled", context.Canceled, false, tools.ErrClassPermanent},
 		{"InvalidArgs", tools.ErrToolInvalidArgs, false, tools.ErrClassPermanent},
+		{"Materialization+perAttemptTimeout", errors.Join(tools.ErrToolResultMaterialization, context.DeadlineExceeded), true, tools.ErrClassPermanent},
 		{"timeout-text", fmt.Errorf("call timeout"), false, tools.ErrClassTimeout},
 		{"5xx-text", fmt.Errorf("upstream returned status 503 service unavailable"), false, tools.ErrClass5xx},
 		{"transient-default", fmt.Errorf("eof reading body"), false, tools.ErrClassTransient},

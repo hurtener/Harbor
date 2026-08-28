@@ -14735,3 +14735,39 @@ HTTP/stdio attach, registry-generation, and real render-admission tests cover
 exact app-only, mixed, ordinary, cross-server, and stale-generation behavior.
 
 **Cross-references:** D-412, D-425, RFC §6.10, Phase 238.
+
+## D-447 — Protocol-native binary tool content is materialized as session artifacts
+
+**Date:** 2026-08-27
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+Harbor's transport-neutral tool-result seam admits protocol-native binary
+content without teaching the dispatcher about a particular server or driver.
+Every binary candidate is stored as an individual content-addressed artifact
+under the verified `(tenant, user, session)` scope, with a bounded payload,
+canonical MIME metadata, a sanitized filename, size, full SHA-256, producer
+provenance, and deterministic content index. Standard MCP ImageContent,
+AudioContent, and EmbeddedResource blobs use this seam; text, structured
+content, and ResourceLink metadata stay in the lowered result, while a
+ResourceLink is never fetched automatically.
+
+Materialization runs before both raw trajectory observation and the
+LLM-facing projection, and before an MCP App tool-context capture. The
+planner-facing value contains artifact metadata/refs only; raw binary bytes
+are not serialized, logged, or sent to the model. Missing identity or store,
+empty/oversized content, cancellation, storage failure, and invalid driver
+projection fail loudly rather than falling back to JSON or truncation.
+ArtifactStore has no transaction/rollback contract, so a later multi-part
+write can leave earlier identity-scoped artifacts in the session manifest;
+content addressing makes a retry deduplicate those writes. Repeated provider
+or App handling therefore does not create manifest duplicates.
+
+This does not add a Protocol method, a server-specific configuration field,
+automatic URL fetching, or a second artifact store. The existing MCP App
+resource-read path remains a host-only byte read for rendering; only typed
+binary tool/result content entering planner or App context follows the
+materialization seam.
+
+**Cross-references:** D-022, D-347, D-412, RFC §6.10.

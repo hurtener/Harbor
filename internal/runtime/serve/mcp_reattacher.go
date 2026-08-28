@@ -281,6 +281,7 @@ func (a *MCPConnectionAttacher) reattachAttachDeps(owner toolauth.Owner, closers
 		OAuthProviders:   a.oauthProviders,
 		OAuthProviderSet: a.oauthProviderSet,
 		ToolContext:      a.toolContext,
+		ArtifactStore:    a.artifactStore,
 		Owner:            owner,
 		// The deployment's egress ceiling, threaded exactly as the add path
 		// threads it. Omitting it silently restores the default ceiling across

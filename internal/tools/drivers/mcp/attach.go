@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -73,6 +74,11 @@ type AttachDeps struct {
 	// capturer leaves tool-context delivery unwired (the host read returns
 	// not-found). Optional.
 	ToolContext ToolContextCapturer
+	// ArtifactStore is the runtime's identity-scoped content store. Standard
+	// binary MCP result blocks are materialized there before they reach the
+	// planner or an MCP App context. Connections without binary results may
+	// leave it nil; a binary result then fails closed at invocation time.
+	ArtifactStore artifacts.ArtifactStore
 	// Owner is the (tenant, agent) reconcile-view tag stamped on the
 	// registry entry for a RUNTIME-ADDED connection. The boot loader leaves it
 	// zero (boot-declared servers are untagged and never reconciled); the
@@ -395,6 +401,7 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		DefaultIdentity:        deps.DefaultIdentity,
 		HostDisplayModes:       append([]string(nil), deps.HostDisplayModes...),
 		ToolContext:            deps.ToolContext,
+		ArtifactStore:          deps.ArtifactStore,
 		OAuthProvider:          oauthProvider,
 		OwnOAuthProvider:       deps.OAuthProviderOverride != nil && ms.OAuthProvider != "" && deps.OwnOAuthProvider,
 		OwnedInjectionProvider: ownedInjectionProvider(ms, deps),
