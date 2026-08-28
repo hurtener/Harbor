@@ -2106,6 +2106,25 @@ type AgentConfigUserGetResponse struct {
 	ProtocolVersion string `json:"protocol_version"`
 }
 
+// AgentConfigUserReconcileLiveProfileRequest is the
+// `agent_config.user.reconcile_live_profile` request. It asks the runtime to
+// converge the caller's existing durable user profile against live MCP state.
+// The verified identity and agent reach are the only selectors; provider,
+// descriptor, authority, and replay material are deliberately absent.
+type AgentConfigUserReconcileLiveProfileRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigUserReconcileLiveProfileResponse reports the freshly materialized
+// user profile after live reconciliation. Set is false when the caller has no
+// durable user profile to reconcile.
+type AgentConfigUserReconcileLiveProfileResponse struct {
+	Revision        *AgentConfigRevisionView `json:"revision,omitempty"`
+	Set             bool                     `json:"set"`
+	ProtocolVersion string                   `json:"protocol_version"`
+}
+
 // AgentConfigUserSetRevisionRequest is the `agent_config.user.set_revision`
 // request — write a new revision of the caller's durable variant from the
 // bounded safe-subset payload.

@@ -5836,12 +5836,22 @@ deployment, or downstream acceptance is claimed.
   collisions rather than aliasing them. Private OAuth initialize/discovery
   continues to resolve the acting identity's bearer without widening token
   destinations.
+- **Live-profile retry extension:** D-450 adds the typed
+  `agent_config.user.reconcile_live_profile` recovery/read operation. It
+  reuses the existing user-scope signed-capability reconciler used at run
+  start, requires verified `agent_config:user` plus signed reach, and returns
+  the fresh `ConfigScopeUser` revision for immediate tool re-listing. Its
+  `{identity, agent_id}` body adds no provider, authority, JTI, idempotency,
+  or new lifecycle state; existing revision/removal fences remain the
+  concurrency authority.
 - **Evidence:** two-user same-agent desired/physical/removal isolation,
-  verified identity/scope/reach rejection, user projection narrowing, focused
+  verified identity/scope/reach rejection, user projection narrowing, live
+  profile reconcile current-session and concurrent-removal coverage, focused
   package tests, Protocol generator lockstep, and static smoke. Local race
   and smoke results are recorded at the implementation head; hosted CI,
   release, deployment, and downstream acceptance remain pending.
-- **Decision:** D-448. **Status:** Accepted for the next Harbor patch release;
+- **Decision:** D-448 and D-450. **Status:** Accepted for the next Harbor patch
+  release;
   downstream/runtime deployment and acceptance remain pending. See
   `docs/plans/phase-265-user-scoped-signed-oauth-mcp.md`.
 

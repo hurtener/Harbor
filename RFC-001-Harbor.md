@@ -2277,6 +2277,23 @@ aborts the fence; uncertainty remains pending cross-runtime until reread proves
 its phase. `DeactivateIfActive` is post-fence pointer compaction, never this
 security fence. (Phase 233b.)
 
+**Immediate user-profile reconciliation (D-450).** The user-tier
+`agent_config.user.reconcile_live_profile` method is the single Protocol
+recovery/read operation for a caller whose durable `ConfigScopeUser` signed
+MCP pair may no longer be materialized in the process-local registry. Its
+request is limited to the verified `IdentityScope` echo and `agent_id`, and it
+requires the existing `agent_config:user` scope and signed reach for that
+agent. The service invokes the same
+`SignedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapabilityForScope` path used
+at run start with `ConfigScopeUser`, then reads the caller's fresh active
+revision and returns that projection. It has no provider, endpoint, authority,
+JTI, tenant/user selector, idempotency key, ledger, or alternate lifecycle;
+register, removal, revision CAS, physical owner, and teardown-fence semantics
+remain those of D-448. The active read follows the reconciler, so a concurrent
+user removal or revision fence cannot be reported from a stale pre-reconcile
+projection. Missing identity, authorization, reach, wiring, or profile state
+fails closed, and the Protocol version is unchanged.
+
 **Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
 
 **Fleet privilege tiers.** A Console managing one or more Harbor runtimes is a control plane. Fleet *observation* (reading events, viewing topology, listing agents) and fleet *control* (pause / drain / restart / force-stop of agents) are **distinct privilege tiers** — control requires a more-elevated scope claim than observation, extending the elevated-scope-claim concept (§6.13 admin subscriptions). Every fleet-control command is audit-redacted (§6.4) and emitted. A leaked read-only Console token must not be able to force-stop a fleet. A runtime-side enrollment allowlist of authorized control-plane clients is a stronger-than-JWT-scope option, deferred as a "decide later" item — per-request JWT scope (§5.5) covers the V1 need. (Settled — D-066.)

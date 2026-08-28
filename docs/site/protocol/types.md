@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 448 canonical Harbor Protocol wire types, generated from the single-source
+The 450 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1277,6 +1277,25 @@ Declared in `internal/protocol/types`.
 | `server_loading_modes` | `map[string]string` | optional (`omitempty`) |
 | `tool_loading_modes` | `map[string]string` | optional (`omitempty`) |
 | `personal_skills` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigUserReconcileLiveProfileRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigUserReconcileLiveProfileResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `*types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) | optional (`omitempty`) |
+| `set` | `bool` |  |
+| `protocol_version` | `string` |  |
 
 ## AgentConfigUserRegisterOAuthMCPCapabilityRequest
 

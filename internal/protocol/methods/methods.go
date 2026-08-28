@@ -597,6 +597,11 @@ const (
 	// paired-removal verb. It uses the immutable pair receipt and exact physical
 	// subject owner; no bearer or authority envelope is accepted.
 	MethodAgentConfigUserRemoveOAuthMCPCapability Method = "agent_config.user.remove_oauth_mcp_capability"
+	// MethodAgentConfigUserReconcileLiveProfile is the user-tier live-profile
+	// recovery verb. It reuses the same durable signed-capability reconciler as
+	// run start, scoped to the verified caller's ConfigScopeUser profile. The
+	// wire-transport route is `POST /v1/agent_config/user/reconcile_live_profile`.
+	MethodAgentConfigUserReconcileLiveProfile Method = "agent_config.user.reconcile_live_profile"
 
 	// MethodAgentConfigUserSkillsList — durable-per-user skills verb: lists
 	// the caller's user-scope (durable, cross-session) personal skills under
@@ -1284,6 +1289,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigUserRollback:                   {},
 	MethodAgentConfigUserRegisterOAuthMCPCapability: {},
 	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
+	MethodAgentConfigUserReconcileLiveProfile:       {},
 	MethodAgentConfigUserSkillsList:                 {},
 	MethodAgentConfigUserSkillsUpsert:               {},
 	MethodAgentConfigUserSkillsDelete:               {},
@@ -1593,6 +1599,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigUserRollback:                   {},
 	MethodAgentConfigUserRegisterOAuthMCPCapability: {},
 	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
+	MethodAgentConfigUserReconcileLiveProfile:       {},
 	// Durable-per-user skills (CLAIM-FREE, session-safe tier — a personal
 	// skill cannot widen capability, so it needs only a valid identity).
 	MethodAgentConfigUserSkillsList:   {},
@@ -1608,7 +1615,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigCompositionPreview: {},
 }
 
-// canonicalAgentConfigUserMethods is the closed sub-set of the five
+// canonicalAgentConfigUserMethods is the closed sub-set of the eight
 // `agent_config.user.*` verbs — the durable per-user config-variant tier
 // (the middle tier of the authorization matrix). A caller is permitted on
 // these verbs iff they carry the verified `auth.ScopeAgentConfigUser` claim
@@ -1624,6 +1631,7 @@ var canonicalAgentConfigUserMethods = map[Method]struct{}{
 	MethodAgentConfigUserRollback:                   {},
 	MethodAgentConfigUserRegisterOAuthMCPCapability: {},
 	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
+	MethodAgentConfigUserReconcileLiveProfile:       {},
 }
 
 // canonicalAgentConfigSessionMethods is the closed CLAIM-FREE SAFE-SUBSET —
@@ -1691,7 +1699,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMProvider:             {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the thirty-six
+// IsAgentConfigMethod reports whether m is one of the thirty-seven
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

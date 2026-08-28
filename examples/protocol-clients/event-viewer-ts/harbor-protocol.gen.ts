@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:ba5158c6fcf36cc8286b7a72000cb139ae02e1aa533db8bf030adb95df528fe0";
+export const WIRE_SURFACE_DIGEST = "sha256:0c3f1b8d54a489ca0c8fb5496bf33d3da11a3b6e2282a6099a92f6ef1c7f7acd";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -56,6 +56,7 @@ export type HarborMethod =
   | "agent_config.user.diff"
   | "agent_config.user.get"
   | "agent_config.user.list_revisions"
+  | "agent_config.user.reconcile_live_profile"
   | "agent_config.user.register_oauth_mcp_capability"
   | "agent_config.user.remove_oauth_mcp_capability"
   | "agent_config.user.rollback"
@@ -1184,6 +1185,17 @@ export interface AgentConfigUserPayload {
   server_loading_modes?: Record<string, string>;
   tool_loading_modes?: Record<string, string>;
   personal_skills?: string[];
+}
+
+export interface AgentConfigUserReconcileLiveProfileRequest {
+  identity: IdentityScope;
+  agent_id: string;
+}
+
+export interface AgentConfigUserReconcileLiveProfileResponse {
+  revision?: AgentConfigRevisionView;
+  set: boolean;
+  protocol_version: string;
 }
 
 export interface AgentConfigUserRegisterOAuthMCPCapabilityRequest {

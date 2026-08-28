@@ -673,6 +673,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigUserRemoveOAuthMCPCapabilityRequest", Response: "AgentConfigUserRemoveOAuthMCPCapabilityResponse",
 			Auth: userTierNote + "; signed reach to the target agent is required",
 		},
+		methods.MethodAgentConfigUserReconcileLiveProfile: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserReconcileLiveProfile),
+			Mutates: true,
+			Request: "AgentConfigUserReconcileLiveProfileRequest", Response: "AgentConfigUserReconcileLiveProfileResponse",
+			Auth: userTierNote + "; signed reach to the target agent is required",
+		},
 		methods.MethodAgentConfigUserSkillsList: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsList),
 			Mutates: false,

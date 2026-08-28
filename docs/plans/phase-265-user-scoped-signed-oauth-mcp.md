@@ -6,7 +6,9 @@ Add a generic user-tier sibling to the existing signed OAuth MCP capability
 registration and removal lifecycle. The sibling keeps the authority envelope
 and connection descriptor closed, derives all identity scope from the verified
 bearer, and stores the user's desired pair and tool choices in
-`ConfigScopeUser`.
+`ConfigScopeUser`. It also exposes one recovery/read operation that invokes
+the same user-tier signed-capability reconciler used at run start and returns
+the fresh profile projection for an immediate retry.
 
 ## RFC anchor
 
@@ -18,6 +20,8 @@ bearer, and stores the user's desired pair and tool choices in
 ## Decision
 
 - D-448 — user-scoped signed OAuth MCP capability lifecycle.
+- D-450 — user-tier live-profile reconciliation reuses the signed capability
+  reconciler.
 
 ## Dependencies
 
@@ -51,6 +55,10 @@ bearer, and stores the user's desired pair and tool choices in
   unchanged.
 - Ensure private OAuth initialize and discovery use the acting verified
   identity on every connection path without widening shared token destinations.
+- Provide `agent_config.user.reconcile_live_profile` as the canonical
+  immediate retry operation. It must reuse the existing
+  `SignedOAuthMCPReconciler` `ConfigScopeUser` path and return a fresh active
+  revision without introducing state, idempotency, or a second lifecycle.
 
 ## Non-goals
 
@@ -106,6 +114,14 @@ URL, provider, bearer, or token sink. Pair-owned providers use
 `OwnOAuthProvider`; the existing driver resolves the bearer from the acting
 context before initialize and discovery.
 
+The live-profile recovery request is only `{identity, agent_id}`. Its handler
+uses the verified identity and signed agent reach, calls the existing
+user-scope reconciler, and then reads the active user revision for the response.
+It does not mint a JTI, accept a provider/descriptor/authority, or write a new
+receipt. Existing removal and revision CAS fences therefore remain the sole
+concurrency authority; a concurrent removal is reflected by the post-reconcile
+fresh revision rather than a stale retry projection.
+
 ## Acceptance criteria
 
 - [x] User register/remove methods are present in canonical methods, stream
@@ -129,6 +145,9 @@ context before initialize and discovery.
       the shared provider set or token destination.
 - [x] Focused source tests, generator lockstep checks, static smoke, and the
       focused race gate pass locally.
+- [x] Existing-pair retry calls the canonical live-profile reconcile method,
+      uses its fresh projection, makes no new registration/JTI, and reports
+      reconciliation failure as a truthful retryable error.
 
 ## Files added or changed
 
@@ -140,7 +159,7 @@ context before initialize and discovery.
 - Canonical Protocol methods/types, stream routes, TypeScript client/types,
   and generated manifest/reference files.
 - Two-user lifecycle and effective projection tests.
-- D-448, this phase plan, and `scripts/smoke/phase-265.sh`.
+- D-448 and D-450, this phase plan, and `scripts/smoke/phase-265.sh`.
 
 ## Test plan
 
@@ -150,6 +169,9 @@ context before initialize and discovery.
   packages.
 - `go test -race` over the complete focused lifecycle/projection/serve/MCP
   set.
+- User live-profile reconcile service/stream tests, including current-session
+  identity, body/reach mismatch, two-user isolation, concurrent removal and
+  fresh post-reconcile revision projection.
 - User loading-mode validation, two-user differing-mode projection, and
   logical-to-physical personal-source loading tests.
 - Protocol TypeScript, reference, and committed-file lockstep checks.
@@ -159,9 +181,10 @@ context before initialize and discovery.
 
 `scripts/smoke/phase-265.sh` asserts the user methods/types/routes, verified
 authorization, `ConfigScopeUser`, full physical owner plumbing, user-only
-projection, private OAuth provider ownership, the two-user tests, D-448, and
-the generated contract surfaces. It is static-only and does not claim a live
-runtime or hosted CI result.
+projection, private OAuth provider ownership, the two-user tests, the live
+profile reconcile route and test, D-448/D-450, and the generated contract
+surfaces. It is static-only and does not claim a live runtime or hosted CI
+result.
 
 ## Coverage target
 
@@ -189,15 +212,22 @@ has a focused test. No unrelated package coverage claim is made.
 - Existing operator maintenance preserves its compatibility fence and skips
   user operation receipts; user reconciliation is keyed by the durable user
   attachment, while session identity is audit/replay context only.
+- A runtime must expose this additive method before a consumer can perform an
+  immediate retry after process-local attachment loss. Until that runtime
+  contract is deployed, the caller reports live verification unavailable; no
+  tag or compatibility version is inferred by this plan.
 
 ## Public surface
 
 - `AgentConfigUserRegisterOAuthMCPCapabilityRequest` / `Response`.
 - `AgentConfigUserRemoveOAuthMCPCapabilityRequest` / `Response`.
+- `AgentConfigUserReconcileLiveProfileRequest` / `Response`.
 - `agent_config.user.register_oauth_mcp_capability`.
 - `agent_config.user.remove_oauth_mcp_capability`.
+- `agent_config.user.reconcile_live_profile`.
 - `ProtocolClient.userRegisterOAuthMCPCapability` and
-  `ProtocolClient.userRemoveOAuthMCPCapability`.
+  `ProtocolClient.userRemoveOAuthMCPCapability` and
+  `ProtocolClient.userReconcileLiveProfile`.
 
 Protocol version remains `0.1.0`.
 

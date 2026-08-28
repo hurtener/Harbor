@@ -14899,3 +14899,39 @@ fields (including no event/cache and broker re-exchange), the unchanged
 general mismatch guard, and the production signed builder path. No hosted CI,
 tag, release, downstream/runtime deployment, or downstream acceptance is
 claimed.
+
+## D-450 — User-tier live-profile reconciliation reuses the signed capability reconciler
+
+**Date:** 2026-08-28
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The user-tier `agent_config.user.reconcile_live_profile` method is the
+canonical immediate recovery operation for a caller's durable
+`ConfigScopeUser` profile. It accepts only the verified `IdentityScope` echo
+and `agent_id`, and requires the existing `agent_config:user` scope plus signed
+agent reach. It invokes the same `SignedOAuthMCPReconciler` user-scope path
+used by run start, then reads and returns the fresh active user revision for
+the caller's next projection. It introduces no provider, endpoint, authority,
+JTI, tenant, user selector, idempotency field, ledger, or second reconciliation
+mechanism.
+
+The operation is deliberately a recovery/read projection, not an attach or
+remove door: the existing signed-capability operation receipt, revision CAS,
+physical owner, teardown fence, and removal/replacement rules remain the
+authority. A concurrent removal or revision movement therefore remains
+subject to those existing fences, and the response is read only after the
+shared reconciler returns. Missing verified identity, user scope, signed
+reach, reconciler wiring, or active profile fails closed. The Protocol version
+and all existing user register/remove semantics remain unchanged.
+
+**Cross-references:** D-397, D-398, D-401, D-407, D-448, RFC §5.5, §6.4,
+§6.11, §6.16, `docs/plans/phase-265-user-scoped-signed-oauth-mcp.md`.
+
+**Evidence status.** Focused service and stream tests cover verified identity
+and current session use, two-user isolation, body/reach mismatch rejection,
+missing reconciler fail-closed behavior, and a concurrent user removal that
+must return the post-removal revision. Client and generated Protocol surfaces
+are covered locally. No hosted CI, tag, release, downstream/runtime
+deployment, or downstream acceptance is claimed.

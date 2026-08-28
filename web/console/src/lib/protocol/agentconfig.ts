@@ -1190,6 +1190,23 @@ export interface AgentConfigUserGetResponse {
 	protocol_version: string;
 }
 
+/** `agent_config.user.reconcile_live_profile` request — reconcile the
+ * caller's existing durable user profile against live MCP state. The verified
+ * identity echo and server-resolved agent are the only selectors, matching
+ * Harbor's canonical user-tier wire shape. */
+export interface AgentConfigUserReconcileLiveProfileRequest {
+	identity: IdentityScope;
+	agent_id: string;
+}
+
+/** `agent_config.user.reconcile_live_profile` response — the fresh user
+ * profile projection after live reconciliation. */
+export interface AgentConfigUserReconcileLiveProfileResponse {
+	revision?: AgentConfigRevisionView;
+	set: boolean;
+	protocol_version: string;
+}
+
 /** `agent_config.user.set_revision` request — write a new revision of the
  * caller's durable variant (user-tier; requires the `agent_config:user` scope). */
 export interface AgentConfigUserSetRevisionRequest {
