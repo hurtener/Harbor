@@ -2825,6 +2825,16 @@
           "optional": true
         },
         {
+          "key": "server_loading_modes",
+          "type": "object",
+          "optional": true
+        },
+        {
+          "key": "tool_loading_modes",
+          "type": "object",
+          "optional": true
+        },
+        {
           "key": "personal_skills",
           "type": "array",
           "optional": true

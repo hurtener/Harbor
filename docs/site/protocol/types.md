@@ -1274,6 +1274,8 @@ Declared in `internal/protocol/types`.
 | `user_prompt` | `string` | optional (`omitempty`) |
 | `disabled_servers` | `[]string` | optional (`omitempty`) |
 | `disabled_tools` | `[]string` | optional (`omitempty`) |
+| `server_loading_modes` | `map[string]string` | optional (`omitempty`) |
+| `tool_loading_modes` | `map[string]string` | optional (`omitempty`) |
 | `personal_skills` | `[]string` | optional (`omitempty`) |
 
 ## AgentConfigUserRegisterOAuthMCPCapabilityRequest

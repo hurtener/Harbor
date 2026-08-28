@@ -20,6 +20,7 @@ import (
 // The verb maps the bounded AgentConfigUserPayload onto a RESTRICTED
 // ConfigPayload: UserPrompt → PromptLayers.User (Base stays nil),
 // DisabledServers/DisabledTools → ToolExposure (PausedServers/DisabledTools),
+// ServerLoadingModes/ToolLoadingModes → ToolExposure loading maps, and
 // PersonalSkills → Skills.Names; Base, Connections, and LLMParams stay nil.
 // Because the wire payload carries no base / connections / enable / model
 // field AND the mapping never populates those sections, a user caller
@@ -32,24 +33,37 @@ import (
 
 // userPayloadToDomain maps the bounded safe-subset wire payload onto the
 // restricted domain ConfigPayload. It populates ONLY the prompt user layer,
-// the tool-exposure disables, and the skills membership — never Base,
-// Connections, or LLMParams (the structural widening boundary).
+// the tool-exposure disables/loading choices, and the skills membership —
+// never Base, Connections, or LLMParams (the structural widening boundary).
 func userPayloadToDomain(p prototypes.AgentConfigUserPayload) agentcfg.ConfigPayload {
 	var out agentcfg.ConfigPayload
 	if p.UserPrompt != "" {
 		user := p.UserPrompt
 		out.PromptLayers = &agentcfg.PromptLayers{User: &user}
 	}
-	if len(p.DisabledServers) > 0 || len(p.DisabledTools) > 0 {
+	if len(p.DisabledServers) > 0 || len(p.DisabledTools) > 0 || len(p.ServerLoadingModes) > 0 || len(p.ToolLoadingModes) > 0 {
 		out.ToolExposure = &agentcfg.ToolExposure{
-			PausedServers: append([]string(nil), p.DisabledServers...),
-			DisabledTools: append([]string(nil), p.DisabledTools...),
+			PausedServers:      append([]string(nil), p.DisabledServers...),
+			DisabledTools:      append([]string(nil), p.DisabledTools...),
+			ServerLoadingModes: cloneAnnotations(p.ServerLoadingModes),
+			ToolLoadingModes:   cloneAnnotations(p.ToolLoadingModes),
 		}
 	}
 	if len(p.PersonalSkills) > 0 {
 		out.Skills = &agentcfg.SkillsSelection{Names: append([]string(nil), p.PersonalSkills...)}
 	}
 	return out
+}
+
+// validateUserToolExposureLoading applies the same closed loading-mode
+// validation as the admin tool-exposure door. User loading choices are
+// persisted in the durable ConfigScopeUser revision, so invalid values must
+// be refused before the revision write rather than normalised away.
+func validateUserToolExposureLoading(p prototypes.AgentConfigUserPayload) error {
+	if err := validateLoadingModeMap("server_loading_modes", p.ServerLoadingModes); err != nil {
+		return err
+	}
+	return validateLoadingModeMap("tool_loading_modes", p.ToolLoadingModes)
 }
 
 // UserGet reads the caller's own durable config variant active revision.
@@ -83,6 +97,9 @@ func (s *Service) UserSetRevision(ctx context.Context, req prototypes.AgentConfi
 	}
 	id, err := identityFromScope(req.Identity, req.AgentID)
 	if err != nil {
+		return prototypes.AgentConfigUserSetRevisionResponse{}, err
+	}
+	if err := validateUserToolExposureLoading(req.Payload); err != nil {
 		return prototypes.AgentConfigUserSetRevisionResponse{}, err
 	}
 	defer s.lockOwner(agentcfg.ConfigScopeUser, id.TenantID, id.UserID, req.AgentID)()

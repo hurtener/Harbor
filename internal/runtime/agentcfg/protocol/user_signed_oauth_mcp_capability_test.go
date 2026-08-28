@@ -148,6 +148,66 @@ func TestUserSignedOAuthMCPCapability_TwoUsersHaveIndependentDesiredAndPhysicalO
 	}
 }
 
+func TestUserSignedOAuthMCPCapability_AttachmentSurvivesSessionAndProcessRestart(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	userS1 := identity.Identity{TenantID: "t", UserID: "user-a", SessionID: "session-s1"}
+	userS2 := identity.Identity{TenantID: "t", UserID: "user-a", SessionID: "session-s2"}
+	request := signedCapabilityRequestFor(t, key, now,
+		prototypes.IdentityScope{Tenant: userS1.TenantID, User: userS1.UserID, Session: userS1.SessionID},
+		testAgentID, "jti-user-session-restart", "aud", "session-cap")
+	registered, err := svc.RegisterUserOAuthMCPCapability(verifiedUserCapabilityContext(t, userS1, true, true), userRegisterRequest(request))
+	if err != nil {
+		t.Fatalf("register S1: %v", err)
+	}
+	preparer.mu.Lock()
+	delete(preparer.userLive, userS1.TenantID+"/"+testAgentID+"/"+userS1.UserID+"/"+request.Connection.Name)
+	preparer.mu.Unlock()
+
+	// A fresh reconciler represents a process restart. The active user
+	// revision remains durable, while the process-local physical attachment
+	// is intentionally gone and must be rebuilt for S2.
+	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatalf("new reconciler after restart: %v", err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapabilityForScope(context.Background(), identity.Quadruple{Identity: userS2}, testAgentID, agentcfg.ConfigScopeUser); err != nil {
+		t.Fatalf("reconcile S2: %v", err)
+	}
+	preparer.mu.Lock()
+	_, live := preparer.userLive[userS1.TenantID+"/"+testAgentID+"/"+userS1.UserID+"/"+request.Connection.Name]
+	preparer.mu.Unlock()
+	if !live {
+		t.Fatal("S2 reconciliation did not reattach the durable user pair")
+	}
+
+	// Removal is also keyed by (tenant, user, agent), not the S1 audit
+	// session. S2 may remove the same durable pair without re-authorizing it
+	// as a new attachment.
+	if _, err := svc.RemoveUserOAuthMCPCapability(verifiedUserCapabilityContext(t, userS2, true, true), prototypes.AgentConfigUserRemoveOAuthMCPCapabilityRequest{
+		Identity: prototypes.IdentityScope{Tenant: userS2.TenantID, User: userS2.UserID, Session: userS2.SessionID},
+		AgentID:  testAgentID, ProviderName: "provider", ExpectedContentHash: registered.Revision.ContentHash,
+	}); err != nil {
+		t.Fatalf("remove S2: %v", err)
+	}
+	preparer.mu.Lock()
+	_, live = preparer.userLive[userS1.TenantID+"/"+testAgentID+"/"+userS1.UserID+"/"+request.Connection.Name]
+	preparer.mu.Unlock()
+	if live {
+		t.Fatal("S2 removal left the user physical attachment live")
+	}
+	active, set, err := reg.Active(context.Background(), identity.Quadruple{Identity: userS2}, testAgentID, agentcfg.ConfigScopeUser)
+	if err != nil {
+		t.Fatalf("read S2 user revision after removal: %v", err)
+	}
+	if !set {
+		t.Fatal("S2 user revision disappeared after removal; removal should retain the durable empty revision")
+	}
+	if _, pairSet, pairErr := active.Payload.SignedOAuthMCPPairByProvider("provider"); pairErr != nil || pairSet {
+		t.Fatalf("S2 user pair after removal = set:%t err:%v, want absent", pairSet, pairErr)
+	}
+}
+
 func TestUserSignedOAuthMCPCapability_RequiresVerifiedScopeAndReach(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	svc, key, _, _, _ := signedCapabilityServiceWithRegistry(t, now)

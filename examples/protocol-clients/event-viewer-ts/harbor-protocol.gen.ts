@@ -1181,6 +1181,8 @@ export interface AgentConfigUserPayload {
   user_prompt?: string;
   disabled_servers?: string[];
   disabled_tools?: string[];
+  server_loading_modes?: Record<string, string>;
+  tool_loading_modes?: Record<string, string>;
   personal_skills?: string[];
 }
 

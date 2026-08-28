@@ -586,7 +586,7 @@ func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, i
 			return err
 		}
 		for _, operation := range operations {
-			if scope == agentcfg.ConfigScopeUser && (operation.Binding.UserID != id.UserID || operation.Binding.SessionID != id.SessionID) {
+			if scope == agentcfg.ConfigScopeUser && operation.Binding.UserID != id.UserID {
 				continue
 			}
 			if scope == agentcfg.ConfigScopeAgent && (operation.ReplayKey.UserID != "" || operation.ReplayKey.SessionID != "") {

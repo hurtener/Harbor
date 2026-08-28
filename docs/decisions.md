@@ -14830,6 +14830,31 @@ there is no unsigned or generic non-OAuth fallback in these methods. A future
 non-OAuth user attachment must introduce its own closed descriptor and
 signer-authorized Protocol method.
 
+**Implementation clarification (2026-08-28).** The durable
+`ConfigScopeUser` revision is the sole personal authority for a user's
+attachment and tool choices. The process-global MCP registry is only the
+materialized/cache view: its owner and logical-name fields are inputs to the
+shared effective-source authorizer, never an independent grant or lifecycle
+record. At run start the effective view composes the operator ceiling with the
+current caller's user revision and then the session's narrow-only overlay.
+Every user-facing source read, resource/App admission, and dispatch path uses
+that same source authorizer, so a stale physical registration is inaccessible
+after its user pair is removed from the active revision. The durable key is
+`(tenant, user, agent)`; session identity remains audit/replay context only,
+and an attachment reconciles, is usable, and can be removed from a later
+session or after restart. This corrects the preceding subject/session-bound
+wording: session identity is deliberately not a second lifecycle key.
+
+The bounded user payload also carries per-server and per-tool loading-mode
+choices (`always` or `deferred`). For the user tier this supersedes D-281 item
+3's admin-only limitation; the session tier remains narrow-only and carries no
+loading fields. These choices are composed after the operator loading baseline
+and are translated from logical connection names to
+owner-derived physical source names for personal MCP registrations. They do
+not grant capabilities; operator and user disabled sets still compose as a
+grow-only union with the session overlay. One shared effective-loading helper
+backs run-start projection and `tools.describe`.
+
 **Cross-references:** D-397, D-398, D-401, D-407, RFC §5.5, §6.4, §6.11,
 §6.16. Plan:
 `docs/plans/phase-265-user-scoped-signed-oauth-mcp.md`.

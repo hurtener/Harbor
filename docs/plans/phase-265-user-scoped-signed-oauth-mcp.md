@@ -5,7 +5,8 @@
 Add a generic user-tier sibling to the existing signed OAuth MCP capability
 registration and removal lifecycle. The sibling keeps the authority envelope
 and connection descriptor closed, derives all identity scope from the verified
-bearer, and stores the user's desired pair in `ConfigScopeUser`.
+bearer, and stores the user's desired pair and tool choices in
+`ConfigScopeUser`.
 
 ## RFC anchor
 
@@ -36,8 +37,12 @@ bearer, and stores the user's desired pair in `ConfigScopeUser`.
 - Keep `ConfigScopeAgent` as the operator base and persist user desired pairs
   only in `ConfigScopeUser`.
 - Preserve user-owned signed pairs across generic user configuration writes.
+- Persist the bounded per-server and per-tool loading-mode choices
+  (`always`/`deferred`) in the same user revision; compose them after the
+  operator baseline without widening the operator capability ceiling.
 - Project only the acting user's desired user-owned MCP pairs and tool
-  narrowing, while retaining the operator/boot ceiling.
+  narrowing/loading choices, while retaining the operator/boot ceiling and
+  the session overlay's disable union.
 - Prove same-agent two-user registration and removal isolation, including
   colliding signed authority JTIs.
 - Reuse the process-global MCP registry with a server-derived owner-scoped
@@ -74,14 +79,20 @@ verified identity and reach before it resolves or mutates a revision.
 The user revision key is `(tenant, user, agent)` and the pair itself retains
 the issuing `(tenant, user, session, agent)` binding. Replay identity extends
 the existing operation tuple with verified user and session only for the user
-tier; operator replay behavior remains unchanged. Removal requires the exact
-expected revision/content hash, signed pair identity, and physical owner.
+tier; operator replay behavior remains unchanged. The issuing session remains
+audit/replay metadata and is not required for a later session to use,
+reconcile, or remove the durable pair. Removal requires the exact expected
+revision/content hash, signed pair identity, and physical owner.
 
 The effective projection starts from the existing operator/boot ceiling and
-then admits only the acting user's desired pair names. A physical source owner
-with a different user is excluded from that acting-user view. Boot-declared
-and operator-owned entries retain their existing shared visibility and
-authorization gates.
+then applies the acting user's durable loading-mode choices and desired pair
+names. A physical source owner with a different user is excluded from that
+acting-user view. Loading choices are translated from logical connection/tool
+names to owner-derived physical source names before the projection; they only
+change prompt-time presence for entries already in the operator ceiling.
+Boot-declared and operator-owned entries retain their existing shared
+visibility and authorization gates. The session overlay contributes only its
+narrow-only disable set.
 
 The MCP registry remains process-global, but user-owned attachments are stored
 under a deterministic server-derived physical source key computed from the
@@ -107,6 +118,9 @@ context before initialize and discovery.
       physical owners, replay slots, and removals.
 - [x] Effective user projection admits the acting user's source and excludes
       a foreign user source while retaining the operator/boot ceiling.
+- [x] User server/tool loading-mode choices are validated as the closed
+      `always`/`deferred` set, survive sibling writes, compose after the
+      operator mode, and resolve logical names for physical user sources.
 - [x] Generic user configuration writes carry the signed pair forward.
 - [x] Physical MCP owner and exact teardown paths include the user identity;
       the same logical descriptor can map to distinct physical sources without
@@ -136,6 +150,8 @@ context before initialize and discovery.
   packages.
 - `go test -race` over the complete focused lifecycle/projection/serve/MCP
   set.
+- User loading-mode validation, two-user differing-mode projection, and
+  logical-to-physical personal-source loading tests.
 - Protocol TypeScript, reference, and committed-file lockstep checks.
 - Static phase smoke assertions and shell syntax validation.
 
@@ -158,16 +174,21 @@ has a focused test. No unrelated package coverage claim is made.
   to deterministic owner-derived physical source keys. Physical ids stay in
   the runtime registry/catalog only; desired pairs and exposure policy remain
   logical. A collision with an already-occupied derived key still fails loud.
-- A pair is user desired state but remains bound to the session that issued
-  its signed authority. A later session for the same user cannot remove it
-  with a mismatched physical owner or signed binding.
+- A pair is user desired state keyed by `(tenant, user, agent)`. The session
+  that issued its signed authority remains audit/replay context, not durable
+  attachment authority; a later session for the same user reconciles, uses,
+  and removes the pair after restart.
+- The physical registry is cache/materialization only. One shared effective
+  source authorizer checks owner, logical pair membership, current user
+  revision, and signed reach for list/get/resource/App/dispatch admission;
+  stale physical entries do not become authority after a revision drop.
 - This phase intentionally supports only the signed OAuth descriptor/envelope
   contract. Non-OAuth user attachment needs a separate closed descriptor and
   signer-authorized method; no empty-envelope or browser-selected fallback is
   permitted.
 - Existing operator maintenance preserves its compatibility fence and skips
-  user operation receipts; user reconciliation is separately keyed by user
-  and session.
+  user operation receipts; user reconciliation is keyed by the durable user
+  attachment, while session identity is audit/replay context only.
 
 ## Public surface
 

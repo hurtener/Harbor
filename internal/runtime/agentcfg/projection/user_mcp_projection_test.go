@@ -181,3 +181,57 @@ func TestActivePlannerCatalogView_UserExposureUsesLogicalNamesForPhysicalSources
 		t.Fatal("user B saw user A's physical source")
 	}
 }
+
+// TestActivePlannerCatalogView_UserMCPServerLoadingModeUsesLogicalPairName
+// proves a user loading choice survives the owner-derived physical source
+// namespace. The durable revision names the logical connection; the live
+// catalog uses the physical source, and the projection must still promote the
+// user's deferred server to the prompt-time always set.
+func TestActivePlannerCatalogView_UserMCPServerLoadingModeUsesLogicalPairName(t *testing.T) {
+	ctx := context.Background()
+	reg := newRegistry(t)
+	cat := tools.NewCatalog()
+	const (
+		logical  = "shared"
+		physical = "shared~u-a"
+	)
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: physical + "_echo", Source: tools.ToolSourceID(physical), Transport: tools.TransportMCP, Loading: tools.LoadingDeferred},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Value: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register physical tool: %v", err)
+	}
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: projTenant, UserID: "user-a", SessionID: "session-a"}}
+	pair := &agentcfg.SignedOAuthMCPPair{
+		ProviderName: "provider", Broker: "broker", Audience: "audience", Scopes: []string{"read"},
+		CapabilityRevision: "capability", URLDigest: agentcfg.OAuthMCPURLDigest("https://example.test/mcp"),
+		Sink: "https://example.test", SinkDigest: agentcfg.OAuthMCPURLDigest("https://example.test"),
+		Connection:             agentcfg.SignedOAuthMCPConnectionDescriptor{Name: logical, URL: "https://example.test/mcp"},
+		AuthorityOperationKind: "op-a", OwnerAgentID: projAgent, OwnerUserID: id.UserID, OwnerSessionID: id.SessionID,
+	}
+	if _, err := reg.SetRevision(agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind), id, projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		SignedOAuthMCPPair: pair,
+		ToolExposure:       &agentcfg.ToolExposure{ServerLoadingModes: map[string]string{logical: "always"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set user pair: %v", err)
+	}
+	resolver := testPhysicalSourceResolver{
+		owners:  map[tools.ToolSourceID]toolauth.Owner{physical: {Tenant: projTenant, Agent: projAgent, User: id.UserID}},
+		logical: map[tools.ToolSourceID]string{physical: logical},
+	}
+	view, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, id, cat, tools.CatalogFilter{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+	}, resolver)
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	tool, ok := view.Resolve(physical + "_echo")
+	if !ok || tool.Loading != tools.LoadingAlways {
+		t.Fatalf("Resolve(%q) = (%+v, %t), want physical tool with loading always", physical+"_echo", tool, ok)
+	}
+	if !hasName(viewNames(view), physical+"_echo") {
+		t.Fatalf("logical user server loading choice did not promote physical tool: %v", viewNames(view))
+	}
+}

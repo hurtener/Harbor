@@ -113,7 +113,15 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		return ErrIdentityRequired
 	}
 	scope := signedOAuthMCPConfigScope(ctx)
-	cursorKey := strings.Join([]string{string(scope), q.TenantID, q.UserID, q.SessionID, agentID}, "\x00")
+	// The durable user attachment is keyed by (tenant, user, agent). Session
+	// is only the audit/run subject that originally authorized the pair, so a
+	// new session must continue the same bounded scan rather than start a new
+	// ownership slot (and potentially miss the old receipt).
+	cursorParts := []string{string(scope), q.TenantID, q.UserID, agentID}
+	if scope == agentcfg.ConfigScopeAgent {
+		cursorParts = append(cursorParts, q.SessionID)
+	}
+	cursorKey := strings.Join(cursorParts, "\x00")
 	ops, continuation, err := r.operations.ScanTenantPage(ctx, q.TenantID, state.MaxStateScanLimit, r.continuations[cursorKey])
 	if err != nil {
 		return err
@@ -130,7 +138,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		if scope == agentcfg.ConfigScopeAgent && (op.ReplayKey.UserID != "" || op.ReplayKey.SessionID != "") {
 			continue
 		}
-		if scope == agentcfg.ConfigScopeUser && (op.Binding.UserID != q.UserID || op.Binding.SessionID != q.SessionID) {
+		if scope == agentcfg.ConfigScopeUser && op.Binding.UserID != q.UserID {
 			continue
 		}
 		ownerQ, err := signedCapabilityOwnerQuadruple(q.TenantID, op.Binding)
@@ -253,7 +261,9 @@ func signedCapabilityOwnerQuadruple(tenant string, binding agentcfg.SignedOAuthM
 }
 
 func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity.Quadruple, agentID string, revision agentcfg.Revision, pair *agentcfg.SignedOAuthMCPPair) error {
-	if pair.OwnerAgentID != agentID || pair.OwnerUserID != q.UserID || pair.OwnerSessionID != q.SessionID || strings.TrimSpace(pair.Connection.Name) == "" {
+	if pair.OwnerAgentID != agentID || pair.OwnerUserID != q.UserID ||
+		(signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeAgent && pair.OwnerSessionID != q.SessionID) ||
+		strings.TrimSpace(pair.Connection.Name) == "" {
 		return fmt.Errorf("%w: foreign or incomplete signed pair", agentcfg.ErrSignedCapabilityReplay)
 	}
 	canonicalURL, sink, err := agentcfg.CanonicalOAuthMCPURL(pair.Connection.URL)
@@ -681,7 +691,8 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	if q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || q.SessionID != op.Binding.SessionID || agentID != op.Binding.AgentID {
+	if q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || agentID != op.Binding.AgentID ||
+		(signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeAgent && q.SessionID != op.Binding.SessionID) {
 		return fmt.Errorf("%w: expiry owner does not match frozen registrar", agentcfg.ErrSignedCapabilityReplay)
 	}
 	// The exact generation fingerprint makes detach idempotent across every
@@ -790,7 +801,8 @@ func (r *SignedOAuthMCPReconciler) resumePreparationRejection(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || q.SessionID != op.Binding.SessionID || agentID != op.Binding.AgentID {
+	if q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || agentID != op.Binding.AgentID ||
+		(signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeAgent && q.SessionID != op.Binding.SessionID) {
 		return fmt.Errorf("%w: rejected preparation owner does not match frozen registrar", agentcfg.ErrSignedCapabilityReplay)
 	}
 	candidate, err := r.registry.Get(ctx, q, agentID, op.RevisionID, signedOAuthMCPConfigScope(ctx))

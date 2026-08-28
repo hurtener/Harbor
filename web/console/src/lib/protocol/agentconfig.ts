@@ -1161,7 +1161,8 @@ export interface AgentConfigSessionSkillsDeleteResponse {
 // authorization matrix). A caller carrying the `agent_config:user` scope owns
 // a DURABLE, versioned safe-subset config variant keyed under their real
 // (tenant, user), with full diff/rollback. The payload is structurally bounded
-// (user prompt + narrow-only disables + personal skills) — NO base /
+// (user prompt + narrow-only disables + loading-mode choices + personal
+// skills) — NO base /
 // connections / enable / model field, so a user caller cannot widen. The
 // responses REUSE AgentConfigRevisionView / AgentConfigDiff. ---
 
@@ -1171,6 +1172,8 @@ export interface AgentConfigUserPayload {
 	user_prompt?: string;
 	disabled_servers?: string[];
 	disabled_tools?: string[];
+	server_loading_modes?: Record<string, string>;
+	tool_loading_modes?: Record<string, string>;
 	personal_skills?: string[];
 }
 

@@ -110,8 +110,12 @@ type MuxInput struct {
 	Coordinator    pauseresume.Coordinator
 	MCPRegistry    *mcpdrv.Registry
 	MCPToolContext *mcpconsole.ToolContextStore
-	State          state.StateStore
-	Skills         skills.SkillStore
+	// SourceAuthorizer is the shared effective-source projection for
+	// user-owned MCP attachments. Nil lets BuildMux construct it from the
+	// registry and AgentConfig for compatibility with direct callers.
+	SourceAuthorizer *mcpconsole.SourceAuthorizer
+	State            state.StateStore
+	Skills           skills.SkillStore
 	// AgentPackLLM is the configured model client used by governed pack
 	// authoring. BuildMux wraps it in the production proposer seam.
 	AgentPackLLM llm.LLMClient
@@ -388,6 +392,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 
 	// MCP servers + Apps host surfaces (the catalog band).
 	if in.MCPRegistry != nil {
+		sourceAuthorizer := in.SourceAuthorizer
+		if sourceAuthorizer == nil {
+			sourceAuthorizer = mcpconsole.NewSourceAuthorizer(in.MCPRegistry, in.AgentConfig, in.AgentReach)
+		}
 		// Wire the on-demand OAuth-requirement discovery walker into
 		// the probe path: a probe against a server that answered a
 		// `WWW-Authenticate` OAuth step-up triggers the RFC 9728 → RFC 8414
@@ -395,6 +403,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		// mcp.servers.get. Harbor never runs the flow or holds a token.
 		mcpRegAccessor, aErr := mcpconsole.NewRegistryAccessor(
 			in.MCPRegistry,
+			mcpconsole.WithSourceAuthorizer(sourceAuthorizer),
 			mcpconsole.WithOAuthDiscoverer(toolauth.NewDiscoverer()),
 		)
 		if aErr != nil {
@@ -414,14 +423,15 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		muxOpts = append(muxOpts, transports.WithMCPSurface(mcpSurface))
 
 		appsAccessor, aaErr := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-			Registry:       in.MCPRegistry,
-			Catalog:        in.Catalog,
-			Store:          in.Artifacts,
-			Bus:            bus,
-			ToolContext:    in.MCPToolContext,
-			AgentConfig:    in.AgentConfig,
-			AgentID:        in.AgentConfigID,
-			SessionOverlay: in.SessionOverlay,
+			Registry:         in.MCPRegistry,
+			Catalog:          in.Catalog,
+			Store:            in.Artifacts,
+			Bus:              bus,
+			ToolContext:      in.MCPToolContext,
+			AgentConfig:      in.AgentConfig,
+			AgentID:          in.AgentConfigID,
+			SourceAuthorizer: sourceAuthorizer,
+			SessionOverlay:   in.SessionOverlay,
 			// PINNED, not threaded: the MCP Apps reads are
 			// browser-rendered Protocol replies, so they select
 			// inline-versus-reference at the Console inline-payload
@@ -467,7 +477,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		var toolsProjectorOpts []toolsprotocol.CatalogProjectorOption
 		if in.AgentConfig != nil {
 			toolsProjectorOpts = append(toolsProjectorOpts,
-				toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{Registry: in.AgentConfig}))
+				toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{
+					Registry:      in.AgentConfig,
+					OwnerResolver: in.MCPRegistry,
+				}))
 		}
 		// Assemble + wire the production per-tool Annotator (the one-line seam;
 		// the weight is the annotator's aggregation, not the wiring). It reads

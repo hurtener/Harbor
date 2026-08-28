@@ -43,13 +43,14 @@ import (
 // compiled artifacts, and the adapter adds no mutable state. Per-call
 // identity rides ctx.
 type AppsAccessor struct {
-	reg      *mcp.Registry
-	cat      tools.ToolCatalog
-	store    artifacts.ArtifactStore
-	bus      events.EventBus
-	toolCtx  *ToolContextStore
-	agentCfg agentcfg.Registry // optional — nil ⇒ the app-call exposure gate is inert
-	agentID  string            // legacy/default slot; effective ctx selection wins
+	reg        *mcp.Registry
+	cat        tools.ToolCatalog
+	store      artifacts.ArtifactStore
+	bus        events.EventBus
+	toolCtx    *ToolContextStore
+	sourceAuth *SourceAuthorizer
+	agentCfg   agentcfg.Registry // optional — nil ⇒ the app-call exposure gate is inert
+	agentID    string            // legacy/default slot; effective ctx selection wins
 	// sessionOverlay is the session-safe narrow-only disable set the gate
 	// UNIONS into the admin exposure (parity with the run-start planner-view
 	// projection, which unions it too). Optional — nil ⇒ only the admin
@@ -95,6 +96,10 @@ type AppsDeps struct {
 	// dispatch always seats its reach-admitted effective selection first.
 	// Required when AgentConfig is set; ignored when it is nil.
 	AgentID string
+	// SourceAuthorizer is the shared effective-source admission helper. Nil
+	// builds one over Registry and AgentConfig; production wiring passes the
+	// same instance used by the MCP registry and render-admission surfaces.
+	SourceAuthorizer *SourceAuthorizer
 	// SessionOverlay is the session-safe narrow-only disable set the app→host
 	// gate UNIONS into the admin exposure, so a tool a SESSION user disabled
 	// (via agent_config.session.set_source_disables) is also rejected from an
@@ -148,6 +153,10 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 	if deps.ToolContext == nil {
 		return nil, fmt.Errorf("%w: ToolContext is nil", ErrAppsMisconfigured)
 	}
+	sourceAuth := deps.SourceAuthorizer
+	if sourceAuth == nil {
+		sourceAuth = NewSourceAuthorizer(deps.Registry, deps.AgentConfig)
+	}
 	threshold := deps.Threshold
 	if threshold <= 0 {
 		threshold = defaultHeavyThreshold
@@ -162,6 +171,7 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 		store:          deps.Store,
 		bus:            deps.Bus,
 		toolCtx:        deps.ToolContext,
+		sourceAuth:     sourceAuth,
 		agentCfg:       deps.AgentConfig,
 		agentID:        deps.AgentID,
 		sessionOverlay: deps.SessionOverlay,
@@ -224,6 +234,9 @@ var (
 // ArtifactStore by reference (with a loud `mcp.resource_offloaded`
 // event); below it, the content rides inline.
 func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI string) (protocol.MCPResourceContent, error) {
+	if err := a.gateSourceAttachment(ctx, tools.ToolSourceID(serverID)); err != nil {
+		return protocol.MCPResourceContent{}, err
+	}
 	content, mime, err := a.reg.ReadResource(ctx, serverID, resourceURI)
 	if err != nil {
 		// Translate the driver's not-found sentinel into the Protocol's so the
@@ -368,7 +381,10 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 	// binds the generation the surface verified, and a refresh/replacement
 	// since that verification must refuse here — a stale admission never
 	// resolves (and never executes) a newer-generation descriptor.
-	currentGen, ok := a.reg.CurrentGeneration(serverID)
+	currentGen, ok, genErr := a.reg.CurrentGenerationForIdentity(ctx, serverID)
+	if genErr != nil {
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof cannot be verified: %v", protocol.ErrAccessorScopeDenied, genErr)
+	}
 	if !ok || currentGen == "" {
 		// Missing/empty current generation (absent server, detach, or a
 		// server whose discovery has never established its descriptor set)
@@ -394,7 +410,7 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 	// same critical section. A refresh/replacement between the generation
 	// read above and this call fails typed (ErrGenerationMismatch) — the
 	// new row is never returned and never invoked.
-	desc, ok, err := a.reg.ResolveAppToolAtGeneration(serverID, tool, currentGen)
+	desc, ok, err := a.reg.ResolveAppToolAtGenerationForIdentity(ctx, serverID, tool, currentGen)
 	if err != nil {
 		// The registry's exact-generation compare refused (absent /
 		// unknown generation, or a generation change raced the call). The
@@ -425,7 +441,10 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 			return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q",
 				protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool)
 		}
-		appDesc, appOK := a.reg.ResolveAppTool(serverID, tool)
+		appDesc, appOK, resolveErr := a.reg.ResolveAppToolForIdentity(ctx, serverID, tool)
+		if resolveErr != nil {
+			appOK = false
+		}
 		if appOK && !a.reg.ValidateAppBinding(ctx, serverID, binding, resourceURI) {
 			appOK = false
 		}
@@ -523,6 +542,9 @@ func marshalAppResult(value any) ([]byte, error) {
 // without a triple fails closed. A registry read error fails the call loud
 // (no silent fall-through, CLAUDE.md §13).
 func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, source tools.ToolSourceID) error {
+	if err := a.gateSourceAttachment(ctx, source); err != nil {
+		return err
+	}
 	if a.agentCfg == nil {
 		return nil
 	}
@@ -572,6 +594,34 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 		if n == toolName {
 			return fmt.Errorf("%w: tool %q is disabled", ErrAppToolExposureDenied, toolName)
 		}
+	}
+	return nil
+}
+
+// gateSourceAttachment is the generic personal-attachment gate shared by
+// resource reads and App callbacks. The MCP registry is only a live cache;
+// the durable ConfigScopeUser pair is the authority for a user-owned source.
+// A source is therefore usable only by its owner and only while that owner's
+// current user revision still names the logical connection. Session identity
+// is intentionally absent from the durable match, so a new session for the
+// same user can use the attachment.
+func (a *AppsAccessor) gateSourceAttachment(ctx context.Context, source tools.ToolSourceID) error {
+	if source == "" {
+		return nil
+	}
+	agentID, stamped := tools.EffectiveAgentConfigFrom(ctx)
+	if !stamped {
+		agentID = a.agentID
+	}
+	visible, err := a.sourceAuth.Visible(ctx, source, agentID)
+	if err != nil {
+		if errors.Is(err, mcp.ErrIdentityMissing) {
+			return fmt.Errorf("mcpconsole: app source gate: %w", err)
+		}
+		return fmt.Errorf("%w: mcpconsole: source %q authority check: %w", ErrAppToolExposureDenied, source, err)
+	}
+	if !visible {
+		return fmt.Errorf("%w: mcpconsole: source %q is not available to this caller", ErrAppToolExposureDenied, source)
 	}
 	return nil
 }

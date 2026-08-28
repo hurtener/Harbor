@@ -60,7 +60,8 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 	if err != nil {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 	}
-	if pair.OwnerAgentID != req.AgentID || pair.OwnerUserID != id.UserID || pair.OwnerSessionID != id.SessionID {
+	if pair.OwnerAgentID != req.AgentID || pair.OwnerUserID != id.UserID ||
+		(scope == agentcfg.ConfigScopeAgent && pair.OwnerSessionID != id.SessionID) {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: pair owner does not match requested subject and agent", agentcfg.ErrSignedCapabilityReplay)
 	}
 	op, err := s.signedOAuthMCPOperations.LoadForPair(ctx, id.TenantID, pair)

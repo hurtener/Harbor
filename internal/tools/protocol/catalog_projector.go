@@ -57,8 +57,9 @@ type CatalogProjector struct {
 }
 
 // LoadingResolver is the optional per-agent effective-loading-mode backend
-// `tools.describe` consults when a request names an agent_id. The V1
-// production implementation is
+// `tools.describe` consults when a request names an agent_id. The production
+// implementation composes the operator baseline and the acting user's
+// durable ConfigScopeUser choice. It is
 // `internal/runtime/agentcfg/projection.LoadingResolverAdapter`, wired at
 // the cmd/harbor + devstack boot boundary (the §4.4 seam keeps the
 // agent-config registry out of this package's import graph — the interface
@@ -66,10 +67,10 @@ type CatalogProjector struct {
 // supplied) makes DescribeTool always report the boot-effective mode.
 type LoadingResolver interface {
 	// EffectiveLoading resolves the projected effective LoadingMode for
-	// tool t under agentID's active tool-exposure config, given boot as the
-	// fallback (the boot-effective mode already reflecting the driver
-	// default + boot config). Returns boot unchanged when there is no
-	// active revision, no tool-exposure section, or no relevant override.
+	// tool t under agentID's operator and acting-user tool-exposure config,
+	// given boot as the fallback (the boot-effective mode already reflecting
+	// the driver default + boot config). Returns boot unchanged when there is
+	// no active revision, no tool-exposure section, or no relevant override.
 	EffectiveLoading(ctx context.Context, id identity.Identity, agentID string, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error)
 }
 

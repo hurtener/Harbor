@@ -59,6 +59,7 @@ import (
 	providerroutehttp "github.com/hurtener/Harbor/internal/llm/providerroute/httptransport"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	receipthttp "github.com/hurtener/Harbor/internal/llm/receipts/httptransport"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/observability/rollups"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -906,13 +907,18 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// paused-disabled before every mint and every callback
 	// verification, and binds the exact current provider/catalog
 	// generation.
+	var sourceAuthorizer *mcpconsole.SourceAuthorizer
+	if mcpRegistry != nil {
+		sourceAuthorizer = mcpconsole.NewSourceAuthorizer(mcpRegistry, retirementRegistry, agentReach)
+	}
 	admissionAuthority, admissionGate, admErr := WireRenderAdmission(RenderAdmissionAuthorityDeps{
-		Enabled:        cfg.Tools.MCPAppRenderAdmission.Enabled,
-		Sessions:       sessionRegistry,
-		AgentConfig:    retirementRegistry,
-		SessionOverlay: sessionOverlayStore,
-		Registry:       mcpRegistry,
-		Sealer:         sharedSealer,
+		Enabled:          cfg.Tools.MCPAppRenderAdmission.Enabled,
+		Sessions:         sessionRegistry,
+		AgentConfig:      retirementRegistry,
+		SessionOverlay:   sessionOverlayStore,
+		Registry:         mcpRegistry,
+		SourceAuthorizer: sourceAuthorizer,
+		Sealer:           sharedSealer,
 	})
 	if admErr != nil {
 		closeAll(ctx)
@@ -1270,6 +1276,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Coordinator:                    coord,
 		MCPRegistry:                    mcpRegistry,
 		MCPToolContext:                 mcpToolContext,
+		SourceAuthorizer:               sourceAuthorizer,
 		State:                          stack.State,
 		Skills:                         skillStore,
 		AgentPackLLM:                   stack.LLM,
