@@ -2303,18 +2303,6 @@ func matchesFilter(v ServerView, f ListFilter) bool {
 	return true
 }
 
-// entry returns the named server entry, or ErrServerNotFound. Caller
-// must NOT hold r.mu.
-func (r *Registry) entry(name string) (*serverEntry, error) {
-	r.mu.RLock()
-	e, ok := r.servers[name]
-	r.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
-	}
-	return e, nil
-}
-
 // ownedEntry returns the named server entry ONLY when its owner tag equals
 // owner — the OWNER-SCOPED resolution the registry's write paths use. A name
 // that resolves to a boot-declared (zero-owner) entry, or to an entry another
