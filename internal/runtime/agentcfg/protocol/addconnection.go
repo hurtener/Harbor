@@ -196,6 +196,13 @@ type ExactConnectionDetacher interface {
 	DetachExactConnection(ctx context.Context, tenant, agentID, name, descriptorFingerprint string) error
 }
 
+// SubjectExactConnectionDetacher is the user-scoped companion to
+// ExactConnectionDetacher. Implementations prove the complete physical owner,
+// including the verified user, before withdrawing a connection.
+type SubjectExactConnectionDetacher interface {
+	DetachExactConnectionForOwner(ctx context.Context, owner toolauth.Owner, name, descriptorFingerprint string) error
+}
+
 // ExactConnectionTeardownFence is the process-local admission receipt that
 // spans desired-state removal. Seal is called once pair absence is durable;
 // Cancel is called only when the CAS is proven not to have committed.
@@ -212,6 +219,12 @@ type ExactConnectionTeardownFencer interface {
 	BeginExactConnectionTeardown(tenant, agentID, name, descriptorFingerprint string) (ExactConnectionTeardownFence, error)
 }
 
+// SubjectExactConnectionTeardownFencer admits exact teardown for a complete
+// physical owner. It prevents one user from reserving another user's source.
+type SubjectExactConnectionTeardownFencer interface {
+	BeginExactConnectionTeardownForOwner(owner toolauth.Owner, name, descriptorFingerprint string) (ExactConnectionTeardownFence, error)
+}
+
 // AttachRequest is the input to a ConnectionAttacher. It carries the
 // non-secret descriptor PLUS the optional operator-supplied auth headers
 // used ONLY for the live transport — the attacher never persists them.
@@ -225,6 +238,11 @@ type AttachRequest struct {
 	// run-start reconcile scopes to its own owner. Registration metadata, never
 	// an isolation key.
 	AgentID string
+	// Owner optionally overrides the default (tenant, agent) owner for a
+	// user-scoped signed registration. A non-empty User must equal
+	// Identity.UserID; the attacher rejects any broader owner so physical
+	// provider/connection state cannot be redirected to another subject.
+	Owner toolauth.Owner
 	// Name is the unique MCP source id.
 	Name string
 	// Transport is "stdio" or "http".

@@ -1391,6 +1391,52 @@ type AgentConfigRemoveOAuthMCPCapabilityResponse struct {
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 
+// AgentConfigUserRegisterOAuthMCPCapabilityRequest is the user-scoped sibling
+// of AgentConfigRegisterOAuthMCPCapabilityRequest. The caller must carry the
+// verified agent_config:user entitlement and signed reach to AgentID. The
+// signed authority and closed descriptor are otherwise identical; the service
+// persists the desired pair only in ConfigScopeUser for the acting user.
+type AgentConfigUserRegisterOAuthMCPCapabilityRequest struct {
+	Identity            IdentityScope                      `json:"identity"`
+	AgentID             string                             `json:"agent_id"`
+	ProviderName        string                             `json:"provider_name"`
+	Broker              string                             `json:"broker"`
+	Audience            string                             `json:"audience"`
+	Scopes              []string                           `json:"scopes"`
+	Connection          SignedOAuthMCPConnectionDescriptor `json:"connection"`
+	ExpectedContentHash string                             `json:"expected_content_hash,omitempty"`
+	AuthorityEnvelope   string                             `json:"authority_envelope"`
+}
+
+// AgentConfigUserRegisterOAuthMCPCapabilityResponse reports the user-scoped
+// desired revision without returning signed authority material or a raw JTI.
+type AgentConfigUserRegisterOAuthMCPCapabilityResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProviderName    string                  `json:"provider_name"`
+	ConnectionName  string                  `json:"connection_name"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigUserRemoveOAuthMCPCapabilityRequest is the user-scoped paired
+// removal request. It selects only the acting user's immutable desired pair by
+// its expected content hash; no authority envelope or credential is accepted.
+type AgentConfigUserRemoveOAuthMCPCapabilityRequest struct {
+	Identity            IdentityScope `json:"identity"`
+	AgentID             string        `json:"agent_id"`
+	ProviderName        string        `json:"provider_name,omitempty"`
+	ExpectedContentHash string        `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigUserRemoveOAuthMCPCapabilityResponse reports the user-scoped
+// revision that drops the pair and the terminal durable receipt phase.
+type AgentConfigUserRemoveOAuthMCPCapabilityResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProviderName    string                  `json:"provider_name"`
+	ConnectionName  string                  `json:"connection_name"`
+	OperationPhase  string                  `json:"operation_phase"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
 // AgentConfigRemoveOAuthProviderRequest is the admin-scoped
 // `agent_config.remove_oauth_provider` request — uninstall a Protocol-installed
 // OAuth provider by name. The runtime records a new revision dropping the named
@@ -2006,11 +2052,13 @@ type AgentConfigUserSkillsDeleteResponse struct {
 
 // AgentConfigUserPayload is the bounded safe-subset a user-scope revision
 // persists — the ONE durable user write surface for the agent-config band. It
-// mirrors the session overlay's field set (user prompt + narrow-only disables
-// + personal skills) and has NO base / connections / enable / model field.
-// The two PROJECTION-ONLY sibling phases consume its fields: the prompt
-// projection reads UserPrompt; the tool-exposure projection reads
-// DisabledServers / DisabledTools.
+// carries the user prompt, narrow-only disables, the user's loading-mode
+// choices, and personal skills, and has NO base / connections / enable / model
+// field. Loading-mode choices only affect prompt-time presence for tools that
+// are already in the operator ceiling; they cannot grant a capability. The
+// run-start projection composes them after the operator loading modes while
+// the disable sets remain a grow-only union with the operator and session
+// tiers.
 type AgentConfigUserPayload struct {
 	// UserPrompt is the user instruction layer that composes ABOVE the
 	// operator base (the prompt projection consumes this).
@@ -2022,6 +2070,15 @@ type AgentConfigUserPayload struct {
 	// DisabledTools names the individual tools the user narrows out (the
 	// tool-exposure projection consumes this).
 	DisabledTools []string `json:"disabled_tools,omitempty"`
+	// ServerLoadingModes overrides prompt-time loading for TOOL-form
+	// descriptors from one MCP source. Values are the closed set "always" |
+	// "deferred"; the user may only change visibility within the operator
+	// ceiling, never widen the capability set.
+	ServerLoadingModes map[string]string `json:"server_loading_modes,omitempty"`
+	// ToolLoadingModes overrides prompt-time loading for one exact catalog
+	// name. Values are the closed set "always" | "deferred" and take
+	// precedence over ServerLoadingModes for that descriptor.
+	ToolLoadingModes map[string]string `json:"tool_loading_modes,omitempty"`
 	// PersonalSkills names the user's durable personal skill membership for
 	// the variant. It COMPOSES with the `agent_config.user.skills.*` verbs:
 	// those verbs write the skill BODIES to the SkillStore at user scope AND

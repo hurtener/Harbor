@@ -62,6 +62,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/mcpconsole/admission"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -96,6 +97,10 @@ type RenderAdmissionAuthorityDeps struct {
 	// Registry is the MCP driver registry the gate reads the exact
 	// current provider/catalog generation from. Mandatory.
 	Registry *mcp.Registry
+	// SourceAuthorizer is the shared effective-source admission helper. Nil
+	// builds one over Registry and AgentConfig; production wiring passes the
+	// same instance used by the MCP registry and Apps surfaces.
+	SourceAuthorizer *mcpconsole.SourceAuthorizer
 	// Sealer is the ONE shared restart-stable KEK-backed sealer.
 	Sealer toolauth.Sealer
 	// AdmissionOptions are forwarded verbatim to the sealed authority
@@ -171,6 +176,7 @@ type renderAdmissionGate struct {
 	agentCfg       renderAdmissionAgentConfig
 	sessionOverlay sessionoverlay.Store
 	registry       *mcp.Registry
+	sourceAuth     *mcpconsole.SourceAuthorizer
 }
 
 var _ protocol.RenderAdmissionGate = (*renderAdmissionGate)(nil)
@@ -212,7 +218,23 @@ func (g *renderAdmissionGate) AuthorizeRender(ctx context.Context, serverID, res
 	// a current provider/catalog generation (absent server, detach, or
 	// a server whose discovery never established its descriptor set
 	// fails closed), and the resource must be a `ui://` App document.
-	generation, ok := g.registry.CurrentGeneration(serverID)
+	sourceAuth := g.sourceAuth
+	if sourceAuth == nil {
+		// Preserve direct test/embedded construction compatibility while
+		// keeping the same single source-authorizer implementation.
+		sourceAuth = mcpconsole.NewSourceAuthorizer(g.registry, g.agentCfg)
+	}
+	visible, sourceErr := sourceAuth.Visible(ctx, tools.ToolSourceID(serverID), agentID)
+	if sourceErr != nil {
+		return "", fmt.Errorf("mcpconsole: render-admission gate: source %q authority check: %w", serverID, sourceErr)
+	}
+	if !visible {
+		return "", fmt.Errorf("%w: mcpconsole: render-admission gate: source %q is not available to this caller", protocol.ErrRenderAdmissionRefused, serverID)
+	}
+	generation, ok, generationErr := g.registry.CurrentGenerationForIdentity(ctx, serverID)
+	if generationErr != nil {
+		return "", fmt.Errorf("mcpconsole: render-admission gate: read current generation: %w", generationErr)
+	}
 	if !ok || generation == "" {
 		return "", fmt.Errorf("%w: mcpconsole: render-admission gate: server %q has no current provider/catalog generation", protocol.ErrRenderAdmissionRefused, serverID)
 	}
@@ -314,6 +336,10 @@ func WireRenderAdmission(deps RenderAdmissionAuthorityDeps) (protocol.RenderAdmi
 	if deps.AgentConfig == nil {
 		return nil, nil, errors.New("render admission: agent-config reader is required when the surface is enabled (the retirement/current-exposure checks may never be skipped)")
 	}
+	sourceAuth := deps.SourceAuthorizer
+	if sourceAuth == nil {
+		sourceAuth = mcpconsole.NewSourceAuthorizer(deps.Registry, deps.AgentConfig)
+	}
 	authority, err := admission.New(deps.Sealer, deps.AdmissionOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("render admission authority: %w", err)
@@ -323,6 +349,7 @@ func WireRenderAdmission(deps RenderAdmissionAuthorityDeps) (protocol.RenderAdmi
 		agentCfg:       deps.AgentConfig,
 		sessionOverlay: deps.SessionOverlay,
 		registry:       deps.Registry,
+		sourceAuth:     sourceAuth,
 	}
 	return authority, gate, nil
 }

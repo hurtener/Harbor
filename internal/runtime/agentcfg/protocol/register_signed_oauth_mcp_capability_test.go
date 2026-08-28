@@ -205,6 +205,7 @@ type capabilityPreparer struct {
 	detaches           int
 	preparedCloses     int
 	live               map[string]string
+	userLive           map[string]string
 	failActivate       error
 	failPrepare        error
 	failDetach         error
@@ -408,10 +409,17 @@ func (p capabilityPreparedConnection) Activate(context.Context) error {
 		return err
 	}
 	p.parent.activations++
-	if p.parent.live == nil {
-		p.parent.live = make(map[string]string)
+	if p.req.Owner.User != "" {
+		if p.parent.userLive == nil {
+			p.parent.userLive = make(map[string]string)
+		}
+		p.parent.userLive[p.req.Owner.Tenant+"/"+p.req.Owner.Agent+"/"+p.req.Owner.User+"/"+p.req.Name] = p.req.DescriptorFingerprint
+	} else {
+		if p.parent.live == nil {
+			p.parent.live = make(map[string]string)
+		}
+		p.parent.live[p.req.Identity.TenantID+"/"+p.req.AgentID+"/"+p.req.Name] = p.req.DescriptorFingerprint
 	}
-	p.parent.live[p.req.Identity.TenantID+"/"+p.req.AgentID+"/"+p.req.Name] = p.req.DescriptorFingerprint
 	p.parent.mu.Unlock()
 	return nil
 }
@@ -905,9 +913,52 @@ func (p *capabilityPreparer) BeginExactConnectionTeardown(string, string, string
 	return &capabilityExactTeardownFence{parent: p}, nil
 }
 
+func (p *capabilityPreparer) DetachExactConnectionForOwner(ctx context.Context, owner toolauth.Owner, name, fingerprint string) error {
+	p.mu.Lock()
+	if p.failDetach != nil {
+		err := p.failDetach
+		p.mu.Unlock()
+		return err
+	}
+	entered, release := p.detachEntered, p.detachRelease
+	p.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := owner.Tenant + "/" + owner.Agent + "/" + owner.User + "/" + name
+	if live, ok := p.userLive[key]; ok && live != fingerprint {
+		return nil
+	}
+	p.detaches++
+	delete(p.userLive, key)
+	return nil
+}
+
+func (p *capabilityPreparer) BeginExactConnectionTeardownForOwner(owner toolauth.Owner, name, fingerprint string) (agentcfgprotocol.ExactConnectionTeardownFence, error) {
+	if owner.User == "" || name == "" || fingerprint == "" {
+		return nil, fmt.Errorf("incomplete subject teardown fence")
+	}
+	return &capabilityExactTeardownFence{parent: p}, nil
+}
+
 func (p *capabilityPreparer) ConnectionMatches(owner toolauth.Owner, name, fingerprint string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if owner.User != "" {
+		return p.userLive[owner.Tenant+"/"+owner.Agent+"/"+owner.User+"/"+name] == fingerprint
+	}
 	return p.live[owner.Tenant+"/"+owner.Agent+"/"+name] == fingerprint
 }
 

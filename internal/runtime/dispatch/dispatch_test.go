@@ -337,6 +337,33 @@ func TestExecutor_CallTool_ErrorShapes(t *testing.T) {
 	}
 }
 
+// TestExecutor_CallTool_GuessedNameCannotBypassRunCatalog pins the ordinary
+// dispatch boundary: a caller may name a descriptor that exists in the shared
+// catalog only when that descriptor is present in the sealed per-run view.
+// This protects user-owned physical tool names from being guessed around the
+// effective user projection. Trusted completion hooks are a separate,
+// explicitly elevated path covered by
+// TestExecutor_CallTool_DisabledInProjection_HookTargetStillDispatches.
+func TestExecutor_CallTool_GuessedNameCannotBypassRunCatalog(t *testing.T) {
+	t.Parallel()
+	cat := tools.NewCatalog()
+	registerEcho(t, cat, "shared~u-a_echo")
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
+	q := dispatchTestQuad("r-user-catalog")
+	base := tools.NewPlannerView(cat, tools.CatalogFilter{
+		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
+	})
+	view := tools.NewExclusionView(base, nil, []string{"shared~u-a_echo"})
+	rc := planner.RunContext{Quadruple: q, Catalog: view}
+
+	_, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, planner.CallTool{
+		Tool: "shared~u-a_echo", Args: json.RawMessage(`{}`),
+	})
+	if !errors.Is(err, tools.ErrToolNotFound) {
+		t.Fatalf("guessed physical tool through shared catalog err = %v, want ErrToolNotFound", err)
+	}
+}
+
 // TestExecutor_UnsupportedDecisionShape — an unknown Decision concrete
 // fails loud with steering.ErrDecisionShapeUnsupported.
 func TestExecutor_UnsupportedDecisionShape(t *testing.T) {

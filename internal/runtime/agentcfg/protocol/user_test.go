@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -94,10 +95,12 @@ func TestUserVerbs_WideningHasNoPath(t *testing.T) {
 	r, err := s.UserSetRevision(ctx, prototypes.AgentConfigUserSetRevisionRequest{
 		Identity: id, AgentID: testAgentID,
 		Payload: prototypes.AgentConfigUserPayload{
-			UserPrompt:      "narrow me",
-			DisabledServers: []string{"weather"},
-			DisabledTools:   []string{"weather_now"},
-			PersonalSkills:  []string{"sk1"},
+			UserPrompt:         "narrow me",
+			DisabledServers:    []string{"weather"},
+			DisabledTools:      []string{"weather_now"},
+			ServerLoadingModes: map[string]string{"weather": "deferred"},
+			ToolLoadingModes:   map[string]string{"weather_now": "always"},
+			PersonalSkills:     []string{"sk1"},
 		},
 	})
 	if err != nil {
@@ -117,8 +120,40 @@ func TestUserVerbs_WideningHasNoPath(t *testing.T) {
 	if p.ToolExposure == nil || len(p.ToolExposure.PausedServers) != 1 {
 		t.Errorf("disabled servers not projected onto tool exposure: %+v", p.ToolExposure)
 	}
+	if p.ToolExposure == nil || p.ToolExposure.ServerLoadingModes["weather"] != "deferred" || p.ToolExposure.ToolLoadingModes["weather_now"] != "always" {
+		t.Errorf("user loading-mode choices not projected onto tool exposure: %+v", p.ToolExposure)
+	}
 	if p.Skills == nil || len(p.Skills.Names) != 1 {
 		t.Errorf("personal skills not projected onto skills membership: %+v", p.Skills)
+	}
+}
+
+// TestUserVerbs_InvalidLoadingModes_FailBeforeRevision proves the user-tier
+// wire payload accepts only the same closed loading-mode values as the admin
+// tool-exposure door and never persists a rejected choice.
+func TestUserVerbs_InvalidLoadingModes_FailBeforeRevision(t *testing.T) {
+	ctx := context.Background()
+	s := svc(t, false)
+	id := userScope("alice")
+	for name, payload := range map[string]prototypes.AgentConfigUserPayload{
+		"unknown server mode": {ServerLoadingModes: map[string]string{"weather": "sometimes"}},
+		"unknown tool mode":   {ToolLoadingModes: map[string]string{"weather_now": "sometimes"}},
+		"empty server key":    {ServerLoadingModes: map[string]string{"": "always"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := s.UserSetRevision(ctx, prototypes.AgentConfigUserSetRevisionRequest{Identity: id, AgentID: testAgentID, Payload: payload}); err == nil {
+				t.Fatal("invalid loading mode was accepted")
+			} else if !errors.Is(err, agentcfgprotocol.ErrInvalidToolExposureLoading) {
+				t.Fatalf("error = %v, want ErrInvalidToolExposureLoading", err)
+			}
+			got, err := s.UserGet(ctx, prototypes.AgentConfigUserGetRequest{Identity: id, AgentID: testAgentID})
+			if err != nil {
+				t.Fatalf("get after rejected write: %v", err)
+			}
+			if got.Set {
+				t.Fatal("rejected user loading mode created a revision")
+			}
+		})
 	}
 }
 

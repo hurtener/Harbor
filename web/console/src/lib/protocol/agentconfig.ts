@@ -895,6 +895,46 @@ export interface AgentConfigRemoveOAuthMCPCapabilityResponse {
 	protocol_version: string;
 }
 
+/** User-tier sibling of the signed OAuth MCP registration request. The
+ * verified caller's `(tenant, user, session)` is the durable ConfigScopeUser
+ * owner; the closed descriptor and write-only authority envelope are the same
+ * as the operator-tier lifecycle. */
+export interface AgentConfigUserRegisterOAuthMCPCapabilityRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	provider_name: string;
+	broker: string;
+	audience: string;
+	scopes: string[];
+	connection: SignedOAuthMCPConnectionDescriptor;
+	expected_content_hash?: string;
+	authority_envelope: string;
+}
+
+export interface AgentConfigUserRegisterOAuthMCPCapabilityResponse {
+	revision: AgentConfigRevisionView;
+	provider_name: string;
+	connection_name: string;
+	protocol_version: string;
+}
+
+/** User-tier sibling of the signed OAuth MCP paired removal request. The
+ * expected hash selects only the acting user's immutable desired pair. */
+export interface AgentConfigUserRemoveOAuthMCPCapabilityRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	provider_name?: string;
+	expected_content_hash: string;
+}
+
+export interface AgentConfigUserRemoveOAuthMCPCapabilityResponse {
+	revision: AgentConfigRevisionView;
+	provider_name: string;
+	connection_name: string;
+	operation_phase: string;
+	protocol_version: string;
+}
+
 /** `agent_config.set_llm_provider` request — admin-scoped. Install (upsert) /
  * rotate a ZERO-URL, broker-pull inference provider binding. A separate method
  * from set_oauth_provider (a distinct credential plane); the descriptor carries
@@ -1121,7 +1161,8 @@ export interface AgentConfigSessionSkillsDeleteResponse {
 // authorization matrix). A caller carrying the `agent_config:user` scope owns
 // a DURABLE, versioned safe-subset config variant keyed under their real
 // (tenant, user), with full diff/rollback. The payload is structurally bounded
-// (user prompt + narrow-only disables + personal skills) — NO base /
+// (user prompt + narrow-only disables + loading-mode choices + personal
+// skills) — NO base /
 // connections / enable / model field, so a user caller cannot widen. The
 // responses REUSE AgentConfigRevisionView / AgentConfigDiff. ---
 
@@ -1131,6 +1172,8 @@ export interface AgentConfigUserPayload {
 	user_prompt?: string;
 	disabled_servers?: string[];
 	disabled_tools?: string[];
+	server_loading_modes?: Record<string, string>;
+	tool_loading_modes?: Record<string, string>;
 	personal_skills?: string[];
 }
 

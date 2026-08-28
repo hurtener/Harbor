@@ -79,10 +79,15 @@ type appBindingProvider interface {
 // ValidateAppBinding verifies a runtime-issued callback capability against the
 // named server. The token, rather than server_id, is the callback authority.
 func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, resourceURI string) bool {
+	if err := requireIdentity(ctx); err != nil {
+		return false
+	}
+	id, _ := identity.From(ctx)
 	r.mu.RLock()
 	entry := r.servers[serverID]
+	visible := entry != nil && entryVisibleToIdentity(entry, id)
 	r.mu.RUnlock()
-	if entry == nil {
+	if !visible {
 		return false
 	}
 	p, ok := entry.provider.(appBindingProvider)
@@ -236,6 +241,14 @@ type ListFilter struct {
 	PageSize int
 }
 
+// SourceVisibility is an optional caller-owned admission predicate for
+// identity-scoped registry reads. Registry itself supplies the immutable
+// owner/logical snapshot; the predicate may consult a durable external
+// authority without making the process-local registry a policy store. A false
+// result is projected as ErrServerNotFound so an unselected personal source
+// cannot become an existence oracle.
+type SourceVisibility func(ctx context.Context, source tools.ToolSourceID, owner auth.Owner, logical string) (bool, error)
+
 // Cursor is the opaque pagination cursor a paged read returns.
 type Cursor struct {
 	// NextPageToken is the cursor for the next page, or empty when the
@@ -280,14 +293,30 @@ func (e *DiscoveryStaleError) Is(target error) bool { return target == ErrDiscov
 
 // maxListPageSize / defaultListPageSize bound the ListServers page.
 const (
-	maxListPageSize     = 200
-	defaultListPageSize = 50
+	maxListPageSize          = 200
+	defaultListPageSize      = 50
+	userPhysicalSourceMarker = "~u-"
 )
+
+// PhysicalServerName derives the process-local source id for one logical MCP
+// connection. Operator/boot registrations keep their logical name. A
+// user-owned registration gets a deterministic owner-derived suffix so two
+// users can attach the same signed descriptor/name concurrently without a
+// client selecting a destination. The logical descriptor and downstream URL
+// are unchanged; this value is only a local registry/catalog key.
+func PhysicalServerName(logical string, owner auth.Owner) string {
+	if owner.User == "" {
+		return logical
+	}
+	h := sha256.Sum256([]byte("harbor:mcp:user-source:v1\x00" + owner.Tenant + "\x00" + owner.Agent + "\x00" + owner.User))
+	return logical + userPhysicalSourceMarker + hex.EncodeToString(h[:16])
+}
 
 // serverEntry is the Registry's per-server record — the provider plus
 // its operator-supplied static config plus mutable runtime stats.
 type serverEntry struct {
 	provider     serverProvider
+	logicalName  string
 	transport    string
 	urlOrCommand string
 	policy       tools.ToolPolicy
@@ -302,9 +331,11 @@ type serverEntry struct {
 	oauthAllowedOrigins []string
 	// owner is the (tenant, agent) reconcile-view tag for a runtime-added
 	// server. A zero owner marks a boot-declared server, which the
-	// owner-scoped reconcile view never enumerates. Set at Register;
-	// read-only thereafter. It is a reconcile-view filter, NOT an isolation
-	// key — resolution and dispatch stay bare-name and process-global.
+	// owner-scoped reconcile view never enumerates. A user-scoped registration
+	// additionally carries its verified user id. Set at Register;
+	// read-only thereafter. For user-owned registrations it also selects the
+	// physical registry/catalog namespace; operator/boot behavior remains bare
+	// name. The downstream URL and token sink are never derived from this key.
 	owner auth.Owner
 	// descriptorFingerprint identifies the complete canonical NON-SECRET
 	// runtime-added descriptor that produced this registration. Empty for
@@ -467,10 +498,17 @@ type ServerRegistration struct {
 	// Owner is the (tenant, agent) reconcile-view tag for a RUNTIME-ADDED
 	// server. Boot-declared servers leave it zero (untagged) — the
 	// owner-scoped reconcile view never enumerates a zero-owner entry. The
+	// user field is populated for a user-scoped registration and participates
+	// in exact ownership checks.
 	// runtime-add attach path stamps a non-zero owner (fail-closed there when
 	// either component is missing); nothing about resolution or dispatch reads
-	// it (those stay bare-name and process-global).
+	// it for operator-owned entries. User-owned entries use a server-derived
+	// physical key; the logical descriptor name remains in LogicalName.
 	Owner auth.Owner
+	// LogicalName is the signed/config descriptor name before any server-side
+	// user namespace is applied. Empty preserves the provider source id for
+	// boot and legacy callers.
+	LogicalName string
 	// DescriptorFingerprint is the canonical digest of the complete
 	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
 	DescriptorFingerprint string
@@ -621,6 +659,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 	tc, rc, pc := classifyDescriptors(descs, name)
 	entry := &serverEntry{
 		provider:     reg.Provider,
+		logicalName:  reg.LogicalName,
 		transport:    reg.Transport,
 		urlOrCommand: reg.URLOrCommand,
 		policy:       policy,
@@ -643,6 +682,9 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 			resourceCount:     rc,
 			promptCount:       pc,
 		},
+	}
+	if entry.logicalName == "" {
+		entry.logicalName = name
 	}
 	// Partition the SAME discovered snapshot into the two views: App-visible
 	// callbacks stay HERE on the per-server App dispatch catalog (read via
@@ -1190,6 +1232,26 @@ func (r *Registry) ResolveAppTool(serverID, toolName string) (tools.ToolDescript
 	return d, ok
 }
 
+// ResolveAppToolForIdentity resolves an App-visible callback only when the
+// named server is visible to the verified request identity. It is the
+// identity-aware counterpart to ResolveAppTool, which remains for the
+// operator/boot compatibility seam and has no identity context to evaluate.
+func (r *Registry) ResolveAppToolForIdentity(ctx context.Context, serverID, toolName string) (tools.ToolDescriptor, bool, error) {
+	if err := requireIdentity(ctx); err != nil {
+		return tools.ToolDescriptor{}, false, err
+	}
+	r.mu.RLock()
+	e, ok := r.servers[serverID]
+	id, _ := identity.From(ctx)
+	if !ok || !entryVisibleToIdentity(e, id) {
+		r.mu.RUnlock()
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: %q", ErrServerNotFound, serverID)
+	}
+	d, found := e.appVisible[toolName]
+	r.mu.RUnlock()
+	return d, found, nil
+}
+
 // ResolveAppToolAtGeneration resolves an App-visible callback from the named
 // server's App dispatch catalog ONLY when the server's CURRENT generation
 // exactly equals expectedGeneration. The generation compare and the
@@ -1237,6 +1299,33 @@ func (r *Registry) ResolveAppToolAtGeneration(serverID, toolName, expectedGenera
 	return d, ok, nil
 }
 
+// ResolveAppToolAtGenerationForIdentity is the identity-aware, atomic
+// generation compare + App callback lookup. A foreign user-owned server is
+// indistinguishable from an absent server to the caller.
+func (r *Registry) ResolveAppToolAtGenerationForIdentity(ctx context.Context, serverID, toolName, expectedGeneration string) (tools.ToolDescriptor, bool, error) {
+	if err := requireIdentity(ctx); err != nil {
+		return tools.ToolDescriptor{}, false, err
+	}
+	r.mu.RLock()
+	e, ok := r.servers[serverID]
+	id, _ := identity.From(ctx)
+	if !ok || !entryVisibleToIdentity(e, id) {
+		r.mu.RUnlock()
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: %q", ErrServerNotFound, serverID)
+	}
+	if e.currentGeneration == "" {
+		r.mu.RUnlock()
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q has no current provider/catalog generation to compare", ErrGenerationMismatch, serverID)
+	}
+	if e.currentGeneration != expectedGeneration {
+		r.mu.RUnlock()
+		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: server %q current generation changed while resolving", ErrGenerationMismatch, serverID)
+	}
+	d, found := e.appVisible[toolName]
+	r.mu.RUnlock()
+	return d, found, nil
+}
+
 // CurrentGeneration returns the deterministic current provider/catalog
 // generation fingerprint for the named server: a content digest of the
 // canonical CURRENT descriptor set (resources + App callbacks +
@@ -1260,6 +1349,26 @@ func (r *Registry) CurrentGeneration(serverID string) (string, bool) {
 		return "", false
 	}
 	return e.currentGeneration, true
+}
+
+// CurrentGenerationForIdentity returns the current descriptor generation only
+// for a server visible to the verified request identity. It returns false for
+// an absent or foreign user-owned source and therefore cannot mint render
+// authority for another user's attachment.
+func (r *Registry) CurrentGenerationForIdentity(ctx context.Context, serverID string) (string, bool, error) {
+	if err := requireIdentity(ctx); err != nil {
+		return "", false, err
+	}
+	id, _ := identity.From(ctx)
+	r.mu.RLock()
+	e, ok := r.servers[serverID]
+	if !ok || !entryVisibleToIdentity(e, id) || e.currentGeneration == "" {
+		r.mu.RUnlock()
+		return "", false, nil
+	}
+	generation := e.currentGeneration
+	r.mu.RUnlock()
+	return generation, true, nil
 }
 
 // RegistrationSwap is a reversible live-registry publication. Commit makes
@@ -1381,6 +1490,7 @@ type ExactRemovalFence struct {
 // returns. An absent generation is still fenced so a stale preparation cannot
 // publish between admission and the desired-state CAS.
 func (r *Registry) BeginExactRemoval(name string, owner auth.Owner, descriptorFingerprint string) (*ExactRemovalFence, error) {
+	name = PhysicalServerName(name, owner)
 	if name == "" || owner.IsZero() || descriptorFingerprint == "" {
 		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 	}
@@ -1426,6 +1536,7 @@ func (r *Registry) BeginExactPublisherRemoval(name string, owner auth.Owner, des
 	if err == nil || !errors.Is(err, ErrServerNotFound) {
 		return fence, err
 	}
+	name = PhysicalServerName(name, owner)
 	if name == "" || owner.IsZero() || descriptorFingerprint == "" {
 		return nil, err
 	}
@@ -1651,6 +1762,7 @@ type genericCloseReceipt struct {
 }
 
 func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
+	name = PhysicalServerName(name, owner)
 	r.mu.Lock()
 	if _, staged := r.pending[name]; staged {
 		r.mu.Unlock()
@@ -1700,6 +1812,7 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 // closing generation and never converts an absent-after-error observation into
 // a teardown receipt.
 func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.Owner, descriptorFingerprint string, withdrawCatalog func() int) (int, error) {
+	name = PhysicalServerName(name, owner)
 	if owner.IsZero() || descriptorFingerprint == "" || withdrawCatalog == nil {
 		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 	}
@@ -1777,6 +1890,7 @@ func (r *Registry) DeregisterExactPublisher(ctx context.Context, name string, ow
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	name = PhysicalServerName(name, owner)
 	reservation := r.removing[name]
 	if reservation == nil || reservation.owner != owner || reservation.descriptorFingerprint != descriptorFingerprint || !reservation.sealed {
 		return 0, err
@@ -1817,6 +1931,42 @@ func (r *Registry) reservationState(name string) (pending, live, closing bool) {
 func (r *Registry) OwnerOf(name string) (auth.Owner, bool) {
 	owner, _, ok := r.RegistrationIdentity(name)
 	return owner, ok
+}
+
+// OwnerOfSource is the source-oriented spelling of OwnerOf used by generic
+// run projection seams. It returns the immutable registration owner for a
+// physical source without exposing any mutable provider state.
+func (r *Registry) OwnerOfSource(source tools.ToolSourceID) (auth.Owner, bool) {
+	return r.OwnerOf(string(source))
+}
+
+// SourceAccess reports whether a physical source is registered and whether the
+// verified caller may reach it. Unknown non-MCP sources are represented by
+// registered=false so generic catalog callers can preserve their existing
+// behavior. A foreign user-owned source is registered=true but returns
+// ErrServerNotFound, without returning its owner or logical name.
+func (r *Registry) SourceAccess(ctx context.Context, source tools.ToolSourceID) (owner auth.Owner, logical string, registered bool, err error) {
+	if err := requireIdentity(ctx); err != nil {
+		return auth.Owner{}, "", false, err
+	}
+	id, _ := identity.From(ctx)
+	r.mu.RLock()
+	e, ok := r.servers[string(source)]
+	if !ok {
+		r.mu.RUnlock()
+		return auth.Owner{}, "", false, nil
+	}
+	if !entryVisibleToIdentity(e, id) {
+		r.mu.RUnlock()
+		return auth.Owner{}, "", true, fmt.Errorf("%w: %q", ErrServerNotFound, source)
+	}
+	owner = e.owner
+	logical = e.logicalName
+	if logical == "" {
+		logical = string(source)
+	}
+	r.mu.RUnlock()
+	return owner, logical, true, nil
 }
 
 // RegistrationIdentity atomically returns the reconcile owner and canonical
@@ -1874,12 +2024,43 @@ func (r *Registry) RuntimeAddedSources(owner auth.Owner) []string {
 	out := make([]string, 0, len(r.servers))
 	for name, e := range r.servers {
 		if e.owner == owner {
-			out = append(out, name)
+			logical := e.logicalName
+			if logical == "" {
+				logical = name
+			}
+			out = append(out, logical)
 		}
 	}
 	r.mu.RUnlock()
 	sort.Strings(out)
 	return out
+}
+
+// LogicalNameOfSource returns the signed/config descriptor name associated
+// with one physical source id. It is used only by an identity-scoped
+// projection to translate the private local key back to desired-state names.
+func (r *Registry) LogicalNameOfSource(source tools.ToolSourceID) (string, bool) {
+	r.mu.RLock()
+	e, ok := r.servers[string(source)]
+	if !ok {
+		e, ok = r.closing[string(source)]
+	}
+	r.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	logical := e.logicalName
+	if logical == "" {
+		logical = string(source)
+	}
+	return logical, true
+}
+
+// RegistrationIdentityForOwner returns the live registration identity for a
+// logical connection under owner. User-owned names resolve through the
+// server-derived physical namespace; operator/boot names remain unchanged.
+func (r *Registry) RegistrationIdentityForOwner(name string, owner auth.Owner) (auth.Owner, string, bool) {
+	return r.RegistrationIdentity(PhysicalServerName(name, owner))
 }
 
 // ReadResource fetches a single resource's content from the named MCP
@@ -1895,7 +2076,7 @@ func (r *Registry) ReadResource(ctx context.Context, name, uri string) (content 
 	if err := ctx.Err(); err != nil {
 		return nil, "", fmt.Errorf("mcp: ReadResource cancelled: %w", err)
 	}
-	e, eErr := r.entry(name)
+	e, eErr := r.identityVisibleEntry(ctx, name)
 	if eErr != nil {
 		return nil, "", eErr
 	}
@@ -1917,6 +2098,38 @@ func requireIdentity(ctx context.Context) error {
 		return ErrRegistryIdentityMissing
 	}
 	return nil
+}
+
+// entryVisibleToIdentity is the registry's read/dispatch visibility rule.
+// Boot-declared and agent-scoped registrations remain deployment/tenant-wide,
+// while a user-scoped registration is visible only to the exact verified
+// tenant and user that owns it. Session is deliberately not part of this
+// durable attachment boundary: a later session for the same user can use its
+// own attachment. The caller holds r.mu when reading entry fields.
+func entryVisibleToIdentity(e *serverEntry, id identity.Identity) bool {
+	if e == nil || e.owner.User == "" {
+		return e != nil
+	}
+	return e.owner.Tenant == id.TenantID && e.owner.User == id.UserID
+}
+
+// identityVisibleEntry resolves a server through the identity-scoped read
+// boundary. Foreign user-owned registrations answer ErrServerNotFound just as
+// an absent registration does, so the read surface cannot be used as an
+// existence oracle. Caller must have already supplied a complete identity.
+func (r *Registry) identityVisibleEntry(ctx context.Context, name string) (*serverEntry, error) {
+	id, ok := identity.From(ctx)
+	if !ok {
+		return nil, ErrRegistryIdentityMissing
+	}
+	r.mu.RLock()
+	e, found := r.servers[name]
+	visible := found && entryVisibleToIdentity(e, id)
+	r.mu.RUnlock()
+	if !visible {
+		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	return e, nil
 }
 
 // viewLocked builds a ServerView snapshot from an entry. Caller MUST
@@ -1943,8 +2156,22 @@ func (e *serverEntry) viewLocked() ServerView {
 
 // ListServers returns the filtered, paginated server list. The view
 // shapes are projection-only; no per-call state lives on the Registry.
-// Identity is mandatory.
+// Identity is mandatory. The process-local owner filter protects cache
+// privacy; callers that have a durable effective-source authority should use
+// ListServersWithVisibility so filtering happens before pagination.
 func (r *Registry) ListServers(ctx context.Context, f ListFilter) ([]ServerView, *Cursor, error) {
+	return r.listServers(ctx, f, nil)
+}
+
+// ListServersWithVisibility applies an identity-aware source visibility
+// predicate before filters and pagination. The registry remains a cache: the
+// callback is the caller's durable policy projection, and its false result is
+// indistinguishable from an absent server.
+func (r *Registry) ListServersWithVisibility(ctx context.Context, f ListFilter, visible SourceVisibility) ([]ServerView, *Cursor, error) {
+	return r.listServers(ctx, f, visible)
+}
+
+func (r *Registry) listServers(ctx context.Context, f ListFilter, visible SourceVisibility) ([]ServerView, *Cursor, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -1952,18 +2179,50 @@ func (r *Registry) ListServers(ctx context.Context, f ListFilter) ([]ServerView,
 		return nil, nil, fmt.Errorf("mcp: ListServers cancelled: %w", err)
 	}
 
+	id, _ := identity.From(ctx)
+	type snapshot struct {
+		view    ServerView
+		source  tools.ToolSourceID
+		owner   auth.Owner
+		logical string
+	}
 	r.mu.RLock()
-	all := make([]ServerView, 0, len(r.servers))
+	all := make([]snapshot, 0, len(r.servers))
 	for _, e := range r.servers {
-		all = append(all, e.viewLocked())
+		if !entryVisibleToIdentity(e, id) {
+			continue
+		}
+		logical := e.logicalName
+		if logical == "" {
+			logical = string(e.provider.SourceID())
+		}
+		all = append(all, snapshot{view: e.viewLocked(), source: e.provider.SourceID(), owner: e.owner, logical: logical})
 	}
 	r.mu.RUnlock()
+	if visible != nil {
+		admitted := all[:0]
+		for _, row := range all {
+			ok, err := visible(ctx, row.source, row.owner, row.logical)
+			if err != nil {
+				return nil, nil, fmt.Errorf("mcp: source visibility for %q: %w", row.source, err)
+			}
+			if ok {
+				admitted = append(admitted, row)
+			}
+		}
+		all = admitted
+	}
+
+	views := make([]ServerView, 0, len(all))
+	for _, row := range all {
+		views = append(views, row.view)
+	}
 
 	// Deterministic order — sort by name so the cursor is stable.
-	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
+	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 
-	filtered := all[:0:0]
-	for _, v := range all {
+	filtered := views[:0:0]
+	for _, v := range views {
 		if !matchesFilter(v, f) {
 			continue
 		}
@@ -2042,18 +2301,6 @@ func matchesFilter(v ServerView, f ListFilter) bool {
 		return false
 	}
 	return true
-}
-
-// entry returns the named server entry, or ErrServerNotFound. Caller
-// must NOT hold r.mu.
-func (r *Registry) entry(name string) (*serverEntry, error) {
-	r.mu.RLock()
-	e, ok := r.servers[name]
-	r.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
-	}
-	return e, nil
 }
 
 // ownedEntry returns the named server entry ONLY when its owner tag equals
@@ -2150,17 +2397,36 @@ func (r *Registry) tenantEntry(name, tenant string) (*serverEntry, error) {
 	return e, nil
 }
 
-// GetServer returns the per-server detail view. Identity is mandatory.
+// GetServer returns the per-server detail view. Identity is mandatory. The
+// process-local owner filter protects cache privacy; callers that have a
+// durable effective-source authority should use GetServerWithVisibility.
 func (r *Registry) GetServer(ctx context.Context, name string) (*ServerView, error) {
+	return r.getServer(ctx, name, nil)
+}
+
+// GetServerWithVisibility applies an identity-aware source visibility
+// predicate to the exact current server detail. A false result is projected
+// as ErrServerNotFound so an unselected personal source cannot become an
+// existence oracle.
+func (r *Registry) GetServerWithVisibility(ctx context.Context, name string, visible SourceVisibility) (*ServerView, error) {
+	return r.getServer(ctx, name, visible)
+}
+
+func (r *Registry) getServer(ctx context.Context, name string, visible SourceVisibility) (*ServerView, error) {
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	e, err := r.entry(name)
+	e, err := r.identityVisibleEntry(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	r.mu.RLock()
 	v := e.viewLocked()
+	owner := e.owner
+	logical := e.logicalName
+	if logical == "" {
+		logical = string(e.provider.SourceID())
+	}
 	// The OAuth requirement rides the DETAIL read only (get/probe), never the
 	// hot list row — see ServerView.OAuthRequirement.
 	v.OAuthRequirement = e.stats.oauthRequirement
@@ -2171,6 +2437,15 @@ func (r *Registry) GetServer(ctx context.Context, name string) (*ServerView, err
 		v.LastScopeShortfall = &sf
 	}
 	r.mu.RUnlock()
+	if visible != nil {
+		ok, err := visible(ctx, e.provider.SourceID(), owner, logical)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: source visibility for %q: %w", name, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
+		}
+	}
 	return &v, nil
 }
 
@@ -2244,6 +2519,28 @@ func (r *Registry) OAuthDiscoveryTarget(name string) (challenge *AuthChallenge, 
 	return challenge, e.urlOrCommand, append([]string(nil), e.oauthAllowedOrigins...), nil
 }
 
+// OAuthDiscoveryTargetForIdentity is the identity-aware OAuth discovery read.
+// It preserves the legacy no-context helper for operator-only internals while
+// preventing a user request from probing another user's connection metadata.
+func (r *Registry) OAuthDiscoveryTargetForIdentity(ctx context.Context, name string) (challenge *AuthChallenge, serverURL string, allowedOrigins []string, err error) {
+	if err := requireIdentity(ctx); err != nil {
+		return nil, "", nil, err
+	}
+	e, err := r.identityVisibleEntry(ctx, name)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	r.mu.RLock()
+	if e.stats.oauthChallenge != nil {
+		ch := *e.stats.oauthChallenge
+		challenge = &ch
+	}
+	serverURL = e.urlOrCommand
+	allowedOrigins = append([]string(nil), e.oauthAllowedOrigins...)
+	r.mu.RUnlock()
+	return challenge, serverURL, allowedOrigins, nil
+}
+
 // ListResources returns the advertised resources for a server. It runs a
 // Discover and projects the synthetic resource descriptors. Identity is
 // mandatory.
@@ -2251,7 +2548,7 @@ func (r *Registry) ListResources(ctx context.Context, name string) ([]ResourceVi
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	e, err := r.entry(name)
+	e, err := r.identityVisibleEntry(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2282,7 +2579,7 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	e, err := r.entry(name)
+	e, err := r.identityVisibleEntry(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2341,7 +2638,7 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	e, err := r.entry(name)
+	e, err := r.identityVisibleEntry(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2419,7 +2716,7 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	e, err := r.entry(name)
+	e, err := r.identityVisibleEntry(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2449,7 +2746,7 @@ func (r *Registry) Health(ctx context.Context, name string, window time.Duration
 	if err := requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	e, err := r.entry(name)
+	e, err := r.identityVisibleEntry(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2552,6 +2849,7 @@ func (r *Registry) SetOAuthDiscoveryOrigins(ctx context.Context, name string, ow
 	if idErr := requireIdentity(ctx); idErr != nil {
 		return nil, idErr
 	}
+	name = PhysicalServerName(name, owner)
 	e, eerr := r.ownedEntry(name, owner)
 	if eerr != nil {
 		return nil, eerr

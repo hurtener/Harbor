@@ -143,6 +143,8 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigUserListRevisions,
 	methods.MethodAgentConfigUserDiff,
 	methods.MethodAgentConfigUserRollback,
+	methods.MethodAgentConfigUserRegisterOAuthMCPCapability,
+	methods.MethodAgentConfigUserRemoveOAuthMCPCapability,
 	methods.MethodAgentConfigUserSkillsList,
 	methods.MethodAgentConfigUserSkillsUpsert,
 	methods.MethodAgentConfigUserSkillsDelete,
@@ -188,8 +190,8 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// (agent_config.session.set_user_prompt + set_source_disables +
 	// skills.{list,upsert,delete}) = 104,
 	// + State-snapshots state.history one = 105,
-	// + agent-config USER tier five (agent_config.user.get + set_revision +
-	// list_revisions + diff + rollback) = 110,
+	// + agent-config USER tier seven (agent_config.user.get + set_revision +
+	// list_revisions + diff + rollback + signed OAuth MCP register/remove) = 112,
 	// + Sessions-page erasure one (sessions.delete) = 111,
 	// + Sessions-page rename one (sessions.set_title, D-288) = 112,
 	// + events-read one (events.list, D-294) = 113,
@@ -217,9 +219,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// (agent_config.composition.preview) = 134, plus the session-turns
 	// read pair (sessions.turns.list + sessions.turns.get) = 136, plus the
 	// observability administrative read (observability.query) = 137, plus
-	// HA-68 same-runtime skill publications ten = 147.
-	if len(got) != 147 {
-		t.Fatalf("Methods() returned %d methods, want 147", len(got))
+	// HA-68 same-runtime skill publications ten = 149.
+	if len(got) != 149 {
+		t.Fatalf("Methods() returned %d methods, want 149", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -820,7 +822,7 @@ func TestIsAgentConfigSessionMethod_Lockstep(t *testing.T) {
 }
 
 // TestIsAgentConfigUserMethod_Lockstep pins the user-tier classifier on the
-// authorization boundary: the five `agent_config.user.*` verbs are user-tier
+// authorization boundary: the seven `agent_config.user.*` verbs are user-tier
 // methods; the admin verbs, the session safe-subset verbs, and a non-agent-
 // config method are not. A user method is always an agent-config method and
 // never an admin or a session method (the three tiers are disjoint).
@@ -831,6 +833,8 @@ func TestIsAgentConfigUserMethod_Lockstep(t *testing.T) {
 		methods.MethodAgentConfigUserListRevisions,
 		methods.MethodAgentConfigUserDiff,
 		methods.MethodAgentConfigUserRollback,
+		methods.MethodAgentConfigUserRegisterOAuthMCPCapability,
+		methods.MethodAgentConfigUserRemoveOAuthMCPCapability,
 	}
 	for _, m := range userMethods {
 		if !methods.IsAgentConfigUserMethod(m) {

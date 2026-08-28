@@ -13,10 +13,15 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
+	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
+	artifactsinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/protocol"
+	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -26,6 +31,8 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
 // projWiringDeps bundles the real subsystem handles a projection prod-wiring
@@ -119,8 +126,12 @@ func buildProjWiringMux(t *testing.T) projWiringDeps {
 
 // postMux issues an identity-headered POST through the mounted mux.
 func postMux(t *testing.T, m http.Handler, path string, id identity.Identity, body string) (int, []byte) {
+	return postMuxWithContext(t, m, path, id, body, context.Background())
+}
+
+func postMuxWithContext(t *testing.T, m http.Handler, path string, id identity.Identity, body string, ctx context.Context) (int, []byte) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(stream.HeaderTenant, id.TenantID)
 	req.Header.Set(stream.HeaderUser, id.UserID)
@@ -238,6 +249,176 @@ func TestProdWiring_ToolsAnnotatorThroughBuildMux(t *testing.T) {
 	}
 	if resp.Aggregates.Total != 1 {
 		t.Fatalf("Aggregates.Total = %d, want 1 (the one registered tool)", resp.Aggregates.Total)
+	}
+}
+
+// TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux drives the
+// identity-scoped catalog view through the REAL serve assembly. The process
+// catalog contains two physical registrations for the same logical user
+// connection, while each user's ConfigScopeUser revision selects only its
+// own pair. A user may see the ordinary local tool and their own MCP tool,
+// but tools.list/get/describe must not reveal the other user's physical
+// descriptor or schema. The request context carries the same verified reach
+// and effective-agent stamps that an admitted Protocol caller supplies.
+func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
+	deps := buildProjWiringMux(t)
+	ctx := context.Background()
+	const agentID = "agent-tools-scope"
+	const logicalName = "shared"
+
+	agentConfig, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{
+		State: deps.in.State,
+		Bus:   deps.in.Bus,
+	})
+	if err != nil {
+		t.Fatalf("agentcfg.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = agentConfig.Close(context.Background()) })
+
+	artifactStore, err := artifactsinmem.New(config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("artifactsinmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = artifactStore.Close(context.Background()) })
+	toolContext, err := mcpconsole.NewToolContextStore(mcpconsole.ToolContextDeps{
+		State: deps.in.State,
+		Store: artifactStore,
+		Bus:   deps.in.Bus,
+	})
+	if err != nil {
+		t.Fatalf("NewToolContextStore: %v", err)
+	}
+
+	mcpRegistry := mcpdrv.NewRegistry()
+	type scopedUser struct {
+		id       identity.Identity
+		owner    toolauth.Owner
+		physical string
+		foreign  string
+	}
+	users := []scopedUser{
+		{
+			id:    identity.Identity{TenantID: "t", UserID: "user-a", SessionID: "s-tools-a"},
+			owner: toolauth.Owner{Tenant: "t", Agent: agentID, User: "user-a"},
+		},
+		{
+			id:    identity.Identity{TenantID: "t", UserID: "user-b", SessionID: "s-tools-b"},
+			owner: toolauth.Owner{Tenant: "t", Agent: agentID, User: "user-b"},
+		},
+	}
+	for i := range users {
+		users[i].physical = mcpdrv.PhysicalServerName(logicalName, users[i].owner)
+		if i == 0 {
+			users[i].foreign = mcpdrv.PhysicalServerName(logicalName, users[1].owner)
+		} else {
+			users[i].foreign = mcpdrv.PhysicalServerName(logicalName, users[0].owner)
+		}
+		if err := mcpRegistry.Register(ctx, mcpdrv.ServerRegistration{
+			Provider:     admissionStubProvider{id: users[i].physical},
+			Transport:    "streamable-http",
+			InitialState: mcpdrv.ServerStateOnline,
+			Owner:        users[i].owner,
+			LogicalName:  logicalName,
+		}); err != nil {
+			t.Fatalf("register %s: %v", users[i].physical, err)
+		}
+		if err := deps.catalog.Register(tools.ToolDescriptor{
+			Tool: tools.Tool{
+				Name:        users[i].physical + "_echo",
+				Description: "private schema for " + users[i].id.UserID,
+				Source:      tools.ToolSourceID(users[i].physical),
+				Transport:   tools.TransportMCP,
+				Loading:     tools.LoadingAlways,
+			},
+			Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+				return tools.ToolResult{}, nil
+			},
+		}); err != nil {
+			t.Fatalf("register catalog tool %s: %v", users[i].physical, err)
+		}
+		pair := &agentcfg.SignedOAuthMCPPair{
+			ProviderName:       "provider-" + users[i].id.UserID,
+			Broker:             "broker",
+			Audience:           "audience",
+			Scopes:             []string{"read"},
+			CapabilityRevision: "capability",
+			URLDigest:          agentcfg.OAuthMCPURLDigest("https://example.test/mcp"),
+			Sink:               "https://example.test",
+			SinkDigest:         agentcfg.OAuthMCPURLDigest("https://example.test"),
+			Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{
+				Name: logicalName,
+				URL:  "https://example.test/mcp",
+			},
+			AuthorityOperationKind: "tools-scope-" + users[i].id.UserID,
+			OwnerAgentID:           agentID,
+			OwnerUserID:            users[i].id.UserID,
+			OwnerSessionID:         users[i].id.SessionID,
+		}
+		if _, err := agentConfig.SetRevision(
+			agentcfg.WithSignedOAuthMCPFenceOperation(ctx, pair.AuthorityOperationKind),
+			identity.Quadruple{Identity: users[i].id}, agentID, agentcfg.ConfigScopeUser,
+			agentcfg.ConfigPayload{SignedOAuthMCPPair: pair}, agentcfg.SetOptions{}); err != nil {
+			t.Fatalf("set user %s config: %v", users[i].id.UserID, err)
+		}
+	}
+
+	deps.in.AgentConfig = agentConfig
+	deps.in.AgentConfigID = agentID
+	deps.in.MCPRegistry = mcpRegistry
+	deps.in.MCPToolContext = toolContext
+	deps.in.Artifacts = artifactStore
+	deps.in.AgentResolver = NewAgentResolverAdapter(agentConfig, agentID)
+	deps.in.AgentReach = protocolauth.NewAgentReachAuthorizer()
+	built, err := BuildMux(deps.in)
+	if err != nil {
+		t.Fatalf("BuildMux: %v", err)
+	}
+
+	for _, user := range users {
+		t.Run(user.id.UserID, func(t *testing.T) {
+			requestCtx := protocolauth.WithAgentReach(ctx, []string{agentID})
+			requestCtx = tools.WithEffectiveAgentConfig(requestCtx, agentID)
+
+			code, body := postMuxWithContext(t, built.Mux, "/v1/tools/list", user.id, `{}`, requestCtx)
+			if code != http.StatusOK {
+				t.Fatalf("tools.list: status %d, body %s", code, body)
+			}
+			var list prototypes.ToolListResponse
+			if err := json.Unmarshal(body, &list); err != nil {
+				t.Fatalf("decode tools.list: %v (body %s)", err, body)
+			}
+			seen := make(map[string]bool, len(list.Tools))
+			for _, row := range list.Tools {
+				seen[row.ID] = true
+			}
+			ownTool := user.physical + "_echo"
+			foreignTool := user.foreign + "_echo"
+			if !seen[ownTool] || seen[foreignTool] {
+				t.Fatalf("tools.list visibility = %v, want own %q and no foreign %q", seen, ownTool, foreignTool)
+			}
+
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/get", user.id,
+				`{"id":"`+ownTool+`"}`, requestCtx)
+			if code != http.StatusOK {
+				t.Fatalf("tools.get own: status %d, body %s", code, body)
+			}
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/get", user.id,
+				`{"id":"`+foreignTool+`"}`, requestCtx)
+			if code != http.StatusNotFound {
+				t.Fatalf("tools.get foreign: status %d, body %s, want 404", code, body)
+			}
+
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/describe", user.id,
+				`{"id":"`+ownTool+`","agent_id":"`+agentID+`"}`, requestCtx)
+			if code != http.StatusOK {
+				t.Fatalf("tools.describe own: status %d, body %s", code, body)
+			}
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/describe", user.id,
+				`{"id":"`+foreignTool+`","agent_id":"`+agentID+`"}`, requestCtx)
+			if code != http.StatusNotFound {
+				t.Fatalf("tools.describe foreign: status %d, body %s, want 404", code, body)
+			}
+		})
 	}
 }
 

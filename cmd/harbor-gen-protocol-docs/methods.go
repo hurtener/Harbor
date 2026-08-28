@@ -661,6 +661,18 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigUserRollbackRequest", Response: "AgentConfigUserRollbackResponse",
 			Auth: userTierNote,
 		},
+		methods.MethodAgentConfigUserRegisterOAuthMCPCapability: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserRegisterOAuthMCPCapability),
+			Mutates: true,
+			Request: "AgentConfigUserRegisterOAuthMCPCapabilityRequest", Response: "AgentConfigUserRegisterOAuthMCPCapabilityResponse",
+			Auth: userTierNote + "; signed reach to the target agent is required",
+		},
+		methods.MethodAgentConfigUserRemoveOAuthMCPCapability: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserRemoveOAuthMCPCapability),
+			Mutates: true,
+			Request: "AgentConfigUserRemoveOAuthMCPCapabilityRequest", Response: "AgentConfigUserRemoveOAuthMCPCapabilityResponse",
+			Auth: userTierNote + "; signed reach to the target agent is required",
+		},
 		methods.MethodAgentConfigUserSkillsList: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsList),
 			Mutates: false,

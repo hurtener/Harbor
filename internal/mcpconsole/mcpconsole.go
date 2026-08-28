@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
@@ -61,7 +62,8 @@ func markNotFound(err error) error {
 // calls for the nine `mcp.servers.*` read methods plus the raw-HTML
 // trust toggle.
 type RegistryAccessor struct {
-	reg *mcp.Registry
+	reg        *mcp.Registry
+	sourceAuth *SourceAuthorizer
 	// discoverer, when non-nil, walks the advertised OAuth requirement chain
 	// on a probe that captured a `WWW-Authenticate` challenge. Nil
 	// leaves the probe path exactly as before (no discovery). It is an
@@ -71,6 +73,18 @@ type RegistryAccessor struct {
 
 // RegistryAccessorOption configures a RegistryAccessor.
 type RegistryAccessorOption func(*RegistryAccessor)
+
+// WithSourceAuthorizer wires the shared effective-source admission helper.
+// The helper reads the current ConfigScopeUser revision for user-owned
+// sources; RegistryAccessor otherwise retains the fail-closed default helper
+// built at construction.
+func WithSourceAuthorizer(sourceAuth *SourceAuthorizer) RegistryAccessorOption {
+	return func(a *RegistryAccessor) {
+		if sourceAuth != nil {
+			a.sourceAuth = sourceAuth
+		}
+	}
+}
 
 // WithOAuthDiscoverer wires the on-demand OAuth-requirement discovery walker
 // into the probe path: a probe that captures a `WWW-Authenticate`
@@ -87,7 +101,7 @@ func NewRegistryAccessor(reg *mcp.Registry, opts ...RegistryAccessorOption) (*Re
 	if reg == nil {
 		return nil, errors.New("mcpconsole: NewRegistryAccessor requires a non-nil *mcp.Registry")
 	}
-	a := &RegistryAccessor{reg: reg}
+	a := &RegistryAccessor{reg: reg, sourceAuth: NewSourceAuthorizer(reg, nil)}
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -110,7 +124,7 @@ func (a *RegistryAccessor) ListServers(ctx context.Context, f protocol.MCPListFi
 	for _, st := range f.State {
 		filter.State = append(filter.State, mcp.ServerState(st))
 	}
-	views, cur, err := a.reg.ListServers(ctx, filter)
+	views, cur, err := a.reg.ListServersWithVisibility(ctx, filter, a.sourceVisible)
 	if err != nil {
 		return nil, "", markNotFound(err)
 	}
@@ -127,15 +141,43 @@ func (a *RegistryAccessor) ListServers(ctx context.Context, f protocol.MCPListFi
 
 // GetServer implements protocol.MCPAccessor.
 func (a *RegistryAccessor) GetServer(ctx context.Context, name string) (protocol.MCPServerRow, error) {
-	v, err := a.reg.GetServer(ctx, name)
+	v, err := a.reg.GetServerWithVisibility(ctx, name, a.sourceVisible)
 	if err != nil {
 		return protocol.MCPServerRow{}, markNotFound(err)
 	}
 	return serverRow(*v), nil
 }
 
+// sourceVisible adapts the registry's atomic owner/logical snapshot to the
+// shared effective-source authority. The empty effective-agent argument is
+// intentional for the agent-agnostic list/get methods: a user-owned source's
+// own owner.Agent selects the ConfigScopeUser slot, while resource and App
+// paths pass the reach-admitted effective agent explicitly.
+func (a *RegistryAccessor) sourceVisible(ctx context.Context, source tools.ToolSourceID, owner auth.Owner, logical string) (bool, error) {
+	return a.sourceAuth.VisibleRegistration(ctx, source, owner, logical, "")
+}
+
+// ensureSourceVisible applies the same effective-source authority to named
+// reads and control calls that do not carry a source snapshot. A reach
+// admitted effective agent is honored when the protocol seated one; otherwise
+// a user-owned source's own owner.Agent selects its durable user revision.
+func (a *RegistryAccessor) ensureSourceVisible(ctx context.Context, name string) error {
+	agentID, _ := tools.EffectiveAgentConfigFrom(ctx)
+	visible, err := a.sourceAuth.Visible(ctx, tools.ToolSourceID(name), agentID)
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return fmt.Errorf("%w: %q", mcp.ErrServerNotFound, name)
+	}
+	return nil
+}
+
 // ListResources implements protocol.MCPAccessor.
 func (a *RegistryAccessor) ListResources(ctx context.Context, name string) ([]protocol.MCPResourceRow, error) {
+	if err := a.ensureSourceVisible(ctx, name); err != nil {
+		return nil, markNotFound(err)
+	}
 	views, err := a.reg.ListResources(ctx, name)
 	if err != nil {
 		return nil, markNotFound(err)
@@ -151,6 +193,9 @@ func (a *RegistryAccessor) ListResources(ctx context.Context, name string) ([]pr
 
 // ListPrompts implements protocol.MCPAccessor.
 func (a *RegistryAccessor) ListPrompts(ctx context.Context, name string) ([]protocol.MCPPromptRow, error) {
+	if err := a.ensureSourceVisible(ctx, name); err != nil {
+		return nil, markNotFound(err)
+	}
 	views, err := a.reg.ListPrompts(ctx, name)
 	if err != nil {
 		return nil, markNotFound(err)
@@ -172,6 +217,9 @@ func (a *RegistryAccessor) ListPrompts(ctx context.Context, name string) ([]prot
 
 // RefreshDiscovery implements protocol.MCPAccessor.
 func (a *RegistryAccessor) RefreshDiscovery(ctx context.Context, name string) (protocol.MCPDiscoveryRow, error) {
+	if err := a.ensureSourceVisible(ctx, name); err != nil {
+		return protocol.MCPDiscoveryRow{}, markNotFound(err)
+	}
 	r, err := a.reg.RefreshDiscovery(ctx, name)
 	if err != nil {
 		return protocol.MCPDiscoveryRow{}, markNotFound(err)
@@ -192,6 +240,16 @@ func (a *RegistryAccessor) RefreshDiscovery(ctx context.Context, name string) (p
 // requires auth still reports the failure, and discovery still runs off the
 // captured challenge so the requirement is inspectable.
 func (a *RegistryAccessor) Probe(ctx context.Context, name string) (protocol.MCPProbeRow, error) {
+	if _, verified := identity.From(ctx); verified {
+		if err := a.ensureSourceVisible(ctx, name); err != nil {
+			return protocol.MCPProbeRow{}, markNotFound(err)
+		}
+	} else if owner, known := a.reg.OwnerOfSource(tools.ToolSourceID(name)); known && owner.User != "" {
+		// The compatibility probe path permits ownerless boot entries to
+		// capture OAuth challenge metadata without a request identity. A
+		// user-owned source never receives that exception.
+		return protocol.MCPProbeRow{}, mcp.ErrIdentityMissing
+	}
 	r, probeErr := a.reg.Probe(ctx, name)
 	a.maybeDiscoverOAuthRequirement(ctx, name)
 	if probeErr != nil {
@@ -209,7 +267,24 @@ func (a *RegistryAccessor) maybeDiscoverOAuthRequirement(ctx context.Context, na
 	if a.discoverer == nil {
 		return
 	}
-	challenge, serverURL, allowedOrigins, err := a.reg.OAuthDiscoveryTarget(name)
+	var (
+		challenge      *mcp.AuthChallenge
+		serverURL      string
+		allowedOrigins []string
+		err            error
+	)
+	if _, verified := identity.From(ctx); verified {
+		challenge, serverURL, allowedOrigins, err = a.reg.OAuthDiscoveryTargetForIdentity(ctx, name)
+	} else {
+		// Keep the pre-auth operator/boot probe seam working. A bare context
+		// may inspect only process-wide (ownerless) boot entries; a user-owned
+		// source must never become discoverable through this compatibility path.
+		owner, known := a.reg.OwnerOfSource(tools.ToolSourceID(name))
+		if known && owner.User != "" {
+			return
+		}
+		challenge, serverURL, allowedOrigins, err = a.reg.OAuthDiscoveryTarget(name)
+	}
 	if err != nil || challenge == nil {
 		// No captured challenge → nothing advertised to discover.
 		return
@@ -226,6 +301,9 @@ func (a *RegistryAccessor) maybeDiscoverOAuthRequirement(ctx context.Context, na
 
 // Health implements protocol.MCPAccessor.
 func (a *RegistryAccessor) Health(ctx context.Context, name string) (protocol.MCPHealthRow, error) {
+	if err := a.ensureSourceVisible(ctx, name); err != nil {
+		return protocol.MCPHealthRow{}, markNotFound(err)
+	}
 	snap, err := a.reg.Health(ctx, name, 0)
 	if err != nil {
 		return protocol.MCPHealthRow{}, markNotFound(err)
@@ -247,6 +325,9 @@ func (a *RegistryAccessor) Health(ctx context.Context, name string) (protocol.MC
 
 // SetRawHTMLTrust implements protocol.MCPAccessor.
 func (a *RegistryAccessor) SetRawHTMLTrust(ctx context.Context, name string, trusted bool) (bool, error) {
+	if err := a.ensureSourceVisible(ctx, name); err != nil {
+		return false, markNotFound(err)
+	}
 	prev, err := a.reg.SetRawHTMLTrust(ctx, name, trusted)
 	return prev, markNotFound(err)
 }

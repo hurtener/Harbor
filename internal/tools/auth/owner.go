@@ -8,17 +8,14 @@ package auth
 // owner's runtime-added entries — never boot-declared entries, never another
 // owner's runtime-adds.
 //
-// Owner is deliberately NOT an isolation principal: agent_id is not part of the
-// (tenant, user, session) isolation tuple, so the owner tag is never used as a
-// dispatch key or a storage WHERE clause. Boot-declared infrastructure and the
-// bare-name tool catalog stay process-global and deployment-shared: resolution
-// and dispatch happen by bare name across every session, and boot servers stay
-// visible to every session's read surface. A shared runtime therefore TRUSTS
-// its co-tenant admins for runtime-added connection / provider names — a name
-// collision fails loud rather than silently cross-serving — and a deployment
-// that needs hard isolation of runtime-added tools runs one runtime per tenant,
-// which then gets full isolation for free (one tenant; everything in the global
-// catalog is theirs).
+// User optionally extends the physical owner for a user-scoped registration.
+// Agent is not part of the (tenant, user, session) isolation tuple, so the
+// owner tag is not a dispatch key. It is an exact ownership and projection
+// tag for runtime-added state. Boot-declared infrastructure and the bare-name
+// tool catalog stay process-global and deployment-shared: resolution and
+// dispatch happen by bare name across every session, and boot servers stay
+// visible to every session's read surface. A same-name registration owned by a
+// different full owner is rejected rather than silently cross-serving.
 //
 // A zero Owner denotes a boot-declared / untagged entry, which the reconcile
 // view never enumerates.
@@ -30,8 +27,11 @@ type Owner struct {
 	// runtime-added entry belongs to. Registration metadata, never an isolation
 	// key.
 	Agent string
+	// User is the owning verified user id for a user-scoped registration. It is
+	// empty for operator/agent-scoped registrations and is never a dispatch key.
+	User string
 }
 
 // IsZero reports whether o is the zero (boot-declared / untagged) owner. A
 // zero-owner entry is never enumerated by the owner-scoped reconcile view.
-func (o Owner) IsZero() bool { return o.Tenant == "" && o.Agent == "" }
+func (o Owner) IsZero() bool { return o.Tenant == "" && o.Agent == "" && o.User == "" }

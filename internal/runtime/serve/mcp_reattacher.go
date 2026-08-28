@@ -133,7 +133,7 @@ func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Own
 		return false, fmt.Errorf("serve: mcp attacher has no catalog/registry wired for the run-start re-attach of %q", desc.Name)
 	}
 
-	key := reattachKey{tenant: owner.Tenant, agent: owner.Agent, name: desc.Name}
+	key := reattachKey{tenant: owner.Tenant, agent: owner.Agent, user: owner.User, name: desc.Name}
 	fingerprint := agentcfg.MCPConnectionFingerprint(desc)
 
 	// The gate pass is PURE and runs before the lock and before any dial: a
@@ -213,7 +213,7 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	// start for the SAME owner may have attached the name in between. Re-reading
 	// here — inside the lock that serialises the whole attach — makes the pair
 	// (check, attach) atomic, so two concurrent run starts dial exactly once.
-	if priorOwner, liveFingerprint, exists := a.registry.RegistrationIdentity(desc.Name); exists {
+	if priorOwner, liveFingerprint, exists := a.registry.RegistrationIdentityForOwner(desc.Name, owner); exists {
 		if priorOwner == owner {
 			if liveFingerprint == fingerprint {
 				// Exact canonical descriptor already live: no transport churn.

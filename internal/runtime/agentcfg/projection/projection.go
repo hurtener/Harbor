@@ -39,6 +39,222 @@ import (
 // legitimately not be in the directory view).
 var ErrSkillBodyMissing = errors.New("agentcfg/projection: agent-config pins a skill whose body is absent from the store")
 
+// SourceOwnerResolver reports the physical owner stamped on a runtime-added
+// MCP source. The run projection uses it to hide foreign user-owned sources;
+// boot and operator-owned sources remain part of the operator ceiling.
+type SourceOwnerResolver interface {
+	OwnerOfSource(source tools.ToolSourceID) (auth.Owner, bool)
+}
+
+type sourceLogicalNameResolver interface {
+	LogicalNameOfSource(source tools.ToolSourceID) (string, bool)
+}
+
+// physicalizeUserExposure keeps user policy names logical while the live
+// catalog uses owner-derived source ids. A user revision may say
+// "shared_echo" or "shared"; the process-local catalog may contain
+// "shared~u-<digest>_echo" and "shared~u-<digest>" for that same pair.
+// Translate the user tier only for the matching owner, preserving the
+// original names so the same narrow policy still applies to an operator/boot
+// source with that logical name or to a source that is not attached yet.
+func physicalizeUserExposure(base tools.PlannerCatalogView, resolver SourceOwnerResolver, owner auth.Owner, paused, disabled []string) ([]string, []string) {
+	if base == nil || resolver == nil || owner.User == "" || (len(paused) == 0 && len(disabled) == 0) {
+		return paused, disabled
+	}
+	logicalNames, ok := resolver.(sourceLogicalNameResolver)
+	if !ok {
+		return paused, disabled
+	}
+
+	pausedSet := make(map[string]struct{}, len(paused))
+	for _, name := range paused {
+		if name != "" {
+			pausedSet[name] = struct{}{}
+		}
+	}
+	disabledSet := make(map[string]struct{}, len(disabled))
+	for _, name := range disabled {
+		if name != "" {
+			disabledSet[name] = struct{}{}
+		}
+	}
+	physicalPaused := make(map[string]struct{})
+	physicalDisabled := make(map[string]struct{})
+	for _, tool := range base.List() {
+		if tool.Source == "" {
+			continue
+		}
+		sourceOwner, found := resolver.OwnerOfSource(tool.Source)
+		if !found || sourceOwner != owner {
+			continue
+		}
+		logicalSource, found := logicalNames.LogicalNameOfSource(tool.Source)
+		if !found || logicalSource == "" {
+			continue
+		}
+		if _, selected := pausedSet[logicalSource]; selected {
+			physicalPaused[string(tool.Source)] = struct{}{}
+		}
+		if !strings.HasPrefix(tool.Name, string(tool.Source)) {
+			continue
+		}
+		suffix := strings.TrimPrefix(tool.Name, string(tool.Source))
+		if _, selected := disabledSet[logicalSource+suffix]; selected {
+			physicalDisabled[tool.Name] = struct{}{}
+		}
+	}
+	for name := range physicalPaused {
+		paused = append(paused, name)
+	}
+	for name := range physicalDisabled {
+		disabled = append(disabled, name)
+	}
+	return paused, disabled
+}
+
+// physicalizeUserLoadingModes adds physical aliases for a user's logical
+// loading-mode choices. User revisions intentionally retain logical
+// connection/tool names, while a live user-owned MCP source is stored under
+// an owner-derived physical source id. Keeping this translation next to the
+// disable-set translation prevents a user server-loading choice from silently
+// becoming inert merely because the source was namespaced.
+func physicalizeUserLoadingModes(cat tools.ToolCatalog, filter tools.CatalogFilter, resolver SourceOwnerResolver, owner auth.Owner, exposure *agentcfg.ToolExposure) *agentcfg.ToolExposure {
+	if cat == nil || resolver == nil || owner.User == "" || !hasLoadingOverrides(exposure) {
+		return exposure
+	}
+	logicalNames, ok := resolver.(sourceLogicalNameResolver)
+	if !ok {
+		return exposure
+	}
+	out := &agentcfg.ToolExposure{
+		PausedServers:      append([]string(nil), exposure.PausedServers...),
+		DisabledTools:      append([]string(nil), exposure.DisabledTools...),
+		ServerLoadingModes: cloneLoadingModes(exposure.ServerLoadingModes),
+		ToolLoadingModes:   cloneLoadingModes(exposure.ToolLoadingModes),
+	}
+	broad := filter
+	broad.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+	for _, tool := range cat.List(broad) {
+		if tool.Source == "" {
+			continue
+		}
+		sourceOwner, found := resolver.OwnerOfSource(tool.Source)
+		if !found || sourceOwner != owner {
+			continue
+		}
+		logical, found := logicalNames.LogicalNameOfSource(tool.Source)
+		if !found || logical == "" {
+			continue
+		}
+		if mode, found := exposure.ServerLoadingModes[logical]; found {
+			if out.ServerLoadingModes == nil {
+				out.ServerLoadingModes = make(map[string]string)
+			}
+			out.ServerLoadingModes[string(tool.Source)] = mode
+		}
+		if !strings.HasPrefix(tool.Name, string(tool.Source)) {
+			continue
+		}
+		suffix := strings.TrimPrefix(tool.Name, string(tool.Source))
+		if mode, found := exposure.ToolLoadingModes[logical+suffix]; found {
+			if out.ToolLoadingModes == nil {
+				out.ToolLoadingModes = make(map[string]string)
+			}
+			out.ToolLoadingModes[tool.Name] = mode
+		}
+	}
+	return out
+}
+
+func cloneLoadingModes(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+// userLoadingTool projects a physical source back to the logical name used
+// by a user's durable revision. The bool is false when the physical source is
+// owned by another user, so that user's loading preferences cannot affect a
+// foreign attachment. Boot/operator sources and unregistered descriptors
+// retain their ordinary names for backward-compatible shared choices.
+func userLoadingTool(t tools.Tool, resolver SourceOwnerResolver, owner auth.Owner) (tools.Tool, bool) {
+	if resolver == nil || t.Source == "" || owner.User == "" {
+		return t, true
+	}
+	sourceOwner, found := resolver.OwnerOfSource(t.Source)
+	if !found || sourceOwner.User == "" {
+		return t, true
+	}
+	if sourceOwner != owner {
+		return tools.Tool{}, false
+	}
+	logicalNames, ok := resolver.(sourceLogicalNameResolver)
+	if !ok {
+		return t, true
+	}
+	logical, found := logicalNames.LogicalNameOfSource(t.Source)
+	if !found || logical == "" {
+		return t, true
+	}
+	physical := string(t.Source)
+	t.Source = tools.ToolSourceID(logical)
+	// The physical source is the prefix of every MCP catalog name. Preserve
+	// the suffix while replacing only that prefix with the logical source.
+	if strings.HasPrefix(t.Name, physical) {
+		t.Name = logical + strings.TrimPrefix(t.Name, physical)
+	}
+	return t, true
+}
+
+type userScopedMCPView struct {
+	base        tools.PlannerCatalogView
+	resolver    SourceOwnerResolver
+	owner       auth.Owner
+	desiredPair map[string]struct{}
+}
+
+func (v userScopedMCPView) allows(tool tools.Tool) bool {
+	owner, ok := v.resolver.OwnerOfSource(tool.Source)
+	if !ok || owner.User == "" {
+		return true
+	}
+	if owner != v.owner {
+		return false
+	}
+	logical := string(tool.Source)
+	if names, ok := v.resolver.(sourceLogicalNameResolver); ok {
+		if resolved, found := names.LogicalNameOfSource(tool.Source); found {
+			logical = resolved
+		}
+	}
+	_, ok = v.desiredPair[logical]
+	return ok
+}
+
+func (v userScopedMCPView) Resolve(name string) (tools.Tool, bool) {
+	t, ok := v.base.Resolve(name)
+	if !ok || !v.allows(t) {
+		return tools.Tool{}, false
+	}
+	return t, true
+}
+
+func (v userScopedMCPView) List() []tools.Tool {
+	all := v.base.List()
+	out := make([]tools.Tool, 0, len(all))
+	for _, tool := range all {
+		if v.allows(tool) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // loadOverlay reads the session's safe-subset overlay (the lower tier of the
 // authorization matrix) for the run's REAL (tenant, user, session) triple. A
 // nil store, an empty agentID, or an agent with no overlay returns the zero
@@ -882,11 +1098,14 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 // ActivePlannerCatalogView builds the run's planner-facing catalog view at
 // run start, applying the agent's active-config tool exposure: a paused MCP
 // server's tools and any individually-disabled tool are excluded from the
-// view (next-turn projection — the live transport stays WARM). The exclusion
-// set is the order-independent union of THREE narrow-only disable tiers — the
-// admin baseline, the durable per-user disable set (which spans that user's
-// sessions for the agent), and the ephemeral session overlay — so it can only
-// ever grow: no tier can re-expose a tool a higher tier disabled. It always
+// view (next-turn projection — the live transport stays WARM). Loading-mode
+// overrides compose in authority order: operator baseline, then the acting
+// user's durable choices; the session overlay remains narrow-only. The
+// exclusion set is the order-independent union of THREE narrow-only disable
+// tiers — the admin baseline, the durable per-user disable set (which spans
+// that user's sessions for the agent), and the ephemeral session overlay — so
+// it can only ever grow: no tier can re-expose a tool a higher tier disabled.
+// It always
 // returns a usable view: a nil registry, an empty agentID, an agent with no
 // active revision, or an active revision with no tool-exposure section (or an
 // empty one) returns the plain [tools.NewPlannerView] over cat+filter — the
@@ -898,10 +1117,10 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 // concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
-func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	// Admin exposure (the baseline). The loading-mode override maps are
-	// ADMIN-tier only — the durable per-user and ephemeral session tiers
-	// below stay narrow-only disable sets with no loading field.
+func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+	// Admin exposure (the baseline). Loading-mode overrides are composed below
+	// with the durable user tier; the ephemeral session tier remains
+	// narrow-only and contributes disable sets only.
 	var adminPaused, adminDisabled []string
 	var adminToolExposure *agentcfg.ToolExposure
 	if reg != nil && agentID != "" {
@@ -916,23 +1135,6 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		}
 	}
 
-	// Loading-mode override projection: when the admin tier carries no
-	// override maps, the plain PlannerView is the backward-compatible "no
-	// override" path. Otherwise, the inner view is rebuilt over a
-	// BROADENED filter (both loading modes) so LoadingOverrideView — not
-	// filter.LoadingModes — decides prompt-time visibility against the
-	// EFFECTIVE mode. The effective map is resolved ONCE per run from a
-	// single catalog listing, so concurrent / in-flight runs never share
-	// mutable state (the concurrent-reuse contract).
-	var base tools.PlannerCatalogView = tools.NewPlannerView(cat, filter)
-	if adminToolExposure != nil && (len(adminToolExposure.ServerLoadingModes) > 0 || len(adminToolExposure.ToolLoadingModes) > 0) {
-		broadFilter := filter
-		broadFilter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
-		broad := tools.NewPlannerView(cat, broadFilter)
-		effective := buildEffectiveLoading(broad.List(), adminToolExposure)
-		base = tools.NewLoadingOverrideView(broad, effective, filter.LoadingModes)
-	}
-
 	// Durable user-scope exposure: the per-user narrow-only disable set that
 	// spans the user's sessions for this agent. The run's full triple is
 	// passed; the user-scope storage key (session + run zeroed, agent_id in the
@@ -942,6 +1144,8 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// surfaces identity_required); a missing active user revision is the
 	// ungated path. The set is narrow-only — there is no user enable field.
 	var userPaused, userDisabled []string
+	var userToolExposure *agentcfg.ToolExposure
+	userPairNames := make(map[string]struct{})
 	if reg != nil && agentID != "" {
 		urev, uok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)
 		if err != nil {
@@ -950,8 +1154,35 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		if uok && urev.Payload.ToolExposure != nil {
 			userPaused = urev.Payload.PausedServers()
 			userDisabled = urev.Payload.DisabledTools()
+			userToolExposure = urev.Payload.ToolExposure
+		}
+		if uok {
+			pairs, pairErr := urev.Payload.EffectiveSignedOAuthMCPPairs()
+			if pairErr != nil {
+				return nil, pairErr
+			}
+			for _, pair := range pairs {
+				if pair.Connection.Name != "" {
+					userPairNames[pair.Connection.Name] = struct{}{}
+				}
+			}
 		}
 	}
+	var ownerResolver SourceOwnerResolver
+	if len(ownerResolvers) > 0 {
+		ownerResolver = ownerResolvers[0]
+	}
+	actingOwner := auth.Owner{Tenant: id.TenantID, Agent: agentID, User: id.UserID}
+	userLoadingExposure := physicalizeUserLoadingModes(cat, filter, ownerResolver, actingOwner, userToolExposure)
+
+	// Loading-mode override projection composes the operator baseline first,
+	// then the acting user's durable choices. The inner view is rebuilt over a
+	// BROADENED filter (both loading modes) whenever either tier carries an
+	// override, so each layer can see the complete catalog before the final
+	// prompt-time filter is applied. The effective map is resolved once per run
+	// from an immutable view snapshot; the session tier has no loading-mode
+	// write path and can only narrow through the disable union below.
+	base := composeLoadingView(cat, filter, adminToolExposure, userLoadingExposure)
 
 	// Session overlay (narrow-only): the session's disable set is UNIONED into
 	// the exclusion set — it can only ADD to the disabled set, never remove an
@@ -971,10 +1202,98 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// re-widen past the admin-provisioned palette.
 	paused := unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
 	disabled := unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
+	if ownerResolver != nil && id.UserID != "" {
+		userPaused, userDisabled = physicalizeUserExposure(base, ownerResolver, actingOwner, userPaused, userDisabled)
+		paused = unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
+		disabled = unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
+		base = userScopedMCPView{base: base, resolver: ownerResolver, owner: actingOwner, desiredPair: userPairNames}
+	}
 	if len(paused) == 0 && len(disabled) == 0 {
 		return base, nil
 	}
 	return tools.NewExclusionView(base, paused, disabled), nil
+}
+
+// ToolExposedAtCurrentRevision reports whether the named catalog tool is in
+// the same effective exposure view a newly-started run would receive for the
+// acting identity. It deliberately delegates to [ActivePlannerCatalogView]
+// instead of re-reading the admin, user, and session tiers here: the durable
+// ConfigScopeUser revision, logical-to-physical source translation, and
+// narrow-only disable union therefore have one implementation for planner
+// discovery and late app callbacks alike.
+//
+// The caller supplies a catalog containing the current dispatch descriptor
+// and should pass the same source-owner resolver used by runtime MCP
+// registrations. Both loading modes are included in the intermediate view so
+// loading preferences do not turn a callback authorization check into a
+// prompt-presence check. A nil registry or empty agent id preserves the
+// existing inert-gate behavior and reports exposed.
+func ToolExposedAtCurrentRevision(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, tool tools.Tool, ownerResolvers ...SourceOwnerResolver) (bool, error) {
+	if reg == nil || agentID == "" {
+		return true, nil
+	}
+	// App-only callbacks are intentionally absent from the ordinary planner
+	// catalog. Include the already-resolved callback as a read-only target in
+	// the temporary projection so user logical-to-physical translation and the
+	// exclusion view still apply to that callback. It never escapes this
+	// predicate into planner discovery or catalog registration.
+	cat = exposureTargetCatalog{ToolCatalog: cat, target: tool}
+	filter := tools.CatalogFilter{
+		TenantID:     id.TenantID,
+		UserID:       id.UserID,
+		SessionID:    id.SessionID,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	}
+	view, err := ActivePlannerCatalogView(ctx, reg, ov, agentID, id, cat, filter, ownerResolvers...)
+	if err != nil {
+		return false, err
+	}
+	resolved, ok := view.Resolve(tool.Name)
+	if !ok {
+		return false, nil
+	}
+	// The descriptor is resolved before this check by the Apps accessor. A
+	// source mismatch means the catalog changed between those operations, so
+	// do not let a stale descriptor cross the exposure boundary.
+	return resolved.Source == tool.Source, nil
+}
+
+// exposureTargetCatalog is the narrow adapter used by
+// ToolExposedAtCurrentRevision for app-only callbacks, which do not belong to
+// the planner catalog. It delegates every catalog operation except the two
+// planner-view reads, and adds only the target descriptor to those reads when
+// the ordinary catalog does not already contain that name. The target is
+// never registered or made globally discoverable.
+type exposureTargetCatalog struct {
+	tools.ToolCatalog
+	target tools.Tool
+}
+
+func (c exposureTargetCatalog) Resolve(name string) (tools.ToolDescriptor, bool) {
+	if desc, ok := c.ToolCatalog.Resolve(name); ok {
+		return desc, true
+	}
+	if name == c.target.Name {
+		return tools.ToolDescriptor{Tool: c.target}, true
+	}
+	return tools.ToolDescriptor{}, false
+}
+
+func (c exposureTargetCatalog) List(filter tools.CatalogFilter) []tools.Tool {
+	out := c.ToolCatalog.List(filter)
+	for _, existing := range out {
+		if existing.Name == c.target.Name {
+			return out
+		}
+	}
+	// ActivePlannerCatalogView always broadens loading-mode filtering before
+	// it uses List for the exposure translation. App callbacks have already
+	// passed source/identity admission; retaining the target here is therefore
+	// safe and lets the canonical projection apply all user/admin/session
+	// exclusion semantics to it.
+	out = append(out, c.target)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // resolveEffectiveLoading applies the top two layers of the loading-mode
@@ -1019,31 +1338,118 @@ func buildEffectiveLoading(list []tools.Tool, te *agentcfg.ToolExposure) map[str
 	return out
 }
 
+func hasLoadingOverrides(te *agentcfg.ToolExposure) bool {
+	return te != nil && (len(te.ServerLoadingModes) > 0 || len(te.ToolLoadingModes) > 0)
+}
+
+// composeLoadingView applies the loading-mode layers in authority order:
+// boot-effective catalog, operator/agent revision, then acting-user
+// revision. User modes are not an enable set — they operate on the same
+// operator-ceiling catalog and only change prompt-time presence. The helper
+// deliberately keeps intermediate layers broad so a lower layer can promote
+// a descriptor the preceding layer demoted; only the final view applies the
+// caller's requested visible modes.
+func composeLoadingView(cat tools.ToolCatalog, filter tools.CatalogFilter, admin, user *agentcfg.ToolExposure) tools.PlannerCatalogView {
+	adminOverrides := hasLoadingOverrides(admin)
+	userOverrides := hasLoadingOverrides(user)
+	if !adminOverrides && !userOverrides {
+		return tools.NewPlannerView(cat, filter)
+	}
+
+	broadFilter := filter
+	broadFilter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+	var view tools.PlannerCatalogView = tools.NewPlannerView(cat, broadFilter)
+	if adminOverrides {
+		visible := []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+		if !userOverrides {
+			visible = filter.LoadingModes
+		}
+		view = tools.NewLoadingOverrideView(view, buildEffectiveLoading(view.List(), admin), visible)
+	}
+	if userOverrides {
+		view = tools.NewLoadingOverrideView(view, buildEffectiveLoading(view.List(), user), filter.LoadingModes)
+	}
+	return view
+}
+
 // EffectiveLoadingMode resolves tool t's projected EFFECTIVE LoadingMode
-// under agentID's ADMIN-tier active config revision — the SAME precedence
-// [ActivePlannerCatalogView] applies at run start, exposed for the
-// `tools.describe` read surface's optional `agent_id` path. boot is the
-// boot-effective mode (already reflecting the driver default + any boot
-// `tools.entries[].loading_mode`); a nil registry, an empty agentID, or an
-// agent with no active revision / no tool-exposure section returns boot
-// unchanged — the backward-compatible path byte-identical to `tools.describe`
-// behaviour before this projection existed. A registry read error is
-// returned so the caller fails the request loudly (CLAUDE.md §13).
-func EffectiveLoadingMode(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error) {
+// under agentID's operator then acting-user active config revisions — the
+// SAME precedence [ActivePlannerCatalogView] applies at run start, exposed
+// for the `tools.describe` read surface's optional `agent_id` path. boot is
+// the boot-effective mode (already reflecting the driver default + boot
+// config); a nil registry, an empty agentID, or no relevant revisions returns
+// boot unchanged — the backward-compatible path byte-identical to
+// `tools.describe` behaviour before this projection existed. A registry read
+// error is returned so the caller fails the request loudly (CLAUDE.md §13).
+func EffectiveLoadingMode(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, t tools.Tool, boot tools.LoadingMode, ownerResolvers ...SourceOwnerResolver) (tools.LoadingMode, error) {
 	if reg == nil || agentID == "" {
 		return boot, nil
 	}
-	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	q := identity.Quadruple{Identity: id.Identity}
+	admin, adminOK, err := reg.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return "", err
 	}
-	if !ok || rev.Payload.ToolExposure == nil {
-		return boot, nil
+	user, userOK, err := reg.Active(ctx, q, agentID, agentcfg.ConfigScopeUser)
+	if err != nil {
+		return "", err
 	}
-	if mode, ok := resolveEffectiveLoading(rev.Payload.ToolExposure, t); ok {
-		return mode, nil
+	mode := boot
+	if adminOK {
+		if resolved, ok := resolveEffectiveLoading(admin.Payload.ToolExposure, t); ok {
+			mode = resolved
+		}
 	}
-	return boot, nil
+	if userOK {
+		var ownerResolver SourceOwnerResolver
+		if len(ownerResolvers) > 0 {
+			ownerResolver = ownerResolvers[0]
+		}
+		userTool, allowed := userLoadingTool(t, ownerResolver, auth.Owner{Tenant: id.TenantID, Agent: agentID, User: id.UserID})
+		if allowed {
+			if resolved, ok := resolveEffectiveLoading(user.Payload.ToolExposure, userTool); ok {
+				mode = resolved
+			}
+		}
+	}
+	return mode, nil
+}
+
+// CatalogViewResolver adapts the canonical run-start projection to the
+// Tools Protocol's per-request catalog-view seam. It is immutable after
+// construction and safe for concurrent reuse. A blank agentID intentionally
+// builds an agent-less view: operator/boot tools remain compatible, while a
+// configured SourceOwnerResolver makes private user sources fail closed until
+// a request names the effective agent that owns the revision.
+type CatalogViewResolver struct {
+	Registry       agentcfg.Registry
+	SessionOverlay sessionoverlay.Store
+	Catalog        tools.ToolCatalog
+	OwnerResolver  SourceOwnerResolver
+}
+
+// CatalogView implements the structurally identical
+// internal/tools/protocol.CatalogViewResolver seam without importing the
+// Tools Protocol package. Every request is projected through the same
+// ActivePlannerCatalogView used at run start; this adapter is the assembly
+// boundary that keeps the runtime agent-config registry out of the Protocol
+// package's dependency graph.
+func (a CatalogViewResolver) CatalogView(ctx context.Context, id identity.Identity, agentID string) (tools.PlannerCatalogView, error) {
+	if a.Catalog == nil {
+		return nil, errors.New("agentcfg/projection: catalog view requires a non-nil tool catalog")
+	}
+	filter := tools.CatalogFilter{
+		TenantID:     id.TenantID,
+		UserID:       id.UserID,
+		SessionID:    id.SessionID,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	}
+	if a.OwnerResolver == nil {
+		return ActivePlannerCatalogView(ctx, a.Registry, a.SessionOverlay, agentID,
+			identity.Quadruple{Identity: id}, a.Catalog, filter)
+	}
+	return ActivePlannerCatalogView(ctx, a.Registry, a.SessionOverlay, agentID,
+		identity.Quadruple{Identity: id}, a.Catalog, filter, a.OwnerResolver)
 }
 
 // LoadingResolverAdapter adapts a Registry into the `internal/tools/protocol`
@@ -1055,12 +1461,13 @@ func EffectiveLoadingMode(ctx context.Context, reg agentcfg.Registry, agentID st
 // package does not import `tools/protocol` to avoid a needless dependency
 // (Go interfaces are satisfied structurally).
 type LoadingResolverAdapter struct {
-	Registry agentcfg.Registry
+	Registry      agentcfg.Registry
+	OwnerResolver SourceOwnerResolver
 }
 
 // EffectiveLoading implements the `tools/protocol.LoadingResolver` seam.
 func (a LoadingResolverAdapter) EffectiveLoading(ctx context.Context, id identity.Identity, agentID string, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error) {
-	return EffectiveLoadingMode(ctx, a.Registry, agentID, identity.Quadruple{Identity: id}, t, boot)
+	return EffectiveLoadingMode(ctx, a.Registry, agentID, identity.Quadruple{Identity: id}, t, boot, a.OwnerResolver)
 }
 
 // ActivePromptLayers resolves the agent's active-config layered system

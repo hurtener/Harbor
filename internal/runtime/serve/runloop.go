@@ -473,6 +473,10 @@ type RunLoopDriver struct {
 	closedOnce sync.Once
 }
 
+type signedOAuthMCPUserReconciler interface {
+	ReconcileSignedOAuthMCPCapabilityForScope(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) error
+}
+
 // ErrRunLoopDriverMisconfigured fires when NewRunLoopDriver
 // is called with a nil bus / RunLoop / planner. Driver invariant: all
 // three are mandatory.
@@ -917,7 +921,11 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 // tools excluded) via the SAME shared projection the devstack twin uses
 // (CLAUDE.md §17.6). Next-turn-only; the live transport stays warm.
 func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, agentID string, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
-	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, filter)
+	var ownerResolver projection.SourceOwnerResolver
+	if candidate, ok := d.connectionDetacher.(projection.SourceOwnerResolver); ok {
+		ownerResolver = candidate
+	}
+	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, filter, ownerResolver)
 }
 
 // projectAgentConfigPromptLayers overlays the agent's durable layered system
@@ -1043,6 +1051,15 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start signed OAuth MCP reconcile failed",
 				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
 			return
+		}
+		if q.UserID != "" {
+			if userReconciler, ok := d.signedOAuthMCPReconciler.(signedOAuthMCPUserReconciler); ok {
+				if err := userReconciler.ReconcileSignedOAuthMCPCapabilityForScope(ctx, q, agentID, agentcfg.ConfigScopeUser); err != nil {
+					d.logger.ErrorContext(ctx, "RunLoopDriver: run-start user-scoped signed OAuth MCP reconcile failed",
+						slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
+					return
+				}
+			}
 		}
 	}
 	// The PROVIDER-reconcile leg runs independently of the connection detacher:

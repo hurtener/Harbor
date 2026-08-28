@@ -120,7 +120,6 @@ func TestExecutor_TypedContentParallelOrdering(t *testing.T) {
 	t.Parallel()
 	cat := tools.NewCatalog()
 	for _, name := range []string{"first", "second"} {
-		name := name
 		if err := cat.Register(tools.ToolDescriptor{
 			Tool: tools.Tool{Name: name},
 			Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {

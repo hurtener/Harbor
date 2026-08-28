@@ -22,10 +22,10 @@ func restorePreOperationAuthority(ctx context.Context, registry agentcfg.Registr
 		restoreCtx = agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
 	}
 	if priorRevisionID == "" {
-		_, err := registry.DeactivateIfActive(restoreCtx, q, agentID, candidate.RevisionID, agentcfg.ConfigScopeAgent)
+		_, err := registry.DeactivateIfActive(restoreCtx, q, agentID, candidate.RevisionID, signedOAuthMCPConfigScope(ctx))
 		return err
 	}
-	if _, err := registry.Rollback(restoreCtx, q, agentID, priorRevisionID, agentcfg.ConfigScopeAgent,
+	if _, err := registry.Rollback(restoreCtx, q, agentID, priorRevisionID, signedOAuthMCPConfigScope(ctx),
 		agentcfg.SetOptions{ExpectedContentHash: candidate.ContentHash}); err != nil {
 		if errors.Is(err, agentcfg.ErrRevisionConflict) {
 			return nil
@@ -36,7 +36,7 @@ func restorePreOperationAuthority(ctx context.Context, registry agentcfg.Registr
 }
 
 func findRevisionByContentHash(ctx context.Context, registry agentcfg.Registry, q identity.Quadruple, agentID, contentHash string) (agentcfg.Revision, bool, error) {
-	history, err := registry.ListRevisions(ctx, q, agentID, agentcfg.ConfigScopeAgent, 0)
+	history, err := registry.ListRevisions(ctx, q, agentID, signedOAuthMCPConfigScope(ctx), 0)
 	if err != nil {
 		return agentcfg.Revision{}, false, err
 	}
@@ -53,7 +53,7 @@ func findRevisionByContentHash(ctx context.Context, registry agentcfg.Registry, 
 // pointer write may leave an unreferenced revision that ListRevisions and Get
 // can still read.
 func requirePhysicalActiveRevision(ctx context.Context, physical physicalActiveRegistry, q identity.Quadruple, agentID, revisionID, contentHash string) (agentcfg.Revision, error) {
-	revision, set, err := physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+	revision, set, err := physical.PhysicalActive(ctx, q, agentID, signedOAuthMCPConfigScope(ctx))
 	if err != nil {
 		return agentcfg.Revision{}, fmt.Errorf("%w: load physical active candidate: %w", agentcfg.ErrSignedCapabilityPending, err)
 	}

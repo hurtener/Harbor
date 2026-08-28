@@ -405,6 +405,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |261 | Stock authenticated external-grant renewal (D-441): strict typed expiry, full-authority renewal preflight, public canonical `sdk/llm/topup` contract and 128-KiB bounds, optional authenticated HTTP transport, reason-aware no-widen expiry renewal, replay-idempotent durable successor CAS, apply-before-reserve/provider ordering, truthful stock/host/unsupported readiness, and zero idle work | sdk/llm/topup + grant wrapper + leases + receipt HTTP transport + runtime assembly/config/readiness | §6.5, §6.11, §6.15 | 254, 256, 258, 259, 260, D-434..D-440 | focused race/vet + inmem/SQLite/real-PG + public consumer + smoke | Accepted for v1.30.2 release candidate; tag/release/downstream acceptance pending |
 |262 | Stock coordinator-bound credential resolution (HA-73, D-442): public canonical `sdk/llm/credentials` exchange, public server injection, optional authenticated stock transport, verified-full-grant authority, exact generation-bound response, bounded TTL/cardinality cache and singleflight isolation, truthful route readiness, and zero idle/default-route work | sdk/llm/credentials + credential HTTP transport + runtime serve/config/readiness + sdk/server | §6.5, §6.11, §6.15 | 254, 256, 258, 260, D-434, D-436, D-438, D-440 | focused race/vet + public consumer + real runtime.info + smoke | Accepted for v1.30.3 release candidate; tag/release/downstream acceptance pending |
 |263 | Content-free user-scoped turn usage projection (D-443): optional `sessions.turns.get projection=usage`, exact-session/effective-agent authority, structurally exclusive lifecycle/timing and canonical usage row, one existing durable indexed read, no admin/fleet widening, and no scans/pollers/workers/receipts/config/schema/provider/grant dependency | sessions/turns projection + Protocol + generated Go/TS/docs + operator skill | §5.2, §5.5, §6.9, §6.13, §7, §9 | 130, 161, 246, D-293, D-425 | focused package/transport/wire/content-free gates + hosted CI | Accepted for v1.30.4 release candidate; final preflight/Playwright, tag/release/downstream acceptance pending |
+|265 | User-scoped signed OAuth MCP capability lifecycle (D-448): closed-envelope/descriptor sibling methods, verified `agent_config:user` plus signed reach, tenant/user/session derived from bearer, `ConfigScopeUser` desired pairs and loading choices, full physical owner and exact teardown, one shared effective-source authorizer across catalog/resource/App/dispatch surfaces, operator-then-user loading projection with logical-to-physical resolution, private initialize/discovery bearer, two-user isolation, and generated Protocol/TypeScript/docs/smoke surfaces | agent-config signed OAuth MCP + physical MCP registry/provider + projection + Protocol | §5.5, §6.4, §6.11, §6.16 | 130, 205, 206, 211, 246, D-397, D-398, D-401, D-407 | focused package/race + generators + two-user isolation + stale-source authority + loading-mode isolation + static smoke | Accepted for next Harbor patch release; downstream/runtime deployment and acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5816,6 +5817,33 @@ run `32967906795` completed successfully. Exact post-merge docs run
 successful post-merge full CI/preflight result, tag, release, assets,
 provenance, checksums, attestations, post-tag cleanup, downstream/runtime
 deployment, or downstream acceptance is claimed.
+
+### Phase 265 — User-scoped signed OAuth MCP capability lifecycle
+
+- **Subsystem:** agent-config signed OAuth MCP lifecycle, physical MCP
+  registry/provider ownership, effective projection, Protocol transport, and
+  generated Go/TypeScript/reference surfaces.
+- **RFC:** §5.5, §6.4, §6.11, §6.16. **Deps:** phases 130, 205, 206, 211,
+  246; D-397, D-398, D-401, and D-407.
+- **What it delivers:** D-448 — a generic user-tier sibling of the signed
+  OAuth MCP register/remove lifecycle. It reuses the closed authority
+  envelope and connection descriptor, requires verified `agent_config:user`
+  plus signed reach, derives `(tenant, user, session)` from the bearer,
+  stores desired pairs only in `ConfigScopeUser`, and preserves those pairs
+  across generic user config writes. Physical attach, provider, detach,
+  teardown, reattach, backoff, and effective projection carry the full user
+  owner; the process-global bare-name registry rejects same-name foreign-owner
+  collisions rather than aliasing them. Private OAuth initialize/discovery
+  continues to resolve the acting identity's bearer without widening token
+  destinations.
+- **Evidence:** two-user same-agent desired/physical/removal isolation,
+  verified identity/scope/reach rejection, user projection narrowing, focused
+  package tests, Protocol generator lockstep, and static smoke. Local race
+  and smoke results are recorded at the implementation head; hosted CI,
+  release, deployment, and downstream acceptance remain pending.
+- **Decision:** D-448. **Status:** Accepted for the next Harbor patch release;
+  downstream/runtime deployment and acceptance remain pending. See
+  `docs/plans/phase-265-user-scoped-signed-oauth-mcp.md`.
 
 ## Notes
 

@@ -34,6 +34,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if verified, ok := identity.FromVerified(ctx); ok && verified != id {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: signed capability identity does not match verified caller", ErrIdentityRequired)
 	}
+	scope := signedOAuthMCPConfigScope(ctx)
 	if s.preparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
 	}
@@ -47,6 +48,11 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	providerPreparer, ok := s.providerInstaller.(SignedCapabilityProviderPreparer)
 	if !ok || providerPreparer == nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
+	}
+	if scope == agentcfg.ConfigScopeUser {
+		if _, ok := s.detacher.(SubjectExactConnectionDetacher); !ok {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
+		}
 	}
 	exactDetacher, ok := s.detacher.(ExactConnectionDetacher)
 	if !ok || exactDetacher == nil {
@@ -110,6 +116,10 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		TenantID: id.TenantID, TrustAnchorName: broker, Issuer: claims.Issuer,
 		KeyID: kid, JTI: claims.ID,
 	}
+	if scope == agentcfg.ConfigScopeUser {
+		operationKey.UserID = id.UserID
+		operationKey.SessionID = id.SessionID
+	}
 	op, _, err := s.signedOAuthMCPOperations.Claim(ctx, operationKey, binding, claims.ExpiresAt.Time)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
@@ -119,7 +129,11 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
 
-	defer s.lockAgent(id.TenantID, req.AgentID)()
+	lockUser := ""
+	if scope == agentcfg.ConfigScopeUser {
+		lockUser = id.UserID
+	}
+	defer s.lockOwner(scope, id.TenantID, lockUser, req.AgentID)()
 	// Claim precedes this process-local lock so independent runtimes compete at
 	// the durable StateStore boundary. Refresh after waiting: a same-JTI caller
 	// may already have advanced the exact receipt.
@@ -139,7 +153,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 		}
 	}
-	active, hasActive, err := s.registry.Active(operationCtx, q, req.AgentID, agentcfg.ConfigScopeAgent)
+	active, hasActive, err := s.registry.Active(operationCtx, q, req.AgentID, signedOAuthMCPConfigScope(operationCtx))
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
@@ -155,7 +169,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			}
 			reconciler := &SignedOAuthMCPReconciler{
 				registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences,
-				preparer: s.preparer, providers: providerPreparer, matcher: matcher,
+				preparer: s.preparer, detacher: s.detacher, providers: providerPreparer, matcher: matcher,
 			}
 			if _, err := reconciler.ensureAttached(ctx, q, req.AgentID, activePair, active, op); err != nil {
 				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
@@ -215,7 +229,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			(*payload.SignedOAuthMCPPairs)[providerName] = *pair
 		}
 		beginFence := s.signedOAuthMCPFences.BeginForOperation
-		if len(existingPairs) == 0 {
+		if len(existingPairs) == 0 && scope == agentcfg.ConfigScopeAgent {
 			beginFence = s.signedOAuthMCPFences.Begin
 		}
 		normalized := agentcfg.NormalizePayload(payload)
@@ -258,7 +272,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			}
 		}
 		fenceCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
-		rev, err = s.registry.SetRevision(fenceCtx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+		rev, err = s.registry.SetRevision(fenceCtx, q, req.AgentID, signedOAuthMCPConfigScope(fenceCtx), payload, agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 		if err != nil {
 			if errors.Is(err, agentcfg.ErrRevisionConflict) {
 				releaseErr := s.signedOAuthMCPFences.ReleasePending(context.WithoutCancel(ctx), activationFence)
@@ -268,7 +282,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 			// Exact immutable pair equality identifies the candidate, but immutable
 			// history alone is not authority: compensation may have left an orphan.
 			// The physical pointer must also name this exact revision.
-			history, readErr := s.registry.ListRevisions(context.WithoutCancel(ctx), q, req.AgentID, agentcfg.ConfigScopeAgent, 0)
+			history, readErr := s.registry.ListRevisions(context.WithoutCancel(ctx), q, req.AgentID, signedOAuthMCPConfigScope(ctx), 0)
 			for _, candidate := range history {
 				if candidate.ContentHash == candidateHash && signedCapabilityPayloadMatches(candidate.Payload, id.TenantID, binding) {
 					rev = candidate
@@ -311,6 +325,12 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, req.AgentID), req.AgentID)
 	preparedConnection, err := s.preparer.PrepareConnection(attachCtx, AttachRequest{
 		Identity: id, AgentID: req.AgentID, Name: connection.Name, Transport: agentcfg.MCPTransportHTTP,
+		Owner: func() toolauth.Owner {
+			if scope == agentcfg.ConfigScopeUser {
+				return toolauth.Owner{Tenant: id.TenantID, Agent: req.AgentID, User: id.UserID}
+			}
+			return toolauth.Owner{}
+		}(),
 		URL: canonicalURL, OAuthProvider: signedCapabilityOAuthProvider(providerName, domainInjection),
 		OAuthProviderOverride: preparedProvider.Binding(), OwnOAuthProvider: true, Injection: domainInjection.Clone(),
 		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
@@ -368,6 +388,31 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	return signedCapabilityResponse(rev, providerName, connection.Name), nil
 }
 
+// RegisterUserOAuthMCPCapability is the user-tier sibling of
+// RegisterOAuthMCPCapability. It reuses the signed authority envelope and
+// closed descriptor, but only after the request identity is verified, the
+// agent_config:user entitlement is present, and signed agent reach authorizes
+// the target agent. The durable pair is written in ConfigScopeUser.
+func (s *Service) RegisterUserOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigUserRegisterOAuthMCPCapabilityRequest) (prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse, error) {
+	id, err := identityFromScope(req.Identity, req.AgentID)
+	if err != nil {
+		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	if err := requireUserSignedOAuthMCPAuthorization(ctx, id, req.AgentID); err != nil {
+		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	scopedCtx := withSignedOAuthMCPConfigScope(ctx, agentcfg.ConfigScopeUser)
+	response, err := s.RegisterOAuthMCPCapability(scopedCtx, prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
+		Identity: req.Identity, AgentID: req.AgentID, ProviderName: req.ProviderName, Broker: req.Broker,
+		Audience: req.Audience, Scopes: append([]string(nil), req.Scopes...), Connection: req.Connection,
+		ExpectedContentHash: req.ExpectedContentHash, AuthorityEnvelope: req.AuthorityEnvelope,
+	})
+	if err != nil {
+		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse(response), nil
+}
+
 func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -392,7 +437,7 @@ func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, phy
 	}
 	expiry := &SignedOAuthMCPReconciler{
 		registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations,
-		fences: s.signedOAuthMCPFences, exactDetacher: exactDetacher,
+		fences: s.signedOAuthMCPFences, detacher: s.detacher, exactDetacher: exactDetacher,
 	}
 	for range 6 {
 		switch op.Phase {
@@ -407,7 +452,7 @@ func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, phy
 			if op.Phase == agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
 				candidateRevisionID = op.RevisionID
 			} else {
-				active, set, activeErr := physical.PhysicalActive(ctx, ownerQ, binding.AgentID, agentcfg.ConfigScopeAgent)
+				active, set, activeErr := physical.PhysicalActive(ctx, ownerQ, binding.AgentID, signedOAuthMCPConfigScope(ctx))
 				if activeErr != nil {
 					return agentcfg.SignedOAuthMCPOperation{}, activeErr
 				}
@@ -483,8 +528,8 @@ func (s *Service) commitSignedOAuthMCPFence(ctx context.Context, tenant, agentID
 	}
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: tenant, UserID: op.Binding.UserID, SessionID: op.Binding.SessionID}}
 	if fence.Phase == agentcfg.SignedOAuthMCPFenceCommitted {
-		candidate, getErr := s.registry.Get(ctx, q, agentID, op.RevisionID, agentcfg.ConfigScopeAgent)
-		active, activeSet, activeErr := physical.PhysicalActive(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+		candidate, getErr := s.registry.Get(ctx, q, agentID, op.RevisionID, signedOAuthMCPConfigScope(ctx))
+		active, activeSet, activeErr := physical.PhysicalActive(ctx, q, agentID, signedOAuthMCPConfigScope(ctx))
 		if getErr == nil && activeErr == nil && activeSet && fence.CandidateRevisionID == op.RevisionID && candidate.ContentHash == fence.CandidateContentHash &&
 			signedCapabilityPayloadMatchesOperation(candidate.Payload, tenant, op.Binding, operationKind) &&
 			signedCapabilityPayloadMatchesOperation(active.Payload, tenant, op.Binding, operationKind) {
@@ -530,6 +575,7 @@ func signedCapabilityPayloadMatchesOperation(payload agentcfg.ConfigPayload, ten
 }
 
 func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, id identity.Identity, agentID, operationKind string, binding agentcfg.SignedOAuthMCPBinding) error {
+	scope := signedOAuthMCPConfigScope(ctx)
 	continuation := ""
 	for {
 		operations, next, err := s.signedOAuthMCPOperations.ScanTenantPage(ctx, id.TenantID, state.MaxStateScanLimit, continuation)
@@ -537,6 +583,12 @@ func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, i
 			return err
 		}
 		for _, operation := range operations {
+			if scope == agentcfg.ConfigScopeUser && operation.Binding.UserID != id.UserID {
+				continue
+			}
+			if scope == agentcfg.ConfigScopeAgent && (operation.ReplayKey.UserID != "" || operation.ReplayKey.SessionID != "") {
+				continue
+			}
 			kind, err := s.signedOAuthMCPOperations.Kind(operation.ReplayKey)
 			if err != nil {
 				return err

@@ -96,6 +96,59 @@ func TestPlannerCatalog_UserCannotReEnableAdminDisabled(t *testing.T) {
 	}
 }
 
+// TestPlannerCatalog_UserLoadingModesOverrideAdminPerUser proves loading
+// choices live in each user's durable revision: two users on one agent can
+// choose different prompt-time modes, while both remain inside the same
+// operator baseline and the disable sets retain their union semantics.
+func TestPlannerCatalog_UserLoadingModesOverrideAdminPerUser(t *testing.T) {
+	ctx := context.Background()
+	cat := loadingCatalog(t)
+	reg := newRegistry(t)
+	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{ServerLoadingModes: map[string]string{"srvA": "deferred"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set admin loading mode: %v", err)
+	}
+	idA := projID()
+	idB := identity.Quadruple{Identity: identity.Identity{TenantID: projTenant, UserID: "user-B", SessionID: "sess-B"}}
+	if _, err := reg.SetRevision(ctx, idA, projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{ServerLoadingModes: map[string]string{"srvA": "always"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set user A loading mode: %v", err)
+	}
+	if _, err := reg.SetRevision(ctx, idB, projAgent, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{ServerLoadingModes: map[string]string{"srvA": "deferred"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set user B loading mode: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		id         identity.Quadruple
+		wantMode   tools.LoadingMode
+		wantListed bool
+	}{
+		{name: "user A promotes", id: idA, wantMode: tools.LoadingAlways, wantListed: true},
+		{name: "user B defers", id: idB, wantMode: tools.LoadingDeferred, wantListed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view, err := projection.ActivePlannerCatalogView(ctx, reg, nil, projAgent, tc.id, cat, tools.CatalogFilter{
+				TenantID: tc.id.TenantID, UserID: tc.id.UserID, SessionID: tc.id.SessionID,
+			})
+			if err != nil {
+				t.Fatalf("projection: %v", err)
+			}
+			tool, ok := view.Resolve("srvA_tool2")
+			if !ok || tool.Loading != tc.wantMode {
+				t.Fatalf("Resolve(srvA_tool2) = (%+v, %t), want loading=%q", tool, ok, tc.wantMode)
+			}
+			if listed := hasName(viewNames(view), "srvA_tool2"); listed != tc.wantListed {
+				t.Fatalf("List() deferred presence = %t, want %t: %v", listed, tc.wantListed, viewNames(view))
+			}
+		})
+	}
+}
+
 // TestPlannerCatalog_ThreeSetUnion proves all three tiers fold into the one
 // grow-only exclusion set: admin pauses srvA, user disables srvB_gamma, the
 // session disables local_tool — all three are excluded.

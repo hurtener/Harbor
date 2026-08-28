@@ -81,11 +81,17 @@ type AttachDeps struct {
 	ArtifactStore artifacts.ArtifactStore
 	// Owner is the (tenant, agent) reconcile-view tag stamped on the
 	// registry entry for a RUNTIME-ADDED connection. The boot loader leaves it
-	// zero (boot-declared servers are untagged and never reconciled); the
+	// zero (boot-declared servers are untagged and never reconciled); a
+	// user-scoped attach additionally carries the verified user id; the
 	// runtime-add attach path sets a non-zero owner so the run-start reconcile
-	// view scopes to it. It is a reconcile-view filter, never a dispatch or
-	// isolation key.
+	// view scopes to it. When User is set, the driver derives an owner-scoped
+	// physical source id from Owner + LogicalName before registry/catalog
+	// publication; operator/boot names remain unchanged.
 	Owner auth.Owner
+	// LogicalName is the signed/config descriptor name. User-owned attaches
+	// derive a private physical source id from this value and Owner; it is
+	// never accepted from the wire or used to choose a downstream sink.
+	LogicalName string
 	// DescriptorFingerprint is the canonical digest of the NON-SECRET
 	// runtime-added descriptor. It is retained on the live registration so
 	// run-start reconciliation can distinguish an exact no-op from a same-name
@@ -308,6 +314,17 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	}
 	if deps.Closers == nil {
 		return nil, fmt.Errorf("mcp attach: Closers chain is required (the Provider's subprocess must drain on teardown)")
+	}
+	logicalName := ms.Name
+	if deps.LogicalName != "" {
+		logicalName = deps.LogicalName
+	}
+	if logicalName == "" {
+		return nil, fmt.Errorf("mcp attach: logical connection name is required")
+	}
+	deps.LogicalName = logicalName
+	if deps.Owner.User != "" {
+		ms.Name = PhysicalServerName(logicalName, deps.Owner)
 	}
 	// Separator safety, checked BEFORE any side effect (no transport spawned,
 	// no catalog rows written), so an ambiguous id is refused cleanly rather
@@ -589,6 +606,7 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 			InitialState: ServerStateOnline, Policy: p.defaultPolicy,
 			OAuthDiscoveryAllowedOrigins: append([]string(nil), p.ms.OAuthDiscoveryAllowedOrigins...),
 			Owner:                        p.deps.Owner,
+			LogicalName:                  p.deps.LogicalName,
 			DescriptorFingerprint:        p.deps.DescriptorFingerprint,
 			Catalog:                      p.deps.Catalog,
 			ToolAllowlist:                append([]string(nil), p.deps.ToolAllowlist...),

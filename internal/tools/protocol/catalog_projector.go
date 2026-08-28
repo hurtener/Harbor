@@ -39,6 +39,7 @@ import (
 type CatalogProjector struct {
 	catalog   tools.ToolCatalog
 	annotator Annotator
+	view      CatalogViewResolver
 	// adminMu guards the in-memory approval-policy overrides the
 	// default (annotator-less) admin path records. Production wiring
 	// supplies an Annotator whose SetApprovalPolicy persists (identity-
@@ -56,9 +57,32 @@ type CatalogProjector struct {
 	loading LoadingResolver
 }
 
+// CatalogViewResolver builds the effective, identity-scoped catalog view for
+// one request. The production adapter delegates to the runtime's canonical
+// agent-config projection, so the Tools Protocol never reads the process-wide
+// catalog directly for user-owned MCP sources. A blank agent id means the
+// caller did not select an agent; the resolver must preserve ordinary
+// operator/boot visibility while failing closed for private sources it cannot
+// associate with that request.
+type CatalogViewResolver interface {
+	CatalogView(context.Context, identity.Identity, string) (tools.PlannerCatalogView, error)
+}
+
+// WithCatalogViewResolver wires the per-request effective catalog view. A nil
+// resolver is treated as not supplied, preserving the existing raw-catalog
+// behavior for embedders that have not assembled agent-config projection.
+func WithCatalogViewResolver(r CatalogViewResolver) CatalogProjectorOption {
+	return func(p *CatalogProjector) {
+		if r != nil {
+			p.view = r
+		}
+	}
+}
+
 // LoadingResolver is the optional per-agent effective-loading-mode backend
-// `tools.describe` consults when a request names an agent_id. The V1
-// production implementation is
+// `tools.describe` consults when a request names an agent_id. The production
+// implementation composes the operator baseline and the acting user's
+// durable ConfigScopeUser choice. It is
 // `internal/runtime/agentcfg/projection.LoadingResolverAdapter`, wired at
 // the cmd/harbor + devstack boot boundary (the §4.4 seam keeps the
 // agent-config registry out of this package's import graph — the interface
@@ -66,10 +90,10 @@ type CatalogProjector struct {
 // supplied) makes DescribeTool always report the boot-effective mode.
 type LoadingResolver interface {
 	// EffectiveLoading resolves the projected effective LoadingMode for
-	// tool t under agentID's active tool-exposure config, given boot as the
-	// fallback (the boot-effective mode already reflecting the driver
-	// default + boot config). Returns boot unchanged when there is no
-	// active revision, no tool-exposure section, or no relevant override.
+	// tool t under agentID's operator and acting-user tool-exposure config,
+	// given boot as the fallback (the boot-effective mode already reflecting
+	// the driver default + boot config). Returns boot unchanged when there is
+	// no active revision, no tool-exposure section, or no relevant override.
 	EffectiveLoading(ctx context.Context, id identity.Identity, agentID string, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error)
 }
 
@@ -255,7 +279,11 @@ func (p *CatalogProjector) ListTools(ctx context.Context, id identity.Identity) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	descriptors := p.catalog.List(fullTripleFilter(id))
+	view, err := p.catalogView(ctx, id, effectiveAgentID(ctx))
+	if err != nil {
+		return nil, err
+	}
+	descriptors := view.List()
 	rows := make([]prototypes.Tool, 0, len(descriptors))
 	for _, t := range descriptors {
 		rows = append(rows, p.projectRow(ctx, id, t))
@@ -266,13 +294,36 @@ func (p *CatalogProjector) ListTools(ctx context.Context, id identity.Identity) 
 // resolveDescriptor finds a tool by ID in the identity-scoped catalog.
 // It uses List (not Resolve) so the identity-scope predicate is
 // honoured — Resolve would leak a tool outside the caller's scope.
-func (p *CatalogProjector) resolveDescriptor(id identity.Identity, toolID string) (tools.Tool, bool) {
-	for _, t := range p.catalog.List(fullTripleFilter(id)) {
+func (p *CatalogProjector) resolveDescriptor(ctx context.Context, id identity.Identity, toolID, agentID string) (tools.Tool, bool, error) {
+	view, err := p.catalogView(ctx, id, agentID)
+	if err != nil {
+		return tools.Tool{}, false, err
+	}
+	for _, t := range view.List() {
 		if t.Name == toolID {
-			return t, true
+			return t, true, nil
 		}
 	}
-	return tools.Tool{}, false
+	return tools.Tool{}, false, nil
+}
+
+func (p *CatalogProjector) catalogView(ctx context.Context, id identity.Identity, agentID string) (tools.PlannerCatalogView, error) {
+	if p.view != nil {
+		view, err := p.view.CatalogView(ctx, id, agentID)
+		if err != nil {
+			return nil, err
+		}
+		if view == nil {
+			return nil, fmt.Errorf("%w: CatalogViewResolver returned a nil view", ErrMisconfigured)
+		}
+		return view, nil
+	}
+	return tools.NewPlannerView(p.catalog, fullTripleFilter(id)), nil
+}
+
+func effectiveAgentID(ctx context.Context) string {
+	agentID, _ := tools.EffectiveAgentConfigFrom(ctx)
+	return agentID
 }
 
 // GetTool implements Projector.GetTool.
@@ -280,7 +331,10 @@ func (p *CatalogProjector) GetTool(ctx context.Context, id identity.Identity, to
 	if err := ctx.Err(); err != nil {
 		return prototypes.Tool{}, err
 	}
-	t, ok := p.resolveDescriptor(id, toolID)
+	t, ok, err := p.resolveDescriptor(ctx, id, toolID, effectiveAgentID(ctx))
+	if err != nil {
+		return prototypes.Tool{}, err
+	}
 	if !ok {
 		return prototypes.Tool{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
@@ -296,7 +350,10 @@ func (p *CatalogProjector) DescribeTool(ctx context.Context, id identity.Identit
 	if err := ctx.Err(); err != nil {
 		return prototypes.ToolManifest{}, err
 	}
-	t, ok := p.resolveDescriptor(id, toolID)
+	t, ok, err := p.resolveDescriptor(ctx, id, toolID, agentID)
+	if err != nil {
+		return prototypes.ToolManifest{}, err
+	}
 	if !ok {
 		return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
@@ -308,7 +365,7 @@ func (p *CatalogProjector) DescribeTool(ctx context.Context, id identity.Identit
 	if loading == "" {
 		loading = string(tools.LoadingAlways)
 	}
-	if p.loading != nil && agentID != "" {
+	if p.view == nil && p.loading != nil && agentID != "" {
 		eff, err := p.loading.EffectiveLoading(ctx, id, agentID, t, tools.LoadingMode(loading))
 		if err != nil {
 			return prototypes.ToolManifest{}, err
@@ -337,7 +394,9 @@ func (p *CatalogProjector) ToolMetrics(ctx context.Context, id identity.Identity
 	if err := ctx.Err(); err != nil {
 		return prototypes.ToolMetrics{}, err
 	}
-	if _, ok := p.resolveDescriptor(id, toolID); !ok {
+	if _, ok, err := p.resolveDescriptor(ctx, id, toolID, effectiveAgentID(ctx)); err != nil {
+		return prototypes.ToolMetrics{}, err
+	} else if !ok {
 		return prototypes.ToolMetrics{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
 	if p.annotator != nil {
@@ -364,7 +423,9 @@ func (p *CatalogProjector) ToolContentStats(ctx context.Context, id identity.Ide
 	if err := ctx.Err(); err != nil {
 		return prototypes.ToolContentStats{}, err
 	}
-	if _, ok := p.resolveDescriptor(id, toolID); !ok {
+	if _, ok, err := p.resolveDescriptor(ctx, id, toolID, effectiveAgentID(ctx)); err != nil {
+		return prototypes.ToolContentStats{}, err
+	} else if !ok {
 		return prototypes.ToolContentStats{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
 	if p.annotator != nil {
@@ -387,7 +448,9 @@ func (p *CatalogProjector) SetApprovalPolicy(ctx context.Context, id identity.Id
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, ok := p.resolveDescriptor(id, toolID); !ok {
+	if _, ok, err := p.resolveDescriptor(ctx, id, toolID, effectiveAgentID(ctx)); err != nil {
+		return err
+	} else if !ok {
 		return fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
 	if setter, ok := p.annotator.(ApprovalPolicySetter); ok {
@@ -426,7 +489,9 @@ func (p *CatalogProjector) RevokeOAuth(ctx context.Context, id identity.Identity
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if _, ok := p.resolveDescriptor(id, toolID); !ok {
+	if _, ok, err := p.resolveDescriptor(ctx, id, toolID, effectiveAgentID(ctx)); err != nil {
+		return 0, err
+	} else if !ok {
 		return 0, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
 	revoker, ok := p.annotator.(OAuthRevoker)

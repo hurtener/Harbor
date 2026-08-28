@@ -358,11 +358,11 @@ type ExtraSystemBlocks struct {
 // tools.Tool.Loading, so a projection consumer applies exactly the top two
 // layers over that boot-effective value (see
 // internal/runtime/agentcfg/projection). Values are the closed set
-// "always" | "deferred" — validated at the `agent_config.set_tool_exposure`
-// wire edge BEFORE any registry write (CLAUDE.md §13: no invalid value is
-// ever persisted). Loading is NOT capability-narrowing (a deferred tool
-// stays reachable via `tool_search`), so it lives in the ADMIN tier only —
-// the narrow-only user/session tiers gain no loading field.
+// "always" | "deferred" — validated at each wire edge BEFORE any registry
+// write (CLAUDE.md §13: no invalid value is ever persisted). Loading is NOT
+// capability-narrowing (a deferred tool stays reachable via `tool_search`),
+// so the operator and durable user tiers may carry loading choices while the
+// ephemeral session tier remains narrow-only and has no loading field.
 type ToolExposure struct {
 	// PausedServers names MCP servers excluded from the next run's
 	// projection (resume is a flag flip, not a re-dial).

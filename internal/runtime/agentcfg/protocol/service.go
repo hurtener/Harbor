@@ -124,6 +124,10 @@ var (
 	// ErrSignedCapabilityUnavailable means this Runtime was not booted with an
 	// explicitly enabled signed-capability trust anchor or private preparation seams.
 	ErrSignedCapabilityUnavailable = errors.New("agentcfg/protocol: signed oauth mcp capability registration is not wired or boot-authorized")
+	// ErrSignedCapabilityUserAuthorization means a user-scoped signed pair
+	// request did not carry the verified user entitlement and signed reach for
+	// its target agent.
+	ErrSignedCapabilityUserAuthorization = errors.New("agentcfg/protocol: user-scoped signed oauth mcp capability requires verified user scope and agent reach")
 	// ErrSignedCapabilityPairExists rejects a second pair for an agent until the
 	// paired-removal lifecycle lands; generic provider/connection writers never
 	// compose with a signed pair.

@@ -662,7 +662,7 @@ func TestEgress_ToolContextInputIsTheModelsOwnArgs(t *testing.T) {
 	const argsJSON = `{"doc":"art-1"}`
 	capturer := &capturingToolContext{}
 	bus := newRecordingBus(t)
-	p, _ := newAppEgressProvider(t, capturer, bus)
+	p := newAppEgressProvider(t, capturer, bus)
 	desc := resolveTool(t, p, "egress-app-server_ingest_app")
 
 	if _, err := desc.Invoke(egressCtx(t, map[string][]byte{"art-1": []byte(marker)}, nil), json.RawMessage(argsJSON)); err != nil {
@@ -692,7 +692,7 @@ func TestEgress_ToolContextResultKeepsStructuredShapeAndAppRef(t *testing.T) {
 	const argsJSON = `{"doc":"art-1"}`
 	capturer := newRecordingCapturer()
 	bus := newRecordingBus(t)
-	p, _ := newAppEgressProvider(t, capturer, bus)
+	p := newAppEgressProvider(t, capturer, bus)
 	desc := resolveTool(t, p, "egress-app-server_ingest_app")
 
 	result, err := desc.Invoke(egressCtx(t, map[string][]byte{"art-1": []byte("document bytes")}, nil), json.RawMessage(argsJSON))
@@ -760,7 +760,7 @@ func TestEgress_ToolContextResultKeepsStructuredShapeAndAppRef(t *testing.T) {
 // newAppEgressProvider builds a fixture whose mapped tool ALSO declares
 // a `ui://` app, so the tool-context capture path actually fires (the
 // driver captures only for app-declaring tools).
-func newAppEgressProvider(t *testing.T, capturer ToolContextCapturer, bus events.EventBus) (*Provider, *egressFixtureServer) {
+func newAppEgressProvider(t *testing.T, capturer ToolContextCapturer, bus events.EventBus) *Provider {
 	t.Helper()
 	fixture := &egressFixtureServer{}
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "harbor-egress-app-fixture", Version: "v0"}, nil)
@@ -814,7 +814,7 @@ func newAppEgressProvider(t *testing.T, capturer ToolContextCapturer, bus events
 		_ = serverSession.Wait()
 		_ = p.Close(context.Background())
 	})
-	return p, fixture
+	return p
 }
 
 // ---------------------------------------------------------------------
