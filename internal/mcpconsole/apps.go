@@ -488,7 +488,7 @@ func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tool
 		}
 	}
 	out.App = appRefFromValue(res.Value, string(desc.Tool.Source))
-	encoded, encErr := json.Marshal(res.Value)
+	encoded, encErr := marshalAppResult(res.Value)
 	if encErr != nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: encode tool %q result: %w", tool, encErr)
 	}
@@ -502,6 +502,16 @@ func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tool
 	}
 	out.Artifact = row
 	return out, nil
+}
+
+// marshalAppResult keeps host-only dispatch envelopes out of the result body
+// delivered to an interactive App. Tool results that do not need a distinct
+// App projection retain the ordinary JSON encoding.
+func marshalAppResult(value any) ([]byte, error) {
+	if projected, ok := value.(tools.AppResultJSONMarshaler); ok {
+		return projected.MarshalAppJSON()
+	}
+	return json.Marshal(value)
 }
 
 // gateToolExposure rejects an app→host tool call whose MCP source server is

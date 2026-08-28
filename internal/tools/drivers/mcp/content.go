@@ -398,6 +398,20 @@ func (v MCPToolValue) MarshalJSON() ([]byte, error) {
 	return v.marshalResultBody()
 }
 
+// MarshalAppJSON renders only the canonical tool-result body for an
+// interactive App. ArtifactEgress is dispatch metadata for the model and
+// trajectory projections; wrapping the body with it would change a
+// structured MCP result's shape and make the App unable to consume its
+// declared result contract. The result body still contains only model-safe
+// text, structured content, and metadata-only artifact references because
+// binary content is materialized before this projection.
+func (v MCPToolValue) MarshalAppJSON() ([]byte, error) {
+	v.ArtifactEgress = nil
+	return v.marshalResultBody()
+}
+
+var _ tools.AppResultJSONMarshaler = MCPToolValue{}
+
 // marshalResultBody renders the tool RESULT itself, with the
 // LLM-edge-friendly collapses described on [MCPToolValue.MarshalJSON].
 func (v MCPToolValue) marshalResultBody() ([]byte, error) {

@@ -309,6 +309,20 @@ type ArtifactContentResult interface {
 	WithArtifactContentRefs([]ArtifactContentRef) (ArtifactContentResult, error)
 }
 
+// AppResultJSONMarshaler is implemented by a tool result whose JSON contains
+// host-only dispatch metadata that must not change the result body delivered
+// to an interactive App. An App projection must preserve the tool's
+// model-safe content and metadata-only artifact references while omitting
+// transport, audit, and routing envelopes. It must never reintroduce raw
+// content bytes.
+//
+// The model/trajectory projection remains the ordinary json.Marshaler output;
+// this seam exists because those consumers have different contracts from an
+// App result context.
+type AppResultJSONMarshaler interface {
+	MarshalAppJSON() ([]byte, error)
+}
+
 // ToolDescriptor is the callable binding produced by a driver.
 // The planner sees Tool; the dispatcher uses ToolDescriptor.
 //

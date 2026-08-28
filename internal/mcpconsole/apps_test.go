@@ -20,6 +20,7 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -334,6 +335,59 @@ func TestAppsAccessor_CallTool_ResolvesAndInvokes(t *testing.T) {
 	// Unknown tool fails with ErrToolNotFound.
 	if _, err := acc.CallTool(idCtx(t), "", "nope", nil); err == nil {
 		t.Fatal("CallTool unknown tool: want error")
+	}
+}
+
+// TestAppsAccessor_CallTool_UsesAppResultProjection keeps the model/trajectory
+// egress envelope out of a direct App callback result while retaining the
+// typed result body and host-side App reference.
+func TestAppsAccessor_CallTool_UsesAppResultProjection(t *testing.T) {
+	cat := tools.NewCatalog()
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "srv-a_media", Source: "srv-a"},
+		Invoke: func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Value: mcp.MCPToolValue{
+				StructuredContent: map[string]any{"handle": "image-1", "status": "succeeded"},
+				AppRef:            &mcp.AppRef{Binding: "binding-1", ResourceURI: "ui://media/index.html"},
+				ArtifactEgress: []artifactegress.Record{{
+					ArtifactID: "artifact-input-1", Param: "source", SizeBytes: 12, Digest: "sha256:input",
+				}},
+			}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
+		Registry:    newAppsRegistry(t, nil),
+		Catalog:     cat,
+		Store:       newAppsStore(t),
+		Bus:         newAppsBus(t),
+		ToolContext: newAppsToolCtx(t),
+		Threshold:   1024,
+	})
+	if err != nil {
+		t.Fatalf("NewAppsAccessor: %v", err)
+	}
+
+	res, err := acc.CallTool(idCtx(t), "srv-a", "srv-a_media", json.RawMessage(`{"source":"artifact-input-1"}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.App == nil || res.App.ResourceURI != "ui://media/index.html" {
+		t.Fatalf("App ref = %+v, want the typed result App reference", res.App)
+	}
+	var appResult map[string]any
+	if err := json.Unmarshal(res.Inline, &appResult); err != nil {
+		t.Fatalf("decode App result: %v (%s)", err, res.Inline)
+	}
+	if appResult["handle"] != "image-1" || appResult["status"] != "succeeded" {
+		t.Fatalf("App result = %s, want direct structured result", res.Inline)
+	}
+	if _, wrapped := appResult["result"]; wrapped {
+		t.Fatalf("App result retained model result envelope: %s", res.Inline)
+	}
+	if _, egress := appResult["artifact_egress"]; egress {
+		t.Fatalf("App result leaked dispatch metadata: %s", res.Inline)
 	}
 }
 

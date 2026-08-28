@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 )
 
 // TestMCPToolValue_MarshalJSON_UnwrapsJSONText asserts a text-only
@@ -153,5 +156,57 @@ func TestMCPToolValue_MarshalJSON_MixedContentRetainsWrapper(t *testing.T) {
 	got := string(raw)
 	if !strings.Contains(got, `"Text"`) || !strings.Contains(got, `"Parts"`) {
 		t.Errorf("mixed-content value lost wrapper fields: %s", got)
+	}
+}
+
+// TestMCPToolValue_MarshalAppJSON_PreservesCanonicalResult proves that an
+// App receives the result body rather than the model/trajectory egress
+// envelope. Structured content, the App reference, and already-materialized
+// typed artifact refs remain available to their respective host projections;
+// transient bytes and dispatch records do not cross the App-result boundary.
+func TestMCPToolValue_MarshalAppJSON_PreservesCanonicalResult(t *testing.T) {
+	t.Parallel()
+	const marker = "app-result-bytes-must-not-escape"
+	v := MCPToolValue{
+		Text: `{"handle":"image-1"}`,
+		Parts: []ContentPart{{
+			Kind: ContentKindImage,
+			Image: &ImageRef{
+				Data:     []byte(marker),
+				MIMEType: "image/png",
+				Artifact: &tools.ArtifactContentRef{ID: "artifact-image-1", MIMEType: "image/png", SizeBytes: 42, SHA256: "sha256:test", ContentIndex: 0},
+			},
+		}},
+		StructuredContent: map[string]any{"handle": "image-1", "status": "ready"},
+		AppRef:            &AppRef{Binding: "binding-1", ResourceURI: "ui://media/index.html", ToolCallID: "call-1"},
+		ArtifactEgress: []artifactegress.Record{{
+			ArtifactID: "artifact-input-1", Param: "source", SizeBytes: 17, Digest: "sha256:input",
+		}},
+	}
+
+	appRaw, err := v.MarshalAppJSON()
+	if err != nil {
+		t.Fatalf("MarshalAppJSON: %v", err)
+	}
+	appJSON := string(appRaw)
+	if strings.Contains(appJSON, `"artifact_egress"`) {
+		t.Fatalf("App result contains dispatch egress envelope: %s", appJSON)
+	}
+	if strings.Contains(appJSON, marker) || strings.Contains(appJSON, "YXBwLXJlc3VsdC") {
+		t.Fatalf("App result leaked transient content bytes: %s", appJSON)
+	}
+	for _, want := range []string{`"artifact-image-1"`, `"handle":"image-1"`, `"mime_type":"image/png"`} {
+		if !strings.Contains(appJSON, want) {
+			t.Errorf("App result lost %s: %s", want, appJSON)
+		}
+	}
+
+	modelRaw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal model result: %v", err)
+	}
+	modelJSON := string(modelRaw)
+	if !strings.Contains(modelJSON, `"artifact_egress"`) || !strings.Contains(modelJSON, `"artifact-input-1"`) {
+		t.Fatalf("model result lost dispatch egress record: %s", modelJSON)
 	}
 }
