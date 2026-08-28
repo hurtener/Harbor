@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -239,6 +240,125 @@ func TestExchange_AudienceMismatch_FailsLoudNothingCached(t *testing.T) {
 	}
 	if !errors.Is(err2, tokenexchange.ErrAudienceMismatch) {
 		t.Fatalf("second Token() err = %v, want ErrAudienceMismatch (mismatch must fail loud every time)", err2)
+	}
+}
+
+func signedCapabilityBindingFixture(resource string) auth.SignedCapabilityExchangeBinding {
+	return auth.SignedCapabilityExchangeBinding{
+		TenantID: "tenant-signed", UserID: "user-signed", SessionID: "session-signed",
+		AgentID: "agent-signed", ProviderName: "signed-provider", CapabilityRevision: "revision-signed",
+		PairFingerprint: "pair-fingerprint-signed", URLDigest: "url-digest-signed", SinkDigest: "sink-digest-signed",
+		Audience: resource, Resource: resource,
+		AuthorityOperationKind: "signed-operation", PublisherEpoch: "publisher-epoch", UseAuthorizer: allowSignedCapabilityUseAuthorizer{},
+	}
+}
+
+// TestSignedCapability_ThirdPartyJWTAppAudienceDoesNotRequireResourceURI proves
+// the signed-capability path uses the exact broker response destination tuple
+// rather than assuming a third-party JWT's application audience identifier is
+// the RFC 8707 resource URI. The signed tuple is exact, while the audit bit
+// remains false because no JWT `aud` comparison was performed.
+func TestSignedCapability_ThirdPartyJWTAppAudienceDoesNotRequireResourceURI(t *testing.T) {
+	t.Parallel()
+	const (
+		resource    = "https://downstream.example"
+		appAudience = "00000000-0000-0000-0000-000000000001"
+	)
+	binding := signedCapabilityBindingFixture(resource)
+	broker := newJWTBroker(t)
+	broker.tokenFn = func(_ map[string][]string) string { return mkJWT(t, appAudience) }
+	broker.responseAudience = binding.Audience
+	broker.responseResource = binding.Resource
+	deps, _, bus := mkDeps(t)
+	prov, err := tokenexchange.New(auth.ProviderConfig{
+		Name: binding.ProviderName, CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+		Scopes: []string{"resource.read"}, TokenURL: broker.tokenURL(), Audience: binding.Audience,
+		AllowedDownstreamHosts: []string{"downstream.example"}, ResourceIndicator: binding.Resource,
+		SignedCapability: &binding,
+	}, deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Close(context.Background()) })
+
+	id := identity.Identity{TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID}
+	ctx := tools.WithEffectiveAgentConfig(mkCtx(t, id), binding.AgentID)
+	sub := subscribe(t, bus, id)
+	tok, err := prov.Token(ctx, tools.ToolSourceID("signed-provider"))
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if tok.AccessToken == "" {
+		t.Fatal("Token returned an empty access token")
+	}
+	if got := broker.formValue("audience"); got != binding.Audience {
+		t.Fatalf("audience form param = %q, want exact signed audience %q", got, binding.Audience)
+	}
+	if got := broker.formValue("resource"); got != binding.Resource {
+		t.Fatalf("resource form param = %q, want exact signed resource %q", got, binding.Resource)
+	}
+	ev := waitEvent(t, sub, auth.EventTypeToolCredentialExchanged)
+	if got := ev.Payload.(auth.ToolCredentialExchangedPayload).AudienceVerified; got {
+		t.Fatal("AudienceVerified = true, want false when signed destination proof replaces JWT aud comparison")
+	}
+}
+
+// TestSignedCapability_DestinationMismatchFailsLoudAndReexchanges proves both
+// broker response destination fields remain strict on the signed path. A
+// mismatch emits no success event, is not cached, and the next call reaches the
+// broker again rather than serving a misbound token.
+func TestSignedCapability_DestinationMismatchFailsLoudAndReexchanges(t *testing.T) {
+	t.Parallel()
+	const resource = "https://downstream.example"
+	for _, tc := range []struct {
+		name             string
+		responseAudience string
+		responseResource string
+	}{
+		{name: "audience", responseAudience: "https://wrong-audience.example", responseResource: resource},
+		{name: "resource", responseAudience: resource, responseResource: "https://wrong-resource.example"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			binding := signedCapabilityBindingFixture(resource)
+			broker := newJWTBroker(t)
+			broker.tokenFn = func(_ map[string][]string) string {
+				return mkJWT(t, "00000000-0000-0000-0000-000000000001")
+			}
+			broker.responseAudience = tc.responseAudience
+			broker.responseResource = tc.responseResource
+			deps, _, bus := mkDeps(t)
+			prov, err := tokenexchange.New(auth.ProviderConfig{
+				Name: binding.ProviderName, CredentialSource: credsource.Static(tDummyBrokerClient, tDummyBrokerSecret),
+				Scopes: []string{"resource.read"}, TokenURL: broker.tokenURL(), Audience: binding.Audience,
+				AllowedDownstreamHosts: []string{"downstream.example"}, ResourceIndicator: binding.Resource,
+				SignedCapability: &binding,
+			}, deps)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = prov.Close(context.Background()) })
+
+			id := identity.Identity{TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID}
+			ctx := tools.WithEffectiveAgentConfig(mkCtx(t, id), binding.AgentID)
+			sub := subscribe(t, bus, id)
+			if _, err := prov.Token(ctx, tools.ToolSourceID(binding.ProviderName)); !errors.Is(err, auth.ErrExchangeFailed) {
+				t.Fatalf("Token err = %v, want auth.ErrExchangeFailed", err)
+			}
+			select {
+			case ev := <-sub:
+				t.Fatalf("mismatched destination emitted event %q", ev.Type)
+			case <-time.After(100 * time.Millisecond):
+			}
+			before := broker.callCount()
+			if _, err := prov.Token(ctx, tools.ToolSourceID(binding.ProviderName)); !errors.Is(err, auth.ErrExchangeFailed) {
+				t.Fatalf("second Token err = %v, want auth.ErrExchangeFailed", err)
+			}
+			if got := broker.callCount(); got != before+1 {
+				t.Fatalf("second Token broker calls = %d, want %d (destination mismatch must not cache)", got, before+1)
+			}
+		})
 	}
 }
 

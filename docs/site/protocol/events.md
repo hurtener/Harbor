@@ -1653,6 +1653,8 @@ Payload `ToolCompletedPayload` — safe payload (delivered typed, verbatim).
 
 ## `tool.credential_exchanged`
 
+The `AudienceVerified` field is true only when the general tokenexchange path read a JWT `aud` claim and it included the declared RFC 8707 resource. Signed-capability exchanges prove the destination from the broker response and leave this field false.
+
 Payload `ToolCredentialExchangedPayload` — safe payload (delivered typed, verbatim).
 
 | Wire key | Go type | Notes |

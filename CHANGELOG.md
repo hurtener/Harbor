@@ -17,6 +17,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Signed-capability broker exchanges now accept third-party JWTs whose
+  provider-specific application audience is distinct from the RFC 8707
+  resource URI. The exact broker `Audience`/`Resource` destination tuple
+  remains mandatory; ordinary tokenexchange providers retain their JWT
+  audience mismatch guard.
+
 ## [1.30.7] — 2026-08-27
 
 ### Added
