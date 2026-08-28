@@ -83,10 +83,13 @@ const (
 	RetirementCleanupClassSignedOAuthMCPPair = "signed_oauth_mcp_pair"
 )
 
-// SignedOAuthMCPReplayKey is tenant-scoped by design. Agent ID is a signed
-// binding field, not a fourth persistence/isolation principal.
+// SignedOAuthMCPReplayKey is tenant-scoped for operator registrations. User
+// registrations additionally bind the verified user and session into the
+// durable operation slot so independent users cannot collide on one JTI.
 type SignedOAuthMCPReplayKey struct {
 	TenantID        string
+	UserID          string
+	SessionID       string
 	TrustAnchorName string
 	Issuer          string
 	KeyID           string
@@ -867,6 +870,12 @@ func validateSignedOAuthMCPOperation(op SignedOAuthMCPOperation) error {
 
 func signedOAuthMCPOperationSlot(key SignedOAuthMCPReplayKey) (identity.Quadruple, string, error) {
 	parts := []string{key.TenantID, key.TrustAnchorName, key.Issuer, key.KeyID, key.JTI}
+	if (key.UserID == "") != (key.SessionID == "") {
+		return identity.Quadruple{}, "", fmt.Errorf("%w: replay key user and session must be supplied together", ErrSignedCapabilityAuthority)
+	}
+	if key.UserID != "" {
+		parts = append(parts, key.UserID, key.SessionID)
+	}
 	for _, part := range parts {
 		if strings.TrimSpace(part) == "" {
 			return identity.Quadruple{}, "", fmt.Errorf("%w: replay key component is empty", ErrSignedCapabilityAuthority)

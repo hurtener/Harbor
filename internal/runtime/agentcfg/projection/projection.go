@@ -39,6 +39,123 @@ import (
 // legitimately not be in the directory view).
 var ErrSkillBodyMissing = errors.New("agentcfg/projection: agent-config pins a skill whose body is absent from the store")
 
+// SourceOwnerResolver reports the physical owner stamped on a runtime-added
+// MCP source. The run projection uses it to hide foreign user-owned sources;
+// boot and operator-owned sources remain part of the operator ceiling.
+type SourceOwnerResolver interface {
+	OwnerOfSource(source tools.ToolSourceID) (auth.Owner, bool)
+}
+
+type sourceLogicalNameResolver interface {
+	LogicalNameOfSource(source tools.ToolSourceID) (string, bool)
+}
+
+// physicalizeUserExposure keeps user policy names logical while the live
+// catalog uses owner-derived source ids. A user revision may say
+// "shared_echo" or "shared"; the process-local catalog may contain
+// "shared~u-<digest>_echo" and "shared~u-<digest>" for that same pair.
+// Translate the user tier only for the matching owner, preserving the
+// original names so the same narrow policy still applies to an operator/boot
+// source with that logical name or to a source that is not attached yet.
+func physicalizeUserExposure(base tools.PlannerCatalogView, resolver SourceOwnerResolver, owner auth.Owner, paused, disabled []string) ([]string, []string) {
+	if base == nil || resolver == nil || owner.User == "" || (len(paused) == 0 && len(disabled) == 0) {
+		return paused, disabled
+	}
+	logicalNames, ok := resolver.(sourceLogicalNameResolver)
+	if !ok {
+		return paused, disabled
+	}
+
+	pausedSet := make(map[string]struct{}, len(paused))
+	for _, name := range paused {
+		if name != "" {
+			pausedSet[name] = struct{}{}
+		}
+	}
+	disabledSet := make(map[string]struct{}, len(disabled))
+	for _, name := range disabled {
+		if name != "" {
+			disabledSet[name] = struct{}{}
+		}
+	}
+	physicalPaused := make(map[string]struct{})
+	physicalDisabled := make(map[string]struct{})
+	for _, tool := range base.List() {
+		if tool.Source == "" {
+			continue
+		}
+		sourceOwner, found := resolver.OwnerOfSource(tool.Source)
+		if !found || sourceOwner != owner {
+			continue
+		}
+		logicalSource, found := logicalNames.LogicalNameOfSource(tool.Source)
+		if !found || logicalSource == "" {
+			continue
+		}
+		if _, selected := pausedSet[logicalSource]; selected {
+			physicalPaused[string(tool.Source)] = struct{}{}
+		}
+		if !strings.HasPrefix(tool.Name, string(tool.Source)) {
+			continue
+		}
+		suffix := strings.TrimPrefix(tool.Name, string(tool.Source))
+		if _, selected := disabledSet[logicalSource+suffix]; selected {
+			physicalDisabled[tool.Name] = struct{}{}
+		}
+	}
+	for name := range physicalPaused {
+		paused = append(paused, name)
+	}
+	for name := range physicalDisabled {
+		disabled = append(disabled, name)
+	}
+	return paused, disabled
+}
+
+type userScopedMCPView struct {
+	base        tools.PlannerCatalogView
+	resolver    SourceOwnerResolver
+	owner       auth.Owner
+	desiredPair map[string]struct{}
+}
+
+func (v userScopedMCPView) allows(tool tools.Tool) bool {
+	owner, ok := v.resolver.OwnerOfSource(tool.Source)
+	if !ok || owner.User == "" {
+		return true
+	}
+	if owner != v.owner {
+		return false
+	}
+	logical := string(tool.Source)
+	if names, ok := v.resolver.(sourceLogicalNameResolver); ok {
+		if resolved, found := names.LogicalNameOfSource(tool.Source); found {
+			logical = resolved
+		}
+	}
+	_, ok = v.desiredPair[logical]
+	return ok
+}
+
+func (v userScopedMCPView) Resolve(name string) (tools.Tool, bool) {
+	t, ok := v.base.Resolve(name)
+	if !ok || !v.allows(t) {
+		return tools.Tool{}, false
+	}
+	return t, true
+}
+
+func (v userScopedMCPView) List() []tools.Tool {
+	all := v.base.List()
+	out := make([]tools.Tool, 0, len(all))
+	for _, tool := range all {
+		if v.allows(tool) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // loadOverlay reads the session's safe-subset overlay (the lower tier of the
 // authorization matrix) for the run's REAL (tenant, user, session) triple. A
 // nil store, an empty agentID, or an agent with no overlay returns the zero
@@ -898,7 +1015,7 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 // concurrent / in-flight runs keep their own snapshot (the concurrent-reuse
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
-func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
 	// Admin exposure (the baseline). The loading-mode override maps are
 	// ADMIN-tier only — the durable per-user and ephemeral session tiers
 	// below stay narrow-only disable sets with no loading field.
@@ -942,6 +1059,7 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// surfaces identity_required); a missing active user revision is the
 	// ungated path. The set is narrow-only — there is no user enable field.
 	var userPaused, userDisabled []string
+	userPairNames := make(map[string]struct{})
 	if reg != nil && agentID != "" {
 		urev, uok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeUser)
 		if err != nil {
@@ -950,6 +1068,17 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		if uok && urev.Payload.ToolExposure != nil {
 			userPaused = urev.Payload.PausedServers()
 			userDisabled = urev.Payload.DisabledTools()
+		}
+		if uok {
+			pairs, pairErr := urev.Payload.EffectiveSignedOAuthMCPPairs()
+			if pairErr != nil {
+				return nil, pairErr
+			}
+			for _, pair := range pairs {
+				if pair.Connection.Name != "" {
+					userPairNames[pair.Connection.Name] = struct{}{}
+				}
+			}
 		}
 	}
 
@@ -971,6 +1100,13 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// re-widen past the admin-provisioned palette.
 	paused := unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
 	disabled := unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
+	if len(ownerResolvers) > 0 && ownerResolvers[0] != nil && id.UserID != "" {
+		owner := auth.Owner{Tenant: id.TenantID, Agent: agentID, User: id.UserID}
+		userPaused, userDisabled = physicalizeUserExposure(base, ownerResolvers[0], owner, userPaused, userDisabled)
+		paused = unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
+		disabled = unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
+		base = userScopedMCPView{base: base, resolver: ownerResolvers[0], owner: owner, desiredPair: userPairNames}
+	}
 	if len(paused) == 0 && len(disabled) == 0 {
 		return base, nil
 	}

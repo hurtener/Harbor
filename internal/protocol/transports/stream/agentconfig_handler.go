@@ -282,6 +282,10 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserDiff(w, r, body, wireID)
 	case "user/rollback":
 		h.serveUserRollback(w, r, body, wireID)
+	case "user/register_oauth_mcp_capability":
+		h.serveUserRegisterOAuthMCPCapability(w, r, body, wireID)
+	case "user/remove_oauth_mcp_capability":
+		h.serveUserRemoveOAuthMCPCapability(w, r, body, wireID)
 	case "user/skills/list":
 		h.serveUserSkillsList(w, r, body, wireID)
 	case "user/skills/upsert":
@@ -338,11 +342,13 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 // methods.canonicalAgentConfigUserMethods — adding a user-tier verb extends
 // BOTH.
 var agentConfigUserRoutes = map[string]bool{
-	"user/get":            true,
-	"user/set_revision":   true,
-	"user/list_revisions": true,
-	"user/diff":           true,
-	"user/rollback":       true,
+	"user/get":                           true,
+	"user/set_revision":                  true,
+	"user/list_revisions":                true,
+	"user/diff":                          true,
+	"user/rollback":                      true,
+	"user/register_oauth_mcp_capability": true,
+	"user/remove_oauth_mcp_capability":   true,
 }
 
 func (h *AgentConfigHandler) serveGet(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -1007,6 +1013,46 @@ func (h *AgentConfigHandler) serveUserRollback(w http.ResponseWriter, r *http.Re
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+func (h *AgentConfigHandler) serveUserRegisterOAuthMCPCapability(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserRegisterOAuthMCPCapabilityRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserRegisterOAuthMCPCapability) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserRegisterOAuthMCPCapability) {
+		return
+	}
+	resp, err := h.service.RegisterUserOAuthMCPCapability(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserRegisterOAuthMCPCapability, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserRemoveOAuthMCPCapability(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserRemoveOAuthMCPCapabilityRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserRemoveOAuthMCPCapability) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserRemoveOAuthMCPCapability) {
+		return
+	}
+	resp, err := h.service.RemoveUserOAuthMCPCapability(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserRemoveOAuthMCPCapability, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 // --- durable-per-user skills (CLAIM-FREE, session-safe tier) routes ---
 
 func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -1384,6 +1430,9 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		errors.Is(err, skills.ErrIdentityRequired):
 		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			m + ": identity scope incomplete"
+	case errors.Is(err, agentcfgprotocol.ErrSignedCapabilityUserAuthorization):
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			m + ": user signed-capability authorization is not admitted"
 	case errors.Is(err, sessionoverlay.ErrInvalidInput):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": " + err.Error()

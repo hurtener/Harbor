@@ -1391,6 +1391,52 @@ type AgentConfigRemoveOAuthMCPCapabilityResponse struct {
 	ProtocolVersion string                  `json:"protocol_version"`
 }
 
+// AgentConfigUserRegisterOAuthMCPCapabilityRequest is the user-scoped sibling
+// of AgentConfigRegisterOAuthMCPCapabilityRequest. The caller must carry the
+// verified agent_config:user entitlement and signed reach to AgentID. The
+// signed authority and closed descriptor are otherwise identical; the service
+// persists the desired pair only in ConfigScopeUser for the acting user.
+type AgentConfigUserRegisterOAuthMCPCapabilityRequest struct {
+	Identity            IdentityScope                      `json:"identity"`
+	AgentID             string                             `json:"agent_id"`
+	ProviderName        string                             `json:"provider_name"`
+	Broker              string                             `json:"broker"`
+	Audience            string                             `json:"audience"`
+	Scopes              []string                           `json:"scopes"`
+	Connection          SignedOAuthMCPConnectionDescriptor `json:"connection"`
+	ExpectedContentHash string                             `json:"expected_content_hash,omitempty"`
+	AuthorityEnvelope   string                             `json:"authority_envelope"`
+}
+
+// AgentConfigUserRegisterOAuthMCPCapabilityResponse reports the user-scoped
+// desired revision without returning signed authority material or a raw JTI.
+type AgentConfigUserRegisterOAuthMCPCapabilityResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProviderName    string                  `json:"provider_name"`
+	ConnectionName  string                  `json:"connection_name"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
+// AgentConfigUserRemoveOAuthMCPCapabilityRequest is the user-scoped paired
+// removal request. It selects only the acting user's immutable desired pair by
+// its expected content hash; no authority envelope or credential is accepted.
+type AgentConfigUserRemoveOAuthMCPCapabilityRequest struct {
+	Identity            IdentityScope `json:"identity"`
+	AgentID             string        `json:"agent_id"`
+	ProviderName        string        `json:"provider_name,omitempty"`
+	ExpectedContentHash string        `json:"expected_content_hash,omitempty"`
+}
+
+// AgentConfigUserRemoveOAuthMCPCapabilityResponse reports the user-scoped
+// revision that drops the pair and the terminal durable receipt phase.
+type AgentConfigUserRemoveOAuthMCPCapabilityResponse struct {
+	Revision        AgentConfigRevisionView `json:"revision"`
+	ProviderName    string                  `json:"provider_name"`
+	ConnectionName  string                  `json:"connection_name"`
+	OperationPhase  string                  `json:"operation_phase"`
+	ProtocolVersion string                  `json:"protocol_version"`
+}
+
 // AgentConfigRemoveOAuthProviderRequest is the admin-scoped
 // `agent_config.remove_oauth_provider` request — uninstall a Protocol-installed
 // OAuth provider by name. The runtime records a new revision dropping the named

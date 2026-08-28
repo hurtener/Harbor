@@ -86,7 +86,20 @@ func (s *Service) UserSetRevision(ctx context.Context, req prototypes.AgentConfi
 		return prototypes.AgentConfigUserSetRevisionResponse{}, err
 	}
 	defer s.lockOwner(agentcfg.ConfigScopeUser, id.TenantID, id.UserID, req.AgentID)()
-	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeUser, userPayloadToDomain(req.Payload),
+	q := identity.Quadruple{Identity: id}
+	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeUser)
+	if err != nil {
+		return prototypes.AgentConfigUserSetRevisionResponse{}, err
+	}
+	// The signed OAuth MCP pair is server-owned. Carry it (and every other
+	// sibling section) forward so a normal user authoring write cannot erase or
+	// replace the immutable pair lifecycle by accident.
+	mapped := userPayloadToDomain(req.Payload)
+	payload := carrySiblingsForward(active, hasActive)
+	payload.PromptLayers = mapped.PromptLayers
+	payload.ToolExposure = mapped.ToolExposure
+	payload.Skills = mapped.Skills
+	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeUser, payload,
 		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
 	if err != nil {
 		return prototypes.AgentConfigUserSetRevisionResponse{}, err

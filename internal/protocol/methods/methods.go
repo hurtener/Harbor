@@ -588,6 +588,15 @@ const (
 	// revision. Requires the verified `auth.ScopeAgentConfigUser` claim. The
 	// wire-transport route is `POST /v1/agent_config/user/rollback`.
 	MethodAgentConfigUserRollback Method = "agent_config.user.rollback"
+	// MethodAgentConfigUserRegisterOAuthMCPCapability is the user-tier signed
+	// OAuth MCP pair registration verb. It requires the verified
+	// `auth.ScopeAgentConfigUser` claim and signed reach to the target agent;
+	// the desired pair is persisted only in ConfigScopeUser.
+	MethodAgentConfigUserRegisterOAuthMCPCapability Method = "agent_config.user.register_oauth_mcp_capability"
+	// MethodAgentConfigUserRemoveOAuthMCPCapability is the matching user-tier
+	// paired-removal verb. It uses the immutable pair receipt and exact physical
+	// subject owner; no bearer or authority envelope is accepted.
+	MethodAgentConfigUserRemoveOAuthMCPCapability Method = "agent_config.user.remove_oauth_mcp_capability"
 
 	// MethodAgentConfigUserSkillsList — durable-per-user skills verb: lists
 	// the caller's user-scope (durable, cross-session) personal skills under
@@ -1199,99 +1208,101 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
-	MethodStart:                                 {},
-	MethodCancel:                                {},
-	MethodPause:                                 {},
-	MethodResume:                                {},
-	MethodRedirect:                              {},
-	MethodInjectContext:                         {},
-	MethodApprove:                               {},
-	MethodReject:                                {},
-	MethodPrioritize:                            {},
-	MethodUserMessage:                           {},
-	MethodEventsSubscribe:                       {},
-	MethodEventsAggregate:                       {},
-	MethodSearchQuery:                           {},
-	MethodSearchSessions:                        {},
-	MethodSearchTasks:                           {},
-	MethodSearchEvents:                          {},
-	MethodSearchArtifacts:                       {},
-	MethodRuntimeInfo:                           {},
-	MethodRuntimeHealth:                         {},
-	MethodRuntimeCounters:                       {},
-	MethodRuntimeDrivers:                        {},
-	MethodMetricsSnapshot:                       {},
-	MethodGovernancePosture:                     {},
-	MethodLLMPosture:                            {},
-	MethodGovernanceSetTenantOverrides:          {},
-	MethodGovernanceGetTenantOverrides:          {},
-	MethodGovernanceRotateKey:                   {},
-	MethodGovernanceSetPosture:                  {},
-	MethodAgentConfigGet:                        {},
-	MethodAgentConfigSetRevision:                {},
-	MethodAgentConfigListRevisions:              {},
-	MethodAgentConfigDiff:                       {},
-	MethodAgentConfigRollback:                   {},
-	MethodAgentConfigRetire:                     {},
-	MethodAgentConfigSkillsList:                 {},
-	MethodAgentConfigSkillsUpsert:               {},
-	MethodAgentConfigSkillsDelete:               {},
-	MethodAgentConfigAgentPacksList:             {},
-	MethodAgentConfigAgentPacksUpsert:           {},
-	MethodAgentConfigAgentPacksRemove:           {},
-	MethodAgentConfigAgentPacksPropose:          {},
-	MethodAgentConfigAgentPacksCommit:           {},
-	MethodSkillsPublicationsPublish:             {},
-	MethodSkillsPublicationsList:                {},
-	MethodSkillsPublicationsGet:                 {},
-	MethodSkillsPublicationsSuccessor:           {},
-	MethodSkillsPublicationsRetire:              {},
-	MethodSkillsPublicationsAvailable:           {},
-	MethodSkillsPublicationsInstall:             {},
-	MethodSkillsPublicationsUpdate:              {},
-	MethodSkillsPublicationsRemove:              {},
-	MethodSkillsPublicationsReferencesList:      {},
-	MethodAgentConfigSetToolExposure:            {},
-	MethodAgentConfigSetPromptLayers:            {},
-	MethodAgentConfigSetExtraSystemBlocks:       {},
-	MethodAgentConfigSetLLMParams:               {},
-	MethodAgentConfigAddMCPConnection:           {},
-	MethodAgentConfigRemoveMCPConnection:        {},
-	MethodAgentConfigSetMCPDiscoveryOrigins:     {},
-	MethodAgentConfigSetOAuthProvider:           {},
-	MethodAgentConfigRegisterOAuthMCPCapability: {},
-	MethodAgentConfigRemoveOAuthMCPCapability:   {},
-	MethodAgentConfigRemoveOAuthProvider:        {},
-	MethodAgentConfigSetLLMProvider:             {},
-	MethodAgentConfigSessionSetUserPrompt:       {},
-	MethodAgentConfigSessionSetSourceDisables:   {},
-	MethodAgentConfigSessionSkillsList:          {},
-	MethodAgentConfigSessionSkillsUpsert:        {},
-	MethodAgentConfigSessionSkillsDelete:        {},
-	MethodAgentConfigUserGet:                    {},
-	MethodAgentConfigUserSetRevision:            {},
-	MethodAgentConfigUserListRevisions:          {},
-	MethodAgentConfigUserDiff:                   {},
-	MethodAgentConfigUserRollback:               {},
-	MethodAgentConfigUserSkillsList:             {},
-	MethodAgentConfigUserSkillsUpsert:           {},
-	MethodAgentConfigUserSkillsDelete:           {},
-	MethodAgentConfigUserSkillsImportValidate:   {},
-	MethodAgentConfigUserSkillsImportCommit:     {},
-	MethodAgentConfigCompositionPreview:         {},
-	MethodPauseList:                             {},
-	MethodTopologySnapshot:                      {},
-	MethodArtifactsList:                         {},
-	MethodArtifactsPut:                          {},
-	MethodArtifactsGet:                          {},
-	MethodArtifactsGetRef:                       {},
-	MethodArtifactsDelete:                       {},
-	MethodMemoryList:                            {},
-	MethodMemoryGet:                             {},
-	MethodMemoryHealth:                          {},
-	MethodMemoryStrategyTrace:                   {},
-	MethodMemoryPut:                             {},
-	MethodMemoryDelete:                          {},
+	MethodStart:                                     {},
+	MethodCancel:                                    {},
+	MethodPause:                                     {},
+	MethodResume:                                    {},
+	MethodRedirect:                                  {},
+	MethodInjectContext:                             {},
+	MethodApprove:                                   {},
+	MethodReject:                                    {},
+	MethodPrioritize:                                {},
+	MethodUserMessage:                               {},
+	MethodEventsSubscribe:                           {},
+	MethodEventsAggregate:                           {},
+	MethodSearchQuery:                               {},
+	MethodSearchSessions:                            {},
+	MethodSearchTasks:                               {},
+	MethodSearchEvents:                              {},
+	MethodSearchArtifacts:                           {},
+	MethodRuntimeInfo:                               {},
+	MethodRuntimeHealth:                             {},
+	MethodRuntimeCounters:                           {},
+	MethodRuntimeDrivers:                            {},
+	MethodMetricsSnapshot:                           {},
+	MethodGovernancePosture:                         {},
+	MethodLLMPosture:                                {},
+	MethodGovernanceSetTenantOverrides:              {},
+	MethodGovernanceGetTenantOverrides:              {},
+	MethodGovernanceRotateKey:                       {},
+	MethodGovernanceSetPosture:                      {},
+	MethodAgentConfigGet:                            {},
+	MethodAgentConfigSetRevision:                    {},
+	MethodAgentConfigListRevisions:                  {},
+	MethodAgentConfigDiff:                           {},
+	MethodAgentConfigRollback:                       {},
+	MethodAgentConfigRetire:                         {},
+	MethodAgentConfigSkillsList:                     {},
+	MethodAgentConfigSkillsUpsert:                   {},
+	MethodAgentConfigSkillsDelete:                   {},
+	MethodAgentConfigAgentPacksList:                 {},
+	MethodAgentConfigAgentPacksUpsert:               {},
+	MethodAgentConfigAgentPacksRemove:               {},
+	MethodAgentConfigAgentPacksPropose:              {},
+	MethodAgentConfigAgentPacksCommit:               {},
+	MethodSkillsPublicationsPublish:                 {},
+	MethodSkillsPublicationsList:                    {},
+	MethodSkillsPublicationsGet:                     {},
+	MethodSkillsPublicationsSuccessor:               {},
+	MethodSkillsPublicationsRetire:                  {},
+	MethodSkillsPublicationsAvailable:               {},
+	MethodSkillsPublicationsInstall:                 {},
+	MethodSkillsPublicationsUpdate:                  {},
+	MethodSkillsPublicationsRemove:                  {},
+	MethodSkillsPublicationsReferencesList:          {},
+	MethodAgentConfigSetToolExposure:                {},
+	MethodAgentConfigSetPromptLayers:                {},
+	MethodAgentConfigSetExtraSystemBlocks:           {},
+	MethodAgentConfigSetLLMParams:                   {},
+	MethodAgentConfigAddMCPConnection:               {},
+	MethodAgentConfigRemoveMCPConnection:            {},
+	MethodAgentConfigSetMCPDiscoveryOrigins:         {},
+	MethodAgentConfigSetOAuthProvider:               {},
+	MethodAgentConfigRegisterOAuthMCPCapability:     {},
+	MethodAgentConfigRemoveOAuthMCPCapability:       {},
+	MethodAgentConfigRemoveOAuthProvider:            {},
+	MethodAgentConfigSetLLMProvider:                 {},
+	MethodAgentConfigSessionSetUserPrompt:           {},
+	MethodAgentConfigSessionSetSourceDisables:       {},
+	MethodAgentConfigSessionSkillsList:              {},
+	MethodAgentConfigSessionSkillsUpsert:            {},
+	MethodAgentConfigSessionSkillsDelete:            {},
+	MethodAgentConfigUserGet:                        {},
+	MethodAgentConfigUserSetRevision:                {},
+	MethodAgentConfigUserListRevisions:              {},
+	MethodAgentConfigUserDiff:                       {},
+	MethodAgentConfigUserRollback:                   {},
+	MethodAgentConfigUserRegisterOAuthMCPCapability: {},
+	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
+	MethodAgentConfigUserSkillsList:                 {},
+	MethodAgentConfigUserSkillsUpsert:               {},
+	MethodAgentConfigUserSkillsDelete:               {},
+	MethodAgentConfigUserSkillsImportValidate:       {},
+	MethodAgentConfigUserSkillsImportCommit:         {},
+	MethodAgentConfigCompositionPreview:             {},
+	MethodPauseList:                                 {},
+	MethodTopologySnapshot:                          {},
+	MethodArtifactsList:                             {},
+	MethodArtifactsPut:                              {},
+	MethodArtifactsGet:                              {},
+	MethodArtifactsGetRef:                           {},
+	MethodArtifactsDelete:                           {},
+	MethodMemoryList:                                {},
+	MethodMemoryGet:                                 {},
+	MethodMemoryHealth:                              {},
+	MethodMemoryStrategyTrace:                       {},
+	MethodMemoryPut:                                 {},
+	MethodMemoryDelete:                              {},
 
 	MethodFlowsList:         {},
 	MethodFlowsDescribe:     {},
@@ -1521,7 +1532,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the thirty-four
+// canonicalAgentConfigMethods is the closed set of the thirty-six
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1531,9 +1542,10 @@ func IsGovernanceAdminMethod(m Method) bool {
 // (add_mcp_connection), the remove-connection verb (remove_mcp_connection),
 // the discovery-allowance write (set_mcp_discovery_origins), the OAuth-provider
 // install / uninstall verbs (set_oauth_provider / remove_oauth_provider),
-// the five session safe-subset verbs, the five user-tier registry verbs
+// the five session safe-subset verbs, the seven user-tier verbs
 // (user.get / user.set_revision / user.list_revisions / user.diff /
-// user.rollback), the three CLAIM-FREE durable-per-user skills verbs
+// user.rollback / user.register_oauth_mcp_capability /
+// user.remove_oauth_mcp_capability), the three CLAIM-FREE durable-per-user skills verbs
 // (user.skills.list / user.skills.upsert / user.skills.delete), the two
 // CLAIM-FREE two-phase import verbs (user.skills.import_validate /
 // user.skills.import_commit), and the CLAIM-FREE read-only composition
@@ -1574,11 +1586,13 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSessionSkillsUpsert:      {},
 	MethodAgentConfigSessionSkillsDelete:      {},
 	// User tier (the durable per-user variant — the middle tier).
-	MethodAgentConfigUserGet:           {},
-	MethodAgentConfigUserSetRevision:   {},
-	MethodAgentConfigUserListRevisions: {},
-	MethodAgentConfigUserDiff:          {},
-	MethodAgentConfigUserRollback:      {},
+	MethodAgentConfigUserGet:                        {},
+	MethodAgentConfigUserSetRevision:                {},
+	MethodAgentConfigUserListRevisions:              {},
+	MethodAgentConfigUserDiff:                       {},
+	MethodAgentConfigUserRollback:                   {},
+	MethodAgentConfigUserRegisterOAuthMCPCapability: {},
+	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
 	// Durable-per-user skills (CLAIM-FREE, session-safe tier — a personal
 	// skill cannot widen capability, so it needs only a valid identity).
 	MethodAgentConfigUserSkillsList:   {},
@@ -1603,11 +1617,13 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 // apply the user-tier scope gate. Authority derives from the verified ctx,
 // never the request body.
 var canonicalAgentConfigUserMethods = map[Method]struct{}{
-	MethodAgentConfigUserGet:           {},
-	MethodAgentConfigUserSetRevision:   {},
-	MethodAgentConfigUserListRevisions: {},
-	MethodAgentConfigUserDiff:          {},
-	MethodAgentConfigUserRollback:      {},
+	MethodAgentConfigUserGet:                        {},
+	MethodAgentConfigUserSetRevision:                {},
+	MethodAgentConfigUserListRevisions:              {},
+	MethodAgentConfigUserDiff:                       {},
+	MethodAgentConfigUserRollback:                   {},
+	MethodAgentConfigUserRegisterOAuthMCPCapability: {},
+	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
 }
 
 // canonicalAgentConfigSessionMethods is the closed CLAIM-FREE SAFE-SUBSET —
@@ -1675,7 +1691,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMProvider:             {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the thirty-four
+// IsAgentConfigMethod reports whether m is one of the thirty-six
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new
@@ -1685,7 +1701,7 @@ func IsAgentConfigMethod(m Method) bool {
 	return ok
 }
 
-// IsAgentConfigUserMethod reports whether m is one of the five
+// IsAgentConfigUserMethod reports whether m is one of the seven
 // `agent_config.user.*` verbs — the durable per-user config-variant tier
 // (the middle tier of the authorization matrix). The agent-config wire
 // handler uses it to gate those routes on the verified

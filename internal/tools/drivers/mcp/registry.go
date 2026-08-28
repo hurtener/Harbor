@@ -280,14 +280,30 @@ func (e *DiscoveryStaleError) Is(target error) bool { return target == ErrDiscov
 
 // maxListPageSize / defaultListPageSize bound the ListServers page.
 const (
-	maxListPageSize     = 200
-	defaultListPageSize = 50
+	maxListPageSize          = 200
+	defaultListPageSize      = 50
+	userPhysicalSourceMarker = "~u-"
 )
+
+// PhysicalServerName derives the process-local source id for one logical MCP
+// connection. Operator/boot registrations keep their logical name. A
+// user-owned registration gets a deterministic owner-derived suffix so two
+// users can attach the same signed descriptor/name concurrently without a
+// client selecting a destination. The logical descriptor and downstream URL
+// are unchanged; this value is only a local registry/catalog key.
+func PhysicalServerName(logical string, owner auth.Owner) string {
+	if owner.User == "" {
+		return logical
+	}
+	h := sha256.Sum256([]byte("harbor:mcp:user-source:v1\x00" + owner.Tenant + "\x00" + owner.Agent + "\x00" + owner.User))
+	return logical + userPhysicalSourceMarker + hex.EncodeToString(h[:16])
+}
 
 // serverEntry is the Registry's per-server record — the provider plus
 // its operator-supplied static config plus mutable runtime stats.
 type serverEntry struct {
 	provider     serverProvider
+	logicalName  string
 	transport    string
 	urlOrCommand string
 	policy       tools.ToolPolicy
@@ -302,9 +318,11 @@ type serverEntry struct {
 	oauthAllowedOrigins []string
 	// owner is the (tenant, agent) reconcile-view tag for a runtime-added
 	// server. A zero owner marks a boot-declared server, which the
-	// owner-scoped reconcile view never enumerates. Set at Register;
-	// read-only thereafter. It is a reconcile-view filter, NOT an isolation
-	// key — resolution and dispatch stay bare-name and process-global.
+	// owner-scoped reconcile view never enumerates. A user-scoped registration
+	// additionally carries its verified user id. Set at Register;
+	// read-only thereafter. For user-owned registrations it also selects the
+	// physical registry/catalog namespace; operator/boot behavior remains bare
+	// name. The downstream URL and token sink are never derived from this key.
 	owner auth.Owner
 	// descriptorFingerprint identifies the complete canonical NON-SECRET
 	// runtime-added descriptor that produced this registration. Empty for
@@ -467,10 +485,17 @@ type ServerRegistration struct {
 	// Owner is the (tenant, agent) reconcile-view tag for a RUNTIME-ADDED
 	// server. Boot-declared servers leave it zero (untagged) — the
 	// owner-scoped reconcile view never enumerates a zero-owner entry. The
+	// user field is populated for a user-scoped registration and participates
+	// in exact ownership checks.
 	// runtime-add attach path stamps a non-zero owner (fail-closed there when
 	// either component is missing); nothing about resolution or dispatch reads
-	// it (those stay bare-name and process-global).
+	// it for operator-owned entries. User-owned entries use a server-derived
+	// physical key; the logical descriptor name remains in LogicalName.
 	Owner auth.Owner
+	// LogicalName is the signed/config descriptor name before any server-side
+	// user namespace is applied. Empty preserves the provider source id for
+	// boot and legacy callers.
+	LogicalName string
 	// DescriptorFingerprint is the canonical digest of the complete
 	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
 	DescriptorFingerprint string
@@ -621,6 +646,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 	tc, rc, pc := classifyDescriptors(descs, name)
 	entry := &serverEntry{
 		provider:     reg.Provider,
+		logicalName:  reg.LogicalName,
 		transport:    reg.Transport,
 		urlOrCommand: reg.URLOrCommand,
 		policy:       policy,
@@ -643,6 +669,9 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 			resourceCount:     rc,
 			promptCount:       pc,
 		},
+	}
+	if entry.logicalName == "" {
+		entry.logicalName = name
 	}
 	// Partition the SAME discovered snapshot into the two views: App-visible
 	// callbacks stay HERE on the per-server App dispatch catalog (read via
@@ -1381,6 +1410,7 @@ type ExactRemovalFence struct {
 // returns. An absent generation is still fenced so a stale preparation cannot
 // publish between admission and the desired-state CAS.
 func (r *Registry) BeginExactRemoval(name string, owner auth.Owner, descriptorFingerprint string) (*ExactRemovalFence, error) {
+	name = PhysicalServerName(name, owner)
 	if name == "" || owner.IsZero() || descriptorFingerprint == "" {
 		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 	}
@@ -1426,6 +1456,7 @@ func (r *Registry) BeginExactPublisherRemoval(name string, owner auth.Owner, des
 	if err == nil || !errors.Is(err, ErrServerNotFound) {
 		return fence, err
 	}
+	name = PhysicalServerName(name, owner)
 	if name == "" || owner.IsZero() || descriptorFingerprint == "" {
 		return nil, err
 	}
@@ -1651,6 +1682,7 @@ type genericCloseReceipt struct {
 }
 
 func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
+	name = PhysicalServerName(name, owner)
 	r.mu.Lock()
 	if _, staged := r.pending[name]; staged {
 		r.mu.Unlock()
@@ -1700,6 +1732,7 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 // closing generation and never converts an absent-after-error observation into
 // a teardown receipt.
 func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.Owner, descriptorFingerprint string, withdrawCatalog func() int) (int, error) {
+	name = PhysicalServerName(name, owner)
 	if owner.IsZero() || descriptorFingerprint == "" || withdrawCatalog == nil {
 		return 0, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 	}
@@ -1777,6 +1810,7 @@ func (r *Registry) DeregisterExactPublisher(ctx context.Context, name string, ow
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	name = PhysicalServerName(name, owner)
 	reservation := r.removing[name]
 	if reservation == nil || reservation.owner != owner || reservation.descriptorFingerprint != descriptorFingerprint || !reservation.sealed {
 		return 0, err
@@ -1874,12 +1908,43 @@ func (r *Registry) RuntimeAddedSources(owner auth.Owner) []string {
 	out := make([]string, 0, len(r.servers))
 	for name, e := range r.servers {
 		if e.owner == owner {
-			out = append(out, name)
+			logical := e.logicalName
+			if logical == "" {
+				logical = name
+			}
+			out = append(out, logical)
 		}
 	}
 	r.mu.RUnlock()
 	sort.Strings(out)
 	return out
+}
+
+// LogicalNameOfSource returns the signed/config descriptor name associated
+// with one physical source id. It is used only by an identity-scoped
+// projection to translate the private local key back to desired-state names.
+func (r *Registry) LogicalNameOfSource(source tools.ToolSourceID) (string, bool) {
+	r.mu.RLock()
+	e, ok := r.servers[string(source)]
+	if !ok {
+		e, ok = r.closing[string(source)]
+	}
+	r.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	logical := e.logicalName
+	if logical == "" {
+		logical = string(source)
+	}
+	return logical, true
+}
+
+// RegistrationIdentityForOwner returns the live registration identity for a
+// logical connection under owner. User-owned names resolve through the
+// server-derived physical namespace; operator/boot names remain unchanged.
+func (r *Registry) RegistrationIdentityForOwner(name string, owner auth.Owner) (auth.Owner, string, bool) {
+	return r.RegistrationIdentity(PhysicalServerName(name, owner))
 }
 
 // ReadResource fetches a single resource's content from the named MCP
@@ -2552,6 +2617,7 @@ func (r *Registry) SetOAuthDiscoveryOrigins(ctx context.Context, name string, ow
 	if idErr := requireIdentity(ctx); idErr != nil {
 		return nil, idErr
 	}
+	name = PhysicalServerName(name, owner)
 	e, eerr := r.ownedEntry(name, owner)
 	if eerr != nil {
 		return nil, eerr

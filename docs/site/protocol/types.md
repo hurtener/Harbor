@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 444 canonical Harbor Protocol wire types, generated from the single-source
+The 448 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1275,6 +1275,56 @@ Declared in `internal/protocol/types`.
 | `disabled_servers` | `[]string` | optional (`omitempty`) |
 | `disabled_tools` | `[]string` | optional (`omitempty`) |
 | `personal_skills` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigUserRegisterOAuthMCPCapabilityRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `provider_name` | `string` |  |
+| `broker` | `string` |  |
+| `audience` | `string` |  |
+| `scopes` | `[]string` |  |
+| `connection` | `types.SignedOAuthMCPConnectionDescriptor` — see [`SignedOAuthMCPConnectionDescriptor`](./types.md#signedoauthmcpconnectiondescriptor) |  |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+| `authority_envelope` | `string` |  |
+
+## AgentConfigUserRegisterOAuthMCPCapabilityResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `provider_name` | `string` |  |
+| `connection_name` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserRemoveOAuthMCPCapabilityRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `provider_name` | `string` | optional (`omitempty`) |
+| `expected_content_hash` | `string` | optional (`omitempty`) |
+
+## AgentConfigUserRemoveOAuthMCPCapabilityResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `provider_name` | `string` |  |
+| `connection_name` | `string` |  |
+| `operation_phase` | `string` |  |
+| `protocol_version` | `string` |  |
 
 ## AgentConfigUserRollbackRequest
 

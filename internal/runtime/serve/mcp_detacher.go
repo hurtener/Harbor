@@ -39,6 +39,26 @@ type MCPConnectionDetacher struct {
 	logger   *slog.Logger
 }
 
+// OwnerOfSource exposes the registry's immutable owner tag to the run-start
+// projection. It is read-only and returns false for an unknown source; the
+// projection uses it only to hide foreign user-scoped MCP tools.
+func (d *MCPConnectionDetacher) OwnerOfSource(source tools.ToolSourceID) (toolauth.Owner, bool) {
+	if d == nil || d.registry == nil {
+		return toolauth.Owner{}, false
+	}
+	return d.registry.OwnerOf(string(source))
+}
+
+// LogicalNameOfSource translates a physical registry source back to the
+// signed/config descriptor name. User-owned sources carry an owner-derived
+// physical suffix; operator/boot sources return their original name.
+func (d *MCPConnectionDetacher) LogicalNameOfSource(source tools.ToolSourceID) (string, bool) {
+	if d == nil || d.registry == nil {
+		return "", false
+	}
+	return d.registry.LogicalNameOfSource(source)
+}
+
 // Compile-time assertions that the production concrete satisfies BOTH reconcile
 // seams the run loop binds it to. The run loop binds the allowance reconciler
 // through an UNCHECKED type assertion
@@ -49,6 +69,7 @@ type MCPConnectionDetacher struct {
 var (
 	_ projection.ConnectionDetacher        = (*MCPConnectionDetacher)(nil)
 	_ projection.DiscoveryOriginReconciler = (*MCPConnectionDetacher)(nil)
+	_ projection.SourceOwnerResolver       = (*MCPConnectionDetacher)(nil)
 )
 
 // NewMCPConnectionDetacher builds the production detacher. catalog and
@@ -166,8 +187,9 @@ func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string, owner
 // idempotent), which is what makes it safe to call on a compensation path that
 // cannot know how far the attach got.
 func detachSource(ctx context.Context, catalog tools.ToolCatalog, registry *mcpdrv.Registry, source string, owner toolauth.Owner, logger *slog.Logger, reason string) error {
+	physical := mcpdrv.PhysicalServerName(source, owner)
 	if dc, ok := catalog.(tools.CatalogSourceDeregisterer); ok {
-		removed := dc.DeregisterSource(tools.ToolSourceID(source))
+		removed := dc.DeregisterSource(tools.ToolSourceID(physical))
 		if logger != nil {
 			logger.InfoContext(ctx, reason,
 				slog.String("source", source), slog.Int("tools_deregistered", removed))
@@ -193,8 +215,9 @@ func detachSourceExpected(ctx context.Context, catalog tools.ToolCatalog, regist
 	if !ok {
 		return errors.New("mcp: exact teardown requires catalog source deregistration")
 	}
+	physical := mcpdrv.PhysicalServerName(source, owner)
 	removed, err := registry.DeregisterExactPublisher(ctx, source, owner, fingerprint, func() int {
-		return dc.DeregisterSource(tools.ToolSourceID(source))
+		return dc.DeregisterSource(tools.ToolSourceID(physical))
 	})
 	if err != nil {
 		if errors.Is(err, mcpdrv.ErrServerNotFound) {

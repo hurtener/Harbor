@@ -211,6 +211,7 @@ type MCPConnectionAttacher struct {
 type reattachKey struct {
 	tenant string
 	agent  string
+	user   string
 	name   string
 }
 
@@ -327,16 +328,22 @@ func (a *MCPConnectionAttacher) Attach(ctx context.Context, req agentcfgprotocol
 // PrepareConnection dials and discovers against a private attachment. The
 // shared catalog and registry remain unchanged until Activate.
 func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
-	// Stamp the (tenant, agent) reconcile-view owner tag from the verified
+	// Stamp the (tenant, agent[, user]) reconcile-view owner tag from the verified
 	// caller identity + the target agent. Fail CLOSED when either component is
 	// missing: a runtime-added connection with no owner would be an
 	// unreconcilable orphan (a run-start reconcile could never scope to it,
 	// leaving it attached forever or, worse, detachable only by a
 	// process-global sweep). Never a silent untagged attach (CLAUDE.md §13).
-	owner := toolauth.Owner{Tenant: req.Identity.TenantID, Agent: req.AgentID}
+	owner := req.Owner
+	if owner.IsZero() {
+		owner = toolauth.Owner{Tenant: req.Identity.TenantID, Agent: req.AgentID}
+	}
 	if owner.IsZero() || owner.Tenant == "" || owner.Agent == "" {
 		return nil, fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
 			ErrRuntimeAddOwnerMissing, req.Name, owner.Tenant, owner.Agent)
+	}
+	if owner.Tenant != req.Identity.TenantID || (owner.User != "" && owner.User != req.Identity.UserID) {
+		return nil, fmt.Errorf("%w: runtime-added connection %q owner does not match verified identity", ErrRuntimeAddOwnerMissing, req.Name)
 	}
 
 	ms := config.MCPServerConfig{
@@ -415,6 +422,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		ToolContext:           a.toolContext,
 		ArtifactStore:         a.artifactStore,
 		Owner:                 owner,
+		LogicalName:           req.Name,
 		DescriptorFingerprint: descriptorFingerprint,
 		// The deployment's egress ceiling. Zero leaves mcpdrv.Attach on
 		// config.DefaultMCPArtifactEgressMaxBytes — a real ceiling, never an
@@ -437,7 +445,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 // live for this owner. It is the resume idempotency check after a crash between
 // activation and checkpoint deletion.
 func (a *MCPConnectionAttacher) ConnectionMatches(owner toolauth.Owner, name, fingerprint string) bool {
-	liveOwner, liveFingerprint, ok := a.registry.RegistrationIdentity(name)
+	liveOwner, liveFingerprint, ok := a.registry.RegistrationIdentityForOwner(name, owner)
 	return ok && liveOwner == owner && liveFingerprint == fingerprint
 }
 
@@ -575,6 +583,17 @@ func (a *MCPConnectionAttacher) DetachExactConnection(ctx context.Context, tenan
 		"mcp: detached exact signed capability source")
 }
 
+// DetachExactConnectionForOwner tears down only the registration whose full
+// owner, including an optional verified user, and descriptor fingerprint match
+// the signed pair's frozen identity.
+func (a *MCPConnectionAttacher) DetachExactConnectionForOwner(ctx context.Context, owner toolauth.Owner, name, descriptorFingerprint string) error {
+	if owner.IsZero() || owner.User == "" || descriptorFingerprint == "" {
+		return fmt.Errorf("%w: user-scoped exact detach requires owner and descriptor fingerprint", ErrRuntimeAddOwnerMissing)
+	}
+	return detachSourceExpected(ctx, a.catalog, a.registry, name, owner, descriptorFingerprint, a.logger,
+		"mcp: detached exact user-scoped signed capability source")
+}
+
 // BeginExactConnectionTeardown installs the process-local admission fence
 // before signed desired-state removal. The receipt is sealed after the durable
 // CAS or canceled when the CAS is proven not to have committed.
@@ -583,6 +602,16 @@ func (a *MCPConnectionAttacher) BeginExactConnectionTeardown(tenant, agentID, na
 		return nil, errors.New("mcp: exact teardown fence requires registry")
 	}
 	return a.registry.BeginExactPublisherRemoval(name, toolauth.Owner{Tenant: tenant, Agent: agentID}, descriptorFingerprint)
+}
+
+// BeginExactConnectionTeardownForOwner reserves a user-scoped physical source
+// before desired-state removal. The caller seals or cancels the receipt after
+// its durable CAS.
+func (a *MCPConnectionAttacher) BeginExactConnectionTeardownForOwner(owner toolauth.Owner, name, descriptorFingerprint string) (agentcfgprotocol.ExactConnectionTeardownFence, error) {
+	if a.registry == nil || owner.IsZero() || owner.User == "" || descriptorFingerprint == "" {
+		return nil, errors.New("mcp: user-scoped exact teardown fence requires owner and registry")
+	}
+	return a.registry.BeginExactPublisherRemoval(name, owner, descriptorFingerprint)
 }
 
 // Close drains every runtime-added server's transport in reverse order. Wired

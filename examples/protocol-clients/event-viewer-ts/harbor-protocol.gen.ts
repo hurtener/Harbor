@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:42e65ef859ba71535ad0f5ade9652c0850651c00505be6cf9a24e342a3f1b7d3";
+export const WIRE_SURFACE_DIGEST = "sha256:ba5158c6fcf36cc8286b7a72000cb139ae02e1aa533db8bf030adb95df528fe0";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -56,6 +56,8 @@ export type HarborMethod =
   | "agent_config.user.diff"
   | "agent_config.user.get"
   | "agent_config.user.list_revisions"
+  | "agent_config.user.register_oauth_mcp_capability"
+  | "agent_config.user.remove_oauth_mcp_capability"
   | "agent_config.user.rollback"
   | "agent_config.user.set_revision"
   | "agent_config.user.skills.delete"
@@ -1180,6 +1182,40 @@ export interface AgentConfigUserPayload {
   disabled_servers?: string[];
   disabled_tools?: string[];
   personal_skills?: string[];
+}
+
+export interface AgentConfigUserRegisterOAuthMCPCapabilityRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  provider_name: string;
+  broker: string;
+  audience: string;
+  scopes: string[];
+  connection: SignedOAuthMCPConnectionDescriptor;
+  expected_content_hash?: string;
+  authority_envelope: string;
+}
+
+export interface AgentConfigUserRegisterOAuthMCPCapabilityResponse {
+  revision: AgentConfigRevisionView;
+  provider_name: string;
+  connection_name: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigUserRemoveOAuthMCPCapabilityRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  provider_name?: string;
+  expected_content_hash?: string;
+}
+
+export interface AgentConfigUserRemoveOAuthMCPCapabilityResponse {
+  revision: AgentConfigRevisionView;
+  provider_name: string;
+  connection_name: string;
+  operation_phase: string;
+  protocol_version: string;
 }
 
 export interface AgentConfigUserRollbackRequest {

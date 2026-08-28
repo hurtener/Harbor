@@ -80,6 +80,8 @@ import type {
 	AgentConfigSetOAuthProviderResponse,
 	AgentConfigRegisterOAuthMCPCapabilityResponse,
 	AgentConfigRemoveOAuthMCPCapabilityResponse,
+	AgentConfigUserRegisterOAuthMCPCapabilityResponse,
+	AgentConfigUserRemoveOAuthMCPCapabilityResponse,
 	SignedOAuthMCPConnectionDescriptor,
 	AgentConfigRemoveOAuthProviderResponse,
 	AgentConfigLLMProviderDescriptor,
@@ -1552,6 +1554,36 @@ export class AgentConfigNamespace {
 	): Promise<AgentConfigRemoveOAuthMCPCapabilityResponse> {
 		return this.#t.request<AgentConfigRemoveOAuthMCPCapabilityResponse>(
 			'/v1/agent_config/remove_oauth_mcp_capability',
+			{ agent_id: agentId, expected_content_hash: expectedContentHash },
+		);
+	}
+	/** `agent_config.user.register_oauth_mcp_capability` — the user-tier
+	 * sibling of the signed OAuth MCP lifecycle. The runtime derives the
+	 * acting `(tenant, user, session)` from the verified bearer, stores the
+	 * desired pair in ConfigScopeUser, and narrows exposure at run start. */
+	userRegisterOAuthMCPCapability(
+		agentId: string,
+		providerName: string,
+		broker: string,
+		audience: string,
+		scopes: string[],
+		connection: SignedOAuthMCPConnectionDescriptor,
+		authorityEnvelope: string,
+		expectedContentHash?: string,
+	): Promise<AgentConfigUserRegisterOAuthMCPCapabilityResponse> {
+		return this.#t.request<AgentConfigUserRegisterOAuthMCPCapabilityResponse>(
+			'/v1/agent_config/user/register_oauth_mcp_capability',
+			{ agent_id: agentId, provider_name: providerName, broker, audience, scopes, connection, authority_envelope: authorityEnvelope, expected_content_hash: expectedContentHash },
+		);
+	}
+	/** `agent_config.user.remove_oauth_mcp_capability` — remove only the
+	 * acting user's exact signed OAuth MCP pair from ConfigScopeUser. */
+	userRemoveOAuthMCPCapability(
+		agentId: string,
+		expectedContentHash: string,
+	): Promise<AgentConfigUserRemoveOAuthMCPCapabilityResponse> {
+		return this.#t.request<AgentConfigUserRemoveOAuthMCPCapabilityResponse>(
+			'/v1/agent_config/user/remove_oauth_mcp_capability',
 			{ agent_id: agentId, expected_content_hash: expectedContentHash },
 		);
 	}

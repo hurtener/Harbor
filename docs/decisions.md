@@ -14771,3 +14771,72 @@ binary tool/result content entering planner or App context follows the
 materialization seam.
 
 **Cross-references:** D-022, D-347, D-412, RFC §6.10.
+
+## D-448 — User-scoped signed OAuth MCP capability lifecycle is an identity-scoped sibling
+
+**Date:** 2026-08-28
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The signed OAuth MCP capability lifecycle has an additive user-scoped sibling
+beside the existing operator/agent-scoped methods. The sibling reuses the
+closed authority envelope, closed connection descriptor, pair validation,
+atomic claim/attach/activate receipt, exact removal receipt, and provider
+binding. It adds no client-selected authority, provider, endpoint, token sink,
+tenant, or user field to that closed contract. The two Protocol methods and
+four named wire types are user-tier entries and are generated into the Go,
+TypeScript, manifest, and reference surfaces; the Protocol version is
+unchanged.
+
+The user methods fail closed unless the request identity exactly equals the
+verified bearer identity, the bearer has the `agent_config:user` scope, and a
+signed agent-reach claim admits the target agent. Tenant, user, and session
+are taken from that verified bearer rather than trusted request fields. The
+desired pair is written only to `ConfigScopeUser`, keyed by the verified
+tenant/user/agent; the shared `ConfigScopeAgent` revision is never read or
+mutated as the user's storage location. A generic user configuration write
+carries the signed pair forward so it cannot accidentally erase the user's
+capability. User operation replay slots extend the existing signed tuple with
+the verified user and session, while the operator tuple remains unchanged.
+
+The operator configuration is still the ceiling. At acting-user run and
+effective projection time, the base operator/boot view is narrowed only by
+the acting user's desired pair names and physical owner. A user can see the
+operator/boot entries plus their own user-owned pair and tool narrowing, but
+not another user's user-owned source. User reconciliation scans and exact
+teardown are subject- and session-bound; the operator maintenance pass skips
+user operations. Consequently, two users of one agent can register and remove
+independently, including when their signed authority JTIs collide, and one
+user's failed or successful removal cannot alter the other's desired or live
+pair.
+
+The physical MCP registry remains process-global, but a user-owned logical
+descriptor is stored under a deterministic server-derived physical source key
+computed from the logical name and exact owner `(tenant, agent, user)`. The
+logical name is retained separately for desired-state matching and user
+tool-exposure policy; it is not a shared physical key. Operator/boot names
+remain unchanged. Exact detach, teardown, replacement, reattach, backoff, and
+source projection compare the full owner, and a collision with an occupied
+derived key fails loudly. The physical mapping never selects a downstream URL,
+provider, bearer, or token sink. The private pair provider remains outside the
+shared provider set and is attached with `OwnOAuthProvider`; initialize and
+discovery resolve the OAuth bearer from the acting verified context on every
+connection path. Boot/shared bindings remain credential-neutral.
+
+This contract is deliberately OAuth-only. A user attachment without the
+verified signed OAuth authority envelope is rejected by the existing lifecycle;
+there is no unsigned or generic non-OAuth fallback in these methods. A future
+non-OAuth user attachment must introduce its own closed descriptor and
+signer-authorized Protocol method.
+
+**Cross-references:** D-397, D-398, D-401, D-407, RFC §5.5, §6.4, §6.11,
+§6.16. Plan:
+`docs/plans/phase-265-user-scoped-signed-oauth-mcp.md`.
+
+**Evidence status.** Local focused protocol, projection, serve, stream,
+method, single-source, and MCP-driver tests pass, including exact same-logical-
+descriptor two-user desired-state/physical-owner isolation, logical exposure
+narrowing, and missing verified scope/reach rejections. Generator lockstep
+checks, focused race tests, and static smoke pass locally; no hosted CI, tag,
+release, downstream/runtime deployment, or downstream acceptance is claimed.
