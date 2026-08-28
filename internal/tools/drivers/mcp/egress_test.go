@@ -683,6 +683,80 @@ func TestEgress_ToolContextInputIsTheModelsOwnArgs(t *testing.T) {
 	}
 }
 
+// TestEgress_ToolContextResultKeepsStructuredShapeAndAppRef proves that
+// artifact-parameter substitution is transparent to the result projection:
+// the model-facing value retains its auditable egress record, while the
+// browser-readable App context receives the server's original structured
+// result shape and the invocation keeps its App reference/correlation.
+func TestEgress_ToolContextResultKeepsStructuredShapeAndAppRef(t *testing.T) {
+	const argsJSON = `{"doc":"art-1"}`
+	capturer := newRecordingCapturer()
+	bus := newRecordingBus(t)
+	p, _ := newAppEgressProvider(t, capturer, bus)
+	desc := resolveTool(t, p, "egress-app-server_ingest_app")
+
+	result, err := desc.Invoke(egressCtx(t, map[string][]byte{"art-1": []byte("document bytes")}, nil), json.RawMessage(argsJSON))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	value, ok := result.Value.(MCPToolValue)
+	if !ok {
+		t.Fatalf("result.Value = %T, want MCPToolValue", result.Value)
+	}
+	if value.AppRef == nil {
+		t.Fatal("result lost AppRef")
+	}
+	if value.AppRef.ResourceURI != "ui://egress/index.html" || value.AppRef.Binding == "" {
+		t.Fatalf("result AppRef = %+v, want bound ui:// reference", value.AppRef)
+	}
+	if len(value.ArtifactEgress) != 1 || value.ArtifactEgress[0].ArtifactID != "art-1" {
+		t.Fatalf("result egress records = %+v, want the authored artifact record", value.ArtifactEgress)
+	}
+
+	callID := value.AppRef.ToolCallID
+	if callID == "" {
+		t.Fatal("result AppRef.ToolCallID is empty despite successful capture")
+	}
+	captured, ok := capturer.get(callID)
+	if !ok {
+		t.Fatalf("no tool-context capture for AppRef.ToolCallID %q", callID)
+	}
+	if captured.identity.TenantID != "t1" || captured.identity.UserID != "u1" || captured.identity.SessionID != "s1" {
+		t.Fatalf("captured identity = %+v, want the dispatch identity", captured.identity)
+	}
+	if string(captured.in.Input) != argsJSON {
+		t.Fatalf("captured Input = %s, want the model-authored args %s", captured.in.Input, argsJSON)
+	}
+	var appResult map[string]any
+	if err := json.Unmarshal(captured.in.Result, &appResult); err != nil {
+		t.Fatalf("decode captured App result: %v (%s)", err, captured.in.Result)
+	}
+	if appResult["handle"] != "image-1" || appResult["status"] != "succeeded" {
+		t.Fatalf("captured App result = %s, want direct structured result", captured.in.Result)
+	}
+	if _, wrapped := appResult["result"]; wrapped {
+		t.Fatalf("captured App result retained the model egress wrapper: %s", captured.in.Result)
+	}
+	if _, recorded := appResult["artifact_egress"]; recorded {
+		t.Fatalf("captured App result leaked dispatch metadata: %s", captured.in.Result)
+	}
+
+	modelResult, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal model result: %v", err)
+	}
+	var modelEnvelope map[string]any
+	if err := json.Unmarshal(modelResult, &modelEnvelope); err != nil {
+		t.Fatalf("decode model result: %v (%s)", err, modelResult)
+	}
+	if _, ok := modelEnvelope["result"]; !ok {
+		t.Fatalf("model result lost result envelope: %s", modelResult)
+	}
+	if _, ok := modelEnvelope["artifact_egress"]; !ok {
+		t.Fatalf("model result lost artifact_egress: %s", modelResult)
+	}
+}
+
 // newAppEgressProvider builds a fixture whose mapped tool ALSO declares
 // a `ui://` app, so the tool-context capture path actually fires (the
 // driver captures only for app-declaring tools).
@@ -701,7 +775,10 @@ func newAppEgressProvider(t *testing.T, capturer ToolContextCapturer, bus events
 		},
 	}, func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		fixture.record(req.Params.Name, req.Params.Arguments)
-		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"ok":true}`}}}, nil
+		return &mcpsdk.CallToolResult{
+			Content:           []mcpsdk.Content{&mcpsdk.TextContent{Text: `{"handle":"image-1","status":"succeeded"}`}},
+			StructuredContent: map[string]any{"handle": "image-1", "status": "succeeded"},
+		}, nil
 	})
 
 	p, err := New(Config{

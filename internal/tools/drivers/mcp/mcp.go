@@ -1407,7 +1407,7 @@ func (p *Provider) captureToolContext(ctx context.Context, toolCallID, toolName 
 		)
 		return false
 	}
-	resultJSON, err := json.Marshal(value)
+	resultJSON, err := value.MarshalAppJSON()
 	if err != nil {
 		p.logger.Warn("mcp: app tool-context capture failed: encode result",
 			slog.String("source", string(p.source)),
