@@ -407,7 +407,10 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 		return true
 	}, "PTY submitted turn terminal before export")
 	quad := identity.Quadruple{Identity: runtimeIdentity}
-	holdTask, spawnErr := stack.Tasks.Spawn(runtimeCtx, tasks.SpawnRequest{Identity: quad, Kind: tasks.KindForeground, Description: "PTY follow-up hold", Query: "hold active work", IdempotencyKey: "pty-followup-hold"})
+	// This task is manually controlled by the test. Keep it background-kind so
+	// the devstack's foreground-only RunLoopDriver cannot race the explicit
+	// MarkRunning/MarkComplete transitions below.
+	holdTask, spawnErr := stack.Tasks.Spawn(runtimeCtx, tasks.SpawnRequest{Identity: quad, Kind: tasks.KindBackground, Description: "PTY follow-up hold", Query: "hold active work", IdempotencyKey: "pty-followup-hold"})
 	if spawnErr != nil {
 		t.Fatal(spawnErr)
 	}
