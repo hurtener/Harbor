@@ -17,6 +17,38 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.7] — 2026-08-27
+
+### Added
+
+- Standard typed MCP binary result blocks — images, audio, and embedded
+  resources — are now materialized as individual identity-scoped session
+  artifacts regardless of the heavy-output threshold. The planner, trajectory,
+  and MCP App tool-context projections receive metadata and artifact refs only;
+  text, structured content, and `ResourceLink` metadata remain intact, and a
+  `ResourceLink` is never fetched automatically. The transport-neutral seam is
+  available to future protocol adapters without adding a server-specific
+  dispatcher path.
+
+### Fixed
+
+- Local failures while materializing typed tool-result content into the
+  `ArtifactStore` are now classified as permanent. A remote call may already
+  have completed when local storage or projection fails, so retrying the
+  unchanged invocation could repeat stateful tool or App side effects. The
+  original wrapped diagnostic remains available while the reliability shell
+  avoids that unsafe replay.
+
+### Release candidate evidence
+
+- D-447 landed at the exact reviewed head
+  `317979cb2096d723ab47ca43931defe7434de6f7`. The change is framework-only:
+  it adds no Protocol method or version, no server-specific configuration, no
+  automatic URL fetch, and no second artifact store. Local full tests, static
+  analysis, and focused race checks passed for this head. No hosted CI,
+  `v1.30.7` tag, release assets, module provenance, attestations, or downstream
+  deployment/acceptance is claimed by this cut.
+
 ## [1.30.6] — 2026-08-27
 
 ### Fixed
@@ -5171,7 +5203,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.6...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.7...HEAD
+[1.30.7]: https://github.com/hurtener/Harbor/compare/v1.30.6...v1.30.7
 [1.30.6]: https://github.com/hurtener/Harbor/compare/v1.30.5...v1.30.6
 [1.30.5]: https://github.com/hurtener/Harbor/compare/v1.30.4...v1.30.5
 [1.30.4]: https://github.com/hurtener/Harbor/compare/v1.30.3...v1.30.4
