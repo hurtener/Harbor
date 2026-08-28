@@ -145,6 +145,16 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		if err != nil {
 			return err
 		}
+		// A user-scoped pair is durable under (tenant, user, agent), but the
+		// session is still part of the live run subject. Keep the frozen
+		// operation owner for durable-slot reads and use the current verified
+		// subject for any path that can materialize or tear down a private
+		// provider. Otherwise a later S2 run reconstructs the S1 session from
+		// the receipt and sends S1 in the downstream actor binding.
+		subjectQ := ownerQ
+		if scope == agentcfg.ConfigScopeUser {
+			subjectQ = q
+		}
 		active, hasActive, err := r.physical.PhysicalActive(ctx, ownerQ, agentID, signedOAuthMCPConfigScope(ctx))
 		if err != nil {
 			return fmt.Errorf("load physical active signed capability revision: %w", err)
@@ -158,7 +168,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 			return pairErr
 		}
 		if hasActive && signedCapabilityPairMatchesOperation(activePair, q.TenantID, op.Binding, kind) {
-			if err := r.reconcilePair(ctx, ownerQ, agentID, active, activePair); err != nil {
+			if err := r.reconcilePair(ctx, subjectQ, agentID, active, activePair); err != nil {
 				return err
 			}
 			continue
@@ -166,7 +176,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		switch op.Phase {
 		case agentcfg.SignedOAuthMCPPhaseClaimed:
 			if signedCapabilityOperationExpired(op) {
-				if err := r.expireIncomplete(ctx, ownerQ, agentID, op, agentcfg.Revision{}, false); err != nil {
+				if err := r.expireIncomplete(ctx, subjectQ, agentID, op, agentcfg.Revision{}, false); err != nil {
 					return err
 				}
 			}
@@ -176,16 +186,16 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				if getErr != nil {
 					return getErr
 				}
-				if err := r.expireIncomplete(ctx, ownerQ, agentID, op, revision, true); err != nil {
+				if err := r.expireIncomplete(ctx, subjectQ, agentID, op, revision, true); err != nil {
 					return err
 				}
 			}
 		case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
-			if err := r.resumeExpiryCompensation(ctx, ownerQ, agentID, op); err != nil {
+			if err := r.resumeExpiryCompensation(ctx, subjectQ, agentID, op); err != nil {
 				return err
 			}
 		case agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted:
-			if err := r.resumePreparationRejection(ctx, ownerQ, agentID, op); err != nil {
+			if err := r.resumePreparationRejection(ctx, subjectQ, agentID, op); err != nil {
 				return err
 			}
 		case agentcfg.SignedOAuthMCPPhasePreparationRejected:
@@ -204,7 +214,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				if err != nil {
 					return err
 				}
-				if err := r.resumeRemoval(ctx, ownerQ, agentID, op); err != nil {
+				if err := r.resumeRemoval(ctx, subjectQ, agentID, op); err != nil {
 					return err
 				}
 			}
@@ -218,7 +228,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 					return err
 				}
 			}
-			if err := r.resumeRemoval(ctx, ownerQ, agentID, op); err != nil {
+			if err := r.resumeRemoval(ctx, subjectQ, agentID, op); err != nil {
 				return err
 			}
 		case agentcfg.SignedOAuthMCPPhaseRemoved:
@@ -230,7 +240,7 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 				return kindErr
 			}
 			fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, operationKind, op.PublisherEpoch)
-			if err := r.detachExact(ctx, ownerQ, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+			if err := r.detachExact(ctx, subjectQ, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
 				return err
 			}
 		}

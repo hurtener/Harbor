@@ -701,6 +701,7 @@ func TestRegisterUserOAuthMCPCapability_ProductionPathAuthenticatesPerUserAndIso
 	)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	idA := identity.Identity{TenantID: "tenant", UserID: "user-a", SessionID: "session-a"}
+	idA2 := identity.Identity{TenantID: "tenant", UserID: "user-a", SessionID: "session-a-restarted"}
 	idB := identity.Identity{TenantID: "tenant", UserID: "user-b", SessionID: "session-b"}
 	bearerByUser := map[string]string{idA.UserID: bearerUserA, idB.UserID: bearerUserB}
 
@@ -775,9 +776,11 @@ func TestRegisterUserOAuthMCPCapability_ProductionPathAuthenticatesPerUserAndIso
 
 	var exchangeMu sync.Mutex
 	type exchangeObservation struct {
-		subjectUser string
-		actorUser   string
-		bearer      string
+		subjectUser    string
+		subjectSession string
+		actorUser      string
+		actorSession   string
+		bearer         string
 	}
 	var exchanges []exchangeObservation
 	var exchangeError string
@@ -841,7 +844,10 @@ func TestRegisterUserOAuthMCPCapability_ProductionPathAuthenticatesPerUserAndIso
 			return
 		}
 		exchangeMu.Lock()
-		exchanges = append(exchanges, exchangeObservation{subjectUser: subject.UserID, actorUser: actor.UserID, bearer: bearer})
+		exchanges = append(exchanges, exchangeObservation{
+			subjectUser: subject.UserID, subjectSession: subject.SessionID,
+			actorUser: actor.UserID, actorSession: actor.SessionID, bearer: bearer,
+		})
 		exchangeMu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": bearer, "token_type": "Bearer", "expires_in": 300,
@@ -946,6 +952,37 @@ func TestRegisterUserOAuthMCPCapability_ProductionPathAuthenticatesPerUserAndIso
 	ownerB := toolauth.Owner{Tenant: idB.TenantID, Agent: agentID, User: idB.UserID}
 	physicalA := mcpdrv.PhysicalServerName(logicalName, ownerA)
 	physicalB := mcpdrv.PhysicalServerName(logicalName, ownerB)
+	// Simulate the process-local materialization disappearing after S1. The
+	// durable ConfigScopeUser pair remains, so a fresh reconciler must rebuild
+	// the private provider and authenticate discovery as the current S2 subject.
+	_, descriptorFingerprint, ok := mcpRegistry.RegistrationIdentityForOwner(logicalName, ownerA)
+	if !ok || descriptorFingerprint == "" {
+		t.Fatal("user A physical registration missing before restart reconcile")
+	}
+	if err := attacher.DetachExactConnectionForOwner(context.Background(), ownerA, logicalName, descriptorFingerprint); err != nil {
+		t.Fatalf("simulate S1 process-local loss: %v", err)
+	}
+	if _, ok := catalog.Resolve(physicalA + "_echo"); ok {
+		t.Fatal("user A catalog survived simulated process-local loss")
+	}
+	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(registry, store, attacher, attacher, installer)
+	if err != nil {
+		t.Fatalf("new user reconciler after restart: %v", err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapabilityForScope(userContext(idA2), identity.Quadruple{Identity: idA2}, agentID, agentcfg.ConfigScopeUser); err != nil {
+		t.Fatalf("reconcile user A as S2: %v", err)
+	}
+	if _, ok := catalog.Resolve(physicalA + "_echo"); !ok {
+		t.Fatal("user A catalog was not rebuilt by S2 reconciliation")
+	}
+	callCtx := tools.WithEffectiveAgentConfig(userContext(idA2), agentID)
+	reattachedTool, ok := catalog.Resolve(physicalA + "_echo")
+	if !ok {
+		t.Fatal("user A reattached tool is not callable")
+	}
+	if _, err := reattachedTool.Invoke(callCtx, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("user A call after S2 reattach: %v", err)
+	}
 	if physicalA == physicalB || physicalA == logicalName || physicalB == logicalName {
 		t.Fatalf("user source namespace collapsed: A=%q B=%q", physicalA, physicalB)
 	}
@@ -1050,6 +1087,30 @@ func TestRegisterUserOAuthMCPCapability_ProductionPathAuthenticatesPerUserAndIso
 	}
 	if credentialRequests.Load() == 0 {
 		t.Fatal("broker credential source was never called")
+	}
+	exchangeMu.Lock()
+	restartExchanges := append([]exchangeObservation(nil), exchanges...)
+	exchangeMu.Unlock()
+	seenS2 := false
+	for _, exchange := range restartExchanges {
+		if exchange.subjectUser == idA2.UserID && exchange.subjectSession == idA2.SessionID &&
+			exchange.actorUser == idA2.UserID && exchange.actorSession == idA2.SessionID {
+			seenS2 = true
+			break
+		}
+	}
+	if !seenS2 {
+		t.Fatalf("restart exchange did not bind current S2 subject: %+v", restartExchanges)
+	}
+	mcpMu.Lock()
+	callHeaders := append([]string(nil), acceptedHeaders["tools/call"]...)
+	mcpMu.Unlock()
+	seenCallBearer := false
+	for _, header := range callHeaders {
+		seenCallBearer = seenCallBearer || header == "Bearer "+bearerUserA
+	}
+	if !seenCallBearer {
+		t.Fatalf("S2 reattached tool call authorization = %v, want user A bearer", callHeaders)
 	}
 }
 
