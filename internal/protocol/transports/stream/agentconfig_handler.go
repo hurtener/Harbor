@@ -286,6 +286,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserRegisterOAuthMCPCapability(w, r, body, wireID)
 	case "user/remove_oauth_mcp_capability":
 		h.serveUserRemoveOAuthMCPCapability(w, r, body, wireID)
+	case "user/reconcile_live_profile":
+		h.serveUserReconcileLiveProfile(w, r, body, wireID)
 	case "user/skills/list":
 		h.serveUserSkillsList(w, r, body, wireID)
 	case "user/skills/upsert":
@@ -349,6 +351,7 @@ var agentConfigUserRoutes = map[string]bool{
 	"user/rollback":                      true,
 	"user/register_oauth_mcp_capability": true,
 	"user/remove_oauth_mcp_capability":   true,
+	"user/reconcile_live_profile":        true,
 }
 
 func (h *AgentConfigHandler) serveGet(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -1048,6 +1051,26 @@ func (h *AgentConfigHandler) serveUserRemoveOAuthMCPCapability(w http.ResponseWr
 	resp, err := h.service.RemoveUserOAuthMCPCapability(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodAgentConfigUserRemoveOAuthMCPCapability, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveUserReconcileLiveProfile(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserReconcileLiveProfileRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserReconcileLiveProfile) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserReconcileLiveProfile) {
+		return
+	}
+	resp, err := h.service.UserReconcileLiveProfile(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserReconcileLiveProfile, err)
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)

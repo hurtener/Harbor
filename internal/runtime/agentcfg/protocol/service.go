@@ -200,6 +200,14 @@ type SessionPersonalSkillController interface {
 	DeleteSessionSkill(ctx context.Context, id identity.Quadruple, agentID, name string) error
 }
 
+// SignedOAuthMCPUserReconciler is the shared live-profile recovery seam used
+// by run start and the user-tier reconciliation Protocol operation. It carries
+// no provider or authority inputs: the reconciler derives its work from the
+// verified identity, durable user revision, and existing operation ledger.
+type SignedOAuthMCPUserReconciler interface {
+	ReconcileSignedOAuthMCPCapabilityForScope(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) error
+}
+
 // Service implements the admin-scoped agent-config methods.
 type Service struct {
 	registry              agentcfg.Registry
@@ -313,6 +321,9 @@ type Service struct {
 	// boot env), computed at the cmd/harbor + devstack boundary and injected here
 	// — never Protocol-writable.
 	allowWireInjection bool
+	// signedOAuthMCPUserReconciler is the exact recovery artifact shared with
+	// run start. Nil leaves the explicit user reconcile route unavailable.
+	signedOAuthMCPUserReconciler SignedOAuthMCPUserReconciler
 	// coordinator is the unified pause/resume primitive an auth-required
 	// attach parks on. Optional — nil ⇒ an auth-required attach fails loud
 	// with ErrCoordinatorUnavailable rather than silently dropping the auth
@@ -780,6 +791,17 @@ func WithSignedOAuthMCPOperationState(store state.StateStore) Option {
 			if fenceErr == nil {
 				s.signedOAuthMCPFences = fences
 			}
+		}
+	}
+}
+
+// WithSignedOAuthMCPUserReconciler wires the same durable live-profile
+// reconciler used by run start into the user-tier Protocol operation. A nil
+// value leaves that operation fail-closed as unavailable.
+func WithSignedOAuthMCPUserReconciler(reconciler SignedOAuthMCPUserReconciler) Option {
+	return func(s *Service) {
+		if reconciler != nil {
+			s.signedOAuthMCPUserReconciler = reconciler
 		}
 	}
 }

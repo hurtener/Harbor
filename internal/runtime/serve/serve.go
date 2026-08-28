@@ -1091,6 +1091,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// starts, never through a cross-tenant maintenance sweep.
 	var signedOAuthMCPReconciler interface {
 		ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error
+		ReconcileSignedOAuthMCPCapabilityForScope(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) error
 	}
 	if len(signedOAuthMCPCapabilityAuthorities) > 0 {
 		preparer, prepared := mcpAttacher.(agentcfgprotocol.ConnectionPreparer)
@@ -1282,6 +1283,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		AgentPackLLM:                   stack.LLM,
 		AgentConfig:                    agentConfigRegistry,
 		AgentConfigID:                  devAgentConfigID,
+		SignedOAuthMCPUserReconciler:   signedOAuthMCPReconciler,
 		AgentResolver:                  agentResolver,
 		BootLifecycleEnsurer:           bootLifecycleEnsurer,
 		RunSnapshots:                   runSnapshots,

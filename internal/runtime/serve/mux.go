@@ -165,6 +165,9 @@ type MuxInput struct {
 	// SignedOAuthMCPCapabilityAuthorities are boot-built verifier
 	// anchors, keyed by broker name. Empty leaves signed registration disabled.
 	SignedOAuthMCPCapabilityAuthorities map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority
+	// SignedOAuthMCPUserReconciler is the single durable live-profile recovery
+	// artifact shared by run start and the user-tier reconcile operation.
+	SignedOAuthMCPUserReconciler agentcfgprotocol.SignedOAuthMCPUserReconciler
 	// BootDeclaredOAuth is the set of boot-declared OAuth provider names
 	// (tools.oauth_providers[].name); an install/uninstall of one of these is
 	// refused (boot wins).
@@ -850,6 +853,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(in.SignedOAuthMCPCapabilityAuthorities),
 			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
+			agentcfgprotocol.WithSignedOAuthMCPUserReconciler(in.SignedOAuthMCPUserReconciler),
 			agentcfgprotocol.WithAgentPackProposalState(in.State),
 			agentcfgprotocol.WithAgentPackCatalog(in.Catalog),
 			agentcfgprotocol.WithAgentPackGrantedScopes(append([]string(nil), cfg.Tools.GrantedScopes...)),

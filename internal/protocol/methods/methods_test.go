@@ -145,6 +145,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigUserRollback,
 	methods.MethodAgentConfigUserRegisterOAuthMCPCapability,
 	methods.MethodAgentConfigUserRemoveOAuthMCPCapability,
+	methods.MethodAgentConfigUserReconcileLiveProfile,
 	methods.MethodAgentConfigUserSkillsList,
 	methods.MethodAgentConfigUserSkillsUpsert,
 	methods.MethodAgentConfigUserSkillsDelete,
@@ -219,9 +220,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// (agent_config.composition.preview) = 134, plus the session-turns
 	// read pair (sessions.turns.list + sessions.turns.get) = 136, plus the
 	// observability administrative read (observability.query) = 137, plus
-	// HA-68 same-runtime skill publications ten = 149.
-	if len(got) != 149 {
-		t.Fatalf("Methods() returned %d methods, want 149", len(got))
+	// HA-68 same-runtime skill publications ten = 149, plus the user live
+	// profile reconciliation verb = 150.
+	if len(got) != 150 {
+		t.Fatalf("Methods() returned %d methods, want 150", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -835,6 +837,7 @@ func TestIsAgentConfigUserMethod_Lockstep(t *testing.T) {
 		methods.MethodAgentConfigUserRollback,
 		methods.MethodAgentConfigUserRegisterOAuthMCPCapability,
 		methods.MethodAgentConfigUserRemoveOAuthMCPCapability,
+		methods.MethodAgentConfigUserReconcileLiveProfile,
 	}
 	for _, m := range userMethods {
 		if !methods.IsAgentConfigUserMethod(m) {
