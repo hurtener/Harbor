@@ -87,9 +87,12 @@ type ProviderConfig struct {
 	ScopeCeiling []string
 	// ResourceIndicator is the boot-declared RFC 8707 `resource` value the
 	// `tokenexchange` driver carries as the `resource` form parameter on every
-	// exchange, and verifies the returned token's `aud` against (when the
-	// token is JWT-shaped). Empty preserves today's behaviour (no `resource`
-	// sent, no audience check). Ignored by the interactive `oauth2` driver.
+	// exchange. On the general tokenexchange path, the returned JWT-shaped
+	// token's `aud` is compared with this value. A signed-capability provider
+	// instead verifies the broker response's exact Audience/Resource pair and
+	// does not assume a third-party JWT audience identifier is the resource URI.
+	// Empty preserves today's behaviour (no `resource` sent, no general
+	// audience check). Ignored by the interactive `oauth2` driver.
 	ResourceIndicator string
 	// IncludeActorToken opts the `tokenexchange` driver into carrying the
 	// run's verified acting principal (`agent_id`, when present on ctx) as an

@@ -190,11 +190,13 @@ var (
 	// / Coordinator) was nil.
 	ErrMissingDeps = errors.New("auth/tokenexchange: Store / Bus / Redactor / Coordinator are mandatory")
 	// ErrAudienceMismatch — a JWT-shaped exchanged access token's `aud` claim
-	// excluded the boot-declared RFC 8707 resource indicator. The exchange
-	// fails loud and the token is NEVER cached (a confused-deputy defence). It
-	// is an `aud`-claim comparison only, never signature verification — Harbor
-	// has no keying relationship with the broker's AS.
-	ErrAudienceMismatch = errors.New("auth/tokenexchange: exchanged token audience excludes the declared resource_indicator")
+	// excluded the boot-declared RFC 8707 resource indicator on the general
+	// tokenexchange path. The exchange fails loud and the token is NEVER cached
+	// (a confused-deputy defence). It is an `aud`-claim comparison only, never
+	// signature verification — Harbor has no keying relationship with the
+	// broker's AS. Signed-capability exchanges use their authenticated broker
+	// destination response instead; this sentinel is not used for that path.
+	ErrAudienceMismatch = errors.New("auth/tokenexchange: JWT aud claim excludes the declared resource_indicator")
 )
 
 // RFC 8693 actor-token constants.
@@ -562,8 +564,11 @@ type provider struct {
 	scopes     []string
 	audience   string
 	// resourceIndicator is the boot-declared RFC 8707 `resource` value carried
-	// on every exchange request and verified against the returned token's
-	// `aud` claim (when JWT-shaped). Empty disables both. Set once at
+	// on every exchange request. On the general tokenexchange path it is also
+	// compared with the returned JWT-shaped token's `aud` claim. A signed
+	// capability instead authenticates the broker response's exact destination
+	// fields; third-party JWT audience identifiers are not assumed to equal the
+	// RFC 8707 resource URI. Empty disables the general comparison. Set once at
 	// construction; read-only.
 	resourceIndicator string
 	// includeActorToken opts this provider into carrying the run's verified
@@ -984,16 +989,29 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 			auth.ErrExchangeFailed, br.Audience, br.Resource)
 	}
 
-	// Best-effort audience verification (confused-deputy defence). When a
-	// resource indicator is declared and the returned token is JWT-shaped, its
-	// `aud` claim MUST include the resource — a mismatch fails the exchange
-	// loud and nothing is cached. An opaque token (RFC 8693 permits one)
-	// leaves audienceVerified false — an honest no-op, never a fabricated
-	// pass. This is an `aud`-claim comparison only, NOT signature verification.
-	audienceVerified, audErr := verifyAudience(br.AccessToken, p.resourceIndicator)
-	if audErr != nil {
-		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (broker %s, resource=%q)",
-			auth.ErrExchangeFailed, audErr, p.brokerHost, p.resourceIndicator)
+	// Best-effort audience verification (confused-deputy defence) applies to
+	// the general tokenexchange path. When a resource indicator is declared and
+	// the returned token is JWT-shaped, its `aud` claim MUST include the
+	// resource — a mismatch fails the exchange loud and nothing is cached. An
+	// opaque token (RFC 8693 permits one) leaves audienceVerified false — an
+	// honest no-op, never a fabricated pass. This is an `aud`-claim comparison
+	// only, NOT signature verification.
+	//
+	// Signed-capability exchanges have a different, stronger destination proof:
+	// the authenticated broker response's Audience and Resource fields were
+	// already required to exactly match the immutable signed binding above. Do
+	// not decode a third-party JWT's `aud` and assume that provider-specific
+	// identifier is the RFC 8707 resource URI (for example, an application
+	// client identifier can be the valid audience for a resource URI). Keep the
+	// audit bit false because no JWT `aud` comparison was performed.
+	var audienceVerified bool
+	if p.signedBinding == nil {
+		var audErr error
+		audienceVerified, audErr = verifyAudience(br.AccessToken, p.resourceIndicator)
+		if audErr != nil {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (broker %s, resource=%q)",
+				auth.ErrExchangeFailed, audErr, p.brokerHost, p.resourceIndicator)
+		}
 	}
 
 	// ExpiresAt is the broker-advertised token validity (zero when the

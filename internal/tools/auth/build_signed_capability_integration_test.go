@@ -47,6 +47,16 @@ func (p *signedCapabilityProviderAdapter) Close(ctx context.Context) error {
 	return p.provider.Close(ctx)
 }
 
+func unsignedJWTForTest(t *testing.T, aud string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	claims, err := json.Marshal(map[string]string{"aud": aud})
+	if err != nil {
+		t.Fatalf("marshal JWT claims: %v", err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(claims) + ".fixture"
+}
+
 func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache(t *testing.T) {
 	t.Setenv("HARBOR_SIGNED_BUILDER_KEK", "0101010101010101010101010101010101010101010101010101010101010101")
 	t.Setenv("HARBOR_SIGNED_BUILDER_AUTH", "fixture-broker-auth")
@@ -55,6 +65,7 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 	var exchanges int
 	var recorded url.Values
 	responseAudience := "capability-audience"
+	accessToken := unsignedJWTForTest(t, "00000000-0000-0000-0000-000000000001")
 	mux := http.NewServeMux()
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -76,7 +87,7 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 		audience := responseAudience
 		mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "fixture-downstream-token", "token_type": "Bearer", "expires_in": 300,
+			"access_token": accessToken, "token_type": "Bearer", "expires_in": 300,
 			"scope": "read", "audience": audience, "resource": "https://mcp.example.test:8443",
 		})
 	})
@@ -123,7 +134,7 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 	}
 	ctx = tools.WithEffectiveAgentConfig(ctx, "agent")
 	first, err := provider.Token(ctx, tools.ToolSourceID("provider"))
-	if err != nil || first.AccessToken != "fixture-downstream-token" {
+	if err != nil || first.AccessToken != accessToken {
 		t.Fatalf("first token: %+v err=%v", first, err)
 	}
 	if _, err := provider.Token(ctx, tools.ToolSourceID("provider")); err != nil {

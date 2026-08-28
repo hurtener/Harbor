@@ -14865,3 +14865,37 @@ descriptor two-user desired-state/physical-owner isolation, logical exposure
 narrowing, and missing verified scope/reach rejections. Generator lockstep
 checks, focused race tests, and static smoke pass locally; no hosted CI, tag,
 release, downstream/runtime deployment, or downstream acceptance is claimed.
+
+## D-449 — Signed-capability broker destination is authoritative for third-party token audiences
+
+**Date:** 2026-08-28
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The signed-capability token-exchange profile already authenticates the broker
+response's `Audience` and `Resource` fields against the immutable signed
+binding, before accepting or caching the returned bearer. That destination
+proof is authoritative for this profile. Harbor therefore does not perform a
+second unsigned decode of a third-party JWT's `aud` claim and require it to be
+the RFC 8707 resource URI: an authorization server may legitimately use a
+provider-specific application identifier as the JWT audience while the broker
+response names the exact downstream resource.
+
+The general `tokenexchange` profile is unchanged: when a resource indicator is
+declared and the returned token is JWT-shaped, its `aud` claim is compared with
+the resource and a mismatch fails loudly without caching. Signed-capability
+exchanges skip only that heuristic and leave the content-free
+`tool.credential_exchanged.AudienceVerified` bit false because no JWT claim
+comparison was performed. No Protocol, configuration, credential-custody, or
+provider-specific exception is added; the signed destination tuple remains
+strict, including both-field mismatch refusal.
+
+**Cross-references:** D-271, D-300, D-448, RFC §5.5, §6.4, §6.11.
+
+**Evidence status.** Focused race tests cover a signed JWT with a
+provider-specific application audience, both signed destination mismatch
+fields (including no event/cache and broker re-exchange), the unchanged
+general mismatch guard, and the production signed builder path. No hosted CI,
+tag, release, downstream/runtime deployment, or downstream acceptance is
+claimed.

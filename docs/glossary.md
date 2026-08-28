@@ -1214,7 +1214,7 @@ Non-batchable in this wave; each returns `{task_id, steered|paused|resumed}`.
 
 **`RuntimeHealth`** — Phase 72f wire type carrying the `runtime.health` response: a `Subsystems []SubsystemHealth` slice. Each `SubsystemHealth` entry pins one subsystem's `Status` (`"ready"` / `"degraded"` / `"unavailable"`) and an optional `Detail` reason string.
 
-**Resource indicator (RFC 8707, tokenexchange)** — the boot-declared, config-only `ToolOAuthProviderConfig.ResourceIndicator` carried as the `resource` form parameter on the RFC 8693 exchange, with best-effort `aud`-claim verification on a JWT-shaped returned token (an opaque token records `AudienceVerified:false`, never a false pass). Never auto-populated from discovery — an operator copies a discovered, confirmed value by hand (report-don't-follow, D-297; boot-declared-sink invariant, D-300). Phase 191, D-328.
+**Resource indicator (RFC 8707, tokenexchange)** — the boot-declared, config-only `ToolOAuthProviderConfig.ResourceIndicator` carried as the `resource` form parameter on the RFC 8693 exchange. On a general tokenexchange provider, Harbor performs best-effort `aud`-claim verification on a JWT-shaped returned token (an opaque token records `AudienceVerified:false`, never a false pass). A signed-capability provider verifies the broker response's exact `Audience`/`Resource` destination pair instead and leaves `AudienceVerified:false`; a provider-specific JWT audience identifier is not assumed to equal the RFC 8707 resource URI. Never auto-populated from discovery — an operator copies a discovered, confirmed value by hand (report-don't-follow, D-297; boot-declared-sink invariant, D-300). Phase 191, D-328; signed capability clarification D-449.
 
 ## S
 
