@@ -1415,6 +1415,43 @@ func EffectiveLoadingMode(ctx context.Context, reg agentcfg.Registry, agentID st
 	return mode, nil
 }
 
+// CatalogViewResolver adapts the canonical run-start projection to the
+// Tools Protocol's per-request catalog-view seam. It is immutable after
+// construction and safe for concurrent reuse. A blank agentID intentionally
+// builds an agent-less view: operator/boot tools remain compatible, while a
+// configured SourceOwnerResolver makes private user sources fail closed until
+// a request names the effective agent that owns the revision.
+type CatalogViewResolver struct {
+	Registry       agentcfg.Registry
+	SessionOverlay sessionoverlay.Store
+	Catalog        tools.ToolCatalog
+	OwnerResolver  SourceOwnerResolver
+}
+
+// CatalogView implements the structurally identical
+// internal/tools/protocol.CatalogViewResolver seam without importing the
+// Tools Protocol package. Every request is projected through the same
+// ActivePlannerCatalogView used at run start; this adapter is the assembly
+// boundary that keeps the runtime agent-config registry out of the Protocol
+// package's dependency graph.
+func (a CatalogViewResolver) CatalogView(ctx context.Context, id identity.Identity, agentID string) (tools.PlannerCatalogView, error) {
+	if a.Catalog == nil {
+		return nil, errors.New("agentcfg/projection: catalog view requires a non-nil tool catalog")
+	}
+	filter := tools.CatalogFilter{
+		TenantID:     id.TenantID,
+		UserID:       id.UserID,
+		SessionID:    id.SessionID,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	}
+	if a.OwnerResolver == nil {
+		return ActivePlannerCatalogView(ctx, a.Registry, a.SessionOverlay, agentID,
+			identity.Quadruple{Identity: id}, a.Catalog, filter)
+	}
+	return ActivePlannerCatalogView(ctx, a.Registry, a.SessionOverlay, agentID,
+		identity.Quadruple{Identity: id}, a.Catalog, filter, a.OwnerResolver)
+}
+
 // LoadingResolverAdapter adapts a Registry into the `internal/tools/protocol`
 // package's narrow LoadingResolver seam (the `tools.describe` optional
 // `agent_id` path) via [EffectiveLoadingMode], so the SAME projection

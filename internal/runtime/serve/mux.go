@@ -477,6 +477,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		var toolsProjectorOpts []toolsprotocol.CatalogProjectorOption
 		if in.AgentConfig != nil {
 			toolsProjectorOpts = append(toolsProjectorOpts,
+				toolsprotocol.WithCatalogViewResolver(projection.CatalogViewResolver{
+					Registry:       in.AgentConfig,
+					SessionOverlay: in.SessionOverlay,
+					Catalog:        in.Catalog,
+					OwnerResolver:  in.MCPRegistry,
+				}),
 				toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{
 					Registry:      in.AgentConfig,
 					OwnerResolver: in.MCPRegistry,
