@@ -410,10 +410,7 @@ func (s *Service) RegisterUserOAuthMCPCapability(ctx context.Context, req protot
 	if err != nil {
 		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{
-		Revision: response.Revision, ProviderName: response.ProviderName, ConnectionName: response.ConnectionName,
-		ProtocolVersion: response.ProtocolVersion,
-	}, nil
+	return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse(response), nil
 }
 
 func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {

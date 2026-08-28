@@ -68,8 +68,12 @@ func (a *SourceAuthorizer) Visible(ctx context.Context, source tools.ToolSourceI
 	owner, logical, registered, err := a.registry.SourceAccess(ctx, source)
 	if err != nil {
 		// SourceAccess deliberately collapses a foreign user-owned source
-		// into not-found. Preserve that non-oracle result here.
-		return false, nil
+		// into not-found. Preserve that non-oracle result here, while
+		// propagating identity, cancellation, and registry failures.
+		if errors.Is(err, mcp.ErrServerNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read source access: %w", err)
 	}
 	if !registered {
 		return true, nil
@@ -95,10 +99,16 @@ func (a *SourceAuthorizer) VisibleRegistration(ctx context.Context, _ tools.Tool
 	if effectiveAgent != "" && owner.Agent != effectiveAgent {
 		return false, nil
 	}
-	if a == nil || a.reach == nil || a.reach.AuthorizeAgentReach(ctx, owner.Agent) != nil {
-		return false, nil
+	if a.reach == nil {
+		return false, ErrSourceAuthorityUnavailable
 	}
-	if a == nil || a.config == nil {
+	if err := a.reach.AuthorizeAgentReach(ctx, owner.Agent); err != nil {
+		if errors.Is(err, protocolauth.ErrAgentReachDenied) {
+			return false, nil
+		}
+		return false, fmt.Errorf("authorize source agent reach: %w", err)
+	}
+	if a.config == nil {
 		return false, ErrSourceAuthorityUnavailable
 	}
 	active, has, err := a.config.Active(ctx, identity.Quadruple{Identity: id}, owner.Agent, agentcfg.ConfigScopeUser)

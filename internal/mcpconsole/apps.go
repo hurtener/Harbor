@@ -384,7 +384,7 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 	// resolves (and never executes) a newer-generation descriptor.
 	currentGen, ok, genErr := a.reg.CurrentGenerationForIdentity(ctx, serverID)
 	if genErr != nil {
-		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof cannot be verified: %v", protocol.ErrAccessorScopeDenied, genErr)
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: mcpconsole: render-admission call-local proof cannot be verified: %w", protocol.ErrAccessorScopeDenied, genErr)
 	}
 	if !ok || currentGen == "" {
 		// Missing/empty current generation (absent server, detach, or a

@@ -30,12 +30,7 @@ func verifiedUserCapabilityContext(t *testing.T, id identity.Identity, withScope
 }
 
 func userRegisterRequest(req prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest) prototypes.AgentConfigUserRegisterOAuthMCPCapabilityRequest {
-	return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityRequest{
-		Identity: req.Identity, AgentID: req.AgentID, ProviderName: req.ProviderName,
-		Broker: req.Broker, Audience: req.Audience, Scopes: req.Scopes,
-		Connection: req.Connection, ExpectedContentHash: req.ExpectedContentHash,
-		AuthorityEnvelope: req.AuthorityEnvelope,
-	}
+	return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityRequest(req)
 }
 
 func TestUserSignedOAuthMCPCapability_TwoUsersHaveIndependentDesiredAndPhysicalOwners(t *testing.T) {

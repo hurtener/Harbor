@@ -245,17 +245,11 @@ func (s *Service) RemoveUserOAuthMCPCapability(ctx context.Context, req prototyp
 		return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{}, err
 	}
 	scopedCtx := withSignedOAuthMCPConfigScope(ctx, agentcfg.ConfigScopeUser)
-	response, err := s.RemoveOAuthMCPCapability(scopedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{
-		Identity: req.Identity, AgentID: req.AgentID, ProviderName: req.ProviderName,
-		ExpectedContentHash: req.ExpectedContentHash,
-	})
+	response, err := s.RemoveOAuthMCPCapability(scopedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest(req))
 	if err != nil {
 		return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{}, err
 	}
-	return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{
-		Revision: response.Revision, ProviderName: response.ProviderName, ConnectionName: response.ConnectionName,
-		OperationPhase: response.OperationPhase, ProtocolVersion: response.ProtocolVersion,
-	}, nil
+	return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse(response), nil
 }
 
 func (s *Service) signedCapabilityRemovalTarget(ctx context.Context, q identity.Quadruple, agentID, expectedContentHash, providerName string) (agentcfg.Revision, *agentcfg.SignedOAuthMCPPair, error) {
