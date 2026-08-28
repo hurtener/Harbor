@@ -14,6 +14,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/tools"
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
@@ -561,39 +562,27 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 	if !ok || id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: %w", mcp.ErrIdentityMissing)
 	}
-	rev, has, err := a.agentCfg.Active(ctx, identity.Quadruple{Identity: id}, agentID, agentcfg.ConfigScopeAgent)
+	// Use the same effective planner view that is materialized at run start.
+	// This includes the durable ConfigScopeUser tier and its logical-to-
+	// physical source translation, in addition to the admin and session
+	// narrow-only tiers. Apps callbacks are late invocations, so resolving
+	// against this CURRENT view keeps a personal pause/disable effective for
+	// both legacy and render-admission dispatch without a second composition.
+	exposed, err := projection.ToolExposedAtCurrentRevision(
+		ctx,
+		a.agentCfg,
+		a.sessionOverlay,
+		agentID,
+		identity.Quadruple{Identity: id},
+		a.cat,
+		tools.Tool{Name: toolName, Source: source},
+		a.reg,
+	)
 	if err != nil {
-		return fmt.Errorf("mcpconsole: app-call exposure gate: read active config: %w", err)
+		return fmt.Errorf("mcpconsole: app-call exposure gate: read effective config: %w", err)
 	}
-	// The effective exposure is the admin desired-state UNION the session
-	// overlay's narrow-only disables — the SAME composition the run-start
-	// planner-view projection applies. A tool/server the SESSION disabled must
-	// also be rejected from an App callback, else the two views of "currently
-	// exposed" diverge.
-	var pausedServers, disabledTools []string
-	if has && rev.Payload.ToolExposure != nil {
-		pausedServers = rev.Payload.PausedServers()
-		disabledTools = rev.Payload.DisabledTools()
-	}
-	if a.sessionOverlay != nil {
-		overlay, _, oerr := a.sessionOverlay.Get(ctx, identity.Quadruple{Identity: id}, agentID)
-		if oerr != nil {
-			return fmt.Errorf("mcpconsole: app-call exposure gate: read session overlay: %w", oerr)
-		}
-		pausedServers = append(pausedServers, overlay.DisabledServers...)
-		disabledTools = append(disabledTools, overlay.DisabledTools...)
-	}
-	if source != "" {
-		for _, s := range pausedServers {
-			if tools.ToolSourceID(s) == source {
-				return fmt.Errorf("%w: tool %q is on server %q, which is paused", ErrAppToolExposureDenied, toolName, source)
-			}
-		}
-	}
-	for _, n := range disabledTools {
-		if n == toolName {
-			return fmt.Errorf("%w: tool %q is disabled", ErrAppToolExposureDenied, toolName)
-		}
+	if !exposed {
+		return fmt.Errorf("%w: tool %q is not exposed by the current agent configuration", ErrAppToolExposureDenied, toolName)
 	}
 	return nil
 }

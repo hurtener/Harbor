@@ -125,6 +125,52 @@ func TestAppCallGate_DisabledTool_Rejected(t *testing.T) {
 	}
 }
 
+// TestAppCallGate_UserExposure_Isolated proves that a user's durable
+// ConfigScopeUser exposure is part of the late callback gate, while the same
+// agent remains usable for another user in the tenant. The two identities
+// share one compiled accessor and one catalog; only the user revision differs.
+func TestAppCallGate_UserExposure_Isolated(t *testing.T) {
+	ctxA := idCtx(t)
+	idB := identity.Quadruple{Identity: identity.Identity{
+		TenantID: "t-1", UserID: "u-2", SessionID: "s-2",
+	}}
+	ctxB, err := identity.With(context.Background(), idB.Identity)
+	if err != nil {
+		t.Fatalf("identity.With(user B): %v", err)
+	}
+	cat := gateCatalog(t)
+	reg := gateRegistry(t)
+	for _, q := range []identity.Quadruple{gateID(), idB} {
+		if _, err := reg.SetRevision(context.Background(), q, gateAgentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+			t.Fatalf("materialize agent for %s: %v", q.UserID, err)
+		}
+	}
+	if _, err := reg.SetRevision(ctxA, gateID(), gateAgentID, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"srv-a_echo"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set user A disabled tool: %v", err)
+	}
+	if _, err := reg.SetRevision(ctxB, idB, gateAgentID, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{
+		ToolExposure: &agentcfg.ToolExposure{PausedServers: []string{"srv-a"}},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("set user B paused server: %v", err)
+	}
+	acc := newGatedAccessor(t, cat, reg)
+
+	if _, err := acc.CallTool(ctxA, "", "srv-a_echo", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+		t.Fatalf("user A disabled callback err = %v, want ErrAppToolExposureDenied", err)
+	}
+	if _, err := acc.CallTool(ctxA, "", "srv-a_other", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("user A sibling callback rejected: %v", err)
+	}
+	if _, err := acc.CallTool(ctxB, "", "srv-a_other", json.RawMessage(`{}`)); !errors.Is(err, mcpconsole.ErrAppToolExposureDenied) {
+		t.Fatalf("user B paused-server callback err = %v, want ErrAppToolExposureDenied", err)
+	}
+	if _, err := acc.CallTool(ctxB, "", "srv-b_ping", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("user B unaffected server callback rejected: %v", err)
+	}
+}
+
 // TestAppCallGate_SessionOverlayDisable_Rejected is the wave-end regression
 // for the app-gate / session-overlay divergence (audit W3): the run-start
 // planner-view projection UNIONS the session overlay's narrow-only disables,

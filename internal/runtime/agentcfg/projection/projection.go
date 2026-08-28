@@ -1214,6 +1214,88 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	return tools.NewExclusionView(base, paused, disabled), nil
 }
 
+// ToolExposedAtCurrentRevision reports whether the named catalog tool is in
+// the same effective exposure view a newly-started run would receive for the
+// acting identity. It deliberately delegates to [ActivePlannerCatalogView]
+// instead of re-reading the admin, user, and session tiers here: the durable
+// ConfigScopeUser revision, logical-to-physical source translation, and
+// narrow-only disable union therefore have one implementation for planner
+// discovery and late app callbacks alike.
+//
+// The caller supplies a catalog containing the current dispatch descriptor
+// and should pass the same source-owner resolver used by runtime MCP
+// registrations. Both loading modes are included in the intermediate view so
+// loading preferences do not turn a callback authorization check into a
+// prompt-presence check. A nil registry or empty agent id preserves the
+// existing inert-gate behavior and reports exposed.
+func ToolExposedAtCurrentRevision(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, tool tools.Tool, ownerResolvers ...SourceOwnerResolver) (bool, error) {
+	if reg == nil || agentID == "" {
+		return true, nil
+	}
+	// App-only callbacks are intentionally absent from the ordinary planner
+	// catalog. Include the already-resolved callback as a read-only target in
+	// the temporary projection so user logical-to-physical translation and the
+	// exclusion view still apply to that callback. It never escapes this
+	// predicate into planner discovery or catalog registration.
+	cat = exposureTargetCatalog{ToolCatalog: cat, target: tool}
+	filter := tools.CatalogFilter{
+		TenantID:     id.TenantID,
+		UserID:       id.UserID,
+		SessionID:    id.SessionID,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	}
+	view, err := ActivePlannerCatalogView(ctx, reg, ov, agentID, id, cat, filter, ownerResolvers...)
+	if err != nil {
+		return false, err
+	}
+	resolved, ok := view.Resolve(tool.Name)
+	if !ok {
+		return false, nil
+	}
+	// The descriptor is resolved before this check by the Apps accessor. A
+	// source mismatch means the catalog changed between those operations, so
+	// do not let a stale descriptor cross the exposure boundary.
+	return resolved.Source == tool.Source, nil
+}
+
+// exposureTargetCatalog is the narrow adapter used by
+// ToolExposedAtCurrentRevision for app-only callbacks, which do not belong to
+// the planner catalog. It delegates every catalog operation except the two
+// planner-view reads, and adds only the target descriptor to those reads when
+// the ordinary catalog does not already contain that name. The target is
+// never registered or made globally discoverable.
+type exposureTargetCatalog struct {
+	tools.ToolCatalog
+	target tools.Tool
+}
+
+func (c exposureTargetCatalog) Resolve(name string) (tools.ToolDescriptor, bool) {
+	if desc, ok := c.ToolCatalog.Resolve(name); ok {
+		return desc, true
+	}
+	if name == c.target.Name {
+		return tools.ToolDescriptor{Tool: c.target}, true
+	}
+	return tools.ToolDescriptor{}, false
+}
+
+func (c exposureTargetCatalog) List(filter tools.CatalogFilter) []tools.Tool {
+	out := c.ToolCatalog.List(filter)
+	for _, existing := range out {
+		if existing.Name == c.target.Name {
+			return out
+		}
+	}
+	// ActivePlannerCatalogView always broadens loading-mode filtering before
+	// it uses List for the exposure translation. App callbacks have already
+	// passed source/identity admission; retaining the target here is therefore
+	// safe and lets the canonical projection apply all user/admin/session
+	// exclusion semantics to it.
+	out = append(out, c.target)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // resolveEffectiveLoading applies the top two layers of the loading-mode
 // precedence order (tool_loading_modes[name] > server_loading_modes
 // [source], the latter restricted to TOOL-form descriptors) to one catalog

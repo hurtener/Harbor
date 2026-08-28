@@ -295,16 +295,28 @@ func buildAdmissionCallbackFixture(t *testing.T, authOpts ...admission.Option) *
 // produces after JWT validation).
 func (f *admissionCallbackFixture) reqCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, err := identity.WithVerified(context.Background(), f.id)
+	return admissionCallbackReqCtx(t, f.id, f.agentID)
+}
+
+// admissionCallbackReqCtx seats the verified identity and signed agent reach
+// for one caller. It is used by the user-isolation callback test to drive the
+// same AppsSurface with two users while sharing one compiled accessor.
+func admissionCallbackReqCtx(t *testing.T, id identity.Identity, agentID string) context.Context {
+	t.Helper()
+	ctx, err := identity.WithVerified(context.Background(), id)
 	if err != nil {
 		t.Fatalf("seat verified identity: %v", err)
 	}
-	return auth.WithAgentReach(ctx, []string{f.agentID})
+	return auth.WithAgentReach(ctx, []string{agentID})
 }
 
 // scope is the wire identity scope matching the verified triple.
 func (f *admissionCallbackFixture) scope() types.IdentityScope {
 	return types.IdentityScope{Tenant: f.id.TenantID, User: f.id.UserID, Session: f.id.SessionID}
+}
+
+func admissionCallbackScope(id identity.Identity) types.IdentityScope {
+	return types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
 }
 
 // mint requests the opt-in render admission through the REAL surface
@@ -344,6 +356,54 @@ func (f *admissionCallbackFixture) callback(t *testing.T, token string) (*types.
 		return nil, perr
 	}
 	return resp.(*types.MCPAppCallToolResponse), nil
+}
+
+func (f *admissionCallbackFixture) mintAs(t *testing.T, id identity.Identity) *types.ReadMCPResourceResponse {
+	t.Helper()
+	resp, err := f.surface.Dispatch(admissionCallbackReqCtx(t, id, f.agentID), methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+		Identity:               admissionCallbackScope(id),
+		AgentID:                f.agentID,
+		ServerID:               admissionCallbackServer,
+		ResourceURI:            admissionCallbackResource,
+		RequestRenderAdmission: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch(read_resource as %s): %v", id.UserID, err)
+	}
+	return resp.(*types.ReadMCPResourceResponse)
+}
+
+func (f *admissionCallbackFixture) callbackAs(t *testing.T, id identity.Identity, token string) (*types.MCPAppCallToolResponse, *protoerrors.Error) {
+	t.Helper()
+	resp, err := f.surface.Dispatch(admissionCallbackReqCtx(t, id, f.agentID), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity:        admissionCallbackScope(id),
+		AgentID:         f.agentID,
+		ServerID:        admissionCallbackServer,
+		Tool:            admissionCallbackTool,
+		ResourceURI:     admissionCallbackResource,
+		RenderAdmission: token,
+		Arguments:       json.RawMessage(`{"q":1}`),
+	})
+	if err != nil {
+		var perr *protoerrors.Error
+		if !errors.As(err, &perr) {
+			t.Fatalf("Dispatch(call_tool as %s) non-Protocol error: %v", id.UserID, err)
+		}
+		return nil, perr
+	}
+	return resp.(*types.MCPAppCallToolResponse), nil
+}
+
+func (f *admissionCallbackFixture) setUserExposure(t *testing.T, id identity.Identity, paused, disabled []string) {
+	t.Helper()
+	q := identity.Quadruple{Identity: id}
+	if _, err := f.agentCfg.SetRevision(context.Background(), q, f.agentID, agentcfg.ConfigScopeUser,
+		agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{
+			PausedServers: append([]string(nil), paused...),
+			DisabledTools: append([]string(nil), disabled...),
+		}}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("SetRevision(user exposure %s): %v", id.UserID, err)
+	}
 }
 
 // setExposure rewrites the agent's CURRENT active revision exposure —
@@ -437,6 +497,78 @@ func TestRenderAdmissionCallback_DisabledCallbackTool_ZeroExecutions(t *testing.
 	}
 	if got := f.calls.Load(); got != 0 {
 		t.Fatalf("disabled-tool wrapped invocations = %d, want 0", got)
+	}
+}
+
+// TestRenderAdmissionCallback_UserExposure_Isolated proves the admitted
+// callback path re-checks the acting user's durable ConfigScopeUser exposure
+// at invocation time. User A's disable and pause are both refused after the
+// token was minted, while User B can invoke the same agent/server through the
+// same surface and accessor.
+func TestRenderAdmissionCallback_UserExposure_Isolated(t *testing.T) {
+	f := buildAdmissionCallbackFixture(t)
+	userA := f.id
+	userB := identity.Identity{TenantID: f.id.TenantID, UserID: "cb-u2", SessionID: "cb-s2"}
+
+	// Give user B an explicit agent revision so both users exercise the same
+	// real agent resolver path; their USER revisions remain independent.
+	if _, err := f.agentCfg.SetRevision(context.Background(), identity.Quadruple{Identity: userB}, f.agentID,
+		agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{}}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("SetRevision(user B agent): %v", err)
+	}
+
+	// Mint before either personal change. The render-admission gate sees the
+	// shared admin exposure, while the callback gate will read each user's
+	// current revision later.
+	tokenA := f.mintAs(t, userA).RenderAdmission.Token
+	if tokenA == "" {
+		t.Fatal("user A mint returned no render admission token")
+	}
+	f.setUserExposure(t, userA, nil, []string{admissionCallbackTool})
+	if _, perr := f.callbackAs(t, userA, tokenA); perr == nil || perr.Code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("user A personally-disabled callback error = %v, want scope mismatch", perr)
+	}
+	if got := f.calls.Load(); got != 0 {
+		t.Fatalf("user A personally-disabled callback invocations = %d, want 0", got)
+	}
+
+	// User B has no personal disable and remains able to use the same
+	// shared server/agent. This is the cross-user isolation assertion.
+	tokenB := f.mintAs(t, userB).RenderAdmission.Token
+	if tokenB == "" {
+		t.Fatal("user B mint returned no render admission token")
+	}
+	if resp, perr := f.callbackAs(t, userB, tokenB); perr != nil || resp == nil {
+		t.Fatalf("user B unaffected callback: response=%v error=%v", resp, perr)
+	}
+	if got := f.calls.Load(); got != 1 {
+		t.Fatalf("user B unaffected callback invocations = %d, want 1", got)
+	}
+
+	// Replace only user A's personal revision with a server pause and prove
+	// the same callback-time gate refuses it too. User B remains unaffected.
+	tokenA2 := f.mintAs(t, userA).RenderAdmission.Token
+	if tokenA2 == "" {
+		t.Fatal("user A second mint returned no render admission token")
+	}
+	f.setUserExposure(t, userA, []string{admissionCallbackServer}, nil)
+	if _, perr := f.callbackAs(t, userA, tokenA2); perr == nil || perr.Code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("user A personally-paused callback error = %v, want scope mismatch", perr)
+	}
+	if got := f.calls.Load(); got != 1 {
+		t.Fatalf("user A personally-paused callback changed invocation count to %d, want 1", got)
+	}
+
+	// A fresh user-B token/call still succeeds after both user-A changes.
+	tokenB2 := f.mintAs(t, userB).RenderAdmission.Token
+	if tokenB2 == "" {
+		t.Fatal("user B second mint returned no render admission token")
+	}
+	if resp, perr := f.callbackAs(t, userB, tokenB2); perr != nil || resp == nil {
+		t.Fatalf("user B second unaffected callback: response=%v error=%v", resp, perr)
+	}
+	if got := f.calls.Load(); got != 2 {
+		t.Fatalf("user B second callback invocations = %d, want 2", got)
 	}
 }
 
