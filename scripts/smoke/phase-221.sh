@@ -42,9 +42,10 @@ ERRORS_MD='docs/site/protocol/errors.md'
 
 # (1) Exact named CAS-wire census. A count cannot distinguish a new governed
 # response from a field accidentally added to an unrelated request. HA-61 adds
-# the import validate response and import commit request bindings, bringing the
-# closed set to 27: 21 optional request tokens and six mandatory
-# request/response bindings.
+# the import validate response and import commit request bindings; the later
+# user-scoped signed OAuth MCP lifecycle adds two user-tier request carriers,
+# bringing the current closed set to 29: 23 optional request tokens and six
+# mandatory request/response bindings.
 # This fails for a missing member, an unexpected member, or changed optionality.
 declare -a P221_CAS_CARRIERS=(
     'AgentConfigSetRevisionRequest:optional'
@@ -60,6 +61,8 @@ declare -a P221_CAS_CARRIERS=(
     'AgentConfigSetOAuthProviderRequest:optional'
     'AgentConfigRegisterOAuthMCPCapabilityRequest:optional'
     'AgentConfigRemoveOAuthMCPCapabilityRequest:optional'
+    'AgentConfigUserRegisterOAuthMCPCapabilityRequest:optional'
+    'AgentConfigUserRemoveOAuthMCPCapabilityRequest:optional'
     'AgentConfigRemoveOAuthProviderRequest:optional'
     'AgentConfigSkillsUpsertRequest:optional'
     'AgentConfigSkillsDeleteRequest:optional'
@@ -81,7 +84,7 @@ P221_ACTUAL_CAS_CARRIERS="$(awk '
 ' "${TYPES_GO}")"
 P221_EXPECTED_CAS_CARRIERS="$(printf '%s\n' "${P221_CAS_CARRIERS[@]}")"
 if [ "${P221_ACTUAL_CAS_CARRIERS}" = "${P221_EXPECTED_CAS_CARRIERS}" ]; then
-    ok 'phase 221: the exact 27-member Go CAS-wire census has the required optional/mandatory semantics'
+    ok 'phase 221: the exact 29-member Go CAS-wire census has the required optional/mandatory semantics'
 else
     fail "phase 221: Go CAS-wire census changed or changed semantics (expected=$(printf '%s' "${P221_EXPECTED_CAS_CARRIERS}" | tr '\n' ' ') actual=$(printf '%s' "${P221_ACTUAL_CAS_CARRIERS}" | tr '\n' ' '))"
 fi
@@ -202,10 +205,12 @@ assert_grep_present 'StateStore\.SaveIf' "${ERRORS_GO}" \
 assert_grep_present 'StateStore\.SaveIf' "${ERRORS_MD}" \
     'phase 221: generated Protocol reference carries the durable predicate (D-209)'
 
-# (8) The Console mirror — twenty optional fields plus four mandatory fields,
-#     hand-mirrored and lockstep-gated (D-223).
-assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 20 \
-    'phase 221: the Console wire module mirrors all twenty optional CAS fields (25 total = 21 Go optional + 4 mandatory; 20 TS optional)'
+# (8) The Console mirror — twenty-one optional fields plus eight mandatory
+#     fields, hand-mirrored and lockstep-gated (D-223). The Console keeps the
+#     two OAuth removal request hashes mandatory even though the Go wire fields
+#     remain optional for additive decoding.
+assert_grep_count 'expected_content_hash\?: string;' "${TS_WIRE}" 21 \
+    'phase 221: the Console wire module mirrors all twenty-one optional CAS fields (29 total = 23 Go optional + 6 mandatory; 21 TS optional + 8 mandatory)'
 if awk '
     $0 == "export interface AgentConfigRegisterOAuthMCPCapabilityRequest {" { inside = 1; next }
     inside && /^}/ { exit }
