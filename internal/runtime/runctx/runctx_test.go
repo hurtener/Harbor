@@ -59,8 +59,6 @@ func TestEmitterAndPublisher_MatchRunContextCallbackShapes(t *testing.T) {
 type captureBus struct{ events.EventBus }
 
 func (b *captureBus) Publish(context.Context, events.Event) error { return nil }
-func (b *captureBus) PublishLive(context.Context, events.Event) error { return nil }
-
 func TestProjectMemoryBlocks_EmptyPatchReturnsNil(t *testing.T) {
 	if got := runctx.ProjectMemoryBlocks(memory.LLMContextPatch{}); got != nil {
 		t.Errorf("empty patch: got %v, want nil (wrapper omitted)", got)

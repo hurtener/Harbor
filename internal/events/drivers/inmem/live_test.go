@@ -281,8 +281,8 @@ func TestPublishLive_SaturationDropNoticeStaysTransient(t *testing.T) {
 	// Keep the two-slot subscriber saturated while a live burst forces the
 	// drop notice path. The notice must remain Sequence 0 and must not enter
 	// the replay ring or advance the next durable sequence.
-	for i := uint64(0); i < 4; i++ {
-		if err := publishLive(bus, context.Background(), liveWarning(id, i)); err != nil {
+	for i := range 4 {
+		if err := publishLive(bus, context.Background(), liveWarning(id, uint64(i))); err != nil {
 			t.Fatalf("PublishLive(%d): %v", i, err)
 		}
 	}

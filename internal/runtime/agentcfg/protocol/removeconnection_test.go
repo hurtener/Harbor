@@ -244,10 +244,6 @@ func (b *collectingBus) Publish(_ context.Context, ev events.Event) error {
 	return nil
 }
 
-func (b *collectingBus) PublishLive(ctx context.Context, ev events.Event) error {
-	return b.Publish(ctx, ev)
-}
-
 func (b *collectingBus) eventsOfType(tp events.EventType) []events.Event {
 	var out []events.Event
 	for _, e := range b.got {

@@ -182,13 +182,6 @@ func (b *flakyPublishBus) Publish(ctx context.Context, ev events.Event) error {
 	return b.EventBus.Publish(ctx, ev)
 }
 
-func (b *flakyPublishBus) PublishLive(ctx context.Context, ev events.Event) error {
-	if live, ok := b.EventBus.(events.LivePublisher); ok {
-		return live.PublishLive(ctx, ev)
-	}
-	return b.EventBus.Publish(ctx, ev)
-}
-
 func (b *flakyPublishBus) Fence(ctx context.Context, id identity.Identity) error {
 	return b.fencer.Fence(ctx, id)
 }

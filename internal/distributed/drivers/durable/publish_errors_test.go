@@ -96,13 +96,6 @@ func (f *failFirstProjectBus) Publish(ctx context.Context, ev events.Event) erro
 	return f.EventBus.Publish(ctx, ev)
 }
 
-func (f *failFirstProjectBus) PublishLive(ctx context.Context, ev events.Event) error {
-	if live, ok := f.EventBus.(events.LivePublisher); ok {
-		return live.PublishLive(ctx, ev)
-	}
-	return f.EventBus.Publish(ctx, ev)
-}
-
 // TestDurable_ProjectFailure_PollerRedelivers asserts that when a
 // publish's LOCAL projection fails after the envelope is durably
 // persisted, the poller re-delivers it (no permanent local-delivery

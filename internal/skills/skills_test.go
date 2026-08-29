@@ -34,7 +34,6 @@ func uniqueDriverName(t *testing.T) string {
 type stubBus struct{}
 
 func (stubBus) Publish(context.Context, events.Event) error { return nil }
-func (stubBus) PublishLive(context.Context, events.Event) error { return nil }
 func (stubBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, nil
 }

@@ -35,10 +35,6 @@ func (b *emitterCaptureBus) Publish(_ context.Context, ev Event) error {
 	return nil
 }
 
-func (b *emitterCaptureBus) PublishLive(ctx context.Context, ev Event) error {
-	return b.Publish(ctx, ev)
-}
-
 func (b *emitterCaptureBus) Subscribe(context.Context, Filter) (Subscription, error) {
 	return nil, errors.New("emitterCaptureBus: Subscribe unsupported")
 }

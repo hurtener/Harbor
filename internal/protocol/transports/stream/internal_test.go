@@ -120,7 +120,6 @@ func TestSurfaceReplayGap_WritesCommentFrame(t *testing.T) {
 type nonReplayerBus struct{}
 
 func (nonReplayerBus) Publish(context.Context, events.Event) error { return nil }
-func (nonReplayerBus) PublishLive(context.Context, events.Event) error { return nil }
 func (nonReplayerBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrBusClosed
 }
@@ -147,7 +146,6 @@ type replayerBus struct {
 }
 
 func (replayerBus) Publish(context.Context, events.Event) error { return nil }
-func (replayerBus) PublishLive(context.Context, events.Event) error { return nil }
 func (replayerBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrBusClosed
 }
@@ -233,7 +231,6 @@ func TestServeHTTP_NonFlushWriter_FailsClosed(t *testing.T) {
 type closedBus struct{}
 
 func (closedBus) Publish(context.Context, events.Event) error { return events.ErrBusClosed }
-func (closedBus) PublishLive(context.Context, events.Event) error { return events.ErrBusClosed }
 func (closedBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrBusClosed
 }
@@ -261,7 +258,6 @@ func TestServeHTTP_SubscribeClosedBus_503(t *testing.T) {
 type scopeRequiredBus struct{}
 
 func (scopeRequiredBus) Publish(context.Context, events.Event) error { return nil }
-func (scopeRequiredBus) PublishLive(context.Context, events.Event) error { return nil }
 func (scopeRequiredBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrIdentityScopeRequired
 }
@@ -294,7 +290,6 @@ func TestServeHTTP_SubscribeScopeRequired_403(t *testing.T) {
 type adminScopeRequiredBus struct{}
 
 func (adminScopeRequiredBus) Publish(context.Context, events.Event) error { return nil }
-func (adminScopeRequiredBus) PublishLive(context.Context, events.Event) error { return nil }
 func (adminScopeRequiredBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrAdminScopeRequired
 }

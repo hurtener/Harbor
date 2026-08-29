@@ -292,7 +292,6 @@ func TestStateHistory_NegativeLimit400(t *testing.T) {
 type busNoHistory struct{}
 
 func (busNoHistory) Publish(context.Context, events.Event) error { return nil }
-func (busNoHistory) PublishLive(context.Context, events.Event) error { return nil }
 func (busNoHistory) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, nil
 }

@@ -62,7 +62,6 @@ func (f *fakeApplier) get(name string) []string {
 type failingBus struct{ events.EventBus }
 
 func (failingBus) Publish(context.Context, events.Event) error { return errors.New("bus boom") }
-func (failingBus) PublishLive(context.Context, events.Event) error { return errors.New("live bus boom") }
 
 //nolint:unparam // test helper: the agent id is fixed across these cases.
 func seedDiscoveryRev(t *testing.T, ctx context.Context, reg agentcfg.Registry, agentID string, desc agentcfg.MCPConnectionDescriptor) {

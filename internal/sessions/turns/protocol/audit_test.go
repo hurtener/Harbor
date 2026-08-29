@@ -43,7 +43,6 @@ func (erroringRedactor) Redact(context.Context, any) (any, error) {
 type failingBus struct{}
 
 func (failingBus) Publish(context.Context, events.Event) error { return errors.New("publish failed") }
-func (failingBus) PublishLive(context.Context, events.Event) error { return errors.New("live publish failed") }
 
 func (failingBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, errors.New("not wired")

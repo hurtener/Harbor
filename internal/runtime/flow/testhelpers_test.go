@@ -29,10 +29,6 @@ func (b *recordingBus) Publish(ctx context.Context, ev events.Event) error {
 	return nil
 }
 
-func (b *recordingBus) PublishLive(ctx context.Context, ev events.Event) error {
-	return b.Publish(ctx, ev)
-}
-
 func (b *recordingBus) Subscribe(ctx context.Context, f events.Filter) (events.Subscription, error) {
 	return nil, events.ErrBusClosed
 }

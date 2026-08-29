@@ -225,7 +225,6 @@ func TestNewStateHistoryHandler_NilDeps(t *testing.T) {
 type busNoHistoryInternal struct{}
 
 func (busNoHistoryInternal) Publish(_ context.Context, _ events.Event) error { return nil }
-func (busNoHistoryInternal) PublishLive(_ context.Context, _ events.Event) error { return nil }
 func (busNoHistoryInternal) Subscribe(_ context.Context, _ events.Filter) (events.Subscription, error) {
 	return nil, nil
 }
