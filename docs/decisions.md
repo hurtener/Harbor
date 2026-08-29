@@ -14935,3 +14935,35 @@ missing reconciler fail-closed behavior, and a concurrent user removal that
 must return the post-removal revision. Client and generated Protocol surfaces
 are covered locally. No hosted CI, tag, release, downstream/runtime
 deployment, or downstream acceptance is claimed.
+
+## D-451 — Protocol tool owners are logical MCP source names
+
+**Date:** 2026-08-28
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The `tools.*` catalog projection reports the logical configured MCP source name
+in the wire `Tool.Owner` field. User-scoped MCP registrations may use an
+opaque physical source key internally so multiple users can attach the same
+logical connection without a registry collision, but that process-local key is
+not a client contract. The catalog projector therefore accepts a narrow,
+projection-only logical-source resolver supplied by runtime assembly and
+translates only `Owner` when a mapping exists.
+
+The physical catalog `ID` and `Name` remain unchanged because they are the
+stable keys used by exact `tools.get`, `tools.describe`, and dispatch lookup.
+Identity-scoped catalog visibility remains owned by the existing
+`CatalogViewResolver`; the logical resolver cannot authorize, widen, or hide a
+row. If no resolver is wired or a source has no mapping, the projector returns
+the raw source identifier rather than deriving a physical name in a Protocol
+client. The production mux wires the existing MCP registry's canonical
+`LogicalNameOfSource` read, so the runtime's user projection and the wire
+catalog share one source-name authority.
+
+**Cross-references:** D-448, D-450, RFC §5.5, §6.4, §6.16.
+
+**Evidence status.** Focused projector and BuildMux tests cover two users with
+the same logical connection, physical ID/Name preservation, foreign-source
+visibility, logical Owner projection, and raw fallback. No hosted CI, tag,
+release, downstream/runtime deployment, or downstream acceptance is claimed.

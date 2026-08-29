@@ -478,6 +478,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 
 	if in.Catalog != nil {
 		var toolsProjectorOpts []toolsprotocol.CatalogProjectorOption
+		if in.MCPRegistry != nil {
+			toolsProjectorOpts = append(toolsProjectorOpts,
+				toolsprotocol.WithLogicalSourceResolver(in.MCPRegistry))
+		}
 		if in.AgentConfig != nil {
 			toolsProjectorOpts = append(toolsProjectorOpts,
 				toolsprotocol.WithCatalogViewResolver(projection.CatalogViewResolver{

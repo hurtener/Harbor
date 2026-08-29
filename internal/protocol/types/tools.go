@@ -180,7 +180,10 @@ type Tool struct {
 	// ReliabilityTier is the operator-facing reliability label
 	// (derived from the tool's side-effect class / cost hint).
 	ReliabilityTier string `json:"reliability_tier"`
-	// Owner is the configured owner / source identifier ("" when unset).
+	// Owner is the logical configured owner / source identifier ("" when
+	// unset). User-scoped MCP sources keep an opaque physical key in the
+	// runtime catalog; a wired projection resolves that key back to this
+	// logical name without changing the physical ID or Name fields.
 	Owner string `json:"owner"`
 	// LastUsedAt is the timestamp of the most recent invocation; the
 	// zero value means "never used".
