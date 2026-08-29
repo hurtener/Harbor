@@ -1007,8 +1007,11 @@ of this ask, and no content-read/impersonation authority is requested.
    cannot resume.
 6. Wire manifest, generated clients, capability/version discovery, protocol
    docs, and Harbor's own chat surface (the Console) land with the methods.
-   The fallback path may use raw reads only as an explicit
-   degraded/forensic action, never a silent normal-open path.
+   The current Console requires `sessions.turns.*`; an unavailable
+   projection is surfaced explicitly and does not fall back to raw
+   `state.history` reconstruction, because completion chunks are
+   non-durable. The `state.history` surface remains available only to
+   consumers that explicitly declare and own that raw-event contract.
 
 **What remains available.** `events.list` / `state.history` remain raw
 forensic drill-down; `tasks.get` remains explicit task detail; live SSE

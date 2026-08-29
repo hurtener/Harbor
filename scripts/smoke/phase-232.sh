@@ -14,7 +14,7 @@ assert_grep_present 'const AgentReachClaim = "agent_reach"' internal/protocol/au
 # The closed agent-config reach matrix remains load-bearing after HA-61.
 # Historical user ListRevisions/Diff and HA-66 composition preview are
 # reach-only: all preserve/read state without bootstrapping lifecycle. The
-# other thirteen current, mutating, and skill doors MUST perform signed reach
+# other sixteen current, mutating, and skill doors MUST perform signed reach
 # before lifecycle lookup through the helper. Named entries reject an added,
 # removed, or reclassified route rather than accepting a numeric bump.
 AGENTCONFIG_HANDLER='internal/protocol/transports/stream/agentconfig_handler.go'
@@ -32,6 +32,9 @@ declare -a P232_LIFECYCLE_REACH_METHODS=(
     MethodAgentConfigUserGet
     MethodAgentConfigUserSetRevision
     MethodAgentConfigUserRollback
+    MethodAgentConfigUserRegisterOAuthMCPCapability
+    MethodAgentConfigUserRemoveOAuthMCPCapability
+    MethodAgentConfigUserReconcileLiveProfile
     MethodAgentConfigUserSkillsList
     MethodAgentConfigUserSkillsUpsert
     MethodAgentConfigUserSkillsDelete
@@ -62,7 +65,7 @@ for method in "${P232_LIFECYCLE_REACH_METHODS[@]}"; do
 done
 assert_grep_count 'h\.authorizeAgent\(w, r, req\.AgentID\)' "${AGENTCONFIG_HANDLER}" 3 \
     'phase 232: no unclassified direct signed-reach-only agent-config route exists'
-assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" 13 \
+assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" 16 \
     'phase 232: no unclassified signed-reach-before-lifecycle agent-config route exists'
 assert_grep_present 'func \(h \*AgentConfigHandler\) authorizeAndEnsureBootAgent' "${AGENTCONFIG_HANDLER}" \
     'phase 232: lifecycle helper remains the single signed-reach-before-lifecycle ordering seam'

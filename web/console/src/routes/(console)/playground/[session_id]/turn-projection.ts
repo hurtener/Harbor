@@ -1,13 +1,12 @@
 // The projections that build a turn's rendered agent bubble.
 //
-// A turn reaches the transcript by one of three routes, and ALL of them must
-// produce the same rendered result:
+// A turn's rendered result is shared by the current durable projection and
+// the live App path. The history reducer below remains a standalone legacy
+// utility for explicit `state.history` consumers; current Playground reopen
+// does not use it as a transcript fallback.
 //
 //   - LIVE — an `mcp.app_available` SSE frame is decoded (`decodeAppAvailable`)
 //     and projected onto the run's existing bubble (`appViewFromDiscovery`).
-//   - REPLAY (legacy forensic fallback) — the durable event window is reduced
-//     into `HistoryTurn`s (`reduceHistoryTurns`) and each turn is projected
-//     into a fresh bubble (`hydratedAgentMessage`).
 //   - DURABLE PROJECTION (the normal open path, HA-64 / D-425) — one
 //     `SessionTurnRow` from `sessions.turns.list` is projected into the user +
 //     agent bubbles (`turnRowMessages`). The row is already the runtime's
@@ -17,13 +16,10 @@
 //     state, and the bounded inline activity window. It is structurally
 //     unable to carry raw thinking / tool arguments / App render authority.
 //
-// They live in ONE module on purpose. While the first two were inline in
-// `+page.svelte` neither was importable, so neither was testable: deleting the
-// App fields from the hydration mapping left the whole replay feature inert
-// with every test still green, and the live projection could only be compared
-// against a hand-copied re-implementation that would agree with a one-sided
-// change. Colocating them keeps the trio visible to a reader and reachable by
-// a spec.
+// They live in ONE module on purpose. Keeping the live, durable, and explicit
+// legacy utility projections together makes their boundaries visible and
+// keeps each independently reachable by a spec without making the legacy
+// reducer an answer authority for current chat reopen.
 
 import type { MCPAppRefView, McpUiDisplayMode } from '$lib/chat/renderers/app-bridge-host.js';
 import type { ChatArtifactRef, ChatMessage, ChatToolCall } from '$lib/chat/types.js';
@@ -54,9 +50,9 @@ export interface AppAttachment {
  * normalises to `''` — "the server stated no preference" — which the renderer
  * reads as inline.
  *
- * The replay reducer (`reduceHistoryTurns`) reconstructs the identical shape
- * from the identical durable event; a spec pins the two against each other, so
- * a one-sided change here (a dropped `toolCallId`, a widened mode set) fails.
+ * The explicit history reducer (`reduceHistoryTurns`) reconstructs the same
+ * attachment shape from its durable event window; a spec pins that utility
+ * independently, but current chat reopen remains on `sessions.turns.*`.
  */
 export function appViewFromDiscovery(ev: AppAvailableEvent): AppAttachment {
 	const known = (KNOWN_DISPLAY_MODES as readonly string[]).includes(ev.displayMode);
@@ -88,8 +84,9 @@ export interface HydratedTurnContext {
 }
 
 /**
- * The REPLAY projection: turn one reduced `HistoryTurn` into the reopened
- * agent bubble, or `null` when the turn has nothing to render.
+ * The explicit history projection: turn one reduced `HistoryTurn` into an
+ * agent bubble for a caller that opted into `state.history`, or `null` when
+ * the turn has nothing to render. Current Playground reopen does not call it.
  *
  * The render gate admits a turn with an answer, a terminal lifecycle event, OR
  * an App: an App-bearing turn is worth rendering on its own, because the App

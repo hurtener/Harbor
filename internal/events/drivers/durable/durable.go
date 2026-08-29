@@ -8,10 +8,14 @@
 //     subscriber fan-out (drop-oldest under saturation, bus.dropped
 //     notices windowed per DropWindow) — it is a standalone §4.4
 //     driver, not a wrapper over the inmem driver.
-//   - Every published event is persisted through a state.StateStore
-//     before it is fanned out to live subscribers. Persistence is
-//     keyed so replay-from-cursor is exact and gap-free across a
-//     Runtime restart: see the keying scheme below.
+//   - Every durable-published event is persisted through a state.StateStore
+//     before it is fanned out to live subscribers. Persistence is keyed so
+//     replay-from-cursor is exact and gap-free across a Runtime restart: see
+//     the keying scheme below. PublishLive is the required exception for
+//     present-tense animation: it applies the same audit-boundary policy
+//     (redacting non-SafePayload values while retaining the existing
+//     SafePayload bypass) and bounded-fan-outs with Sequence == 0, without
+//     StateStore, ring, sequence, or projection work.
 //   - Replay reads from the StateStore — not an in-memory ring — so a
 //     late subscriber that connects after the Runtime was rebuilt
 //     against the same StateStore sees the full, gap-free history.
@@ -644,6 +648,9 @@ func (b *bus) loadDurableFenceSnapshot(ctx context.Context) (durableFenceSnapsho
 }
 
 // isFenced reports whether the event's session triple is fenced (erased).
+// It is used by durable publication/read paths that already hold their own
+// publication coordination. Live publication uses fanOutLive below so the
+// check remains linearized with the complete fan-out.
 func (b *bus) isFenced(id identity.Quadruple) bool {
 	b.fenceMu.RLock()
 	defer b.fenceMu.RUnlock()
@@ -815,7 +822,47 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	// persisted; a persistence failure never reaches here.
 	b.notifyProjectionWatermark(ev)
 
-	b.fanOut(ev)
+	b.fanOut(ev, false)
+	return nil
+}
+
+// PublishLive validates, redacts, and bounded-fan-outs a present-tense event.
+// It intentionally bypasses sequenceAndStore, the StateStore, the
+// best-effort ring, and projection watermarks. Live animation is therefore
+// non-durable and non-replayable: every delivered event carries Sequence == 0
+// and a reconnect may miss it. Validation and redaction happen before the
+// live fence cutoff lock; the final check and fan-out are linearized with
+// Fence so erased-session output cannot leak after Fence returns. SafePayload
+// retains its existing redactor bypass. Durable semantic and lifecycle events
+// must continue through Publish.
+func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("durable: publish live cancelled: %w", err)
+	}
+	if err := events.ValidateEvent(ev); err != nil {
+		return err
+	}
+
+	payload := ev.Payload
+	if _, safe := payload.(events.SafePayload); !safe {
+		redacted, err := b.redactor.Redact(ctx, payload)
+		if err != nil {
+			b.emitLiveRedactionFailure(ctx, ev, err)
+			return fmt.Errorf("durable: live publish redaction failed: %w", err)
+		}
+		payload = wrapRedacted(redacted)
+	}
+	ev.Payload = payload
+	if ev.OccurredAt.IsZero() {
+		ev.OccurredAt = b.clock.Now()
+	}
+	// ValidateEvent requires caller-provided Sequence to be zero. Keep the
+	// explicit assignment here as a guard if Event construction changes later.
+	ev.Sequence = 0
+	b.fanOutLive(ctx, ev)
 	return nil
 }
 
@@ -2055,7 +2102,7 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 
 // fanOut walks subscribers and enqueues ev to each whose filter
 // matches.
-func (b *bus) fanOut(ev events.Event) {
+func (b *bus) fanOut(ev events.Event, live bool) {
 	b.mu.RLock()
 	matched := make([]*subscription, 0, len(b.subs))
 	for _, s := range b.subs {
@@ -2068,7 +2115,7 @@ func (b *bus) fanOut(ev events.Event) {
 	}
 	b.mu.RUnlock()
 	for _, s := range matched {
-		s.enqueue(ev, b)
+		s.enqueue(ev, b, live)
 	}
 }
 
@@ -2109,6 +2156,55 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 	b.publishInternal(ev)
 }
 
+// emitLiveRedactionFailure reports a live redaction failure through the
+// transient fan-out path. It must not reuse a durable publish helper: even
+// this sibling notice has no replay position and does not touch StateStore,
+// the ring, the global sequence, or projection state.
+func (b *bus) emitLiveRedactionFailure(ctx context.Context, original events.Event, cause error) {
+	b.fanOutLive(ctx, events.Event{
+		Type:       events.EventTypeAuditRedactionFailed,
+		Identity:   original.Identity,
+		OccurredAt: b.clock.Now(),
+		Payload: events.AuditRedactionFailedPayload{
+			OriginalType: original.Type,
+			Reason:       cause.Error(),
+		},
+	})
+}
+
+// fanOutLive performs the final fenced-session check and the complete
+// bounded fan-out under one read-side fence lock. Fence's write-side lock
+// therefore waits for an already-admitted live fan-out to finish and blocks
+// later ones before marking the session erased. The lock is not held during
+// validation, redaction, or StateStore I/O.
+func (b *bus) fanOutLive(ctx context.Context, ev events.Event) {
+	b.fenceMu.RLock()
+	defer b.fenceMu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	if b.fenced == nil {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		b.fanOut(ev, true)
+		return
+	}
+	if _, fenced := b.fenced[fenceKey(ev.Identity.Identity)]; fenced {
+		b.logger.InfoContext(ctx, "durable: dropped live event for erased (fenced) session",
+			slog.String("driver", "durable"),
+			slog.String("event_type", string(ev.Type)),
+			slog.String("tenant_id", ev.Identity.TenantID),
+			slog.String("user_id", ev.Identity.UserID),
+			slog.String("session_id", ev.Identity.SessionID))
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	b.fanOut(ev, true)
+}
+
 // publishInternal fans out a bus-internal SafePayload notice
 // (admin-scope-used, redaction-failed). These notices are per-call
 // observability, NOT session event history — an admin_scope_used event
@@ -2130,7 +2226,7 @@ func (b *bus) publishInternal(ev events.Event) {
 		ev.OccurredAt = b.clock.Now()
 	}
 	ev.Sequence = 0
-	b.fanOut(ev)
+	b.fanOut(ev, false)
 }
 
 // Close idempotently shuts the bus down. After Close, Publish /
@@ -2274,6 +2370,7 @@ func windowFromSnapshot(snapshot []events.Event, before uint64, limit int, f eve
 // Compile-time assertions: bus implements all three interfaces.
 var (
 	_ events.EventBus              = (*bus)(nil)
+	_ events.LivePublisher         = (*bus)(nil)
 	_ events.Replayer              = (*bus)(nil)
 	_ events.HistoryReplayer       = (*bus)(nil)
 	_ events.EventMetadataReplayer = (*bus)(nil)

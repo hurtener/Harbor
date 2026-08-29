@@ -148,10 +148,27 @@ assert_grep_present 'result, err := desc\.Invoke\(ctx, d\.Args\)' "${DISPATCH_SR
     "phase 210: dispatch hands the tool the model's own argument JSON, unrewritten"
 assert_grep_present 'func \(e \*toolExecutor\) withArtifactResolver' "${DISPATCH_SRC}" \
     "phase 210: dispatch seats the run-scoped artifact resolver"
-# The read key is the isolation triple. A TaskID in the resolver's scope
-# would reintroduce the enumerate-then-fail divergence the read key closed.
-assert_grep_absent 'TaskID:[[:space:]]*rc\.Quadruple' "${DISPATCH_SRC}" \
-    "phase 210: the resolver scopes on the isolation triple, never the task"
+# The resolver read key is the isolation triple. `materializeContent` also
+# builds an ArtifactScope with TaskID, but that field is provenance for typed
+# output materialization and is ignored by artifact reads. Keep this guard
+# scoped to the resolver function so a later output-provenance field cannot
+# make this check false-positive while a TaskID enters the read key.
+if awk '
+    /^func \(e \*toolExecutor\) withArtifactResolver\(ctx context.Context, rc planner.RunContext\) context.Context \{/ {
+        inside = 1
+        next
+    }
+    inside && /^func / { exit }
+    inside && /TenantID:[[:space:]]*rc\.Quadruple\.TenantID/ { tenant = 1 }
+    inside && /UserID:[[:space:]]*rc\.Quadruple\.UserID/ { user = 1 }
+    inside && /SessionID:[[:space:]]*rc\.Quadruple\.SessionID/ { session = 1 }
+    inside && /TaskID:[[:space:]]*rc\.Quadruple/ { task = 1 }
+    END { exit !(inside && tenant && user && session && !task) }
+' "${DISPATCH_SRC}"; then
+    ok "phase 210: the artifact resolver read key is exactly the isolation triple, never the task"
+else
+    fail "phase 210: the artifact resolver read key must use the isolation triple and omit TaskID"
+fi
 
 run_phase210_test 'TestDerive_ArtifactRef' './internal/tools/schema/' \
     "phase 210: an artifact-reference parameter derives to a plain string the model can author"

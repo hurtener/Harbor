@@ -86,10 +86,12 @@ That `task_id` is the run's handle for everything that follows. (Send an
 
 Everything the Runtime does is narrated on one typed event bus, exposed as
 Server-Sent Events at `GET /v1/events`, server-filtered to your identity. The
-`Last-Event-ID: 0` header replays the session's history from the ring buffer
-before live-tailing, so you see the run you just started even if it already
-finished. We bound the tail to five seconds for the tour — a real client keeps
-the stream open.
+`Last-Event-ID: 0` header replays the session's durable event history from the
+ring buffer before live-tailing, so you see the run's durable lifecycle even
+if it already finished. Completion-chunk animation is live-only and may be
+missed by a reconnect; the terminal task/answer state is authoritative. We
+bound the tail to five seconds for the tour — a real client keeps the stream
+open.
 
 <!-- qs-step: 3-events -->
 
@@ -113,8 +115,10 @@ A short run's stream, counted by event type:
    1 event: planner.decision
 ```
 
-Each frame is `event:` (the type), `id:` (the per-bus sequence — your reconnect
-cursor), and a `data:` JSON object. Here is a real `task.spawned` frame:
+Each durable frame is `event:` (the type), `id:` (the per-bus sequence — your
+reconnect cursor), and a `data:` JSON object. Live completion chunks carry
+`sequence: 0` and omit `id:` because they are not replayable. Here is a real
+`task.spawned` frame:
 
 ```text
 event: task.spawned

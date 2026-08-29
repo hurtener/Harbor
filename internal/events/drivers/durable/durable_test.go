@@ -371,7 +371,7 @@ var _ audit.Redactor = auditpatterns.New()
 // ---------------------------------------------------------------------------
 // D-207 — emit-constructor base-ctx threading on the DURABLE driver.
 //
-// The durable driver persists every event via store.Save under the
+// The durable driver persists every durable event via the StateStore under the
 // PUBLISH ctx, so the per-run emit closures' base context is
 // load-bearing here: pre-D-207 the promoted constructors published
 // under context.Background(), which silently outlived the run-loop
@@ -421,10 +421,15 @@ func TestDurable_IdentityStampingEmitterContext_CancellationBoundsPersistence(t 
 	}
 }
 
-func TestDurable_NewChunkPublisherContext_CancellationBoundsPersistence(t *testing.T) {
+func TestDurable_NewChunkPublisherContext_LiveChunksAreNonDurable(t *testing.T) {
 	store := newInmemStore(t)
 	bus, _ := newDurableBus(t, store)
 	id := quad("t-chunkctx", "u1", "s1")
+	sub, err := bus.Subscribe(context.Background(), filterFor(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -433,14 +438,25 @@ func TestDurable_NewChunkPublisherContext_CancellationBoundsPersistence(t *testi
 	pub := llm.NewChunkPublisherContext(driverCtx, bus, id, "task-ctx-1", logger)
 
 	pub("hello", false, "answer")
-	if n := countDurableEntries(t, store); n != 1 {
-		t.Fatalf("persisted entries after live chunk = %d, want 1", n)
+	select {
+	case ev := <-sub.Events():
+		if ev.Sequence != 0 {
+			t.Fatalf("live chunk sequence = %d, want 0", ev.Sequence)
+		}
+		if ev.Type != llm.EventTypeCompletionChunk {
+			t.Fatalf("live chunk type = %q, want %q", ev.Type, llm.EventTypeCompletionChunk)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live chunk was not delivered")
+	}
+	if n := countDurableEntries(t, store); n != 0 {
+		t.Fatalf("persisted entries after live chunk = %d, want 0", n)
 	}
 
 	cancel()
 	pub("late", true, "answer")
-	if n := countDurableEntries(t, store); n != 1 {
-		t.Fatalf("persisted entries after cancelled chunk = %d, want 1 (no write past driver teardown)", n)
+	if n := countDurableEntries(t, store); n != 0 {
+		t.Fatalf("persisted entries after cancelled chunk = %d, want 0", n)
 	}
 	if !strings.Contains(buf.String(), "completion-chunk publish failed") {
 		t.Fatalf("cancelled chunk publish did not Warn loudly; log: %q", buf.String())

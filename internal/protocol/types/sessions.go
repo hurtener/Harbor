@@ -307,7 +307,8 @@ type SessionRow struct {
 	Duration time.Duration `json:"duration"`
 	// TasksCount is the number of tasks the session has spawned.
 	TasksCount int `json:"tasks_count"`
-	// EventsCount is the number of events the session has emitted.
+	// EventsCount is the number of durable, replayable events the session has
+	// emitted. Transient live animation frames (Sequence == 0) are excluded.
 	EventsCount int `json:"events_count"`
 	// TotalCostCents is the session's accumulated LLM cost in US cents.
 	TotalCostCents int64 `json:"total_cost_cents"`

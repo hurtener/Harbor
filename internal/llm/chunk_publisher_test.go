@@ -20,13 +20,29 @@ import (
 // inmem bus applies before fan-out (CLAUDE.md §6 rule 5). Accepted
 // events are recorded for shape assertions.
 type envelopeValidatingBus struct {
-	mu       sync.Mutex
-	events   []events.Event
-	rejected int
-	fail     error
+	mu           sync.Mutex
+	events       []events.Event
+	rejected     int
+	publishCalls int
+	liveCalls    int
+	fail         error
 }
 
 func (b *envelopeValidatingBus) Publish(_ context.Context, ev events.Event) error {
+	b.mu.Lock()
+	b.publishCalls++
+	b.mu.Unlock()
+	return b.record(ev)
+}
+
+func (b *envelopeValidatingBus) PublishLive(_ context.Context, ev events.Event) error {
+	b.mu.Lock()
+	b.liveCalls++
+	b.mu.Unlock()
+	return b.record(ev)
+}
+
+func (b *envelopeValidatingBus) record(ev events.Event) error {
 	if b.fail != nil {
 		return b.fail
 	}
@@ -63,6 +79,41 @@ func (b *envelopeValidatingBus) rejectedCount() int {
 	return b.rejected
 }
 
+func (b *envelopeValidatingBus) laneCounts() (publish, live int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.publishCalls, b.liveCalls
+}
+
+// legacyEventBus intentionally implements only the durable EventBus core.
+// It pins source compatibility for custom SDK buses that predate the
+// additive LivePublisher capability.
+type legacyEventBus struct {
+	mu           sync.Mutex
+	events       []events.Event
+	publishCalls int
+}
+
+func (b *legacyEventBus) Publish(_ context.Context, ev events.Event) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.publishCalls++
+	b.events = append(b.events, ev)
+	return nil
+}
+
+func (b *legacyEventBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
+	return nil, errors.New("legacyEventBus: Subscribe unsupported")
+}
+
+func (b *legacyEventBus) Close(context.Context) error { return nil }
+
+func (b *legacyEventBus) counts() (publish, captured int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.publishCalls, len(b.events)
+}
+
 func chunkPublisherTestQuad(run string) identity.Quadruple {
 	return identity.Quadruple{
 		Identity: identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "sess-a"},
@@ -88,6 +139,9 @@ func TestNewChunkPublisher_IdentityLandsOnEnvelope(t *testing.T) {
 	got := bus.captured()
 	if len(got) != 2 {
 		t.Fatalf("published %d events, want 2", len(got))
+	}
+	if publish, live := bus.laneCounts(); publish != 0 || live != 2 {
+		t.Fatalf("chunk publisher lanes = Publish:%d PublishLive:%d, want Publish:0 PublishLive:2", publish, live)
 	}
 	for _, ev := range got {
 		if ev.Type != EventTypeCompletionChunk {
@@ -130,6 +184,27 @@ func TestNewChunkPublisher_PayloadCarriesTaskAndRunIDs(t *testing.T) {
 	}
 	if payload.OccurredAt.IsZero() {
 		t.Error("payload.OccurredAt is zero")
+	}
+}
+
+func TestNewChunkPublisher_LegacyBusDisablesAnimationWithoutDurableFallback(t *testing.T) {
+	bus := &legacyEventBus{}
+	var log bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&log, nil))
+	pub := NewChunkPublisher(bus, chunkPublisherTestQuad("run-legacy"), "task-legacy", logger)
+
+	pub("first", false, "content")
+	pub("", true, "content")
+
+	if live, ok := any(bus).(events.LivePublisher); ok {
+		t.Fatalf("legacy bus unexpectedly implements LivePublisher: %T", live)
+	}
+	publish, captured := bus.counts()
+	if publish != 0 || captured != 0 {
+		t.Fatalf("legacy chunk degradation counts = Publish:%d captured:%d, want 0/0", publish, captured)
+	}
+	if warnings := strings.Count(log.String(), "completion animation disabled"); warnings != 1 {
+		t.Fatalf("legacy chunk degradation warnings = %d, want exactly one: %s", warnings, log.String())
 	}
 }
 

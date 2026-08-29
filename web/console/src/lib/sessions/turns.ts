@@ -5,7 +5,7 @@
 // surface (CLAUDE.md §13 primitive-with-consumer rule): the normal session
 // reopen reads ONE lifecycle-only session snapshot (Phase 245 / HA-63, done
 // by the page) plus ONE `sessions.turns.list` tail page — it never
-// reconstructs a conversation from forensic `state.history` windows,
+// reconstructs a conversation from raw `state.history` windows,
 // `tasks.list`, `tasks.get`, or `events.list` joins. Older pages load by
 // passing the response's opaque `next_older_cursor` back verbatim (a
 // snapshot/keyset cursor anchored on an immutable task/turn tie-breaker),
@@ -108,7 +108,7 @@ export type TurnPageErrorKind =
 	| 'invalid_cursor'
 	/** The session (or a foreign read) answered typed not-found. */
 	| 'not_found'
-	/** The runtime predates the `sessions.turns.*` surface. */
+	/** The runtime does not expose the required `sessions.turns.*` surface. */
 	| 'unknown_method'
 	/** Anything else — a real transport / runtime failure. */
 	| 'transport';

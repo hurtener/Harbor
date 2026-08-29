@@ -1,9 +1,9 @@
 // Package events owns Harbor's typed event bus surface — the single
 // pub/sub channel every subsystem (telemetry, audit, governance,
 // runtime, planner, tools) Publishes to and Subscribes from. There
-// is no parallel observability channel; the unification of telemetry
-// + chunked output on one bus is a load-bearing decision that closes
-// the predecessor's split-channel sharp edge.
+// is no parallel observability channel; durable semantic events and
+// non-durable live animation both use this bus, with the publication
+// lane making their replay guarantees explicit.
 //
 // Harbor ships:
 //
@@ -12,7 +12,8 @@
 //     constant + an init() registration in this file).
 //   - The sealed EventPayload interface; concrete payload types live in
 //     their owning subsystems and embed events.Sealed to satisfy the seal.
-//   - The Event record, Filter, Subscription and EventBus interfaces.
+//   - The Event record, Filter, Subscription, EventBus, and LivePublisher
+//     interfaces.
 //   - Sentinel errors callers compare via errors.Is.
 //   - The §4.4 driver-registry seam (registry.go) so future drivers
 //     (replay-equipped, durable-log) plug in without
@@ -326,11 +327,15 @@ type RedactedMap struct {
 	Data map[string]any
 }
 
-// Event is the canonical bus record.
+// Event is the canonical bus record. Publish assigns a non-zero sequence
+// to durable events; PublishLive preserves Sequence == 0 for a present-tense
+// event that is bounded fan-out only and is not a replay position.
 //
-// Sequence is per-bus monotonic and gap-free; assigned by Publish.
-// Callers MUST NOT pre-fill Sequence (Publish rejects with
-// ErrSequenceProvided). OccurredAt defaults to time.Now() when zero.
+// Sequence is per-bus monotonic and gap-free for durable events; assigned by
+// Publish. Callers MUST NOT pre-fill Sequence (both Publish and PublishLive
+// reject with ErrSequenceProvided). PublishLive leaves it at zero because
+// live events have no replay position. OccurredAt defaults to time.Now() when
+// zero.
 //
 // Extra is reserved for the bounded low-cardinality metric
 // labels. Harbor does not derive metrics; the slot exists so later
@@ -489,13 +494,33 @@ type Subscription interface {
 	Cancel()
 }
 
-// EventBus is the canonical pub/sub surface. Implementations MUST be
-// safe for concurrent use by N goroutines against a single shared
-// instance.
+// EventBus is the canonical durable pub/sub surface. Implementations MUST be
+// safe for concurrent use by N goroutines against a single shared instance.
+// Present-tense animation is an additive LivePublisher capability so legacy
+// embedders that provide only this durable core remain source-compatible;
+// callers that need animation must explicitly test for that capability.
 type EventBus interface {
 	Publish(ctx context.Context, ev Event) error
 	Subscribe(ctx context.Context, f Filter) (Subscription, error)
 	Close(ctx context.Context) error
+}
+
+// LivePublisher is the additive capability for present-tense animation.
+// Implementations validate, apply the existing audit-redaction policy, and
+// bounded-fan-out without assigning a replay position or touching durable /
+// history state. Delivered events carry Sequence == 0 and may be missed by a
+// reconnecting subscriber. The SafePayload marker retains its existing
+// redactor bypass on this lane. Durable semantic and lifecycle events must
+// continue through EventBus.Publish.
+//
+// NewChunkPublisherContext uses this capability when a bus provides it. A
+// legacy/custom EventBus that does not opt in receives no completion-chunk
+// events: the publisher logs one per-run warning and disables animation,
+// leaving the terminal result and durable lifecycle authoritative. This
+// preserves source compatibility without silently converting live animation
+// into per-chunk durable writes.
+type LivePublisher interface {
+	PublishLive(ctx context.Context, ev Event) error
 }
 
 // Cursor identifies the last event a subscriber has consumed for a
@@ -825,10 +850,10 @@ var (
 
 // ValidateEvent does structural validation: the EventType is in the
 // registry; the identity quadruple has at least the triple; Sequence
-// is zero (assigned by Publish); Payload is non-nil. Returns wrapped
-// sentinels. Callers can call this directly to validate before
-// Publish if they want compile-shaped check; Publish calls it
-// internally.
+// is zero (assigned by Publish, or deliberately retained as zero by
+// PublishLive); Payload is non-nil. Returns wrapped sentinels. Callers can
+// call this directly to validate before publishing if they want a
+// compile-shaped check; both EventBus publication lanes call it internally.
 func ValidateEvent(ev Event) error {
 	if !IsValidEventType(ev.Type) {
 		return wrap(ErrUnknownEventType, "type=%q", string(ev.Type))

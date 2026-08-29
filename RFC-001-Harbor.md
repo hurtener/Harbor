@@ -1935,18 +1935,42 @@ type EventBus interface {
     Subscribe(ctx context.Context, f Filter) (Subscription, error)
     Close(ctx context.Context) error
 }
+
+// Optional additive capability for present-tense animation. SafePayload
+// values retain the existing audit-redactor bypass; other values follow the
+// audit boundary. The capability leaves Sequence == 0 and never persists or
+// enters replay history.
+type LivePublisher interface {
+    PublishLive(ctx context.Context, ev Event) error
+}
 ```
 
 **Settled:**
 
-- One bus, not two. The predecessor's split of telemetry vs chunked-output channels is unified on this single typed bus from t=0.
-- `EventBus` (the Go-level name shipped as `internal/events.EventBus`) ships with `Publish` / `Subscribe` / `Close`. The `Replay(ctx, Cursor, Filter)` method is a separate concern and lives in Phase 06's replay-equipped driver — when that driver lands, callers will type-assert the returned `EventBus` to a `Replayer` capability interface, keeping the core surface lean.
+- One bus, not two. Telemetry, durable semantic/lifecycle events, and
+  present-tense chunk animation share this typed bus from t=0. The bus has
+  two explicit publication contracts: `Publish` is durable/replayable where
+  the configured driver supports replay, while `PublishLive` is the bounded,
+  non-durable animation lane described below.
+- `EventBus` (the Go-level name shipped as `internal/events.EventBus`) ships with `Publish` / `Subscribe` / `Close`. Present-tense animation is the additive `LivePublisher` capability; the shipped drivers implement it, while a legacy/custom EventBus may omit it for source compatibility. In that case the completion publisher emits no chunk event, logs one explicit warning per run, and disables animation rather than converting chunks into durable `Publish` writes; the terminal result remains authoritative. The `Replay(ctx, Cursor, Filter)` method is a separate concern and lives in Phase 06's replay-equipped driver — when that driver lands, callers will type-assert the returned `EventBus` to a `Replayer` capability interface, keeping the core surface lean.
 - Drop policy on backpressure: drop-oldest, with a `bus.dropped` event describing the dropped sequence range. Notices are windowed at most once per `DropWindow` per subscriber.
 - Server-enforced isolation filter: `Subscribe` rejects empty-triple non-admin filters with `ErrIdentityScopeRequired`. Every `Admin: true` Subscribe additionally emits an `audit.admin_scope_used` event so abuse is retroactively detectable. Cryptographic verification of the admin claim is wired in Phase 61 (Protocol auth); Phase 05 trusts the boolean.
 - **Audit-before-emit boundary.** Every `Publish` runs the payload through `audit.Redactor` before enqueueing — except for `SafePayload`-marked types, which bypass the redactor (their declarer guarantees no secret-shaped fields; preserves typed access for bus-internal events and well-known metadata). On redaction failure: the bus emits a sibling `audit.redaction_failed` event (with NO original payload bytes) AND returns the wrapped error to the caller. The original event is NOT enqueued (D-020).
+- **Non-durable live publication (D-452).** The additive `LivePublisher`
+  capability applies the same event validation, audit-boundary policy,
+  identity filtering, and bounded drop-oldest fan-out as `Publish`, then
+  immediately delivers a present-tense event with `Sequence == 0`. Non-
+  `SafePayload` values follow the audit redactor; `SafePayload` values retain
+  their existing bypass. It does not touch `StateStore`, the replay ring, the
+  global sequence authority, or projection watermarks, so reconnect is
+  intentionally lossy for live animation. SSE omits `id:` for these events;
+  the terminal `AnswerEnvelope` and durable task/session lifecycle events are
+  authoritative and reconcile a client after a missed animation frame. Only
+  LLM completion chunks use this lane in the current release. A failed or
+  cancelled run never gets a synthetic answer from this lane.
 - Identity-mandatory: `Publish` rejects events whose Quadruple lacks tenant/user/session with `ErrIdentityRequired`. Empty `RunID` is acceptable for session-scoped events.
-- Sequence numbering: per-bus monotonic via `atomic.Uint64`; gap-free. Caller-prefilled `Sequence != 0` is rejected with `ErrSequenceProvided`.
-- Replay-from-cursor: ring buffer (default 10k events) when no durable log; exact replay when the durable log driver (StateStore-backed, Phase 57) is configured. Replay capability lives in Phase 06.
+- Sequence numbering: durable `Publish` is per-bus monotonic via `atomic.Uint64`; gap-free. Caller-prefilled `Sequence != 0` is rejected with `ErrSequenceProvided`. `PublishLive` retains `Sequence == 0` as its explicit no-replay sentinel.
+- Replay-from-cursor: ring buffer (default 10k events) when no durable log; exact replay when the durable log driver (StateStore-backed, Phase 57) is configured. Replay capability lives in Phase 06 and contains durable events only; live animation is not replayed.
 - Cardinality safety: future metric derivation (Phase 56) will draw labels from `Event.Type` and `Event.Extra` only — never `RunID` or `TraceID`. A static lint check enforces this in CI; the script ships as a Phase 05 stub at `scripts/check-event-cardinality.sh` and tightens in Phase 56.
 
 **Event taxonomy** is Settled and lives in `internal/events/events.go`. V1 starter set: `runtime.error`, `runtime.warning`, `bus.dropped`, `bus.subscription_idle_closed`, `audit.redaction_failed`, `audit.admin_scope_used`, `governance.budget_exceeded`, `governance.rate_limited`. Adding new types is at-the-seam: declare an exported constant and register it in `init()`. The `TestEventTypes_Exhaustiveness` smoke gate runs in preflight.

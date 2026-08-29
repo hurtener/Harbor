@@ -13207,9 +13207,11 @@ driver, including N>=100 concurrent mixed identities under `-race`; a paused
 owner without the required tier receives no action token and cannot resume,
 while an otherwise identical authorized caller can. Wire manifest, generated
 clients, capability/version discovery, protocol docs, and Harbor's own chat
-surface (the Console) land with the methods; the fallback path may use
-raw reads only as an explicit degraded/forensic action, never a silent
-normal-open path.
+surface (the Console) land with the methods. The current Console requires
+`sessions.turns.*`; an unavailable projection is surfaced explicitly and has
+no raw `state.history` forensic fallback, because completion chunks are
+non-durable. The `state.history` surface remains available only to consumers
+that explicitly declare and own that protocol contract.
 
 **Cross-references.** D-424 (the lifecycle read of the two-read open), D-421
 (durable identity-scoped projection precedent), D-309 (read-model
@@ -14967,3 +14969,47 @@ catalog share one source-name authority.
 the same logical connection, physical ID/Name preservation, foreign-source
 visibility, logical Owner projection, and raw fallback. No hosted CI, tag,
 release, downstream/runtime deployment, or downstream acceptance is claimed.
+
+## D-452 — Completion chunks use a non-durable live publication lane
+
+**Date:** 2026-08-29
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+Completion-token animation remains on the canonical EventBus, but it does not
+belong in durable session history. The additive `events.LivePublisher`
+capability, implemented by both shipped EventBus drivers, validates the event,
+applies the existing audit-boundary policy (redacting non-`SafePayload` values
+while retaining the established `SafePayload` bypass), enforces the same
+identity/type filter, and immediately bounded-fan-outs the event with
+`Sequence == 0`. It does not call `StateStore`, append to a replay ring,
+advance the global sequence authority, or notify projection watermarks. The
+SSE transport therefore emits no `id:` for a live frame, and reconnect is
+honestly lossy for animation. Legacy/custom EventBus implementations may omit
+the additive capability for source compatibility; the completion publisher
+emits no chunk event, logs one explicit warning per run, and disables
+animation rather than falling back to durable `EventBus.Publish` writes.
+
+Only `llm.completion.chunk` uses this lane in the current release. Durable
+semantic and lifecycle events continue through `Publish`; the terminal
+`AnswerEnvelope`, `task.completed`, and session-turn state are authoritative
+when a reconnect misses token frames. A failed or cancelled run never receives
+a synthetic answer from the live lane. Both shipped EventBus drivers implement
+the capability with bounded drop-oldest delivery and identity isolation;
+redaction failures remain observable without persisting the live event or its
+payload. SafePayload completion chunks bypass the redactor under the
+pre-existing payload policy; the live lane does not broaden their exposure.
+
+**Cross-references:** RFC §6.13, `docs/site/protocol/streaming-semantics.md`,
+`internal/events/events.go`, `internal/llm/chunk_publisher.go`.
+
+**Evidence status.** Focused in-memory and durable tests cover Sequence-0
+delivery, identity/type filtering, blocked durable-store isolation, zero live
+durable writes/history rows, durable sequence/replay continuity, mixed
+durable-to-live saturation, Fence-to-Unfence cancellation cutoff, and 128-way
+concurrent identity isolation. Focused LLM tests assert completion chunks call
+`PublishLive` for capable buses and make no durable `Publish` fallback for a
+legacy bus, with exactly one warning per run. Local race and documentation
+checks are run for this head; no hosted CI, tag, release, downstream/runtime
+deployment, or downstream acceptance is claimed.

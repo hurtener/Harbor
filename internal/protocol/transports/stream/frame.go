@@ -57,9 +57,9 @@ func toWireEvent(ev events.Event) wireEvent {
 // the SSE grammar.
 //
 // An event with no assigned replay position (Sequence == 0 — the sentinel
-// the durable bus assigns to transient, non-persisted notices) carries NO
+// used by transient bus notices and PublishLive animation events) carries NO
 // `id:` line, so a reconnecting client keeps its prior Last-Event-ID and
-// can never anchor its reconnect cursor on a transient notice. The first
+// can never anchor its reconnect cursor on a transient event. The first
 // persisted sequence is 1, so 0 is an unambiguous "no replay position".
 //
 // A `data:` payload that contains newlines is split across multiple

@@ -46,8 +46,9 @@ type Enricher interface {
 type SessionCounters struct {
 	// TasksCount is the number of tasks the session has spawned.
 	TasksCount int
-	// EventsCount is the number of events the session has emitted (a lower
-	// bound when Partial is set).
+	// EventsCount is the number of durable, replayable events the session has
+	// emitted (a lower bound when Partial is set); transient Sequence-0 live
+	// animation frames are excluded.
 	EventsCount int
 	// TotalCostCents is the session's accumulated LLM cost in US cents (a
 	// lower bound when Partial is set).
@@ -95,8 +96,9 @@ const perSessionScanBound = 10_000
 //
 //   - total_cost_cents / total_tokens: summed from `llm.cost.recorded`
 //     events scoped to the session (via the event substrate).
-//   - events_count: the count of the session's events from the durable
-//     event substrate (HistoryReplayer.ListWindow, bounded).
+//   - events_count: the count of the session's durable, replayable events
+//     from the event substrate (HistoryReplayer.ListWindow, bounded);
+//     transient live animation frames (Sequence == 0) are excluded.
 //   - tasks_count / has_failed_task: the session's tasks from the task
 //     registry.
 //   - has_pending_intervention: a paused pause record from the pause
@@ -192,7 +194,9 @@ func (e *CounterEnricher) Counters(ctx context.Context, id identity.Identity, se
 	out.HasPendingIntervention, pausesRead = e.pendingIntervention(ctx, id)
 
 	// total_cost_cents / total_tokens / events_count — from the bounded
-	// per-session event scan. A truncated scan (or an unavailable
+	// per-session durable/replayable event scan. Transient live animation
+	// frames (Sequence == 0) are not in this history and are excluded. A
+	// truncated scan (or an unavailable
 	// windowed-read substrate) sets Partial: the counts are then an honest
 	// lower bound, NEVER a silently-undercounted exact value.
 	cents, tokens, evCount, partial := e.eventCounters(ctx, id)
@@ -296,7 +300,7 @@ func (e *CounterEnricher) pendingIntervention(ctx context.Context, id identity.I
 // returns the summed cost (cents), summed tokens, the event count, and
 // whether the scan was partial (truncated or the substrate unavailable).
 //
-// One ListWindow scan (all event types, full triple, non-admin) serves
+// One ListWindow scan (all durable event types, full triple, non-admin) serves
 // both the events_count and the cost sum: the cost is summed from the
 // `llm.cost.recorded` events within the SAME page, so a truncated scan
 // makes cost / tokens / events all a lower bound together — Partial covers

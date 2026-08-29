@@ -31,9 +31,9 @@
 //     terminal row served on retry never regains membership — instead its
 //     rendered bubbles converge IN PLACE from the retry's own freshly
 //     projected sealed row (local durable convergence, zero turns.get);
-//   - a runtime predating the projection answers `unknown_method` on the open:
-//     the page shows the explicit degraded/forensic control and does NOT run
-//     the legacy `state.history` event-replay path until the operator clicks.
+//   - an unavailable `sessions.turns.*` projection answers `unknown_method`:
+//     the page surfaces an explicit unavailable notice, does NOT read the
+//     legacy `state.history` path, and offers no incomplete forensic reopen.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -1046,29 +1046,24 @@ describe('Playground reopen — the TWO-READ open (HA-64 / D-425)', () => {
     expect(ids.indexOf('t-task-late-u')).toBe(ids.indexOf('t-task-late-a') - 1);
   });
 
-  it('a runtime predating the projection is NOT silently degraded — the forensic reopen is explicit + user-invoked', async () => {
+  it('an unavailable turn projection surfaces an explicit notice and never falls back', async () => {
     harness.lifecycleRow = { session_id: 's-reopen', status: 'completed' };
     harness.listError = { code: 'unknown_method', message: 'no such method' };
     await render();
 
-    // The open failed with unknown_method: no forensic replay ran on its own.
+    // The current Console requires the turn projection. No raw transcript or
+    // legacy catalog reads run when that required surface is unavailable.
     expect(harness.stateHistoryCalls).toBe(0);
     expect(harness.tasksListCalls).toBe(0);
+    expect(harness.tasksGetCalls).toBe(0);
+    expect(harness.eventsListCalls).toBe(0);
     expect(bubbleTexts().length).toBe(0);
 
-    // The explicit degraded control is visible and names the degradation.
-    const fallback = target?.querySelector('[data-testid="forensic-fallback"]');
-    expect(fallback).not.toBeNull();
-    expect(fallback?.textContent ?? '').toContain('forensic');
-
-    // Clicking it runs the legacy state.history + tasks.list path.
-    (target?.querySelector('[data-testid="forensic-reopen-button"]') as HTMLButtonElement | null)?.click();
-    for (let i = 0; i < 16; i++) {
-      flushSync();
-      await Promise.resolve();
-    }
-    flushSync();
-    expect(harness.stateHistoryCalls).toBe(1);
+    expect(target?.querySelector('[data-testid="forensic-fallback"]')).toBeNull();
+    expect(target?.querySelector('[data-testid="forensic-reopen-button"]')).toBeNull();
+    expect(target?.querySelector('[data-testid="history-notice"]')?.textContent ?? '').toContain(
+      'reopening is unavailable'
+    );
   });
 
   it('an unavailable usage measure never folds a fabricated zero into the KPI or bubble', async () => {

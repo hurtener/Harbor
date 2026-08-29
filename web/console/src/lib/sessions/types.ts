@@ -139,6 +139,7 @@ export interface SessionRow {
   /** Elapsed span in nanoseconds (Go `time.Duration` JSON form). */
   duration: number;
   tasks_count: number;
+  /** Durable/replayable event count; transient Sequence-0 live frames are excluded. */
   events_count: number;
   total_cost_cents: number;
   total_tokens: number;

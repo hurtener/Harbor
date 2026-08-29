@@ -17,6 +17,33 @@ the fresh profile projection for an immediate retry.
 - RFC §6.11
 - RFC §6.16
 
+## Briefs informing this phase
+
+- brief 09 — signed MCP OAuth binding scopes and identity-mandatory
+  authorization.
+- brief 05 — the session identity triple and durable state boundaries.
+- brief 06 — Protocol-client projections and server-enforced isolation
+  filtering.
+
+## Brief findings incorporated
+
+- brief 09 §"What Harbor must add" items 2 and 4: the binding scope drives
+  lookup and authorization behavior, and each flow must fail closed when its
+  required identity components are missing. User registration and removal
+  therefore derive scope from the verified bearer rather than accepting a
+  caller-selected owner.
+- brief 05 §1: session identity is the `(tenant_id, user_id, session_id)`
+  triple. The user revision, physical owner, and projected catalog retain
+  that boundary throughout lifecycle and read operations.
+- brief 06 §"Isolation-triple filtering by default": filtering and
+  cross-scope access are enforced at the runtime/Protocol boundary. The
+  user projection consequently narrows the operator ceiling for the acting
+  identity instead of creating a client-side or shared view.
+
+## Findings I'm departing from (if any)
+
+None.
+
 ## Decision
 
 - D-448 — user-scoped signed OAuth MCP capability lifecycle.
@@ -217,6 +244,10 @@ has a focused test. No unrelated package coverage claim is made.
   contract is deployed, the caller reports live verification unavailable; no
   tag or compatibility version is inferred by this plan.
 
+## Glossary additions
+
+None.
+
 ## Public surface
 
 - `AgentConfigUserRegisterOAuthMCPCapabilityRequest` / `Response`.
@@ -236,3 +267,25 @@ Protocol version remains `0.1.0`.
 Local focused tests, generated-source checks, the focused race gate, and the
 static smoke pass at the implementation head. No hosted CI, release tag,
 deployment, or downstream acceptance is claimed.
+
+## Pre-merge checklist
+
+- [x] Focused source, generated-surface, race, and Phase 265 smoke checks pass
+      at the implementation head.
+- [x] `make drift-audit` passes.
+- [ ] `make preflight` passes — not run locally under the authorized scoped
+      verification; hosted preflight remains the release gate.
+- [x] `make check-mirror` passes.
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve.
+- [x] Coverage target is met by focused tests for each stated authorization,
+      scope, owner, projection, and isolation branch; no unrelated package
+      coverage claim is made.
+- [x] Multi-isolation paths: two-user and cross-session isolation tests pass.
+- [x] Concurrent-reuse N/A — this phase adds no new compiled reusable
+      artifact; concurrent lifecycle/projection behavior is covered by the
+      focused isolation tests.
+- [x] Integration test exists through the service, Protocol stream, serve,
+      and projection seams, including identity and failure cases, under the
+      focused race gate.
+- [x] New vocabulary N/A — no glossary entry is required.
+- [x] Brief departures N/A — no brief finding is departed from.

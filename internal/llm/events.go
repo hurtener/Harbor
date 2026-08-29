@@ -55,9 +55,12 @@ const (
 	EventTypePostureReadAdmin events.EventType = "llm.posture_read_admin"
 	// EventTypeCompletionChunk — streaming completion event.
 	// Emitted per token delta from the LLM provider under the originating
-	// run's identity quadruple. The `Done=true` chunk fires exactly once
-	// per stream (terminator marker). SafePayload — deltas are per-session
-	// operator-visible content.
+	// run's identity quadruple through EventBus.PublishLive. These are
+	// present-tense animation frames with Sequence == 0 and no replay row;
+	// durable task/session completion state is authoritative. The `Done=true`
+	// chunk fires exactly once per stream (terminator marker). SafePayload —
+	// deltas are per-session operator-visible content and therefore retain the
+	// existing audit-redactor bypass; this lane does not broaden exposure.
 	EventTypeCompletionChunk events.EventType = "llm.completion.chunk"
 	// EventTypeProviderCredentialFetched — emitted at every connect /
 	// refresh pull of a broker-sourced provider key from the coordinator's
@@ -286,7 +289,8 @@ type ProviderFileUploadedPayload struct {
 // CompletionChunkPayload is the typed payload for
 // EventTypeCompletionChunk. SafePayload — the delta is
 // per-session operator-visible content (the LLM's own output), not a
-// secret. Kind is "content" or "reasoning".
+// secret, so it retains the existing audit-redactor bypass. The live lane
+// does not broaden that exposure. Kind is "content" or "reasoning".
 type CompletionChunkPayload struct {
 	events.SafePayload
 	Identity   identity.Quadruple

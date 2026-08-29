@@ -109,12 +109,13 @@ projection of runtime state.** Task lifecycle, planner decisions, LLM token
 chunks, tool execution, pause/resume, governance, audit — all of it is narrated
 on one bus.
 
-Live UI streaming and telemetry are **not parallel paths**. The same events
-that stream to a Console (or any Protocol client) for live rendering are the
-same events that drive `slog` records and OpenTelemetry spans. There is no
-second observability channel that could drift from what the UI sees — what you
-observe is what happened. See [Observability](/concepts/observability) for how
-that bus-first model fans out to logs, traces, and metrics.
+Live UI streaming and telemetry are **not parallel paths**. The same typed bus
+feeds a Console (or any Protocol client) and the operator telemetry; durable
+semantic/lifecycle events are the recorded source of truth. Present-tense
+completion animation is a bounded, non-durable fan-out and may be missed by a
+reconnect, while the terminal task/answer state reconciles it. See
+[Observability](/concepts/observability) for how that bus-first model fans out
+to logs, traces, and metrics.
 
 ### The bus contract
 
@@ -124,15 +125,17 @@ The bus enforces a small set of non-negotiable properties on every event:
 | --- | --- |
 | Identity-mandatory | Every event carries `(tenant, user, session)` (plus `run` where applicable). A subscription without a valid identity scope is rejected — fail closed, never silent. |
 | Server-filtered | Subscribers receive only events their identity scope authorizes. Cross-session / cross-tenant / admin views require an explicit elevated scope claim, audited unconditionally. The filter is server-side, not a client-side `if`. |
-| Gap-free sequenced | Each event carries a per-bus monotonic `sequence`. That number is your reconnect cursor — replay from the last sequence you saw, with no gaps. |
-| Audit-redacted before emit | Every payload passes the audit redactor *before* it hits the bus. Raw tool arguments and results — which routinely carry secrets — never reach a subscriber unredacted. |
+| Durable events are gap-free sequenced | Events published to durable history carry a per-bus monotonic `sequence`; that number is your reconnect cursor. Present-tense `llm.completion.chunk` animation carries `sequence: 0`, has no replay cursor, and may be missed across reconnect. |
+| Audit boundary before emit | Every non-`SafePayload` passes the audit redactor *before* it hits the bus; `SafePayload` types retain their declared bypass. Raw tool arguments and results — which routinely carry secrets — never reach a subscriber unredacted. |
 | Drop-oldest on backpressure | A slow subscriber does not stall the runtime. On backpressure the bus drops the oldest buffered events and emits a `bus.dropped` notice so the consumer knows there is a gap, rather than silently lying. |
 
-::: tip The sequence is your reconnect contract
-Because every event is gap-free sequenced and reconnect replays from a cursor,
-a client that records the last `sequence` it processed can disconnect, come
-back, and resume exactly where it left off. A `bus.dropped` between two
-sequences is the honest signal that the buffer overflowed for a slow consumer.
+::: tip The durable sequence is your reconnect contract
+Because durable events are gap-free sequenced and reconnect replays from a
+cursor, a client that records the last durable `sequence` it processed can
+disconnect, come back, and resume the durable history exactly where it left
+off. Live completion animation is intentionally lossy; the terminal task and
+answer state reconciles it. A `bus.dropped` between two durable sequences is
+the honest signal that the buffer overflowed for a slow consumer.
 :::
 
 ## See it on the wire
