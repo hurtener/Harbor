@@ -477,6 +477,14 @@ The verb **always** writes `title_source: "manual"` — `auto` provenance is not
 - **`memory.list` / `memory.health`** — the always-empty `has_ttl_expiring` facet and the two `expiring_in_1h` aggregate fields are **removed** from the wire (V1 memory has no TTL); `filter.agent_ids` loud-rejects with `invalid_request`/400 (a V1 record carries no producer identity), never a false-empty page.
 - **`tools.list` / `tools.metrics` / `tools.content_stats`** — a runtime that advertises the `tool_annotations` capability (negotiate via `Accepts(tool_annotations)`) serves REAL per-tool annotations: `filter.oauth_statuses` / `filter.approval_policies` narrow to real rows, the annotator-backed aggregates (`active` / `pending_approval` / `awaiting_oauth`) carry real counts (no `aggregates_partial`), `tools.metrics` returns real error-rate gauges + invocation/failure counts over the window, and `tools.content_stats` returns a real result-size histogram (D-314). The admin `tools.set_approval_policy` / `tools.revoke_oauth` methods persist through `tools/approval` / `tools/auth` with audit (they no longer return `admin_unsupported`). A runtime that does NOT advertise `tool_annotations` (a headless catalog stack) loud-rejects `filter.oauth_statuses` / `filter.approval_policies` with `invalid_request` and returns `aggregates_partial: true` with those counters zeroed — render them "unavailable," never a real-looking 0; only `aggregates.total` is authoritative in that state.
 
+The `owner` field in a `tools.*` catalog row is the logical configured MCP
+source name. A user-scoped runtime may keep an opaque physical source key in
+its internal catalog so two users can attach the same connection; that key is
+not a client-side naming contract and is never reconstructed from a suffix or
+hash. The row's `id` and `name` remain the physical catalog keys needed for
+the exact `tools.get` / `tools.describe` request, while a runtime without a
+logical-source projection may honestly return the raw source identifier.
+
 ## 4d. Reopening a chat — durable turns and the two-read open (v1.28)
 
 `state.history` (above) is still the raw-event drill-down. To **reopen a

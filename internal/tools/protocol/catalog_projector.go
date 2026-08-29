@@ -37,9 +37,10 @@ import (
 // runtime state, but that mutation lives behind the catalog / annotator
 // implementations, internally synchronised there.
 type CatalogProjector struct {
-	catalog   tools.ToolCatalog
-	annotator Annotator
-	view      CatalogViewResolver
+	catalog        tools.ToolCatalog
+	annotator      Annotator
+	view           CatalogViewResolver
+	logicalSources LogicalSourceResolver
 	// adminMu guards the in-memory approval-policy overrides the
 	// default (annotator-less) admin path records. Production wiring
 	// supplies an Annotator whose SetApprovalPolicy persists (identity-
@@ -68,6 +69,20 @@ type CatalogViewResolver interface {
 	CatalogView(context.Context, identity.Identity, string) (tools.PlannerCatalogView, error)
 }
 
+// LogicalSourceResolver translates a runtime-local tool source key into the
+// logical MCP connection name that belongs in a Protocol catalog row. User-
+// scoped MCP registrations use a physical source key internally so two users
+// can attach the same logical connection concurrently; that key is an
+// implementation detail and must not leak through the read projection.
+//
+// The resolver is projection-only. It does not authorize a source or change
+// the catalog view; CatalogViewResolver remains responsible for identity-
+// scoped visibility. A missing mapping preserves the raw source key so
+// partially assembled embedders remain honest and backward-compatible.
+type LogicalSourceResolver interface {
+	LogicalNameOfSource(tools.ToolSourceID) (string, bool)
+}
+
 // WithCatalogViewResolver wires the per-request effective catalog view. A nil
 // resolver is treated as not supplied, preserving the existing raw-catalog
 // behavior for embedders that have not assembled agent-config projection.
@@ -75,6 +90,17 @@ func WithCatalogViewResolver(r CatalogViewResolver) CatalogProjectorOption {
 	return func(p *CatalogProjector) {
 		if r != nil {
 			p.view = r
+		}
+	}
+}
+
+// WithLogicalSourceResolver wires the runtime's canonical physical-to-logical
+// MCP source projection. It changes only the wire Owner field; the physical
+// catalog ID, Name, and identity-scoped visibility remain unchanged.
+func WithLogicalSourceResolver(r LogicalSourceResolver) CatalogProjectorOption {
+	return func(p *CatalogProjector) {
+		if r != nil {
+			p.logicalSources = r
 		}
 	}
 }
@@ -221,6 +247,12 @@ func reliabilityTierOf(t tools.Tool) string {
 // projectRow maps a runtime tools.Tool onto the wire Tool row,
 // resolving the annotated fields through the Annotator (or defaults).
 func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity, t tools.Tool) prototypes.Tool {
+	owner := string(t.Source)
+	if t.Transport == tools.TransportMCP && p.logicalSources != nil {
+		if logical, ok := p.logicalSources.LogicalNameOfSource(t.Source); ok && logical != "" {
+			owner = logical
+		}
+	}
 	row := prototypes.Tool{
 		ID:              t.Name,
 		Name:            t.Name,
@@ -228,7 +260,7 @@ func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity,
 		Scope:           scopeOf(t),
 		Transport:       transportOf(t.Transport),
 		ReliabilityTier: reliabilityTierOf(t),
-		Owner:           string(t.Source),
+		Owner:           owner,
 		OAuthStatus:     prototypes.ToolOAuthNotApplicable,
 		ApprovalPolicy:  prototypes.ToolApprovalAuto,
 	}

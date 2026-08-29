@@ -19,6 +19,11 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- The `tools.*` catalog projection now resolves user-scoped MCP source keys
+  back to their logical configured names for the wire `owner` field. Physical
+  catalog IDs and names remain unchanged, and an unmapped source keeps the
+  raw identifier rather than being guessed by the client.
+
 - Signed-capability broker exchanges now accept third-party JWTs whose
   provider-specific application audience is distinct from the RFC 8707
   resource URI. The exact broker `Audience`/`Resource` destination tuple

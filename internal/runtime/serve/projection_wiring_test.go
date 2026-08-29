@@ -388,19 +388,37 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 				t.Fatalf("decode tools.list: %v (body %s)", err, body)
 			}
 			seen := make(map[string]bool, len(list.Tools))
+			owners := make(map[string]string, len(list.Tools))
 			for _, row := range list.Tools {
 				seen[row.ID] = true
+				owners[row.ID] = row.Owner
 			}
 			ownTool := user.physical + "_echo"
 			foreignTool := user.foreign + "_echo"
 			if !seen[ownTool] || seen[foreignTool] {
 				t.Fatalf("tools.list visibility = %v, want own %q and no foreign %q", seen, ownTool, foreignTool)
 			}
+			if owners[ownTool] != logicalName {
+				t.Fatalf("tools.list own Owner = %q, want logical source %q (physical source %q must remain an internal catalog key)", owners[ownTool], logicalName, user.physical)
+			}
+			if owners[ownTool] == user.physical {
+				t.Fatalf("tools.list leaked physical source %q through Owner", user.physical)
+			}
 
 			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/get", user.id,
 				`{"id":"`+ownTool+`"}`, requestCtx)
 			if code != http.StatusOK {
 				t.Fatalf("tools.get own: status %d, body %s", code, body)
+			}
+			var got prototypes.Tool
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatalf("decode tools.get own: %v (body %s)", err, body)
+			}
+			if got.Owner != logicalName {
+				t.Fatalf("tools.get own Owner = %q, want logical source %q", got.Owner, logicalName)
+			}
+			if got.ID != ownTool || got.Name != ownTool {
+				t.Fatalf("tools.get changed physical identity: ID=%q Name=%q want %q", got.ID, got.Name, ownTool)
 			}
 			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/get", user.id,
 				`{"id":"`+foreignTool+`"}`, requestCtx)
@@ -412,6 +430,16 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 				`{"id":"`+ownTool+`","agent_id":"`+agentID+`"}`, requestCtx)
 			if code != http.StatusOK {
 				t.Fatalf("tools.describe own: status %d, body %s", code, body)
+			}
+			var manifest prototypes.ToolManifest
+			if err := json.Unmarshal(body, &manifest); err != nil {
+				t.Fatalf("decode tools.describe own: %v (body %s)", err, body)
+			}
+			if manifest.Tool.Owner != logicalName {
+				t.Fatalf("tools.describe own Owner = %q, want logical source %q", manifest.Tool.Owner, logicalName)
+			}
+			if manifest.Tool.ID != ownTool || manifest.Tool.Name != ownTool {
+				t.Fatalf("tools.describe changed physical identity: ID=%q Name=%q want %q", manifest.Tool.ID, manifest.Tool.Name, ownTool)
 			}
 			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/describe", user.id,
 				`{"id":"`+foreignTool+`","agent_id":"`+agentID+`"}`, requestCtx)

@@ -43,6 +43,7 @@ export interface Tool {
   oauth_status: ToolOAuthStatus;
   approval_policy: ToolApprovalPolicy;
   reliability_tier: string;
+  /** Logical configured source/owner name; runtime-local physical MCP keys are not exposed here. */
   owner: string;
   last_used_at: string;
 }
