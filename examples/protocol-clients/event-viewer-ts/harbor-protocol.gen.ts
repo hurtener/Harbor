@@ -3623,6 +3623,7 @@ export interface ToolGetRequest {
 
 export interface ToolListRequest {
   identity: IdentityScope;
+  agent_id?: string;
   filter: ToolFilter;
   page?: number;
   page_size?: number;

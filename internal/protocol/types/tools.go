@@ -214,6 +214,11 @@ type ToolListRequest struct {
 	// Identity is the (tenant, user, session) scope the catalog is
 	// projected for. Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`
+	// AgentID, when set, selects the named agent's effective catalog view.
+	// The request is admitted only when the verified caller has signed reach
+	// to that agent and the agent resolves for the caller's tenant. An omitted
+	// value preserves the boot-effective catalog view.
+	AgentID string `json:"agent_id,omitempty"`
 	// Filter is the optional facet filter; the zero value lists every
 	// visible tool.
 	Filter ToolFilter `json:"filter"`

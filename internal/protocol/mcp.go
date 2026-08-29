@@ -634,7 +634,7 @@ func (s *MCPSurface) handleResources(ctx context.Context, id identity.Identity, 
 	if perr != nil {
 		return nil, perr
 	}
-	effectiveID, err := admitEffectiveAgent(idCtx, string(methods.MethodMCPServersResources), id, r.AgentID, s.agents, s.reach)
+	effectiveID, err := AdmitEffectiveAgent(idCtx, string(methods.MethodMCPServersResources), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
 		return nil, err
 	}

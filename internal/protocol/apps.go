@@ -545,7 +545,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if perr != nil {
 		return nil, perr
 	}
-	effectiveID, err := admitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
+	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +672,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	if perr != nil {
 		return nil, perr
 	}
-	effectiveID, err := admitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
+	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
 		return nil, err
 	}

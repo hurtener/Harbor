@@ -318,7 +318,6 @@ func TestSignedCapability_DestinationMismatchFailsLoudAndReexchanges(t *testing.
 		{name: "audience", responseAudience: "https://wrong-audience.example", responseResource: resource},
 		{name: "resource", responseAudience: resource, responseResource: "https://wrong-resource.example"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			binding := signedCapabilityBindingFixture(resource)

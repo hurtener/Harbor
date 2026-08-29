@@ -44,7 +44,6 @@
     "ToolContentStatsRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ToolDescribeRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ToolGetRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
-    "ToolListRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ToolMetricsRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ToolRevokeOAuthRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ToolSetApprovalPolicyRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",

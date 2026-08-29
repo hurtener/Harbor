@@ -11100,6 +11100,11 @@
           "ref": "IdentityScope"
         },
         {
+          "key": "agent_id",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "filter",
           "type": "object",
           "ref": "ToolFilter"

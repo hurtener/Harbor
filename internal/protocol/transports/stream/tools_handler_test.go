@@ -56,9 +56,40 @@ func newToolsHandler(t *testing.T, extra ...stream.ToolsOption) *stream.ToolsHan
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	opts := []stream.ToolsOption{stream.WithToolsReachAuthorizer(auth.NewAgentReachAuthorizer())}
+	opts := []stream.ToolsOption{
+		stream.WithToolsReachAuthorizer(auth.NewAgentReachAuthorizer()),
+		stream.WithToolsAgentResolver(toolsAgentResolverFunc(func(context.Context, identity.Identity, string) (bool, error) {
+			return true, nil
+		})),
+	}
 	opts = append(opts, extra...)
 	h, err := stream.NewToolsHandler(svc, opts...)
+	if err != nil {
+		t.Fatalf("NewToolsHandler: %v", err)
+	}
+	return h
+}
+
+func newToolsHandlerWithoutAgentResolver(t *testing.T) *stream.ToolsHandler {
+	t.Helper()
+	cat := tools.NewCatalog()
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: "echo", Transport: tools.TransportInProcess, Loading: tools.LoadingAlways},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register catalog tool: %v", err)
+	}
+	proj, err := toolsprotocol.NewCatalogProjector(cat)
+	if err != nil {
+		t.Fatalf("NewCatalogProjector: %v", err)
+	}
+	svc, err := toolsprotocol.NewService(proj)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	h, err := stream.NewToolsHandler(svc, stream.WithToolsReachAuthorizer(auth.NewAgentReachAuthorizer()))
 	if err != nil {
 		t.Fatalf("NewToolsHandler: %v", err)
 	}
@@ -136,6 +167,89 @@ func TestToolsHandler_List_TransportFacet(t *testing.T) {
 	_ = json.Unmarshal(body, &resp)
 	if len(resp.Tools) != 1 || resp.Tools[0].Name != "web_search" {
 		t.Fatalf("HTTP facet returned %d rows, want 1 (web_search)", len(resp.Tools))
+	}
+}
+
+func TestToolsHandler_List_ExplicitAgentSelectionUsesReachAndResolver(t *testing.T) {
+	var resolved atomic.Int64
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(_ context.Context, id identity.Identity, agentID string) (bool, error) {
+			if id != toolsHandlerID || agentID != "agent-a" {
+				t.Fatalf("resolver input = (%+v,%q)", id, agentID)
+			}
+			resolved.Add(1)
+			return true, nil
+		})))
+	status, body := doToolsRequest(t, h, "list", `{"agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("tools/list explicit agent status = %d body=%s", status, body)
+	}
+	if resolved.Load() != 1 {
+		t.Fatalf("agent resolver calls = %d, want 1", resolved.Load())
+	}
+}
+
+func TestToolsHandler_List_ExcludedReachPrecedesResolver(t *testing.T) {
+	var resolved atomic.Int64
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) {
+			resolved.Add(1)
+			return true, nil
+		})))
+	status, body := doToolsRequest(t, h, "list", `{"agent_id":"agent-b"}`, &toolsHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("tools/list excluded agent status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeScopeMismatch)
+	if resolved.Load() != 0 {
+		t.Fatalf("agent resolver calls = %d, want 0 before reach authorization", resolved.Load())
+	}
+}
+
+func TestToolsHandler_List_UnresolvableAgentFailsClosed(t *testing.T) {
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) { return false, nil })))
+	status, body := doToolsRequest(t, h, "list", `{"agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("tools/list unresolvable agent status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeInvalidRequest)
+}
+
+func TestToolsHandler_List_ResolverFailureIsLoud(t *testing.T) {
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) {
+			return false, errors.New("resolver unavailable")
+		})))
+	status, body := doToolsRequest(t, h, "list", `{"agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusInternalServerError {
+		t.Fatalf("tools/list resolver failure status = %d body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeRuntimeError)
+}
+
+func TestToolsHandler_List_ExplicitAgentWithoutResolverFailsClosed(t *testing.T) {
+	h := newToolsHandlerWithoutAgentResolver(t)
+	status, body := doToolsRequest(t, h, "list", `{"agent_id":"agent-a"}`, &toolsHandlerID, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("tools/list without resolver status = %d, want 400; body=%s", status, body)
+	}
+	assertErrorCode(t, body, protoerrors.CodeInvalidRequest)
+}
+
+func TestToolsHandler_List_OmittedAgentPreservesBootView(t *testing.T) {
+	var resolved atomic.Int64
+	h := newToolsHandler(t, stream.WithToolsAgentResolver(toolsAgentResolverFunc(
+		func(context.Context, identity.Identity, string) (bool, error) {
+			resolved.Add(1)
+			return true, nil
+		})))
+	status, body := doToolsRequest(t, h, "list", `{}`, &toolsHandlerID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("tools/list omitted agent status = %d body=%s", status, body)
+	}
+	if resolved.Load() != 0 {
+		t.Fatalf("agent resolver calls = %d, want 0 for omitted agent", resolved.Load())
 	}
 }
 

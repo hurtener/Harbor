@@ -22,6 +22,7 @@ import (
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/protocol"
 	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -258,8 +259,9 @@ func TestProdWiring_ToolsAnnotatorThroughBuildMux(t *testing.T) {
 // connection, while each user's ConfigScopeUser revision selects only its
 // own pair. A user may see the ordinary local tool and their own MCP tool,
 // but tools.list/get/describe must not reveal the other user's physical
-// descriptor or schema. The request context carries the same verified reach
-// and effective-agent stamps that an admitted Protocol caller supplies.
+// descriptor or schema. The request carries the selected agent and the
+// request context carries only the verified reach; the Tools transport
+// performs the canonical admission and stamps the effective agent itself.
 func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 	deps := buildProjWiringMux(t)
 	ctx := context.Background()
@@ -377,9 +379,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 	for _, user := range users {
 		t.Run(user.id.UserID, func(t *testing.T) {
 			requestCtx := protocolauth.WithAgentReach(ctx, []string{agentID})
-			requestCtx = tools.WithEffectiveAgentConfig(requestCtx, agentID)
 
-			code, body := postMuxWithContext(t, built.Mux, "/v1/tools/list", user.id, `{}`, requestCtx)
+			code, body := postMuxWithContext(t, built.Mux, "/v1/tools/list", user.id,
+				`{"agent_id":"`+agentID+`"}`, requestCtx)
 			if code != http.StatusOK {
 				t.Fatalf("tools.list: status %d, body %s", code, body)
 			}
@@ -405,8 +407,12 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 				t.Fatalf("tools.list leaked physical source %q through Owner", user.physical)
 			}
 
+			// tools.get has no agent selector yet; keep the existing projection
+			// coverage on the admitted context while tools.list above proves the
+			// real wire selection path.
+			projectionCtx := tools.WithEffectiveAgentConfig(requestCtx, agentID)
 			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/get", user.id,
-				`{"id":"`+ownTool+`"}`, requestCtx)
+				`{"id":"`+ownTool+`"}`, projectionCtx)
 			if code != http.StatusOK {
 				t.Fatalf("tools.get own: status %d, body %s", code, body)
 			}
@@ -421,7 +427,7 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 				t.Fatalf("tools.get changed physical identity: ID=%q Name=%q want %q", got.ID, got.Name, ownTool)
 			}
 			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/get", user.id,
-				`{"id":"`+foreignTool+`"}`, requestCtx)
+				`{"id":"`+foreignTool+`"}`, projectionCtx)
 			if code != http.StatusNotFound {
 				t.Fatalf("tools.get foreign: status %d, body %s, want 404", code, body)
 			}
@@ -448,6 +454,39 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			}
 		})
 	}
+
+	// An omitted selector preserves the boot-effective view and therefore does
+	// not require a reach claim. It must not accidentally become a personal
+	// view merely because the caller has a user revision for agentID.
+	omitted := users[0].id
+	code, body := postMuxWithContext(t, built.Mux, "/v1/tools/list", omitted, `{}`, context.Background())
+	if code != http.StatusOK {
+		t.Fatalf("tools.list omitted agent: status %d, body %s", code, body)
+	}
+	var omittedList prototypes.ToolListResponse
+	if err := json.Unmarshal(body, &omittedList); err != nil {
+		t.Fatalf("decode tools.list omitted agent: %v (body %s)", err, body)
+	}
+	for _, row := range omittedList.Tools {
+		if row.ID == users[0].physical+"_echo" || row.ID == users[1].physical+"_echo" {
+			t.Fatalf("tools.list omitted agent leaked user-scoped tool %q", row.ID)
+		}
+	}
+
+	// Reach is checked before tenant-local resolution. A caller that names an
+	// agent outside its signed reach gets the same refusal regardless of
+	// whether the resolver could find that agent.
+	wrongReachCtx := protocolauth.WithAgentReach(ctx, []string{"agent-not-reached"})
+	code, body = postMuxWithContext(t, built.Mux, "/v1/tools/list", omitted,
+		`{"agent_id":"`+agentID+`"}`, wrongReachCtx)
+	if code != http.StatusForbidden {
+		t.Fatalf("tools.list wrong-agent reach: status %d, body %s", code, body)
+	}
+	var wrongReach protoerrors.Error
+	if err := json.Unmarshal(body, &wrongReach); err != nil || wrongReach.Code != protoerrors.CodeScopeMismatch {
+		t.Fatalf("tools.list wrong-agent reach error = %s / %v, want %q", body, err, protoerrors.CodeScopeMismatch)
+	}
+
 }
 
 // TestApprovalChecker_RunlessTaskDoesNotInheritSiblingGate pins the FAIL-F1
