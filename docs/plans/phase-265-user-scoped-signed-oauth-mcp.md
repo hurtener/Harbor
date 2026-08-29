@@ -17,6 +17,29 @@ the fresh profile projection for an immediate retry.
 - RFC §6.11
 - RFC §6.16
 
+## Briefs informing this phase
+
+- brief 09 — signed MCP OAuth binding scopes and identity-mandatory
+  authorization.
+- brief 05 — the session identity triple and durable state boundaries.
+- brief 06 — Protocol-client projections and server-enforced isolation
+  filtering.
+
+## Brief findings incorporated
+
+- brief 09 §"What Harbor must add" items 2 and 4: the binding scope drives
+  lookup and authorization behavior, and each flow must fail closed when its
+  required identity components are missing. User registration and removal
+  therefore derive scope from the verified bearer rather than accepting a
+  caller-selected owner.
+- brief 05 §1: session identity is the `(tenant_id, user_id, session_id)`
+  triple. The user revision, physical owner, and projected catalog retain
+  that boundary throughout lifecycle and read operations.
+- brief 06 §"Isolation-triple filtering by default": filtering and
+  cross-scope access are enforced at the runtime/Protocol boundary. The
+  user projection consequently narrows the operator ceiling for the acting
+  identity instead of creating a client-side or shared view.
+
 ## Decision
 
 - D-448 — user-scoped signed OAuth MCP capability lifecycle.

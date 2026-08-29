@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.30.13] — 2026-08-29
+
 ### Fixed
 
 - LLM completion chunks now use the EventBus live-only publication lane:
@@ -36,6 +38,25 @@ Two versions move independently in Harbor (RFC §5.3):
   an unavailable projection is surfaced explicitly rather than rendering an
   incomplete answer from non-durable completion chunks.
 
+### Release candidate evidence
+
+- This v1.30.13 candidate is based on the published v1.30.12 tag and carries
+  the non-durable completion-chunk lane plus the authoritative Console reopen
+  contract. The v1.30.13 tag, release assets, module provenance,
+  checksums/attestations, and downstream acceptance are not claimed by this
+  candidate.
+
+## [1.30.12] — 2026-08-28
+
+### Added
+
+- `tools.list` can now request the effective catalog for an explicit,
+  reach-admitted agent. The omitted-agent path retains the boot-effective
+  catalog, while the selected view remains identity-scoped and does not
+  widen the caller's authority.
+
+### Fixed
+
 - The `tools.*` catalog projection now resolves user-scoped MCP source keys
   back to their logical configured names for the wire `owner` field. Physical
   catalog IDs and names remain unchanged, and an unmapped source keeps the
@@ -46,6 +67,13 @@ Two versions move independently in Harbor (RFC §5.3):
   resource URI. The exact broker `Audience`/`Resource` destination tuple
   remains mandatory; ordinary tokenexchange providers retain their JWT
   audience mismatch guard.
+
+### Release evidence
+
+- The historical v1.30.12 release is the published tag at
+  `b41f343ade4d498d850811af08b564a6ce4ed517`. This section records the
+  effective-agent tools projection and the preceding current-main fixes that
+  shipped in that tag's ancestry.
 
 ## [1.30.7] — 2026-08-27
 
@@ -5233,7 +5261,9 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.7...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.13...HEAD
+[1.30.13]: https://github.com/hurtener/Harbor/compare/v1.30.12...v1.30.13
+[1.30.12]: https://github.com/hurtener/Harbor/compare/v1.30.11...v1.30.12
 [1.30.7]: https://github.com/hurtener/Harbor/compare/v1.30.6...v1.30.7
 [1.30.6]: https://github.com/hurtener/Harbor/compare/v1.30.5...v1.30.6
 [1.30.5]: https://github.com/hurtener/Harbor/compare/v1.30.4...v1.30.5
