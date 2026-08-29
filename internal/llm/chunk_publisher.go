@@ -15,6 +15,7 @@ package llm
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -31,8 +32,10 @@ import (
 // are non-durable, non-replayable animation frames with Sequence == 0, while
 // the terminal answer/task lifecycle remains authoritative through the
 // durable Publish path. Legacy/custom EventBus implementations that do not
-// opt into LivePublisher retain the prior durable Publish behavior. This is the
-// hard-won trap the constructor encodes: when the original closure
+// opt into LivePublisher receive no completion-chunk event: the constructor
+// logs one explicit per-run warning and disables animation rather than
+// reintroducing per-chunk durable writes. This is the hard-won trap the
+// constructor encodes: when the original closure
 // stamped the payload only, live testing surfaced 280+ rejected
 // chunks per task ("events: event identity missing one or more
 // components: type=llm.completion.chunk"). Publish failures Warn
@@ -79,11 +82,18 @@ func NewChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q id
 	if logger == nil {
 		logger = slog.Default()
 	}
-	publish := bus.Publish
-	if live, ok := bus.(events.LivePublisher); ok {
-		publish = live.PublishLive
-	}
+	live, liveOK := bus.(events.LivePublisher)
+	var disabledWarning sync.Once
 	return func(delta string, done bool, kind string) {
+		if !liveOK {
+			disabledWarning.Do(func() {
+				logger.Warn("llm: completion animation disabled",
+					slog.String("task_id", taskID),
+					slog.String("run_id", q.RunID),
+					slog.String("reason", "events.EventBus does not implement events.LivePublisher"))
+			})
+			return
+		}
 		now := time.Now()
 		payload := CompletionChunkPayload{
 			Identity:   q,
@@ -94,7 +104,7 @@ func NewChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q id
 			Kind:       kind,
 			OccurredAt: now,
 		}
-		if pubErr := publish(baseCtx, events.Event{
+		if pubErr := live.PublishLive(baseCtx, events.Event{
 			Type:       EventTypeCompletionChunk,
 			Identity:   q,
 			OccurredAt: now,

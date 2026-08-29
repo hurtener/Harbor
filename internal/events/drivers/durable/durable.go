@@ -822,7 +822,7 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	// persisted; a persistence failure never reaches here.
 	b.notifyProjectionWatermark(ev)
 
-	b.fanOut(ev)
+	b.fanOut(ev, false)
 	return nil
 }
 
@@ -850,7 +850,7 @@ func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 	if _, safe := payload.(events.SafePayload); !safe {
 		redacted, err := b.redactor.Redact(ctx, payload)
 		if err != nil {
-			b.emitLiveRedactionFailure(ev, err)
+			b.emitLiveRedactionFailure(ctx, ev, err)
 			return fmt.Errorf("durable: live publish redaction failed: %w", err)
 		}
 		payload = wrapRedacted(redacted)
@@ -2102,7 +2102,7 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 
 // fanOut walks subscribers and enqueues ev to each whose filter
 // matches.
-func (b *bus) fanOut(ev events.Event) {
+func (b *bus) fanOut(ev events.Event, live bool) {
 	b.mu.RLock()
 	matched := make([]*subscription, 0, len(b.subs))
 	for _, s := range b.subs {
@@ -2115,7 +2115,7 @@ func (b *bus) fanOut(ev events.Event) {
 	}
 	b.mu.RUnlock()
 	for _, s := range matched {
-		s.enqueue(ev, b)
+		s.enqueue(ev, b, live)
 	}
 }
 
@@ -2160,8 +2160,8 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 // transient fan-out path. It must not reuse a durable publish helper: even
 // this sibling notice has no replay position and does not touch StateStore,
 // the ring, the global sequence, or projection state.
-func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
-	b.fanOutLive(context.Background(), events.Event{
+func (b *bus) emitLiveRedactionFailure(ctx context.Context, original events.Event, cause error) {
+	b.fanOutLive(ctx, events.Event{
 		Type:       events.EventTypeAuditRedactionFailed,
 		Identity:   original.Identity,
 		OccurredAt: b.clock.Now(),
@@ -2180,8 +2180,14 @@ func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
 func (b *bus) fanOutLive(ctx context.Context, ev events.Event) {
 	b.fenceMu.RLock()
 	defer b.fenceMu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	if b.fenced == nil {
-		b.fanOut(ev)
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		b.fanOut(ev, true)
 		return
 	}
 	if _, fenced := b.fenced[fenceKey(ev.Identity.Identity)]; fenced {
@@ -2193,7 +2199,10 @@ func (b *bus) fanOutLive(ctx context.Context, ev events.Event) {
 			slog.String("session_id", ev.Identity.SessionID))
 		return
 	}
-	b.fanOut(ev)
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	b.fanOut(ev, true)
 }
 
 // publishInternal fans out a bus-internal SafePayload notice
@@ -2217,7 +2226,7 @@ func (b *bus) publishInternal(ev events.Event) {
 		ev.OccurredAt = b.clock.Now()
 	}
 	ev.Sequence = 0
-	b.fanOut(ev)
+	b.fanOut(ev, false)
 }
 
 // Close idempotently shuts the bus down. After Close, Publish /

@@ -54,8 +54,10 @@ func (s *subscription) cancel() {
 
 // enqueue delivers ev to the subscriber. Drops the oldest event under
 // saturation, accounts the drop, and emits a windowed bus.dropped
-// sibling event into the subscriber's own stream.
-func (s *subscription) enqueue(ev events.Event, b *bus) {
+// sibling event into the subscriber's own stream. The lane is propagated
+// explicitly so a live invocation cannot accidentally acquire durable
+// notice behavior as this path evolves.
+func (s *subscription) enqueue(ev events.Event, b *bus, live bool) {
 	if s.cancelled.Load() {
 		return
 	}
@@ -68,7 +70,7 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 
 	select {
 	case s.ch <- ev:
-		s.maybeEmitDropNotice(ev.Identity, b, now)
+		s.maybeEmitDropNotice(ev.Identity, b, now, live)
 		return
 	default:
 	}
@@ -82,7 +84,7 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 	}
 	select {
 	case s.ch <- ev:
-		s.maybeEmitDropNotice(ev.Identity, b, now)
+		s.maybeEmitDropNotice(ev.Identity, b, now, live)
 	default:
 		s.recordDrop(ev.Sequence, ev.Sequence)
 	}
@@ -106,7 +108,7 @@ func (s *subscription) recordDrop(fromSeq, toSeq uint64) {
 // stream when a drop window is open and DropWindow has elapsed since
 // the last emit. The notice carries the dropped sequence range so the
 // consumer learns exactly what it missed.
-func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bus, now time.Time) {
+func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bus, now time.Time, live bool) {
 	if !s.dropOpen {
 		return
 	}
@@ -124,6 +126,12 @@ func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bu
 			DroppedCount: s.dropCount,
 			SubscriberID: s.id,
 		},
+	}
+	if live {
+		// Keep the non-replayable sentinel explicit at the live lane boundary.
+		// The durable driver's existing internal drop notices are also
+		// unsequenced, so the non-live path intentionally remains unchanged.
+		notice.Sequence = 0
 	}
 	// The bus.dropped notice is bus-internal bookkeeping: it is NOT
 	// sequenced through the durable log (it carries no run state to

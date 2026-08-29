@@ -36,14 +36,22 @@ func publishLive(bus events.EventBus, ctx context.Context, ev events.Event) erro
 }
 
 type blockingRedactor struct {
-	inner   audit.Redactor
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	inner        audit.Redactor
+	started      chan struct{}
+	release      chan struct{}
+	ignoreCancel bool
+	once         sync.Once
 }
 
 func (r *blockingRedactor) Redact(ctx context.Context, payload any) (any, error) {
 	r.once.Do(func() { close(r.started) })
+	if r.ignoreCancel {
+		<-r.release
+		// This test seam deliberately models a redactor that finishes after
+		// its caller has been cancelled, so the post-fence ctx check is the
+		// only cutoff that can protect the subscriber.
+		return r.inner.Redact(context.Background(), payload)
+	}
 	select {
 	case <-r.release:
 	case <-ctx.Done():
@@ -332,6 +340,69 @@ windowClosed:
 	}
 }
 
+func TestPublishLive_MixedDurableBackpressureDoesNotSequenceNotice(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	cfg := defaultCfg()
+	cfg.SubscriberBufferSize = 1
+	cfg.DropWindow = 10 * time.Millisecond
+	cfg.ReplayBufferSize = 8
+	bus, err := inmem.New(cfg, auditpatterns.New(), inmem.WithClock(clock))
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	id := mkID(908)
+	sub, err := bus.Subscribe(context.Background(), liveFilter(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	if err := bus.Publish(context.Background(), liveWarning(id, 1)); err != nil {
+		t.Fatalf("durable Publish(seq1): %v", err)
+	}
+	// Leave seq1 unread, then advance the injected clock past the drop
+	// window. PublishLive must displace seq1 without turning its drop notice
+	// into a durable sequence.
+	clock.Advance(20 * time.Millisecond)
+	if err := publishLive(bus, context.Background(), liveWarning(id, 2)); err != nil {
+		t.Fatalf("PublishLive mixed saturation: %v", err)
+	}
+	var notices int
+	for {
+		select {
+		case ev := <-sub.Events():
+			if ev.Type != events.EventTypeBusDropped {
+				t.Fatalf("mixed saturation retained event = %+v, want transient drop notice", ev)
+			}
+			notices++
+			if ev.Sequence != 0 {
+				t.Fatalf("live-triggered drop notice Sequence = %d, want 0", ev.Sequence)
+			}
+		default:
+			if notices != 1 {
+				t.Fatalf("mixed saturation notices = %d, want 1", notices)
+			}
+			goto drained
+		}
+	}
+drained:
+	if err := bus.Publish(context.Background(), liveWarning(id, 3)); err != nil {
+		t.Fatalf("durable Publish after live saturation: %v", err)
+	}
+	durable := drainN(t, sub, 1, time.Second)
+	if len(durable) != 1 || durable[0].Sequence != 2 {
+		t.Fatalf("durable event after mixed live saturation = %#v, want Sequence 2", durable)
+	}
+	replay, err := bus.(events.Replayer).Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, liveFilter(id))
+	if err != nil {
+		t.Fatalf("Replay after mixed saturation: %v", err)
+	}
+	if len(replay) != 2 || replay[0].Sequence != 1 || replay[1].Sequence != 2 {
+		t.Fatalf("replay after mixed saturation = %#v, want durable sequences 1,2", replay)
+	}
+}
+
 func TestPublishLive_FenceCutsOffInFlightRedaction(t *testing.T) {
 	redactor := &blockingRedactor{
 		inner:   auditpatterns.New(),
@@ -374,5 +445,70 @@ func TestPublishLive_FenceCutsOffInFlightRedaction(t *testing.T) {
 	case ev := <-sub.Events():
 		t.Fatalf("live event reached subscriber after Fence returned: %+v", ev)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestPublishLive_CancelledAfterFenceUnfenceCannotReachReusedSession(t *testing.T) {
+	redactor := &blockingRedactor{
+		inner:        auditpatterns.New(),
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+		ignoreCancel: true,
+	}
+	bus, err := inmem.New(defaultCfg(), redactor)
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	id := mkID(909)
+	sub, err := bus.Subscribe(context.Background(), liveFilter(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	oldCtx, cancel := context.WithCancel(context.Background())
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- publishLive(bus, oldCtx, events.Event{
+			Type:     events.EventTypeRuntimeWarning,
+			Identity: id,
+			Payload:  liveBarrierPayload{Value: "old-run"},
+		})
+	}()
+	select {
+	case <-redactor.started:
+	case <-time.After(time.Second):
+		t.Fatal("old live publish did not reach redaction barrier")
+	}
+
+	fencer := bus.(events.Fencer)
+	if err := fencer.Fence(context.Background(), id.Identity); err != nil {
+		t.Fatalf("Fence: %v", err)
+	}
+	if err := fencer.Unfence(context.Background(), id.Identity); err != nil {
+		t.Fatalf("Unfence: %v", err)
+	}
+	cancel()
+	close(redactor.release)
+	if err := <-publishDone; err != nil {
+		t.Fatalf("cancelled old PublishLive: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		t.Fatalf("cancelled old live event reached reused session: %+v", ev)
+	default:
+	}
+
+	if err := publishLive(bus, context.Background(), liveWarning(id, 10)); err != nil {
+		t.Fatalf("new-session PublishLive: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		if ev.Identity != id || ev.Sequence != 0 {
+			t.Fatalf("new-session live event = %+v, want identity %+v and Sequence 0", ev, id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new-session live event was not delivered after Unfence")
 	}
 }

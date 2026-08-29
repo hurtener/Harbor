@@ -438,7 +438,7 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	// accepted and retained; a redaction failure never reaches here.
 	b.notifyProjectionWatermark(ev)
 
-	b.fanOut(ev)
+	b.fanOut(ev, false)
 	return nil
 }
 
@@ -465,7 +465,7 @@ func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 	if _, safe := payload.(events.SafePayload); !safe {
 		redacted, err := b.redactor.Redact(ctx, payload)
 		if err != nil {
-			b.emitLiveRedactionFailure(ev, err)
+			b.emitLiveRedactionFailure(ctx, ev, err)
 			return fmt.Errorf("inmem: live publish redaction failed: %w", err)
 		}
 		payload = wrapRedacted(redacted)
@@ -485,7 +485,7 @@ func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 // the notice through the durable Publish path. The notice itself is
 // non-replayable and has no effect on the ring, sequence counter, or
 // projection watermark.
-func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
+func (b *bus) emitLiveRedactionFailure(ctx context.Context, original events.Event, cause error) {
 	ev := events.Event{
 		Type:       events.EventTypeAuditRedactionFailed,
 		Identity:   original.Identity,
@@ -496,7 +496,7 @@ func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
 		},
 		Sequence: 0,
 	}
-	b.fanOutLive(context.Background(), ev)
+	b.fanOutLive(ctx, ev)
 }
 
 // fanOutLive performs the final fenced-session check and the complete
@@ -507,6 +507,9 @@ func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
 func (b *bus) fanOutLive(ctx context.Context, ev events.Event) {
 	b.liveFenceMu.RLock()
 	defer b.liveFenceMu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	b.publishMu.Lock()
 	fenced := b.fencedLocked(ev.Identity)
 	b.publishMu.Unlock()
@@ -514,7 +517,10 @@ func (b *bus) fanOutLive(ctx context.Context, ev events.Event) {
 		b.logFencedDrop(ctx, ev)
 		return
 	}
-	b.fanOut(ev)
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	b.fanOut(ev, true)
 }
 
 // emitRedactionFailure publishes a sibling audit.redaction_failed
@@ -532,7 +538,7 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 		},
 	}
 	b.assignSeqAndStore(&ev)
-	b.fanOut(ev)
+	b.fanOut(ev, false)
 }
 
 // wrapRedacted converts the audit redactor's output (which may be a
@@ -551,7 +557,7 @@ func wrapRedacted(v any) events.EventPayload {
 }
 
 // fanOut walks subscribers and enqueues to each whose filter matches.
-func (b *bus) fanOut(ev events.Event) {
+func (b *bus) fanOut(ev events.Event, live bool) {
 	b.mu.RLock()
 	matched := make([]*subscription, 0, len(b.subs))
 	for _, s := range b.subs {
@@ -564,7 +570,7 @@ func (b *bus) fanOut(ev events.Event) {
 	}
 	b.mu.RUnlock()
 	for _, s := range matched {
-		s.enqueue(ev, b)
+		s.enqueue(ev, b, live)
 	}
 }
 
@@ -635,7 +641,7 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 			},
 		}
 		b.assignSeqAndStore(&notice)
-		b.fanOut(notice)
+		b.fanOut(notice, false)
 	}
 
 	return s, nil
@@ -757,7 +763,7 @@ func (b *bus) Replay(_ context.Context, from events.Cursor, f events.Filter) ([]
 			},
 		}
 		b.assignSeqAndStore(&notice)
-		b.fanOut(notice)
+		b.fanOut(notice, false)
 	}
 
 	// Snapshot the ring + record the head sequence under one lock
@@ -1020,7 +1026,7 @@ func (b *bus) emitAdminScopeUsedAndFanOut(f events.Filter) {
 		},
 	}
 	b.assignSeqAndStore(&notice)
-	b.fanOut(notice)
+	b.fanOut(notice, false)
 }
 
 // Close idempotently shuts the bus down. After Close, Publish and
@@ -1070,7 +1076,6 @@ type subscription struct {
 	dropFromSeq   uint64
 	dropToSeq     uint64
 	dropCount     uint64
-	dropDurable   bool         // this window includes at least one durable sequence
 	lastDropEmit  atomic.Int64 // unix nano of last bus.dropped emit
 	lastDrain     atomic.Int64 // unix nano of last successful read
 	cancelled     atomic.Bool
@@ -1179,7 +1184,7 @@ func (s *subscription) cancelInternalWithNotice(b *bus, notice *events.Event) {
 // buffer as the saturation signal — a saturated buffer where the
 // only way the bus could enqueue was via displacement is exactly
 // the "consumer not keeping up" condition.
-func (s *subscription) enqueue(ev events.Event, b *bus) {
+func (s *subscription) enqueue(ev events.Event, b *bus, live bool) {
 	if s.cancelled.Load() {
 		return
 	}
@@ -1195,7 +1200,7 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 	select {
 	case s.ch <- ev:
 		s.markEnqueueProgress(now.UnixNano())
-		s.maybeEmitDropNotice(ev.Identity, b, now)
+		s.maybeEmitDropNotice(ev.Identity, b, now, live)
 		return
 	default:
 	}
@@ -1214,7 +1219,7 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 
 	select {
 	case s.ch <- ev:
-		s.maybeEmitDropNotice(ev.Identity, b, now)
+		s.maybeEmitDropNotice(ev.Identity, b, now, live)
 	default:
 		// Pathological — record this as dropped too.
 		s.recordDrop(ev.Sequence, ev.Sequence)
@@ -1238,12 +1243,10 @@ func (s *subscription) recordDrop(fromSeq, toSeq uint64) {
 		s.dropFromSeq = fromSeq
 		s.dropToSeq = toSeq
 		s.dropCount = 1
-		s.dropDurable = fromSeq != 0 || toSeq != 0
 		return
 	}
 	s.dropToSeq = toSeq
 	s.dropCount++
-	s.dropDurable = s.dropDurable || fromSeq != 0 || toSeq != 0
 }
 
 // maybeEmitDropNotice emits a bus.dropped event if (a) a drop
@@ -1254,7 +1257,7 @@ func (s *subscription) recordDrop(fromSeq, toSeq uint64) {
 // dropped data event because it tells the consumer they missed a
 // range. The displaced event is folded into the drop accounting
 // before being overwritten.
-func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bus, now time.Time) {
+func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bus, now time.Time, live bool) {
 	if !s.dropOpen {
 		return
 	}
@@ -1273,10 +1276,10 @@ func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bu
 			SubscriberID: s.id,
 		},
 	}
-	// A live event has Sequence == 0 and must not turn its backpressure
-	// notice into durable history. Preserve the legacy sequenced notice for a
-	// window that actually dropped a durable event.
-	if s.dropDurable {
+	// A live invocation must remain completely transient even when it
+	// displaces a previously published durable event. A durable invocation
+	// retains the existing sequenced notice semantics.
+	if !live {
 		b.assignSeqAndStore(&notice)
 	}
 
@@ -1319,7 +1322,6 @@ func (s *subscription) resetDropWindow(now time.Time) {
 	s.dropFromSeq = 0
 	s.dropToSeq = 0
 	s.dropCount = 0
-	s.dropDurable = false
 	s.lastDropEmit.Store(now.UnixNano())
 	s.markEnqueueProgress(now.UnixNano())
 }

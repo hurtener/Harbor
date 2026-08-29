@@ -14987,8 +14987,9 @@ identity/type filter, and immediately bounded-fan-outs the event with
 advance the global sequence authority, or notify projection watermarks. The
 SSE transport therefore emits no `id:` for a live frame, and reconnect is
 honestly lossy for animation. Legacy/custom EventBus implementations may omit
-the additive capability; the completion publisher falls back to durable
-`EventBus.Publish` for those implementations to preserve source compatibility.
+the additive capability for source compatibility; the completion publisher
+emits no chunk event, logs one explicit warning per run, and disables
+animation rather than falling back to durable `EventBus.Publish` writes.
 
 Only `llm.completion.chunk` uses this lane in the current release. Durable
 semantic and lifecycle events continue through `Publish`; the terminal
@@ -15005,8 +15006,10 @@ pre-existing payload policy; the live lane does not broaden their exposure.
 
 **Evidence status.** Focused in-memory and durable tests cover Sequence-0
 delivery, identity/type filtering, blocked durable-store isolation, zero live
-durable writes/history rows, durable sequence/replay continuity, and 128-way
+durable writes/history rows, durable sequence/replay continuity, mixed
+durable-to-live saturation, Fence-to-Unfence cancellation cutoff, and 128-way
 concurrent identity isolation. Focused LLM tests assert completion chunks call
-`PublishLive`. Local race and documentation checks are run for this head; no
-hosted CI, tag, release, downstream/runtime deployment, or downstream
-acceptance is claimed.
+`PublishLive` for capable buses and make no durable `Publish` fallback for a
+legacy bus, with exactly one warning per run. Local race and documentation
+checks are run for this head; no hosted CI, tag, release, downstream/runtime
+deployment, or downstream acceptance is claimed.

@@ -497,7 +497,8 @@ type Subscription interface {
 // EventBus is the canonical durable pub/sub surface. Implementations MUST be
 // safe for concurrent use by N goroutines against a single shared instance.
 // Present-tense animation is an additive LivePublisher capability so legacy
-// embedders that provide only this durable core remain source-compatible.
+// embedders that provide only this durable core remain source-compatible;
+// callers that need animation must explicitly test for that capability.
 type EventBus interface {
 	Publish(ctx context.Context, ev Event) error
 	Subscribe(ctx context.Context, f Filter) (Subscription, error)
@@ -513,8 +514,11 @@ type EventBus interface {
 // continue through EventBus.Publish.
 //
 // NewChunkPublisherContext uses this capability when a bus provides it. A
-// legacy/custom EventBus that does not opt in receives completion chunks via
-// EventBus.Publish instead, preserving the pre-capability durable behavior.
+// legacy/custom EventBus that does not opt in receives no completion-chunk
+// events: the publisher logs one per-run warning and disables animation,
+// leaving the terminal result and durable lifecycle authoritative. This
+// preserves source compatibility without silently converting live animation
+// into per-chunk durable writes.
 type LivePublisher interface {
 	PublishLive(ctx context.Context, ev Event) error
 }

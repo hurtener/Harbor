@@ -187,9 +187,11 @@ func TestNewChunkPublisher_PayloadCarriesTaskAndRunIDs(t *testing.T) {
 	}
 }
 
-func TestNewChunkPublisher_LegacyBusFallsBackToDurablePublish(t *testing.T) {
+func TestNewChunkPublisher_LegacyBusDisablesAnimationWithoutDurableFallback(t *testing.T) {
 	bus := &legacyEventBus{}
-	pub := NewChunkPublisher(bus, chunkPublisherTestQuad("run-legacy"), "task-legacy", slog.Default())
+	var log bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&log, nil))
+	pub := NewChunkPublisher(bus, chunkPublisherTestQuad("run-legacy"), "task-legacy", logger)
 
 	pub("first", false, "content")
 	pub("", true, "content")
@@ -198,8 +200,11 @@ func TestNewChunkPublisher_LegacyBusFallsBackToDurablePublish(t *testing.T) {
 		t.Fatalf("legacy bus unexpectedly implements LivePublisher: %T", live)
 	}
 	publish, captured := bus.counts()
-	if publish != 2 || captured != 2 {
-		t.Fatalf("legacy chunk fallback counts = Publish:%d captured:%d, want 2/2", publish, captured)
+	if publish != 0 || captured != 0 {
+		t.Fatalf("legacy chunk degradation counts = Publish:%d captured:%d, want 0/0", publish, captured)
+	}
+	if warnings := strings.Count(log.String(), "completion animation disabled"); warnings != 1 {
+		t.Fatalf("legacy chunk degradation warnings = %d, want exactly one: %s", warnings, log.String())
 	}
 }
 

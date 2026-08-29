@@ -27,7 +27,9 @@ Two versions move independently in Harbor (RFC §5.3):
   write durable session history or replay state. Reconnects may miss
   animation; the terminal answer and task/session lifecycle remain
   authoritative. Legacy/custom EventBus implementations without the additive
-  `LivePublisher` capability retain durable chunk behavior.
+  `LivePublisher` capability emit no completion-chunk events; the publisher
+  logs one explicit warning per run and disables animation rather than turning
+  chunks into durable writes.
 
 - Playground reopen now requires the authoritative `sessions.turns.*`
   projection. The obsolete raw `state.history` forensic fallback is retired;

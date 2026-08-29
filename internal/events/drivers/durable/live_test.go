@@ -65,14 +65,22 @@ func publishLive(bus events.EventBus, ctx context.Context, ev events.Event) erro
 }
 
 type blockingRedactor struct {
-	inner   audit.Redactor
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	inner        audit.Redactor
+	started      chan struct{}
+	release      chan struct{}
+	ignoreCancel bool
+	once         sync.Once
 }
 
 func (r *blockingRedactor) Redact(ctx context.Context, payload any) (any, error) {
 	r.once.Do(func() { close(r.started) })
+	if r.ignoreCancel {
+		<-r.release
+		// This test seam deliberately models a redactor that finishes after
+		// its caller has been cancelled, so the post-fence ctx check is the
+		// only cutoff that can protect the subscriber.
+		return r.inner.Redact(context.Background(), payload)
+	}
 	select {
 	case <-r.release:
 	case <-ctx.Done():
@@ -84,6 +92,23 @@ func (r *blockingRedactor) Redact(ctx context.Context, payload any) (any, error)
 type liveBarrierPayload struct {
 	events.Sealed
 	Value string
+}
+
+type advancingClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *advancingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *advancingClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
 }
 
 func TestDurable_PublishLive_BypassesBlockedStoreAndLeavesReplayIntact(t *testing.T) {
@@ -197,6 +222,106 @@ func TestDurable_PublishLive_BypassesBlockedStoreAndLeavesReplayIntact(t *testin
 	}
 }
 
+func TestDurable_PublishLive_MixedDurableBackpressureStaysTransient(t *testing.T) {
+	inner := newInmemStore(t)
+	store := &blockingBatchStore{
+		StateStore: inner,
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	clock := &advancingClock{now: time.Unix(1_700_000_000, 0)}
+	cfg := durableCfg()
+	cfg.SubscriberBufferSize = 1
+	cfg.DropWindow = 10 * time.Millisecond
+	cfg.ReplayBufferSize = 8
+	bus, err := durable.New(context.Background(), cfg, auditpatterns.New(), store, durable.WithClock(clock))
+	if err != nil {
+		t.Fatalf("durable.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	rp := bus.(events.Replayer)
+	id := quad("t-mixed-live", "u-mixed-live", "s-mixed-live")
+	sub, err := bus.Subscribe(context.Background(), filterFor(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	if err := bus.Publish(context.Background(), events.Event{
+		Type:     events.EventTypeRuntimeWarning,
+		Identity: id,
+		Payload:  runtimeWarn("first durable"),
+	}); err != nil {
+		t.Fatalf("first durable Publish: %v", err)
+	}
+	// Keep durable seq1 unread in the one-slot subscriber and block the next
+	// durable write. The live call must still fan out and must not touch this
+	// StateStore call or the durable sequence authority.
+	store.batchCalls.Store(0)
+	store.armed.Store(true)
+	durableDone := make(chan error, 1)
+	go func() {
+		durableDone <- bus.Publish(context.Background(), events.Event{
+			Type:     events.EventTypeRuntimeWarning,
+			Identity: id,
+			Payload:  runtimeWarn("blocked second durable"),
+		})
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(time.Second):
+		t.Fatal("second durable Publish did not reach blocked SaveBatchIf")
+	}
+	clock.Advance(20 * time.Millisecond)
+	beforeLiveCalls := store.batchCalls.Load()
+	liveDone := make(chan error, 1)
+	go func() {
+		liveDone <- publishLive(bus, context.Background(), liveChunk(id, "task-mixed", "live-delta"))
+	}()
+	select {
+	case err := <-liveDone:
+		if err != nil {
+			t.Fatalf("PublishLive during blocked durable write: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PublishLive waited for blocked durable persistence")
+	}
+	if calls := store.batchCalls.Load(); calls != beforeLiveCalls {
+		t.Fatalf("PublishLive changed StateStore calls from %d to %d", beforeLiveCalls, calls)
+	}
+	select {
+	case ev := <-sub.Events():
+		if ev.Type != events.EventTypeBusDropped || ev.Sequence != 0 {
+			t.Fatalf("mixed live drop notice = %+v, want bus.dropped Sequence 0", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mixed live saturation did not emit a transient drop notice")
+	}
+
+	close(store.release)
+	if err := <-durableDone; err != nil {
+		t.Fatalf("second durable Publish: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		if ev.Type != events.EventTypeRuntimeWarning || ev.Sequence != 2 {
+			t.Fatalf("next durable event = %+v, want runtime.warning Sequence 2", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("next durable event was not delivered")
+	}
+	if n := countDurableEntries(t, inner); n != 2 {
+		t.Fatalf("durable entry count after mixed live publish = %d, want 2", n)
+	}
+	replay, err := rp.Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, filterFor(id))
+	if err != nil {
+		t.Fatalf("Replay after mixed live publish: %v", err)
+	}
+	if len(replay) != 2 || replay[0].Sequence != 1 || replay[1].Sequence != 2 {
+		t.Fatalf("replay after mixed live publish = %#v, want durable sequences 1,2", replay)
+	}
+}
+
 func TestDurable_PublishLive_ConcurrentIdentityIsolation(t *testing.T) {
 	bus, _ := newDurableBus(t, newInmemStore(t))
 	const identities = 128
@@ -288,5 +413,71 @@ func TestDurable_PublishLive_FenceCutsOffInFlightRedaction(t *testing.T) {
 	case ev := <-sub.Events():
 		t.Fatalf("live event reached subscriber after Fence returned: %+v", ev)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDurable_PublishLive_CancelledAfterFenceUnfenceCannotReachReusedSession(t *testing.T) {
+	redactor := &blockingRedactor{
+		inner:        auditpatterns.New(),
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+		ignoreCancel: true,
+	}
+	store := newInmemStore(t)
+	bus, err := durable.New(context.Background(), durableCfg(), redactor, store)
+	if err != nil {
+		t.Fatalf("durable.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	id := quad("t-fence-reuse-live", "u-fence-reuse-live", "s-fence-reuse-live")
+	sub, err := bus.Subscribe(context.Background(), filterFor(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	oldCtx, cancel := context.WithCancel(context.Background())
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- publishLive(bus, oldCtx, events.Event{
+			Type:     events.EventTypeRuntimeWarning,
+			Identity: id,
+			Payload:  liveBarrierPayload{Value: "old-run"},
+		})
+	}()
+	select {
+	case <-redactor.started:
+	case <-time.After(time.Second):
+		t.Fatal("old live publish did not reach redaction barrier")
+	}
+
+	fencer := bus.(events.Fencer)
+	if err := fencer.Fence(context.Background(), id.Identity); err != nil {
+		t.Fatalf("Fence: %v", err)
+	}
+	if err := fencer.Unfence(context.Background(), id.Identity); err != nil {
+		t.Fatalf("Unfence: %v", err)
+	}
+	cancel()
+	close(redactor.release)
+	if err := <-publishDone; err != nil {
+		t.Fatalf("cancelled old PublishLive: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		t.Fatalf("cancelled old live event reached reused session: %+v", ev)
+	default:
+	}
+
+	if err := publishLive(bus, context.Background(), liveChunk(id, "task-new", "new-live")); err != nil {
+		t.Fatalf("new-session PublishLive: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		if ev.Identity != id || ev.Sequence != 0 {
+			t.Fatalf("new-session live event = %+v, want identity %+v and Sequence 0", ev, id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new-session live event was not delivered after Unfence")
 	}
 }
