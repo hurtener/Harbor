@@ -231,6 +231,26 @@ if awk '
 else
     fail 'phase 221: Console must require the signed OAuth MCP pair removal CAS token'
 fi
+if awk '
+    $0 == "export interface AgentConfigUserRegisterOAuthMCPCapabilityRequest {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /expected_content_hash\?: string;/ { found = 1 }
+    END { exit !found }
+' "${TS_WIRE}"; then
+    ok 'phase 221: Console mirrors the user-scoped signed OAuth MCP pair creation CAS token'
+else
+    fail 'phase 221: Console must mirror the user-scoped signed OAuth MCP pair creation CAS token'
+fi
+if awk '
+    $0 == "export interface AgentConfigUserRemoveOAuthMCPCapabilityRequest {" { inside = 1; next }
+    inside && /^}/ { exit }
+    inside && /expected_content_hash: string;/ { found = 1 }
+    END { exit !found }
+' "${TS_WIRE}"; then
+    ok 'phase 221: Console mirrors the mandatory user-scoped signed OAuth MCP pair removal CAS token'
+else
+    fail 'phase 221: Console must require the user-scoped signed OAuth MCP pair removal CAS token'
+fi
 
 # The Go wire field remains optional for additive decoding, while the Console
 # interface requires it. The service must still fail closed when no usable hash
