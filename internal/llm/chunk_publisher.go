@@ -27,9 +27,11 @@ import (
 // [EventTypeCompletionChunk] with the run's identity quadruple on the
 // **Event envelope**, not just the payload — the event bus validates
 // the envelope before fan-out (CLAUDE.md §6 rule 5). Completion chunks
-// use EventBus.PublishLive: they are non-durable, non-replayable animation
-// frames with Sequence == 0, while the terminal answer/task lifecycle remains
-// authoritative through the durable Publish path. This is the
+// use the additive LivePublisher capability when the bus provides it: they
+// are non-durable, non-replayable animation frames with Sequence == 0, while
+// the terminal answer/task lifecycle remains authoritative through the
+// durable Publish path. Legacy/custom EventBus implementations that do not
+// opt into LivePublisher retain the prior durable Publish behavior. This is the
 // hard-won trap the constructor encodes: when the original closure
 // stamped the payload only, live testing surfaced 280+ rejected
 // chunks per task ("events: event identity missing one or more
@@ -77,6 +79,10 @@ func NewChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q id
 	if logger == nil {
 		logger = slog.Default()
 	}
+	publish := bus.Publish
+	if live, ok := bus.(events.LivePublisher); ok {
+		publish = live.PublishLive
+	}
 	return func(delta string, done bool, kind string) {
 		now := time.Now()
 		payload := CompletionChunkPayload{
@@ -88,7 +94,7 @@ func NewChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q id
 			Kind:       kind,
 			OccurredAt: now,
 		}
-		if pubErr := bus.PublishLive(baseCtx, events.Event{
+		if pubErr := publish(baseCtx, events.Event{
 			Type:       EventTypeCompletionChunk,
 			Identity:   q,
 			OccurredAt: now,

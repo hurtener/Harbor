@@ -78,11 +78,6 @@
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
   import {
-    loadSessionHistory,
-    reduceHistoryTurns,
-    type HistoryTurn
-  } from '$lib/sessions/history.js';
-  import {
     loadTurnPage,
     mergeTurnPages,
     reconcileTurnRow,
@@ -110,7 +105,6 @@
   } from './wire-events.js';
   import {
     appViewFromDiscovery,
-    hydratedAgentMessage,
     turnRowMessages,
     type TurnRowMessages
   } from './turn-projection.js';
@@ -145,20 +139,10 @@
   let pageInfo = $state<{ headline: string; detail: string } | null>(null);
   // A non-fatal note about the reopen hydration: set when the durable turn
   // page was partial (retention eviction), when an older page's cursor was
-  // refused (typed expiry/gap — never a silent reset), or when hydration
-  // failed for an UNEXPECTED reason (a real transport error — never a silent
-  // swallow, CLAUDE.md §13). Null when hydration loaded cleanly (or the
-  // runtime simply has no `sessions.turns.*` surface / no prior history).
+  // refused (typed expiry/gap — never a silent reset), when the required
+  // projection is unavailable, or when hydration failed for an UNEXPECTED
+  // reason (a real transport error — never a silent swallow, CLAUDE.md §13).
   let historyNotice = $state<string | null>(null);
-  // True when the runtime predates the `sessions.turns.*` surface
-  // (`unknown_method` on the two-read open). The normal open NEVER silently
-  // degrades to forensic event replay — the operator must explicitly invoke
-  // it (CLAUDE.md §13, D-425: the legacy path is a user-invoked
-  // degraded/forensic action, never the default).
-  let turnProjectionUnavailable = $state(false);
-  // True once the operator explicitly requested the degraded/forensic
-  // `state.history` event-replay reopen.
-  let legacyReopenRequested = $state(false);
 
   /* ---- durable turn-page paging (HA-64 / D-425) -------------------- */
   // The loaded newest-first turn pages (page[0] is the newest). Older pages
@@ -530,9 +514,10 @@
   // (the bubble is created synchronously on send, before tool results) is a
   // no-op rather than a synthetic bubble.
   function applyAppAvailable(ev: AppAvailableEvent): void {
-    // The projection lives in `turn-projection.ts` beside the replay one, so a
-    // spec can pin the two producers against each other (a one-sided change
-    // here would otherwise pass unnoticed).
+    // The projection lives in `turn-projection.ts` beside the explicit
+    // history utility, so a spec can pin the live and durable producers
+    // against each other (a one-sided change here would otherwise pass
+    // unnoticed).
     const { app: appView, serverID } = appViewFromDiscovery(ev);
     messages = messages.map((m) =>
       m.taskID === ev.taskID && m.role === 'agent' ? { ...m, app: appView, serverID } : m
@@ -1078,11 +1063,10 @@
   // immutable task/turn tie-breaker, so a new turn starting while the
   // operator pages older history produces neither duplicates nor omissions.
   //
-  // A runtime that predates the `sessions.turns.*` surface answers
-  // `unknown_method`: the page sets `turnProjectionUnavailable` and OFFERS
-  // the degraded/forensic legacy reopen (`hydratePastTurnsLegacy`, the
-  // `state.history` event-replay path) — the operator must explicitly invoke
-  // it. It is never the default open path (D-425).
+  // The current Console requires the `sessions.turns.*` surface. An
+  // `unknown_method` response is surfaced as an explicit unavailable notice;
+  // there is no raw-transcript fallback because live completion chunks are
+  // non-durable and cannot reconstruct an authoritative answer (D-425).
   //
   // Returns the durable fold's `live_resume_seq` when it is non-zero (the
   // exclusive subscribe-from cursor the page binds to the EventSource's
@@ -1094,7 +1078,6 @@
     const c = client;
     historyNotice = null;
     olderError = null;
-    turnProjectionUnavailable = false;
     turnPages = [];
     // HA-64 / D-425 (P1) — a re-hydration (retry) rebuilds the eligible
     // in-flight set from the fresh fold; stale admissions from a previous
@@ -1119,8 +1102,8 @@
         return undefined;
       }
       if (isUnknownMethod(err)) {
-        // Runtime predates the lifecycle projection — the turns read below
-        // still decides whether the projection open is possible.
+        // This Runtime does not expose the lifecycle projection — the turns
+        // read below still decides whether the projection open is possible.
       } else {
         // A real lifecycle-read failure is non-fatal (the turn page is the
         // content source); the page proceeds to the turns read.
@@ -1150,11 +1133,11 @@
       return resumeSeq;
     } catch (err) {
       if (err instanceof TurnPageError && err.kind === 'unknown_method') {
-        // The Runtime predates the `sessions.turns.*` surface. The normal
-        // open does NOT silently degrade to forensic replay — offer it.
-        turnProjectionUnavailable = true;
+        // The turn projection is required by the current Console. There is
+        // no raw-transcript fallback: completion chunks are live-only and
+        // cannot reconstruct an authoritative reopened answer.
         historyNotice =
-          'This Runtime does not expose the conversation turn projection. You can load earlier messages with the degraded forensic event-replay path.';
+          'This Runtime does not expose the required conversation turn projection; reopening is unavailable.';
         return undefined;
       }
       if (err instanceof TurnPageError && err.kind === 'not_found') {
@@ -1350,123 +1333,6 @@
       }
     } finally {
       olderLoading = false;
-    }
-  }
-
-  // hydratePastTurnsLegacy is the EXPLICIT, user-invoked degraded/forensic
-  // fallback (D-425): the pre-HA-64 reopen that reconstructs turns CLIENT-SIDE
-  // from the `state.history` windowed event-replay surface (D-254), folding
-  // the user query text in from a single `tasks.list` catalog lookup. It is
-  // ONLY reachable via the "reopen via forensic event replay" control shown
-  // when the turn projection is unavailable — never the default open path.
-  async function hydratePastTurnsLegacy(): Promise<void> {
-    if (client === null || sessionID === '') return;
-    const c = client;
-    historyNotice = null;
-    try {
-      // 1. Window the durable event stream tail-first, scrolling up by
-      //    next_cursor (the `state.history` consumer), and reduce the
-      //    loaded events into per-run turns client-side.
-      const loaded = await loadSessionHistory(c, sessionID, { pageLimit: 50 });
-      // Honest retention signal: when the durable substrate (or a wrapped
-      // best-effort ring) dropped events older than the loaded window, say
-      // so rather than presenting a trimmed history as complete (§13).
-      if (loaded.truncated) {
-        historyNotice =
-          'Older messages were trimmed by retention — showing the most recent history.';
-      }
-      const turns: HistoryTurn[] = reduceHistoryTurns(loaded.events);
-      if (turns.length === 0) return;
-
-      // 2. One catalog lookup for the user query text + per-turn timing
-      //    (the query is not in the event payloads). Keyed by run id.
-      const catalog = new Map<string, { query: string; at: string; durationMs: number }>();
-      try {
-        const resp = await c.tasks.list<{
-          rows?: Array<{
-            id: string;
-            query?: string;
-            started_at?: string;
-            duration_ms?: number;
-          }>;
-        }>({ filter: {}, page_size: 200 });
-        for (const r of resp.rows ?? []) {
-          catalog.set(r.id, {
-            query: r.query ?? '',
-            at: r.started_at ?? '',
-            durationMs: r.duration_ms ?? 0
-          });
-        }
-      } catch {
-        /* query text is best-effort; agent answers still hydrate */
-      }
-
-      // Dedup against turns already in the stream so a live turn sent
-      // before hydration finished is neither duplicated nor discarded.
-      const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
-      const fresh = turns.filter((t) => !present.has(t.runID));
-      if (fresh.length === 0) return;
-
-      const hydrated: ChatMessage[] = [];
-      for (const turn of fresh) {
-        const meta = catalog.get(turn.runID);
-        // Prefer the tasks.list duration_ms (the primary source, as today);
-        // fall back to the reducer's task-lifecycle-derived durationMs.
-        const durationMs = meta?.durationMs || turn.durationMs || 0;
-        const at = meta?.at || turn.at || new Date().toISOString();
-        const query = meta?.query ?? '';
-
-        // Fold the reopened turn into the session KPI accumulators the header
-        // + model chip read — so leave-and-return renders IDENTICAL to the live
-        // view (the acceptance centerpiece), not just the message bodies.
-        recordTurn(durationMs);
-        tokenCount += turn.tokens;
-        promptTokens += turn.promptTokens;
-        outputTokens += turn.outputTokens;
-        costUSD += turn.costUSD;
-        if (turn.tokens > 0 || turn.costUSD > 0) {
-          // A real reading exists — flip the KPI strip out of its "no turns
-          // yet" em-dash state so the reopened stats render (the operator's
-          // regression: reopen showed no tokens/cost).
-          hasCostReading = true;
-          const prev = turnCost[turn.runID] ?? { tokens: 0, cost: 0 };
-          turnCost[turn.runID] = { tokens: prev.tokens + turn.tokens, cost: prev.cost + turn.costUSD };
-        }
-        if (turn.model !== '') modelName = turn.model;
-        const toolCalls: ChatToolCall[] =
-          turn.toolCalls.length > 0
-            ? turn.toolCalls.map((tc) => ({ tool: tc.tool, status: tc.status, summary: tc.summary, runID: turn.runID }))
-            : [];
-        if (toolCalls.length > 0) turnTools[turn.runID] = [...toolCalls];
-
-        if (query) {
-          hydrated.push({ id: `h-${turn.runID}-u`, role: 'user', text: query, taskID: turn.runID, at });
-        }
-        // The field mapping (and its render gate) lives in `turn-projection.ts`
-        // so a spec can hold it — inline here it was the one part of the replay
-        // no test could reach.
-        const agent = hydratedAgentMessage(turn, { at, durationMs, toolCalls });
-        if (agent !== null) hydrated.push(agent);
-      }
-      if (hydrated.length === 0) return;
-      // Prepend — the reloaded turns predate any live message sent after
-      // reload, so history sits above the live tail.
-      messages = [...hydrated, ...messages];
-      if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
-    } catch (err) {
-      // Distinguish EXPECTED-empty from a real transport failure (§13 — no
-      // silent swallow). A runtime that predates the surface
-      // (`unknown_method`) or a session with no retained history
-      // (`not_found`) legitimately starts empty. Any other error (e.g. the
-      // bus has no windowed-read capability → `runtime_error`, or a network
-      // fault) is surfaced as a non-fatal notice rather than masked behind a
-      // blank conversation.
-      if (isUnknownMethod(err) || (err instanceof ProtocolError && err.code === 'not_found')) {
-        return;
-      }
-      const detail = err instanceof ProtocolError ? `${err.code}: ${err.message}` : String(err);
-      console.warn('hydratePastTurnsLegacy: could not load earlier messages:', detail);
-      historyNotice = `Could not load earlier messages (${detail}). The conversation continues from here.`;
     }
   }
 
@@ -2230,28 +2096,7 @@
             {historyNotice}
           </p>
         {/if}
-        {#if turnProjectionUnavailable}
-          <!-- The explicit, user-invoked degraded/forensic fallback (D-425).
-               The runtime predates the `sessions.turns.*` surface; the normal
-               open does NOT silently fall back to forensic event replay. The
-               operator opts in, and the control names the degradation. -->
-          <div class="forensic-fallback" data-testid="forensic-fallback">
-            <p class="history-notice" role="status">
-              Conversation turn projection unavailable on this Runtime.
-            </p>
-            <button
-              type="button"
-              class="session-new small"
-              data-testid="forensic-reopen-button"
-              onclick={() => {
-                legacyReopenRequested = true;
-                void hydratePastTurnsLegacy();
-              }}
-            >
-              {legacyReopenRequested ? 'Reopening via forensic event replay…' : 'Reopen via forensic event replay (degraded)'}
-            </button>
-          </div>
-        {:else if turnPages.length > 0}
+        {#if turnPages.length > 0}
           <!-- Older-page paging rides the opaque snapshot/keyset cursor
                (`next_older_cursor`) — stable ordering under append, typed
                refusal surfaced honestly (never a silent reset). -->
@@ -2500,20 +2345,6 @@
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
-  }
-
-  /* The explicit degraded/forensic fallback control (HA-64 / D-425) —
-     shown only when the turn projection is unavailable. */
-  .forensic-fallback {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-1);
-    margin: 0 var(--space-3) var(--space-2);
-  }
-
-  .forensic-fallback .history-notice {
-    margin: 0;
   }
 
   .older-turns-row {

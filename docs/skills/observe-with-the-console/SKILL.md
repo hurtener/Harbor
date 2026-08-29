@@ -152,7 +152,7 @@ The queue view for planner-spawned background tasks — a focused `tasks.list` p
 
 Covered in depth in [`drive-the-playground`](../drive-the-playground/SKILL.md). Where you actually use the agent; the Tasks page links from here.
 
-Opening (or reopening) an existing session uses the **two-read chat open** (HA-64 / D-425): ONE lifecycle-only session read — `sessions.inspect` with `projection: 'lifecycle'` — drives the header's paused flag, the KPI Started column, and honest brand-new-session detection; plus ONE durable tail page — `sessions.turns.list` — the runtime's consumer-safe conversation projection. When a turn you rendered from that fold seals mid-view, the page reconciles it with exactly ONE `sessions.turns.get` on the consumer lane — never a raw-transcript refetch. A runtime that predates the `sessions.turns.*` surface answers `unknown_method`, and the degraded legacy reopen (`state.history` event replay) is offered but never the default.
+Opening (or reopening) an existing session uses the **two-read chat open** (HA-64 / D-425): ONE lifecycle-only session read — `sessions.inspect` with `projection: 'lifecycle'` — drives the header's paused flag, the KPI Started column, and honest brand-new-session detection; plus ONE durable tail page — `sessions.turns.list` — the runtime's consumer-safe conversation projection. When a turn you rendered from that fold seals mid-view, the page reconciles it with exactly ONE `sessions.turns.get` on the consumer lane — never a raw-transcript refetch. The current Console requires the `sessions.turns.*` surface; `unknown_method` is surfaced as an explicit "reopening is unavailable" state, with no legacy `state.history` reconstruction because completion chunks are non-durable.
 
 ---
 

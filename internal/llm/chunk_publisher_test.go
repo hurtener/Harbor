@@ -85,6 +85,35 @@ func (b *envelopeValidatingBus) laneCounts() (publish, live int) {
 	return b.publishCalls, b.liveCalls
 }
 
+// legacyEventBus intentionally implements only the durable EventBus core.
+// It pins source compatibility for custom SDK buses that predate the
+// additive LivePublisher capability.
+type legacyEventBus struct {
+	mu           sync.Mutex
+	events       []events.Event
+	publishCalls int
+}
+
+func (b *legacyEventBus) Publish(_ context.Context, ev events.Event) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.publishCalls++
+	b.events = append(b.events, ev)
+	return nil
+}
+
+func (b *legacyEventBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
+	return nil, errors.New("legacyEventBus: Subscribe unsupported")
+}
+
+func (b *legacyEventBus) Close(context.Context) error { return nil }
+
+func (b *legacyEventBus) counts() (publish, captured int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.publishCalls, len(b.events)
+}
+
 func chunkPublisherTestQuad(run string) identity.Quadruple {
 	return identity.Quadruple{
 		Identity: identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "sess-a"},
@@ -155,6 +184,22 @@ func TestNewChunkPublisher_PayloadCarriesTaskAndRunIDs(t *testing.T) {
 	}
 	if payload.OccurredAt.IsZero() {
 		t.Error("payload.OccurredAt is zero")
+	}
+}
+
+func TestNewChunkPublisher_LegacyBusFallsBackToDurablePublish(t *testing.T) {
+	bus := &legacyEventBus{}
+	pub := NewChunkPublisher(bus, chunkPublisherTestQuad("run-legacy"), "task-legacy", slog.Default())
+
+	pub("first", false, "content")
+	pub("", true, "content")
+
+	if live, ok := any(bus).(events.LivePublisher); ok {
+		t.Fatalf("legacy bus unexpectedly implements LivePublisher: %T", live)
+	}
+	publish, captured := bus.counts()
+	if publish != 2 || captured != 2 {
+		t.Fatalf("legacy chunk fallback counts = Publish:%d captured:%d, want 2/2", publish, captured)
 	}
 }
 

@@ -685,7 +685,10 @@ func (b *liveCtxBus) PublishLive(ctx context.Context, ev events.Event) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("live publish arrived on a dead context: %w", err)
 	}
-	return b.EventBus.PublishLive(ctx, ev)
+	if live, ok := b.EventBus.(events.LivePublisher); ok {
+		return live.PublishLive(ctx, ev)
+	}
+	return b.EventBus.Publish(ctx, ev)
 }
 
 // countingDeleteStore counts Delete calls without altering behaviour.

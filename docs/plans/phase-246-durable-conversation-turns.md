@@ -332,9 +332,12 @@ database mutation is claimed.
       access.
 - [ ] Wire manifest, generated clients, capability/version discovery, protocol
       docs, operator skill, and Harbor's own chat surface (the Console) land
-      with the methods. The fallback path may use raw reads only as an
-      explicit degraded/forensic action, never a silent normal-open path.
-      Full D-223 lockstep + D-209 regen fire in the same PR.
+      with the methods. The current Console requires `sessions.turns.*` and
+      surfaces `unknown_method` explicitly when that projection is absent;
+      it does not fall back to raw `state.history` reconstruction, because
+      completion chunks are non-durable. `state.history` remains available
+      only to consumers that explicitly own that raw-event contract. Full
+      D-223 lockstep + D-209 regen fire in the same PR.
 
 ## Files added or changed
 
@@ -351,7 +354,7 @@ database mutation is claimed.
   (hand-maintained mirror + `make protocol-ts-gen`)
 - generated Protocol docs (`make protocol-docs-gen`) and the operator skill
 - `web/console/src/lib/sessions/` — minimal chat-open consumer using the two
-  reads (replaces the forensic `state.history` join for the normal open path)
+  reads (the current Console has no forensic `state.history` fallback)
 - `test/integration/conversation_turns_test.go`
 - `docs/glossary.md`, `docs/decisions.md`, `docs/plans/README.md`,
   `RFC-001-Harbor.md`, `docs/skills/`, and `CHANGELOG.md`

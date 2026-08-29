@@ -12,8 +12,10 @@
 //     before it is fanned out to live subscribers. Persistence is keyed so
 //     replay-from-cursor is exact and gap-free across a Runtime restart: see
 //     the keying scheme below. PublishLive is the required exception for
-//     present-tense animation: it validates/redacts and bounded-fan-outs with
-//     Sequence == 0, without StateStore, ring, sequence, or projection work.
+//     present-tense animation: it applies the same audit-boundary policy
+//     (redacting non-SafePayload values while retaining the existing
+//     SafePayload bypass) and bounded-fan-outs with Sequence == 0, without
+//     StateStore, ring, sequence, or projection work.
 //   - Replay reads from the StateStore — not an in-memory ring — so a
 //     late subscriber that connects after the Runtime was rebuilt
 //     against the same StateStore sees the full, gap-free history.
@@ -646,6 +648,9 @@ func (b *bus) loadDurableFenceSnapshot(ctx context.Context) (durableFenceSnapsho
 }
 
 // isFenced reports whether the event's session triple is fenced (erased).
+// It is used by durable publication/read paths that already hold their own
+// publication coordination. Live publication uses fanOutLive below so the
+// check remains linearized with the complete fan-out.
 func (b *bus) isFenced(id identity.Quadruple) bool {
 	b.fenceMu.RLock()
 	defer b.fenceMu.RUnlock()
@@ -825,8 +830,11 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 // It intentionally bypasses sequenceAndStore, the StateStore, the
 // best-effort ring, and projection watermarks. Live animation is therefore
 // non-durable and non-replayable: every delivered event carries Sequence == 0
-// and a reconnect may miss it. Durable semantic and lifecycle events must
-// continue through Publish.
+// and a reconnect may miss it. Validation and redaction happen before the
+// live fence cutoff lock; the final check and fan-out are linearized with
+// Fence so erased-session output cannot leak after Fence returns. SafePayload
+// retains its existing redactor bypass. Durable semantic and lifecycle events
+// must continue through Publish.
 func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
@@ -836,20 +844,6 @@ func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 	}
 	if err := events.ValidateEvent(ev); err != nil {
 		return err
-	}
-
-	// The in-memory fence cache is the only fence check permitted here. A
-	// StateStore lookup would turn this non-durable, latency-sensitive lane
-	// back into a persistence operation. Fence populates this cache before
-	// returning, so late output from an erased session is not fanned out.
-	if b.isFenced(ev.Identity) {
-		b.logger.InfoContext(ctx, "durable: dropped live event for erased (fenced) session",
-			slog.String("driver", "durable"),
-			slog.String("event_type", string(ev.Type)),
-			slog.String("tenant_id", ev.Identity.TenantID),
-			slog.String("user_id", ev.Identity.UserID),
-			slog.String("session_id", ev.Identity.SessionID))
-		return nil
 	}
 
 	payload := ev.Payload
@@ -868,7 +862,7 @@ func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 	// ValidateEvent requires caller-provided Sequence to be zero. Keep the
 	// explicit assignment here as a guard if Event construction changes later.
 	ev.Sequence = 0
-	b.fanOut(ev)
+	b.fanOutLive(ctx, ev)
 	return nil
 }
 
@@ -2167,7 +2161,7 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 // this sibling notice has no replay position and does not touch StateStore,
 // the ring, the global sequence, or projection state.
 func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
-	b.publishInternal(events.Event{
+	b.fanOutLive(context.Background(), events.Event{
 		Type:       events.EventTypeAuditRedactionFailed,
 		Identity:   original.Identity,
 		OccurredAt: b.clock.Now(),
@@ -2176,6 +2170,30 @@ func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
 			Reason:       cause.Error(),
 		},
 	})
+}
+
+// fanOutLive performs the final fenced-session check and the complete
+// bounded fan-out under one read-side fence lock. Fence's write-side lock
+// therefore waits for an already-admitted live fan-out to finish and blocks
+// later ones before marking the session erased. The lock is not held during
+// validation, redaction, or StateStore I/O.
+func (b *bus) fanOutLive(ctx context.Context, ev events.Event) {
+	b.fenceMu.RLock()
+	defer b.fenceMu.RUnlock()
+	if b.fenced == nil {
+		b.fanOut(ev)
+		return
+	}
+	if _, fenced := b.fenced[fenceKey(ev.Identity.Identity)]; fenced {
+		b.logger.InfoContext(ctx, "durable: dropped live event for erased (fenced) session",
+			slog.String("driver", "durable"),
+			slog.String("event_type", string(ev.Type)),
+			slog.String("tenant_id", ev.Identity.TenantID),
+			slog.String("user_id", ev.Identity.UserID),
+			slog.String("session_id", ev.Identity.SessionID))
+		return
+	}
+	b.fanOut(ev)
 }
 
 // publishInternal fans out a bus-internal SafePayload notice
@@ -2343,6 +2361,7 @@ func windowFromSnapshot(snapshot []events.Event, before uint64, limit int, f eve
 // Compile-time assertions: bus implements all three interfaces.
 var (
 	_ events.EventBus              = (*bus)(nil)
+	_ events.LivePublisher         = (*bus)(nil)
 	_ events.Replayer              = (*bus)(nil)
 	_ events.HistoryReplayer       = (*bus)(nil)
 	_ events.EventMetadataReplayer = (*bus)(nil)

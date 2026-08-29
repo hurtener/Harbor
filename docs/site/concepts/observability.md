@@ -31,11 +31,12 @@ one.
 
 The durable sequence and reconnect cursor apply to semantic and lifecycle
 events published to history. `llm.completion.chunk` uses the bus's live-only
-lane: it is validated, redacted, identity-filtered, and bounded for immediate
-animation, but has `sequence: 0`, no `id:`, and no replay or telemetry-history
-row.
+lane: it is validated, identity-filtered, and bounded for immediate animation;
+its `SafePayload` remains exempt from the existing audit-redactor policy, with
+no broadened exposure. It has `sequence: 0`, no `id:`, and no replay or
+telemetry-history row.
 
-The bus itself is identity-mandatory and server-filtered: subscriptions are scoped to the caller's identity, durable events carry a monotonic gap-free sequence, and **every payload runs through the audit redactor before emit** — so secrets and raw tool arguments never reach a log, a trace, or a Console pane. Under backpressure the bus drops oldest and emits a `bus.dropped` notice (carrying the dropped durable sequence range) rather than blocking a run. The full event catalog lives in the [events reference](/protocol/events).
+The bus itself is identity-mandatory and server-filtered: subscriptions are scoped to the caller's identity, durable events carry a monotonic gap-free sequence, and **every non-SafePayload runs through the audit redactor before emit**; SafePayload types retain their declared bypass. Raw tool arguments and results — which routinely carry secrets — never reach a subscriber unredacted. Under backpressure the bus drops oldest and emits a `bus.dropped` notice (carrying the dropped durable sequence range) rather than blocking a run. The full event catalog lives in the [events reference](/protocol/events).
 
 ## The Console — a Protocol client, not a backdoor
 

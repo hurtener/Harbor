@@ -97,7 +97,10 @@ func (f *failFirstProjectBus) Publish(ctx context.Context, ev events.Event) erro
 }
 
 func (f *failFirstProjectBus) PublishLive(ctx context.Context, ev events.Event) error {
-	return f.EventBus.PublishLive(ctx, ev)
+	if live, ok := f.EventBus.(events.LivePublisher); ok {
+		return live.PublishLive(ctx, ev)
+	}
+	return f.EventBus.Publish(ctx, ev)
 }
 
 // TestDurable_ProjectFailure_PollerRedelivers asserts that when a

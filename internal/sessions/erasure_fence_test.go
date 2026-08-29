@@ -346,7 +346,10 @@ func (b *nonFencerBus) Publish(ctx context.Context, ev events.Event) error {
 }
 
 func (b *nonFencerBus) PublishLive(ctx context.Context, ev events.Event) error {
-	return b.inner.PublishLive(ctx, ev)
+	if live, ok := b.inner.(events.LivePublisher); ok {
+		return live.PublishLive(ctx, ev)
+	}
+	return b.inner.Publish(ctx, ev)
 }
 
 func (b *nonFencerBus) Subscribe(ctx context.Context, f events.Filter) (events.Subscription, error) {

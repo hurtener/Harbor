@@ -52,7 +52,10 @@ func (b *retirementFailOnceBus) Publish(ctx context.Context, event events.Event)
 }
 
 func (b *retirementFailOnceBus) PublishLive(ctx context.Context, event events.Event) error {
-	return b.EventBus.PublishLive(ctx, event)
+	if live, ok := b.EventBus.(events.LivePublisher); ok {
+		return live.PublishLive(ctx, event)
+	}
+	return b.EventBus.Publish(ctx, event)
 }
 
 // TestRetirement_TerminalHistoryAndReplay proves the lifecycle transition is

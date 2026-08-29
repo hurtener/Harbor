@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/audit"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
@@ -26,6 +27,36 @@ func liveFilter(id identity.Quadruple) events.Filter {
 	return events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
 }
 
+func publishLive(bus events.EventBus, ctx context.Context, ev events.Event) error {
+	live, ok := bus.(events.LivePublisher)
+	if !ok {
+		return fmt.Errorf("bus does not implement events.LivePublisher")
+	}
+	return live.PublishLive(ctx, ev)
+}
+
+type blockingRedactor struct {
+	inner   audit.Redactor
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingRedactor) Redact(ctx context.Context, payload any) (any, error) {
+	r.once.Do(func() { close(r.started) })
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.inner.Redact(ctx, payload)
+}
+
+type liveBarrierPayload struct {
+	events.Sealed
+	Value string
+}
+
 func TestPublishLive_DeliversWithoutReplayOrSequenceAdvance(t *testing.T) {
 	cfg := defaultCfg()
 	cfg.ReplayBufferSize = 32
@@ -41,7 +72,7 @@ func TestPublishLive_DeliversWithoutReplayOrSequenceAdvance(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	if err := bus.PublishLive(context.Background(), liveWarning(id, 1)); err != nil {
+	if err := publishLive(bus, context.Background(), liveWarning(id, 1)); err != nil {
 		t.Fatalf("PublishLive: %v", err)
 	}
 	got := drainN(t, sub, 1, time.Second)
@@ -95,7 +126,7 @@ func TestPublishLive_AppliesIdentityAndTypeFilters(t *testing.T) {
 		liveWarning(other, 1),
 		{Type: events.EventTypeRuntimeError, Identity: target, Payload: events.SubscriptionIdleClosedPayload{SubscriberID: 2}},
 	} {
-		if err := bus.PublishLive(context.Background(), ev); err != nil {
+		if err := publishLive(bus, context.Background(), ev); err != nil {
 			t.Fatalf("PublishLive(%s): %v", ev.Type, err)
 		}
 	}
@@ -105,7 +136,7 @@ func TestPublishLive_AppliesIdentityAndTypeFilters(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 
-	if err := bus.PublishLive(context.Background(), liveWarning(target, 3)); err != nil {
+	if err := publishLive(bus, context.Background(), liveWarning(target, 3)); err != nil {
 		t.Fatalf("PublishLive matching event: %v", err)
 	}
 	select {
@@ -149,7 +180,7 @@ func TestPublishLive_ConcurrentIdentityIsolation(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := bus.PublishLive(context.Background(), liveWarning(ids[i], uint64(i))); err != nil {
+			if err := publishLive(bus, context.Background(), liveWarning(ids[i], uint64(i))); err != nil {
 				errCh <- fmt.Errorf("publish %d: %w", i, err)
 			}
 		}(i)
@@ -186,12 +217,12 @@ func TestPublishLive_RejectsInvalidEventsWithoutFanout(t *testing.T) {
 
 	bad := liveWarning(id, 1)
 	bad.Sequence = 99
-	if err := bus.PublishLive(context.Background(), bad); !errors.Is(err, events.ErrSequenceProvided) {
+	if err := publishLive(bus, context.Background(), bad); !errors.Is(err, events.ErrSequenceProvided) {
 		t.Fatalf("PublishLive(sequence=99) = %v, want ErrSequenceProvided", err)
 	}
 	missing := liveWarning(id, 2)
 	missing.Identity.SessionID = ""
-	if err := bus.PublishLive(context.Background(), missing); !errors.Is(err, events.ErrIdentityRequired) {
+	if err := publishLive(bus, context.Background(), missing); !errors.Is(err, events.ErrIdentityRequired) {
 		t.Fatalf("PublishLive(missing identity) = %v, want ErrIdentityRequired", err)
 	}
 	select {
@@ -212,12 +243,136 @@ func TestPublishLive_CancelledContextDoesNotFanout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := bus.PublishLive(ctx, liveWarning(id, 1)); !errors.Is(err, context.Canceled) {
+	if err := publishLive(bus, ctx, liveWarning(id, 1)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("PublishLive(cancelled) = %v, want context.Canceled", err)
 	}
 	select {
 	case ev := <-sub.Events():
 		t.Fatalf("cancelled live event reached subscriber: %+v", ev)
 	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestPublishLive_SaturationDropNoticeStaysTransient(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SubscriberBufferSize = 2
+	cfg.DropWindow = time.Nanosecond
+	cfg.ReplayBufferSize = 8
+	bus, err := inmem.New(cfg, auditpatterns.New())
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	id := mkID(906)
+	sub, err := bus.Subscribe(context.Background(), liveFilter(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	// Keep the two-slot subscriber saturated while a live burst forces the
+	// drop notice path. The notice must remain Sequence 0 and must not enter
+	// the replay ring or advance the next durable sequence.
+	for i := uint64(0); i < 4; i++ {
+		if err := publishLive(bus, context.Background(), liveWarning(id, i)); err != nil {
+			t.Fatalf("PublishLive(%d): %v", i, err)
+		}
+	}
+	var sawDrop bool
+	for {
+		select {
+		case ev := <-sub.Events():
+			if ev.Type == events.EventTypeBusDropped {
+				sawDrop = true
+				if ev.Sequence != 0 {
+					t.Fatalf("live drop notice Sequence = %d, want 0", ev.Sequence)
+				}
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	if !sawDrop {
+		t.Fatal("live saturation did not emit a bus.dropped notice")
+	}
+	// The notice path may displace one additional live event, leaving a new
+	// zero-sequence drop window open. With the buffer drained, one more live
+	// event lets that notice land without displacement and closes the window;
+	// this isolates the following durable assertion from the subscriber's
+	// backpressure bookkeeping.
+	if err := publishLive(bus, context.Background(), liveWarning(id, 99)); err != nil {
+		t.Fatalf("PublishLive(window close): %v", err)
+	}
+	for {
+		select {
+		case ev := <-sub.Events():
+			if ev.Type == events.EventTypeBusDropped && ev.Sequence != 0 {
+				t.Fatalf("live drop notice Sequence = %d, want 0", ev.Sequence)
+			}
+		default:
+			goto windowClosed
+		}
+	}
+windowClosed:
+	if err := bus.Publish(context.Background(), liveWarning(id, 100)); err != nil {
+		t.Fatalf("Publish durable after live burst: %v", err)
+	}
+	durable := drainN(t, sub, 1, time.Second)
+	if len(durable) != 1 || durable[0].Sequence != 1 {
+		t.Fatalf("durable event after live drop notice = %#v, want Sequence 1", durable)
+	}
+	rp := bus.(events.Replayer)
+	replay, err := rp.Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, liveFilter(id))
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(replay) != 1 || replay[0].Sequence != 1 || replay[0].Type != events.EventTypeRuntimeWarning {
+		t.Fatalf("replay after live drop notice = %#v, want only durable Sequence 1", replay)
+	}
+}
+
+func TestPublishLive_FenceCutsOffInFlightRedaction(t *testing.T) {
+	redactor := &blockingRedactor{
+		inner:   auditpatterns.New(),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	bus, err := inmem.New(defaultCfg(), redactor)
+	if err != nil {
+		t.Fatalf("inmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	id := mkID(907)
+	sub, err := bus.Subscribe(context.Background(), liveFilter(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- publishLive(bus, context.Background(), events.Event{
+			Type:     events.EventTypeRuntimeWarning,
+			Identity: id,
+			Payload:  liveBarrierPayload{Value: "in-flight"},
+		})
+	}()
+	select {
+	case <-redactor.started:
+	case <-time.After(time.Second):
+		t.Fatal("live publish did not reach redaction barrier")
+	}
+	if err := bus.(events.Fencer).Fence(context.Background(), id.Identity); err != nil {
+		t.Fatalf("Fence: %v", err)
+	}
+	close(redactor.release)
+	if err := <-publishDone; err != nil {
+		t.Fatalf("in-flight PublishLive: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		t.Fatalf("live event reached subscriber after Fence returned: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

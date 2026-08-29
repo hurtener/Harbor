@@ -1932,11 +1932,16 @@ type Filter struct {
 
 type EventBus interface {
     Publish(ctx context.Context, ev Event) error
-    // Present-tense animation only: validates/redacts, bounded-fan-outs,
-    // and leaves Sequence == 0. Never persists or enters replay history.
-    PublishLive(ctx context.Context, ev Event) error
     Subscribe(ctx context.Context, f Filter) (Subscription, error)
     Close(ctx context.Context) error
+}
+
+// Optional additive capability for present-tense animation. SafePayload
+// values retain the existing audit-redactor bypass; other values follow the
+// audit boundary. The capability leaves Sequence == 0 and never persists or
+// enters replay history.
+type LivePublisher interface {
+    PublishLive(ctx context.Context, ev Event) error
 }
 ```
 
@@ -1947,15 +1952,17 @@ type EventBus interface {
   two explicit publication contracts: `Publish` is durable/replayable where
   the configured driver supports replay, while `PublishLive` is the bounded,
   non-durable animation lane described below.
-- `EventBus` (the Go-level name shipped as `internal/events.EventBus`) ships with `Publish` / `PublishLive` / `Subscribe` / `Close`. The `Replay(ctx, Cursor, Filter)` method is a separate concern and lives in Phase 06's replay-equipped driver — when that driver lands, callers will type-assert the returned `EventBus` to a `Replayer` capability interface, keeping the core surface lean.
+- `EventBus` (the Go-level name shipped as `internal/events.EventBus`) ships with `Publish` / `Subscribe` / `Close`. Present-tense animation is the additive `LivePublisher` capability; the shipped drivers implement it, while a legacy/custom EventBus may omit it and retain the completion publisher's durable `Publish` fallback for source compatibility. The `Replay(ctx, Cursor, Filter)` method is a separate concern and lives in Phase 06's replay-equipped driver — when that driver lands, callers will type-assert the returned `EventBus` to a `Replayer` capability interface, keeping the core surface lean.
 - Drop policy on backpressure: drop-oldest, with a `bus.dropped` event describing the dropped sequence range. Notices are windowed at most once per `DropWindow` per subscriber.
 - Server-enforced isolation filter: `Subscribe` rejects empty-triple non-admin filters with `ErrIdentityScopeRequired`. Every `Admin: true` Subscribe additionally emits an `audit.admin_scope_used` event so abuse is retroactively detectable. Cryptographic verification of the admin claim is wired in Phase 61 (Protocol auth); Phase 05 trusts the boolean.
 - **Audit-before-emit boundary.** Every `Publish` runs the payload through `audit.Redactor` before enqueueing — except for `SafePayload`-marked types, which bypass the redactor (their declarer guarantees no secret-shaped fields; preserves typed access for bus-internal events and well-known metadata). On redaction failure: the bus emits a sibling `audit.redaction_failed` event (with NO original payload bytes) AND returns the wrapped error to the caller. The original event is NOT enqueued (D-020).
-- **Non-durable live publication (D-452).** `PublishLive` applies the same
-  event validation, audit-redaction boundary, identity filtering, and bounded
-  drop-oldest fan-out as `Publish`, then immediately delivers a present-tense
-  event with `Sequence == 0`. It does not touch `StateStore`, the replay ring,
-  the global sequence authority, or projection watermarks, so reconnect is
+- **Non-durable live publication (D-452).** The additive `LivePublisher`
+  capability applies the same event validation, audit-boundary policy,
+  identity filtering, and bounded drop-oldest fan-out as `Publish`, then
+  immediately delivers a present-tense event with `Sequence == 0`. Non-
+  `SafePayload` values follow the audit redactor; `SafePayload` values retain
+  their existing bypass. It does not touch `StateStore`, the replay ring, the
+  global sequence authority, or projection watermarks, so reconnect is
   intentionally lossy for live animation. SSE omits `id:` for these events;
   the terminal `AnswerEnvelope` and durable task/session lifecycle events are
   authoritative and reconcile a client after a missed animation frame. Only

@@ -1,20 +1,15 @@
-// Harbor Console — session-reopen windowed hydration helper (D-254).
+// Harbor Console — bounded `state.history` reader/reducer (D-254).
 //
-// Since HA-64 / D-425, this module is the EXPLICIT, user-invoked
-// DEGRADED/FORENSIC FALLBACK for the Playground reopen, retained verbatim
-// for runtimes that predate the `sessions.turns.*` surface. The NORMAL open
-// is the two-read path (`$lib/sessions/turns.ts`: one lifecycle inspect +
-// one `sessions.turns.list` tail page); this module's forensic
-// `state.history` event-replay reducer is reached ONLY when the operator
-// explicitly invokes the "reopen via forensic event replay" control — it is
-// never the default open path (CLAUDE.md §13, D-425).
+// The current Playground reopen uses the authoritative `sessions.turns.*`
+// projection and does not invoke this module. These helpers remain available
+// to protocol consumers that explicitly opt into the `state.history` surface;
+// they are not an answer authority and must not be used to reconstruct a
+// current chat from non-durable completion chunks (D-425).
 //
-// It is the FIRST consumer of the `state.history` Protocol surface
-// (CLAUDE.md §13 primitive-with-consumer rule): a tail-first, windowed,
-// scroll-up-by-cursor reader of a session's durable event stream, plus a
-// pure client-side reduction of the loaded events into reopen turns. The
-// Playground legacy-reopen path drives this instead of its former
-// full-load `tasks.list` + N×`tasks.get` reconstruction.
+// It is a tail-first, windowed, scroll-up-by-cursor reader of a session's
+// durable event stream, plus a pure client-side reduction of loaded events
+// into turns for those explicit consumers. The current Playground does not
+// use it as a fallback for the authoritative turn projection.
 //
 // The reduction stays client-side (the surface returns flat events, never
 // pre-reduced turns): the agent answer + reasoning are reconstructed from the

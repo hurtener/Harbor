@@ -256,7 +256,11 @@ func (b *recordingBus) Publish(ctx context.Context, ev events.Event) error {
 }
 
 func (b *recordingBus) PublishLive(ctx context.Context, ev events.Event) error {
-	if err := b.EventBus.PublishLive(ctx, ev); err != nil {
+	live, ok := b.EventBus.(events.LivePublisher)
+	if !ok {
+		return b.EventBus.Publish(ctx, ev)
+	}
+	if err := live.PublishLive(ctx, ev); err != nil {
 		return err
 	}
 	b.mu.Lock()

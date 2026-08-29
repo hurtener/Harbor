@@ -20,10 +20,19 @@ Two versions move independently in Harbor (RFC §5.3):
 ### Fixed
 
 - LLM completion chunks now use the EventBus live-only publication lane:
-  validation, redaction, identity filtering, and bounded fan-out still apply,
-  but the animation frames carry `Sequence == 0` and never write durable
-  session history or replay state. Reconnects may miss animation; the
-  terminal answer and task/session lifecycle remain authoritative.
+  validation, the existing audit-boundary policy, identity filtering, and
+  bounded fan-out still apply. `CompletionChunkPayload` remains a
+  `SafePayload` and therefore retains its existing redactor bypass; the lane
+  does not broaden exposure. Animation frames carry `Sequence == 0` and never
+  write durable session history or replay state. Reconnects may miss
+  animation; the terminal answer and task/session lifecycle remain
+  authoritative. Legacy/custom EventBus implementations without the additive
+  `LivePublisher` capability retain durable chunk behavior.
+
+- Playground reopen now requires the authoritative `sessions.turns.*`
+  projection. The obsolete raw `state.history` forensic fallback is retired;
+  an unavailable projection is surfaced explicitly rather than rendering an
+  incomplete answer from non-durable completion chunks.
 
 - The `tools.*` catalog projection now resolves user-scoped MCP source keys
   back to their logical configured names for the wire `owner` field. Physical

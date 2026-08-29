@@ -14,6 +14,10 @@ import (
 type (
 	// EventBus is the typed pub/sub bus interface.
 	EventBus = internal.EventBus
+	// LivePublisher is the additive present-tense animation capability.
+	// Legacy EventBus implementations may omit it; chunk publishers fall back
+	// to EventBus.Publish when it is absent.
+	LivePublisher = internal.LivePublisher
 	// Event is the canonical event record.
 	Event = internal.Event
 	// EventID uniquely identifies one published Event.

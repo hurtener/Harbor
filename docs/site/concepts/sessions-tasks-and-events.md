@@ -126,7 +126,7 @@ The bus enforces a small set of non-negotiable properties on every event:
 | Identity-mandatory | Every event carries `(tenant, user, session)` (plus `run` where applicable). A subscription without a valid identity scope is rejected — fail closed, never silent. |
 | Server-filtered | Subscribers receive only events their identity scope authorizes. Cross-session / cross-tenant / admin views require an explicit elevated scope claim, audited unconditionally. The filter is server-side, not a client-side `if`. |
 | Durable events are gap-free sequenced | Events published to durable history carry a per-bus monotonic `sequence`; that number is your reconnect cursor. Present-tense `llm.completion.chunk` animation carries `sequence: 0`, has no replay cursor, and may be missed across reconnect. |
-| Audit-redacted before emit | Every payload passes the audit redactor *before* it hits the bus. Raw tool arguments and results — which routinely carry secrets — never reach a subscriber unredacted. |
+| Audit boundary before emit | Every non-`SafePayload` passes the audit redactor *before* it hits the bus; `SafePayload` types retain their declared bypass. Raw tool arguments and results — which routinely carry secrets — never reach a subscriber unredacted. |
 | Drop-oldest on backpressure | A slow subscriber does not stall the runtime. On backpressure the bus drops the oldest buffered events and emits a `bus.dropped` notice so the consumer knows there is a gap, rather than silently lying. |
 
 ::: tip The durable sequence is your reconnect contract

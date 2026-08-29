@@ -12,7 +12,8 @@
 //     constant + an init() registration in this file).
 //   - The sealed EventPayload interface; concrete payload types live in
 //     their owning subsystems and embed events.Sealed to satisfy the seal.
-//   - The Event record, Filter, Subscription and EventBus interfaces.
+//   - The Event record, Filter, Subscription, EventBus, and LivePublisher
+//     interfaces.
 //   - Sentinel errors callers compare via errors.Is.
 //   - The §4.4 driver-registry seam (registry.go) so future drivers
 //     (replay-equipped, durable-log) plug in without
@@ -493,19 +494,29 @@ type Subscription interface {
 	Cancel()
 }
 
-// EventBus is the canonical pub/sub surface. Implementations MUST be
-// safe for concurrent use by N goroutines against a single shared
-// instance.
+// EventBus is the canonical durable pub/sub surface. Implementations MUST be
+// safe for concurrent use by N goroutines against a single shared instance.
+// Present-tense animation is an additive LivePublisher capability so legacy
+// embedders that provide only this durable core remain source-compatible.
 type EventBus interface {
 	Publish(ctx context.Context, ev Event) error
-	// PublishLive validates, redacts, and bounded-fan-outs a present-tense
-	// event without assigning a replay position or touching durable/history
-	// state. The event is delivered with Sequence == 0 and may be missed by
-	// reconnecting subscribers. Durable semantic and lifecycle events must
-	// continue through Publish.
-	PublishLive(ctx context.Context, ev Event) error
 	Subscribe(ctx context.Context, f Filter) (Subscription, error)
 	Close(ctx context.Context) error
+}
+
+// LivePublisher is the additive capability for present-tense animation.
+// Implementations validate, apply the existing audit-redaction policy, and
+// bounded-fan-out without assigning a replay position or touching durable /
+// history state. Delivered events carry Sequence == 0 and may be missed by a
+// reconnecting subscriber. The SafePayload marker retains its existing
+// redactor bypass on this lane. Durable semantic and lifecycle events must
+// continue through EventBus.Publish.
+//
+// NewChunkPublisherContext uses this capability when a bus provides it. A
+// legacy/custom EventBus that does not opt in receives completion chunks via
+// EventBus.Publish instead, preserving the pre-capability durable behavior.
+type LivePublisher interface {
+	PublishLive(ctx context.Context, ev Event) error
 }
 
 // Cursor identifies the last event a subscriber has consumed for a

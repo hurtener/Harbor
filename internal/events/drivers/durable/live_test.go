@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/audit"
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/events/drivers/durable"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/state"
@@ -53,6 +56,36 @@ func liveChunk(id identity.Quadruple, taskID, delta string) events.Event {
 	}
 }
 
+func publishLive(bus events.EventBus, ctx context.Context, ev events.Event) error {
+	live, ok := bus.(events.LivePublisher)
+	if !ok {
+		return fmt.Errorf("bus does not implement events.LivePublisher")
+	}
+	return live.PublishLive(ctx, ev)
+}
+
+type blockingRedactor struct {
+	inner   audit.Redactor
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingRedactor) Redact(ctx context.Context, payload any) (any, error) {
+	r.once.Do(func() { close(r.started) })
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.inner.Redact(ctx, payload)
+}
+
+type liveBarrierPayload struct {
+	events.Sealed
+	Value string
+}
+
 func TestDurable_PublishLive_BypassesBlockedStoreAndLeavesReplayIntact(t *testing.T) {
 	inner := newInmemStore(t)
 	store := &blockingBatchStore{
@@ -88,7 +121,7 @@ func TestDurable_PublishLive_BypassesBlockedStoreAndLeavesReplayIntact(t *testin
 
 	liveDone := make(chan error, 1)
 	go func() {
-		liveDone <- bus.PublishLive(context.Background(), liveChunk(id, "task-live", "delta-live"))
+		liveDone <- publishLive(bus, context.Background(), liveChunk(id, "task-live", "delta-live"))
 	}()
 	select {
 	case err := <-liveDone:
@@ -128,7 +161,7 @@ func TestDurable_PublishLive_BypassesBlockedStoreAndLeavesReplayIntact(t *testin
 	// head, authority, sequence, or replay row is added for any chunk.
 	const liveChunks = 32
 	for i := range liveChunks {
-		if err := bus.PublishLive(context.Background(), liveChunk(id, "task-live", fmt.Sprintf("delta-%d", i))); err != nil {
+		if err := publishLive(bus, context.Background(), liveChunk(id, "task-live", fmt.Sprintf("delta-%d", i))); err != nil {
 			t.Fatalf("PublishLive #%d: %v", i, err)
 		}
 	}
@@ -189,7 +222,7 @@ func TestDurable_PublishLive_ConcurrentIdentityIsolation(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := bus.PublishLive(context.Background(), liveChunk(ids[i], fmt.Sprintf("task-%d", i), fmt.Sprintf("delta-%d", i))); err != nil {
+			if err := publishLive(bus, context.Background(), liveChunk(ids[i], fmt.Sprintf("task-%d", i), fmt.Sprintf("delta-%d", i))); err != nil {
 				errCh <- fmt.Errorf("PublishLive(%d): %w", i, err)
 			}
 		}(i)
@@ -209,5 +242,51 @@ func TestDurable_PublishLive_ConcurrentIdentityIsolation(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("subscriber %d did not receive its live chunk", i)
 		}
+	}
+}
+
+func TestDurable_PublishLive_FenceCutsOffInFlightRedaction(t *testing.T) {
+	redactor := &blockingRedactor{
+		inner:   auditpatterns.New(),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	store := newInmemStore(t)
+	bus, err := durable.New(context.Background(), durableCfg(), redactor, store)
+	if err != nil {
+		t.Fatalf("durable.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	id := quad("t-fence-live", "u-fence-live", "s-fence-live")
+	sub, err := bus.Subscribe(context.Background(), filterFor(id))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- publishLive(bus, context.Background(), events.Event{
+			Type:     events.EventTypeRuntimeWarning,
+			Identity: id,
+			Payload:  liveBarrierPayload{Value: "in-flight"},
+		})
+	}()
+	select {
+	case <-redactor.started:
+	case <-time.After(time.Second):
+		t.Fatal("live publish did not reach redaction barrier")
+	}
+	if err := bus.(events.Fencer).Fence(context.Background(), id.Identity); err != nil {
+		t.Fatalf("Fence: %v", err)
+	}
+	close(redactor.release)
+	if err := <-publishDone; err != nil {
+		t.Fatalf("in-flight PublishLive: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		t.Fatalf("live event reached subscriber after Fence returned: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

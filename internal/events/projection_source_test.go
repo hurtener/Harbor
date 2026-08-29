@@ -144,11 +144,11 @@ func TestProjectionWakeHub_ConcurrentRegisterNotifyUnsubscribe(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // stubBus is a minimal events.EventBus that does NOT implement
-// ProjectionSource — used to prove OpenProjectionSource fails loudly.
+// LivePublisher or ProjectionSource — used to prove both optional
+// capabilities remain separate from the durable EventBus core.
 type stubBus struct{}
 
 func (stubBus) Publish(context.Context, events.Event) error { return nil }
-func (stubBus) PublishLive(context.Context, events.Event) error { return nil }
 func (stubBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrIdentityScopeRequired
 }
