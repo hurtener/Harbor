@@ -71,7 +71,6 @@ func TestUserReconcileLiveProfileUsesVerifiedCurrentSubjectAndIsolatesUsers(t *t
 	errs := make(chan error, len(ids))
 	var wg sync.WaitGroup
 	for _, id := range ids {
-		id := id
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

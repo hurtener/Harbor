@@ -290,9 +290,11 @@ export class ToolsNamespace {
 	constructor(t: Transport) {
 		this.#t = t;
 	}
-	/** `tools.list` — paginated, faceted catalog projection. */
-	list<R = unknown>(filter: Record<string, unknown> = {}, page = 1, pageSize = 50): Promise<R> {
-		return this.#t.request<R>('/v1/tools/list', { filter, page, page_size: pageSize });
+	/** `tools.list` — paginated, faceted catalog projection. `agentId`, when
+	 * set, projects the caller's effective per-agent catalog view; omitted
+	 * preserves the boot-effective view. */
+	list<R = unknown>(filter: Record<string, unknown> = {}, page = 1, pageSize = 50, agentId?: string): Promise<R> {
+		return this.#t.request<R>('/v1/tools/list', agentId ? { agent_id: agentId, filter, page, page_size: pageSize } : { filter, page, page_size: pageSize });
 	}
 	/** `tools.get` — single catalog-row projection. */
 	get<R = unknown>(id: string): Promise<R> {

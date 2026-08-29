@@ -45,6 +45,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tools"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -89,7 +90,7 @@ func WithToolsLogger(l *slog.Logger) ToolsOption {
 }
 
 // WithToolsReachAuthorizer wires the shared signed reach gate for the
-// optional per-agent tools.describe projection.
+// optional per-agent tools.list/tools.describe projections.
 func WithToolsReachAuthorizer(a auth.AgentReachAuthorizer) ToolsOption {
 	return func(h *ToolsHandler) {
 		if a != nil {
@@ -99,8 +100,8 @@ func WithToolsReachAuthorizer(a auth.AgentReachAuthorizer) ToolsOption {
 }
 
 // WithToolsAgentResolver wires the same lifecycle resolver used by
-// control.start. tools.describe consults it only after signed reach authorizes
-// the explicit agent, preserving the non-oracle ordering.
+// control.start. tools.list/tools.describe consult it only after signed reach
+// authorizes the explicit agent, preserving the non-oracle ordering.
 func WithToolsAgentResolver(resolver protocol.AgentResolver) ToolsOption {
 	return func(h *ToolsHandler) {
 		if resolver != nil {
@@ -221,6 +222,16 @@ func (h *ToolsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 		return
 	}
 	req.Identity = scope
+	if req.AgentID != "" {
+		effectiveID, admissionErr := protocol.AdmitEffectiveAgent(r.Context(), string(methods.MethodToolsList), identity.Identity{
+			TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
+		}, req.AgentID, h.agents, h.reach)
+		if admissionErr != nil {
+			h.writeAgentAdmissionError(w, r, methods.MethodToolsList, admissionErr)
+			return
+		}
+		r = r.WithContext(tools.WithEffectiveAgentConfig(r.Context(), effectiveID))
+	}
 	resp, err := h.service.List(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodToolsList, err)
@@ -262,32 +273,14 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 	}
 	req.Identity = scope
 	if req.AgentID != "" {
-		if h.reach == nil || h.reach.AuthorizeAgentReach(r.Context(), req.AgentID) != nil {
-			writeToolsError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
-				"caller is not authorized for the effective agent")
+		effectiveID, admissionErr := protocol.AdmitEffectiveAgent(r.Context(), string(methods.MethodToolsDescribe), identity.Identity{
+			TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
+		}, req.AgentID, h.agents, h.reach)
+		if admissionErr != nil {
+			h.writeAgentAdmissionError(w, r, methods.MethodToolsDescribe, admissionErr)
 			return
 		}
-		if h.agents != nil {
-			allowed, err := h.agents.ResolveAgent(r.Context(), identity.Identity{
-				TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
-			}, req.AgentID)
-			switch {
-			case errors.Is(err, protocol.ErrAgentRetired):
-				writeToolsError(w, protoerrors.CodeAgentRetired, http.StatusConflict,
-					"tools.describe: agent is retired")
-				return
-			case err != nil:
-				h.logger.ErrorContext(r.Context(), "tools handler: agent lifecycle resolution failed",
-					slog.String("method", string(methods.MethodToolsDescribe)), slog.String("error", err.Error()))
-				writeToolsError(w, protoerrors.CodeRuntimeError, http.StatusInternalServerError,
-					"tools.describe: agent lifecycle resolution failed")
-				return
-			case !allowed:
-				writeToolsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
-					"tools.describe: agent_id is not resolvable for the caller's tenant")
-				return
-			}
-		}
+		r = r.WithContext(tools.WithEffectiveAgentConfig(r.Context(), effectiveID))
 	}
 	resp, err := h.service.Describe(r.Context(), req)
 	if err != nil {
@@ -295,6 +288,31 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 	writeToolsJSON(w, h.logger, r, resp)
+}
+
+// writeAgentAdmissionError maps the shared Protocol effective-agent admission
+// error to the Tools HTTP surface. Keeping the admission itself in the
+// protocol package prevents each transport from inventing its own reach and
+// lifecycle checks; this adapter only supplies the transport status.
+func (h *ToolsHandler) writeAgentAdmissionError(w http.ResponseWriter, r *http.Request, method methods.Method, err error) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		status := http.StatusInternalServerError
+		switch perr.Code {
+		case protoerrors.CodeScopeMismatch:
+			status = http.StatusForbidden
+		case protoerrors.CodeAgentRetired:
+			status = http.StatusConflict
+		case protoerrors.CodeInvalidRequest:
+			status = http.StatusBadRequest
+		}
+		writeToolsError(w, perr.Code, status, perr.Message)
+		return
+	}
+	h.logger.ErrorContext(r.Context(), "tools handler: agent admission failed",
+		slog.String("method", string(method)), slog.String("error", err.Error()))
+	writeToolsError(w, protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+		string(method)+": agent admission failed")
 }
 
 func (h *ToolsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, body []byte, scope prototypes.IdentityScope) {

@@ -418,15 +418,15 @@ const agentNotResolvableMsg = "agent_id is not resolvable for the caller's tenan
 // A resolver ERROR fails the request loud with CodeRuntimeError; it
 // never falls through to the default agent.
 func (s *ControlSurface) validateNamedAgent(ctx context.Context, method string, id identity.Identity, agentID string) (string, error) {
-	return admitEffectiveAgent(ctx, method, id, agentID, s.agents, s.reach)
+	return AdmitEffectiveAgent(ctx, method, id, agentID, s.agents, s.reach)
 }
 
-// admitEffectiveAgent is the shared reach-before-resolver admission used by
+// AdmitEffectiveAgent is the shared reach-before-resolver admission used by
 // every Protocol edge that consumes agent-addressed runtime authority. Reach
 // MUST run before tenant-local resolution so the edge cannot become an agent
 // existence oracle. The returned id is the sole value callers may stamp as an
 // EffectiveAgentConfig execution capability.
-func admitEffectiveAgent(ctx context.Context, method string, id identity.Identity, agentID string, agents AgentResolver, reach auth.AgentReachAuthorizer) (string, error) {
+func AdmitEffectiveAgent(ctx context.Context, method string, id identity.Identity, agentID string, agents AgentResolver, reach auth.AgentReachAuthorizer) (string, error) {
 	// Determine the effective target without consulting tenant-local state.
 	// Reach is the authority boundary, so it MUST run before ResolveAgent:
 	// otherwise an untrusted caller can distinguish configured targets from

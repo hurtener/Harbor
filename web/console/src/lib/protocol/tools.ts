@@ -17,6 +17,8 @@
  * — a mechanical migration.
  */
 
+import type { IdentityScope } from './memory-types.js';
+
 /** Wire enum — a tool's transport. */
 export type ToolTransport = 'in-proc' | 'HTTP' | 'MCP' | 'A2A' | 'flow';
 
@@ -56,6 +58,15 @@ export interface ToolFilter {
   approval_policies?: ToolApprovalPolicy[];
   reliability_tiers?: string[];
   search?: string;
+}
+
+/** The `tools.list` request body. */
+export interface ToolListRequest {
+  identity: IdentityScope;
+  agent_id?: string;
+  filter: ToolFilter;
+  page?: number;
+  page_size?: number;
 }
 
 /** The four catalog counters over the filtered view. */

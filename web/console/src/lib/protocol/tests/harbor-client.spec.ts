@@ -51,6 +51,15 @@ describe('HarborClient namespace dispatch', () => {
 		expect(headers['X-Harbor-Tenant']).toBe('t1');
 	});
 
+	it('includes the selected agent on tools.list when requested', async () => {
+		const fetchImpl = vi.fn(async () => okResponse({ tools: [] }));
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.tools.list({}, 1, 50, 'agent-a');
+
+		const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(JSON.parse(init.body as string).agent_id).toBe('agent-a');
+	});
+
 	it('routes memory.health to POST /v1/memory/health', async () => {
 		const fetchImpl = vi.fn(async () => okResponse({ aggregate: {} }));
 		const client = new HarborClient({ connection: CONNECTION, fetchImpl });

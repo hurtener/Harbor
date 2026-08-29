@@ -5015,6 +5015,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` | optional (`omitempty`) |
 | `filter` | `types.ToolFilter` — see [`ToolFilter`](./types.md#toolfilter) |  |
 | `page` | `int` | optional (`omitempty`) |
 | `page_size` | `int` | optional (`omitempty`) |
