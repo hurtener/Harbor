@@ -41,6 +41,16 @@ func (b *errBus) Publish(ctx context.Context, ev events.Event) error {
 	return b.inner.Publish(ctx, ev)
 }
 
+func (b *errBus) PublishLive(ctx context.Context, ev events.Event) error {
+	if b.failTypes[ev.Type] {
+		b.mu.Lock()
+		b.failed++
+		b.mu.Unlock()
+		return errors.New("errBus: injected live publish failure for " + string(ev.Type))
+	}
+	return b.inner.PublishLive(ctx, ev)
+}
+
 func (b *errBus) Subscribe(ctx context.Context, f events.Filter) (events.Subscription, error) {
 	return b.inner.Subscribe(ctx, f)
 }

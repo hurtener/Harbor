@@ -51,6 +51,10 @@ func (b *retirementFailOnceBus) Publish(ctx context.Context, event events.Event)
 	return b.EventBus.Publish(ctx, event)
 }
 
+func (b *retirementFailOnceBus) PublishLive(ctx context.Context, event events.Event) error {
+	return b.EventBus.PublishLive(ctx, event)
+}
+
 // TestRetirement_TerminalHistoryAndReplay proves the lifecycle transition is
 // terminal for every active/mutation door while immutable revision history is
 // still usable for audit and same-operation replay is exact.

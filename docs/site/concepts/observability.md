@@ -21,10 +21,21 @@ Harbor has a single canonical projection of runtime state: the [typed event bus]
 The practical payoff: a single event carries the full identity quadruple, so a log line, a span, and a metric label all agree on which `(tenant, user, session, run)` produced them. You correlate across the three surfaces by the same keys, because they came from the same source.
 
 ::: tip One stream, many lenses
-Because telemetry and live UI streaming consume the same bus, what you see in the Console during a turn is exactly what your logs and traces recorded for it. There is no "observability version" of runtime state that can drift from the real one.
+Because telemetry and live UI streaming consume the same bus, durable state and
+semantic events have one canonical source. Live completion animation is
+best-effort fan-out rather than a recorded history; the terminal answer and
+task lifecycle remain the authoritative reconciliation surface. There is no
+separate observability version of runtime state that can drift from the real
+one.
 :::
 
-The bus itself is identity-mandatory and server-filtered: subscriptions are scoped to the caller's identity, the canonical sequence is monotonic and gap-free, and **every payload runs through the audit redactor before emit** — so secrets and raw tool arguments never reach a log, a trace, or a Console pane. Under backpressure the bus drops oldest and emits a `bus.dropped` notice (carrying the dropped sequence range) rather than blocking a run. The full event catalog lives in the [events reference](/protocol/events).
+The durable sequence and reconnect cursor apply to semantic and lifecycle
+events published to history. `llm.completion.chunk` uses the bus's live-only
+lane: it is validated, redacted, identity-filtered, and bounded for immediate
+animation, but has `sequence: 0`, no `id:`, and no replay or telemetry-history
+row.
+
+The bus itself is identity-mandatory and server-filtered: subscriptions are scoped to the caller's identity, durable events carry a monotonic gap-free sequence, and **every payload runs through the audit redactor before emit** — so secrets and raw tool arguments never reach a log, a trace, or a Console pane. Under backpressure the bus drops oldest and emits a `bus.dropped` notice (carrying the dropped durable sequence range) rather than blocking a run. The full event catalog lives in the [events reference](/protocol/events).
 
 ## The Console — a Protocol client, not a backdoor
 

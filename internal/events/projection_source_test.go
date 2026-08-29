@@ -148,6 +148,7 @@ func TestProjectionWakeHub_ConcurrentRegisterNotifyUnsubscribe(t *testing.T) {
 type stubBus struct{}
 
 func (stubBus) Publish(context.Context, events.Event) error { return nil }
+func (stubBus) PublishLive(context.Context, events.Event) error { return nil }
 func (stubBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, events.ErrIdentityScopeRequired
 }

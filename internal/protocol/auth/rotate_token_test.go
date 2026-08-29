@@ -47,6 +47,9 @@ func (b *rotateCapturingBus) Publish(_ context.Context, ev events.Event) error {
 	b.events = append(b.events, ev)
 	return nil
 }
+func (b *rotateCapturingBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.Publish(ctx, ev)
+}
 func (b *rotateCapturingBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, nil
 }

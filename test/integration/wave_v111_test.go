@@ -626,6 +626,10 @@ func (b *waveV111FlakyBus) Publish(ctx context.Context, ev events.Event) error {
 	return b.EventBus.Publish(ctx, ev)
 }
 
+func (b *waveV111FlakyBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.EventBus.PublishLive(ctx, ev)
+}
+
 func (b *waveV111FlakyBus) Fence(ctx context.Context, id identity.Identity) error {
 	return b.fencer.Fence(ctx, id)
 }

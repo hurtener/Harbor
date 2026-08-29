@@ -7,6 +7,10 @@
 //     metrics, and any opt-in caller). On redaction error the bus
 //     publishes an audit.redaction_failed sibling event and returns
 //     the wrapped error; the original payload is NOT enqueued.
+//   - PublishLive runs the same validation, redaction, identity filtering,
+//     and bounded fan-out for present-tense animation, but never assigns a
+//     sequence or touches the replay ring / projection watermark. Live events
+//     carry Sequence == 0 and are intentionally lossy across reconnects.
 //   - Sequence numbering is per-bus monotonic and gap-free. Sequence
 //     assignment and ring-buffer append happen under one mutex
 //     (publishMu) so the ring's contents are guaranteed to be in
@@ -423,6 +427,68 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 
 	b.fanOut(ev)
 	return nil
+}
+
+// PublishLive validates, redacts, and bounded-fan-outs a present-tense event.
+// It does not assign a sequence, append to the replay ring, or notify
+// projection watchers: live events are best-effort animation and carry the
+// non-replayable Sequence == 0 sentinel. (The fenced-session read uses the
+// bus's existing short lock so erased-session output cannot leak.) Durable
+// semantic and lifecycle events must continue through Publish.
+func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("inmem: publish live cancelled: %w", err)
+	}
+	if err := events.ValidateEvent(ev); err != nil {
+		return err
+	}
+
+	// A fenced session has been erased. Do not leak its late live output to
+	// subscribers, but keep this path free of replay/persistence work.
+	if b.isFenced(ev.Identity) {
+		b.logFencedDrop(ctx, ev)
+		return nil
+	}
+
+	payload := ev.Payload
+	if _, safe := payload.(events.SafePayload); !safe {
+		redacted, err := b.redactor.Redact(ctx, payload)
+		if err != nil {
+			b.emitLiveRedactionFailure(ev, err)
+			return fmt.Errorf("inmem: live publish redaction failed: %w", err)
+		}
+		payload = wrapRedacted(redacted)
+	}
+	ev.Payload = payload
+	if ev.OccurredAt.IsZero() {
+		ev.OccurredAt = b.clock.Now()
+	}
+	// ValidateEvent requires caller-provided Sequence to be zero. Keep the
+	// explicit assignment here as a guard if Event construction changes later.
+	ev.Sequence = 0
+	b.fanOut(ev)
+	return nil
+}
+
+// emitLiveRedactionFailure reports a live redaction failure without routing
+// the notice through the durable Publish path. The notice itself is
+// non-replayable and has no effect on the ring, sequence counter, or
+// projection watermark.
+func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
+	ev := events.Event{
+		Type:       events.EventTypeAuditRedactionFailed,
+		Identity:   original.Identity,
+		OccurredAt: b.clock.Now(),
+		Payload: events.AuditRedactionFailedPayload{
+			OriginalType: original.Type,
+			Reason:       cause.Error(),
+		},
+		Sequence: 0,
+	}
+	b.fanOut(ev)
 }
 
 // emitRedactionFailure publishes a sibling audit.redaction_failed

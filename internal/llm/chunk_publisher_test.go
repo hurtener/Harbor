@@ -20,13 +20,29 @@ import (
 // inmem bus applies before fan-out (CLAUDE.md §6 rule 5). Accepted
 // events are recorded for shape assertions.
 type envelopeValidatingBus struct {
-	mu       sync.Mutex
-	events   []events.Event
-	rejected int
-	fail     error
+	mu           sync.Mutex
+	events       []events.Event
+	rejected     int
+	publishCalls int
+	liveCalls    int
+	fail         error
 }
 
 func (b *envelopeValidatingBus) Publish(_ context.Context, ev events.Event) error {
+	b.mu.Lock()
+	b.publishCalls++
+	b.mu.Unlock()
+	return b.record(ev)
+}
+
+func (b *envelopeValidatingBus) PublishLive(_ context.Context, ev events.Event) error {
+	b.mu.Lock()
+	b.liveCalls++
+	b.mu.Unlock()
+	return b.record(ev)
+}
+
+func (b *envelopeValidatingBus) record(ev events.Event) error {
 	if b.fail != nil {
 		return b.fail
 	}
@@ -63,6 +79,12 @@ func (b *envelopeValidatingBus) rejectedCount() int {
 	return b.rejected
 }
 
+func (b *envelopeValidatingBus) laneCounts() (publish, live int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.publishCalls, b.liveCalls
+}
+
 func chunkPublisherTestQuad(run string) identity.Quadruple {
 	return identity.Quadruple{
 		Identity: identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "sess-a"},
@@ -88,6 +110,9 @@ func TestNewChunkPublisher_IdentityLandsOnEnvelope(t *testing.T) {
 	got := bus.captured()
 	if len(got) != 2 {
 		t.Fatalf("published %d events, want 2", len(got))
+	}
+	if publish, live := bus.laneCounts(); publish != 0 || live != 2 {
+		t.Fatalf("chunk publisher lanes = Publish:%d PublishLive:%d, want Publish:0 PublishLive:2", publish, live)
 	}
 	for _, ev := range got {
 		if ev.Type != EventTypeCompletionChunk {

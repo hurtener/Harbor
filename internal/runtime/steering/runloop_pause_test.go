@@ -360,6 +360,9 @@ func (b *recordingBus) Publish(_ context.Context, ev events.Event) error {
 	b.published = append(b.published, ev)
 	return nil
 }
+func (b *recordingBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.Publish(ctx, ev)
+}
 func (b *recordingBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, errors.New("not implemented")
 }

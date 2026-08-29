@@ -255,6 +255,16 @@ func (b *recordingBus) Publish(ctx context.Context, ev events.Event) error {
 	return nil
 }
 
+func (b *recordingBus) PublishLive(ctx context.Context, ev events.Event) error {
+	if err := b.EventBus.PublishLive(ctx, ev); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seen = append(b.seen, ev)
+	return nil
+}
+
 // egressRecords returns the substitution records the bus observed. It
 // names the one event type these tests count rather than taking it as a
 // parameter — a general filter with a single caller is a parameter

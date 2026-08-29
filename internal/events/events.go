@@ -1,9 +1,9 @@
 // Package events owns Harbor's typed event bus surface — the single
 // pub/sub channel every subsystem (telemetry, audit, governance,
 // runtime, planner, tools) Publishes to and Subscribes from. There
-// is no parallel observability channel; the unification of telemetry
-// + chunked output on one bus is a load-bearing decision that closes
-// the predecessor's split-channel sharp edge.
+// is no parallel observability channel; durable semantic events and
+// non-durable live animation both use this bus, with the publication
+// lane making their replay guarantees explicit.
 //
 // Harbor ships:
 //
@@ -326,11 +326,15 @@ type RedactedMap struct {
 	Data map[string]any
 }
 
-// Event is the canonical bus record.
+// Event is the canonical bus record. Publish assigns a non-zero sequence
+// to durable events; PublishLive preserves Sequence == 0 for a present-tense
+// event that is bounded fan-out only and is not a replay position.
 //
-// Sequence is per-bus monotonic and gap-free; assigned by Publish.
-// Callers MUST NOT pre-fill Sequence (Publish rejects with
-// ErrSequenceProvided). OccurredAt defaults to time.Now() when zero.
+// Sequence is per-bus monotonic and gap-free for durable events; assigned by
+// Publish. Callers MUST NOT pre-fill Sequence (both Publish and PublishLive
+// reject with ErrSequenceProvided). PublishLive leaves it at zero because
+// live events have no replay position. OccurredAt defaults to time.Now() when
+// zero.
 //
 // Extra is reserved for the bounded low-cardinality metric
 // labels. Harbor does not derive metrics; the slot exists so later
@@ -494,6 +498,12 @@ type Subscription interface {
 // instance.
 type EventBus interface {
 	Publish(ctx context.Context, ev Event) error
+	// PublishLive validates, redacts, and bounded-fan-outs a present-tense
+	// event without assigning a replay position or touching durable/history
+	// state. The event is delivered with Sequence == 0 and may be missed by
+	// reconnecting subscribers. Durable semantic and lifecycle events must
+	// continue through Publish.
+	PublishLive(ctx context.Context, ev Event) error
 	Subscribe(ctx context.Context, f Filter) (Subscription, error)
 	Close(ctx context.Context) error
 }
@@ -825,10 +835,10 @@ var (
 
 // ValidateEvent does structural validation: the EventType is in the
 // registry; the identity quadruple has at least the triple; Sequence
-// is zero (assigned by Publish); Payload is non-nil. Returns wrapped
-// sentinels. Callers can call this directly to validate before
-// Publish if they want compile-shaped check; Publish calls it
-// internally.
+// is zero (assigned by Publish, or deliberately retained as zero by
+// PublishLive); Payload is non-nil. Returns wrapped sentinels. Callers can
+// call this directly to validate before publishing if they want a
+// compile-shaped check; both EventBus publication lanes call it internally.
 func ValidateEvent(ev Event) error {
 	if !IsValidEventType(ev.Type) {
 		return wrap(ErrUnknownEventType, "type=%q", string(ev.Type))

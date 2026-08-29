@@ -19,6 +19,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- LLM completion chunks now use the EventBus live-only publication lane:
+  validation, redaction, identity filtering, and bounded fan-out still apply,
+  but the animation frames carry `Sequence == 0` and never write durable
+  session history or replay state. Reconnects may miss animation; the
+  terminal answer and task/session lifecycle remain authoritative.
+
 - The `tools.*` catalog projection now resolves user-scoped MCP source keys
   back to their logical configured names for the wire `owner` field. Physical
   catalog IDs and names remain unchanged, and an unmapped source keeps the

@@ -14967,3 +14967,39 @@ catalog share one source-name authority.
 the same logical connection, physical ID/Name preservation, foreign-source
 visibility, logical Owner projection, and raw fallback. No hosted CI, tag,
 release, downstream/runtime deployment, or downstream acceptance is claimed.
+
+## D-452 — Completion chunks use a non-durable live publication lane
+
+**Date:** 2026-08-29
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+Completion-token animation remains on the canonical EventBus, but it does not
+belong in durable session history. The required `EventBus.PublishLive` method
+validates the event, applies the audit-redaction boundary, enforces the same
+identity/type filter, and immediately bounded-fan-outs the event with
+`Sequence == 0`. It does not call `StateStore`, append to a replay ring,
+advance the global sequence authority, or notify projection watermarks. The
+SSE transport therefore emits no `id:` for a live frame, and reconnect is
+honestly lossy for animation.
+
+Only `llm.completion.chunk` uses this lane in the current release. Durable
+semantic and lifecycle events continue through `Publish`; the terminal
+`AnswerEnvelope`, `task.completed`, and session-turn state are authoritative
+when a reconnect misses token frames. A failed or cancelled run never receives
+a synthetic answer from the live lane. Both shipped EventBus drivers implement
+the same contract, including bounded drop-oldest delivery and identity
+isolation; redaction failures remain observable without persisting the live
+event or its payload.
+
+**Cross-references:** RFC §6.13, `docs/site/protocol/streaming-semantics.md`,
+`internal/events/events.go`, `internal/llm/chunk_publisher.go`.
+
+**Evidence status.** Focused in-memory and durable tests cover Sequence-0
+delivery, identity/type filtering, blocked durable-store isolation, zero live
+durable writes/history rows, durable sequence/replay continuity, and 128-way
+concurrent identity isolation. Focused LLM tests assert completion chunks call
+`PublishLive`. Local race and documentation checks are run for this head; no
+hosted CI, tag, release, downstream/runtime deployment, or downstream
+acceptance is claimed.

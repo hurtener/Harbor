@@ -120,6 +120,10 @@ func (b *captureBus) Publish(_ context.Context, ev events.Event) error {
 	return nil
 }
 
+func (b *captureBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.Publish(ctx, ev)
+}
+
 func (b *captureBus) Subscribe(_ context.Context, _ events.Filter) (events.Subscription, error) {
 	return nil, errors.New("captureBus: Subscribe unsupported")
 }

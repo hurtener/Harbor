@@ -30,7 +30,7 @@ tailing session "event-viewer" — Ctrl-C to stop
      5  session.opened               run=                           {"SessionID":"event-viewer","OpenedAt":1781139747555658000}
      6  task.spawned                 run=                           {"TaskID":"01KTT37CQ3317D7DH8QRZC4YRZ","Kind":"foreground","ParentTaskID":"","Priority":0,"IdempotencyKey":""}
      7  task.started                 run=                           {"TaskID":"01KTT37CQ3317D7DH8QRZC4YRZ","PriorState":"pending"}
-    10  llm.completion.chunk         run=01KTT37CQ3317D7DH8QRZC4YRZ {…,"Delta":"mock:User ","Done":false,"Kind":"content",…}
+        llm.completion.chunk         run=01KTT37CQ3317D7DH8QRZC4YRZ {…,"Delta":"mock:User ","Done":false,"Kind":"content",…}
     15  planner.decision             run=01KTT37CQ3317D7DH8QRZC4YRZ {…,"DecisionKind":"Finish","Tool":"",…}
     16  task.completed               run=                           {"TaskID":"01KTT37CQ3317D7DH8QRZC4YRZ"}
 ```
@@ -101,8 +101,10 @@ is the unknown-field tolerance rule, implemented for free by `encoding/json`.
 ### 3. Tail the stream
 
 SSE is line-oriented; a `bufio.Scanner` is a complete SSE parser for this
-wire. `Last-Event-ID: 0` replays the session's retained history before
-live-tailing ([streaming semantics](./streaming-semantics.md)):
+wire. `Last-Event-ID: 0` replays the session's retained durable history before
+live-tailing ([streaming semantics](./streaming-semantics.md)). Live
+`llm.completion.chunk` frames have no `id:` and may be missed across a
+reconnect; terminal task/answer state is authoritative:
 
 ```go
 req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/events", nil)

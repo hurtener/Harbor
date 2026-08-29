@@ -284,6 +284,10 @@ func (b *recordingPreviewBus) Publish(_ context.Context, ev events.Event) error 
 	return nil
 }
 
+func (b *recordingPreviewBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.Publish(ctx, ev)
+}
+
 func (b *recordingPreviewBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, errors.New("recording bus: subscribe not wired")
 }

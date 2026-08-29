@@ -63,6 +63,10 @@ func (b *failingBus) Publish(ctx context.Context, ev events.Event) error {
 	return b.EventBus.Publish(ctx, ev)
 }
 
+func (b *failingBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.EventBus.PublishLive(ctx, ev)
+}
+
 func (b *failingBus) setFail(f bool) {
 	b.mu.Lock()
 	b.failPublish = f

@@ -55,9 +55,11 @@ const (
 	EventTypePostureReadAdmin events.EventType = "llm.posture_read_admin"
 	// EventTypeCompletionChunk — streaming completion event.
 	// Emitted per token delta from the LLM provider under the originating
-	// run's identity quadruple. The `Done=true` chunk fires exactly once
-	// per stream (terminator marker). SafePayload — deltas are per-session
-	// operator-visible content.
+	// run's identity quadruple through EventBus.PublishLive. These are
+	// present-tense animation frames with Sequence == 0 and no replay row;
+	// durable task/session completion state is authoritative. The `Done=true`
+	// chunk fires exactly once per stream (terminator marker). SafePayload —
+	// deltas are per-session operator-visible content.
 	EventTypeCompletionChunk events.EventType = "llm.completion.chunk"
 	// EventTypeProviderCredentialFetched — emitted at every connect /
 	// refresh pull of a broker-sourced provider key from the coordinator's

@@ -24,6 +24,10 @@ func (b *capturingBus) Publish(_ context.Context, ev events.Event) error {
 	return nil
 }
 
+func (b *capturingBus) PublishLive(ctx context.Context, ev events.Event) error {
+	return b.Publish(ctx, ev)
+}
+
 func (b *capturingBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
 	return nil, nil
 }

@@ -8,10 +8,12 @@
 //     subscriber fan-out (drop-oldest under saturation, bus.dropped
 //     notices windowed per DropWindow) — it is a standalone §4.4
 //     driver, not a wrapper over the inmem driver.
-//   - Every published event is persisted through a state.StateStore
-//     before it is fanned out to live subscribers. Persistence is
-//     keyed so replay-from-cursor is exact and gap-free across a
-//     Runtime restart: see the keying scheme below.
+//   - Every durable-published event is persisted through a state.StateStore
+//     before it is fanned out to live subscribers. Persistence is keyed so
+//     replay-from-cursor is exact and gap-free across a Runtime restart: see
+//     the keying scheme below. PublishLive is the required exception for
+//     present-tense animation: it validates/redacts and bounded-fan-outs with
+//     Sequence == 0, without StateStore, ring, sequence, or projection work.
 //   - Replay reads from the StateStore — not an in-memory ring — so a
 //     late subscriber that connects after the Runtime was rebuilt
 //     against the same StateStore sees the full, gap-free history.
@@ -815,6 +817,57 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	// persisted; a persistence failure never reaches here.
 	b.notifyProjectionWatermark(ev)
 
+	b.fanOut(ev)
+	return nil
+}
+
+// PublishLive validates, redacts, and bounded-fan-outs a present-tense event.
+// It intentionally bypasses sequenceAndStore, the StateStore, the
+// best-effort ring, and projection watermarks. Live animation is therefore
+// non-durable and non-replayable: every delivered event carries Sequence == 0
+// and a reconnect may miss it. Durable semantic and lifecycle events must
+// continue through Publish.
+func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
+	if b.closed.Load() {
+		return events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("durable: publish live cancelled: %w", err)
+	}
+	if err := events.ValidateEvent(ev); err != nil {
+		return err
+	}
+
+	// The in-memory fence cache is the only fence check permitted here. A
+	// StateStore lookup would turn this non-durable, latency-sensitive lane
+	// back into a persistence operation. Fence populates this cache before
+	// returning, so late output from an erased session is not fanned out.
+	if b.isFenced(ev.Identity) {
+		b.logger.InfoContext(ctx, "durable: dropped live event for erased (fenced) session",
+			slog.String("driver", "durable"),
+			slog.String("event_type", string(ev.Type)),
+			slog.String("tenant_id", ev.Identity.TenantID),
+			slog.String("user_id", ev.Identity.UserID),
+			slog.String("session_id", ev.Identity.SessionID))
+		return nil
+	}
+
+	payload := ev.Payload
+	if _, safe := payload.(events.SafePayload); !safe {
+		redacted, err := b.redactor.Redact(ctx, payload)
+		if err != nil {
+			b.emitLiveRedactionFailure(ev, err)
+			return fmt.Errorf("durable: live publish redaction failed: %w", err)
+		}
+		payload = wrapRedacted(redacted)
+	}
+	ev.Payload = payload
+	if ev.OccurredAt.IsZero() {
+		ev.OccurredAt = b.clock.Now()
+	}
+	// ValidateEvent requires caller-provided Sequence to be zero. Keep the
+	// explicit assignment here as a guard if Event construction changes later.
+	ev.Sequence = 0
 	b.fanOut(ev)
 	return nil
 }
@@ -2107,6 +2160,22 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 		},
 	}
 	b.publishInternal(ev)
+}
+
+// emitLiveRedactionFailure reports a live redaction failure through the
+// transient fan-out path. It must not reuse a durable publish helper: even
+// this sibling notice has no replay position and does not touch StateStore,
+// the ring, the global sequence, or projection state.
+func (b *bus) emitLiveRedactionFailure(original events.Event, cause error) {
+	b.publishInternal(events.Event{
+		Type:       events.EventTypeAuditRedactionFailed,
+		Identity:   original.Identity,
+		OccurredAt: b.clock.Now(),
+		Payload: events.AuditRedactionFailedPayload{
+			OriginalType: original.Type,
+			Reason:       cause.Error(),
+		},
+	})
 }
 
 // publishInternal fans out a bus-internal SafePayload notice

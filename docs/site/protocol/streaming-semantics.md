@@ -10,7 +10,9 @@ survive backpressure, and aggregate.
 Everything a Harbor Runtime does — task lifecycle, planner decisions, LLM
 token chunks, tool execution, pause/resume, governance, audit — is narrated on
 **one** typed event bus. There is no parallel observability channel. The
-Protocol exposes that bus as Server-Sent Events:
+Protocol exposes that bus as Server-Sent Events. Durable semantic/lifecycle
+events use the replayable `Publish` contract; LLM completion chunks use the
+non-durable `PublishLive` contract for present-tense animation.
 
 ```text
 GET /v1/events
@@ -28,7 +30,9 @@ data: {"type":"task.spawned","sequence":6,"occurred_at":"2026-06-10T23:03:22.781
 ```
 
 - `event:` — the canonical event type ([the full catalog](./events.md)).
-- `id:` — the per-bus monotonic **sequence**, your reconnect cursor.
+- `id:` — the per-bus monotonic **sequence** for durable events, your
+  reconnect cursor. Live animation events have `Sequence == 0` and omit
+  `id:` because they have no replay position.
 - `data:` — one JSON object: the type, sequence, timestamp, the flat identity
   (`tenant` / `user` / `session` / `run`), and the `payload`.
 
@@ -63,12 +67,19 @@ the last `id:` you processed back as a header —
 Last-Event-ID: 41
 ```
 
-— and the Runtime **replays every retained event strictly newer than that
-cursor** from its ring buffer before resuming the live tail. The ring's size
-is operator-configured (`events.replay_buffer_size`). `Last-Event-ID: 0`
-replays everything retained for your scope — the trick the
+— and the Runtime **replays every retained durable event strictly newer than
+that cursor** from its ring buffer before resuming the live tail. The ring's
+size is operator-configured (`events.replay_buffer_size`). `Last-Event-ID: 0`
+replays everything durable retained for your scope — the trick the
 [quickstart](./quickstart.md) uses to read a run that finished before the tail
 opened.
+
+`llm.completion.chunk` frames are deliberately not retained and carry no
+`id:`. A reconnect can therefore miss token animation between durable frames;
+that is expected lossy delivery, not a cursor gap. The terminal `task.completed`
+and session-turn `AnswerEnvelope` are authoritative, so the client reconciles
+the final answer and task state when the run completes. A failed or cancelled
+run does not receive a synthetic answer from the live lane.
 
 When the cursor has aged out of the ring (or the configured bus driver has no
 replay), the gap is **surfaced, never silently swallowed**: the stream emits
@@ -91,7 +102,9 @@ data: {... "payload":{"FromSeq":120,"ToSeq":143,"DroppedCount":24,"SubscriberID"
 — so a correct client treats `bus.dropped` like a failed reconnect: re-sync
 state via the snapshot reads, then continue tailing. A subscriber that stops
 draining entirely is reaped after the idle timeout
-(`bus.subscription_idle_closed`).
+(`bus.subscription_idle_closed`). A dropped live animation frame has
+`Sequence == 0` and cannot identify a cursor range; the terminal durable
+reconciliation is the recovery path for that loss.
 
 ## Payloads: safe vs redacted
 
@@ -131,7 +144,6 @@ A real response (one active bucket):
       "bucket_start": "2026-06-10T22:51:35.945734Z",
       "bucket_end": "2026-06-10T23:06:35.945734Z",
       "counts": {
-        "llm.completion.chunk": 14,
         "planner.decision": 2,
         "session.opened": 1,
         "task.completed": 2,
@@ -147,7 +159,9 @@ A real response (one active bucket):
 Request/response shapes:
 [`EventAggregateRequest`](./types.md#eventaggregaterequest) /
 [`EventAggregateResponse`](./types.md#eventaggregateresponse). The same
-cross-tenant scope rules as the stream apply (`admin` / `console:fleet`).
+cross-tenant scope rules as the stream apply (`admin` / `console:fleet`). The
+aggregate is computed from durable event history; transient
+`llm.completion.chunk` animation is intentionally absent from these counts.
 
 ## A correct minimal consumer, in pseudocode
 
