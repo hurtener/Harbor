@@ -829,30 +829,8 @@ func startPTYEnv(t *testing.T, mode string, width, height int, extraEnv []string
 		}
 		_ = master.Close()
 	})
-	go func() {
-		buffer := make([]byte, 4096)
-		for {
-			n, readErr := master.Read(buffer)
-			if n > 0 {
-				s.mu.Lock()
-				_, _ = s.output.Write(buffer[:n])
-				s.mu.Unlock()
-				select {
-				case s.changed <- struct{}{}:
-				default:
-				}
-			}
-			if readErr != nil {
-				if !errors.Is(readErr, io.EOF) && !strings.Contains(readErr.Error(), "input/output error") {
-					s.mu.Lock()
-					_, _ = fmt.Fprintf(&s.output, "\nPTY_READ_ERROR:%v", readErr)
-					s.mu.Unlock()
-				}
-				return
-			}
-		}
-	}()
-	go func() { s.done <- cmd.Wait(); close(s.exited); _ = master.Close() }()
+	go readPTY(s)
+	go waitPTYCommand(s)
 	return s
 }
 
@@ -912,14 +890,21 @@ func startPTYCommand(t *testing.T, binary string, args []string, workdir string,
 		_ = master.Close()
 	})
 	go readPTY(s)
-	go func() {
-		err := cmd.Wait()
-		s.exitErr = err
-		s.done <- err
-		close(s.exited)
-		_ = master.Close()
-	}()
+	go waitPTYCommand(s)
 	return s
+}
+
+func waitPTYCommand(s *ptySession) {
+	err := s.cmd.Wait()
+	s.exitErr = err
+	close(s.exited)
+	// The child closing its PTY slave makes the master reader return after it
+	// has consumed the queued terminal cleanup frame. Do not close the master
+	// here first: that races the final read and can discard those bytes. A test
+	// timeout still closes the master from Cleanup, which releases this wait.
+	<-s.readerDone
+	_ = s.master.Close()
+	s.done <- err
 }
 
 func readPTY(s *ptySession) {
