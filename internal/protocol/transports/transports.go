@@ -257,6 +257,11 @@ type muxConfig struct {
 	// the route answers 501 (the partial-build convention) — the
 	// `/v1/agent_config/*` route must be mounted first.
 	compositionPreviewService *agentcfgprotocol.CompositionPreviewService
+	// agentPacksSurface feeds the same-runtime admin pack inspect/copy routes.
+	// Production assembly supplies it; an omitted surface fails loudly with
+	// runtime_error when either new route is called while existing agent-config
+	// routes remain available for compatibility.
+	agentPacksSurface stream.AgentPacksSurface
 	// sessionTurnsService feeds the session-turns read handler — the two
 	// `POST /v1/sessions/turns/*` routes (`sessions.turns.list` /
 	// `sessions.turns.get`). OPTIONAL: when unsupplied the routes are NOT
@@ -801,6 +806,19 @@ func WithCompositionPreviewService(s *agentcfgprotocol.CompositionPreviewService
 	}
 }
 
+// WithAgentPacksSurface wires the transport-independent same-runtime Agent
+// pack inspect/copy dispatcher into `/v1/agent_config/agent_packs/{verb}`.
+// Production assembly must supply a surface; the typed routes fail loudly if
+// it is absent. The supplied surface enforces the admin, verified-identity,
+// and signed-reach gates before invoking the runtime port.
+func WithAgentPacksSurface(s stream.AgentPacksSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.agentPacksSurface = s
+		}
+	}
+}
+
 // WithSessionTurnsService wires the session-turns read handler into
 // NewMux — the two `POST /v1/sessions/turns/*` routes
 // (`sessions.turns.list` / `sessions.turns.get`).
@@ -1252,6 +1270,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		}
 		if cfg.compositionPreviewService != nil {
 			opts = append(opts, stream.WithCompositionPreviewService(cfg.compositionPreviewService))
+		}
+		if cfg.agentPacksSurface != nil {
+			opts = append(opts, stream.WithAgentPacksSurface(cfg.agentPacksSurface))
 		}
 		ach, err := stream.NewAgentConfigHandler(cfg.agentConfigService, opts...)
 		if err != nil {

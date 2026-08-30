@@ -1161,7 +1161,12 @@ func Run(t *testing.T, factory Factory) {
 
 	t.Run("Concurrent_SpawnGetCancel_NoRace", func(t *testing.T) {
 		r, cleanup := factory()
-		defer cleanup()
+		cleaned := false
+		defer func() {
+			if !cleaned {
+				cleanup()
+			}
+		}()
 		baseline := runtime.NumGoroutine()
 		const goroutines = 128
 		const opsPerGo = 8
@@ -1225,6 +1230,11 @@ func Run(t *testing.T, factory Factory) {
 		if n := errs.Load(); n != 0 {
 			t.Fatalf("%d concurrent operations errored", n)
 		}
+		// The task registry owns no event bus; the factory's cleanup owns
+		// it. Close that caller-owned bus before asserting the goroutine
+		// baseline so the ordered event worker is included in teardown.
+		cleanup()
+		cleaned = true
 		deadline := time.Now().Add(2 * time.Second)
 		for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
 			runtime.Gosched()

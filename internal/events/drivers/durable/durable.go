@@ -84,8 +84,9 @@ const (
 	// the global durable event sequence. Its identity is deliberately outside
 	// normal session identities and its kind cannot collide with event heads or
 	// bodies.
-	kindSequenceAuthority = state.InternalKindPrefix + "events/global-sequence-authority"
-	kindFencePrefix       = state.InternalKindPrefix + "events/session-fence/"
+	kindSequenceAuthority  = state.InternalKindPrefix + "events/global-sequence-authority"
+	kindFencePrefix        = state.InternalKindPrefix + "events/session-fence/"
+	kindErasureEpochPrefix = state.InternalKindPrefix + "events/session-erasure-epoch/"
 	// metadataValidationBatchSize bounds canonical payload validation before
 	// a durable checkpoint is written. A cancelled/restarted runtime resumes
 	// after the validated prefix instead of repeating the whole head scan.
@@ -108,6 +109,10 @@ var sequenceAuthorityIdentity = identity.InternalCoordinationQuadruple()
 
 type sequenceAuthorityRecord struct {
 	Sequence uint64 `json:"sequence"`
+}
+
+type erasureEpochRecord struct {
+	Epoch uint64 `json:"epoch"`
 }
 
 // errEventFenced is the internal sentinel sequenceAndStore returns when
@@ -145,6 +150,13 @@ func WithLogger(l *slog.Logger) Option {
 			b.logger = l
 		}
 	}
+}
+
+// WithAsyncQueueSize sets the bounded admission capacity for best-effort
+// asynchronous publications. It is intended for tests and operators tuning
+// backpressure; the default is events.DefaultAsyncQueueSize.
+func WithAsyncQueueSize(size int) Option {
+	return func(b *bus) { b.asyncQueueSize = size }
 }
 
 // optWithOwnedStore marks the bus as the owner of the StateStore it
@@ -187,17 +199,24 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 		return nil, fmt.Errorf("durable: ReplayBufferSize must be >= 0 (best-effort ring size)")
 	}
 	b := &bus{
-		cfg:      cfg,
-		redactor: r,
-		store:    store,
-		clock:    realClock{},
-		logger:   slog.Default(),
-		ringCap:  cfg.ReplayBufferSize,
-		subs:     map[uint64]*subscription{},
+		cfg:            cfg,
+		redactor:       r,
+		store:          store,
+		clock:          realClock{},
+		logger:         slog.Default(),
+		ringCap:        cfg.ReplayBufferSize,
+		subs:           map[uint64]*subscription{},
+		subsByIdentity: map[identity.Identity]map[uint64]*subscription{},
+		adminSubs:      map[uint64]*subscription{},
+		asyncQueueSize: events.DefaultAsyncQueueSize,
 	}
 	for _, opt := range opts {
 		opt(b)
 	}
+	if b.asyncQueueSize <= 0 {
+		return nil, fmt.Errorf("durable: async queue size must be > 0")
+	}
+	b.asyncSignal = events.NewAsyncAdmissionSignal(b.logger, events.DefaultAsyncAdmissionLogInterval)
 	if b.store == nil {
 		// Loud degradation — CLAUDE.md §13 forbids silent degradation.
 		b.bestEffort = true
@@ -209,11 +228,21 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 			slog.Int("ring_buffer_size", b.ringCap))
 		// Best-effort mode persists nothing, so there is nothing to
 		// rehydrate — recovery is a durable-mode-only step (Non-goals).
+		ordered, err := events.NewOrderedQueue(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.reportAsyncFailure)
+		if err != nil {
+			return nil, fmt.Errorf("durable: ordered publication queue: %w", err)
+		}
+		b.ordered = ordered
 		return b, nil
 	}
 	if err := b.recoverNextSeq(ctx); err != nil {
 		return nil, err
 	}
+	ordered, err := events.NewOrderedQueue(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.reportAsyncFailure)
+	if err != nil {
+		return nil, fmt.Errorf("durable: ordered publication queue: %w", err)
+	}
+	b.ordered = ordered
 	return b, nil
 }
 
@@ -522,11 +551,15 @@ func newWithOwnedStore(cfg config.EventsConfig, r audit.Redactor) (events.EventB
 // per-subscriber state lives on the subscription. Nothing run-specific
 // is stored on the struct.
 type bus struct {
-	cfg      config.EventsConfig
-	redactor audit.Redactor
-	store    state.StateStore // nil ⇒ best-effort mode
-	clock    Clock
-	logger   *slog.Logger
+	cfg         config.EventsConfig
+	redactor    audit.Redactor
+	store       state.StateStore // nil ⇒ best-effort mode
+	clock       Clock
+	logger      *slog.Logger
+	asyncSignal *events.AsyncAdmissionSignal
+	ordered     *events.OrderedQueue
+	// asyncQueueSize is the bounded best-effort admission capacity.
+	asyncQueueSize int
 
 	bestEffort bool // true when store == nil
 	ownStore   bool // true when this bus opened the StateStore (registry path)
@@ -565,9 +598,14 @@ type bus struct {
 	evicted bool
 	ringCap int
 
-	mu    sync.RWMutex
-	subs  map[uint64]*subscription
-	subID atomic.Uint64
+	mu sync.RWMutex
+	// subs is the canonical lifecycle set. The secondary buckets below are
+	// maintained under the same lock and only narrow fan-out candidates; every
+	// candidate still passes Filter.Matches before enqueue.
+	subs           map[uint64]*subscription
+	subsByIdentity map[identity.Identity]map[uint64]*subscription
+	adminSubs      map[uint64]*subscription
+	subID          atomic.Uint64
 
 	// fenceMu guards fenced — the set of erased session triples (see
 	// events.Fencer). A fenced triple drops new events on the persist path
@@ -577,6 +615,13 @@ type bus struct {
 	// deadlock-free).
 	fenceMu sync.RWMutex
 	fenced  map[string]struct{}
+	// erasureGeneration is retained after Unfence. It invalidates events
+	// admitted before a Fence even if they reach the commit lane after the
+	// session is reused.
+	erasureGeneration map[string]uint64
+	// erasureEpochEventID caches the persistent epoch slot's CAS token for
+	// async admission; the commit lane always revalidates it durably.
+	erasureEpochEventID map[string]string
 
 	// wake is the bounded best-effort watermark notification hub backing
 	// the events.ProjectionSource seam (see projection.go). Publish
@@ -585,7 +630,10 @@ type bus struct {
 	// projector. Zero value is ready to use.
 	wake events.ProjectionWakeHub
 
-	closed atomic.Bool
+	closed            atomic.Bool
+	closeMu           sync.Mutex
+	subscribersClosed bool
+	storeClosed       bool
 }
 
 // fenceKey renders a session triple as the fenced-set key. The NUL
@@ -598,6 +646,75 @@ func fenceKey(id identity.Identity) string {
 func durableFenceKind(id identity.Identity) string {
 	sum := sha256.Sum256([]byte(fenceKey(id)))
 	return fmt.Sprintf("%s%x", kindFencePrefix, sum[:])
+}
+
+func durableEpochKind(id identity.Identity) string {
+	sum := sha256.Sum256([]byte(fenceKey(id)))
+	return fmt.Sprintf("%s%x", kindErasureEpochPrefix, sum[:])
+}
+
+func (b *bus) loadErasureEpoch(ctx context.Context, id identity.Identity) (uint64, state.SlotExpectation, error) {
+	kind := durableEpochKind(id)
+	expectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, kind, "")
+	rec, err := b.store.Load(ctx, expectation.Identity, expectation.Kind)
+	if errors.Is(err, state.ErrNotFound) {
+		return 0, expectation, nil
+	}
+	if err != nil {
+		return 0, expectation, fmt.Errorf("load durable session erasure epoch: %w", err)
+	}
+	if rec.ID == "" {
+		return 0, expectation, fmt.Errorf("durable: invalid persisted session erasure epoch")
+	}
+	var epoch erasureEpochRecord
+	if err := json.Unmarshal(rec.Bytes, &epoch); err != nil {
+		return 0, expectation, fmt.Errorf("decode durable session erasure epoch: %w", err)
+	}
+	if epoch.Epoch == 0 {
+		return 0, expectation, fmt.Errorf("durable: persisted session erasure epoch is zero")
+	}
+	expectation.ExpectedEventID = rec.ID
+	return epoch.Epoch, expectation, nil
+}
+
+func (b *bus) setLocalGeneration(id identity.Identity, generation uint64, eventID string) {
+	b.fenceMu.Lock()
+	defer b.fenceMu.Unlock()
+	if b.erasureGeneration == nil {
+		b.erasureGeneration = map[string]uint64{}
+	}
+	if b.erasureEpochEventID == nil {
+		b.erasureEpochEventID = map[string]string{}
+	}
+	key := fenceKey(id)
+	b.erasureGeneration[key] = generation
+	if eventID == "" {
+		delete(b.erasureEpochEventID, key)
+	} else {
+		b.erasureEpochEventID[key] = eventID
+	}
+}
+
+func (b *bus) setLocalFence(id identity.Identity, generation uint64, eventID string) {
+	b.fenceMu.Lock()
+	defer b.fenceMu.Unlock()
+	if b.fenced == nil {
+		b.fenced = map[string]struct{}{}
+	}
+	if b.erasureGeneration == nil {
+		b.erasureGeneration = map[string]uint64{}
+	}
+	if b.erasureEpochEventID == nil {
+		b.erasureEpochEventID = map[string]string{}
+	}
+	key := fenceKey(id)
+	b.erasureGeneration[key] = generation
+	if eventID == "" {
+		delete(b.erasureEpochEventID, key)
+	} else {
+		b.erasureEpochEventID[key] = eventID
+	}
+	b.fenced[key] = struct{}{}
 }
 
 func (b *bus) isDurablyFenced(ctx context.Context, id identity.Quadruple) (bool, error) {
@@ -661,6 +778,62 @@ func (b *bus) isFenced(id identity.Quadruple) bool {
 	return ok
 }
 
+// generationForAdmission captures the identity's erasure generation under
+// the publication lock at queue admission. In durable mode the generation
+// and its StateStore EventID are read from the shared epoch slot so another
+// bus's Fence→Unfence transition cannot be hidden by a stale local cache. The
+// commit path rechecks both tokens before allocating a sequence or touching
+// the event log.
+func (b *bus) generationForAdmission(ctx context.Context, id identity.Identity) (uint64, string, error) {
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	if b.bestEffort {
+		b.fenceMu.RLock()
+		generation := b.erasureGeneration[fenceKey(id)]
+		b.fenceMu.RUnlock()
+		return generation, "", nil
+	}
+	generation, expectation, err := b.loadErasureEpoch(ctx, id)
+	if err != nil {
+		return 0, "", err
+	}
+	b.setLocalGeneration(id, generation, string(expectation.ExpectedEventID))
+	return generation, string(expectation.ExpectedEventID), nil
+}
+
+// generationForAsyncAdmission reads only the process-local cache. Async
+// admission must not wait on durable StateStore latency; the commit lane
+// performs the authoritative epoch revalidation and refreshes this cache when
+// it detects a stale or cold replica.
+func (b *bus) generationForAsyncAdmission(id identity.Identity) (uint64, string) {
+	b.fenceMu.RLock()
+	defer b.fenceMu.RUnlock()
+	key := fenceKey(id)
+	return b.erasureGeneration[key], b.erasureEpochEventID[key]
+}
+
+// generationMatchesLocked reports whether a queued request still belongs to
+// the current identity generation. Caller must hold publishMu.
+func (b *bus) generationMatchesLocked(id identity.Quadruple, generation uint64) bool {
+	b.fenceMu.RLock()
+	defer b.fenceMu.RUnlock()
+	return b.erasureGeneration[fenceKey(id.Identity)] == generation
+}
+
+func (b *bus) erasureEpochChanged(ctx context.Context, id identity.Identity, generation uint64, expectedEventID string) (bool, error) {
+	current, expectation, err := b.loadErasureEpoch(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	changed := current != generation || string(expectation.ExpectedEventID) != expectedEventID
+	if changed {
+		// Refresh the process-local token so a subsequent async admission on
+		// this replica can proceed after this stale request is discarded.
+		b.setLocalGeneration(id, current, string(expectation.ExpectedEventID))
+	}
+	return changed, nil
+}
+
 // Fence implements events.Fencer. It marks the triple erased so the
 // persist path drops its future events and its history reads empty. It
 // acquires publishMu first so any in-flight Publish for the triple has
@@ -673,38 +846,79 @@ func (b *bus) Fence(ctx context.Context, id identity.Identity) error {
 	}
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
-	if !b.bestEffort {
-		kind := durableFenceKind(id)
-		existing, err := b.store.Load(ctx, sequenceAuthorityIdentity, kind)
-		if err != nil && !errors.Is(err, state.ErrNotFound) {
-			return fmt.Errorf("durable: load session fence: %w", err)
+	if b.bestEffort {
+		b.fenceMu.Lock()
+		if b.fenced == nil {
+			b.fenced = map[string]struct{}{}
 		}
-		if errors.Is(err, state.ErrNotFound) {
+		if b.erasureGeneration == nil {
+			b.erasureGeneration = map[string]uint64{}
+		}
+		key := fenceKey(id)
+		b.erasureGeneration[key]++
+		b.fenced[key] = struct{}{}
+		b.fenceMu.Unlock()
+		return nil
+	}
+
+	fenceKind := durableFenceKind(id)
+	epochKind := durableEpochKind(id)
+	for attempt := 1; attempt <= publishCASMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		epoch, epochExpectation, err := b.loadErasureEpoch(ctx, id)
+		if err != nil {
+			return err
+		}
+		fenceExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, fenceKind, "")
+		fenceRec, fenceErr := b.store.Load(ctx, fenceExpectation.Identity, fenceExpectation.Kind)
+		fencePresent := fenceErr == nil
+		if fenceErr != nil && !errors.Is(fenceErr, state.ErrNotFound) {
+			return fmt.Errorf("durable: load session fence: %w", fenceErr)
+		}
+		if fencePresent {
+			if fenceRec.ID == "" {
+				return fmt.Errorf("durable: invalid persisted session fence")
+			}
+			fenceExpectation.ExpectedEventID = fenceRec.ID
+		}
+
+		if epoch == ^uint64(0) {
+			return fmt.Errorf("durable: session erasure epoch exhausted")
+		}
+		nextEpoch := epoch + 1
+		if epoch == 0 {
+			// A missing epoch slot is the pre-epoch state. The first Fence
+			// establishes generation 1, whether or not a legacy fence marker
+			// already exists.
+			nextEpoch = 1
+		}
+		epochBytes, err := json.Marshal(erasureEpochRecord{Epoch: nextEpoch})
+		if err != nil {
+			return fmt.Errorf("durable: encode session erasure epoch: %w", err)
+		}
+		epochRec := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, epochKind, epochBytes)
+		expectations := []state.SlotExpectation{epochExpectation, fenceExpectation}
+		writes := []state.StateRecord{epochRec}
+		if !fencePresent {
 			payload, marshalErr := json.Marshal(id)
 			if marshalErr != nil {
 				return fmt.Errorf("durable: encode session fence: %w", marshalErr)
 			}
-			next := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kind, payload)
-			if saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{state.InternalSlotExpectation(sequenceAuthorityIdentity, kind, "")}, next); saveErr != nil {
-				if !errors.Is(saveErr, state.ErrConditionFailed) {
-					return fmt.Errorf("durable: persist session fence: %w", saveErr)
-				}
-				// A concurrent fencer won; the persisted outcome is equivalent.
-				if _, loadErr := b.store.Load(ctx, sequenceAuthorityIdentity, kind); loadErr != nil {
-					return fmt.Errorf("durable: confirm concurrent session fence: %w", loadErr)
-				}
-			}
-		} else if existing.ID == "" {
-			return fmt.Errorf("durable: invalid persisted session fence")
+			fenceRec = state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, fenceKind, payload)
+			writes = append(writes, fenceRec)
 		}
+		if saveErr := b.store.SaveBatchIf(ctx, expectations, writes); saveErr != nil {
+			if errors.Is(saveErr, state.ErrConditionFailed) {
+				continue
+			}
+			return fmt.Errorf("durable: persist session fence and erasure epoch: %w", saveErr)
+		}
+		b.setLocalFence(id, nextEpoch, string(epochRec.ID))
+		return nil
 	}
-	b.fenceMu.Lock()
-	defer b.fenceMu.Unlock()
-	if b.fenced == nil {
-		b.fenced = map[string]struct{}{}
-	}
-	b.fenced[fenceKey(id)] = struct{}{}
-	return nil
+	return fmt.Errorf("durable: session fence allocation exceeded %d CAS attempts: %w", publishCASMaxAttempts, state.ErrConditionFailed)
 }
 
 // Unfence implements events.Fencer. It lifts a fence so a reused session
@@ -713,6 +927,8 @@ func (b *bus) Unfence(ctx context.Context, id identity.Identity) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
 	}
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
 	if !b.bestEffort {
 		kind := durableFenceKind(id)
 		rec, err := b.store.Load(ctx, sequenceAuthorityIdentity, kind)
@@ -764,66 +980,165 @@ func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 }
 
 // Publish validates, redacts, sequences, persists, and fans out ev.
-//
-// Publish honours ctx (CLAUDE.md §5): a cancelled caller context is
-// rejected up front, BEFORE anything is persisted — the publish ctx
-// drives store.Save, and the caller's ctx is the lifetime bound for
-// the persistence (the run-loop drivers' emit closures publish
-// under their driver-lifetime ctx, so events stop persisting at driver
-// teardown regardless of whether the configured StateStore driver
-// itself reads ctx — the inmem store does no I/O and ignores it).
+// Publish admits one validated durable event onto the ordered publication
+// lane. The queue worker assigns its sequence, persists it, and fans it out
+// only after the StateStore commit succeeds.
 func (b *bus) Publish(ctx context.Context, ev events.Event) error {
-	if b.closed.Load() {
-		return events.ErrBusClosed
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("durable: publish cancelled: %w", err)
-	}
-	if err := events.ValidateEvent(ev); err != nil {
+	prepared, accepted, err := b.preparePublish(ctx, ev)
+	if err != nil {
 		return err
 	}
+	if !accepted {
+		return nil
+	}
+	generation, epochID, err := b.generationForAdmission(ctx, prepared.Identity.Identity)
+	if err != nil {
+		return fmt.Errorf("durable: capture session erasure epoch: %w", err)
+	}
+	return b.ordered.PublishWithGenerationAndExpectation(ctx, prepared, generation, epochID)
+}
 
-	// Audit-before-emit boundary (RFC §6.13). SafePayload
-	// bypasses the redactor; everything else is walked.
+// PublishBatch validates and admits one atomic durable batch. All events must
+// use one identity/session because one head record and one authority CAS are
+// updated by the durable transaction.
+func (b *bus) PublishBatch(ctx context.Context, batch []events.Event) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("durable: publish batch is empty")
+	}
+	if len(batch) > events.DefaultPublishBatchSize {
+		return fmt.Errorf("durable: publish batch length %d exceeds max %d", len(batch), events.DefaultPublishBatchSize)
+	}
+	if !sameDurableBatchSession(batch) {
+		return fmt.Errorf("durable: publish batch must use one identity/session")
+	}
+	prepared := make([]events.Event, 0, len(batch))
+	for _, ev := range batch {
+		preparedEvent, accepted, err := b.preparePublish(ctx, ev)
+		if err != nil {
+			return err
+		}
+		if accepted {
+			prepared = append(prepared, preparedEvent)
+		}
+	}
+	if len(prepared) == 0 {
+		return nil
+	}
+	generation, epochID, err := b.generationForAdmission(ctx, prepared[0].Identity.Identity)
+	if err != nil {
+		return fmt.Errorf("durable: capture session erasure epoch: %w", err)
+	}
+	return b.ordered.PublishBatchWithGenerationAndExpectation(ctx, prepared, generation, epochID)
+}
+
+// PublishAsync admits a best-effort observability event without waiting for
+// StateStore latency. Admission reads only the process-local epoch cache; the
+// commit lane revalidates the shared epoch and may drop the first request on a
+// cold/stale replica while refreshing that cache. Saturation returns
+// ErrAsyncQueueFull immediately; an accepted event shares the same FIFO as
+// ordinary Publish.
+func (b *bus) PublishAsync(ctx context.Context, ev events.Event) error {
+	prepared, accepted, err := b.preparePublish(ctx, ev)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		return nil
+	}
+	generation, epochID := b.generationForAsyncAdmission(prepared.Identity.Identity)
+	return b.ordered.PublishAsyncWithGenerationAndExpectation(ctx, prepared, generation, epochID)
+}
+
+// ObserveAsyncAdmissionFailure records a bounded-lane admission failure
+// without changing the producer's business result.
+func (b *bus) ObserveAsyncAdmissionFailure(ctx context.Context, eventType events.EventType, err error) {
+	b.asyncSignal.Observe(ctx, eventType, err)
+}
+
+// AsyncAdmissionFailures reports the cumulative bounded-lane admission
+// failures observed since this bus was constructed.
+func (b *bus) AsyncAdmissionFailures() int64 {
+	return b.asyncSignal.Total()
+}
+
+// Flush establishes a terminal barrier after every earlier accepted event.
+func (b *bus) Flush(ctx context.Context) error {
+	return b.ordered.Flush(ctx)
+}
+
+func (b *bus) preparePublish(ctx context.Context, ev events.Event) (events.Event, bool, error) {
+	if ctx == nil {
+		return events.Event{}, false, fmt.Errorf("durable: publish context is nil")
+	}
+	if b.closed.Load() {
+		return events.Event{}, false, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.Event{}, false, fmt.Errorf("durable: publish cancelled: %w", err)
+	}
+	if err := events.ValidateEvent(ev); err != nil {
+		return events.Event{}, false, err
+	}
 	payload := ev.Payload
 	if _, safe := payload.(events.SafePayload); !safe {
 		redacted, err := b.redactor.Redact(ctx, payload)
 		if err != nil {
 			b.emitRedactionFailure(ctx, ev, err)
-			return fmt.Errorf("durable: publish redaction failed: %w", err)
+			return events.Event{}, false, fmt.Errorf("durable: publish redaction failed: %w", err)
 		}
 		payload = wrapRedacted(redacted)
 	}
 	ev.Payload = payload
-
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = b.clock.Now()
 	}
+	return ev, true, nil
+}
 
-	if err := b.sequenceAndStore(ctx, &ev); err != nil {
-		if errors.Is(err, errEventFenced) {
-			// The session was erased while this event was in flight. Dropping
-			// it is the CORRECT outcome (the erased session has no history to
-			// land in), not silent degradation — it is logged loudly so the
-			// drop is observable (CLAUDE.md §13).
+func (b *bus) commitBatch(ctx context.Context, batch []events.Event, generation uint64, expectedEventID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	accepted, err := b.sequenceAndStoreBatch(ctx, batch, generation, expectedEventID)
+	if errors.Is(err, errEventFenced) {
+		for _, ev := range batch {
 			b.logger.InfoContext(ctx, "durable: dropped event for erased (fenced) session",
 				slog.String("driver", "durable"),
 				slog.String("event_type", string(ev.Type)),
 				slog.String("tenant_id", ev.Identity.TenantID),
 				slog.String("user_id", ev.Identity.UserID),
 				slog.String("session_id", ev.Identity.SessionID))
-			return nil
 		}
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-
-	// Wake projection watchers (best-effort, non-blocking — a projector
-	// can never delay or fail the publish path). Only after the event was
-	// persisted; a persistence failure never reaches here.
-	b.notifyProjectionWatermark(ev)
-
-	b.fanOut(ev, false)
+	for _, ev := range accepted {
+		b.notifyProjectionWatermark(ev)
+		b.fanOut(ev, false)
+	}
 	return nil
+}
+
+func (b *bus) reportAsyncFailure(ctx context.Context, batch []events.Event, err error) {
+	b.logger.ErrorContext(ctx, "durable: asynchronous event batch failed",
+		slog.String("driver", "durable"),
+		slog.Int("events", len(batch)),
+		slog.String("error", err.Error()))
+}
+
+func sameDurableBatchSession(batch []events.Event) bool {
+	if len(batch) < 2 {
+		return true
+	}
+	first := batch[0].Identity.Identity
+	for _, ev := range batch[1:] {
+		if ev.Identity.Identity != first {
+			return false
+		}
+	}
+	return true
 }
 
 // PublishLive validates, redacts, and bounded-fan-outs a present-tense event.
@@ -867,138 +1182,164 @@ func (b *bus) PublishLive(ctx context.Context, ev events.Event) error {
 }
 
 // sequenceAndStore assigns the next monotonic sequence to ev and
-// persists it (durable mode) or appends it to the best-effort ring.
-// Holds publishMu so the sequence counter, the persisted head list,
-// and (in best-effort mode) the ring stay mutually consistent.
-//
-// A persistence failure surfaces loudly — the event is NOT enqueued
-// and the error propagates to the Publish caller. Silently dropping a
-// persistence failure would foreclose the gap-free guarantee this driver
-// exists to provide (CLAUDE.md §5 "fail loudly", §13).
-func (b *bus) sequenceAndStore(ctx context.Context, ev *events.Event) error {
+// sequenceAndStoreBatch assigns one contiguous sequence range and commits all
+// events through one StateStore SaveBatchIf transaction. Caller-owned event
+// slices are already validated/redacted before reaching this method.
+func (b *bus) sequenceAndStoreBatch(ctx context.Context, batch []events.Event, generation uint64, expectedEventID string) ([]events.Event, error) {
+	if len(batch) == 0 {
+		return nil, fmt.Errorf("durable: empty publication batch")
+	}
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
+	if !b.generationMatchesLocked(batch[0].Identity, generation) {
+		return nil, errEventFenced
+	}
+	if !b.bestEffort {
+		changed, err := b.erasureEpochChanged(ctx, batch[0].Identity.Identity, generation, expectedEventID)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			return nil, errEventFenced
+		}
+	}
 	if b.persistenceBroken {
-		return fmt.Errorf("durable: persistence/index state is uncertain; restart required before publishing")
+		return nil, fmt.Errorf("durable: persistence/index state is uncertain; restart required before publishing")
 	}
-
-	// Fenced-session drop. Checked under publishMu (the same lock Fence
-	// acquires) so the fence and the persist never disagree: an event that
-	// reaches here after Fence took hold is dropped and never retained.
+	if !sameDurableBatchSession(batch) {
+		return nil, fmt.Errorf("durable: publication batch must use one identity/session")
+	}
+	if uint64(len(batch)) > ^uint64(0)-b.nextSeq {
+		return nil, fmt.Errorf("global sequence exhausted")
+	}
 	if b.bestEffort {
-		if b.isFenced(ev.Identity) {
-			return errEventFenced
+		if b.isFenced(batch[0].Identity) {
+			return nil, errEventFenced
 		}
-		seq := b.nextSeq + 1
-		ev.Sequence = seq
-		if b.ringCap > 0 {
-			b.ringAppendLocked(*ev)
+		out := make([]events.Event, len(batch))
+		copy(out, batch)
+		for i := range out {
+			b.nextSeq++
+			if b.nextSeq == 0 {
+				return nil, fmt.Errorf("global sequence exhausted")
+			}
+			out[i].Sequence = b.nextSeq
+			if b.ringCap > 0 {
+				b.ringAppendLocked(out[i])
+			}
 		}
-		b.nextSeq = seq
-		return nil
+		return out, nil
 	}
-	fenced, err := b.isDurablyFenced(ctx, ev.Identity)
-	if err != nil {
-		return err
-	}
-	if fenced {
-		return errEventFenced
-	}
-
-	seq, err := b.persistAtomic(ctx, ev)
+	accepted, err := b.persistAtomicBatch(ctx, batch, generation, expectedEventID)
 	if err != nil {
 		if errors.Is(err, errEventFenced) {
-			return err
+			return nil, err
 		}
-		// Only an explicit commit-acknowledgement ambiguity poisons the bus.
-		// Validation, reads, cancellation, CAS exhaustion, and known rollback
-		// errors definitely did not commit and leave the next Publish usable.
 		if errors.Is(err, state.ErrCommitOutcomeUnknown) {
 			b.persistenceBroken = true
 		}
-		// nextSeq is NOT advanced. Definite no-commit outcomes retry from shared
-		// authority on the next Publish. An ambiguous outcome stays poisoned:
-		// reusing its sequence could overwrite a commit not yet represented by
-		// the head/index, so restart must perform recovery.
-		return fmt.Errorf("durable: persist event: %w", err)
+		return nil, fmt.Errorf("durable: persist event batch: %w", err)
 	}
-	b.nextSeq = seq
-	// Floor the observed retention horizon at the oldest persisted event.
-	// The untrimmed log means the first persisted event is the head, so
-	// this only sets the horizon on the empty-log edge (or an earlier
-	// out-of-order OccurredAt); later events are newer and leave it.
-	if b.oldestRetainedAt.IsZero() || ev.OccurredAt.Before(b.oldestRetainedAt) {
-		b.oldestRetainedAt = ev.OccurredAt
+	b.nextSeq = accepted[len(accepted)-1].Sequence
+	for _, ev := range accepted {
+		if b.oldestRetainedAt.IsZero() || ev.OccurredAt.Before(b.oldestRetainedAt) {
+			b.oldestRetainedAt = ev.OccurredAt
+		}
 	}
-	return nil
+	return accepted, nil
 }
 
-// persistAtomic allocates through the shared authority and atomically commits
-// authority, immutable body, and conditional session head. Caller holds this
-// bus's publishMu; SaveBatchIf provides cross-process serialization.
-func (b *bus) persistAtomic(ctx context.Context, ev *events.Event) (uint64, error) {
+// persistAtomicBatch allocates a contiguous sequence range from the shared
+// authority and commits the authority, all immutable entries, and one session
+// head through a single conditional transaction. Caller holds publishMu.
+func (b *bus) persistAtomicBatch(ctx context.Context, batch []events.Event, generation uint64, expectedEventID string) ([]events.Event, error) {
+	if len(batch) == 0 {
+		return nil, fmt.Errorf("durable: empty atomic batch")
+	}
+	if !sameDurableBatchSession(batch) {
+		return nil, fmt.Errorf("durable: atomic batch must use one identity/session")
+	}
 	for attempt := 1; attempt <= publishCASMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return nil, err
 		}
 		currentSeq, authorityExpectation, err := b.loadSequenceAuthority(ctx)
 		if err != nil {
-			return 0, fmt.Errorf("load sequence authority: %w", err)
+			return nil, fmt.Errorf("load sequence authority: %w", err)
 		}
-		seq := currentSeq + 1
-		if seq == 0 {
-			return 0, fmt.Errorf("global sequence exhausted")
+		assigned := make([]events.Event, len(batch))
+		copy(assigned, batch)
+		for i := range assigned {
+			seq := currentSeq + uint64(i) + 1
+			if seq == 0 {
+				return nil, fmt.Errorf("global sequence exhausted")
+			}
+			assigned[i].Sequence = seq
 		}
-		ev.Sequence = seq
-		if err := b.persistAtomicAttempt(ctx, *ev, authorityExpectation); err != nil {
+		if err := b.persistAtomicBatchAttempt(ctx, assigned, authorityExpectation, expectedEventID); err != nil {
 			if errors.Is(err, state.ErrConditionFailed) {
+				changed, checkErr := b.erasureEpochChanged(ctx, batch[0].Identity.Identity, generation, expectedEventID)
+				if checkErr != nil {
+					return nil, checkErr
+				}
+				if changed {
+					return nil, errEventFenced
+				}
 				continue
 			}
-			return 0, err
+			return nil, err
 		}
-		return seq, nil
+		return assigned, nil
 	}
-	return 0, fmt.Errorf("global sequence allocation exceeded %d CAS attempts: %w", publishCASMaxAttempts, state.ErrConditionFailed)
+	return nil, fmt.Errorf("global sequence allocation exceeded %d CAS attempts: %w", publishCASMaxAttempts, state.ErrConditionFailed)
 }
 
-func (b *bus) persistAtomicAttempt(ctx context.Context, ev events.Event, authorityExpectation state.SlotExpectation) error {
-	entryBytes, err := encodeEvent(ev)
-	if err != nil {
-		return err
+func (b *bus) persistAtomicBatchAttempt(ctx context.Context, batch []events.Event, authorityExpectation state.SlotExpectation, expectedEventID string) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("durable: empty atomic batch attempt")
 	}
-	metadata, err := metadataRecordFromEvent(ev)
-	if err != nil {
-		return fmt.Errorf("build event metadata: %w", err)
+	sessionID := sessionKey(batch[0].Identity)
+	if !sameDurableBatchSession(batch) {
+		return fmt.Errorf("durable: atomic batch attempt must use one identity/session")
 	}
-	sessionID := sessionKey(ev.Identity)
-	fenceExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, durableFenceKind(ev.Identity.Identity), "")
+	fenceExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, durableFenceKind(batch[0].Identity.Identity), "")
 	if _, err := b.store.Load(ctx, fenceExpectation.Identity, fenceExpectation.Kind); err == nil {
 		return errEventFenced
 	} else if !errors.Is(err, state.ErrNotFound) {
 		return fmt.Errorf("load durable session fence: %w", err)
 	}
+	epochExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, durableEpochKind(batch[0].Identity.Identity), state.EventID(expectedEventID))
 
-	entryRec := state.StateRecord{
-		ID:       state.NewEventID(),
-		Identity: sessionID,
-		Kind:     kindEntryPrefix + seqToken(ev.Sequence),
-		Bytes:    entryBytes,
+	entries := make([]state.StateRecord, len(batch))
+	entryExpectations := make([]state.SlotExpectation, len(batch))
+	metadata := make([]eventMetadataRecord, len(batch))
+	for i, ev := range batch {
+		entryBytes, err := encodeEvent(ev)
+		if err != nil {
+			return err
+		}
+		meta, err := metadataRecordFromEvent(ev)
+		if err != nil {
+			return fmt.Errorf("build event metadata: %w", err)
+		}
+		metadata[i] = meta
+		entries[i] = state.StateRecord{
+			ID:       state.NewEventID(),
+			Identity: sessionID,
+			Kind:     kindEntryPrefix + seqToken(ev.Sequence),
+			Bytes:    entryBytes,
+		}
+		entryExpectations[i] = state.SlotExpectation{Identity: sessionID, Kind: entries[i].Kind}
 	}
 	head, headExpectation, err := b.loadHeadForBatch(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("load head record: %w", err)
 	}
-	// The steady-state path already has one integrity-authenticated metadata
-	// row per sequence. Avoid rebuilding a map over the entire session head on
-	// every publish (which would turn a long-lived session into O(n²) write
-	// work), but force legacy/unchecked heads through bounded canonical
-	// validation before appending a new row.
 	if !headMetadataReady(head) {
 		head, err = b.ensureHeadMetadata(ctx, sessionID, head)
 		if err != nil {
 			return fmt.Errorf("upgrade head index: %w", err)
 		}
-		// Adoption may have replaced the head generation.
 		head, headExpectation, err = b.loadHeadForBatch(ctx, sessionID)
 		if err != nil {
 			return fmt.Errorf("reload adopted head record: %w", err)
@@ -1007,30 +1348,33 @@ func (b *bus) persistAtomicAttempt(ctx context.Context, ev events.Event, authori
 			return fmt.Errorf("adopted head changed before publication: %w", state.ErrConditionFailed)
 		}
 	}
-	head.Sequences = append(head.Sequences, ev.Sequence)
-	head.Metadata = append(head.Metadata, metadata)
+	for i, ev := range batch {
+		head.Sequences = append(head.Sequences, ev.Sequence)
+		head.Metadata = append(head.Metadata, metadata[i])
+	}
 	head.MetadataValidatedCount = len(head.Sequences)
 	head.MetadataReady = true
 	head.MetadataIntegrityChecksum = metadataIntegrityChecksum(head.Sequences, head.Metadata)
 	headBytes, err := encodeHead(head)
 	if err != nil {
+		// authority, immutable body, and conditional session head. Caller holds this
 		return fmt.Errorf("encode head record: %w", err)
 	}
-	headRec := state.StateRecord{
-		ID:       state.NewEventID(),
-		Identity: sessionID,
-		Kind:     kindHead,
-		Bytes:    headBytes,
-	}
-	authorityBytes, err := json.Marshal(sequenceAuthorityRecord{Sequence: ev.Sequence})
+	headRec := state.StateRecord{ID: state.NewEventID(), Identity: sessionID, Kind: kindHead, Bytes: headBytes}
+	authorityBytes, err := json.Marshal(sequenceAuthorityRecord{Sequence: batch[len(batch)-1].Sequence})
 	if err != nil {
 		return fmt.Errorf("encode sequence authority: %w", err)
 	}
 	authorityRec := state.NewInternalRecord(state.NewEventID(), sequenceAuthorityIdentity, kindSequenceAuthority, authorityBytes)
-	entryExpectation := state.SlotExpectation{Identity: sessionID, Kind: entryRec.Kind}
-	return b.store.SaveBatchIf(ctx,
-		[]state.SlotExpectation{authorityExpectation, entryExpectation, headExpectation, fenceExpectation},
-		[]state.StateRecord{authorityRec, entryRec, headRec})
+	expectations := make([]state.SlotExpectation, 0, len(batch)+4)
+	expectations = append(expectations, authorityExpectation)
+	expectations = append(expectations, entryExpectations...)
+	expectations = append(expectations, headExpectation, fenceExpectation, epochExpectation)
+	writes := make([]state.StateRecord, 0, len(batch)+2)
+	writes = append(writes, authorityRec)
+	writes = append(writes, entries...)
+	writes = append(writes, headRec)
+	return b.store.SaveBatchIf(ctx, expectations, writes)
 }
 
 func (b *bus) loadHeadForBatch(ctx context.Context, sessionID identity.Quadruple) (headRecord, state.SlotExpectation, error) {
@@ -2049,29 +2393,29 @@ func (b *bus) loadHead(ctx context.Context, sessionID identity.Quadruple) (headR
 // Subscribe validates the filter, audits Admin scope, enforces the
 // per-session subscriber cap, and returns a live Subscription.
 func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription, error) {
-	if b.closed.Load() {
-		return nil, events.ErrBusClosed
-	}
 	if !f.Admin && !f.HasFullTriple() {
 		return nil, events.ErrIdentityScopeRequired
 	}
 
+	key := identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}
+	b.mu.Lock()
+	if b.closed.Load() {
+		b.mu.Unlock()
+		return nil, events.ErrBusClosed
+	}
 	if !f.Admin {
-		b.mu.RLock()
+		// Count active entries in the exact identity bucket while holding the
+		// insertion lock so concurrent Subscribe calls cannot oversubscribe
+		// the per-session cap.
+		bucket := b.subsByIdentity[key]
 		count := 0
-		for _, s := range b.subs {
-			if s.cancelled.Load() {
-				continue
-			}
-			if !s.filter.Admin &&
-				s.filter.Tenant == f.Tenant &&
-				s.filter.User == f.User &&
-				s.filter.Session == f.Session {
+		for _, existing := range bucket {
+			if !existing.cancelled.Load() {
 				count++
 			}
 		}
-		b.mu.RUnlock()
 		if count >= b.cfg.MaxSubscribersPerSession {
+			b.mu.Unlock()
 			return nil, events.ErrSubscriberLimitReached
 		}
 	}
@@ -2089,9 +2433,19 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 		filter: f,
 		bound:  bound,
 		ch:     make(chan events.Event, b.cfg.SubscriberBufferSize),
+		bus:    b,
 	}
-	b.mu.Lock()
 	b.subs[id] = s
+	if f.Admin {
+		b.adminSubs[id] = s
+	} else {
+		bucket := b.subsByIdentity[key]
+		if bucket == nil {
+			bucket = make(map[uint64]*subscription)
+			b.subsByIdentity[key] = bucket
+		}
+		bucket[id] = s
+	}
 	b.mu.Unlock()
 
 	if f.Admin {
@@ -2100,12 +2454,26 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 	return s, nil
 }
 
-// fanOut walks subscribers and enqueues ev to each whose filter
-// matches.
+// fanOut selects subscribers from the exact identity bucket plus the
+// explicit admin bucket, then retains Filter.Matches as the final predicate.
+// Non-admin Subscribe requires a complete identity triple, so no tenant/user
+// wildcard bucket is valid here. The bucket lookup makes unrelated connected
+// sessions invisible to the hot path while preserving every existing filter
+// and delivery rule.
 func (b *bus) fanOut(ev events.Event, live bool) {
+	key := ev.Identity.Identity
 	b.mu.RLock()
-	matched := make([]*subscription, 0, len(b.subs))
-	for _, s := range b.subs {
+	exact := b.subsByIdentity[key]
+	matched := make([]*subscription, 0, len(exact)+len(b.adminSubs))
+	for _, s := range exact {
+		if s.cancelled.Load() {
+			continue
+		}
+		if s.filter.Matches(ev) {
+			matched = append(matched, s)
+		}
+	}
+	for _, s := range b.adminSubs {
 		if s.cancelled.Load() {
 			continue
 		}
@@ -2236,25 +2604,61 @@ func (b *bus) publishInternal(ev events.Event) {
 // bus as its owner (Close then closes it); a caller that passes a
 // store into New owns the store's lifecycle and Close leaves it open.
 func (b *bus) Close(ctx context.Context) error {
-	if b.closed.Swap(true) {
-		return nil
+	if ctx == nil {
+		return fmt.Errorf("durable: close context is nil")
 	}
-	b.mu.Lock()
-	subs := make([]*subscription, 0, len(b.subs))
-	for _, s := range b.subs {
-		subs = append(subs, s)
+	b.closed.Store(true)
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+
+	var closeErrs []error
+	if err := b.ordered.Close(ctx); err != nil {
+		closeErrs = append(closeErrs, fmt.Errorf("durable: close publication queue: %w", err))
 	}
-	b.subs = map[uint64]*subscription{}
-	b.mu.Unlock()
-	for _, s := range subs {
-		s.cancel()
+	if !b.subscribersClosed {
+		b.mu.Lock()
+		subs := make([]*subscription, 0, len(b.subs))
+		for _, s := range b.subs {
+			subs = append(subs, s)
+		}
+		b.subs = map[uint64]*subscription{}
+		b.mu.Unlock()
+		for _, s := range subs {
+			s.cancel()
+		}
+		b.subscribersClosed = true
 	}
-	if b.ownStore && b.store != nil {
+	if b.ownStore && b.store != nil && !b.storeClosed {
 		if err := b.store.Close(ctx); err != nil {
-			return fmt.Errorf("durable: close StateStore: %w", err)
+			closeErrs = append(closeErrs, fmt.Errorf("durable: close StateStore: %w", err))
+		} else {
+			b.storeClosed = true
 		}
 	}
-	return nil
+	return errors.Join(closeErrs...)
+}
+
+// removeSubscription removes a subscriber from the canonical lifecycle map
+// and exactly one secondary bucket. It is idempotent so Cancel may race with
+// Close without leaving stale fan-out candidates behind. Caller must not hold
+// s.mu; this method acquires only b.mu.
+func (b *bus) removeSubscription(s *subscription) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.subs, s.id)
+	if s.filter.Admin {
+		delete(b.adminSubs, s.id)
+		return
+	}
+	key := s.bound.Identity
+	bucket := b.subsByIdentity[key]
+	if bucket == nil {
+		return
+	}
+	delete(bucket, s.id)
+	if len(bucket) == 0 {
+		delete(b.subsByIdentity, key)
+	}
 }
 
 // wrapRedacted converts the audit redactor's output into a value
@@ -2369,11 +2773,13 @@ func windowFromSnapshot(snapshot []events.Event, before uint64, limit int, f eve
 
 // Compile-time assertions: bus implements all three interfaces.
 var (
-	_ events.EventBus              = (*bus)(nil)
-	_ events.LivePublisher         = (*bus)(nil)
-	_ events.Replayer              = (*bus)(nil)
-	_ events.HistoryReplayer       = (*bus)(nil)
-	_ events.EventMetadataReplayer = (*bus)(nil)
-	_ events.Fencer                = (*bus)(nil)
-	_ events.ProjectionSource      = (*bus)(nil)
+	_ events.EventBus                      = (*bus)(nil)
+	_ events.LivePublisher                 = (*bus)(nil)
+	_ events.Replayer                      = (*bus)(nil)
+	_ events.HistoryReplayer               = (*bus)(nil)
+	_ events.EventMetadataReplayer         = (*bus)(nil)
+	_ events.Fencer                        = (*bus)(nil)
+	_ events.ProjectionSource              = (*bus)(nil)
+	_ events.AsyncAdmissionFailureObserver = (*bus)(nil)
+	_ events.AsyncAdmissionCounter         = (*bus)(nil)
 )

@@ -304,6 +304,11 @@ drained:
 	if !sawDrop {
 		t.Fatal("live saturation did not emit a bus.dropped notice")
 	}
+	// DropWindow is intentionally tiny for this test. Give the real clock a
+	// tick before the follow-up publish so the next live notice is guaranteed
+	// to close the displaced-event window instead of depending on nanosecond
+	// scheduling.
+	time.Sleep(time.Millisecond)
 	// The notice path may displace one additional live event, leaving a new
 	// zero-sequence drop window open. With the buffer drained, one more live
 	// event lets that notice land without displacement and closes the window;

@@ -82,7 +82,7 @@ func publishToolInvoked(ctx context.Context, bus events.EventBus, name string, t
 	if !ok {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
+	events.PublishAsyncObserved(ctx, bus, events.Event{
 		Type:       EventTypeToolInvoked,
 		Identity:   q,
 		OccurredAt: started,
@@ -113,7 +113,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 	var policyErr *PolicyError
 	_ = errors.As(err, &policyErr)
 	if err == nil {
-		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
+		events.PublishAsyncObserved(ctx, bus, events.Event{
 			Type:       EventTypeToolCompleted,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -129,7 +129,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 	}
 	switch {
 	case errors.Is(err, ErrToolInvalidArgs):
-		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
+		events.PublishAsyncObserved(ctx, bus, events.Event{
 			Type:       EventTypeToolInvalidArgs,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -141,7 +141,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 			},
 		})
 	case errors.Is(err, ErrToolPolicyExhausted):
-		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
+		events.PublishAsyncObserved(ctx, bus, events.Event{
 			Type:       EventTypeToolPolicyExhausted,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -166,7 +166,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, t
 			d := scopeErr.ShortfallDetail()
 			shortfall = &d
 		}
-		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; the tool result is the source of truth.
+		events.PublishAsyncObserved(ctx, bus, events.Event{
 			Type:       EventTypeToolFailed,
 			Identity:   q,
 			OccurredAt: time.Now(),

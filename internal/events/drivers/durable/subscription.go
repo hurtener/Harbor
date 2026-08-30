@@ -20,6 +20,7 @@ type subscription struct {
 	filter events.Filter
 	bound  identity.Quadruple
 	ch     chan events.Event
+	bus    *bus
 
 	mu           sync.Mutex // serialises enqueue + cancel against each other
 	dropOpen     bool
@@ -40,9 +41,10 @@ func (s *subscription) Events() <-chan events.Event { return s.ch }
 // goroutine.
 func (s *subscription) Cancel() { s.cancel() }
 
-// cancel closes s.ch under s.mu so the close is serialised against any
-// in-flight enqueue (which also holds s.mu). Without the lock, Close
-// racing an active Publish triggers "send on closed channel".
+// cancel closes s.ch under s.mu and removes the subscription from its
+// driver's canonical set and secondary bucket, so the close is serialised
+// against any in-flight enqueue (which also holds s.mu). Without the lock,
+// Close racing an active Publish triggers "send on closed channel".
 func (s *subscription) cancel() {
 	s.mu.Lock()
 	if !s.cancelled.Load() {
@@ -50,6 +52,9 @@ func (s *subscription) cancel() {
 		s.cancelOnce.Do(func() { close(s.ch) })
 	}
 	s.mu.Unlock()
+	if s.bus != nil {
+		s.bus.removeSubscription(s)
+	}
 }
 
 // enqueue delivers ev to the subscriber. Drops the oldest event under

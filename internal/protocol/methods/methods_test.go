@@ -117,6 +117,8 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigSkillsUpsert,
 	methods.MethodAgentConfigSkillsDelete,
 	methods.MethodAgentConfigAgentPacksList,
+	methods.MethodAgentConfigAgentPacksInspect,
+	methods.MethodAgentConfigAgentPacksCopy,
 	methods.MethodAgentConfigAgentPacksUpsert,
 	methods.MethodAgentConfigAgentPacksRemove,
 	methods.MethodAgentConfigAgentPacksPropose,
@@ -214,16 +216,17 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// (agent_config.set_extra_system_blocks, D-367) = 123, plus signed
 	// OAuth MCP capability registration and paired removal = 125, plus
 	// terminal agent-config retirement = 126, plus agent-config agent-packs
-	// five = 131, plus the two-phase user skill-package import pair
-	// (agent_config.user.skills.import_validate + import_commit) = 133,
+	// five = 131, plus same-runtime agent-pack inspect/copy two = 133, plus
+	// the two-phase user skill-package import pair
+	// (agent_config.user.skills.import_validate + import_commit) = 135,
 	// plus the read-only composition preview
-	// (agent_config.composition.preview) = 134, plus the session-turns
-	// read pair (sessions.turns.list + sessions.turns.get) = 136, plus the
-	// observability administrative read (observability.query) = 137, plus
-	// HA-68 same-runtime skill publications ten = 149, plus the user live
-	// profile reconciliation verb = 150.
-	if len(got) != 150 {
-		t.Fatalf("Methods() returned %d methods, want 150", len(got))
+	// (agent_config.composition.preview) = 136, plus the session-turns
+	// read pair (sessions.turns.list + sessions.turns.get) = 138, plus the
+	// observability administrative read (observability.query) = 139, plus
+	// HA-68 same-runtime skill publications ten = 151, plus the user live
+	// profile reconciliation verb = 152.
+	if len(got) != 152 {
+		t.Fatalf("Methods() returned %d methods, want 152", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

@@ -18,10 +18,18 @@ assert_grep_present 'MethodAgentConfigAgentPacksPropose Method = "agent_config\.
     'phase 237: canonical agent-pack propose method is declared'
 assert_grep_present 'MethodAgentConfigAgentPacksCommit Method = "agent_config\.agent_packs\.commit"' "${METHODS_GO}" \
     'phase 237: canonical agent-pack commit method is declared'
-assert_grep_count '^[[:space:]]*h\.serveAgentPacks[A-Za-z]+\(w, r, body, wireID\)' "${HANDLER_GO}" 5 \
-    'phase 237: transport dispatch has exactly five executable agent-pack handlers'
-assert_grep_count '^func \(h \*AgentConfigHandler\) serveAgentPacks[A-Za-z]+\(' "${HANDLER_GO}" 5 \
-    'phase 237: transport defines exactly five executable agent-pack handlers'
+AGENT_PACK_HANDLERS=(List Inspect Copy Upsert Remove Propose Commit)
+EXPECTED_AGENT_PACK_HANDLERS="${#AGENT_PACK_HANDLERS[@]}"
+assert_grep_count '^[[:space:]]*h\.serveAgentPacks[A-Za-z]+\(w, r, body, wireID\)' "${HANDLER_GO}" "${EXPECTED_AGENT_PACK_HANDLERS}" \
+    "phase 237: transport dispatch covers all ${EXPECTED_AGENT_PACK_HANDLERS} executable agent-pack handlers"
+assert_grep_count '^func \(h \*AgentConfigHandler\) serveAgentPacks[A-Za-z]+\(' "${HANDLER_GO}" "${EXPECTED_AGENT_PACK_HANDLERS}" \
+    "phase 237: transport defines all ${EXPECTED_AGENT_PACK_HANDLERS} executable agent-pack handlers"
+for handler in "${AGENT_PACK_HANDLERS[@]}"; do
+    assert_grep_count "^[[:space:]]*h\\.serveAgentPacks${handler}\\(w, r, body, wireID\\)" "${HANDLER_GO}" 1 \
+        "phase 237: transport dispatches the ${handler} agent-pack handler exactly once"
+    assert_grep_count "^func \\(h \\*AgentConfigHandler\\) serveAgentPacks${handler}\\(" "${HANDLER_GO}" 1 \
+        "phase 237: transport defines the ${handler} agent-pack handler exactly once"
+done
 assert_grep_present '^func \(s \*Service\) AgentPacksPropose' "${SERVICE_GO}" \
     'phase 237: service implements governed agent-pack propose'
 assert_grep_present '^func \(s \*Service\) AgentPacksCommit' "${SERVICE_GO}" \

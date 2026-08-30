@@ -2108,6 +2108,20 @@ baseline) into the run snapshot and the operator-verifiable composition
 preview for the resolved boot/default agent; boot preflight, run, and preview
 all use it. D-427.
 
+**Agent-pack semantic hash** — the lowercase hexadecimal SHA-256 digest of
+canonical attachment-free pack body fields, excluding source, revision, and
+copy-provenance metadata. Equal bodies therefore compare independently of
+authoring lineage. D-456.
+
+**Agent-pack composition hash** — the existing effective resolver's framed
+lowercase hexadecimal SHA-256 digest over canonical ordered pack ID and
+semantic-hash pairs; source and editability remain response metadata. D-456.
+
+**Server-stamped pack-copy provenance** — the immutable `origin_ref` source
+agent/revision/pack/hash lineage plus operation and target binding, and the
+last-applied target semantic hash used to update or remove only an untouched
+server copy during reconciliation. D-456.
+
 **Optional artifact-egress parameter** — a mapping parameter written with one
 trailing `?` at the shared `artifactegress.CompileMapping` boundary. The marker
 is removed from the remote schema and `ParamsFor` projections; absent or
@@ -2207,3 +2221,9 @@ attempt fact whose stable id includes the grant, logical call, attempt nonce,
 retry, downgrade, fallback, and attempt coordinates. Parent logical-call/nonce
 and planner-step fields let a consumer validate a derived receipt against the
 signed grant without re-deriving Harbor internals. D-436.
+
+**Identity-indexed EventBus fan-out** — the internal candidate-selection path
+used by the in-memory and durable drivers: exact `(tenant, user, session)`
+buckets for non-admin subscriptions plus one Admin bucket, with the complete
+`Filter.Matches` predicate retained before bounded enqueue. Subscribe, Cancel,
+and Close keep the indexes synchronized with canonical lifecycle state. D-453.

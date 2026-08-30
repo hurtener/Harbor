@@ -165,9 +165,14 @@ if [ -n "${FAIL}" ]; then
   echo "${FAIL}" >&2
   echo
   echo "perf-gate: FAIL — one or more benchmarks regressed past ${THRESHOLD}%." >&2
-  echo "perf-gate: if the change is intentional, regenerate the baseline" >&2
-  echo "perf-gate:   make bench > ${BASELINE}" >&2
-  echo "perf-gate: and commit it in this PR with reviewer sign-off." >&2
+  if [ -n "${PERF_BASE_FILE:-}" ]; then
+    echo "perf-gate: CI compares fresh base-vs-PR runs; committed baseline changes do not affect this result." >&2
+    echo "perf-gate: optimize the regression or document and review an explicit semantic benchmark reset." >&2
+  else
+    echo "perf-gate: if the change is intentional, regenerate the baseline" >&2
+    echo "perf-gate:   make bench > ${BASELINE}" >&2
+    echo "perf-gate: and commit it in this PR with reviewer sign-off." >&2
+  fi
   exit 1
 fi
 

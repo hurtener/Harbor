@@ -3,6 +3,7 @@ package benchmarks
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/events/drivers/durable"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 )
@@ -38,8 +40,8 @@ func busBenchEvent(id identity.Quadruple) events.Event {
 	}
 }
 
-// BenchmarkBusFanOut measures event-bus publish latency as a
-// function of subscriber count — the master-plan's "bus fan-out
+// BenchmarkOrderedBusFanOut measures ordered, barriered event-bus publish
+// latency as a function of subscriber count — the master-plan's "bus fan-out
 // (subscribers vs latency)" axis. It sweeps {1, 8, 16} subscribers
 // (capped at the default MaxSubscribersPerSession) and reports
 // `ns/op` per Publish for each. brief 06 §"Fan-out" says Publish is
@@ -50,7 +52,7 @@ func busBenchEvent(id identity.Quadruple) events.Event {
 // Real components on every seam: a real `audit` redactor (the
 // `patterns` driver) and the real `inmem` EventBus driver, both
 // resolved through their §4.4 factories — no mocks (CLAUDE.md §13).
-func BenchmarkBusFanOut(b *testing.B) {
+func BenchmarkOrderedBusFanOut(b *testing.B) {
 	for _, subs := range []int{1, 8, 16} {
 
 		b.Run(fmt.Sprintf("subscribers=%d", subs), func(b *testing.B) {
@@ -104,13 +106,13 @@ func BenchmarkBusFanOut(b *testing.B) {
 	}
 }
 
-// BenchmarkBusFanOutCrossTenant measures publish latency when
-// subscribers span multiple tenants — the server-side filter
+// BenchmarkOrderedBusFanOutCrossTenant measures ordered, barriered publish
+// latency when subscribers span multiple tenants — the server-side filter
 // (events.Filter.Matches) is evaluated per subscriber before
 // fan-out (brief 06 §"Filter expressions"). Each publish targets
 // one tenant; the bus must filter the non-matching subscribers out.
 // This confirms identity-scoped filtering cost stays bounded.
-func BenchmarkBusFanOutCrossTenant(b *testing.B) {
+func BenchmarkOrderedBusFanOutCrossTenant(b *testing.B) {
 	const tenants = 8
 
 	red, err := audit.Open(context.Background(), config.AuditConfig{})
@@ -154,6 +156,95 @@ func BenchmarkBusFanOutCrossTenant(b *testing.B) {
 		id := ids[i%tenants]
 		if err := bus.Publish(context.Background(), busBenchEvent(id)); err != nil {
 			b.Fatalf("Publish: %v", err)
+		}
+	}
+}
+
+func mostlyNonmatchingBenchConfig(driver string) config.EventsConfig {
+	cfg := busBenchConfig()
+	cfg.Driver = driver
+	cfg.MaxSubscribersPerSession = 1
+	cfg.ReplayBufferSize = 0
+	cfg.LegacyWritersDrained = true
+	return cfg
+}
+
+func newMostlyNonmatchingBenchBus(b *testing.B, driver string) events.EventBus {
+	b.Helper()
+	red, err := audit.Open(context.Background(), config.AuditConfig{})
+	if err != nil {
+		b.Fatalf("audit.Open: %v", err)
+	}
+	cfg := mostlyNonmatchingBenchConfig(driver)
+	var bus events.EventBus
+	switch driver {
+	case "inmem":
+		bus, err = events.Open(context.Background(), cfg, red)
+	case "durable":
+		// A nil StateStore selects durable's explicitly loud best-effort
+		// ring mode. Replay is disabled here so the benchmark isolates
+		// live fan-out candidate selection in the two drivers.
+		bus, err = durable.New(context.Background(), cfg, red, nil,
+			durable.WithLogger(slog.New(slog.DiscardHandler)))
+	default:
+		b.Fatalf("unknown benchmark driver %q", driver)
+	}
+	if err != nil {
+		b.Fatalf("open %s bus: %v", driver, err)
+	}
+	b.Cleanup(func() { _ = bus.Close(context.Background()) })
+	return bus
+}
+
+func mostlyNonmatchingBenchIdentity(n int) identity.Quadruple {
+	return identity.Quadruple{Identity: identity.Identity{
+		TenantID:  fmt.Sprintf("bench-fanout-tenant-%d", n),
+		UserID:    fmt.Sprintf("bench-fanout-user-%d", n),
+		SessionID: fmt.Sprintf("bench-fanout-session-%d", n),
+	}}
+}
+
+// BenchmarkBusFanOutMostlyNonMatching measures deterministic 1K/10K
+// mostly-nonmatching populations for both EventBus drivers. Each subscriber
+// owns a distinct exact identity, and every publication targets one bucket;
+// the benchmark therefore captures the indexed lookup path while retaining
+// the full Filter.Matches predicate and bounded enqueue behavior.
+func BenchmarkBusFanOutMostlyNonMatching(b *testing.B) {
+	for _, driver := range []string{"inmem", "durable"} {
+		for _, subscriberCount := range []int{1_000, 10_000} {
+			b.Run(fmt.Sprintf("%s/subscribers=%d", driver, subscriberCount), func(b *testing.B) {
+				bus := newMostlyNonmatchingBenchBus(b, driver)
+				ids := make([]identity.Quadruple, subscriberCount)
+				var targetCh <-chan events.Event
+				for i := range subscriberCount {
+					id := mostlyNonmatchingBenchIdentity(i)
+					ids[i] = id
+					sub, err := bus.Subscribe(context.Background(), events.Filter{
+						Tenant:  id.TenantID,
+						User:    id.UserID,
+						Session: id.SessionID,
+					})
+					if err != nil {
+						b.Fatalf("Subscribe #%d: %v", i, err)
+					}
+					if i == 0 {
+						targetCh = sub.Events()
+					}
+				}
+				go func() {
+					for range targetCh {
+					}
+				}()
+
+				target := busBenchEvent(ids[0])
+				b.ReportAllocs()
+				b.ResetTimer()
+				for range b.N {
+					if err := bus.Publish(context.Background(), target); err != nil {
+						b.Fatalf("Publish: %v", err)
+					}
+				}
+			})
 		}
 	}
 }

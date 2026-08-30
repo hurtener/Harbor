@@ -17,6 +17,54 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Performance
+
+- EventBus fan-out in the in-memory and durable drivers now selects an exact
+  identity bucket plus the explicit Admin bucket before retaining the full
+  `Filter.Matches` check. Subscriber lifecycle indexes stay synchronized with
+  Subscribe, Cancel, and Close; EventBus, Protocol, SSE, payload, ordering,
+  drop-notice, fence, and cancellation contracts are unchanged (D-453).
+
+## [1.31.0] — 2026-08-29
+
+### Changed
+
+- Event fan-out now indexes exact identity subscriptions separately from
+  widened admin fan-in, removing unrelated-session scans while preserving
+  filters, isolation, audit, drops, and subscription lifecycle.
+- Additive atomic batch publication is implemented by both event drivers.
+  Batches retain exact individual events, consecutive sequences, replay
+  positions, and SSE cursors; durable authority, bodies, and affected heads
+  commit in one StateStore transaction rather than a flattened batch event.
+- `llm.cost.recorded` and universal tool lifecycle now share one bounded
+  per-bus FIFO and return after acceptance. Synchronous publication is the
+  ordering barrier, so successful task completion cannot overtake earlier
+  accepted records. Abrupt loss can still lose accepted-but-uncommitted
+  telemetry; no outbox, exactly-once claim, or second transcript is added.
+
+- Admin-only same-runtime agent-pack inspection and copy are additive
+  `agent_config.agent_packs.inspect` and `.copy` surfaces (D-456). Inspect
+  returns complete distinct boot/revision bodies plus effective source and
+  composition hashes; copy accepts bounded `pack_ids`, expected source/target
+  composition hashes, and idempotency, producing one all-or-nothing target
+  revision with server-stamped provenance. Equal content is a no-op; edited or
+  independently authored collisions fail closed. Boot sources remain read-only
+  and copied targets remain governed by the existing pack authoring verbs.
+
+### Compatibility
+
+- `sessions.turns.list` / `sessions.turns.get`, `live_resume_seq`, SSE IDs,
+  browser reconnect, non-durable completion chunks, Console wire types, and
+  Harbor Protocol `0.1.0` remain unchanged.
+
+### Release candidate evidence
+
+- This candidate records the ordered event-publication and agent-pack
+  inspect/copy implementations, plus local integration and benchmark gates.
+  Hosted CI, tag/release assets, module provenance,
+  checksums/attestations, deployment, and downstream acceptance are not
+  claimed.
+
 ## [1.30.13] — 2026-08-29
 
 ### Fixed

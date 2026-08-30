@@ -182,11 +182,11 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 6. The classifier's NOT-SHIPPED vocabulary covers every non-Shipped status
-#    word the master plan actually uses. preflight once knew only Pending /
-#    Post-V1 / Deferred and defaulted everything else to Shipped, so `Ready`,
-#    `Cut`, `Revisit`, `Superseded`, `Reverted` and `Deprecated` — 13 rows —
-#    all classified as shipped.
+# 6. The classifier explicitly covers every leading status word the master plan
+#    actually uses. Candidate is intentionally in the SHIPPED/enforced arm:
+#    implementation exists and only release evidence remains. The genuinely
+#    unshipped words (`Ready`, `Cut`, `Revisit`, `Superseded`, `Reverted`, and
+#    `Deprecated`) remain in the NOT-SHIPPED arm.
 #
 #    Computed FROM the master plan, not hard-coded, so a new status word
 #    introduced without teaching the classifier trips this guard.
@@ -226,7 +226,17 @@ EOF
         if [ -n "${unknown_status}" ]; then
             fail "phase 223: master-plan status word(s) phase_status_arm does not name —${unknown_status} — each defaults to Shipped, so an unshipped phase's skeleton reads as shipped-phase debt. Teach the classifier the word."
         else
-            ok 'phase 223: every non-Shipped master-plan status word is named by phase_status_arm'
+            ok 'phase 223: every master-plan leading status word is named by phase_status_arm'
+        fi
+        if printf '%s\n' "${ARM_BODY}" | grep -qE "^[[:space:]]*Candidate\\*\\|candidate\\*\\)[[:space:]]+printf 'shipped'"; then
+            ok 'phase 223: Candidate status explicitly remains shipped/enforced'
+        else
+            fail 'phase 223: Candidate status is not explicitly shipped/enforced'
+        fi
+        if printf '%s\n' "${ARM_BODY}" | grep -qE '^[[:space:]]*Planned\*\|planned\*\)'; then
+            fail 'phase 223: Planned has a global classifier waiver; advance implemented rows or decide a narrower status explicitly'
+        else
+            ok 'phase 223: Planned has no global classifier waiver'
         fi
     fi
 else

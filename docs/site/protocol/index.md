@@ -46,6 +46,19 @@ transport; production/devstack bootstrap remains the one Phase 250
 integration follow-up. See [Phase 250](../../plans/phase-250-same-runtime-skill-publications.md)
 and D-430.
 
+**Phase 267 candidate note.** The additive admin-only
+`agent_config.agent_packs.inspect` and `.copy` surfaces are documented by the
+Phase 267 plan and operator skill. Inspect exposes distinct complete
+`boot_packs`/`revision_packs` bodies plus `effective_packs` and effective
+canonical lowercase 64-character SHA-256 hexadecimal hashes; copy uses bounded
+`pack_ids`, source/target composition-hash CAS, idempotency, exact target
+composition/boot-set hash echoes (including deterministic empty-set values),
+and one all-or-nothing target revision. A runtime must advertise the capability
+only when the strict
+same-runtime/reach-gated handler and its generated lockstep surfaces are
+mounted; Protocol `0.1.0` remains unchanged. See [Phase 267](../../plans/phase-267-agent-pack-inspect-copy.md)
+and D-456.
+
 ## The choreographies (sequence and intent)
 
 What a reference cannot teach — how the calls compose:

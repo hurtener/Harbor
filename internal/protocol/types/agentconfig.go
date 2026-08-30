@@ -1670,6 +1670,80 @@ type AgentConfigAgentPackItem struct {
 	Extra map[string]string `json:"extra,omitempty"`
 }
 
+// AgentConfigAgentPacksInspectRequest is the admin-scoped
+// `agent_config.agent_packs.inspect` request. It reads the complete
+// effective operator pack for one same-runtime Agent, including the boot and
+// active-revision provenance needed by an operator to decide whether an item
+// can be copied.
+type AgentConfigAgentPacksInspectRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+}
+
+// AgentConfigAgentPackInspection is one complete effective pack body and its
+// immutable composition metadata. Source is the closed runtime-authored
+// provenance marker `boot`, `revision`, or `both`.
+type AgentConfigAgentPackInspection struct {
+	// PackID is the canonical pack name (equal to Pack.Name), not a second
+	// storage identity.
+	PackID       string                   `json:"pack_id"`
+	Pack         AgentConfigAgentPackItem `json:"pack"`
+	Source       string                   `json:"source"`
+	SemanticHash string                   `json:"semantic_hash"`
+	Editable     bool                     `json:"editable"`
+}
+
+// AgentConfigAgentPacksInspectResponse is the deterministic effective pack
+// projection returned by `agent_config.agent_packs.inspect`.
+type AgentConfigAgentPacksInspectResponse struct {
+	AgentID         string                           `json:"agent_id"`
+	BootPacks       []AgentConfigAgentPackInspection `json:"boot_packs"`
+	RevisionPacks   []AgentConfigAgentPackInspection `json:"revision_packs"`
+	EffectivePacks  []AgentConfigAgentPackInspection `json:"effective_packs"`
+	CompositionHash string                           `json:"composition_hash"`
+	BootPackSetHash string                           `json:"boot_pack_set_hash"`
+	ProtocolVersion string                           `json:"protocol_version"`
+}
+
+// AgentConfigAgentPacksCopyRequest is the admin-scoped same-runtime pack
+// copy request. The selected IDs are copied from SourceAgentID to
+// TargetAgentID under the supplied compare-and-swap hashes and idempotency
+// key. The protocol surface verifies the caller and both Agent reaches before
+// this request reaches the runtime port.
+type AgentConfigAgentPacksCopyRequest struct {
+	Identity      IdentityScope `json:"identity"`
+	SourceAgentID string        `json:"source_agent_id"`
+	TargetAgentID string        `json:"target_agent_id"`
+	PackIDs       []string      `json:"pack_ids"`
+	// Both composition hashes are mandatory CAS inputs. Callers obtain the
+	// actual deterministic values by inspecting the source and target first;
+	// there is no synthetic empty-state sentinel.
+	ExpectedSourceCompositionHash string `json:"expected_source_composition_hash"`
+	ExpectedTargetCompositionHash string `json:"expected_target_composition_hash"`
+	IdempotencyKey                string `json:"idempotency_key"`
+}
+
+// AgentConfigAgentPackCopyOutcome is one terminal result for a selected pack.
+// Outcome is the closed success set `copied` or `noop`; a collision fails the
+// atomic copy operation with a typed Protocol error.
+type AgentConfigAgentPackCopyOutcome struct {
+	PackID  string `json:"pack_id"`
+	Outcome string `json:"outcome"`
+}
+
+// AgentConfigAgentPacksCopyResponse reports every selected pack's terminal
+// result plus the target's resulting composition hashes. The runtime port
+// must apply the selected set atomically; a collision is a typed error rather
+// than a successful per-pack outcome.
+type AgentConfigAgentPacksCopyResponse struct {
+	SourceAgentID   string                            `json:"source_agent_id"`
+	TargetAgentID   string                            `json:"target_agent_id"`
+	Outcomes        []AgentConfigAgentPackCopyOutcome `json:"outcomes"`
+	CompositionHash string                            `json:"composition_hash"`
+	BootPackSetHash string                            `json:"boot_pack_set_hash"`
+	ProtocolVersion string                            `json:"protocol_version"`
+}
+
 // AgentConfigAgentPacksListRequest is the admin-scoped
 // `agent_config.agent_packs.list` request — reads the agent's active pack.
 type AgentConfigAgentPacksListRequest struct {

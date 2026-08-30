@@ -316,6 +316,42 @@ export interface AgentConfigAgentPackItem {
 	origin_ref?: string; extra?: Record<string, string>;
 }
 
+export interface AgentConfigAgentPacksInspectRequest { identity: IdentityScope; agent_id: string; }
+export interface AgentConfigAgentPackInspection {
+	pack_id: string;
+	pack: AgentConfigAgentPackItem;
+	source: string;
+	semantic_hash: string;
+	editable: boolean;
+}
+export interface AgentConfigAgentPacksInspectResponse {
+	agent_id: string;
+	boot_packs: AgentConfigAgentPackInspection[];
+	revision_packs: AgentConfigAgentPackInspection[];
+	effective_packs: AgentConfigAgentPackInspection[];
+	composition_hash: string;
+	boot_pack_set_hash: string;
+	protocol_version: string;
+}
+export interface AgentConfigAgentPacksCopyRequest {
+	identity: IdentityScope;
+	source_agent_id: string;
+	target_agent_id: string;
+	pack_ids: string[];
+	expected_source_composition_hash: string;
+	expected_target_composition_hash: string;
+	idempotency_key: string;
+}
+export interface AgentConfigAgentPackCopyOutcome { pack_id: string; outcome: string; }
+export interface AgentConfigAgentPacksCopyResponse {
+	source_agent_id: string;
+	target_agent_id: string;
+	outcomes: AgentConfigAgentPackCopyOutcome[];
+	composition_hash: string;
+	boot_pack_set_hash: string;
+	protocol_version: string;
+}
+
 export interface AgentConfigAgentPacksListRequest { identity: IdentityScope; agent_id: string; }
 export interface AgentConfigAgentPacksUpsertRequest { identity: IdentityScope; agent_id: string; scope?: string; skill: AgentConfigAgentPackItem; expected_content_hash?: string; }
 export interface AgentConfigAgentPacksRemoveRequest { identity: IdentityScope; agent_id: string; name: string; expected_content_hash?: string; }

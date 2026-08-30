@@ -1304,6 +1304,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			UserSkillImportService:         importService,
 			CompositionPreviewService:      previewService,
 			BootOwnership:                  devBootOwnership,
+			BootPackReader:                 serve.PreviewBootReader(bootIndex),
 		}
 		muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
 		built, bErr := serve.BuildMux(muxInput)

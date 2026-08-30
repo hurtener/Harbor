@@ -338,6 +338,20 @@ const (
 	// Identity-mandatory; requires the `auth.ScopeAdmin` claim. The
 	// wire-transport route is `POST /v1/agent_config/agent_packs/list`.
 	MethodAgentConfigAgentPacksList Method = "agent_config.agent_packs.list"
+	// MethodAgentConfigAgentPacksInspect — admin verb: reads the complete
+	// effective boot-plus-revision pack body and its immutable composition
+	// metadata for one same-runtime Agent. The body is never used as authority;
+	// the request is checked against the verified caller and signed Agent reach
+	// at the Protocol edge. The wire-transport route is the typed agent-config
+	// surface `POST /v1/agent_config/agent_packs/inspect`.
+	MethodAgentConfigAgentPacksInspect Method = "agent_config.agent_packs.inspect"
+	// MethodAgentConfigAgentPacksCopy — admin verb: copies selected pack IDs
+	// between two same-runtime Agents under caller-supplied compare-and-swap
+	// and idempotency inputs. The operation is fail-closed on a stale base or
+	// collision and requires signed reach to both Agents. The wire-transport
+	// route is the typed agent-config surface
+	// `POST /v1/agent_config/agent_packs/copy`.
+	MethodAgentConfigAgentPacksCopy Method = "agent_config.agent_packs.copy"
 	// MethodAgentConfigAgentPacksUpsert — admin verb: DETERMINISTICALLY adds
 	// or replaces ONE operator-managed pack item (body + membership atomically
 	// in one content-addressed revision). Identity-mandatory; requires the
@@ -1251,6 +1265,8 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsUpsert:                   {},
 	MethodAgentConfigSkillsDelete:                   {},
 	MethodAgentConfigAgentPacksList:                 {},
+	MethodAgentConfigAgentPacksInspect:              {},
+	MethodAgentConfigAgentPacksCopy:                 {},
 	MethodAgentConfigAgentPacksUpsert:               {},
 	MethodAgentConfigAgentPacksRemove:               {},
 	MethodAgentConfigAgentPacksPropose:              {},
@@ -1538,7 +1554,7 @@ func IsGovernanceAdminMethod(m Method) bool {
 	return ok
 }
 
-// canonicalAgentConfigMethods is the closed set of the thirty-six
+// canonicalAgentConfigMethods is the closed set of the canonical
 // `agent_config.*` methods — the five registry verbs (get / set_revision /
 // list_revisions / diff / rollback), the three skills-control verbs
 // (skills.list / skills.upsert / skills.delete), the MCP-exposure verb
@@ -1569,6 +1585,8 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
 	MethodAgentConfigAgentPacksList:             {},
+	MethodAgentConfigAgentPacksInspect:          {},
+	MethodAgentConfigAgentPacksCopy:             {},
 	MethodAgentConfigAgentPacksUpsert:           {},
 	MethodAgentConfigAgentPacksRemove:           {},
 	MethodAgentConfigAgentPacksPropose:          {},
@@ -1613,6 +1631,22 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	// caller previews its own exact triple; the widening is a ctx-scope
 	// decision the service audits, never a route-level gate).
 	MethodAgentConfigCompositionPreview: {},
+}
+
+// canonicalAgentConfigAgentPacksMethods is the closed set of same-runtime
+// Agent pack inspection/copy methods served by the typed agent-config
+// transport. They remain part of the canonical agent_config family for
+// protocol inventory while their narrow runtime port stays transport-agnostic.
+var canonicalAgentConfigAgentPacksMethods = map[Method]struct{}{
+	MethodAgentConfigAgentPacksInspect: {},
+	MethodAgentConfigAgentPacksCopy:    {},
+}
+
+// IsAgentConfigAgentPacksMethod reports whether m is one of the same-runtime
+// Agent pack inspection/copy methods.
+func IsAgentConfigAgentPacksMethod(m Method) bool {
+	_, ok := canonicalAgentConfigAgentPacksMethods[m]
+	return ok
 }
 
 // canonicalAgentConfigUserMethods is the closed sub-set of the eight
@@ -1681,6 +1715,8 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigRetire:                     {},
 	MethodAgentConfigSkillsUpsert:               {},
 	MethodAgentConfigSkillsDelete:               {},
+	MethodAgentConfigAgentPacksInspect:          {},
+	MethodAgentConfigAgentPacksCopy:             {},
 	MethodAgentConfigAgentPacksUpsert:           {},
 	MethodAgentConfigAgentPacksRemove:           {},
 	MethodAgentConfigAgentPacksPropose:          {},
@@ -1699,7 +1735,7 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigSetLLMProvider:             {},
 }
 
-// IsAgentConfigMethod reports whether m is one of the thirty-seven
+// IsAgentConfigMethod reports whether m is one of the canonical
 // `agent_config.*` methods. The control transport / wire handler branches
 // on this to route the request through the agent-config dispatcher
 // instead of the task-control surface. NOT a control method — a new

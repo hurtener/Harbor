@@ -108,6 +108,8 @@ import type {
 	AgentConfigUserSkillsImportCommitResponse,
 	AgentConfigCompositionPreviewResponse,
 	AgentConfigAgentPackItem,
+	AgentConfigAgentPacksInspectResponse,
+	AgentConfigAgentPacksCopyResponse,
 	AgentConfigAgentPacksListResponse,
 	AgentConfigAgentPacksUpsertResponse,
 	AgentConfigAgentPacksRemoveResponse,
@@ -1374,6 +1376,32 @@ export class AgentConfigNamespace {
 	}
 	agentPacksList(agentId: string): Promise<AgentConfigAgentPacksListResponse> {
 		return this.#t.request('/v1/agent_config/agent_packs/list', { agent_id: agentId });
+	}
+	agentPacksInspect(agentId: string): Promise<AgentConfigAgentPacksInspectResponse> {
+		return this.#t.request<AgentConfigAgentPacksInspectResponse>(
+			'/v1/agent_config/agent_packs/inspect',
+			{ agent_id: agentId },
+		);
+	}
+	agentPacksCopy(
+		sourceAgentId: string,
+		targetAgentId: string,
+		packIds: string[],
+		options: {
+			expected_source_composition_hash: string;
+			expected_target_composition_hash: string;
+			idempotency_key: string;
+		},
+	): Promise<AgentConfigAgentPacksCopyResponse> {
+		return this.#t.request<AgentConfigAgentPacksCopyResponse>(
+			'/v1/agent_config/agent_packs/copy',
+			{
+				source_agent_id: sourceAgentId,
+				target_agent_id: targetAgentId,
+				pack_ids: packIds,
+				...options,
+			},
+		);
 	}
 	agentPacksUpsert(agentId: string, skill: AgentConfigAgentPackItem, expectedContentHash?: string, scope = 'agent'): Promise<AgentConfigAgentPacksUpsertResponse> {
 		return this.#t.request('/v1/agent_config/agent_packs/upsert', { agent_id: agentId, skill, scope, expected_content_hash: expectedContentHash });

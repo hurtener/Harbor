@@ -38,6 +38,14 @@ var errorTable = map[protoerrors.Code]errorEntry{
 			"The refusal is exact across Runtime processes sharing a shipped StateStore: publication rechecks the active-pointer EventID through `StateStore.SaveIf`; the per-owner lock only reduces local contention. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour.",
 		Retry: "Yes, after re-reading — call `agent_config.get` (or `agent_config.user.get` if the door you are retrying is a `user.*` twin; they are separate revision spines and a hash from the wrong one never matches) for the current `revision_id` and `content_hash`, re-apply your edit on top (`agent_config.diff` compares what you read against what it is now), and resubmit with the fresh hash.",
 	},
+	protoerrors.CodeAgentPackCopyConflict: {
+		When:  "A same-runtime `agent_config.agent_packs.copy` operation was well-formed and its composition preconditions were current, but an independently authored target pack would be overwritten. The atomic copy was refused and no selected pack was partially applied.",
+		Retry: "No — inspect the target, resolve the authored collision explicitly, then choose a new reviewed copy request.",
+	},
+	protoerrors.CodeAgentPackCopyIdempotencyConflict: {
+		When:  "A same-runtime Agent pack copy idempotency key was reused with a different source, target, selected-pack set, or composition precondition fingerprint. The replay is refused without mutation.",
+		Retry: "No — replay the original request with that key or choose a new idempotency key for a distinct copy.",
+	},
 	protoerrors.CodeSessionSkillCutoverPending: {
 		When:  "A session-personal skill mutation reached a tenant whose explicit durable cutover is still `dual_read`; Harbor refuses the mutation until the declared migration completes and a fresh verification pass authorizes `state_only`.",
 		Retry: "Yes, after the operator completes the tenant's declared cutover; do not retry as an unconditional legacy write.",

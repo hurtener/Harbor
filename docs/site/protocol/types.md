@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 450 canonical Harbor Protocol wire types, generated from the single-source
+The 456 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -84,6 +84,27 @@ Declared in `internal/protocol/types`.
 | `pause_token` | `string` | optional (`omitempty`) |
 | `protocol_version` | `string` |  |
 
+## AgentConfigAgentPackCopyOutcome
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `pack_id` | `string` |  |
+| `outcome` | `string` |  |
+
+## AgentConfigAgentPackInspection
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `pack_id` | `string` |  |
+| `pack` | `types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) |  |
+| `source` | `string` |  |
+| `semantic_hash` | `string` |  |
+| `editable` | `bool` |  |
+
 ## AgentConfigAgentPackItem
 
 Declared in `internal/protocol/types`.
@@ -131,6 +152,56 @@ Declared in `internal/protocol/types`.
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
 | `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `hash` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksCopyRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `source_agent_id` | `string` |  |
+| `target_agent_id` | `string` |  |
+| `pack_ids` | `[]string` |  |
+| `expected_source_composition_hash` | `string` |  |
+| `expected_target_composition_hash` | `string` |  |
+| `idempotency_key` | `string` |  |
+
+## AgentConfigAgentPacksCopyResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `source_agent_id` | `string` |  |
+| `target_agent_id` | `string` |  |
+| `outcomes` | `[]types.AgentConfigAgentPackCopyOutcome` — see [`AgentConfigAgentPackCopyOutcome`](./types.md#agentconfigagentpackcopyoutcome) |  |
+| `composition_hash` | `string` |  |
+| `boot_pack_set_hash` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksInspectRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+
+## AgentConfigAgentPacksInspectResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `agent_id` | `string` |  |
+| `boot_packs` | `[]types.AgentConfigAgentPackInspection` — see [`AgentConfigAgentPackInspection`](./types.md#agentconfigagentpackinspection) |  |
+| `revision_packs` | `[]types.AgentConfigAgentPackInspection` — see [`AgentConfigAgentPackInspection`](./types.md#agentconfigagentpackinspection) |  |
+| `effective_packs` | `[]types.AgentConfigAgentPackInspection` — see [`AgentConfigAgentPackInspection`](./types.md#agentconfigagentpackinspection) |  |
+| `composition_hash` | `string` |  |
+| `boot_pack_set_hash` | `string` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigAgentPacksListRequest

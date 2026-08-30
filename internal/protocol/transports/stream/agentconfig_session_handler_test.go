@@ -70,7 +70,7 @@ func sessionHandler(t *testing.T) http.Handler {
 	return newSessionHandlerFixture(t).handler
 }
 
-func newSessionHandlerFixture(t *testing.T) sessionHandlerFixture {
+func newSessionHandlerFixture(t *testing.T, extra ...stream.AgentConfigOption) sessionHandlerFixture {
 	t.Helper()
 	ctx := context.Background()
 	rawState, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
@@ -123,8 +123,9 @@ func newSessionHandlerFixture(t *testing.T) sessionHandlerFixture {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	h, err := stream.NewAgentConfigHandler(svc,
-		stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
+	options := []stream.AgentConfigOption{stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer())}
+	options = append(options, extra...)
+	h, err := stream.NewAgentConfigHandler(svc, options...)
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}

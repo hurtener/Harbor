@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 150 canonical Harbor Protocol methods, generated from the single-source registry
+The 152 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -225,6 +225,8 @@ error envelopes are catalogued in [errors.md](./errors.md).
 |---|---|---|---|---|---|
 | `agent_config.add_mcp_connection` | `POST /v1/agent_config/add_mcp_connection` | agent config — admin | [`AgentConfigAddMCPConnectionRequest`](./types.md#agentconfigaddmcpconnectionrequest) | [`AgentConfigAddMCPConnectionResponse`](./types.md#agentconfigaddmcpconnectionresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.agent_packs.commit` | `POST /v1/agent_config/agent_packs/commit` | agent config — admin | [`AgentConfigAgentPacksCommitRequest`](./types.md#agentconfigagentpackscommitrequest) | [`AgentConfigAgentPacksCommitResponse`](./types.md#agentconfigagentpackscommitresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.agent_packs.copy` | `POST /v1/agent_config/agent_packs/copy` | agent config — admin | [`AgentConfigAgentPacksCopyRequest`](./types.md#agentconfigagentpackscopyrequest) | [`AgentConfigAgentPacksCopyResponse`](./types.md#agentconfigagentpackscopyresponse) | mutating; requires the verified `admin` scope claim |
+| `agent_config.agent_packs.inspect` | `POST /v1/agent_config/agent_packs/inspect` | agent config — admin | [`AgentConfigAgentPacksInspectRequest`](./types.md#agentconfigagentpacksinspectrequest) | [`AgentConfigAgentPacksInspectResponse`](./types.md#agentconfigagentpacksinspectresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.agent_packs.list` | `POST /v1/agent_config/agent_packs/list` | agent config — admin | [`AgentConfigAgentPacksListRequest`](./types.md#agentconfigagentpackslistrequest) | [`AgentConfigAgentPacksListResponse`](./types.md#agentconfigagentpackslistresponse) | read-only; requires the verified `admin` scope claim |
 | `agent_config.agent_packs.propose` | `POST /v1/agent_config/agent_packs/propose` | agent config — admin | [`AgentConfigAgentPacksProposeRequest`](./types.md#agentconfigagentpacksproposerequest) | [`AgentConfigAgentPacksProposeResponse`](./types.md#agentconfigagentpacksproposeresponse) | mutating; requires the verified `admin` scope claim |
 | `agent_config.agent_packs.remove` | `POST /v1/agent_config/agent_packs/remove` | agent config — admin | [`AgentConfigAgentPacksRemoveRequest`](./types.md#agentconfigagentpacksremoverequest) | [`AgentConfigAgentPacksRemoveResponse`](./types.md#agentconfigagentpacksremoveresponse) | mutating; requires the verified `admin` scope claim |

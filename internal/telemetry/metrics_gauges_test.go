@@ -15,15 +15,16 @@ import (
 // metrics.snapshot reader depend on — a rename is a wire-contract change
 // and must break this test.
 const (
-	gaugeActiveRuns    = "harbor_runtime_active_runs"
-	gaugeEngineCap     = "harbor_runtime_engine_capacity_entries"
-	gaugeGovCache      = "harbor_runtime_governance_cache_entries"
-	gaugeEventsDropped = "harbor_runtime_events_dropped"
+	gaugeActiveRuns             = "harbor_runtime_active_runs"
+	gaugeEngineCap              = "harbor_runtime_engine_capacity_entries"
+	gaugeGovCache               = "harbor_runtime_governance_cache_entries"
+	gaugeEventsDropped          = "harbor_runtime_events_dropped"
+	gaugeAsyncAdmissionFailures = "harbor_runtime_async_admission_failures"
 )
 
 // TestRegisterRuntimeGauges_SnapshotYieldsGauges feeds known callback
 // values through RegisterRuntimeGauges and asserts Snapshot projects all
-// four gauges with those exact values onto MetricSnapshot.Gauges.
+// five gauges with those exact values onto MetricSnapshot.Gauges.
 func TestRegisterRuntimeGauges_SnapshotYieldsGauges(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	reg, shutdown, err := telemetry.NewMetricsRegistry(goodCfg(), telemetry.WithMetricReader(reader))
@@ -33,16 +34,18 @@ func TestRegisterRuntimeGauges_SnapshotYieldsGauges(t *testing.T) {
 	defer func() { _ = shutdown(context.Background()) }()
 
 	want := map[string]float64{
-		gaugeActiveRuns:    3,
-		gaugeEngineCap:     7,
-		gaugeGovCache:      2,
-		gaugeEventsDropped: 11,
+		gaugeActiveRuns:             3,
+		gaugeEngineCap:              7,
+		gaugeGovCache:               2,
+		gaugeEventsDropped:          11,
+		gaugeAsyncAdmissionFailures: 13,
 	}
 	if err := reg.RegisterRuntimeGauges(telemetry.RuntimeGaugeSource{
 		ActiveRuns:             func() int64 { return 3 },
 		EngineCapacityEntries:  func() int64 { return 7 },
 		GovernanceCacheEntries: func() int64 { return 2 },
 		EventsDropped:          func() int64 { return 11 },
+		AsyncAdmissionFailures: func() int64 { return 13 },
 	}); err != nil {
 		t.Fatalf("RegisterRuntimeGauges: %v", err)
 	}

@@ -190,6 +190,14 @@ const (
 	// StateStore.SaveIf. The service's per-owner write lock only reduces local
 	// contention; it is not the authority for this guarantee.
 	CodeRevisionConflict Code = "revision_conflict"
+	// CodeAgentPackCopyConflict marks an authored pack collision during the
+	// atomic same-runtime copy operation. It is distinct from a stale CAS
+	// revision (CodeRevisionConflict): the caller's bases were current, but a
+	// target pack owned by a different author cannot be overwritten.
+	CodeAgentPackCopyConflict Code = "agent_pack_copy_conflict"
+	// CodeAgentPackCopyIdempotencyConflict marks reuse of a copy idempotency
+	// key with a different source/target/pack/precondition fingerprint.
+	CodeAgentPackCopyIdempotencyConflict Code = "agent_pack_copy_idempotency_conflict"
 	// CodeSessionSkillCutoverPending — agent-config session-skill surface: the
 	// tenant remains in the explicit durable `dual_read` cutover mode, so a
 	// session-personal mutation is refused until the declared migration has
@@ -303,37 +311,39 @@ const (
 // new Protocol error code is a new phase that declares a constant +
 // extends this map; there is no registration escape hatch.
 var canonicalCodes = map[Code]struct{}{
-	CodeInvalidRequest:             {},
-	CodeIdentityRequired:           {},
-	CodeScopeMismatch:              {},
-	CodePayloadInvalid:             {},
-	CodeUnknownMethod:              {},
-	CodeNotFound:                   {},
-	CodeRestartUnavailable:         {},
-	CodeRuntimeError:               {},
-	CodeAuthRejected:               {},
-	CodeIdentityScopeRequired:      {},
-	CodePresignUnsupported:         {},
-	CodeRequestTooLarge:            {},
-	CodeSessionRunning:             {},
-	CodeSessionErased:              {},
-	CodeRevisionConflict:           {},
-	CodeSessionSkillCutoverPending: {},
-	CodeSessionSkillReadUnstable:   {},
-	CodeAgentRetired:               {},
-	CodeAgentRetirementConflict:    {},
-	CodeRenderAdmissionMissing:     {},
-	CodeRenderAdmissionUnavailable: {},
-	CodeRenderAdmissionInvalid:     {},
-	CodeRenderAdmissionExpired:     {},
-	CodeRenderAdmissionMismatch:    {},
-	CodeRenderAuthorityAmbiguous:   {},
-	CodeSkillImportProposalInvalid: {},
-	CodeSkillImportProposalExpired: {},
-	CodeSkillImportPackageInvalid:  {},
-	CodeSkillImportReplaceRequired: {},
-	CodeQueryBudgetExceeded:        {},
-	CodeInvalidCursor:              {},
+	CodeInvalidRequest:                   {},
+	CodeIdentityRequired:                 {},
+	CodeScopeMismatch:                    {},
+	CodePayloadInvalid:                   {},
+	CodeUnknownMethod:                    {},
+	CodeNotFound:                         {},
+	CodeRestartUnavailable:               {},
+	CodeRuntimeError:                     {},
+	CodeAuthRejected:                     {},
+	CodeIdentityScopeRequired:            {},
+	CodePresignUnsupported:               {},
+	CodeRequestTooLarge:                  {},
+	CodeSessionRunning:                   {},
+	CodeSessionErased:                    {},
+	CodeRevisionConflict:                 {},
+	CodeAgentPackCopyConflict:            {},
+	CodeAgentPackCopyIdempotencyConflict: {},
+	CodeSessionSkillCutoverPending:       {},
+	CodeSessionSkillReadUnstable:         {},
+	CodeAgentRetired:                     {},
+	CodeAgentRetirementConflict:          {},
+	CodeRenderAdmissionMissing:           {},
+	CodeRenderAdmissionUnavailable:       {},
+	CodeRenderAdmissionInvalid:           {},
+	CodeRenderAdmissionExpired:           {},
+	CodeRenderAdmissionMismatch:          {},
+	CodeRenderAuthorityAmbiguous:         {},
+	CodeSkillImportProposalInvalid:       {},
+	CodeSkillImportProposalExpired:       {},
+	CodeSkillImportPackageInvalid:        {},
+	CodeSkillImportReplaceRequired:       {},
+	CodeQueryBudgetExceeded:              {},
+	CodeInvalidCursor:                    {},
 
 	CodeSkillPublicationConflict:            {},
 	CodeSkillPublicationNotFound:            {},

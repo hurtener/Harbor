@@ -95,6 +95,24 @@ Injection is governed, not raw: **capability filtering and PII redaction happen
 at injection time**, and a **tiered budgeter** keeps injected skill text inside
 the token budget so a fat skill never blows out the prompt.
 
+### Agent-pack inspect and copy stay runtime-local
+
+The admin-only `agent_config.agent_packs.inspect` and `.copy` methods expose
+the selected agent's operator pack only inside the same verified runtime and
+tenant. Inspect returns complete `boot_packs` and `revision_packs` bodies
+separately plus the merged `effective_packs` view, per-entry source/semantic
+hash/`editable`, and the canonical lowercase 64-character hexadecimal
+`composition_hash` / `boot_pack_set_hash` values, including empty-set values.
+Copy accepts
+bounded `pack_ids`, expected source/target composition hashes, and an
+idempotency key, then writes one all-or-nothing target revision. Equal selected
+content is a no-op; an independently authored or edited conflicting target
+fails closed. Server-stamped provenance lets reconciliation update or remove
+only untouched copies.
+Boot sources remain read-only, and copied target packs continue through the
+existing governed authoring path. Both agents must be in signed reach; there
+is no portable catalog or cross-runtime fallback.
+
 ### Organization publications stay exact and runtime-local
 
 Harbor also supports organization-owned skill publications as immutable,

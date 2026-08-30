@@ -122,19 +122,26 @@ func waitEvent(t *testing.T, ch <-chan events.Event, want events.EventType) even
 // the given fixture, with the service token exported in the env.
 func mkRemoteSource(t *testing.T, srv *credsourcetest.FixtureServer, clock func() time.Time) credsource.Source {
 	t.Helper()
+	src, _ := mkRemoteSourceWithBus(t, srv, clock)
+	return src
+}
+
+func mkRemoteSourceWithBus(t *testing.T, srv *credsourcetest.FixtureServer, clock func() time.Time) (credsource.Source, events.EventBus) {
+	t.Helper()
 	t.Setenv(cAuthTokenEnv, cDummyServiceToken)
 	red := mkRedactor()
+	bus := mkBus(t, red)
 	src, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{
 		ProviderName: "fixture-provider",
 		Remote:       &credsource.RemoteConfig{URL: srv.URL(), AuthTokenEnv: cAuthTokenEnv},
 		Clock:        clock,
-		Bus:          mkBus(t, red),
+		Bus:          bus,
 		Redactor:     red,
 	})
 	if err != nil {
 		t.Fatalf("build remote source: %v", err)
 	}
-	return src
+	return src, bus
 }
 
 // ---------------------------------------------------------------------------
@@ -605,8 +612,9 @@ func TestRemote_Redirect_RefusedLoud(t *testing.T) {
 // initiates the flight — the strongest variant of the guarantee.
 func TestRemote_SingleFlight_CancelOneWaiter_OthersResolve(t *testing.T) {
 	slow := credsourcetest.NewSlow(t, cDummyServiceToken, cDummyClientID, cDummyClientSecret, 150*time.Millisecond)
-	src := mkRemoteSource(t, slow, nil)
+	src, bus := mkRemoteSourceWithBus(t, slow, nil)
 	baseCtx := mkCtx(t)
+	eventsCh := subscribe(t, bus, mkID())
 
 	const n = 32
 	cancelCtx, cancel := context.WithCancel(baseCtx)
@@ -614,16 +622,22 @@ func TestRemote_SingleFlight_CancelOneWaiter_OthersResolve(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make(chan error, n)
 	cancelled := make(chan error, 1)
-	started := make(chan struct{})
-
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		close(started)
 		_, err := src.Resolve(cancelCtx)
 		cancelled <- err
 	}()
-	<-started
+	// Wait until the doomed caller has reached the fixture. This makes it
+	// deterministically own the shared flight (rather than merely launching it
+	// first and relying on scheduler order).
+	deadline := time.Now().Add(2 * time.Second)
+	for slow.Hits() == 0 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if slow.Hits() != 1 {
+		t.Fatalf("initiating fetch hits = %d, want 1", slow.Hits())
+	}
 
 	for range n {
 		wg.Add(1)
@@ -662,6 +676,12 @@ func TestRemote_SingleFlight_CancelOneWaiter_OthersResolve(t *testing.T) {
 	// second one for the survivors.
 	if h := slow.Hits(); h != 1 {
 		t.Fatalf("endpoint hits = %d, want 1 (single flight, detach preserved)", h)
+	}
+	// The detached flight retains the initiating caller's identity values and
+	// emits its mandatory success audit exactly as an uncancelled fetch does.
+	ev := waitEvent(t, eventsCh, credsource.EventTypeProviderCredentialFetched)
+	if ev.Identity.Identity != mkID() {
+		t.Fatalf("success event identity = %#v, want %#v", ev.Identity.Identity, mkID())
 	}
 }
 

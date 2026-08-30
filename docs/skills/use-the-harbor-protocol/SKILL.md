@@ -21,6 +21,52 @@ keeps the runtime-default provider-catalog behavior.
 
 ## Operator-managed agent packs
 
+### Same-runtime inspect and copy (Phase 267 / D-456)
+
+The additive admin methods `agent_config.agent_packs.inspect` and
+`agent_config.agent_packs.copy` operate only on registrations in the same
+runtime and verified tenant. They require the verified identity triple, the
+`admin` scope, and signed effective-agent reach to every addressed source and
+target agent. `agent_id` is registration metadata, not an isolation principal;
+the request body cannot select a tenant, user, or authority.
+
+`POST /v1/agent_config/agent_packs/inspect` returns a bounded, complete
+projection of the addressed agent's operator pack. `boot_packs` and
+`revision_packs` retain their distinct complete bodies when both layers
+contribute; `effective_packs` is the deterministic merged view. Every entry
+reports exact `source` (`boot`, `revision`, or effective `both`),
+`semantic_hash`, and boolean `editable`. The response also carries
+`composition_hash` and `boot_pack_set_hash` as canonical lowercase 64-character
+SHA-256 hexadecimal values, including empty-set values. Equal boot/revision content is
+deduplicated only in `effective_packs`; a differing same-name pair fails
+closed. Boot-owned entries remain read-only.
+
+`POST /v1/agent_config/agent_packs/copy` accepts a bounded non-empty `pack_ids`
+array, `expected_source_composition_hash`,
+`expected_target_composition_hash`, and an opaque `idempotency_key`. The server
+rechecks the immutable source hash/revision and applies the authoritative
+target composition-hash CAS. All selected bodies are recorded in one
+all-or-nothing target revision; the response is bounded, echoes the exact
+target `composition_hash` and `boot_pack_set_hash` values (including
+deterministic empty-set values), and never carries the pack body. An exact
+response-loss retry converges, a reused key with different
+arguments fails, and equal selected content is a true no-op. A differing
+independently authored target or an edited prior copy fails closed without
+overwriting another selected pack.
+
+Copy provenance is server-stamped in `origin_ref` with source agent and
+revision (or boot source), selected pack ID, source semantic hash, operation
+digest, and target binding; the durable operation record binds the sorted
+selection and both expected composition hashes. Reconciliation may update or
+remove only entries whose current hashes still equal their last-applied values
+on the same lineage; edited targets remain intact and surface a bounded
+conflict. A boot source can be copied into an editable durable target, but the
+source is never mutated.
+Target changes continue through `agent_config.agent_packs.propose`, `.commit`,
+and `.remove`. There is no cross-runtime federation, portable catalog, or
+capability grant through pack metadata. Use capability discovery and the typed
+error response before invoking either route.
+
 ## Same-runtime organization skill publications (HA-68 / D-430)
 
 Organization publications are a separate, additive Protocol surface from the

@@ -1971,7 +1971,44 @@ type LivePublisher interface {
 - Identity-mandatory: `Publish` rejects events whose Quadruple lacks tenant/user/session with `ErrIdentityRequired`. Empty `RunID` is acceptable for session-scoped events.
 - Sequence numbering: durable `Publish` is per-bus monotonic via `atomic.Uint64`; gap-free. Caller-prefilled `Sequence != 0` is rejected with `ErrSequenceProvided`. `PublishLive` retains `Sequence == 0` as its explicit no-replay sentinel.
 - Replay-from-cursor: ring buffer (default 10k events) when no durable log; exact replay when the durable log driver (StateStore-backed, Phase 57) is configured. Replay capability lives in Phase 06 and contains durable events only; live animation is not replayed.
+- **Indexed exact/admin fan-out (planned — D-453).** Non-admin subscriptions
+  are indexed by mandatory full identity triple. Publication selects only the
+  event's exact bucket plus a distinct `Admin: true` bucket, then applies the
+  unchanged run/type predicate. Admin remains widened fan-in even when identity
+  fields are present. Limits, audit, drops, reaping, cancel, and close share
+  the same indexed membership; unrelated exact subscribers are not scanned.
+- **Atomic individual-record batches (planned — D-454).** Additive
+  `BatchPublisher` is implemented by both shipped drivers while legacy/custom
+  buses remain source-compatible. All members are validated/redacted before
+  mutation. The durable driver assigns consecutive global sequences and
+  commits authority, individual bodies, and affected session heads in one
+  `StateStore.SaveBatchIf`; failure exposes no prefix. Replay, history,
+  projections, subscribers, and SSE cursors retain exact individual records,
+  never a flattened batch envelope or shared cursor.
+- **One ordered bounded async observability FIFO (planned — D-455).** Each bus
+  asynchronously accepts only driver-neutral `llm.cost.recorded` and the five
+  universal tool-lifecycle events. Validation/redaction precedes acceptance.
+  Ordinary `Publish`/`PublishBatch` uses the same FIFO and waits, so a
+  successful `task.completed` cannot overtake prior accepts. Orderly Close
+  drains/joins. Abrupt process loss before commit may lose accepted telemetry:
+  no outbox, WAL, recovery synthesis, or exactly-once claim is added. This does
+  not extend to authority/security paths and creates no second transcript;
+  `sessions.turns.*`, `live_resume_seq`, SSE IDs, completion chunks, Console,
+  and Protocol `0.1.0` remain unchanged.
 - Cardinality safety: future metric derivation (Phase 56) will draw labels from `Event.Type` and `Event.Extra` only — never `RunID` or `TraceID`. A static lint check enforces this in CI; the script ships as a Phase 05 stub at `scripts/check-event-cardinality.sh` and tightens in Phase 56.
+
+**Identity-indexed fan-out (settled — D-453).** The shipped in-memory and
+durable drivers retain a canonical subscriber lifecycle set and maintain an
+exact `(tenant, user, session)` index for non-admin subscriptions plus one
+explicit Admin bucket. Non-admin subscriptions require the full identity
+triple, so tenant- or user-wildcard buckets are not valid. Fan-out selects
+from the event's exact bucket and the Admin bucket, then evaluates the full
+`Filter.Matches` predicate before each bounded enqueue. Subscribe cap checks,
+Subscribe insertion, Cancel removal, and Close teardown update the canonical
+set and secondary indexes under the same driver lock. This is an internal
+selection optimization: event ordering, drop-oldest notices, cancellation,
+fences, admin auditing, and every EventBus/Protocol/SSE/event-payload contract
+remain unchanged.
 
 **Event taxonomy** is Settled and lives in `internal/events/events.go`. V1 starter set: `runtime.error`, `runtime.warning`, `bus.dropped`, `bus.subscription_idle_closed`, `audit.redaction_failed`, `audit.admin_scope_used`, `governance.budget_exceeded`, `governance.rate_limited`. Adding new types is at-the-seam: declare an exported constant and register it in `init()`. The `TestEventTypes_Exhaustiveness` smoke gate runs in preflight.
 

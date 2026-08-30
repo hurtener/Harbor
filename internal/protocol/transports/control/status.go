@@ -115,6 +115,12 @@ func HTTPStatus(code protoerrors.Code) int {
 		// did not fault). The client re-reads `agent_config.get` and
 		// retries.
 		return http.StatusConflict // 409
+	case protoerrors.CodeAgentPackCopyConflict,
+		protoerrors.CodeAgentPackCopyIdempotencyConflict:
+		// Same-runtime Agent pack copy was well-formed and authorized, but
+		// the atomic mutation was refused by target state or idempotency
+		// replay. Both are actionable 409 conflicts, not malformed requests.
+		return http.StatusConflict // 409
 	case protoerrors.CodeSessionSkillCutoverPending:
 		// A session-personal mutation reached a tenant still in the declared
 		// dual-read migration mode. The request is valid, but state_only has

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	patternsaudit "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -350,14 +351,125 @@ func TestBridgeBusToTracer_StopEndsOpenSpans_AndIsIdempotent(t *testing.T) {
 	stop()
 }
 
+type blockingSpanExporter struct {
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func (e *blockingSpanExporter) ExportSpans(ctx context.Context, _ []sdktrace.ReadOnlySpan) error {
+	e.startedOnce.Do(func() { close(e.started) })
+	select {
+	case <-e.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (*blockingSpanExporter) Shutdown(context.Context) error { return nil }
+func (e *blockingSpanExporter) releaseExport() {
+	e.releaseOnce.Do(func() { close(e.release) })
+}
+
+type joinProbeSubscription struct {
+	events    chan events.Event
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+func (s *joinProbeSubscription) Events() <-chan events.Event { return s.events }
+func (s *joinProbeSubscription) Cancel() {
+	s.once.Do(func() {
+		close(s.cancelled)
+		close(s.events)
+	})
+}
+
+type joinProbeBus struct{ sub *joinProbeSubscription }
+
+func (*joinProbeBus) Publish(context.Context, events.Event) error { return nil }
+func (b *joinProbeBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
+	return b.sub, nil
+}
+func (b *joinProbeBus) Close(context.Context) error {
+	b.sub.Cancel()
+	return nil
+}
+
+// TestBridgeBusToTracer_StopJoinsDrain proves bridge ownership independently
+// of EventBus shutdown. The exporter holds one event inside the bridge drain;
+// stop must cancel the subscription but cannot return until that in-flight
+// event is released and the drain goroutine exits.
+func TestBridgeBusToTracer_StopJoinsDrain(t *testing.T) {
+	exporter := &blockingSpanExporter{started: make(chan struct{}), release: make(chan struct{})}
+	tracer, shutdown, err := telemetry.NewTracer(config.TelemetryConfig{
+		LogFormat: "json", LogLevel: "info", ServiceName: "harbor-tracebridge-join-test",
+	}, telemetry.WithSpanExporter(exporter))
+	if err != nil {
+		t.Fatalf("telemetry.NewTracer: %v", err)
+	}
+	sub := &joinProbeSubscription{events: make(chan events.Event, 1), cancelled: make(chan struct{})}
+	bus := &joinProbeBus{sub: sub}
+	stop, err := telemetry.BridgeBusToTracer(context.Background(), bus, tracer, events.Filter{Admin: true})
+	if err != nil {
+		t.Fatalf("BridgeBusToTracer: %v", err)
+	}
+	t.Cleanup(func() {
+		exporter.releaseExport()
+		stop()
+		_ = shutdown(context.Background())
+	})
+	sub.events <- events.Event{
+		Type: events.EventTypeRuntimeError, Identity: bridgeQuad,
+		Payload: events.RuntimeErrorPayload{Message: "join probe"},
+	}
+	select {
+	case <-exporter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge did not enter the blocking exporter")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-sub.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop did not cancel the bridge subscription")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("stop returned before the bridge drain exited")
+	default:
+	}
+	exporter.releaseExport()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop did not join the released bridge drain")
+	}
+}
+
 // TestBridgeBusToTracer_ConcurrentPublish_NoLeak is the D-025 / §11
 // concurrent-reuse + goroutine-leak gate: N≥100 concurrent publishes
 // through one shared bridge under -race; identity isolation asserted
-// per-span; goroutine baseline restored after stop.
+// per-span; goroutine baseline restored after the bridge and its test-owned
+// event bus are both shut down and joined.
 func TestBridgeBusToTracer_ConcurrentPublish_NoLeak(t *testing.T) {
-	tracer, rec := mkRecorderTracer(t)
-	bus := mkBridgeBus(t)
 	baseline := runtime.NumGoroutine()
+	rec := tracetest.NewInMemoryExporter()
+	tracer, shutdown, err := telemetry.NewTracer(config.TelemetryConfig{
+		LogFormat: "json", LogLevel: "info", ServiceName: "harbor-tracebridge-leak-test",
+	}, telemetry.WithSpanExporter(rec))
+	if err != nil {
+		t.Fatalf("telemetry.NewTracer: %v", err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+	bus := mkBridgeBus(t)
 
 	stop, err := telemetry.BridgeBusToTracer(context.Background(), bus, tracer, telemetry.DefaultTraceBridgeFilter())
 	if err != nil {
@@ -400,7 +512,19 @@ func TestBridgeBusToTracer_ConcurrentPublish_NoLeak(t *testing.T) {
 	}
 
 	stop()
-	// Goroutine baseline restored after stop (bounded eventually-poll).
+	// Bridge stop owns only its subscription drain; the shared bus owns the
+	// ordered publication worker started by the first Publish. Close the
+	// test-owned bus explicitly so its queue worker and reaper are joined before
+	// measuring the process-wide goroutine baseline. Production bridges must not
+	// close their shared bus.
+	if err := bus.Close(context.Background()); err != nil {
+		t.Fatalf("bus.Close: %v", err)
+	}
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatalf("tracer shutdown: %v", err)
+	}
+	// Goroutine baseline restored after both owned lifecycles are joined
+	// (bounded eventually-poll; no tolerance is added).
 	deadline := time.Now().Add(5 * time.Second)
 	for runtime.NumGoroutine() > baseline {
 		if time.Now().After(deadline) {

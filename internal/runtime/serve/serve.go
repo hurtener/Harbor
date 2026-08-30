@@ -1327,6 +1327,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		UserSkillImportService:         userSkillImportService,
 		CompositionPreviewService:      compositionPreviewService,
 		BootOwnership:                  bootOwnership,
+		BootPackReader:                 runLoopBootReader,
 	}
 	muxInput.SignedOAuthMCPCapabilityAuthorities = signedOAuthMCPCapabilityAuthorities
 	built, err := BuildMux(muxInput)
