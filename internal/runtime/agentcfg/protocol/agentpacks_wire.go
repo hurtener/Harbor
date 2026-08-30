@@ -36,10 +36,14 @@ func (s *Service) Inspect(ctx context.Context, req prototypes.AgentConfigAgentPa
 // durable receipt and target CAS; the adapter preserves the wire request's
 // mandatory composition expectations and returns one outcome per selection.
 func (s *Service) Copy(ctx context.Context, req prototypes.AgentConfigAgentPacksCopyRequest) (prototypes.AgentConfigAgentPacksCopyResponse, error) {
+	var packIDs []string
+	if req.PackIDs != nil {
+		packIDs = append([]string{}, req.PackIDs...)
+	}
 	result, err := s.CopySelected(ctx, AgentPackCopyRequest{
 		SourceAgentID:                 req.SourceAgentID,
 		TargetAgentID:                 req.TargetAgentID,
-		PackIDs:                       append([]string(nil), req.PackIDs...),
+		PackIDs:                       packIDs,
 		ExpectedSourceCompositionHash: coreCompositionHash(req.ExpectedSourceCompositionHash),
 		ExpectedTargetCompositionHash: coreCompositionHash(req.ExpectedTargetCompositionHash),
 		IdempotencyKey:                req.IdempotencyKey,

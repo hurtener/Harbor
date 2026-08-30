@@ -210,7 +210,7 @@ func (s *AgentPacksSurface) Dispatch(ctx context.Context, method methods.Method,
 			return nil, admitErr
 		}
 		forwarded := *r
-		forwarded.PackIDs = append([]string(nil), r.PackIDs...)
+		forwarded.PackIDs = append([]string{}, r.PackIDs...)
 		forwarded.Identity = verifiedScope
 		resp, err := s.port.Copy(ctx, forwarded)
 		if err != nil {
@@ -278,8 +278,11 @@ func validateCopyRequest(req types.AgentConfigAgentPacksCopyRequest) *protoerror
 	if req.SourceAgentID == req.TargetAgentID {
 		return protoerrors.New(protoerrors.CodeInvalidRequest, "source and target agent ids must differ")
 	}
-	if len(req.PackIDs) == 0 || len(req.PackIDs) > maxAgentPacksPackIDs {
-		return protoerrors.New(protoerrors.CodeInvalidRequest, "pack_ids is empty or exceeds the protocol bound")
+	if req.PackIDs == nil {
+		return protoerrors.New(protoerrors.CodeInvalidRequest, "pack_ids must be an explicit array")
+	}
+	if len(req.PackIDs) > maxAgentPacksPackIDs {
+		return protoerrors.New(protoerrors.CodeInvalidRequest, "pack_ids exceeds the protocol bound")
 	}
 	seen := make(map[string]struct{}, len(req.PackIDs))
 	for _, packID := range req.PackIDs {

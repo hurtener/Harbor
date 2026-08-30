@@ -474,6 +474,74 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	if afterForeign.CompositionHash != targetAfterCopy.CompositionHash {
 		t.Fatalf("foreign-runtime request changed local target: before=%+v after=%+v", targetAfterCopy, afterForeign)
 	}
+
+	// Omitted and null pack_ids decode to nil and must remain invalid. Only an
+	// explicit [] below authorizes the destructive 1-to-0 reconciliation.
+	for _, tc := range []struct {
+		name       string
+		includeKey bool
+	}{
+		{name: "omitted"},
+		{name: "null", includeKey: true},
+	} {
+		body := map[string]any{
+			"identity":                         phase267IdentityScope(id),
+			"source_agent_id":                  sourceID,
+			"target_agent_id":                  targetID,
+			"expected_source_composition_hash": sourceView.CompositionHash,
+			"expected_target_composition_hash": targetAfterCopy.CompositionHash,
+			"idempotency_key":                  "phase267-nil-selection-" + driverName + "-" + tc.name,
+		}
+		if tc.includeKey {
+			body["pack_ids"] = nil
+		}
+		status, raw = postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+			phase267Marshal(t, body), adminReach())
+		if status != http.StatusBadRequest || phase267ErrorCode(t, raw) != protoerrors.CodeInvalidRequest {
+			t.Fatalf("%s pack_ids status=%d code=%q body=%s", tc.name, status, phase267ErrorCode(t, raw), raw)
+		}
+		afterNil := inspect(targetID, adminReach())
+		if afterNil.CompositionHash != targetAfterCopy.CompositionHash {
+			t.Fatalf("%s pack_ids changed target: before=%+v after=%+v", tc.name, targetAfterCopy, afterNil)
+		}
+	}
+
+	// An empty selection is a deliberate 1-to-0 reconciliation request: it
+	// removes only server-stamped copies from this source while preserving the
+	// independently authored target pack. This must traverse the public HTTP
+	// validator rather than succeeding only through the direct runtime port.
+	emptyCopy := successCopy
+	emptyCopy.PackIDs = []string{}
+	emptyCopy.ExpectedTargetCompositionHash = targetAfterCopy.CompositionHash
+	emptyCopy.IdempotencyKey = "phase267-empty-reconcile-" + driverName
+	status, raw = postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+		phase267Marshal(t, emptyCopy), adminReach())
+	if status != http.StatusOK {
+		t.Fatalf("empty reconciliation status=%d body=%s", status, raw)
+	}
+	var emptyResponse prototypes.AgentConfigAgentPacksCopyResponse
+	if err := json.Unmarshal(raw, &emptyResponse); err != nil {
+		t.Fatalf("decode empty reconciliation: %v; body=%s", err, raw)
+	}
+	if len(emptyResponse.Outcomes) != 0 {
+		t.Fatalf("empty reconciliation outcomes = %+v, want none", emptyResponse.Outcomes)
+	}
+	targetAfterEmpty := inspect(targetID, adminReach())
+	if len(targetAfterEmpty.EffectivePacks) != 1 || targetAfterEmpty.EffectivePacks[0].Pack.Name != "keep" || targetAfterEmpty.EffectivePacks[0].Pack.Steps[0] != "competitor-body" {
+		t.Fatalf("empty reconciliation did not preserve only independent target pack: %+v", targetAfterEmpty)
+	}
+	status, replayRaw = postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+		phase267Marshal(t, emptyCopy), adminReach())
+	if status != http.StatusOK {
+		t.Fatalf("empty reconciliation replay status=%d body=%s", status, replayRaw)
+	}
+	var emptyReplay prototypes.AgentConfigAgentPacksCopyResponse
+	if err := json.Unmarshal(replayRaw, &emptyReplay); err != nil {
+		t.Fatalf("decode empty reconciliation replay: %v; body=%s", err, replayRaw)
+	}
+	if emptyReplay.CompositionHash != emptyResponse.CompositionHash || len(emptyReplay.Outcomes) != 0 {
+		t.Fatalf("empty reconciliation replay changed result: first=%+v replay=%+v", emptyResponse, emptyReplay)
+	}
 }
 
 func phase267IdentityScope(id identity.Identity) prototypes.IdentityScope {

@@ -413,6 +413,9 @@ func layerItemsFromPack(items []skills.AgentPackItem) ([]AgentPackLayerItem, err
 }
 
 func normalizePackCopyRequest(req AgentPackCopyRequest) (AgentPackCopyRequest, error) {
+	if req.PackIDs == nil {
+		return AgentPackCopyRequest{}, fmt.Errorf("%w: pack_ids must be an explicit array", ErrAgentPackCopyInvalid)
+	}
 	req.SourceAgentID = strings.TrimSpace(req.SourceAgentID)
 	req.TargetAgentID = strings.TrimSpace(req.TargetAgentID)
 	req.ExpectedSourceCompositionHash = strings.TrimSpace(req.ExpectedSourceCompositionHash)
@@ -432,7 +435,7 @@ func normalizePackCopyRequest(req AgentPackCopyRequest) (AgentPackCopyRequest, e
 		return AgentPackCopyRequest{}, fmt.Errorf("%w: pack_ids exceeds %d items", ErrAgentPackCopyInvalid, maxAgentPackCopyIDs)
 	}
 	seen := make(map[string]struct{}, len(req.PackIDs))
-	req.PackIDs = append([]string(nil), req.PackIDs...)
+	req.PackIDs = append([]string{}, req.PackIDs...)
 	for i, id := range req.PackIDs {
 		id = skills.CanonicalPackName(id)
 		if id == "" {
