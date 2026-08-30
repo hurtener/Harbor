@@ -15018,7 +15018,7 @@ deployment, or downstream acceptance is claimed.
 
 **Date:** 2026-08-29
 
-**Status:** Accepted for the next Harbor patch release; downstream/runtime
+**Status:** Shipped in Harbor v1.31.0; downstream/runtime
 deployment and acceptance remain pending.
 
 The in-memory and durable EventBus drivers retain their canonical subscriber
@@ -15047,14 +15047,15 @@ final predicates, and 128 concurrent identity-isolated sessions under `-race`.
 The 100 ms benchmark median on Apple M4 improved from 13.6 us to 264 ns at 1K
 (in-memory) and from 119.3 us to 269 ns at 10K; durable improved from 13.3 us
 to 270 ns at 1K and from 116.6 us to 271 ns at 10K. These are local candidate
-versus exact v1.30.13 baseline measurements; no hosted CI, tag, release,
-downstream/runtime deployment, or downstream acceptance is claimed.
+versus exact v1.30.13 baseline measurements. Exact post-merge CI and the
+v1.31.0 release are recorded with D-456 below; downstream/runtime deployment
+and acceptance remain unclaimed.
 
 ## D-454 — Atomic batches retain individual canonical events and cursors
 
 **Date:** 2026-08-29
 
-**Status:** Accepted for the next Harbor minor release; downstream/runtime
+**Status:** Shipped in Harbor v1.31.0; downstream/runtime
 deployment and acceptance remain pending.
 
 Additive `events.BatchPublisher` preserves legacy/custom EventBus source
@@ -15078,7 +15079,7 @@ redaction, retention, fences, and `LivePublisher` do not change.
 
 **Date:** 2026-08-29
 
-**Status:** Accepted for the next Harbor minor release; downstream/runtime
+**Status:** Shipped in Harbor v1.31.0; downstream/runtime
 deployment and acceptance remain pending.
 
 Each shipped EventBus owns one bounded FIFO. The driver-neutral
@@ -15128,8 +15129,9 @@ D-452, Phase 266.
 
 **Date:** 2026-08-29
 
-**Status:** Accepted for the v1.31.0 candidate; hosted CI, tag/release,
-deployment, and downstream acceptance remain pending.
+**Status:** Shipped in Harbor v1.31.0; explicit-empty reconciliation corrected
+on current main after that release. Downstream/runtime deployment and
+acceptance remain pending.
 
 Harbor adds two additive, capability-discovered admin methods:
 `agent_config.agent_packs.inspect` at
@@ -15192,3 +15194,16 @@ coverage.
 **Cross-references:** RFC §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9,
 brief 04, brief 05, brief 06, brief 07, brief 09, brief 11, D-411, D-414,
 D-415, D-427, D-430, `docs/plans/phase-267-agent-pack-inspect-copy.md`.
+
+**Release evidence (2026-08-30).** Implementation PR #764 merged as
+`f6d87b27d8381ed4438e74f75348343729294c8e`; exact post-merge main CI run
+`33297306154` completed successfully. The annotated `v1.31.0` tag object
+`dc009bb544ac1381ff6fa23b3e7aa867685adb27` peels to that commit; release
+workflow `33299904384` succeeded with 13 assets and public module provenance
+resolves the same tag and commit. The scaffold fallback and generated goldens
+are updated in this post-tag follow-up. PR #765 subsequently corrected the
+Protocol and internal wire seams so an explicit empty `pack_ids` array
+preserves the reconciliation operation while omitted or `null` selections
+remain invalid. That correction merged as
+`8bc070c1dbc144939f4b8980f5ef74c59bff0a07` and remains Unreleased at this
+cleanup head. Downstream deployment and acceptance remain unclaimed.

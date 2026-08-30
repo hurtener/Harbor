@@ -299,6 +299,19 @@ and capability-discovered; Protocol `0.1.0` is unchanged.
       cross-agent reach leak under concurrent requests and no capability grant
       from required-tool metadata or copied body content.
 
+## Release evidence (2026-08-30)
+
+Implementation PR #764 merged as
+`f6d87b27d8381ed4438e74f75348343729294c8e`. Exact post-merge main CI run
+`33297306154` completed successfully. The annotated `v1.31.0` tag object
+`dc009bb544ac1381ff6fa23b3e7aa867685adb27` peels to that commit; release
+workflow `33299904384` succeeded with 13 published assets. Downstream runtime
+deployment and acceptance are not claimed. PR #765 subsequently corrected
+explicit-empty reconciliation at both Protocol and internal Service.Copy wire
+seams while keeping omitted or `null` selections invalid. It merged as
+`8bc070c1dbc144939f4b8980f5ef74c59bff0a07` and remains Unreleased at this
+cleanup head.
+
 ## Files added or changed
 
 - `internal/protocol/methods/methods.go`,
@@ -325,7 +338,7 @@ and capability-discovered; Protocol `0.1.0` is unchanged.
 - `docs/site/protocol/index.md` and `docs/site/concepts/memory-and-skills.md` —
   reader-facing Protocol and skills references.
 - `scripts/smoke/phase-267.sh` — static contract smoke.
-- `CHANGELOG.md` — unreleased v1.31.0 candidate scope.
+- `CHANGELOG.md` — published v1.31.0 scope and release evidence.
 
 ## Public API surface
 
@@ -390,7 +403,7 @@ plan/index/decision/glossary/operator-source files, both method names and
 routes, complete distinct layer bodies, bounded plural `pack_ids`, expected
 source/target composition-hash CAS, idempotency, collision/reconciliation,
 boot-read-only wording, the explicit no-portable-catalog and Protocol-version
-boundary, the site include, and the unreleased v1.31.0 candidate changelog
+boundary, the site include, and the published v1.31.0 changelog
 note. It also fails if the new plan contains the forbidden predecessor/product
 vocabulary, and pins the implementation files and focused test names so the
 smoke cannot pass on documentation alone.
@@ -416,7 +429,7 @@ smoke cannot pass on documentation alone.
 - Phases 232, 237, 240, and 248 — effective skill composition, boot baseline,
   and preview/hash semantics.
 - Phase 250 / D-430 — same-runtime immutable content-addressed boundaries.
-- Phase 266 / D-453–D-455 — current v1.31.0 candidate documentation baseline.
+- Phase 266 / D-453–D-455 — shipped v1.31.0 documentation baseline.
 
 ## Risks / open questions
 
@@ -455,8 +468,8 @@ smoke cannot pass on documentation alone.
 ## Pre-merge checklist
 
 - [x] `make drift-audit` passes.
-- [ ] `make preflight` is explicitly skipped by the task authorization;
-      hosted preflight remains required before release integration.
+- [x] Hosted full preflight passed in exact-main CI run `33297306154`; local
+      preflight remains intentionally unclaimed for the implementation checkout.
 - [x] `make check-mirror` passes.
 - [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve.
 - [ ] Coverage on touched packages ≥ stated target.
@@ -471,10 +484,13 @@ smoke cannot pass on documentation alone.
 - [x] New vocabulary: glossary updated.
 - [x] No brief finding was departed from; no deviation decision beyond D-456.
 
-Implementation evidence at the integrated release-candidate head includes the
+Implementation evidence at the integrated release head includes the
 focused core, Protocol, runtime-assembly, and transport tests; `-race` coverage
 for the pack service and Protocol paths; generated Protocol lockstep checks;
 Console type-check, lint, and regression coverage; and the Phase 267 static
-smoke. Local preflight is intentionally not run in this checkout. Hosted CI and
-preflight, merge, tag/release assets, post-tag cleanup, deployment, and
-downstream acceptance remain release gates.
+smoke. Exact post-merge hosted CI, full preflight, the annotated v1.31.0 tag,
+and its 13-asset release are complete. Local preflight in the implementation
+checkout, downstream deployment, and downstream acceptance remain unclaimed.
+The current main correction adds explicit nil-versus-empty wire coverage and
+real BuildMux integration for both shipped state drivers; it remains
+Unreleased at this cleanup head.
