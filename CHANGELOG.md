@@ -17,6 +17,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Run-start skill snapshots now accept an admin-pinned skill body supplied by
+  the selected agent's validated operator pack, including a boot pack copied
+  into a derived agent. The fail-closed missing-body check still rejects names
+  absent from both the base skill store and the immutable operator tier;
+  copied `required_tools` metadata remains non-authorizing.
+
 ## [1.31.1] — 2026-08-30
 
 ### Fixed

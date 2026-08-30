@@ -213,9 +213,19 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 			return nil, err
 		}
 	}
+	// Compose the operator tier before validating an explicit admin
+	// membership. Agent-pack bodies live in the active agent-config revision,
+	// not in the base SkillStore; copied boot packs are therefore authoritative
+	// bodies for pinned names even when no duplicate base row exists. The strict
+	// composer validates every body and rejects conflicts before its presence is
+	// allowed to satisfy the fail-closed membership check below.
+	tier, err := ComposeOperatorTier(cfg.Membership.Boot, cfg.Membership.Packs)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Membership.AdminMembershipSet {
 		for name := range admin {
-			if !hasAnyScope(baseByScope, name) {
+			if _, operatorBody := tier.Get(name); !hasAnyScope(baseByScope, name) && !operatorBody {
 				return nil, fmt.Errorf("%w: admin-pinned skill body %q is missing", ErrInvalidSessionSkillResolver, name)
 			}
 		}
@@ -285,10 +295,6 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 	// re-validates + re-hashes every input so a tampered membership input
 	// cannot smuggle a malformed body or a mismatched hash into the
 	// composed view.
-	tier, err := ComposeOperatorTier(cfg.Membership.Boot, cfg.Membership.Packs)
-	if err != nil {
-		return nil, err
-	}
 	pack := make(map[string]skills.Skill, tier.Len())
 	for _, item := range tier.Items() {
 		canonical := canonicalNameFor(item.Skill.Name)

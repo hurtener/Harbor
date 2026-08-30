@@ -540,6 +540,43 @@ func TestSessionSkillResolver_FailsLoudForMissingPinnedAndLegacyBodies(t *testin
 	}
 }
 
+func TestSessionSkillResolver_AdminPinnedOperatorPackSuppliesBody(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-pinned-operator-pack")
+	id.RunID = "run-pinned-operator-pack"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack := resolverSkill(id, "workbench-prototype-authoring", skills.ScopeTenant)
+	pack.Origin = skills.OriginPack
+	pack.RequiredTools = []string{"tool-not-granted"}
+	pack.ContentHash = skills.CanonicalContentHash(pack)
+
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), resolverConfig(
+		id,
+		personal,
+		&resolverReader{},
+		sessionoverlay.CutoverDualRead,
+		sessionoverlay.SessionSkillMembership{
+			AdminMembershipSet: true,
+			AdminNames:         []string{pack.Name},
+			Packs:              []skills.Skill{pack},
+		},
+	))
+	if err != nil {
+		t.Fatalf("operator pack must satisfy pinned-body presence: %v", err)
+	}
+	got, err := resolver.Get(context.Background(), id, pack.Name)
+	if err != nil {
+		t.Fatalf("resolve pinned operator pack: %v", err)
+	}
+	if len(got.Steps) != 1 || got.Steps[0] != pack.Steps[0] || len(got.RequiredTools) != 1 || got.RequiredTools[0] != "tool-not-granted" {
+		t.Fatalf("resolved operator pack body = %+v", got)
+	}
+}
+
 func TestSessionSkillResolver_StateOnlyUsesOwnedExactPrefixAndTombstones(t *testing.T) {
 	st := newDurableState(t)
 	id := durableID("resolver-owned")
