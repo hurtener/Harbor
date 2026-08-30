@@ -85,6 +85,7 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	id := identity.Identity{TenantID: "tenant-phase267-" + driverName, UserID: "operator", SessionID: "session-" + driverName}
 	sourceID := "source-" + driverName
 	targetID := "target-" + driverName
+	emptyTargetID := "empty-target-" + driverName
 	alpha := skills.AgentPackItem{
 		Name: "alpha", Title: "Alpha", Trigger: "trigger-alpha", Steps: []string{"alpha-body"},
 		RequiredTools: []string{"tool-not-granted"},
@@ -102,6 +103,7 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	targetRevision := phase267SetAgentRevision(t, registry, id, targetID, agentcfg.ConfigPayload{
 		AgentPacks: []skills.AgentPackItem{keep},
 	})
+	phase267SetAgentRevision(t, registry, id, emptyTargetID, agentcfg.ConfigPayload{})
 
 	currentResolver := NewAgentResolverAdapter(registry, "")
 	in := deps.in
@@ -208,7 +210,7 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	}
 
 	adminReach := func() context.Context {
-		return phase267AgentPackContext(t, id, []string{sourceID, targetID}, true)
+		return phase267AgentPackContext(t, id, []string{sourceID, targetID, emptyTargetID}, true)
 	}
 	inspect := func(agentID string, requestCtx context.Context) prototypes.AgentConfigAgentPacksInspectResponse {
 		t.Helper()
@@ -228,6 +230,7 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 
 	sourceView := inspect(sourceID, adminReach())
 	targetInitial := inspect(targetID, adminReach())
+	emptyTargetInitial := inspect(emptyTargetID, adminReach())
 	if len(sourceView.EffectivePacks) != 2 || sourceView.EffectivePacks[0].Pack.Name == "" {
 		t.Fatalf("source inspection did not return complete pack bodies: %+v", sourceView)
 	}
@@ -236,6 +239,55 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	}
 	if sourceView.CompositionHash == "" || targetInitial.CompositionHash == "" {
 		t.Fatal("inspection omitted source or target composition hash")
+	}
+	if len(emptyTargetInitial.EffectivePacks) != 0 || emptyTargetInitial.CompositionHash == "" {
+		t.Fatalf("empty target inspection = %+v", emptyTargetInitial)
+	}
+
+	// A first-time derived Agent has a real active revision but zero packs.
+	// Its inspection uses Harbor's canonical non-empty wire sentinel for the
+	// empty composition. That sentinel must survive the wire adapter as an
+	// explicit expected-empty CAS rather than collapsing to a missing value.
+	{
+		emptyTargetCopy := prototypes.AgentConfigAgentPacksCopyRequest{
+			Identity: phase267IdentityScope(id), SourceAgentID: sourceID, TargetAgentID: emptyTargetID,
+			PackIDs:                       []string{"alpha", "beta"},
+			ExpectedSourceCompositionHash: sourceView.CompositionHash,
+			ExpectedTargetCompositionHash: emptyTargetInitial.CompositionHash,
+			IdempotencyKey:                "phase267-empty-target-" + driverName,
+		}
+		status, raw := postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+			phase267Marshal(t, emptyTargetCopy), adminReach())
+		if status != http.StatusOK {
+			t.Fatalf("empty-target copy status=%d body=%s", status, raw)
+		}
+		status, replayRaw := postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+			phase267Marshal(t, emptyTargetCopy), adminReach())
+		if status != http.StatusOK || string(replayRaw) != string(raw) {
+			t.Fatalf("empty-target replay status=%d first=%s replay=%s", status, raw, replayRaw)
+		}
+		emptyTargetAfter := inspect(emptyTargetID, adminReach())
+		if len(emptyTargetAfter.EffectivePacks) != 2 {
+			t.Fatalf("empty-target copy pack count=%d, want 2", len(emptyTargetAfter.EffectivePacks))
+		}
+		staleEmptyTarget := emptyTargetCopy
+		staleEmptyTarget.IdempotencyKey += "-stale"
+		status, raw = postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+			phase267Marshal(t, staleEmptyTarget), adminReach())
+		if status != http.StatusConflict || phase267ErrorCode(t, raw) != protoerrors.CodeRevisionConflict {
+			t.Fatalf("stale empty-target CAS status=%d code=%q body=%s", status, phase267ErrorCode(t, raw), raw)
+		}
+		malformedEmptyTarget := emptyTargetCopy
+		malformedEmptyTarget.ExpectedTargetCompositionHash = "not-a-canonical-hash"
+		malformedEmptyTarget.IdempotencyKey += "-malformed"
+		status, raw = postMuxWithContext(t, built.Mux, "/v1/agent_config/agent_packs/copy", id,
+			phase267Marshal(t, malformedEmptyTarget), adminReach())
+		if status != http.StatusBadRequest || phase267ErrorCode(t, raw) != protoerrors.CodeInvalidRequest {
+			t.Fatalf("malformed empty-target CAS status=%d code=%q body=%s", status, phase267ErrorCode(t, raw), raw)
+		}
+		if afterDenied := inspect(emptyTargetID, adminReach()); afterDenied.CompositionHash != emptyTargetAfter.CompositionHash {
+			t.Fatalf("denied empty-target requests changed target: before=%+v after=%+v", emptyTargetAfter, afterDenied)
+		}
 	}
 
 	// The server's configured grant is applied through the same real catalog

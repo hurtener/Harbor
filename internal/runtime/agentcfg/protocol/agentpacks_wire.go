@@ -133,7 +133,7 @@ func agentPackLayerToWire(item AgentPackLayerItem, source string) prototypes.Age
 
 func coreCompositionHash(value string) string {
 	if value == emptyHash(emptyCompositionHashEnvelope) {
-		return ""
+		return expectedEmptyComposition
 	}
 	return value
 }
