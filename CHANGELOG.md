@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent-pack copy now accepts an empty `pack_ids` selection so coordinators
+  can reconcile a previously copied developer pack set from one item to zero.
+  Omitted or `null` selections remain invalid; only an explicit empty array
+  authorizes removal.
+  The empty selection still requires the same admin scope, signed reach,
+  source/target composition CAS, idempotency key, and atomic target revision.
+
 ### Performance
 
 - EventBus fan-out in the in-memory and durable drivers now selects an exact

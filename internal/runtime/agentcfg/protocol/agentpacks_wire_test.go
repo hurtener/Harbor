@@ -86,6 +86,69 @@ func TestAgentPackWireAdapter_CopyReturnsPluralOutcomes(t *testing.T) {
 	}
 }
 
+func TestAgentPackWireAdapter_CopyRejectsNilPackIDs(t *testing.T) {
+	registry, store := newEffectivePackRegistry(t)
+	id := identityForWireTest(t)
+	ctx := effectivePackContext(t, id)
+	alpha := effectivePackItem("alpha", "same", "")
+	seedEffectivePack(t, registry, id, "source", []skills.AgentPackItem{alpha})
+	seedEffectivePack(t, registry, id, "target", []skills.AgentPackItem{alpha})
+	service := newEffectivePackService(t, registry, store, nil)
+	source, err := service.Inspect(ctx, prototypes.AgentConfigAgentPacksInspectRequest{AgentID: "source"})
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+	target, err := service.Inspect(ctx, prototypes.AgentConfigAgentPacksInspectRequest{AgentID: "target"})
+	if err != nil {
+		t.Fatalf("inspect target: %v", err)
+	}
+
+	_, err = service.Copy(ctx, prototypes.AgentConfigAgentPacksCopyRequest{
+		SourceAgentID:                 "source",
+		TargetAgentID:                 "target",
+		PackIDs:                       nil,
+		ExpectedSourceCompositionHash: source.CompositionHash,
+		ExpectedTargetCompositionHash: target.CompositionHash,
+		IdempotencyKey:                "wire-copy-nil",
+	})
+	if !errors.Is(err, ErrAgentPackCopyInvalid) {
+		t.Fatalf("Copy error = %v, want %v", err, ErrAgentPackCopyInvalid)
+	}
+}
+
+func TestAgentPackWireAdapter_CopyPreservesExplicitEmptyPackIDs(t *testing.T) {
+	registry, store := newEffectivePackRegistry(t)
+	id := identityForWireTest(t)
+	ctx := effectivePackContext(t, id)
+	alpha := effectivePackItem("alpha", "same", "")
+	seedEffectivePack(t, registry, id, "source", []skills.AgentPackItem{alpha})
+	seedEffectivePack(t, registry, id, "target", []skills.AgentPackItem{alpha})
+	service := newEffectivePackService(t, registry, store, nil)
+	source, err := service.Inspect(ctx, prototypes.AgentConfigAgentPacksInspectRequest{AgentID: "source"})
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+	target, err := service.Inspect(ctx, prototypes.AgentConfigAgentPacksInspectRequest{AgentID: "target"})
+	if err != nil {
+		t.Fatalf("inspect target: %v", err)
+	}
+
+	resp, err := service.Copy(ctx, prototypes.AgentConfigAgentPacksCopyRequest{
+		SourceAgentID:                 "source",
+		TargetAgentID:                 "target",
+		PackIDs:                       []string{},
+		ExpectedSourceCompositionHash: source.CompositionHash,
+		ExpectedTargetCompositionHash: target.CompositionHash,
+		IdempotencyKey:                "wire-copy-empty",
+	})
+	if err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	if resp.Outcomes == nil || len(resp.Outcomes) != 0 {
+		t.Fatalf("copy outcomes = %#v, want explicit empty array", resp.Outcomes)
+	}
+}
+
 func TestAgentPackWireAdapter_EmptyHashesAndSentinelClassification(t *testing.T) {
 	registry, store := newEffectivePackRegistry(t)
 	id := identityForWireTest(t)

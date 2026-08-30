@@ -600,6 +600,24 @@ func TestAgentPackService_ConcurrentInspectReuse(t *testing.T) {
 	}
 }
 
+func TestAgentPackCopySelected_RejectsNilSelection(t *testing.T) {
+	registry, store := newEffectivePackRegistry(t)
+	service := newEffectivePackService(t, registry, store, nil)
+	ctx := effectivePackContext(t, identity.Identity{TenantID: "tenant-a", UserID: "operator", SessionID: "session-a"})
+
+	_, err := service.CopySelected(ctx, AgentPackCopyRequest{
+		SourceAgentID:                 "source",
+		TargetAgentID:                 "target",
+		PackIDs:                       nil,
+		ExpectedSourceCompositionHash: "source-hash",
+		ExpectedTargetCompositionHash: "target-hash",
+		IdempotencyKey:                "nil-selection",
+	})
+	if !errors.Is(err, ErrAgentPackCopyInvalid) {
+		t.Fatalf("nil selection error = %v, want ErrAgentPackCopyInvalid", err)
+	}
+}
+
 // TestAgentPackService_ConcurrentInspectCopyReuse exercises the real shared
 // service rather than a recording port. Every invocation has its own full
 // identity and source/target pair, while the compiled Service and StateStore

@@ -302,6 +302,9 @@ func TestAgentPacksSurface_CopyValidationIsBoundedAndFailClosed(t *testing.T) {
 				req.PackIDs[i] = "pack-" + string(rune('a'+i%26)) + strings.Repeat("x", i/26)
 			}
 		},
+		"missing selected packs": func(req *types.AgentConfigAgentPacksCopyRequest) {
+			req.PackIDs = nil
+		},
 		"missing source CAS": func(req *types.AgentConfigAgentPacksCopyRequest) {
 			req.ExpectedSourceCompositionHash = ""
 		},
@@ -327,6 +330,34 @@ func TestAgentPacksSurface_CopyValidationIsBoundedAndFailClosed(t *testing.T) {
 	defer port.mu.Unlock()
 	if port.copyCalls != 0 {
 		t.Fatalf("invalid requests reached runtime port %d times, want 0", port.copyCalls)
+	}
+}
+
+func TestAgentPacksSurface_CopyAllowsEmptySelectionForReconciliation(t *testing.T) {
+	port := &recordingAgentPacksPort{copyResponse: &types.AgentConfigAgentPacksCopyResponse{
+		SourceAgentID: "source", TargetAgentID: "target",
+		Outcomes:        []types.AgentConfigAgentPackCopyOutcome{},
+		CompositionHash: testPackHash,
+		BootPackSetHash: testPackHash,
+	}}
+	surface, err := protocol.NewAgentPacksSurface(protocol.AgentPacksDeps{Port: port, AgentResolver: agentPacksTestResolver{}})
+	if err != nil {
+		t.Fatalf("NewAgentPacksSurface: %v", err)
+	}
+	ctx := verifiedPackContext(t, []auth.Scope{auth.ScopeAdmin}, "source", "target")
+	req := validCopyRequest()
+	req.PackIDs = []string{}
+
+	if _, err := surface.Dispatch(ctx, methods.MethodAgentConfigAgentPacksCopy, &req); err != nil {
+		t.Fatalf("empty reconciliation dispatch: %v", err)
+	}
+	port.mu.Lock()
+	defer port.mu.Unlock()
+	if port.copyCalls != 1 {
+		t.Fatalf("empty reconciliation runtime calls = %d, want 1", port.copyCalls)
+	}
+	if len(port.copyRequest) != 1 || port.copyRequest[0].PackIDs == nil {
+		t.Fatalf("explicit empty selection collapsed before runtime: %+v", port.copyRequest)
 	}
 }
 

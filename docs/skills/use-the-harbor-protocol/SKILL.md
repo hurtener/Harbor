@@ -41,8 +41,11 @@ SHA-256 hexadecimal values, including empty-set values. Equal boot/revision cont
 deduplicated only in `effective_packs`; a differing same-name pair fails
 closed. Boot-owned entries remain read-only.
 
-`POST /v1/agent_config/agent_packs/copy` accepts a bounded non-empty `pack_ids`
-array, `expected_source_composition_hash`,
+`POST /v1/agent_config/agent_packs/copy` accepts a bounded `pack_ids` array,
+including an empty array to remove untouched server-stamped copies from that
+source during reconciliation. Omitted or `null` `pack_ids` is invalid; only an
+explicit empty array authorizes removal. The request also carries
+`expected_source_composition_hash`,
 `expected_target_composition_hash`, and an opaque `idempotency_key`. The server
 rechecks the immutable source hash/revision and applies the authoritative
 target composition-hash CAS. All selected bodies are recorded in one

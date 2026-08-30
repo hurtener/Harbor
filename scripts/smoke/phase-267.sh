@@ -111,6 +111,9 @@ assert_grep_present 'TestAgentPacksSurface_InspectAndCopy_EnforcesAdminIdentityA
     "internal/protocol/agent_packs_test.go" "Protocol identity/reach gate is tested"
 assert_grep_present 'TestAgentPacksSurface_CopyConflictIsClosedAndTyped' \
     "internal/protocol/agent_packs_test.go" "Protocol collision typing is tested"
+assert_grep_present 'TestAgentPacksSurface_CopyAllowsEmptySelectionForReconciliation' \
+    "internal/protocol/agent_packs_test.go" \
+    "Protocol empty-selection reconciliation is tested"
 assert_grep_present 'TestAgentPacksSurface_ConcurrentReuse_Isolated' \
     "internal/protocol/agent_packs_test.go" "Protocol concurrent reuse is tested"
 assert_grep_present 'TestAgentConfigHandler_AgentPacks_UsesTypedRoutesAndGates' \
@@ -125,6 +128,9 @@ assert_grep_present 'TestAgentPackInspectEffective_PreservesLayersAndDedupes' \
 assert_grep_present 'TestAgentPackCopySelected_CASIdempotencyReconciliationAndCollision' \
     "internal/runtime/agentcfg/protocol/agentpacks_effective_test.go" \
     "CAS/idempotency/reconciliation/collision are tested"
+assert_grep_present 'TestAgentPackCopySelected_RejectsNilSelection' \
+    "internal/runtime/agentcfg/protocol/agentpacks_effective_test.go" \
+    "runtime nil-selection rejection is tested"
 assert_grep_present 'TestAgentPackService_ConcurrentInspectReuse' \
     "internal/runtime/agentcfg/protocol/agentpacks_effective_test.go" \
     "runtime concurrent reuse is tested"
@@ -136,6 +142,9 @@ assert_file "internal/runtime/serve/agentpacks_integration_test.go" \
 assert_grep_present 'TestBuildMux_AgentPacks_RealStateStoreMatrix' \
     "internal/runtime/serve/agentpacks_integration_test.go" \
     "real StateStore driver matrix is tested"
+assert_grep_present 'phase267-empty-reconcile-' \
+    "internal/runtime/serve/agentpacks_integration_test.go" \
+    "public HTTP empty-selection reconciliation is tested"
 
 assert_grep_present 'one all-or-nothing target revision' \
     "docs/plans/phase-267-agent-pack-inspect-copy.md" \
