@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 36 canonical Harbor Protocol error codes, generated from the single-source
+The 38 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -17,6 +17,8 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 
 | Code | HTTP | When it fires | Should you retry? |
 |---|---|---|---|
+| `agent_pack_copy_conflict` | 409 | A same-runtime `agent_config.agent_packs.copy` operation was well-formed and its composition preconditions were current, but an independently authored target pack would be overwritten. The atomic copy was refused and no selected pack was partially applied. | No — inspect the target, resolve the authored collision explicitly, then choose a new reviewed copy request. |
+| `agent_pack_copy_idempotency_conflict` | 409 | A same-runtime Agent pack copy idempotency key was reused with a different source, target, selected-pack set, or composition precondition fingerprint. The replay is refused without mutation. | No — replay the original request with that key or choose a new idempotency key for a distinct copy. |
 | `agent_retired` | 409 | An authorized agent-addressed operation selected a terminally retired agent configuration. | No — choose a different agent; retirement is terminal. |
 | `agent_retirement_conflict` | 409 | A retirement request used a stale active-content hash or a different operation id from the durable replay identity. | Only by replaying `agent_config.retire` with the exact original operation id and expected content hash. |
 | `auth_rejected` | 401 | A bearer token was present but failed verification: malformed, an algorithm outside the asymmetric allowlist, bad signature, expired / not-yet-valid, unknown `kid`, audience or issuer mismatch. | Only after obtaining a fresh valid token. |

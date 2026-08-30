@@ -15013,3 +15013,174 @@ concurrent identity isolation. Focused LLM tests assert completion chunks call
 legacy bus, with exactly one warning per run. Local race and documentation
 checks are run for this head; no hosted CI, tag, release, downstream/runtime
 deployment, or downstream acceptance is claimed.
+
+## D-453 — Identity-indexed EventBus fan-out preserves scope and delivery semantics
+
+**Date:** 2026-08-29
+
+**Status:** Accepted for the next Harbor patch release; downstream/runtime
+deployment and acceptance remain pending.
+
+The in-memory and durable EventBus drivers retain their canonical subscriber
+lifecycle set and add two secondary candidate indexes: an exact
+`(tenant, user, session)` bucket for non-admin subscriptions and one explicit
+Admin bucket. The non-admin Subscribe contract already requires the complete
+identity triple, so tenant- and user-wildcard buckets are neither needed nor
+valid. Fan-out selects the event's exact bucket plus the Admin bucket and
+continues to run the complete `Filter.Matches` predicate before every enqueue.
+
+Subscribe cap checks and insertion are performed under the same driver lock as
+the canonical set and index updates. Cancel removes the subscription from both
+sets; Close clears all three maps before closing channels. Fan-out releases its
+read lock before bounded per-subscriber enqueue, preserving the existing
+drop-oldest notices, cancellation and close safety, per-subscriber ordering,
+fence behavior, and admin audit re-entry behavior. No EventBus, Protocol, SSE,
+or event-payload contract changes are introduced.
+
+**Cross-references:** RFC §6.13, brief 06 §"Fan-out" and §"Isolation-triple
+filtering by default", `internal/events/events.go`, and Phase 266's combined
+wave plan.
+
+**Evidence status.** Deterministic cross-driver tests cover 1K and 10K mostly-
+nonmatching subscribers, cancel/re-subscribe cap release, Admin plus Run/Types
+final predicates, and 128 concurrent identity-isolated sessions under `-race`.
+The 100 ms benchmark median on Apple M4 improved from 13.6 us to 264 ns at 1K
+(in-memory) and from 119.3 us to 269 ns at 10K; durable improved from 13.3 us
+to 270 ns at 1K and from 116.6 us to 271 ns at 10K. These are local candidate
+versus exact v1.30.13 baseline measurements; no hosted CI, tag, release,
+downstream/runtime deployment, or downstream acceptance is claimed.
+
+## D-454 — Atomic batches retain individual canonical events and cursors
+
+**Date:** 2026-08-29
+
+**Status:** Accepted for the next Harbor minor release; downstream/runtime
+deployment and acceptance remain pending.
+
+Additive `events.BatchPublisher` preserves legacy/custom EventBus source
+compatibility; both shipped drivers implement it. Every member is normalized,
+validated, and redacted before mutation. One rejected member rejects the set
+without consuming a sequence, changing history, or delivering a sibling.
+
+The durable driver assigns consecutive global sequences and commits the
+authority, every immutable body, and every affected session head in exactly
+one `StateStore.SaveBatchIf` transaction. Failure exposes no prefix. In-memory
+publication provides the same atomic visibility/order under its publication
+lock. Replay, history, projections, subscribers, and SSE cursors observe exact
+individual events in input/sequence order, including after restart—never a
+flattened batch envelope or shared cursor. Wire shapes, Protocol version,
+redaction, retention, fences, and `LivePublisher` do not change.
+
+**Cross-references:** RFC §6.13, D-452, Phase 57, Phase 147,
+`test/integration/phase266_event_ordering_test.go`.
+
+## D-455 — Cost and tool telemetry shares one ordered bounded FIFO
+
+**Date:** 2026-08-29
+
+**Status:** Accepted for the next Harbor minor release; downstream/runtime
+deployment and acceptance remain pending.
+
+Each shipped EventBus owns one bounded FIFO. The driver-neutral
+`llm.cost.recorded` producer and universal descriptor shell for
+`tool.invoked`, `tool.completed`, `tool.failed`, `tool.invalid_args`, and
+`tool.policy_exhausted` validate/redact and return after bounded acceptance,
+without waiting for durable storage. Both use the same per-bus FIFO; separate
+goroutines or per-subsystem queues cannot reorder them.
+
+Normal `Publish` and `PublishBatch` enter the same FIFO and wait for their
+result, so they are barriers behind prior accepted items. Successful
+`task.completed` therefore cannot overtake accepted cost/tool telemetry.
+Orderly `Close(ctx)` drains and joins within deadline. Queue-full/closed
+admission fails explicitly and claims no acceptance.
+
+Async acceptance is not a durable receipt. Abrupt process loss before commit
+may lose accepted telemetry. No outbox, WAL, retry daemon, recovery synthesis,
+or exactly-once claim hides that best-effort boundary. It applies only to the
+named content-free observability producers; audit/security, governance
+enforcement, and task/session authority remain synchronous.
+
+If bounded admission returns `ErrAsyncQueueFull` or `ErrBusClosed`, the shared
+`events.PublishAsyncObserved` helper records a per-bus monotonic admission
+failure counter and emits a rate-limited, content-free `slog` warning carrying
+only the failure class and event type. The helper never retries, blocks, emits
+a sibling durable event, or changes the producer's business result. The
+counter is exposed through the existing runtime metrics-gauge seam as
+`harbor_runtime_async_admission_failures`.
+
+There is still one bus and one transcript. `sessions.turns.*` remains the
+conversation source; completion chunks remain non-durable Sequence-0
+animation; SSE IDs, `live_resume_seq`, Last-Event-ID, Console, and Protocol
+`0.1.0` remain unchanged. No crash/cancellation invents an answer or terminal.
+
+**Cross-references:** RFC §5.2, §6.4, §6.5, §6.13, §6.14, D-293, D-425,
+D-452, Phase 266.
+
+## D-456 — Same-runtime agent-pack inspect and CAS copy preserve layers and lineage
+
+**Date:** 2026-08-29
+
+**Status:** Accepted for the v1.31.0 candidate; hosted CI, tag/release,
+deployment, and downstream acceptance remain pending.
+
+Harbor adds two additive, capability-discovered admin methods:
+`agent_config.agent_packs.inspect` at
+`POST /v1/agent_config/agent_packs/inspect` and
+`agent_config.agent_packs.copy` at
+`POST /v1/agent_config/agent_packs/copy`. Both require the verified identity
+triple, admin authority, signed effective-agent reach to every addressed agent,
+and source/target registrations in the same runtime and tenant. `agent_id`
+remains registration metadata, never an isolation principal or a substitute for
+the identity triple. Protocol `0.1.0` does not change.
+
+Inspect is the one explicit body-bearing operator projection. It returns the
+complete canonical body for `boot_packs` and `revision_packs` separately
+whenever they exist, then a deterministic `effective_packs` view. Each
+inspection entry carries `pack_id`, the full `pack` body, exact source (`boot`,
+`revision`, or effective `both`), semantic hash, and boolean `editable`; the
+response includes `composition_hash`, `boot_pack_set_hash`, and the unchanged
+Protocol version. Equal boot and revision bodies dedupe only in the effective
+view as `source=both`; a differing same-name pair fails closed rather than
+silently merging. Boot-owned entries stay read-only.
+
+Copy selects a bounded `pack_ids` set and pins mandatory expected source and
+target composition hashes (an empty effective target has the deterministic
+empty-composition hash)
+plus an opaque idempotency key. Source and target remain separately
+identity-scoped: the operation first rechecks the immutable source revision and
+its expected composition hash, then applies the authoritative target CAS in
+the target StateStore write; it does not pretend a cross-identity transaction
+exists. The all-or-nothing target write records every selected body, one
+durable revision, server-stamped provenance, and idempotency result. An exact
+response-loss retry returns the original bounded receipt with the exact target
+`composition_hash` and `boot_pack_set_hash` values, including deterministic
+empty-set values; a reused key with
+different arguments is an idempotency conflict. Equal source/target semantic
+content for every selected pack is a true no-op with no target revision or
+pointer advance. An independently authored differing target, or a server copy
+edited since its last-applied hash, fails closed without overwrite or partial
+mutation.
+
+Copy provenance is server-owned: each copied body receives an `origin_ref`
+lineage that binds the source agent, selected pack ID, and source semantic
+hash, while the durable operation record binds source/target IDs, the sorted
+selection, both expected composition hashes, and the idempotency digest. The
+same-runtime binding is checked before this record is written. Reconciliation
+may update or remove a target only while every selected target entry remains on
+the stamped lineage and its current semantic hash still equals the last-applied
+hash. Edited targets remain intact and yield a bounded conflict. A boot body can
+be copied into a durable editable target, but the source remains immutable;
+target changes continue through the existing
+`agent_config.agent_packs.propose|commit|remove` governance.
+
+There is no cross-runtime federation, portable catalog, second resolver, pack
+body in the public copy response, or capability grant through required-tool
+metadata. Hash canonicalization is shared by all shipped drivers and excludes
+provenance from the semantic body digest. The advertised methods are
+accompanied by strict typed Protocol, SDK, generated reference,
+capability-discovery, StateStore, reconciliation, and integration/concurrency
+coverage.
+
+**Cross-references:** RFC §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9,
+brief 04, brief 05, brief 06, brief 07, brief 09, brief 11, D-411, D-414,
+D-415, D-427, D-430, `docs/plans/phase-267-agent-pack-inspect-copy.md`.

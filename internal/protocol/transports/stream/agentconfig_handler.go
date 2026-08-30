@@ -19,6 +19,8 @@
 //	POST /v1/agent_config/skills/list     — list the agent's skills
 //	POST /v1/agent_config/skills/upsert   — upsert a skill (records a rev)
 //	POST /v1/agent_config/skills/delete   — delete a skill (records a rev)
+//	POST /v1/agent_config/agent_packs/inspect — inspect effective pack layers
+//	POST /v1/agent_config/agent_packs/copy    — atomically copy selected packs
 //	POST /v1/agent_config/user/*          — the durable per-user variant tier
 //	POST /v1/agent_config/user/skills/*   — durable-per-user skills (CLAIM-FREE)
 //
@@ -38,6 +40,7 @@
 package stream
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,6 +82,10 @@ type AgentConfigHandler struct {
 	service *agentcfgprotocol.Service
 	logger  *slog.Logger
 	reach   auth.AgentReachAuthorizer
+	// agentPacksSurface is the transport-independent same-runtime inspection
+	// and copy seam. Production assembly supplies it for the canonical routes;
+	// an omitted surface fails loudly instead of advertising an inert success.
+	agentPacksSurface AgentPacksSurface
 	// importService is the OPTIONAL two-phase verified-caller
 	// skill-package import service (HA-61). When nil, the
 	// `user/skills/import_*` routes answer CodeUnknownMethod (501) — the
@@ -92,6 +99,14 @@ type AgentConfigHandler struct {
 
 // AgentConfigOption configures NewAgentConfigHandler.
 type AgentConfigOption func(*AgentConfigHandler)
+
+// AgentPacksSurface is the narrow dispatch port consumed by the typed
+// agent-config HTTP transport. The Protocol implementation performs the
+// admin, verified-identity, and signed-reach gates before calling the runtime
+// AgentPacksAdminPort; transports do not import runtime pack storage.
+type AgentPacksSurface interface {
+	Dispatch(context.Context, methods.Method, any) (any, error)
+}
 
 // WithAgentConfigLogger sets the slog.Logger. A nil logger routes to
 // slog.Default().
@@ -134,6 +149,18 @@ func WithCompositionPreviewService(s *agentcfgprotocol.CompositionPreviewService
 	return func(h *AgentConfigHandler) {
 		if s != nil {
 			h.previewService = s
+		}
+	}
+}
+
+// WithAgentPacksSurface wires the same-runtime Agent pack inspect/copy
+// dispatcher into the typed `/v1/agent_config/agent_packs/{verb}` routes.
+// Production assembly must supply it; an omitted surface fails loudly with
+// runtime_error when either new route is called.
+func WithAgentPacksSurface(s AgentPacksSurface) AgentConfigOption {
+	return func(h *AgentConfigHandler) {
+		if s != nil {
+			h.agentPacksSurface = s
 		}
 	}
 }
@@ -254,6 +281,10 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSkillsDelete(w, r, body, wireID)
 	case "agent_packs/list":
 		h.serveAgentPacksList(w, r, body, wireID)
+	case "agent_packs/inspect":
+		h.serveAgentPacksInspect(w, r, body, wireID)
+	case "agent_packs/copy":
+		h.serveAgentPacksCopy(w, r, body, wireID)
 	case "agent_packs/upsert":
 		h.serveAgentPacksUpsert(w, r, body, wireID)
 	case "agent_packs/remove":
@@ -737,6 +768,68 @@ func (h *AgentConfigHandler) serveAgentPacksList(w http.ResponseWriter, r *http.
 		return
 	}
 	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+func (h *AgentConfigHandler) serveAgentPacksInspect(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksInspectRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksInspect) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if h.agentPacksSurface == nil {
+		writeAgentConfigError(w, protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			"agent_config.agent_packs.inspect: Agent pack surface is not wired on this runtime")
+		return
+	}
+	resp, err := h.agentPacksSurface.Dispatch(r.Context(), methods.MethodAgentConfigAgentPacksInspect, &req)
+	if err != nil {
+		h.writeAgentPacksSurfaceError(w, r, methods.MethodAgentConfigAgentPacksInspect, err)
+		return
+	}
+	if typed, ok := resp.(*prototypes.AgentConfigAgentPacksInspectResponse); ok && typed != nil {
+		writeAgentConfigJSON(w, r, typed, h.logger)
+		return
+	}
+	if typed, ok := resp.(prototypes.AgentConfigAgentPacksInspectResponse); ok {
+		writeAgentConfigJSON(w, r, typed, h.logger)
+		return
+	}
+	h.writeAgentPacksSurfaceError(w, r, methods.MethodAgentConfigAgentPacksInspect,
+		protoerrors.New(protoerrors.CodeRuntimeError, "Agent pack inspection returned an invalid response"))
+}
+
+func (h *AgentConfigHandler) serveAgentPacksCopy(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksCopyRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksCopy) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if h.agentPacksSurface == nil {
+		writeAgentConfigError(w, protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			"agent_config.agent_packs.copy: Agent pack surface is not wired on this runtime")
+		return
+	}
+	resp, err := h.agentPacksSurface.Dispatch(r.Context(), methods.MethodAgentConfigAgentPacksCopy, &req)
+	if err != nil {
+		h.writeAgentPacksSurfaceError(w, r, methods.MethodAgentConfigAgentPacksCopy, err)
+		return
+	}
+	if typed, ok := resp.(*prototypes.AgentConfigAgentPacksCopyResponse); ok && typed != nil {
+		writeAgentConfigJSON(w, r, typed, h.logger)
+		return
+	}
+	if typed, ok := resp.(prototypes.AgentConfigAgentPacksCopyResponse); ok {
+		writeAgentConfigJSON(w, r, typed, h.logger)
+		return
+	}
+	h.writeAgentPacksSurfaceError(w, r, methods.MethodAgentConfigAgentPacksCopy,
+		protoerrors.New(protoerrors.CodeRuntimeError, "Agent pack copy returned an invalid response"))
 }
 
 func (h *AgentConfigHandler) serveAgentPacksUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -1433,6 +1526,35 @@ func (h *AgentConfigHandler) writeServiceError(w http.ResponseWriter, r *http.Re
 			slog.String("method", string(method)), slog.String("error", err.Error()))
 	}
 	writeAgentConfigError(w, code, status, msg)
+}
+
+func (h *AgentConfigHandler) writeAgentPacksSurfaceError(w http.ResponseWriter, r *http.Request, method methods.Method, err error) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		if agentPacksErrorStatus(perr.Code) >= http.StatusInternalServerError {
+			h.logger.ErrorContext(r.Context(), "agent-config agent-packs dispatch failed",
+				slog.String("method", string(method)))
+		}
+		writeAgentConfigError(w, perr.Code, agentPacksErrorStatus(perr.Code), perr.Message)
+		return
+	}
+	h.logger.ErrorContext(r.Context(), "agent-config agent-packs dispatch failed",
+		slog.String("method", string(method)))
+	writeAgentConfigError(w, protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+		"agent pack operation failed")
+}
+
+func agentPacksErrorStatus(code protoerrors.Code) int {
+	switch code {
+	case protoerrors.CodeIdentityScopeRequired:
+		return http.StatusForbidden
+	case protoerrors.CodeRevisionConflict,
+		protoerrors.CodeAgentPackCopyConflict,
+		protoerrors.CodeAgentPackCopyIdempotencyConflict:
+		return http.StatusConflict
+	default:
+		return bodyScopeStatus(code)
+	}
 }
 
 // classifyAgentConfigError maps a service / registry / skills error onto

@@ -14,6 +14,14 @@ Protocol exposes that bus as Server-Sent Events. Durable semantic/lifecycle
 events use the replayable `Publish` contract; LLM completion chunks use the
 non-durable `PublishLive` contract for present-tense animation.
 
+Durable batches remain wire-invisible: each member keeps its own event frame,
+strictly increasing sequence, and reconnect cursor. Internally, cost and
+universal tool-lifecycle events may enter one bounded FIFO and return after
+acceptance; any later synchronous durable publication is an ordering barrier,
+so a successful terminal event cannot overtake them. A hard process loss
+before durable commit can lose accepted observability metadata. Clients must
+not infer a second transcript or exactly-once receipt from async acceptance.
+
 ```text
 GET /v1/events
 Authorization: Bearer <token>
@@ -80,6 +88,11 @@ that is expected lossy delivery, not a cursor gap. The terminal `task.completed`
 and session-turn `AnswerEnvelope` are authoritative, so the client reconciles
 the final answer and task state when the run completes. A failed or cancelled
 run does not receive a synthetic answer from the live lane.
+
+The authoritative reopen choreography is unchanged: read
+`sessions.turns.list`, establish running/paused membership, and open SSE with
+that page's `live_resume_seq`; browser `Last-Event-ID` still wins on reconnect.
+One terminal frame still causes one `sessions.turns.get` reconciliation.
 
 When the cursor has aged out of the ring (or the configured bus driver has no
 replay), the gap is **surfaced, never silently swallowed**: the stream emits

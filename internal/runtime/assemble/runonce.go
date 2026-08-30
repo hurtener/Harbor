@@ -29,6 +29,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -404,6 +405,16 @@ func (s *Stack) RunOnce(
 	env, err := runctx.FinishAnswerEnvelope(fin, base.Trajectory, base.OutputSchema)
 	if err != nil {
 		return planner.AnswerEnvelope{}, err
+	}
+	if fin.Reason == planner.FinishGoal {
+		// A successful embed RunOnce is a terminal boundary just like the
+		// task-driven serve path. Drain accepted async observability before
+		// memory writeback and returning the completed envelope. Legacy
+		// EventBus implementations publish synchronously, so Flush is a
+		// no-op for them; non-goal and failed/cancelled runs stay unchanged.
+		if flushErr := events.Flush(runCtx, s.Bus); flushErr != nil {
+			return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce event flush after successful run: %w", flushErr)
+		}
 	}
 
 	// Best-effort memory writeback on a goal-satisfying finish (mirrors

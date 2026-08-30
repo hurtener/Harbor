@@ -2060,6 +2060,31 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			return
 		}
 
+		// A goal-satisfying finish is the authoritative turn boundary. Drain
+		// every earlier publication accepted by an async-capable bus before
+		// memory writeback and MarkComplete make that turn observable as
+		// complete; otherwise task.completed can overtake its own cost/tool
+		// telemetry in durable replay. Legacy/custom buses publish
+		// synchronously, so events.Flush is a no-op for them. A failed
+		// barrier must not produce a false successful seal: fail the task
+		// loudly while leaving existing failure/cancellation paths unchanged.
+		if flushErr := events.Flush(taskCtx, d.bus); flushErr != nil {
+			d.logger.Warn("RunLoopDriver: event flush failed before successful turn completion",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", flushErr.Error()))
+			if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    planner.TaskErrorCodeRunLoopError,
+				Message: "event flush before successful turn completion: " + flushErr.Error(),
+			}); mErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed after event-flush failure failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("run_id", q.RunID),
+					slog.String("err", mErr.Error()))
+			}
+			return
+		}
+
 		// Memory writeback. The 83d/83f read path
 		// is wired (run loop hands MemoryBlocks to the planner); the
 		// write path was the missing half. Without a writeback the

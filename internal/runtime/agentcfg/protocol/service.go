@@ -221,8 +221,12 @@ type Service struct {
 	// concrete (which owns the LLM call under the agent's configured model)
 	// is injected at the cmd/harbor + devstack boundary; this package depends
 	// only on the interface.
-	agentPackProposer      AgentPackProposer
-	agentPackProposals     state.StateStore
+	agentPackProposer  AgentPackProposer
+	agentPackProposals state.StateStore
+	// agentPackBoot is the frozen boot-pack reader used by the generic
+	// inspect/copy port. The wire handler still owns reach and admin checks;
+	// this reader only supplies the immutable boot layer for composition.
+	agentPackBoot          BootPackReader
 	agentPackCatalog       tools.ToolCatalog
 	agentPackGrantedScopes []string
 	bus                    events.EventBus // optional — nil ⇒ tool-exposure edits emit no mcp.connection.* events
@@ -601,6 +605,29 @@ func WithAgentPackProposalState(store state.StateStore) Option {
 	return func(s *Service) {
 		if store != nil {
 			s.agentPackProposals = store
+		}
+	}
+}
+
+// WithAgentPackCopyState wires the existing identity-scoped StateStore used
+// for durable agent-pack copy receipts. The copy ledger shares the store with
+// governed pack proposals when both options are supplied, but uses its own
+// namespaced kind and never interprets proposal records.
+func WithAgentPackCopyState(store state.StateStore) Option {
+	return func(s *Service) {
+		if store != nil {
+			s.agentPackProposals = store
+		}
+	}
+}
+
+// WithBootPackReader wires the frozen boot-pack index used by the generic
+// agent-pack inspection and copy port. A nil reader leaves the boot layer
+// empty, which is the valid state for a runtime with no boot declarations.
+func WithBootPackReader(reader BootPackReader) Option {
+	return func(s *Service) {
+		if reader != nil {
+			s.agentPackBoot = reader
 		}
 	}
 }

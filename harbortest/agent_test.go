@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/harbortest"
@@ -194,6 +195,86 @@ func TestRunOnce_AgentError_ReturnsLog(t *testing.T) {
 	if log == nil {
 		t.Error("RunOnce returned nil log on agent error")
 	}
+}
+
+// TestRunOnce_FlushesOnlySuccessfulRuns pins the terminal-boundary contract:
+// a successful RunOnce waits for accepted asynchronous publications, while an
+// agent error or cancellation is returned honestly without adding a flush
+// barrier to the failed run.
+func TestRunOnce_FlushesOnlySuccessfulRuns(t *testing.T) {
+	tests := []struct {
+		name        string
+		agent       func(context.Context, context.CancelFunc) (any, error)
+		wantErr     error
+		cancellable bool
+		wantFlushes int32
+	}{
+		{
+			name: "success",
+			agent: func(context.Context, context.CancelFunc) (any, error) {
+				return "ok", nil
+			},
+			wantFlushes: 1,
+		},
+		{
+			name: "agent error",
+			agent: func(context.Context, context.CancelFunc) (any, error) {
+				return nil, errRunOnceFlushTest
+			},
+			wantErr: errRunOnceFlushTest,
+		},
+		{
+			name: "cancellation",
+			agent: func(ctx context.Context, cancel context.CancelFunc) (any, error) {
+				cancel()
+				return nil, ctx.Err()
+			},
+			wantErr:     context.Canceled,
+			cancellable: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bus := openInmemBus(t)
+			tracked := &runOnceFlushTrackingBus{EventBus: bus}
+			ctx := t.Context()
+			cancel := func() {}
+			if tt.cancellable {
+				ctx, cancel = context.WithCancel(ctx)
+			}
+			agent := harbortest.AgentFunc(func(ctx context.Context, _ any) (any, error) {
+				return tt.agent(ctx, cancel)
+			})
+
+			_, _, err := harbortest.RunOnce(ctx, agent, nil, harbortest.Deps{Bus: tracked})
+			if !errors.Is(err, tt.wantErr) {
+				if tt.wantErr == nil {
+					t.Fatalf("RunOnce: %v, want success", err)
+				}
+				t.Fatalf("RunOnce err = %v, want %v", err, tt.wantErr)
+			}
+			if got := tracked.flushes.Load(); got != tt.wantFlushes {
+				t.Fatalf("Flush calls = %d, want %d", got, tt.wantFlushes)
+			}
+		})
+	}
+}
+
+var errRunOnceFlushTest = errors.New("runonce flush test error")
+
+type runOnceFlushTrackingBus struct {
+	events.EventBus
+	flushes atomic.Int32
+}
+
+func (b *runOnceFlushTrackingBus) PublishAsync(ctx context.Context, ev events.Event) error {
+	return events.PublishAsync(ctx, b.EventBus, ev)
+}
+
+func (b *runOnceFlushTrackingBus) Flush(ctx context.Context) error {
+	b.flushes.Add(1)
+	return events.Flush(ctx, b.EventBus)
 }
 
 // TestEventLog_RecordedEvents_FiltersByRun — two RunOnce calls

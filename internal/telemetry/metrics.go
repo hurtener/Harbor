@@ -114,10 +114,11 @@ const (
 	// the single controlled seam onto the MeterProvider — there is no
 	// general Meter() accessor, preserving the metrics-as-derivation
 	// discipline (see the package doc + RegisterRuntimeGauges).
-	metricActiveRuns         = "harbor_runtime_active_runs"
-	metricEngineCapEntries   = "harbor_runtime_engine_capacity_entries"
-	metricGovernanceCacheLen = "harbor_runtime_governance_cache_entries"
-	metricEventsDroppedTotal = "harbor_runtime_events_dropped"
+	metricActiveRuns             = "harbor_runtime_active_runs"
+	metricEngineCapEntries       = "harbor_runtime_engine_capacity_entries"
+	metricGovernanceCacheLen     = "harbor_runtime_governance_cache_entries"
+	metricEventsDroppedTotal     = "harbor_runtime_events_dropped"
+	metricAsyncAdmissionFailures = "harbor_runtime_async_admission_failures"
 
 	// extraKeyProducer / extraKeyNode are the reserved events.Event.Extra
 	// keys RegisterEvent reads. The events.Event doc reserves Extra for
@@ -452,6 +453,9 @@ type RuntimeGaugeSource struct {
 	GovernanceCacheEntries func() int64
 	// EventsDropped — cumulative bus messages dropped under backpressure.
 	EventsDropped func() int64
+	// AsyncAdmissionFailures — cumulative asynchronous observability events
+	// rejected by a full or closed bounded publication lane.
+	AsyncAdmissionFailures func() int64
 }
 
 // RegisterRuntimeGauges registers the runtime observable gauges from src
@@ -495,6 +499,9 @@ func (r *MetricsRegistry) RegisterRuntimeGauges(src RuntimeGaugeSource) error {
 		return err
 	}
 	if err := reg(metricEventsDroppedTotal, "Cumulative bus messages dropped under backpressure.", src.EventsDropped); err != nil {
+		return err
+	}
+	if err := reg(metricAsyncAdmissionFailures, "Cumulative asynchronous observability admissions rejected by a full or closed publication lane.", src.AsyncAdmissionFailures); err != nil {
 		return err
 	}
 	return nil

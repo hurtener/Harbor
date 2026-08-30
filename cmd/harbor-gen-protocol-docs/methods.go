@@ -505,6 +505,18 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigAgentPacksListRequest", Response: "AgentConfigAgentPacksListResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigAgentPacksInspect: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksInspect),
+			Mutates: false,
+			Request: "AgentConfigAgentPacksInspectRequest", Response: "AgentConfigAgentPacksInspectResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigAgentPacksCopy: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksCopy),
+			Mutates: true,
+			Request: "AgentConfigAgentPacksCopyRequest", Response: "AgentConfigAgentPacksCopyResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigAgentPacksUpsert: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksUpsert),
 			Mutates: true,

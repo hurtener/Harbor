@@ -207,6 +207,17 @@ func RunOnce(ctx context.Context, agent Agent, input any, deps ...Deps) (any, *E
 	// returned alongside whatever output the agent produced (the
 	// caller may want to inspect the events EVEN ON FAILURE).
 	output, runErr := agent.Run(runCtx, input)
+	if runErr == nil {
+		// A successful RunOnce is the embed/test-harness terminal boundary.
+		// Drain every accepted async publication before cancelling the
+		// capture subscription, otherwise the caller can observe a
+		// successful result with only the subscription's synchronous
+		// notices. Legacy EventBus implementations publish synchronously,
+		// so events.Flush is intentionally a no-op for them.
+		if flushErr := events.Flush(runCtx, bus); flushErr != nil {
+			runErr = fmt.Errorf("harbortest: event flush after successful run: %w", flushErr)
+		}
+	}
 
 	// Teardown. Cancel the subscription, wait for the drain loop to
 	// flush any pending events, then close the bus if we own it.

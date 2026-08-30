@@ -588,9 +588,14 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	if dc, ok := bus.(events.DroppedCounter); ok {
 		eventsDropped = dc.DroppedTotal
 	}
+	var asyncAdmissionFailures func() int64
+	if ac, ok := bus.(events.AsyncAdmissionCounter); ok {
+		asyncAdmissionFailures = ac.AsyncAdmissionFailures
+	}
 	if err := metricsReg.RegisterRuntimeGauges(telemetry.RuntimeGaugeSource{
 		GovernanceCacheEntries: func() int64 { return int64(governance.CacheLen(govSub)) },
 		EventsDropped:          eventsDropped,
+		AsyncAdmissionFailures: asyncAdmissionFailures,
 	}); err != nil {
 		return stack, fmt.Errorf("telemetry runtime gauges: %w", err)
 	}

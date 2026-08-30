@@ -252,6 +252,11 @@ type MuxInput struct {
 	UserSkillImportService    *agentcfgprotocol.UserSkillImportService
 	CompositionPreviewService *agentcfgprotocol.CompositionPreviewService
 	BootOwnership             agentcfgprotocol.BootOwnership
+	// BootPackReader is the same frozen boot-pack index used by the run-loop
+	// and effective composition preview. It is passed to the generic
+	// agent-pack inspection/copy service so every mounted transport observes
+	// one immutable baseline.
+	BootPackReader agentcfgprotocol.BootPackReader
 }
 
 // BuiltMux is the result of BuildMux: the mounted Protocol mux plus the flow
@@ -859,6 +864,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
 			agentcfgprotocol.WithSignedOAuthMCPUserReconciler(in.SignedOAuthMCPUserReconciler),
 			agentcfgprotocol.WithAgentPackProposalState(in.State),
+			agentcfgprotocol.WithAgentPackCopyState(in.State),
+			agentcfgprotocol.WithBootPackReader(in.BootPackReader),
 			agentcfgprotocol.WithAgentPackCatalog(in.Catalog),
 			agentcfgprotocol.WithAgentPackGrantedScopes(append([]string(nil), cfg.Tools.GrantedScopes...)),
 		}
@@ -901,6 +908,16 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			return nil, wrapErr("agent-config/protocol service", acErr)
 		}
 		muxOpts = append(muxOpts, transports.WithAgentConfigService(agentConfigService))
+		agentPacksSurface, apErr := protocol.NewAgentPacksSurface(protocol.AgentPacksDeps{
+			Port:          agentConfigService,
+			ClassifyError: agentcfgprotocol.ClassifyAgentPackError,
+			AgentReach:    in.AgentReach,
+			AgentResolver: in.AgentResolver,
+		})
+		if apErr != nil {
+			return nil, wrapErr("agent-config/agent-packs surface", apErr)
+		}
+		muxOpts = append(muxOpts, transports.WithAgentPacksSurface(agentPacksSurface))
 		if in.UserSkillImportService != nil {
 			muxOpts = append(muxOpts, transports.WithUserSkillImportService(in.UserSkillImportService))
 		}

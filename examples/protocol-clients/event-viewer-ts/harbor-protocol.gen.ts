@@ -17,12 +17,14 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:0c3f1b8d54a489ca0c8fb5496bf33d3da11a3b6e2282a6099a92f6ef1c7f7acd";
+export const WIRE_SURFACE_DIGEST = "sha256:3326f4fd8d46c73c5d017f78a1320b31bccc2f8a83c35ba7b50c1546c889e798";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
   | "agent_config.add_mcp_connection"
   | "agent_config.agent_packs.commit"
+  | "agent_config.agent_packs.copy"
+  | "agent_config.agent_packs.inspect"
   | "agent_config.agent_packs.list"
   | "agent_config.agent_packs.propose"
   | "agent_config.agent_packs.remove"
@@ -174,6 +176,8 @@ export type HarborMethod =
 
 /** Every canonical Harbor Protocol error code. */
 export type HarborErrorCode =
+  | "agent_pack_copy_conflict"
+  | "agent_pack_copy_idempotency_conflict"
   | "agent_retired"
   | "agent_retirement_conflict"
   | "auth_rejected"
@@ -413,6 +417,19 @@ export interface AgentConfigAddMCPConnectionResponse {
   protocol_version: string;
 }
 
+export interface AgentConfigAgentPackCopyOutcome {
+  pack_id: string;
+  outcome: string;
+}
+
+export interface AgentConfigAgentPackInspection {
+  pack_id: string;
+  pack: AgentConfigAgentPackItem;
+  source: string;
+  semantic_hash: string;
+  editable: boolean;
+}
+
 export interface AgentConfigAgentPackItem {
   name: string;
   title?: string;
@@ -447,6 +464,40 @@ export interface AgentConfigAgentPacksCommitResponse {
   revision: AgentConfigRevisionView;
   skill: AgentConfigSkillSummary;
   hash: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksCopyRequest {
+  identity: IdentityScope;
+  source_agent_id: string;
+  target_agent_id: string;
+  pack_ids: string[];
+  expected_source_composition_hash: string;
+  expected_target_composition_hash: string;
+  idempotency_key: string;
+}
+
+export interface AgentConfigAgentPacksCopyResponse {
+  source_agent_id: string;
+  target_agent_id: string;
+  outcomes: AgentConfigAgentPackCopyOutcome[];
+  composition_hash: string;
+  boot_pack_set_hash: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksInspectRequest {
+  identity: IdentityScope;
+  agent_id: string;
+}
+
+export interface AgentConfigAgentPacksInspectResponse {
+  agent_id: string;
+  boot_packs: AgentConfigAgentPackInspection[];
+  revision_packs: AgentConfigAgentPackInspection[];
+  effective_packs: AgentConfigAgentPackInspection[];
+  composition_hash: string;
+  boot_pack_set_hash: string;
   protocol_version: string;
 }
 

@@ -90,6 +90,23 @@ func WithClock(c Clock) Option {
 	return func(b *bus) { b.clock = c }
 }
 
+// WithLogger injects the logger used for rate-limited asynchronous admission
+// warnings. Defaults to slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(b *bus) {
+		if l != nil {
+			b.logger = l
+		}
+	}
+}
+
+// WithAsyncQueueSize sets the bounded admission capacity for best-effort
+// asynchronous publications. It is intended for tests and operators tuning
+// backpressure; the default is events.DefaultAsyncQueueSize.
+func WithAsyncQueueSize(size int) Option {
+	return func(b *bus) { b.asyncQueueSize = size }
+}
+
 // New constructs a bus directly without going through the registry.
 // Exposed for tests that need to pass Options.
 func New(cfg config.EventsConfig, r audit.Redactor, opts ...Option) (events.EventBus, error) {
@@ -112,12 +129,16 @@ func New(cfg config.EventsConfig, r audit.Redactor, opts ...Option) (events.Even
 		return nil, fmt.Errorf("inmem: ReplayBufferSize must be >= 0 (zero disables replay)")
 	}
 	b := &bus{
-		cfg:       cfg,
-		redactor:  r,
-		clock:     realClock{},
-		ringCap:   cfg.ReplayBufferSize,
-		subs:      map[uint64]*subscription{},
-		closeDone: make(chan struct{}),
+		cfg:            cfg,
+		redactor:       r,
+		clock:          realClock{},
+		logger:         slog.Default(),
+		ringCap:        cfg.ReplayBufferSize,
+		subs:           map[uint64]*subscription{},
+		subsByIdentity: map[identity.Identity]map[uint64]*subscription{},
+		adminSubs:      map[uint64]*subscription{},
+		closeDone:      make(chan struct{}),
+		asyncQueueSize: events.DefaultAsyncQueueSize,
 	}
 	if b.ringCap > 0 {
 		b.ringBuf = make([]events.Event, b.ringCap)
@@ -125,6 +146,15 @@ func New(cfg config.EventsConfig, r audit.Redactor, opts ...Option) (events.Even
 	for _, opt := range opts {
 		opt(b)
 	}
+	if b.asyncQueueSize <= 0 {
+		return nil, fmt.Errorf("inmem: async queue size must be > 0")
+	}
+	b.asyncSignal = events.NewAsyncAdmissionSignal(b.logger, events.DefaultAsyncAdmissionLogInterval)
+	ordered, err := events.NewOrderedQueue(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.reportAsyncFailure)
+	if err != nil {
+		return nil, fmt.Errorf("inmem: ordered publication queue: %w", err)
+	}
+	b.ordered = ordered
 	b.startReaper()
 	return b, nil
 }
@@ -136,10 +166,15 @@ func init() {
 }
 
 type bus struct {
-	cfg      config.EventsConfig
-	redactor audit.Redactor
-	clock    Clock
+	cfg         config.EventsConfig
+	redactor    audit.Redactor
+	clock       Clock
+	logger      *slog.Logger
+	asyncSignal *events.AsyncAdmissionSignal
 
+	ordered *events.OrderedQueue
+	// asyncQueueSize is the bounded best-effort admission capacity.
+	asyncQueueSize int
 	// publishMu protects sequence assignment + ring-buffer append. It
 	// is the load-bearing invariant for Replay: by serialising the two
 	// operations, the ring's contents are guaranteed in Sequence
@@ -165,9 +200,14 @@ type bus struct {
 	evicted bool
 	ringCap int
 
-	mu    sync.RWMutex
-	subs  map[uint64]*subscription
-	subID atomic.Uint64
+	mu sync.RWMutex
+	// subs is the canonical lifecycle set. The secondary buckets below are
+	// maintained under the same lock and only narrow fan-out candidates; every
+	// candidate still passes Filter.Matches before enqueue.
+	subs           map[uint64]*subscription
+	subsByIdentity map[identity.Identity]map[uint64]*subscription
+	adminSubs      map[uint64]*subscription
+	subID          atomic.Uint64
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -192,6 +232,10 @@ type bus struct {
 	// the triple (the ring has no DeleteScope to lean on, unlike the durable
 	// driver).
 	fenced map[string]struct{}
+	// erasureGeneration is retained after Unfence. It invalidates events
+	// admitted before a Fence even if they reach the commit lane after the
+	// session is reused.
+	erasureGeneration map[string]uint64
 
 	// liveFenceMu linearises the live fence check with live fan-out. It is
 	// held only around the short fenced-map check plus bounded fan-out, never
@@ -232,6 +276,25 @@ func (b *bus) isFenced(id identity.Quadruple) bool {
 	return b.fencedLocked(id)
 }
 
+// generationForAdmission captures the identity's erasure generation under
+// publishMu at queue admission. The generation remains valid only until a
+// later Fence increments it; the commit path rechecks it before sequencing.
+func (b *bus) generationForAdmission(id identity.Identity) (uint64, bool) {
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	key := fenceKey(id)
+	if _, fenced := b.fenced[key]; fenced {
+		return 0, false
+	}
+	return b.erasureGeneration[key], true
+}
+
+// generationMatchesLocked reports whether a queued request still belongs to
+// the current identity generation. Caller must hold publishMu.
+func (b *bus) generationMatchesLocked(id identity.Quadruple, generation uint64) bool {
+	return b.erasureGeneration[fenceKey(id.Identity)] == generation
+}
+
 // Fence implements events.Fencer. It marks the triple erased — future
 // events for it are not retained and its history reads empty — and
 // physically purges any already-retained ring entries for the triple, so a
@@ -248,7 +311,12 @@ func (b *bus) Fence(_ context.Context, id identity.Identity) error {
 	if b.fenced == nil {
 		b.fenced = map[string]struct{}{}
 	}
-	b.fenced[fenceKey(id)] = struct{}{}
+	if b.erasureGeneration == nil {
+		b.erasureGeneration = map[string]uint64{}
+	}
+	key := fenceKey(id)
+	b.erasureGeneration[key]++
+	b.fenced[key] = struct{}{}
 	b.purgeFencedLocked(identity.Quadruple{Identity: id})
 	return nil
 }
@@ -396,7 +464,181 @@ func (b *bus) reapIdle(now time.Time) {
 }
 
 // Publish validates, redacts, sequences, and fans out the event.
+// Publish validates and admits one durable event onto the ordered publication
+// lane. The queue worker assigns its sequence and fans it out after commit.
 func (b *bus) Publish(ctx context.Context, ev events.Event) error {
+	prepared, accepted, err := b.preparePublish(ctx, ev)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		return nil
+	}
+	generation, admitted := b.generationForAdmission(prepared.Identity.Identity)
+	if !admitted {
+		b.logFencedDrop(ctx, prepared)
+		return nil
+	}
+	return b.ordered.PublishWithGeneration(ctx, prepared, generation)
+}
+
+// PublishBatch validates and admits one atomic durable batch. All events must
+// name one identity/session so the batch has one ordering authority and one
+// contiguous sequence range. Validation and redaction complete before queue
+// admission, so a rejected event cannot leave a partial durable batch.
+func (b *bus) PublishBatch(ctx context.Context, batch []events.Event) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("inmem: publish batch is empty")
+	}
+	if len(batch) > events.DefaultPublishBatchSize {
+		return fmt.Errorf("inmem: publish batch length %d exceeds max %d", len(batch), events.DefaultPublishBatchSize)
+	}
+	if !sameBatchSession(batch) {
+		return fmt.Errorf("inmem: publish batch must use one identity/session")
+	}
+	prepared := make([]events.Event, 0, len(batch))
+	for _, ev := range batch {
+		preparedEvent, accepted, err := b.preparePublish(ctx, ev)
+		if err != nil {
+			return err
+		}
+		if accepted {
+			prepared = append(prepared, preparedEvent)
+		}
+	}
+	if len(prepared) == 0 {
+		return nil
+	}
+	generation, admitted := b.generationForAdmission(prepared[0].Identity.Identity)
+	if !admitted {
+		for _, ev := range prepared {
+			b.logFencedDrop(ctx, ev)
+		}
+		return nil
+	}
+	return b.ordered.PublishBatchWithGeneration(ctx, prepared, generation)
+}
+
+// PublishAsync admits a best-effort observability event without waiting for
+// the store. ErrAsyncQueueFull is returned immediately when the bounded lane
+// is saturated; an accepted event is committed by the same FIFO worker as
+// ordinary Publish.
+func (b *bus) PublishAsync(ctx context.Context, ev events.Event) error {
+	prepared, accepted, err := b.preparePublish(ctx, ev)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		return nil
+	}
+	generation, admitted := b.generationForAdmission(prepared.Identity.Identity)
+	if !admitted {
+		b.logFencedDrop(ctx, prepared)
+		return nil
+	}
+	return b.ordered.PublishAsyncWithGeneration(ctx, prepared, generation)
+}
+
+// ObserveAsyncAdmissionFailure records a bounded-lane admission failure
+// without changing the producer's business result.
+func (b *bus) ObserveAsyncAdmissionFailure(ctx context.Context, eventType events.EventType, err error) {
+	b.asyncSignal.Observe(ctx, eventType, err)
+}
+
+// AsyncAdmissionFailures reports the cumulative bounded-lane admission
+// failures observed since this bus was constructed.
+func (b *bus) AsyncAdmissionFailures() int64 {
+	return b.asyncSignal.Total()
+}
+
+// Flush waits for all earlier accepted durable and asynchronous publications
+// to commit or report their first failure. Terminal runtime paths call this
+// before materializing successful completion.
+func (b *bus) Flush(ctx context.Context) error {
+	return b.ordered.Flush(ctx)
+}
+
+func (b *bus) preparePublish(ctx context.Context, ev events.Event) (events.Event, bool, error) {
+	if ctx == nil {
+		return events.Event{}, false, fmt.Errorf("inmem: publish context is nil")
+	}
+	if b.closed.Load() {
+		return events.Event{}, false, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.Event{}, false, fmt.Errorf("inmem: publish cancelled: %w", err)
+	}
+	if err := events.ValidateEvent(ev); err != nil {
+		return events.Event{}, false, err
+	}
+	if b.isFenced(ev.Identity) {
+		b.logFencedDrop(ctx, ev)
+		return events.Event{}, false, nil
+	}
+	payload := ev.Payload
+	if _, safe := payload.(events.SafePayload); !safe {
+		redacted, err := b.redactor.Redact(ctx, payload)
+		if err != nil {
+			b.emitRedactionFailure(ctx, ev, err)
+			return events.Event{}, false, fmt.Errorf("events: publish redaction failed: %w", err)
+		}
+		payload = wrapRedacted(redacted)
+	}
+	ev.Payload = payload
+	if ev.OccurredAt.IsZero() {
+		ev.OccurredAt = b.clock.Now()
+	}
+	return ev, true, nil
+}
+
+func (b *bus) commitBatch(ctx context.Context, batch []events.Event, generation uint64, _ string) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("inmem: empty publication batch")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.publishMu.Lock()
+	if !b.generationMatchesLocked(batch[0].Identity, generation) || b.fencedLocked(batch[0].Identity) {
+		b.publishMu.Unlock()
+		for _, ev := range batch {
+			b.logFencedDrop(ctx, ev)
+		}
+		return nil
+	}
+	if uint64(len(batch)) > ^uint64(0)-b.nextSeq {
+		b.publishMu.Unlock()
+		return fmt.Errorf("inmem: global sequence exhausted")
+	}
+	accepted := b.assignSeqAndStoreBatchLocked(batch)
+	b.publishMu.Unlock()
+	for _, ev := range accepted {
+		b.notifyProjectionWatermark(ev)
+		b.fanOut(ev, false)
+	}
+	return nil
+}
+
+func (b *bus) reportAsyncFailure(ctx context.Context, batch []events.Event, err error) {
+	slog.ErrorContext(ctx, "events(inmem): asynchronous event batch failed",
+		slog.String("driver", "inmem"),
+		slog.Int("events", len(batch)),
+		slog.String("error", err.Error()))
+}
+
+func sameBatchSession(batch []events.Event) bool {
+	if len(batch) < 2 {
+		return true
+	}
+	first := batch[0].Identity.Identity
+	for _, ev := range batch[1:] {
+		if ev.Identity.Identity != first {
+			return false
+		}
+	}
+	return true
+}
+func (b *bus) publishDirect(ctx context.Context, ev events.Event) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
 	}
@@ -556,11 +798,26 @@ func wrapRedacted(v any) events.EventPayload {
 	return events.RedactedMap{Data: map[string]any{"value": v}}
 }
 
-// fanOut walks subscribers and enqueues to each whose filter matches.
+// fanOut selects subscribers from the exact identity bucket plus the
+// explicit admin bucket, then retains Filter.Matches as the final predicate.
+// Non-admin Subscribe requires a complete identity triple, so no tenant/user
+// wildcard bucket is valid here. The bucket lookup makes unrelated connected
+// sessions invisible to the hot path while preserving every existing filter
+// and delivery rule.
 func (b *bus) fanOut(ev events.Event, live bool) {
+	key := ev.Identity.Identity
 	b.mu.RLock()
-	matched := make([]*subscription, 0, len(b.subs))
-	for _, s := range b.subs {
+	exact := b.subsByIdentity[key]
+	matched := make([]*subscription, 0, len(exact)+len(b.adminSubs))
+	for _, s := range exact {
+		if s.cancelled.Load() {
+			continue
+		}
+		if s.filter.Matches(ev) {
+			matched = append(matched, s)
+		}
+	}
+	for _, s := range b.adminSubs {
 		if s.cancelled.Load() {
 			continue
 		}
@@ -577,30 +834,30 @@ func (b *bus) fanOut(ev events.Event, live bool) {
 // Subscribe validates the filter, audits Admin scope, enforces the
 // per-session subscriber cap, and returns a Subscription.
 func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription, error) {
-	if b.closed.Load() {
-		return nil, events.ErrBusClosed
-	}
 	if !f.Admin && !f.HasFullTriple() {
 		return nil, events.ErrIdentityScopeRequired
 	}
 
+	key := identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}
+	b.mu.Lock()
+	if b.closed.Load() {
+		b.mu.Unlock()
+		return nil, events.ErrBusClosed
+	}
 	if !f.Admin {
-		// Enforce per-session cap.
-		b.mu.RLock()
+		// The exact identity bucket is the only non-admin scope that can
+		// match this filter. Count active entries while holding the same
+		// lock used for insertion so concurrent Subscribe calls cannot
+		// oversubscribe the per-session cap.
+		bucket := b.subsByIdentity[key]
 		count := 0
-		for _, s := range b.subs {
-			if s.cancelled.Load() {
-				continue
-			}
-			if !s.filter.Admin &&
-				s.filter.Tenant == f.Tenant &&
-				s.filter.User == f.User &&
-				s.filter.Session == f.Session {
+		for _, existing := range bucket {
+			if !existing.cancelled.Load() {
 				count++
 			}
 		}
-		b.mu.RUnlock()
 		if count >= b.cfg.MaxSubscribersPerSession {
+			b.mu.Unlock()
 			return nil, events.ErrSubscriberLimitReached
 		}
 	}
@@ -619,12 +876,22 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 		bound:      bound,
 		ch:         make(chan events.Event, b.cfg.SubscriberBufferSize),
 		busDropped: &b.droppedTotal,
+		bus:        b,
 	}
 	s.lastDrain.Store(b.clock.Now().UnixNano())
 	s.lastDropEmit.Store(b.clock.Now().UnixNano())
 
-	b.mu.Lock()
 	b.subs[id] = s
+	if f.Admin {
+		b.adminSubs[id] = s
+	} else {
+		bucket := b.subsByIdentity[key]
+		if bucket == nil {
+			bucket = make(map[uint64]*subscription)
+			b.subsByIdentity[key] = bucket
+		}
+		bucket[id] = s
+	}
 	b.mu.Unlock()
 
 	if f.Admin {
@@ -662,17 +929,38 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 // When ringCap is 0, only the sequence is assigned; no ring storage
 // happens (replay is configured-off).
 func (b *bus) assignSeqAndStore(ev *events.Event) {
-	b.publishMu.Lock()
-	b.nextSeq++
-	ev.Sequence = b.nextSeq
-	// Do not retain events for a fenced (erased) session — closes the window
-	// where Fence lands between Publish's edge check and this append. The
-	// sequence still advances (globally monotonic); only the ring slot is
-	// withheld.
-	if b.ringCap > 0 && !b.fencedLocked(ev.Identity) {
-		b.ringAppendLocked(*ev)
+	accepted := b.assignSeqAndStoreBatch([]events.Event{*ev})
+	if len(accepted) > 0 {
+		*ev = accepted[0]
 	}
+}
+
+// assignSeqAndStoreBatch assigns one contiguous sequence range and appends
+// every event under one lock. In-memory assignment cannot fail after
+// validation, so the returned slice contains every input event; fenced
+// events retain their sequence but are not retained in the ring, matching the
+// legacy single-event behavior.
+func (b *bus) assignSeqAndStoreBatch(batch []events.Event) []events.Event {
+	if len(batch) == 0 {
+		return nil
+	}
+	b.publishMu.Lock()
+	accepted := b.assignSeqAndStoreBatchLocked(batch)
 	b.publishMu.Unlock()
+	return accepted
+}
+
+func (b *bus) assignSeqAndStoreBatchLocked(batch []events.Event) []events.Event {
+	accepted := make([]events.Event, 0, len(batch))
+	for _, ev := range batch {
+		b.nextSeq++
+		ev.Sequence = b.nextSeq
+		if b.ringCap > 0 && !b.fencedLocked(ev.Identity) {
+			b.ringAppendLocked(ev)
+		}
+		accepted = append(accepted, ev)
+	}
+	return accepted
 }
 
 // logFencedDrop records a dropped event for an erased (fenced) session at
@@ -1033,10 +1321,14 @@ func (b *bus) emitAdminScopeUsedAndFanOut(f events.Filter) {
 // Subscribe return ErrBusClosed; existing subscribers receive a
 // closed Events() channel.
 func (b *bus) Close(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("inmem: close context is nil")
+	}
 	b.closeOnce.Do(func() {
 		b.closed.Store(true)
 		close(b.closeDone)
 	})
+	queueErr := b.ordered.Close(ctx)
 
 	// Cancel all subscriptions.
 	b.mu.Lock()
@@ -1044,6 +1336,9 @@ func (b *bus) Close(ctx context.Context) error {
 	for _, s := range b.subs {
 		subs = append(subs, s)
 	}
+	b.subs = map[uint64]*subscription{}
+	b.subsByIdentity = map[identity.Identity]map[uint64]*subscription{}
+	b.adminSubs = map[uint64]*subscription{}
 	b.mu.Unlock()
 	for _, s := range subs {
 		s.cancelInternal(b)
@@ -1057,9 +1352,9 @@ func (b *bus) Close(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
+		return queueErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(queueErr, ctx.Err())
 	}
 }
 
@@ -1069,6 +1364,7 @@ type subscription struct {
 	filter events.Filter
 	bound  identity.Quadruple
 	ch     chan events.Event
+	bus    *bus
 
 	// Drop bookkeeping.
 	mu            sync.Mutex // serialises enqueue against itself
@@ -1119,7 +1415,7 @@ func (s *subscription) markEnqueueProgress(now int64) {
 
 // Cancel implements events.Subscription. Idempotent.
 func (s *subscription) Cancel() {
-	s.cancelInternal(nil)
+	s.cancelInternal(s.bus)
 }
 
 // cancelInternal performs the cancel, closing s.ch and removing the
@@ -1169,9 +1465,30 @@ func (s *subscription) cancelInternalWithNotice(b *bus, notice *events.Event) {
 	}
 	s.mu.Unlock()
 	if b != nil {
-		b.mu.Lock()
-		delete(b.subs, s.id)
-		b.mu.Unlock()
+		b.removeSubscription(s)
+	}
+}
+
+// removeSubscription removes a subscriber from the canonical lifecycle map
+// and exactly one secondary bucket. It is idempotent so Cancel may race with
+// Close or the idle reaper without leaving stale fan-out candidates behind.
+// Caller must not hold s.mu; this method acquires only b.mu.
+func (b *bus) removeSubscription(s *subscription) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.subs, s.id)
+	if s.filter.Admin {
+		delete(b.adminSubs, s.id)
+		return
+	}
+	key := s.bound.Identity
+	bucket := b.subsByIdentity[key]
+	if bucket == nil {
+		return
+	}
+	delete(bucket, s.id)
+	if len(bucket) == 0 {
+		delete(b.subsByIdentity, key)
 	}
 }
 
@@ -1329,13 +1646,15 @@ func (s *subscription) resetDropWindow(now time.Time) {
 // Compile-time assertion that bus implements events.EventBus,
 // events.Replayer AND events.HistoryReplayer.
 var (
-	_ events.EventBus              = (*bus)(nil)
-	_ events.LivePublisher         = (*bus)(nil)
-	_ events.Replayer              = (*bus)(nil)
-	_ events.HistoryReplayer       = (*bus)(nil)
-	_ events.EventMetadataReplayer = (*bus)(nil)
-	_ events.Fencer                = (*bus)(nil)
-	_ events.ProjectionSource      = (*bus)(nil)
+	_ events.EventBus                      = (*bus)(nil)
+	_ events.LivePublisher                 = (*bus)(nil)
+	_ events.Replayer                      = (*bus)(nil)
+	_ events.HistoryReplayer               = (*bus)(nil)
+	_ events.EventMetadataReplayer         = (*bus)(nil)
+	_ events.Fencer                        = (*bus)(nil)
+	_ events.ProjectionSource              = (*bus)(nil)
+	_ events.AsyncAdmissionFailureObserver = (*bus)(nil)
+	_ events.AsyncAdmissionCounter         = (*bus)(nil)
 )
 
 // Compile-time assertion: subscription.Cancel is exported via the

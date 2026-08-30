@@ -27,6 +27,8 @@ type v128Client interface {
 	AgentConfigUserSkillsImportValidate(context.Context, types.AgentConfigUserSkillsImportValidateRequest) (types.AgentConfigUserSkillsImportValidateResponse, error)
 	AgentConfigUserSkillsImportCommit(context.Context, types.AgentConfigUserSkillsImportCommitRequest) (types.AgentConfigUserSkillsImportCommitResponse, error)
 	AgentConfigCompositionPreview(context.Context, types.AgentConfigCompositionPreviewRequest) (types.AgentConfigCompositionPreviewResponse, error)
+	AgentConfigAgentPacksInspect(context.Context, types.AgentConfigAgentPacksInspectRequest) (types.AgentConfigAgentPacksInspectResponse, error)
+	AgentConfigAgentPacksCopy(context.Context, types.AgentConfigAgentPacksCopyRequest) (types.AgentConfigAgentPacksCopyResponse, error)
 	MCPReadResource(context.Context, types.ReadMCPResourceRequest) (types.ReadMCPResourceResponse, error)
 	MCPAppsCallTool(context.Context, types.MCPAppCallToolRequest) (types.MCPAppCallToolResponse, error)
 }
@@ -171,6 +173,31 @@ func TestClient_AgentConfigImportPreviewRoutes(t *testing.T) {
 	}
 	if *path != "/v1/agent_config/composition/preview" {
 		t.Errorf("composition.preview path = %q", *path)
+	}
+}
+
+func TestClient_AgentConfigAgentPacksRoutesAreTyped(t *testing.T) {
+	srv, path, body := roundTripFixture(t, map[string]string{
+		"/v1/agent_config/agent_packs/inspect": `{"agent_id":"agent-x","effective_packs":[],"composition_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","boot_pack_set_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","protocol_version":"0.1.0"}`,
+		"/v1/agent_config/agent_packs/copy":    `{"source_agent_id":"agent-x","target_agent_id":"agent-y","outcomes":[{"pack_id":"alpha","outcome":"noop"}],"composition_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","boot_pack_set_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","protocol_version":"0.1.0"}`,
+	})
+	c := v128(t, srv)
+	if _, err := c.AgentConfigAgentPacksInspect(context.Background(), types.AgentConfigAgentPacksInspectRequest{AgentID: "agent-x"}); err != nil {
+		t.Fatalf("AgentConfigAgentPacksInspect: %v", err)
+	}
+	if *path != "/v1/agent_config/agent_packs/inspect" || (*body)["agent_id"] != "agent-x" {
+		t.Errorf("inspect route/body = (%q,%v), want typed route and agent id", *path, *body)
+	}
+	if _, err := c.AgentConfigAgentPacksCopy(context.Background(), types.AgentConfigAgentPacksCopyRequest{
+		SourceAgentID: "agent-x", TargetAgentID: "agent-y", PackIDs: []string{"alpha"},
+		ExpectedSourceCompositionHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ExpectedTargetCompositionHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IdempotencyKey:                "copy-1",
+	}); err != nil {
+		t.Fatalf("AgentConfigAgentPacksCopy: %v", err)
+	}
+	if *path != "/v1/agent_config/agent_packs/copy" || (*body)["source_agent_id"] != "agent-x" || (*body)["idempotency_key"] != "copy-1" {
+		t.Errorf("copy route/body = (%q,%v), want typed route and CAS/idempotency fields", *path, *body)
 	}
 }
 

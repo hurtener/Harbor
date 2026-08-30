@@ -406,6 +406,8 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |262 | Stock coordinator-bound credential resolution (HA-73, D-442): public canonical `sdk/llm/credentials` exchange, public server injection, optional authenticated stock transport, verified-full-grant authority, exact generation-bound response, bounded TTL/cardinality cache and singleflight isolation, truthful route readiness, and zero idle/default-route work | sdk/llm/credentials + credential HTTP transport + runtime serve/config/readiness + sdk/server | §6.5, §6.11, §6.15 | 254, 256, 258, 260, D-434, D-436, D-438, D-440 | focused race/vet + public consumer + real runtime.info + smoke | Accepted for v1.30.3 release candidate; tag/release/downstream acceptance pending |
 |263 | Content-free user-scoped turn usage projection (D-443): optional `sessions.turns.get projection=usage`, exact-session/effective-agent authority, structurally exclusive lifecycle/timing and canonical usage row, one existing durable indexed read, no admin/fleet widening, and no scans/pollers/workers/receipts/config/schema/provider/grant dependency | sessions/turns projection + Protocol + generated Go/TS/docs + operator skill | §5.2, §5.5, §6.9, §6.13, §7, §9 | 130, 161, 246, D-293, D-425 | focused package/transport/wire/content-free gates + hosted CI | Accepted for v1.30.4 release candidate; final preflight/Playwright, tag/release/downstream acceptance pending |
 |265 | User-scoped signed OAuth MCP capability lifecycle (D-448): closed-envelope/descriptor sibling methods, verified `agent_config:user` plus signed reach, tenant/user/session derived from bearer, `ConfigScopeUser` desired pairs and loading choices, full physical owner and exact teardown, one shared effective-source authorizer across catalog/resource/App/dispatch surfaces, operator-then-user loading projection with logical-to-physical resolution, private initialize/discovery bearer, two-user isolation, and generated Protocol/TypeScript/docs/smoke surfaces | agent-config signed OAuth MCP + physical MCP registry/provider + projection + Protocol | §5.5, §6.4, §6.11, §6.16 | 130, 205, 206, 211, 246, D-397, D-398, D-401, D-407 | focused package/race + generators + two-user isolation + stale-source authority + loading-mode isolation + static smoke | Accepted for next Harbor patch release; downstream/runtime deployment and acceptance pending |
+|266 | Indexed fan-out and ordered observability event path (D-453/D-454/D-455): exact-triple plus admin-bucket fan-out, atomic `PublishBatch` retaining individual records/sequences/cursors, and one bounded per-bus FIFO for async cost/tool lifecycle with synchronous terminal barriers; explicit process-loss window; no second transcript or turns/resume/wire change | events + durable log + llm/tool observability | §4, §5.2, §6.4, §6.5, §6.13, §6.14 | 05, 06, 57, 147, 161, 246, D-293, D-425, D-452 | focused race/integration + 1K/10K comparative benchmark + static smoke | Planned for v1.31.0; implementation/hosted CI/tag/release pending |
+|267 | Same-runtime agent-pack inspect/copy (D-456): admin-only `agent_config.agent_packs.inspect` with complete distinct boot/revision bodies plus effective hashes, and additive `agent_config.agent_packs.copy` with bounded `pack_ids`, expected source/target composition-hash CAS, one all-or-nothing target revision, server-stamped copy lineage, equal-content no-op, fail-closed independent collision, and boot read-only/target governance preservation | agent-config pack resolver + StateStore CAS + Protocol/SDK/reference surfaces | §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9 | 04, 05, 06, 07, 09, 11, 37, 40, 202, 205, 206, 232, 237, 240, 248, 250, 266, D-411, D-414, D-415, D-427, D-430 | focused wire/driver conformance + same-runtime admin/reach isolation + CAS/idempotency/collision/reconciliation race + static smoke | Candidate for v1.31.0; implementation evidence, hosted CI, tag/release, deployment, and downstream acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5854,6 +5856,67 @@ deployment, or downstream acceptance is claimed.
   release;
   downstream/runtime deployment and acceptance remain pending. See
   `docs/plans/phase-265-user-scoped-signed-oauth-mcp.md`.
+
+### Phase 266 — Indexed fan-out and ordered observability event path
+
+- **Subsystem:** event bus/drivers, LLM cost, universal tool lifecycle, and
+  successful task-terminal ordering.
+- **RFC:** §4, §5.2, §6.4, §6.5, §6.13, §6.14. **Deps:** 05, 06, 57, 147,
+  161, 246, D-293, D-425, D-452.
+- **Scope:** exact subscriptions use a full-triple index and widened
+  subscriptions a distinct admin bucket. Atomic `PublishBatch` retains exact
+  events, sequences, and cursors. One bounded FIFO asynchronously accepts cost
+  plus universal tool lifecycle; synchronous publication is the barrier, so
+  successful `task.completed` cannot overtake accepted telemetry.
+- **Boundary:** async acceptance is best-effort process memory, not a durable
+  receipt. Abrupt loss before commit may lose it; no outbox, recovery synthesis,
+  billing claim, second transcript, durable chunk, or change to
+  `sessions.turns.*`, `live_resume_seq`, SSE IDs, Console, or Protocol 0.1.0.
+- **Evidence plan:** real durable integration, restart/failure, N>=128
+  isolation/leak gates, and same-host 1K/10K comparative benchmark using the
+  phase plan's exact commands. No fixed timing figure is claimed.
+- **Decision:** D-453, D-454, D-455. **Status:** Planned for v1.31.0;
+  implementation, hosted CI, tag/release, deployment, and downstream
+  acceptance remain pending. See
+  `docs/plans/phase-266-ordered-observability-event-path.md`.
+
+### Phase 267 — Same-runtime agent-pack inspect and copy
+
+- **Subsystem:** agent-config operator packs, effective composition and boot
+  baseline, StateStore conditional revision writes, Protocol transport/SDK,
+  generated reference surfaces, and operator guidance.
+- **RFC:** §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9. **Deps:** 37, 40, 202,
+  205, 206, 232, 237, 240, 248, 250, 266; D-411, D-414, D-415, D-427, D-430.
+- **Scope:** D-456 adds admin-only, same-runtime
+  `agent_config.agent_packs.inspect` at
+  `POST /v1/agent_config/agent_packs/inspect` and
+  `agent_config.agent_packs.copy` at
+  `POST /v1/agent_config/agent_packs/copy`. Inspect returns complete distinct
+  boot and revision layer bodies plus a deterministic effective view. Every
+  entry carries exact source, semantic hash, and boolean `editable`; the
+  response carries deterministic `composition_hash` and `boot_pack_set_hash`,
+  including the empty-set values.
+- **Copy boundary:** copy accepts bounded plural `pack_ids`, expected source and
+  target composition hashes, and an idempotency key. It rechecks the immutable
+  source pin and applies the authoritative target CAS, then records all
+  selected bodies in one all-or-nothing target revision. Equal selected content
+  is a no-op; any independently authored differing target or edited prior copy
+  fails closed without partial mutation. Server-stamped provenance is the only
+  authority for reconciliation to update/remove an untouched copy. Boot source
+  remains read-only; copied target packs remain governed by existing
+  `propose|commit|remove`.
+- **Boundary:** both agents must be in the same verified tenant/runtime and in
+  the caller's signed reach under an admin identity. There is no portable
+  catalog, cross-runtime federation, second resolver, body-bearing copy
+  receipt, or capability grant through pack metadata. Protocol `0.1.0` is
+  unchanged.
+- **Evidence plan:** exact body/hash vectors, strict typed routes, source/target
+  reach isolation, same-runtime failure, target CAS/idempotency, all-or-nothing
+  plural copy, no-op/collision, boot read-only, target authoring governance,
+  reconciliation preservation, restart, and N>=128 `-race` coverage across
+  shipped drivers. No tag, release, deployment, or downstream acceptance is
+  claimed at this candidate head. See
+  `docs/plans/phase-267-agent-pack-inspect-copy.md`.
 
 ## Notes
 

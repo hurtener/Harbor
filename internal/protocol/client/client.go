@@ -194,6 +194,8 @@ type RuntimeClient interface {
 	SkillPublicationsUpdate(context.Context, types.SkillPublicationUpdateRequest) (types.SkillPublicationUpdateResponse, error)
 	SkillPublicationsRemove(context.Context, types.SkillPublicationRemoveRequest) (types.SkillPublicationRemoveResponse, error)
 	SkillPublicationsReferencesList(context.Context, types.SkillPublicationReferencesListRequest) (types.SkillPublicationReferencesListResponse, error)
+	AgentConfigAgentPacksInspect(context.Context, types.AgentConfigAgentPacksInspectRequest) (types.AgentConfigAgentPacksInspectResponse, error)
+	AgentConfigAgentPacksCopy(context.Context, types.AgentConfigAgentPacksCopyRequest) (types.AgentConfigAgentPacksCopyResponse, error)
 }
 
 type client struct {
@@ -394,6 +396,10 @@ func routeFor(method methods.Method) string {
 		return "/v1/agent_config/user/skills/import_validate"
 	case method == methods.MethodAgentConfigUserSkillsImportCommit:
 		return "/v1/agent_config/user/skills/import_commit"
+	case method == methods.MethodAgentConfigAgentPacksInspect:
+		return "/v1/agent_config/agent_packs/inspect"
+	case method == methods.MethodAgentConfigAgentPacksCopy:
+		return "/v1/agent_config/agent_packs/copy"
 	case method == methods.MethodAgentConfigCompositionPreview:
 		return "/v1/agent_config/composition/preview"
 	case methods.IsStateMethod(method):
@@ -545,6 +551,25 @@ func (c *client) AgentConfigCompositionPreview(ctx context.Context, request type
 	request.Identity = c.scope()
 	var out types.AgentConfigCompositionPreviewResponse
 	err := c.callMethod(ctx, methods.MethodAgentConfigCompositionPreview, request, &out)
+	return out, err
+}
+
+// AgentConfigAgentPacksInspect reads complete effective pack bodies and their
+// boot/revision composition metadata for one reachable same-runtime Agent.
+func (c *client) AgentConfigAgentPacksInspect(ctx context.Context, request types.AgentConfigAgentPacksInspectRequest) (types.AgentConfigAgentPacksInspectResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigAgentPacksInspectResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigAgentPacksInspect, request, &out)
+	return out, err
+}
+
+// AgentConfigAgentPacksCopy copies selected effective packs between two
+// reachable same-runtime Agents under compare-and-swap and idempotency
+// preconditions. A collision is returned as a typed Protocol error.
+func (c *client) AgentConfigAgentPacksCopy(ctx context.Context, request types.AgentConfigAgentPacksCopyRequest) (types.AgentConfigAgentPacksCopyResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigAgentPacksCopyResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigAgentPacksCopy, request, &out)
 	return out, err
 }
 

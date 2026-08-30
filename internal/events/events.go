@@ -505,6 +505,106 @@ type EventBus interface {
 	Close(ctx context.Context) error
 }
 
+// BatchPublisher is an additive EventBus capability for atomic durable event
+// batches. Implementations validate and redact every event before mutation,
+// commit one contiguous sequence range, and fan out each committed event once.
+// The batch must not be partially committed.
+type BatchPublisher interface {
+	PublishBatch(ctx context.Context, batch []Event) error
+}
+
+// AsyncPublisher is an additive EventBus capability for best-effort
+// observability. PublishAsync acknowledges only bounded queue admission; the
+// caller must treat ErrAsyncQueueFull as an explicit drop signal. Accepted
+// events retain their durable ordering relative to ordinary Publish calls.
+type AsyncPublisher interface {
+	PublishAsync(ctx context.Context, ev Event) error
+}
+
+// AsyncAdmissionFailureObserver receives the only operational signal for an
+// asynchronous publication that was not admitted. Only the canonical event
+// type is provided; payload and identity data never cross this boundary.
+// Implementations MUST keep this path non-blocking and MUST NOT publish
+// another Event: admission errors occur on the best-effort observability lane
+// and the producer's business result remains authoritative.
+type AsyncAdmissionFailureObserver interface {
+	ObserveAsyncAdmissionFailure(ctx context.Context, eventType EventType, err error)
+}
+
+// AsyncAdmissionCounter reports asynchronous publication admission failures
+// since the bus was constructed. It mirrors DroppedCounter: a driver-specific
+// operational read surface discovered by type assertion, not a requirement on
+// legacy EventBus implementations.
+type AsyncAdmissionCounter interface {
+	AsyncAdmissionFailures() int64
+}
+
+// Flusher is an additive EventBus capability for terminal ordering
+// barriers. Flush returns after all earlier accepted publications have either
+// committed or failed, and returns the first failure observed since the prior
+// barrier.
+type Flusher interface {
+	Flush(ctx context.Context) error
+}
+
+// PublishBatch uses an atomic batch capability when available and otherwise
+// preserves legacy EventBus compatibility by publishing each event in order.
+// Callers that require all-or-none semantics must assert BatchPublisher.
+func PublishBatch(ctx context.Context, bus EventBus, batch []Event) error {
+	if publisher, ok := bus.(BatchPublisher); ok {
+		return publisher.PublishBatch(ctx, batch)
+	}
+	for _, ev := range batch {
+		if err := bus.Publish(ctx, ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PublishAsync uses best-effort asynchronous admission when available. A
+// legacy EventBus receives the event synchronously so existing embedders keep
+// their durable behavior; unsupported asynchronous semantics are never hidden.
+func PublishAsync(ctx context.Context, bus EventBus, ev Event) error {
+	if publisher, ok := bus.(AsyncPublisher); ok {
+		return publisher.PublishAsync(ctx, ev)
+	}
+	return bus.Publish(ctx, ev)
+}
+
+// PublishAsyncObserved performs best-effort asynchronous publication and
+// reports bounded-lane admission failures through the bus's operational
+// observer. It intentionally returns no error: this helper is for
+// observability producers whose business result must not be changed by a full
+// or closed telemetry lane. Callers that need the error contract should call
+// PublishAsync directly.
+//
+// Only ErrAsyncQueueFull and ErrBusClosed are operational admission failures.
+// Validation, redaction, and caller-context errors remain the direct
+// PublishAsync contract and are not converted into a second signal here.
+func PublishAsyncObserved(ctx context.Context, bus EventBus, ev Event) {
+	if bus == nil {
+		return
+	}
+	if err := PublishAsync(ctx, bus, ev); err != nil {
+		if _, admissionFailure := asyncAdmissionFailureReason(err); admissionFailure {
+			if observer, ok := bus.(AsyncAdmissionFailureObserver); ok {
+				observer.ObserveAsyncAdmissionFailure(ctx, ev.Type, err)
+			}
+		}
+	}
+}
+
+// Flush establishes a terminal publication barrier when the bus supports it.
+// Legacy EventBus implementations have no asynchronous lane, so their
+// synchronous Publish contract already supplies the required ordering.
+func Flush(ctx context.Context, bus EventBus) error {
+	if publisher, ok := bus.(Flusher); ok {
+		return publisher.Flush(ctx)
+	}
+	return nil
+}
+
 // LivePublisher is the additive capability for present-tense animation.
 // Implementations validate, apply the existing audit-redaction policy, and
 // bounded-fan-out without assigning a replay position or touching durable /
@@ -846,6 +946,10 @@ var (
 	// Window returns as (nil, nil)): Bounds cannot report a head/tail for
 	// a session that never published.
 	ErrNoHistory = errors.New("events: session has no retained event history")
+	// ErrAsyncQueueFull means a bounded asynchronous observability lane could
+	// not admit the event immediately. Callers may count or surface this loss;
+	// the lane never blocks an observability producer on store latency.
+	ErrAsyncQueueFull = errors.New("events: asynchronous publication queue is full")
 )
 
 // ValidateEvent does structural validation: the EventType is in the

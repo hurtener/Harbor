@@ -484,6 +484,8 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeSessionRunning:                      http.StatusConflict,
 	protoerrors.CodeSessionErased:                       http.StatusConflict,
 	protoerrors.CodeRevisionConflict:                    http.StatusConflict,
+	protoerrors.CodeAgentPackCopyConflict:               http.StatusConflict,
+	protoerrors.CodeAgentPackCopyIdempotencyConflict:    http.StatusConflict,
 	protoerrors.CodeSessionSkillCutoverPending:          http.StatusConflict,
 	protoerrors.CodeSessionSkillReadUnstable:            http.StatusConflict,
 	protoerrors.CodeAgentRetired:                        http.StatusConflict,
@@ -556,6 +558,12 @@ var errorCodeMatrix = []protoerrors.Code{
 	// agent-config surface (same posture as the artifacts / sessions codes
 	// above).
 	protoerrors.CodeRevisionConflict,
+	// Agent pack copy has distinct typed outcomes for a stale composition,
+	// an independently authored collision, and divergent idempotency-key
+	// reuse. Focused AgentPacksSurface tests exercise the mappings; the
+	// generic conformance Stack does not assemble its runtime port.
+	protoerrors.CodeAgentPackCopyConflict,
+	protoerrors.CodeAgentPackCopyIdempotencyConflict,
 	// agent-config session-skill surface — these migration-state refusals are
 	// exercised by the session-skill handler/integration suite once the core
 	// durable cutover implementation is wired into the service. The generic
@@ -738,10 +746,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 150 methods; keep the explicit
+	// The canonical list currently contains 152 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 150 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 150 (including HA-68 skill publications)", len(got))
+	if len(got) != 152 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 152 (including HA-68 skill publications and same-runtime Agent pack methods)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -858,6 +866,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigSkillsUpsert:                   {},
 		methods.MethodAgentConfigSkillsDelete:                   {},
 		methods.MethodAgentConfigAgentPacksList:                 {},
+		methods.MethodAgentConfigAgentPacksInspect:              {},
+		methods.MethodAgentConfigAgentPacksCopy:                 {},
 		methods.MethodAgentConfigAgentPacksUpsert:               {},
 		methods.MethodAgentConfigAgentPacksPropose:              {},
 		methods.MethodAgentConfigAgentPacksCommit:               {},
