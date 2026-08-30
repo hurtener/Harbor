@@ -15130,8 +15130,9 @@ D-452, Phase 266.
 **Date:** 2026-08-29
 
 **Status:** Shipped in Harbor v1.31.0; explicit-empty reconciliation corrected
-in Harbor v1.31.1. Downstream/runtime deployment and acceptance remain
-pending.
+in Harbor v1.31.1; canonical empty-target CAS corrected in Harbor v1.31.2; and
+copied operator-pack run-start resolution corrected in Harbor v1.31.3.
+Downstream/runtime deployment and acceptance remain pending.
 
 Harbor adds two additive, capability-discovered admin methods:
 `agent_config.agent_packs.inspect` at
@@ -15211,5 +15212,29 @@ and v1.31.1 release workflow `33311306845` completed successfully. The
 annotated tag object `bbf3769accd938f79b22b157a660842ca5dde1dd` peels to
 that cleanup commit, the release published 13 assets, and public module
 provenance resolves the same tag and commit. The scaffold fallback and goldens
-are updated to v1.31.1 in this follow-up. Downstream deployment and acceptance
-remain unclaimed.
+were updated to v1.31.1 in that follow-up. PR #768 then preserved the
+deterministic empty-composition hash as the internal target CAS without
+allowing direct blank expectations and merged as
+`b5605f7536a7c7227d1b69c75404ef1d2bf7112c`. Its exact PR-head CI run
+`33314472142` completed successfully. The annotated `v1.31.2` tag object
+`63d044d651a3682271c5b18379bda5e12865bfa6` peels to that merge commit;
+release workflow `33318313606` published 13 assets, and public module
+provenance resolves `refs/tags/v1.31.2` to the same commit. Post-tag test-only
+PTY reader-drain cleanup PR #769 then merged as
+`71653f00927810e0b2dd052231c3daaadbd7501a` and remains outside the tagged
+v1.31.2 code.
+
+PR #770 corrected run-start skill resolution so an explicitly pinned body may
+come from the selected agent's already validated immutable operator tier as
+well as the base SkillStore. Genuinely missing bodies still fail closed and
+copied required-tool metadata remains non-authorizing. It merged as
+`b836d0649327a6879cf6b3866d7cba584410e6d7`. Every independent code,
+platform, conformance, frontend, and browser gate on PR-head CI run
+`33320554635` completed successfully; release proceeded under the explicit
+owner override for its sole lingering full-preflight/Phase-231 path, which is
+not represented as green. The annotated `v1.31.3` tag object
+`791a3308d961afae0610465bf4b34d6e956b4f7d` peels to that merge commit;
+release workflow `33321563993` published 13 assets, and public module
+provenance resolves `refs/tags/v1.31.3` to the same commit. The scaffold
+fallback and goldens are updated directly to v1.31.3 in this follow-up.
+Downstream deployment and acceptance remain unclaimed.

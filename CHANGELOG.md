@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.31.3] — 2026-08-30
+
 ### Fixed
 
 - Run-start skill snapshots now accept an admin-pinned skill body supplied by
@@ -24,6 +26,57 @@ Two versions move independently in Harbor (RFC §5.3):
   into a derived agent. The fail-closed missing-body check still rejects names
   absent from both the base skill store and the immutable operator tier;
   copied `required_tools` metadata remains non-authorizing.
+
+### Release evidence
+
+- Fix PR #770 merged as
+  `b836d0649327a6879cf6b3866d7cba584410e6d7`. Every independent code,
+  platform, conformance, frontend, and browser gate on PR-head CI run
+  `33320554635` completed successfully; release proceeded under the explicit
+  owner override for its sole lingering full-preflight/Phase-231 path rather
+  than representing that path as green. The annotated `v1.31.3` tag object is
+  `791a3308d961afae0610465bf4b34d6e956b4f7d` and peels to that merge commit.
+  Release workflow `33321563993` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.3);
+  the published `checksums.txt` has SHA-256
+  `78f0809932191e72c7167ae8d9dddbd50bd9bde90437fecd58fcf0fbdc0a722c`.
+  Public module provenance records
+  `Sum=h1:tWSjmz73D1AZLOtM3YrvyWnKkgsBNpWUHoZ8CIyj2AE=`,
+  `GoModSum=h1:fpxHYfJP3V1QbmKZH/t5XMiol5o1cJ0stHoNBl7kT8M=`,
+  `Origin.Hash=b836d0649327a6879cf6b3866d7cba584410e6d7`, and
+  `Origin.Ref=refs/tags/v1.31.3`. Downstream deployment and acceptance remain
+  separate gates and are not claimed here.
+
+## [1.31.2] — 2026-08-30
+
+### Fixed
+
+- Agent-pack copy now preserves the deterministic empty-composition hash as
+  the internal target CAS when an inspected target has no effective packs.
+  First copy into an empty target and byte-identical replay therefore use the
+  same non-empty canonical expectation, while direct blank, malformed, and
+  stale expectations remain invalid. This is distinct from v1.31.1, which
+  made an explicit empty `pack_ids` array a valid reconciliation selection.
+
+### Release evidence
+
+- Fix PR #768 merged as
+  `b5605f7536a7c7227d1b69c75404ef1d2bf7112c`; its exact PR-head CI run
+  `33314472142` completed successfully, including both Go platforms,
+  PostgreSQL/S3 conformance, frontend/Playwright, and full preflight. The
+  annotated `v1.31.2` tag object is
+  `63d044d651a3682271c5b18379bda5e12865bfa6` and peels to that merge commit.
+  Release workflow `33318313606` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.2);
+  the published `checksums.txt` has SHA-256
+  `6d5585d6482de608ec05f7366652df6f6dc0bdf03da1fa9604715381ab7d7338`.
+  Public module provenance records
+  `Sum=h1:ZIDEOCd1SbmbHM4mM62QP8m10u9AG3iZ9MjgCNSqgwY=`,
+  `GoModSum=h1:fpxHYfJP3V1QbmKZH/t5XMiol5o1cJ0stHoNBl7kT8M=`,
+  `Origin.Hash=b5605f7536a7c7227d1b69c75404ef1d2bf7112c`, and
+  `Origin.Ref=refs/tags/v1.31.2`. Post-tag test-only PTY reader-drain cleanup
+  PR #769 subsequently merged as
+  `71653f00927810e0b2dd052231c3daaadbd7501a` and remains outside the tagged
+  v1.31.2 code. Downstream deployment and acceptance remain separate gates and
+  are not claimed here.
 
 ## [1.31.1] — 2026-08-30
 
@@ -5357,7 +5410,9 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.1...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.3...HEAD
+[1.31.3]: https://github.com/hurtener/Harbor/compare/v1.31.2...v1.31.3
+[1.31.2]: https://github.com/hurtener/Harbor/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/hurtener/Harbor/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/hurtener/Harbor/compare/v1.30.13...v1.31.0
 [1.30.13]: https://github.com/hurtener/Harbor/compare/v1.30.12...v1.30.13
