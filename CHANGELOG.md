@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.31.1] — 2026-08-30
+
 ### Fixed
 
 - Agent-pack copy now accepts an empty `pack_ids` selection so coordinators
@@ -25,6 +27,25 @@ Two versions move independently in Harbor (RFC §5.3):
   authorizes removal.
   The empty selection still requires the same admin scope, signed reach,
   source/target composition CAS, idempotency key, and atomic target revision.
+
+### Release evidence
+
+- Fix PR #765 merged as
+  `8bc070c1dbc144939f4b8980f5ef74c59bff0a07`; release-hygiene PR #766 then
+  merged as `eabdbb6798a49345e566e224188588ab83b383e4`. Exact post-merge main CI
+  run `33308171578` completed successfully, including both Go platforms,
+  PostgreSQL/S3 conformance, frontend/Playwright, and full preflight. The
+  annotated `v1.31.1` tag object is
+  `bbf3769accd938f79b22b157a660842ca5dde1dd` and peels to the cleanup commit.
+  Release workflow `33311306845` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.1);
+  the published `checksums.txt` has SHA-256
+  `8e73d203f58cd1d2bd15ff520585191f79ac2606675c413222b86d4b06ea0314`.
+  Public module provenance records
+  `Sum=h1:JldIeDeEcIP1d1vxyeKaYQmBgfn+XUlmBPPFGhpHOsU=`,
+  `GoModSum=h1:fpxHYfJP3V1QbmKZH/t5XMiol5o1cJ0stHoNBl7kT8M=`,
+  `Origin.Hash=eabdbb6798a49345e566e224188588ab83b383e4`, and
+  `Origin.Ref=refs/tags/v1.31.1`. Downstream deployment and acceptance remain
+  separate gates and are not claimed here.
 
 ## [1.31.0] — 2026-08-30
 
@@ -5328,7 +5349,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.0...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.1...HEAD
+[1.31.1]: https://github.com/hurtener/Harbor/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/hurtener/Harbor/compare/v1.30.13...v1.31.0
 [1.30.13]: https://github.com/hurtener/Harbor/compare/v1.30.12...v1.30.13
 [1.30.12]: https://github.com/hurtener/Harbor/compare/v1.30.11...v1.30.12
