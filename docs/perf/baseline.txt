@@ -2,6 +2,30 @@ goos: darwin
 goarch: arm64
 pkg: github.com/hurtener/Harbor/test/benchmarks
 cpu: Apple M4
+BenchmarkOrderedBusFanOut/subscribers=1-10 	   96650	      1237 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=1-10 	   96787	      1201 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=1-10 	  110350	      1095 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=1-10 	  112669	      1061 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=1-10 	  112137	      1048 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=1-10 	  114553	      1064 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=8-10 	   54886	      2189 ns/op	    1432 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=8-10 	   53564	      2138 ns/op	    1432 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=8-10 	   54934	      2084 ns/op	    1432 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=8-10 	   57841	      2071 ns/op	    1432 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=8-10 	   57415	      2096 ns/op	    1432 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=8-10 	   57728	      2088 ns/op	    1432 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=16-10          	   36399	      3269 ns/op	    1496 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=16-10          	   35480	      3238 ns/op	    1496 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=16-10          	   36294	      3324 ns/op	    1496 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=16-10          	   36063	      3278 ns/op	    1496 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=16-10          	   37135	      3248 ns/op	    1496 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOut/subscribers=16-10          	   35748	      3315 ns/op	    1496 B/op	      18 allocs/op
+BenchmarkOrderedBusFanOutCrossTenant-10              	  108292	      1130 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOutCrossTenant-10              	  105777	      1061 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOutCrossTenant-10              	  113841	      1109 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOutCrossTenant-10              	  104658	      1088 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOutCrossTenant-10              	  106521	      1106 ns/op	    1368 B/op	      17 allocs/op
+BenchmarkOrderedBusFanOutCrossTenant-10              	  103077	      1063 ns/op	    1368 B/op	      17 allocs/op
 BenchmarkBusFanOut/subscribers=1-10      	  490602	       226.8 ns/op	       0 B/op	       0 allocs/op
 BenchmarkBusFanOut/subscribers=1-10      	  501400	       241.3 ns/op	       0 B/op	       0 allocs/op
 BenchmarkBusFanOut/subscribers=1-10      	  548623	       236.0 ns/op	       0 B/op	       0 allocs/op
