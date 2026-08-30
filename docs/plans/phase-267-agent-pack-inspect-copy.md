@@ -315,7 +315,30 @@ merged as `eabdbb6798a49345e566e224188588ab83b383e4`. Exact main CI run
 successfully. The annotated tag object
 `bbf3769accd938f79b22b157a660842ca5dde1dd` peels to the cleanup commit, the
 release published 13 assets, and public module provenance resolves v1.31.1 to
-that same commit.
+that same commit. PR #768 then preserved the canonical empty-composition hash
+as the internal target CAS while retaining direct blank, malformed, and stale
+expectation denial. It merged as
+`b5605f7536a7c7227d1b69c75404ef1d2bf7112c`; exact PR-head CI run
+`33314472142` completed successfully. The annotated v1.31.2 tag object
+`63d044d651a3682271c5b18379bda5e12865bfa6` peels to that merge commit;
+release workflow `33318313606` published 13 assets, and public module
+provenance resolves `refs/tags/v1.31.2` to the same commit. Post-tag test-only
+PTY reader-drain cleanup PR #769 subsequently merged as
+`71653f00927810e0b2dd052231c3daaadbd7501a` and remains outside the tagged
+v1.31.2 code.
+
+PR #770 then corrected run-start resolution of copied operator-pack bodies:
+explicit admin-pinned names may resolve from the selected agent's validated
+immutable operator tier, while genuinely missing bodies still fail closed and
+required-tool metadata remains non-authorizing. It merged as
+`b836d0649327a6879cf6b3866d7cba584410e6d7`. Every independent code,
+platform, conformance, frontend, and browser gate on PR-head CI run
+`33320554635` completed successfully; the explicit owner override covered only
+the lingering full-preflight/Phase-231 path and does not represent it as green.
+The annotated v1.31.3 tag object
+`791a3308d961afae0610465bf4b34d6e956b4f7d` peels to that merge commit;
+release workflow `33321563993` published 13 assets, and public module
+provenance resolves `refs/tags/v1.31.3` to the same commit.
 
 ## Files added or changed
 
@@ -497,4 +520,10 @@ smoke. Exact post-merge hosted CI, full preflight, the annotated v1.31.0 tag,
 and its 13-asset release are complete. Local preflight in the implementation
 checkout, downstream deployment, and downstream acceptance remain unclaimed.
 The v1.31.1 correction adds explicit nil-versus-empty wire coverage and real
-BuildMux integration for both shipped state drivers.
+BuildMux integration for both shipped state drivers. The v1.31.2 correction
+adds first-copy-into-empty-target, byte-identical replay, stale-CAS, blank, and
+malformed-hash coverage through the real BuildMux without changing Protocol
+shape or migration posture. The v1.31.3 correction adds real in-memory and
+SQLite copy-to-run coverage, including boot-source copy, run-start skill
+lookup, and proof that copied `required_tools` metadata grants no visibility or
+invocation authority.
