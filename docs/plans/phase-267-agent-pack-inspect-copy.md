@@ -309,8 +309,13 @@ workflow `33299904384` succeeded with 13 published assets. Downstream runtime
 deployment and acceptance are not claimed. PR #765 subsequently corrected
 explicit-empty reconciliation at both Protocol and internal Service.Copy wire
 seams while keeping omitted or `null` selections invalid. It merged as
-`8bc070c1dbc144939f4b8980f5ef74c59bff0a07` and remains Unreleased at this
-cleanup head.
+`8bc070c1dbc144939f4b8980f5ef74c59bff0a07`; release-hygiene PR #766 then
+merged as `eabdbb6798a49345e566e224188588ab83b383e4`. Exact main CI run
+`33308171578` and v1.31.1 release workflow `33311306845` completed
+successfully. The annotated tag object
+`bbf3769accd938f79b22b157a660842ca5dde1dd` peels to the cleanup commit, the
+release published 13 assets, and public module provenance resolves v1.31.1 to
+that same commit.
 
 ## Files added or changed
 
@@ -491,6 +496,5 @@ Console type-check, lint, and regression coverage; and the Phase 267 static
 smoke. Exact post-merge hosted CI, full preflight, the annotated v1.31.0 tag,
 and its 13-asset release are complete. Local preflight in the implementation
 checkout, downstream deployment, and downstream acceptance remain unclaimed.
-The current main correction adds explicit nil-versus-empty wire coverage and
-real BuildMux integration for both shipped state drivers; it remains
-Unreleased at this cleanup head.
+The v1.31.1 correction adds explicit nil-versus-empty wire coverage and real
+BuildMux integration for both shipped state drivers.

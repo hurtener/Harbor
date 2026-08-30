@@ -15130,8 +15130,8 @@ D-452, Phase 266.
 **Date:** 2026-08-29
 
 **Status:** Shipped in Harbor v1.31.0; explicit-empty reconciliation corrected
-on current main after that release. Downstream/runtime deployment and
-acceptance remain pending.
+in Harbor v1.31.1. Downstream/runtime deployment and acceptance remain
+pending.
 
 Harbor adds two additive, capability-discovered admin methods:
 `agent_config.agent_packs.inspect` at
@@ -15205,5 +15205,11 @@ are updated in this post-tag follow-up. PR #765 subsequently corrected the
 Protocol and internal wire seams so an explicit empty `pack_ids` array
 preserves the reconciliation operation while omitted or `null` selections
 remain invalid. That correction merged as
-`8bc070c1dbc144939f4b8980f5ef74c59bff0a07` and remains Unreleased at this
-cleanup head. Downstream deployment and acceptance remain unclaimed.
+`8bc070c1dbc144939f4b8980f5ef74c59bff0a07`. Release-hygiene PR #766 merged as
+`eabdbb6798a49345e566e224188588ab83b383e4`; exact main CI run `33308171578`
+and v1.31.1 release workflow `33311306845` completed successfully. The
+annotated tag object `bbf3769accd938f79b22b157a660842ca5dde1dd` peels to
+that cleanup commit, the release published 13 assets, and public module
+provenance resolves the same tag and commit. The scaffold fallback and goldens
+are updated to v1.31.1 in this follow-up. Downstream deployment and acceptance
+remain unclaimed.

@@ -16,7 +16,7 @@ A Harbor agent project scaffolded from the `minimal-react` template.
    `llm.model_profiles.<model>` entry.
 
 2. **Fetch the dependencies.** `go.mod` already requires
-   `github.com/hurtener/Harbor v1.31.0` — the version
+   `github.com/hurtener/Harbor v1.31.1` — the version
    of the `harbor` binary that scaffolded this project — so it resolves
    straight from the module proxy:
 
