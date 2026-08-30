@@ -128,6 +128,16 @@ run/type predicates. `Admin: true` remains widened fan-in even when identity
 fields are present. All subscription lifecycle operations update the same
 indexed membership.
 
+## Release evidence (2026-08-30)
+
+Implementation PR #764 merged as
+`f6d87b27d8381ed4438e74f75348343729294c8e`. Exact post-merge main CI run
+`33297306154` completed successfully, including both Go platforms, the
+performance gate, leak/isolation/chaos conformance, and full preflight. The
+annotated `v1.31.0` tag object `dc009bb544ac1381ff6fa23b3e7aa867685adb27`
+peels to that commit; release workflow `33299904384` succeeded with 13
+published assets. Downstream runtime deployment and acceptance are not claimed.
+
 ## Acceptance criteria
 
 - [x] Both buses use exact-identity plus admin candidate buckets; unrelated

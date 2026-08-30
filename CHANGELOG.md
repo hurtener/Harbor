@@ -26,6 +26,8 @@ Two versions move independently in Harbor (RFC §5.3):
   The empty selection still requires the same admin scope, signed reach,
   source/target composition CAS, idempotency key, and atomic target revision.
 
+## [1.31.0] — 2026-08-30
+
 ### Performance
 
 - EventBus fan-out in the in-memory and durable drivers now selects an exact
@@ -33,8 +35,6 @@ Two versions move independently in Harbor (RFC §5.3):
   `Filter.Matches` check. Subscriber lifecycle indexes stay synchronized with
   Subscribe, Cancel, and Close; EventBus, Protocol, SSE, payload, ordering,
   drop-notice, fence, and cancellation contracts are unchanged (D-453).
-
-## [1.31.0] — 2026-08-29
 
 ### Changed
 
@@ -66,13 +66,23 @@ Two versions move independently in Harbor (RFC §5.3):
   browser reconnect, non-durable completion chunks, Console wire types, and
   Harbor Protocol `0.1.0` remain unchanged.
 
-### Release candidate evidence
+### Release evidence
 
-- This candidate records the ordered event-publication and agent-pack
-  inspect/copy implementations, plus local integration and benchmark gates.
-  Hosted CI, tag/release assets, module provenance,
-  checksums/attestations, deployment, and downstream acceptance are not
-  claimed.
+- Implementation PR #764 merged as
+  `f6d87b27d8381ed4438e74f75348343729294c8e`; exact post-merge main CI run
+  `33297306154` completed successfully, including both Go platforms,
+  PostgreSQL/S3 conformance, frontend/Playwright, and full preflight. The
+  annotated `v1.31.0` tag object is
+  `dc009bb544ac1381ff6fa23b3e7aa867685adb27` and peels to that commit. Release
+  workflow `33299904384` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.0)
+  with aggregate checksum digest
+  `a38e277d6d005cd2eee384b9bfadc2b15136565267a3a1690fe6b58fd4148ae6`.
+  Public module provenance records
+  `Sum=h1:LGz8YBySFM93M39lLv7WluglAzisMUwMjkkWzLWcW8U=`,
+  `GoModSum=h1:fpxHYfJP3V1QbmKZH/t5XMiol5o1cJ0stHoNBl7kT8M=`,
+  `Origin.Hash=f6d87b27d8381ed4438e74f75348343729294c8e`, and
+  `Origin.Ref=refs/tags/v1.31.0`. Downstream deployment and acceptance remain
+  separate gates and are not claimed here.
 
 ## [1.30.13] — 2026-08-29
 
@@ -5318,7 +5328,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.30.13...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.0...HEAD
+[1.31.0]: https://github.com/hurtener/Harbor/compare/v1.30.13...v1.31.0
 [1.30.13]: https://github.com/hurtener/Harbor/compare/v1.30.12...v1.30.13
 [1.30.12]: https://github.com/hurtener/Harbor/compare/v1.30.11...v1.30.12
 [1.30.7]: https://github.com/hurtener/Harbor/compare/v1.30.6...v1.30.7
