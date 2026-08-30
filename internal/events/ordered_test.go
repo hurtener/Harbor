@@ -11,6 +11,8 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
+type orderedContextKey string
+
 func TestOrderedQueue_FifoBatchAndFlushBarrier(t *testing.T) {
 	t.Parallel()
 	var (
@@ -245,9 +247,9 @@ func TestOrderedQueue_DerivedContextsSameSessionRemainFifo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOrderedQueue: %v", err)
 	}
-	ctxA := context.WithValue(context.Background(), "derived", "a")
-	ctxB := context.WithValue(context.Background(), "derived", "b")
-	ctxC := context.WithValue(context.Background(), "derived", "c")
+	ctxA := context.WithValue(context.Background(), orderedContextKey("derived"), "a")
+	ctxB := context.WithValue(context.Background(), orderedContextKey("derived"), "b")
+	ctxC := context.WithValue(context.Background(), orderedContextKey("derived"), "c")
 	first := events.Event{Type: events.EventTypeRuntimeWarning, Identity: identity}
 	second := events.Event{Type: events.EventTypeRuntimeError, Identity: identity}
 	third := events.Event{Type: events.EventTypeRuntimeWarning, Identity: identity}

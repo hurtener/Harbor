@@ -580,7 +580,7 @@ func TestAgentPackService_ConcurrentInspectReuse(t *testing.T) {
 	errs := make(chan error, callers)
 	var group sync.WaitGroup
 	group.Add(callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			defer group.Done()
 			view, err := service.InspectEffective(ctx, "source")
@@ -626,7 +626,7 @@ func TestAgentPackService_ConcurrentInspectCopyReuse(t *testing.T) {
 
 	const callers = 128
 	scenarios := make([]scenario, 0, callers)
-	for i := 0; i < callers; i++ {
+	for i := range callers {
 		id := identity.Identity{
 			TenantID:  fmt.Sprintf("tenant-concurrent-%03d", i),
 			UserID:    fmt.Sprintf("operator-%03d", i),
@@ -672,14 +672,13 @@ func TestAgentPackService_ConcurrentInspectCopyReuse(t *testing.T) {
 	var group sync.WaitGroup
 	group.Add(callers)
 	for _, sc := range scenarios {
-		sc := sc
 		go func() {
 			defer group.Done()
 			if sc.cancelled {
 				cancelled, cancel := context.WithCancel(sc.ctx)
 				cancel()
 				if _, err := service.CopySelected(cancelled, sc.request); !errors.Is(err, context.Canceled) {
-					errs <- fmt.Errorf("cancelled copy error = %v, want context.Canceled", err)
+					errs <- fmt.Errorf("cancelled copy error = %w, want context.Canceled", err)
 					return
 				}
 				view, err := service.InspectEffective(sc.ctx, sc.targetID)

@@ -59,7 +59,7 @@ func BenchmarkPhase266FanOutIdentityIsolation(b *testing.B) {
 			}
 			others := make([]channelRef, 0, subscriberCount-1)
 			var targetCh <-chan events.Event
-			for i := 0; i < subscriberCount; i++ {
+			for i := range subscriberCount {
 				id := identity.Quadruple{Identity: identity.Identity{
 					TenantID:  fmt.Sprintf("phase266-tenant-%d", i),
 					UserID:    fmt.Sprintf("phase266-user-%d", i),

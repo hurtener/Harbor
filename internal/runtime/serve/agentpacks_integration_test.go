@@ -59,7 +59,6 @@ func TestBuildMux_AgentPacks_RealStateStoreMatrix(t *testing.T) {
 		}},
 	}
 	for _, driver := range drivers {
-		driver := driver
 		t.Run(driver.name, func(t *testing.T) {
 			t.Parallel()
 			phase267RunAgentPackDriver(t, driver.name, driver.cfg(t))
@@ -128,7 +127,6 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 		{name: "tool-not-granted", authScope: "phase267:tool:secret", invoked: &deniedInvocations},
 		{name: "tool-granted", authScope: "phase267:tool:granted", invoked: &grantedInvocations},
 	} {
-		fixture := fixture
 		if err := in.Catalog.Register(tools.ToolDescriptor{
 			Tool: tools.Tool{
 				Name:        fixture.name,

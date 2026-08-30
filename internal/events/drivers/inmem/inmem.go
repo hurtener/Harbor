@@ -638,51 +638,6 @@ func sameBatchSession(batch []events.Event) bool {
 	}
 	return true
 }
-func (b *bus) publishDirect(ctx context.Context, ev events.Event) error {
-	if b.closed.Load() {
-		return events.ErrBusClosed
-	}
-	if err := events.ValidateEvent(ev); err != nil {
-		return err
-	}
-
-	// Fenced-session drop. The session was erased; its events have no
-	// history to land in. Dropping is the CORRECT outcome, logged loudly so
-	// it is observable (CLAUDE.md §13), not silent degradation. The append
-	// guard in assignSeqAndStore closes the window where Fence lands between
-	// this check and the ring append.
-	if b.isFenced(ev.Identity) {
-		b.logFencedDrop(ctx, ev)
-		return nil
-	}
-
-	// Redaction: skip for SafePayload, otherwise run through the
-	// audit redactor. On redaction error, emit a sibling
-	// audit.redaction_failed event and return the wrapped error.
-	payload := ev.Payload
-	if _, safe := payload.(events.SafePayload); !safe {
-		redacted, err := b.redactor.Redact(ctx, payload)
-		if err != nil {
-			b.emitRedactionFailure(ctx, ev, err)
-			return fmt.Errorf("events: publish redaction failed: %w", err)
-		}
-		payload = wrapRedacted(redacted)
-	}
-	ev.Payload = payload
-
-	if ev.OccurredAt.IsZero() {
-		ev.OccurredAt = b.clock.Now()
-	}
-	b.assignSeqAndStore(&ev)
-
-	// Wake projection watchers (best-effort, non-blocking — a projector
-	// can never delay or fail the publish path). Only after the event was
-	// accepted and retained; a redaction failure never reaches here.
-	b.notifyProjectionWatermark(ev)
-
-	b.fanOut(ev, false)
-	return nil
-}
 
 // PublishLive validates, redacts, and bounded-fan-outs a present-tense event.
 // It does not assign a sequence, append to the replay ring, or notify

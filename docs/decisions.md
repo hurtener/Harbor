@@ -15094,6 +15094,14 @@ result, so they are barriers behind prior accepted items. Successful
 Orderly `Close(ctx)` drains and joins within deadline. Queue-full/closed
 admission fails explicitly and claims no acceptance.
 
+This barrier changes the operation measured by D-136's original
+`BenchmarkBusFanOut` names: synchronous publication now includes ordered FIFO
+handoff and completion, rather than only direct fan-out. The benchmarks are
+therefore renamed `BenchmarkOrderedBusFanOut*` in this phase to establish an
+explicit new baseline for the new contract; the 1K/10K indexed fan-out
+benchmarks continue to guard cardinality scaling. This is a semantic baseline
+reset, not a claim that the ordered barrier has zero fixed cost.
+
 Async acceptance is not a durable receipt. Abrupt process loss before commit
 may lose accepted telemetry. No outbox, WAL, retry daemon, recovery synthesis,
 or exactly-once claim hides that best-effort boundary. It applies only to the

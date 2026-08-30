@@ -408,7 +408,8 @@ func TestAgentPacksSurface_MapsDomainErrorsWithoutLeakingDetails(t *testing.T) {
 				Port:          port,
 				AgentResolver: agentPacksTestResolver{},
 				ClassifyError: func(err error) protocol.AgentPacksErrorCode {
-					if coded, ok := err.(codedPackError); ok {
+					var coded codedPackError
+					if errors.As(err, &coded) {
 						return coded.code
 					}
 					return ""
@@ -440,8 +441,7 @@ func TestAgentPacksSurface_ConcurrentReuse_Isolated(t *testing.T) {
 	const n = 120
 	var wg sync.WaitGroup
 	errCh := make(chan error, n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

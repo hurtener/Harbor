@@ -101,10 +101,8 @@ func subscribeIndexed(t *testing.T, bus events.EventBus, id identity.Quadruple) 
 // Publish returns.
 func TestFanOut_IdentityIndex_1KAnd10K(t *testing.T) {
 	for _, driver := range []string{"inmem", "durable"} {
-		driver := driver
 		t.Run(driver, func(t *testing.T) {
 			for _, subscriberCount := range []int{1_000, 10_000} {
-				subscriberCount := subscriberCount
 				t.Run(fmt.Sprintf("subscribers=%d", subscriberCount), func(t *testing.T) {
 					bus := newIndexedFanoutBus(t, driver)
 					subs := make([]events.Subscription, subscriberCount)
@@ -171,7 +169,6 @@ func TestFanOut_IdentityIndex_1KAnd10K(t *testing.T) {
 // exact identity subscriber still honors Run and Types through Filter.Matches.
 func TestFanOut_IdentityIndex_PreservesAdminAndFinalFilters(t *testing.T) {
 	for _, driver := range []string{"inmem", "durable"} {
-		driver := driver
 		t.Run(driver, func(t *testing.T) {
 			bus := newIndexedFanoutBus(t, driver)
 			id := indexedFanoutIdentity(42)
@@ -247,7 +244,6 @@ func TestFanOut_IdentityIndex_PreservesAdminAndFinalFilters(t *testing.T) {
 // reusable-artifact race coverage for this new fan-out path.
 func TestFanOut_IdentityIndex_ConcurrentReuse(t *testing.T) {
 	for _, driver := range []string{"inmem", "durable"} {
-		driver := driver
 		t.Run(driver, func(t *testing.T) {
 			bus := newIndexedFanoutBus(t, driver)
 			const workers = 128
@@ -264,11 +260,11 @@ func TestFanOut_IdentityIndex_ConcurrentReuse(t *testing.T) {
 						Session: id.SessionID,
 					})
 					if err != nil {
-						errs <- fmt.Errorf("worker %d Subscribe: %v", i, err)
+						errs <- fmt.Errorf("worker %d Subscribe: %w", i, err)
 						return
 					}
 					if err := bus.Publish(context.Background(), indexedFanoutEvent(id, events.EventTypeRuntimeWarning)); err != nil {
-						errs <- fmt.Errorf("worker %d Publish: %v", i, err)
+						errs <- fmt.Errorf("worker %d Publish: %w", i, err)
 						sub.Cancel()
 						return
 					}
@@ -298,7 +294,6 @@ func TestFanOut_IdentityIndex_ConcurrentReuse(t *testing.T) {
 // error rather than racing through a scan-before-insert gap.
 func TestFanOut_IdentityIndex_ConcurrentSubscribeCap(t *testing.T) {
 	for _, driver := range []string{"inmem", "durable"} {
-		driver := driver
 		t.Run(driver, func(t *testing.T) {
 			bus := newIndexedFanoutBus(t, driver)
 			id := indexedFanoutIdentity(9001)

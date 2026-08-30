@@ -116,6 +116,12 @@ payload. `Publish` and `PublishBatch` enter the same FIFO and wait, making
 either a barrier for earlier accepts. A failed barrier remains loud and
 invents no terminal state.
 
+Because that FIFO handoff and completion barrier is a different operation from
+the former direct-fan-out `Publish`, this phase renames the D-136 small-fan-out
+benchmarks to `BenchmarkOrderedBusFanOut*` and establishes a reviewed semantic
+baseline reset. The separate 1K/10K mostly-nonmatching benchmarks retain the
+identity-index cardinality guard.
+
 Exact non-admin subscriptions are keyed by full identity triple. Publication
 visits that bucket and the distinct admin bucket, then applies unchanged
 run/type predicates. `Admin: true` remains widened fan-in even when identity
