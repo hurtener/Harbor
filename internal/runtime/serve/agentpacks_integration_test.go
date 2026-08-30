@@ -103,7 +103,9 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	targetRevision := phase267SetAgentRevision(t, registry, id, targetID, agentcfg.ConfigPayload{
 		AgentPacks: []skills.AgentPackItem{keep},
 	})
-	phase267SetAgentRevision(t, registry, id, emptyTargetID, agentcfg.ConfigPayload{})
+	phase267SetAgentRevision(t, registry, id, emptyTargetID, agentcfg.ConfigPayload{
+		Skills: &agentcfg.SkillsSelection{Names: []string{"alpha", "beta"}},
+	})
 
 	currentResolver := NewAgentResolverAdapter(registry, "")
 	in := deps.in
@@ -287,6 +289,42 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 		}
 		if afterDenied := inspect(emptyTargetID, adminReach()); afterDenied.CompositionHash != emptyTargetAfter.CompositionHash {
 			t.Fatalf("denied empty-target requests changed target: before=%+v after=%+v", emptyTargetAfter, afterDenied)
+		}
+
+		// The copied bodies must immediately back the target's run-start skill
+		// snapshot. They live in the target's active AgentPacks revision, not in
+		// the base SkillStore, while Skills pins their names. This is the exact
+		// derived-Agent shape that regressed live in v1.31.2.
+		runQ := identity.Quadruple{Identity: id, RunID: "phase267-copied-run-" + driverName}
+		runDriver, _ := newRunSnapshotDriver(t, registry, skillStore, store)
+		snapshot, ok, snapshotErr := runDriver.captureRunSkillSnapshot(t.Context(), emptyTargetID, runQ, nil)
+		if snapshotErr != nil || !ok {
+			t.Fatalf("capture copied target snapshot: ok=%t err=%v", ok, snapshotErr)
+		}
+		reader, resolveErr := skills.ResolveSkillReader(withRunSnapshot(t, runQ, snapshot), runQ, skillStore)
+		if resolveErr != nil {
+			t.Fatalf("resolve copied target reader: %v", resolveErr)
+		}
+		resolvedAlpha, resolveErr := reader.Get(t.Context(), runQ, "alpha")
+		if resolveErr != nil || len(resolvedAlpha.Steps) != 1 || resolvedAlpha.Steps[0] != "alpha-body" {
+			t.Fatalf("resolved copied alpha = (%+v, %v)", resolvedAlpha, resolveErr)
+		}
+
+		// Execute the production skill_get handler against the immutable target
+		// snapshot with no allowed tools. The unrestricted copied beta body is
+		// returned, while alpha's copied RequiredTools metadata cannot grant or
+		// expose tool-not-granted.
+		getOut, getErr := skilltools.GetHandler(withRunSnapshot(t, runQ, snapshot), skillStore, deps.in.Bus, skilltools.GetArgs{
+			Names: []string{"alpha", "beta"}, MaxTokens: 4096,
+		})
+		if getErr != nil {
+			t.Fatalf("skill_get copied target: %v", getErr)
+		}
+		if phase267HasSkillValue(getOut.Skills, "alpha") || !phase267HasSkillValue(getOut.Skills, "beta") {
+			t.Fatalf("copied target capability projection = %+v", getOut.Skills)
+		}
+		if deniedInvocations.Load() != 0 {
+			t.Fatalf("copied RequiredTools metadata invoked ungranted tool %d times", deniedInvocations.Load())
 		}
 	}
 
