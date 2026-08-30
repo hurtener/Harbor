@@ -99,7 +99,9 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # CodeAgentRetirementConflict), and the HA-57 same-run step-tranche surface's
 # CodeRestartUnavailable (a persisted tranche pause with no live in-process run
 # loop capable of exact restart redrive — the run fails closed rather than
-# pretending to continue as a new task, D-417). Pin the EXACT closed set by
+# pretending to continue as a new task, D-417), plus the same-runtime agent-pack
+# copy surface's collision and idempotency-conflict outcomes (D-456). Pin the
+# EXACT closed set by
 # identifier, not a raw declaration count: a count alone accepts a missing old
 # code paired with an unrelated replacement.
 CANONICAL_ERROR_CODES=(
@@ -118,6 +120,8 @@ CANONICAL_ERROR_CODES=(
     CodeSessionRunning
     CodeSessionErased
     CodeRevisionConflict
+    CodeAgentPackCopyConflict
+    CodeAgentPackCopyIdempotencyConflict
     CodeSessionSkillCutoverPending
     CodeSessionSkillReadUnstable
     CodeAgentRetired

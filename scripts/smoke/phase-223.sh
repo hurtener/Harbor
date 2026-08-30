@@ -185,8 +185,8 @@ fi
 # 6. The classifier's NOT-SHIPPED vocabulary covers every non-Shipped status
 #    word the master plan actually uses. preflight once knew only Pending /
 #    Post-V1 / Deferred and defaulted everything else to Shipped, so `Ready`,
-#    `Cut`, `Revisit`, `Superseded`, `Reverted` and `Deprecated` — 13 rows —
-#    all classified as shipped.
+#    `Cut`, `Revisit`, `Superseded`, `Reverted`, `Deprecated`, `Candidate`, and
+#    `Planned` all classified as shipped.
 #
 #    Computed FROM the master plan, not hard-coded, so a new status word
 #    introduced without teaching the classifier trips this guard.
@@ -228,6 +228,18 @@ EOF
         else
             ok 'phase 223: every non-Shipped master-plan status word is named by phase_status_arm'
         fi
+        # Candidate/Planned are the active release-staging words. Pin their
+        # actual arm outcome, not merely their presence somewhere in the
+        # function body, so either one can never drift back to strict-default
+        # Shipped classification while its master-plan row remains unshipped.
+        for status_word in Candidate Planned; do
+            lower_word="$(printf '%s' "${status_word}" | tr '[:upper:]' '[:lower:]')"
+            if printf '%s\n' "${ARM_BODY}" | grep -qE "^[[:space:]]*${status_word}\\*\\|${lower_word}\\*\\)[[:space:]]+printf 'not-shipped'"; then
+                ok "phase 223: ${status_word} status explicitly classifies as not-shipped"
+            else
+                fail "phase 223: ${status_word} status does not explicitly classify as not-shipped"
+            fi
+        done
     fi
 else
     # No `else` here meant a missing master plan or a missing preflight.sh

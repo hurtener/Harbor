@@ -59,8 +59,9 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Release candidate evidence
 
-- This candidate records the Phase 266 implementation and local integration
-  and benchmark gates. Hosted CI, tag/release assets, module provenance,
+- This candidate records the ordered event-publication and agent-pack
+  inspect/copy implementations, plus local integration and benchmark gates.
+  Hosted CI, tag/release assets, module provenance,
   checksums/attestations, deployment, and downstream acceptance are not
   claimed.
 
