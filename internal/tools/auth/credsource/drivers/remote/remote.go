@@ -316,7 +316,7 @@ func (s *source) runFetch(callerCtx context.Context, call *fetchCall) {
 	// Audit the actual fetch before caching (mirror the tokenexchange
 	// posture: an emit failure fails the operation so the fetch is not
 	// silently served without its audit trail).
-	if emitErr := s.emitFetched(callerCtx, cred, formatVersion); emitErr != nil {
+	if emitErr := s.emitFetched(fetchCtx, cred, formatVersion); emitErr != nil {
 		call.err = fmt.Errorf("credsource/remote: provider %q: emit tool.provider_credential_fetched: %w", s.providerName, emitErr)
 		return
 	}
