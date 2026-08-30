@@ -86,6 +86,46 @@ func TestAgentPackWireAdapter_CopyReturnsPluralOutcomes(t *testing.T) {
 	}
 }
 
+func TestAgentPackWireAdapter_CopyIntoEmptyTarget(t *testing.T) {
+	registry, store := newEffectivePackRegistry(t)
+	id := identityForWireTest(t)
+	ctx := effectivePackContext(t, id)
+	alpha := effectivePackItem("alpha", "source-body", "")
+	seedEffectivePack(t, registry, id, "source", []skills.AgentPackItem{alpha})
+	seedEffectivePack(t, registry, id, "target", nil)
+	service := newEffectivePackService(t, registry, store, nil)
+	source, err := service.Inspect(ctx, prototypes.AgentConfigAgentPacksInspectRequest{AgentID: "source"})
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+	target, err := service.Inspect(ctx, prototypes.AgentConfigAgentPacksInspectRequest{AgentID: "target"})
+	if err != nil {
+		t.Fatalf("inspect empty target: %v", err)
+	}
+	if len(target.EffectivePacks) != 0 || target.CompositionHash != emptyHash(emptyCompositionHashEnvelope) {
+		t.Fatalf("empty target projection = %+v", target)
+	}
+	req := prototypes.AgentConfigAgentPacksCopyRequest{
+		SourceAgentID:                 "source",
+		TargetAgentID:                 "target",
+		PackIDs:                       []string{"alpha"},
+		ExpectedSourceCompositionHash: source.CompositionHash,
+		ExpectedTargetCompositionHash: target.CompositionHash,
+		IdempotencyKey:                "wire-copy-empty-target",
+	}
+	first, err := service.Copy(ctx, req)
+	if err != nil {
+		t.Fatalf("copy into empty target: %v", err)
+	}
+	replay, err := service.Copy(ctx, req)
+	if err != nil {
+		t.Fatalf("replay copy into empty target: %v", err)
+	}
+	if first.CompositionHash != replay.CompositionHash || len(first.Outcomes) != 1 || first.Outcomes[0].Outcome != "copied" {
+		t.Fatalf("first/replay = %+v / %+v", first, replay)
+	}
+}
+
 func TestAgentPackWireAdapter_CopyRejectsNilPackIDs(t *testing.T) {
 	registry, store := newEffectivePackRegistry(t)
 	id := identityForWireTest(t)

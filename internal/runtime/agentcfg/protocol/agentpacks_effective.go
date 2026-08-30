@@ -53,6 +53,11 @@ const (
 	agentPackCopyKindPrefix = "agentcfg.agent_pack.copy."
 	agentPackCopySchema     = 1
 	maxAgentPackCopyIDs     = skills.MaxAgentPackItems
+	// expectedEmptyComposition is the runtime-internal representation of the
+	// Protocol's canonical SHA-256 empty-composition sentinel. It remains
+	// non-empty so direct callers cannot bypass the mandatory CAS requirement
+	// by supplying a blank expectation.
+	expectedEmptyComposition = "__expected_empty_agent_pack_composition__"
 )
 
 // AgentPackLayerItem is one full body from exactly one source layer. Keeping
@@ -474,10 +479,10 @@ func agentPackCopyKind(key string) string {
 }
 
 func checkPackCopyExpectations(req AgentPackCopyRequest, source, target AgentPackInspection) error {
-	if req.ExpectedSourceCompositionHash != "" && source.CompositionHash != req.ExpectedSourceCompositionHash {
+	if !matchesPackCompositionExpectation(req.ExpectedSourceCompositionHash, source.CompositionHash) {
 		return fmt.Errorf("%w: source expected %q, got %q", ErrAgentPackCopyExpectation, req.ExpectedSourceCompositionHash, source.CompositionHash)
 	}
-	if req.ExpectedTargetCompositionHash != "" && target.CompositionHash != req.ExpectedTargetCompositionHash {
+	if !matchesPackCompositionExpectation(req.ExpectedTargetCompositionHash, target.CompositionHash) {
 		return fmt.Errorf("%w: target expected %q, got %q", ErrAgentPackCopyExpectation, req.ExpectedTargetCompositionHash, target.CompositionHash)
 	}
 	if req.ExpectedTargetContentHash == agentcfg.ExpectNoActiveRevision {
@@ -488,6 +493,13 @@ func checkPackCopyExpectations(req AgentPackCopyRequest, source, target AgentPac
 		return fmt.Errorf("%w: target content expected %q, got %q", ErrAgentPackCopyExpectation, req.ExpectedTargetContentHash, target.ContentHash)
 	}
 	return nil
+}
+
+func matchesPackCompositionExpectation(expected, actual string) bool {
+	if expected == expectedEmptyComposition {
+		return actual == ""
+	}
+	return expected != "" && actual == expected
 }
 
 func samePackPayload(target AgentPackInspection, desired agentcfg.ConfigPayload) (bool, error) {

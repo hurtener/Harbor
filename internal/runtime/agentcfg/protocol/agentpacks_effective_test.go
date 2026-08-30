@@ -618,6 +618,38 @@ func TestAgentPackCopySelected_RejectsNilSelection(t *testing.T) {
 	}
 }
 
+func TestAgentPackCopySelected_RejectsBlankCompositionExpectations(t *testing.T) {
+	registry, store := newEffectivePackRegistry(t)
+	service := newEffectivePackService(t, registry, store, nil)
+	ctx := effectivePackContext(t, identity.Identity{TenantID: "tenant-a", UserID: "operator", SessionID: "session-a"})
+
+	tests := map[string]func(*AgentPackCopyRequest){
+		"source": func(req *AgentPackCopyRequest) {
+			req.ExpectedSourceCompositionHash = ""
+		},
+		"target": func(req *AgentPackCopyRequest) {
+			req.ExpectedTargetCompositionHash = ""
+		},
+	}
+	for name, blank := range tests {
+		t.Run(name, func(t *testing.T) {
+			req := AgentPackCopyRequest{
+				SourceAgentID:                 "source",
+				TargetAgentID:                 "target",
+				PackIDs:                       []string{"alpha"},
+				ExpectedSourceCompositionHash: "source-hash",
+				ExpectedTargetCompositionHash: "target-hash",
+				IdempotencyKey:                "blank-" + name + "-expectation",
+			}
+			blank(&req)
+			_, err := service.CopySelected(ctx, req)
+			if !errors.Is(err, ErrAgentPackCopyInvalid) {
+				t.Fatalf("blank %s expectation error = %v, want ErrAgentPackCopyInvalid", name, err)
+			}
+		})
+	}
+}
+
 // TestAgentPackService_ConcurrentInspectCopyReuse exercises the real shared
 // service rather than a recording port. Every invocation has its own full
 // identity and source/target pair, while the compiled Service and StateStore
