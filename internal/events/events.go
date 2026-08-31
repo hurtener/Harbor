@@ -513,6 +513,21 @@ type BatchPublisher interface {
 	PublishBatch(ctx context.Context, batch []Event) error
 }
 
+// PersistBatchPublisher is an additive EventBus capability for ordered,
+// persist-only event batches. Implementations validate/redact the batch,
+// assign one contiguous durable sequence range, retain it for replay (and
+// notify projection watermarks), but MUST NOT fan the events out to current
+// subscribers. It exists for events that were already delivered through the
+// LivePublisher lane and must not be delivered a second time when they become
+// durable.
+//
+// The batch is ordered exactly as supplied and is bounded by
+// DefaultPublishBatchSize. Callers that require the capability must use
+// PersistBatch; falling back to PublishBatch would duplicate live delivery.
+type PersistBatchPublisher interface {
+	PersistBatch(ctx context.Context, batch []Event) error
+}
+
 // AsyncPublisher is an additive EventBus capability for best-effort
 // observability. PublishAsync acknowledges only bounded queue admission; the
 // caller must treat ErrAsyncQueueFull as an explicit drop signal. Accepted
@@ -560,6 +575,17 @@ func PublishBatch(ctx context.Context, bus EventBus, batch []Event) error {
 		}
 	}
 	return nil
+}
+
+// PersistBatch routes an ordered persist-only batch through the additive
+// capability. Legacy EventBus implementations fail explicitly: using Publish
+// or PublishBatch here would either re-fan-out an already-live event or silently
+// change the delivery contract.
+func PersistBatch(ctx context.Context, bus EventBus, batch []Event) error {
+	if publisher, ok := bus.(PersistBatchPublisher); ok {
+		return publisher.PersistBatch(ctx, batch)
+	}
+	return fmt.Errorf("%w: EventBus does not implement PersistBatchPublisher", ErrPersistBatchUnsupported)
 }
 
 // PublishAsync uses best-effort asynchronous admission when available. A
@@ -950,6 +976,9 @@ var (
 	// not admit the event immediately. Callers may count or surface this loss;
 	// the lane never blocks an observability producer on store latency.
 	ErrAsyncQueueFull = errors.New("events: asynchronous publication queue is full")
+	// ErrPersistBatchUnsupported means a caller requested the additive
+	// persist-only lane from a legacy EventBus that cannot provide it.
+	ErrPersistBatchUnsupported = errors.New("events: persist-only batch capability is unavailable")
 )
 
 // ValidateEvent does structural validation: the EventType is in the

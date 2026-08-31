@@ -228,7 +228,7 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 			slog.Int("ring_buffer_size", b.ringCap))
 		// Best-effort mode persists nothing, so there is nothing to
 		// rehydrate — recovery is a durable-mode-only step (Non-goals).
-		ordered, err := events.NewOrderedQueue(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.reportAsyncFailure)
+		ordered, err := events.NewOrderedQueueWithPersist(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.commitPersistBatch, b.reportAsyncFailure)
 		if err != nil {
 			return nil, fmt.Errorf("durable: ordered publication queue: %w", err)
 		}
@@ -238,7 +238,7 @@ func New(ctx context.Context, cfg config.EventsConfig, r audit.Redactor, store s
 	if err := b.recoverNextSeq(ctx); err != nil {
 		return nil, err
 	}
-	ordered, err := events.NewOrderedQueue(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.reportAsyncFailure)
+	ordered, err := events.NewOrderedQueueWithPersist(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.commitPersistBatch, b.reportAsyncFailure)
 	if err != nil {
 		return nil, fmt.Errorf("durable: ordered publication queue: %w", err)
 	}
@@ -1031,6 +1031,39 @@ func (b *bus) PublishBatch(ctx context.Context, batch []events.Event) error {
 	return b.ordered.PublishBatchWithGenerationAndExpectation(ctx, prepared, generation, epochID)
 }
 
+// PersistBatch validates and admits an ordered batch onto the persist-only
+// lane. The commit stores and sequences the events but deliberately skips
+// subscriber fan-out because callers have already delivered them live.
+func (b *bus) PersistBatch(ctx context.Context, batch []events.Event) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("durable: persist batch is empty")
+	}
+	if len(batch) > events.DefaultPublishBatchSize {
+		return fmt.Errorf("durable: persist batch length %d exceeds max %d", len(batch), events.DefaultPublishBatchSize)
+	}
+	if !sameDurableBatchSession(batch) {
+		return fmt.Errorf("durable: persist batch must use one identity/session")
+	}
+	prepared := make([]events.Event, 0, len(batch))
+	for _, ev := range batch {
+		preparedEvent, accepted, err := b.preparePublish(ctx, ev)
+		if err != nil {
+			return err
+		}
+		if accepted {
+			prepared = append(prepared, preparedEvent)
+		}
+	}
+	if len(prepared) == 0 {
+		return nil
+	}
+	generation, epochID, err := b.generationForAdmission(ctx, prepared[0].Identity.Identity)
+	if err != nil {
+		return fmt.Errorf("durable: capture session erasure epoch: %w", err)
+	}
+	return b.ordered.PersistBatchWithGenerationAndExpectation(ctx, prepared, generation, epochID)
+}
+
 // PublishAsync admits a best-effort observability event without waiting for
 // StateStore latency. Admission reads only the process-local epoch cache; the
 // commit lane revalidates the shared epoch and may drop the first request on a
@@ -1117,6 +1150,34 @@ func (b *bus) commitBatch(ctx context.Context, batch []events.Event, generation 
 	for _, ev := range accepted {
 		b.notifyProjectionWatermark(ev)
 		b.fanOut(ev, false)
+	}
+	return nil
+}
+
+// commitPersistBatch is the ordered queue callback for events already sent on
+// the live lane. It shares sequence/store/watermark handling with the regular
+// commit, but intentionally never calls fanOut.
+func (b *bus) commitPersistBatch(ctx context.Context, batch []events.Event, generation uint64, expectedEventID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	accepted, err := b.sequenceAndStoreBatch(ctx, batch, generation, expectedEventID)
+	if errors.Is(err, errEventFenced) {
+		for _, ev := range batch {
+			b.logger.InfoContext(ctx, "durable: dropped persist-only event for erased (fenced) session",
+				slog.String("driver", "durable"),
+				slog.String("event_type", string(ev.Type)),
+				slog.String("tenant_id", ev.Identity.TenantID),
+				slog.String("user_id", ev.Identity.UserID),
+				slog.String("session_id", ev.Identity.SessionID))
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, ev := range accepted {
+		b.notifyProjectionWatermark(ev)
 	}
 	return nil
 }
@@ -2775,6 +2836,7 @@ func windowFromSnapshot(snapshot []events.Event, before uint64, limit int, f eve
 var (
 	_ events.EventBus                      = (*bus)(nil)
 	_ events.LivePublisher                 = (*bus)(nil)
+	_ events.PersistBatchPublisher         = (*bus)(nil)
 	_ events.Replayer                      = (*bus)(nil)
 	_ events.HistoryReplayer               = (*bus)(nil)
 	_ events.EventMetadataReplayer         = (*bus)(nil)

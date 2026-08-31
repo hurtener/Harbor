@@ -36,6 +36,7 @@ type QueueFailureHandler func(context.Context, []Event, error)
 // hard barriers.
 type OrderedQueue struct {
 	commit   BatchCommit
+	persist  BatchCommit
 	failure  QueueFailureHandler
 	capacity int
 	maxBatch int
@@ -61,11 +62,24 @@ type orderedRequest struct {
 	wait            chan error
 	barrier         bool
 	async           bool
+	persistOnly     bool
 }
 
 // NewOrderedQueue constructs a lazy queue. The worker starts on first
 // admission, so constructing an otherwise-unused bus does not leak a goroutine.
 func NewOrderedQueue(capacity, maxBatch int, commit BatchCommit, failure QueueFailureHandler) (*OrderedQueue, error) {
+	return newOrderedQueue(capacity, maxBatch, commit, nil, failure)
+}
+
+// NewOrderedQueueWithPersist constructs an OrderedQueue with an additional
+// persist-only commit callback. Persist-only requests share the same FIFO as
+// ordinary and asynchronous publications but are committed without the
+// subscriber fan-out that the regular callback owns.
+func NewOrderedQueueWithPersist(capacity, maxBatch int, commit, persist BatchCommit, failure QueueFailureHandler) (*OrderedQueue, error) {
+	return newOrderedQueue(capacity, maxBatch, commit, persist, failure)
+}
+
+func newOrderedQueue(capacity, maxBatch int, commit, persist BatchCommit, failure QueueFailureHandler) (*OrderedQueue, error) {
 	if capacity <= 0 {
 		return nil, fmt.Errorf("events: ordered queue capacity must be > 0")
 	}
@@ -78,6 +92,7 @@ func NewOrderedQueue(capacity, maxBatch int, commit BatchCommit, failure QueueFa
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &OrderedQueue{
 		commit:       commit,
+		persist:      persist,
 		failure:      failure,
 		capacity:     capacity,
 		maxBatch:     maxBatch,
@@ -96,33 +111,33 @@ func (q *OrderedQueue) Publish(ctx context.Context, ev Event) error {
 // PublishWithGeneration admits one event with an erasure generation captured
 // by the owning event bus and waits until its commit outcome is known.
 func (q *OrderedQueue) PublishWithGeneration(ctx context.Context, ev Event, generation uint64) error {
-	return q.enqueue(ctx, []Event{ev}, true, false, false, generation, "")
+	return q.enqueue(ctx, []Event{ev}, true, false, false, generation, "", false)
 }
 
 // PublishWithGenerationAndExpectation admits one event with an erasure
 // generation and an opaque durable generation token captured by the owning
 // event bus, then waits until its commit outcome is known.
 func (q *OrderedQueue) PublishWithGenerationAndExpectation(ctx context.Context, ev Event, generation uint64, expectedEventID string) error {
-	return q.enqueue(ctx, []Event{ev}, true, false, false, generation, expectedEventID)
+	return q.enqueue(ctx, []Event{ev}, true, false, false, generation, expectedEventID, false)
 }
 
 // PublishAsync acknowledges only immediate queue admission. Saturation is a
 // visible ErrAsyncQueueFull rather than hidden blocking or silent loss.
 func (q *OrderedQueue) PublishAsync(ctx context.Context, ev Event) error {
-	return q.enqueue(ctx, []Event{ev}, false, false, true, 0, "")
+	return q.enqueue(ctx, []Event{ev}, false, false, true, 0, "", false)
 }
 
 // PublishAsyncWithGeneration acknowledges immediate queue admission for one
 // event carrying an erasure generation captured by the owning event bus.
 func (q *OrderedQueue) PublishAsyncWithGeneration(ctx context.Context, ev Event, generation uint64) error {
-	return q.enqueue(ctx, []Event{ev}, false, false, true, generation, "")
+	return q.enqueue(ctx, []Event{ev}, false, false, true, generation, "", false)
 }
 
 // PublishAsyncWithGenerationAndExpectation acknowledges immediate queue
 // admission for one event carrying an erasure generation and an opaque
 // durable generation token captured by the owning event bus.
 func (q *OrderedQueue) PublishAsyncWithGenerationAndExpectation(ctx context.Context, ev Event, generation uint64, expectedEventID string) error {
-	return q.enqueue(ctx, []Event{ev}, false, false, true, generation, expectedEventID)
+	return q.enqueue(ctx, []Event{ev}, false, false, true, generation, expectedEventID, false)
 }
 
 // PublishBatch enqueues an explicitly atomic batch and waits for its commit.
@@ -135,7 +150,7 @@ func (q *OrderedQueue) PublishBatch(ctx context.Context, batch []Event) error {
 	if len(batch) > q.maxBatch {
 		return fmt.Errorf("events: ordered publish batch length %d exceeds max %d", len(batch), q.maxBatch)
 	}
-	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, 0, "")
+	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, 0, "", false)
 }
 
 // PublishBatchWithGeneration enqueues an explicitly atomic batch with an
@@ -148,7 +163,7 @@ func (q *OrderedQueue) PublishBatchWithGeneration(ctx context.Context, batch []E
 	if len(batch) > q.maxBatch {
 		return fmt.Errorf("events: ordered publish batch length %d exceeds max %d", len(batch), q.maxBatch)
 	}
-	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, generation, "")
+	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, generation, "", false)
 }
 
 // PublishBatchWithGenerationAndExpectation enqueues an explicitly atomic
@@ -162,13 +177,61 @@ func (q *OrderedQueue) PublishBatchWithGenerationAndExpectation(ctx context.Cont
 	if len(batch) > q.maxBatch {
 		return fmt.Errorf("events: ordered publish batch length %d exceeds max %d", len(batch), q.maxBatch)
 	}
-	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, generation, expectedEventID)
+	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, generation, expectedEventID, false)
+}
+
+// PersistBatch enqueues an explicitly ordered persist-only batch and waits for
+// its commit. The queue must have been constructed with a persist callback.
+// The batch is copied before admission so the caller can safely reuse its
+// backing slice after this method returns.
+func (q *OrderedQueue) PersistBatch(ctx context.Context, batch []Event) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("events: ordered persist batch is empty")
+	}
+	if len(batch) > q.maxBatch {
+		return fmt.Errorf("events: ordered persist batch length %d exceeds max %d", len(batch), q.maxBatch)
+	}
+	if q.persist == nil {
+		return fmt.Errorf("events: ordered queue persist callback is unavailable")
+	}
+	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, 0, "", true)
+}
+
+// PersistBatchWithGeneration enqueues an ordered persist-only batch with an
+// erasure generation captured by the owning event bus and waits for commit.
+func (q *OrderedQueue) PersistBatchWithGeneration(ctx context.Context, batch []Event, generation uint64) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("events: ordered persist batch is empty")
+	}
+	if len(batch) > q.maxBatch {
+		return fmt.Errorf("events: ordered persist batch length %d exceeds max %d", len(batch), q.maxBatch)
+	}
+	if q.persist == nil {
+		return fmt.Errorf("events: ordered queue persist callback is unavailable")
+	}
+	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, generation, "", true)
+}
+
+// PersistBatchWithGenerationAndExpectation enqueues an ordered persist-only
+// batch with an erasure generation and durable epoch token, then waits for its
+// commit.
+func (q *OrderedQueue) PersistBatchWithGenerationAndExpectation(ctx context.Context, batch []Event, generation uint64, expectedEventID string) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("events: ordered persist batch is empty")
+	}
+	if len(batch) > q.maxBatch {
+		return fmt.Errorf("events: ordered persist batch length %d exceeds max %d", len(batch), q.maxBatch)
+	}
+	if q.persist == nil {
+		return fmt.Errorf("events: ordered queue persist callback is unavailable")
+	}
+	return q.enqueue(ctx, append([]Event(nil), batch...), true, false, false, generation, expectedEventID, true)
 }
 
 // Flush places a barrier after every earlier accepted request. It returns the
 // first commit failure since the preceding barrier.
 func (q *OrderedQueue) Flush(ctx context.Context) error {
-	return q.enqueue(ctx, nil, true, true, false, 0, "")
+	return q.enqueue(ctx, nil, true, true, false, 0, "", false)
 }
 
 // Close atomically rejects new admissions and waits for all accepted requests.
@@ -201,14 +264,14 @@ func (q *OrderedQueue) Close(ctx context.Context) error {
 	}
 }
 
-func (q *OrderedQueue) enqueue(ctx context.Context, payload []Event, wait, barrier, async bool, generation uint64, expectedEventID string) error {
+func (q *OrderedQueue) enqueue(ctx context.Context, payload []Event, wait, barrier, async bool, generation uint64, expectedEventID string, persistOnly bool) error {
 	if ctx == nil {
 		return fmt.Errorf("events: ordered queue context is nil")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	request := orderedRequest{ctx: ctx, events: payload, generation: generation, expectedEventID: expectedEventID, barrier: barrier, async: async}
+	request := orderedRequest{ctx: ctx, events: payload, generation: generation, expectedEventID: expectedEventID, barrier: barrier, async: async, persistOnly: persistOnly}
 	if wait {
 		request.wait = make(chan error, 1)
 	}
@@ -293,7 +356,16 @@ func (q *OrderedQueue) run() {
 		}
 
 		workCtx, cancel := q.workContext(requests[0])
-		err := q.commit(workCtx, batch, requests[0].generation, requests[0].expectedEventID)
+		commit := q.commit
+		if requests[0].persistOnly {
+			commit = q.persist
+		}
+		var err error
+		if commit == nil {
+			err = fmt.Errorf("events: ordered queue persist callback is unavailable")
+		} else {
+			err = commit(workCtx, batch, requests[0].generation, requests[0].expectedEventID)
+		}
 		if err != nil && requests[0].async && q.failure != nil {
 			q.failure(workCtx, batch, err)
 		}

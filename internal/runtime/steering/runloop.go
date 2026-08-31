@@ -608,6 +608,26 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			rl.fireCompletionHook(runCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
 		}()
 	}
+	// The completion-chunk seal is registered LAST so LIFO defer ordering runs
+	// it before naming, completion-hook egress, and inbox retirement. This is
+	// the terminal boundary for the streaming lane: callbacks accepted before
+	// the seal are drained, while callbacks racing after it are rejected by the
+	// publisher before they can become live frames. A seal failure changes a
+	// would-be terminal result into a run error so the caller cannot mark the
+	// task complete while accepted chunks remain non-durable.
+	if spec.Base.SealCompletionChunks != nil {
+		defer func() {
+			if sealErr := spec.Base.SealCompletionChunks(runCtx); sealErr != nil {
+				fin = planner.Finish{}
+				sealErr = fmt.Errorf("steering: seal completion chunks at terminal boundary: %w", sealErr)
+				if err == nil {
+					err = sealErr
+				} else {
+					err = errors.Join(err, sealErr)
+				}
+			}
+		}()
+	}
 
 	// outstandingToken is the run's current pause Token, "" when the run
 	// is not paused. It is per-run loop state — it lives on this
@@ -984,6 +1004,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// this coordinate, while retries of this same step retain it.
 		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
+		if flush := rc.AfterPlannerStep; flush != nil {
+			if ferr := flush(plannerCtx); ferr != nil {
+				return planner.Finish{}, fmt.Errorf("steering: persist completion chunks after planner step %d: %w", step, ferr)
+			}
+		}
 		if nerr != nil {
 			// A native-path projector structural rejection — the planner
 			// consumed the LLM response but could not project it into an
