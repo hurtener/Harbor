@@ -332,6 +332,15 @@ type RunContext struct {
 	// closure on the stack, never on the shared planner artifact.
 	OnChunk func(delta string, done bool, kind ChunkKind)
 
+	// AfterPlannerStep is an optional runtime-owned barrier invoked once after
+	// each Planner.Next call returns, before the runloop handles that decision
+	// or advances terminal/lifecycle state. The streaming runtime uses it to
+	// persist the current step's buffered completion chunks in ordered batches.
+	// A returned error fails the run loudly; it must never be treated as a
+	// best-effort telemetry failure. The callback is per-run and may be nil for
+	// planners/runtimes without streaming persistence.
+	AfterPlannerStep func(context.Context) error
+
 	// DiscoveredTools is the per-run list of
 	// tool names the LLM discovered via meta-tools during this run.
 	// The React planner reads this to add discovered tools to

@@ -25,7 +25,10 @@ type envelopeValidatingBus struct {
 	rejected     int
 	publishCalls int
 	liveCalls    int
+	persistCalls int
+	persisted    []events.Event
 	fail         error
+	persistFail  error
 }
 
 func (b *envelopeValidatingBus) Publish(_ context.Context, ev events.Event) error {
@@ -40,6 +43,25 @@ func (b *envelopeValidatingBus) PublishLive(_ context.Context, ev events.Event) 
 	b.liveCalls++
 	b.mu.Unlock()
 	return b.record(ev)
+}
+
+func (b *envelopeValidatingBus) PersistBatch(_ context.Context, batch []events.Event) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.persistCalls++
+	if b.persistFail != nil {
+		return b.persistFail
+	}
+	base := len(b.persisted)
+	for i, ev := range batch {
+		if ev.Identity.TenantID == "" || ev.Identity.UserID == "" || ev.Identity.SessionID == "" {
+			b.rejected++
+			return fmt.Errorf("events: event identity missing one or more components: type=%s", ev.Type)
+		}
+		ev.Sequence = uint64(base + i + 1)
+		b.persisted = append(b.persisted, ev)
+	}
+	return nil
 }
 
 func (b *envelopeValidatingBus) record(ev events.Event) error {
@@ -83,6 +105,12 @@ func (b *envelopeValidatingBus) laneCounts() (publish, live int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.publishCalls, b.liveCalls
+}
+
+func (b *envelopeValidatingBus) persistSnapshot() (calls int, got []events.Event) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.persistCalls, append([]events.Event(nil), b.persisted...)
 }
 
 // legacyEventBus intentionally implements only the durable EventBus core.
@@ -281,5 +309,76 @@ func TestNewChunkPublisher_ConcurrentRuns_NoIdentityBleed(t *testing.T) {
 		if ev.Identity.RunID != wantRun {
 			t.Fatalf("cross-run identity bleed: task %q chunk carries RunID %q", payload.TaskID, ev.Identity.RunID)
 		}
+	}
+}
+
+func TestBufferedChunkPublisher_FlushesOrderedBatchesWithoutLiveDuplication(t *testing.T) {
+	b := &envelopeValidatingBus{}
+	q := chunkPublisherTestQuad("run-buffered")
+	p := NewBufferedChunkPublisherContext(context.Background(), b, q, "task-buffered", slog.Default())
+	const chunks = 33
+	for i := range chunks {
+		p.OnChunk(fmt.Sprintf("delta-%d", i), i == chunks-1, "content")
+	}
+
+	if publish, live := b.laneCounts(); publish != 0 || live != chunks {
+		t.Fatalf("before flush lanes = Publish:%d PublishLive:%d, want 0/%d", publish, live, chunks)
+	}
+	if calls, persisted := b.persistSnapshot(); calls != 0 || len(persisted) != 0 {
+		t.Fatalf("before flush persistence = calls:%d events:%d, want 0/0", calls, len(persisted))
+	}
+	if err := p.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if publish, live := b.laneCounts(); publish != 0 || live != chunks {
+		t.Fatalf("after flush lanes = Publish:%d PublishLive:%d, want 0/%d", publish, live, chunks)
+	}
+	calls, persisted := b.persistSnapshot()
+	if calls != 3 {
+		t.Fatalf("persist batch calls = %d, want 3 (16,16,1)", calls)
+	}
+	if len(persisted) != chunks {
+		t.Fatalf("persisted events = %d, want %d", len(persisted), chunks)
+	}
+	for i, ev := range persisted {
+		payload := ev.Payload.(CompletionChunkPayload)
+		if payload.Delta != fmt.Sprintf("delta-%d", i) || ev.Sequence != uint64(i+1) {
+			t.Fatalf("persisted[%d] = delta %q sequence %d, want delta-%d sequence %d", i, payload.Delta, ev.Sequence, i, i+1)
+		}
+	}
+}
+
+func TestBufferedChunkPublisher_FlushFailurePropagatesAndRetainsPending(t *testing.T) {
+	b := &envelopeValidatingBus{persistFail: errors.New("store unavailable")}
+	p := NewBufferedChunkPublisher(b, chunkPublisherTestQuad("run-failure"), "task-failure", slog.Default())
+	p.OnChunk("one", false, "content")
+	p.OnChunk("two", true, "reasoning")
+	if err := p.Flush(context.Background()); err == nil || !strings.Contains(err.Error(), "store unavailable") {
+		t.Fatalf("Flush error = %v, want propagated store unavailable", err)
+	}
+	if calls, persisted := b.persistSnapshot(); calls != 1 || len(persisted) != 0 {
+		t.Fatalf("failed flush persistence = calls:%d events:%d, want 1/0", calls, len(persisted))
+	}
+	b.mu.Lock()
+	b.persistFail = nil
+	b.mu.Unlock()
+	if err := p.Flush(context.Background()); err != nil {
+		t.Fatalf("retry Flush: %v", err)
+	}
+	if calls, persisted := b.persistSnapshot(); calls != 2 || len(persisted) != 2 {
+		t.Fatalf("retry persistence = calls:%d events:%d, want 2/2", calls, len(persisted))
+	}
+}
+
+func TestBufferedChunkPublisher_LegacyBusFailsAtFlush(t *testing.T) {
+	b := &legacyEventBus{}
+	p := NewBufferedChunkPublisher(b, chunkPublisherTestQuad("run-legacy-buffer"), "task-legacy-buffer", slog.Default())
+	p.OnChunk("delta", true, "content")
+	if err := p.Flush(context.Background()); !errors.Is(err, events.ErrPersistBatchUnsupported) {
+		t.Fatalf("Flush error = %v, want ErrPersistBatchUnsupported", err)
+	}
+	publish, captured := b.counts()
+	if publish != 0 || captured != 0 {
+		t.Fatalf("legacy bus calls = Publish:%d captured:%d, want 0/0", publish, captured)
 	}
 }

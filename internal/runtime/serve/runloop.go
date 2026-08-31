@@ -1720,7 +1720,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// bridges the constructor's string-typed kind (import direction:
 	// `planner` imports `llm`, so `llm` cannot name `planner.ChunkKind`).
 	// The driver-lifetime d.subCtx bounds every publish.
-	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
+	chunkPublisher := llm.NewBufferedChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
 		// The run-level structured-output streaming posture, carried to
 		// the per-task path: on a schema-constrained task, SUPPRESS
@@ -1737,10 +1737,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			if !done {
 				return
 			}
-			chunkPub("", done, string(kind))
+			chunkPublisher.OnChunk("", done, string(kind))
 			return
 		}
-		chunkPub(delta, done, string(kind))
+		chunkPublisher.OnChunk(delta, done, string(kind))
 	}
 
 	// pre-resolve operator-uploaded input
@@ -1899,7 +1899,8 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			Trajectory:        traj,            // runloop appends per step
 			Emit:              emit,            // planner-side telemetry
 			OnChunk:           onChunk,         // per-token streaming to bus
-			InputArtifacts:    inputArtifacts,  // first-turn multimodal inputs
+			AfterPlannerStep:  chunkPublisher.Flush,
+			InputArtifacts:    inputArtifacts, // first-turn multimodal inputs
 			DispositionPolicy: d.dispositionPolicy,
 			SessionArtifacts:  sessionArtifacts, // read-only cross-turn manifest
 			// the per-run token budget the runloop's

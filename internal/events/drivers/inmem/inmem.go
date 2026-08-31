@@ -150,7 +150,7 @@ func New(cfg config.EventsConfig, r audit.Redactor, opts ...Option) (events.Even
 		return nil, fmt.Errorf("inmem: async queue size must be > 0")
 	}
 	b.asyncSignal = events.NewAsyncAdmissionSignal(b.logger, events.DefaultAsyncAdmissionLogInterval)
-	ordered, err := events.NewOrderedQueue(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.reportAsyncFailure)
+	ordered, err := events.NewOrderedQueueWithPersist(b.asyncQueueSize, events.DefaultPublishBatchSize, b.commitBatch, b.commitPersistBatch, b.reportAsyncFailure)
 	if err != nil {
 		return nil, fmt.Errorf("inmem: ordered publication queue: %w", err)
 	}
@@ -519,6 +519,42 @@ func (b *bus) PublishBatch(ctx context.Context, batch []events.Event) error {
 	return b.ordered.PublishBatchWithGeneration(ctx, prepared, generation)
 }
 
+// PersistBatch validates and admits an ordered batch onto the persist-only
+// lane. The commit stores and sequences the events but deliberately skips
+// subscriber fan-out because callers have already delivered them live.
+func (b *bus) PersistBatch(ctx context.Context, batch []events.Event) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("inmem: persist batch is empty")
+	}
+	if len(batch) > events.DefaultPublishBatchSize {
+		return fmt.Errorf("inmem: persist batch length %d exceeds max %d", len(batch), events.DefaultPublishBatchSize)
+	}
+	if !sameBatchSession(batch) {
+		return fmt.Errorf("inmem: persist batch must use one identity/session")
+	}
+	prepared := make([]events.Event, 0, len(batch))
+	for _, ev := range batch {
+		preparedEvent, accepted, err := b.preparePublish(ctx, ev)
+		if err != nil {
+			return err
+		}
+		if accepted {
+			prepared = append(prepared, preparedEvent)
+		}
+	}
+	if len(prepared) == 0 {
+		return nil
+	}
+	generation, admitted := b.generationForAdmission(prepared[0].Identity.Identity)
+	if !admitted {
+		for _, ev := range prepared {
+			b.logFencedDrop(ctx, ev)
+		}
+		return nil
+	}
+	return b.ordered.PersistBatchWithGeneration(ctx, prepared, generation)
+}
+
 // PublishAsync admits a best-effort observability event without waiting for
 // the store. ErrAsyncQueueFull is returned immediately when the bounded lane
 // is saturated; an accepted event is committed by the same FIFO worker as
@@ -615,6 +651,36 @@ func (b *bus) commitBatch(ctx context.Context, batch []events.Event, generation 
 	for _, ev := range accepted {
 		b.notifyProjectionWatermark(ev)
 		b.fanOut(ev, false)
+	}
+	return nil
+}
+
+// commitPersistBatch is the ordered queue callback for events already sent on
+// the live lane. It shares sequence/ring/watermark handling with the regular
+// commit, but intentionally never calls fanOut.
+func (b *bus) commitPersistBatch(ctx context.Context, batch []events.Event, generation uint64, _ string) error {
+	if len(batch) == 0 {
+		return fmt.Errorf("inmem: empty persist batch")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.publishMu.Lock()
+	if !b.generationMatchesLocked(batch[0].Identity, generation) || b.fencedLocked(batch[0].Identity) {
+		b.publishMu.Unlock()
+		for _, ev := range batch {
+			b.logFencedDrop(ctx, ev)
+		}
+		return nil
+	}
+	if uint64(len(batch)) > ^uint64(0)-b.nextSeq {
+		b.publishMu.Unlock()
+		return fmt.Errorf("inmem: global sequence exhausted")
+	}
+	accepted := b.assignSeqAndStoreBatchLocked(batch)
+	b.publishMu.Unlock()
+	for _, ev := range accepted {
+		b.notifyProjectionWatermark(ev)
 	}
 	return nil
 }
@@ -1603,6 +1669,7 @@ func (s *subscription) resetDropWindow(now time.Time) {
 var (
 	_ events.EventBus                      = (*bus)(nil)
 	_ events.LivePublisher                 = (*bus)(nil)
+	_ events.PersistBatchPublisher         = (*bus)(nil)
 	_ events.Replayer                      = (*bus)(nil)
 	_ events.HistoryReplayer               = (*bus)(nil)
 	_ events.EventMetadataReplayer         = (*bus)(nil)

@@ -272,12 +272,14 @@ func NewRunContext(
 	// caller's ctx. Left nil when no bus is wired.
 	var emit func(events.Event)
 	var onChunk func(delta string, done bool, kind planner.ChunkKind)
+	var afterPlannerStep func(context.Context) error
 	if src.Bus != nil {
 		emit = events.IdentityStampingEmitterContext(projCtx, src.Bus, q, logger)
-		chunkPub := llm.NewChunkPublisherContext(projCtx, src.Bus, q, q.RunID, logger)
+		chunkPub := llm.NewBufferedChunkPublisherContext(projCtx, src.Bus, q, q.RunID, logger)
 		onChunk = func(delta string, done bool, kind planner.ChunkKind) {
-			chunkPub(delta, done, string(kind))
+			chunkPub.OnChunk(delta, done, string(kind))
 		}
+		afterPlannerStep = chunkPub.Flush
 	}
 
 	// Input-artifact projection — the SAME thin caller the drivers use
@@ -303,6 +305,7 @@ func NewRunContext(
 		Trajectory:        &planner.Trajectory{Query: goal},
 		Emit:              emit,
 		OnChunk:           onChunk,
+		AfterPlannerStep:  afterPlannerStep,
 		InputArtifacts:    inputArtifacts,
 		DispositionPolicy: cfg.dispositionPolicy,
 		Budget:            src.Budget,

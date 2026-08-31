@@ -984,6 +984,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// this coordinate, while retries of this same step retain it.
 		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
+		if flush := rc.AfterPlannerStep; flush != nil {
+			if ferr := flush(plannerCtx); ferr != nil {
+				return planner.Finish{}, fmt.Errorf("steering: persist completion chunks after planner step %d: %w", step, ferr)
+			}
+		}
 		if nerr != nil {
 			// A native-path projector structural rejection — the planner
 			// consumed the LLM response but could not project it into an
