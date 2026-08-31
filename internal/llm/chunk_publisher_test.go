@@ -382,3 +382,24 @@ func TestBufferedChunkPublisher_LegacyBusFailsAtFlush(t *testing.T) {
 		t.Fatalf("legacy bus calls = Publish:%d captured:%d, want 0/0", publish, captured)
 	}
 }
+
+func TestBufferedChunkPublisher_SealRejectsLateChunk(t *testing.T) {
+	b := &envelopeValidatingBus{}
+	p := NewBufferedChunkPublisher(b, chunkPublisherTestQuad("run-sealed"), "task-sealed", slog.Default())
+	p.OnChunk("before", false, "content")
+	if err := p.Seal(context.Background()); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	p.OnChunk("after", true, "content")
+
+	if publish, live := b.laneCounts(); publish != 0 || live != 1 {
+		t.Fatalf("sealed publisher lanes = Publish:%d PublishLive:%d, want 0/1", publish, live)
+	}
+	calls, persisted := b.persistSnapshot()
+	if calls != 1 || len(persisted) != 1 {
+		t.Fatalf("sealed publisher persistence = calls:%d events:%d, want 1/1", calls, len(persisted))
+	}
+	if got := persisted[0].Payload.(CompletionChunkPayload).Delta; got != "before" {
+		t.Fatalf("sealed publisher persisted delta = %q, want before", got)
+	}
+}

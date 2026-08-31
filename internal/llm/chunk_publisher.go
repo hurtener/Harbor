@@ -53,8 +53,9 @@ import (
 // ChunkPublisher is the per-run completion-chunk bridge. OnChunk delivers a
 // transient Sequence=0 frame immediately through LivePublisher and retains
 // the same event in memory until Flush persists it through the additive
-// persist-only lane. It owns no storage and performs no storage I/O while a
-// provider callback is running.
+// persist-only lane. Seal closes the bridge at the terminal boundary so late
+// provider callbacks cannot create an unpersisted live frame. It owns no
+// storage and performs no storage I/O while a provider callback is running.
 type ChunkPublisher struct {
 	baseCtx context.Context
 	live    events.LivePublisher
@@ -66,7 +67,9 @@ type ChunkPublisher struct {
 	mu              sync.Mutex
 	flushMu         sync.Mutex
 	pending         []events.Event
+	sealed          bool
 	disabledWarning sync.Once
+	sealedWarning   sync.Once
 }
 
 // NewChunkPublisher returns the per-run OnChunk closure. Run-loop drivers that
@@ -90,14 +93,15 @@ func NewChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q id
 
 // NewBufferedChunkPublisher constructs the per-run completion-chunk bridge
 // with a background context. Callers must invoke Flush after each planner
-// step to make buffered chunks replayable.
+// step to make buffered chunks replayable and Seal at terminal completion to
+// close the callback race.
 func NewBufferedChunkPublisher(bus events.EventBus, q identity.Quadruple, taskID string, logger *slog.Logger) *ChunkPublisher {
 	return NewBufferedChunkPublisherContext(context.Background(), bus, q, taskID, logger)
 }
 
 // NewBufferedChunkPublisherContext is NewBufferedChunkPublisher with a
 // caller-supplied base context bounding every live publish. PersistBatch is
-// called only by the explicit Flush method.
+// called only by the explicit Flush or Seal method.
 func NewBufferedChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q identity.Quadruple, taskID string, logger *slog.Logger) *ChunkPublisher {
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -142,6 +146,15 @@ func (p *ChunkPublisher) OnChunk(delta string, done bool, kind string) {
 	// by this bridge. The live call remains storage-free.
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.sealed {
+		p.sealedWarning.Do(func() {
+			p.logger.Warn("llm: completion chunk ignored after terminal seal",
+				slog.String("task_id", p.taskID),
+				slog.String("run_id", p.q.RunID),
+				slog.String("reason", "run already reached terminal boundary"))
+		})
+		return
+	}
 	if p.live == nil {
 		p.disabledWarning.Do(func() {
 			p.logger.Warn("llm: completion animation disabled",
@@ -164,6 +177,28 @@ func (p *ChunkPublisher) OnChunk(delta string, done bool, kind string) {
 func (p *ChunkPublisher) Flush(ctx context.Context) error {
 	p.flushMu.Lock()
 	defer p.flushMu.Unlock()
+	return p.flushPending(ctx)
+}
+
+// Seal closes the per-run completion stream and durably drains every chunk
+// accepted before the seal. It serializes with Flush and OnChunk: a callback
+// that wins the p.mu admission check before sealing is included in the final
+// drain, while callbacks that observe the sealed bit are rejected before live
+// publication and buffering. A persistence failure is returned to the run
+// loop so terminal lifecycle code cannot mark the task complete falsely.
+// Previously accepted chunks remain buffered after a failure, allowing an
+// explicit retry even though no new callbacks are accepted.
+func (p *ChunkPublisher) Seal(ctx context.Context) error {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+
+	p.mu.Lock()
+	p.sealed = true
+	p.mu.Unlock()
+	return p.flushPending(ctx)
+}
+
+func (p *ChunkPublisher) flushPending(ctx context.Context) error {
 
 	p.mu.Lock()
 	if len(p.pending) == 0 {

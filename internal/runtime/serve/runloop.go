@@ -1886,23 +1886,24 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple:         q,
-			ExternalGrant:     externalGrant,
-			Query:             task.Query,
-			Goal:              task.Query,   // initial goal = user query; runtime REDIRECT may mutate
-			LLMOverrides:      llmOverrides, // admin-set tenant default, pinned at run start
-			MemoryBlocks:      memBlocks,
-			SkillsContext:     skillsCtx,
-			RepairCounters:    counters,
-			PlanningHints:     d.planningHints, // nil when operator left the config block empty
-			Catalog:           catalogView,     // populates <available_tools>
-			Trajectory:        traj,            // runloop appends per step
-			Emit:              emit,            // planner-side telemetry
-			OnChunk:           onChunk,         // per-token streaming to bus
-			AfterPlannerStep:  chunkPublisher.Flush,
-			InputArtifacts:    inputArtifacts, // first-turn multimodal inputs
-			DispositionPolicy: d.dispositionPolicy,
-			SessionArtifacts:  sessionArtifacts, // read-only cross-turn manifest
+			Quadruple:            q,
+			ExternalGrant:        externalGrant,
+			Query:                task.Query,
+			Goal:                 task.Query,   // initial goal = user query; runtime REDIRECT may mutate
+			LLMOverrides:         llmOverrides, // admin-set tenant default, pinned at run start
+			MemoryBlocks:         memBlocks,
+			SkillsContext:        skillsCtx,
+			RepairCounters:       counters,
+			PlanningHints:        d.planningHints, // nil when operator left the config block empty
+			Catalog:              catalogView,     // populates <available_tools>
+			Trajectory:           traj,            // runloop appends per step
+			Emit:                 emit,            // planner-side telemetry
+			OnChunk:              onChunk,         // per-token streaming to bus
+			AfterPlannerStep:     chunkPublisher.Flush,
+			SealCompletionChunks: chunkPublisher.Seal,
+			InputArtifacts:       inputArtifacts, // first-turn multimodal inputs
+			DispositionPolicy:    d.dispositionPolicy,
+			SessionArtifacts:     sessionArtifacts, // read-only cross-turn manifest
 			// the per-run token budget the runloop's
 			// compression gate reads. Zero = compression off.
 			Budget: planner.Budget{TokenBudget: tokenBudget},

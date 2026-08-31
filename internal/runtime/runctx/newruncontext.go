@@ -273,6 +273,7 @@ func NewRunContext(
 	var emit func(events.Event)
 	var onChunk func(delta string, done bool, kind planner.ChunkKind)
 	var afterPlannerStep func(context.Context) error
+	var sealCompletionChunks func(context.Context) error
 	if src.Bus != nil {
 		emit = events.IdentityStampingEmitterContext(projCtx, src.Bus, q, logger)
 		chunkPub := llm.NewBufferedChunkPublisherContext(projCtx, src.Bus, q, q.RunID, logger)
@@ -280,6 +281,7 @@ func NewRunContext(
 			chunkPub.OnChunk(delta, done, string(kind))
 		}
 		afterPlannerStep = chunkPub.Flush
+		sealCompletionChunks = chunkPub.Seal
 	}
 
 	// Input-artifact projection — the SAME thin caller the drivers use
@@ -293,22 +295,23 @@ func NewRunContext(
 	})
 
 	return planner.RunContext{
-		Quadruple:         q,
-		Query:             goal,
-		Goal:              goal, // initial goal = the request; runtime REDIRECT may mutate
-		LLMOverrides:      src.LLMOverrides,
-		MemoryBlocks:      memBlocks,
-		SkillsContext:     skillsCtx,
-		RepairCounters:    &planner.RepairCounters{},
-		PlanningHints:     src.PlanningHints,
-		Catalog:           catalogView,
-		Trajectory:        &planner.Trajectory{Query: goal},
-		Emit:              emit,
-		OnChunk:           onChunk,
-		AfterPlannerStep:  afterPlannerStep,
-		InputArtifacts:    inputArtifacts,
-		DispositionPolicy: cfg.dispositionPolicy,
-		Budget:            src.Budget,
-		OutputSchema:      outputSchema,
+		Quadruple:            q,
+		Query:                goal,
+		Goal:                 goal, // initial goal = the request; runtime REDIRECT may mutate
+		LLMOverrides:         src.LLMOverrides,
+		MemoryBlocks:         memBlocks,
+		SkillsContext:        skillsCtx,
+		RepairCounters:       &planner.RepairCounters{},
+		PlanningHints:        src.PlanningHints,
+		Catalog:              catalogView,
+		Trajectory:           &planner.Trajectory{Query: goal},
+		Emit:                 emit,
+		OnChunk:              onChunk,
+		AfterPlannerStep:     afterPlannerStep,
+		SealCompletionChunks: sealCompletionChunks,
+		InputArtifacts:       inputArtifacts,
+		DispositionPolicy:    cfg.dispositionPolicy,
+		Budget:               src.Budget,
+		OutputSchema:         outputSchema,
 	}, nil
 }
