@@ -109,8 +109,14 @@ func NewBufferedChunkPublisherContext(baseCtx context.Context, bus events.EventB
 	if logger == nil {
 		logger = slog.Default()
 	}
-	live, _ := bus.(events.LivePublisher)
-	persist, _ := bus.(events.PersistBatchPublisher)
+	var live events.LivePublisher
+	if candidate, ok := bus.(events.LivePublisher); ok {
+		live = candidate
+	}
+	var persist events.PersistBatchPublisher
+	if candidate, ok := bus.(events.PersistBatchPublisher); ok {
+		persist = candidate
+	}
 	return &ChunkPublisher{
 		baseCtx: baseCtx,
 		live:    live,
