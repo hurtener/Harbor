@@ -20,6 +20,19 @@ sharing the same physical source ID. Historical agent source/App/tool references
 resolve only under the verified tenant and admitted effective agent, with fresh
 App generation checks. A name never grants reach or selects a tenant.
 
+For durable policy keys, use tool `logical_id` and MCP server `logical_name`;
+keep physical `id`/`name` for calls. Admin configuration discovery can request
+`view: "configuration"` on `tools.list` and `tools.describe`, always with an
+`agent_id` admitted by signed reach. This includes owned disabled tools and both
+loading modes. Default reads retain execution exposure, and configuration
+reads preserve tenant/user/source/revision/auth constraints. They never grant
+permission to execute a disabled tool.
+
+Clients negotiate `tools_configuration_view_v1` before sending the configuration
+view selector. It is advertised only when the owned-source configuration backend
+is wired. An older runtime receives no selector; clients do not retry a refused
+configuration request by downgrading its view.
+
 ## Route-aware provider checks
 
 The existing admin-scoped `llm.posture` provider `validate` and `discover`

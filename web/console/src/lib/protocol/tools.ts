@@ -63,7 +63,10 @@ export interface ToolFilter {
 }
 
 /** The `tools.list` request body. */
+export type ToolCatalogView = 'execution' | 'configuration';
+
 export interface ToolListRequest {
+  view?: ToolCatalogView;
   identity: IdentityScope;
   agent_id?: string;
   filter: ToolFilter;

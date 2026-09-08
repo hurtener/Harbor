@@ -918,3 +918,31 @@ func TestPostureSurface_Info_SkillPublicationsCapability(t *testing.T) {
 		t.Fatalf("capabilities = %v, want %v", info.Capabilities, want)
 	}
 }
+
+func TestPostureSurface_Info_ToolsConfigurationCapability(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		deps := basePostureDeps(t)
+		deps.ToolsConfigurationViewAvailable = enabled
+		surface, err := protocol.NewPostureSurface(deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := surface.Dispatch(mustCtx(t, identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}), methods.MethodRuntimeInfo, validRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, ok := resp.(*types.RuntimeInfo)
+		if !ok {
+			t.Fatalf("response %T", resp)
+		}
+		found := false
+		for _, capability := range info.Capabilities {
+			if capability == types.CapToolsConfigurationView {
+				found = true
+			}
+		}
+		if found != enabled {
+			t.Fatalf("configuration capability=%v wired=%v", found, enabled)
+		}
+	}
+}

@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:680e64124f6e58cbe40bd5de45b763ecee2d336e6195afdf8f8cda364edb73d3";
+export const WIRE_SURFACE_DIGEST = "sha256:a22e5c739b4ee2edca438c4eccbf0a6b823d62dc1200698ae472721626c91f73";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -3655,6 +3655,7 @@ export interface ToolContextResponse {
 }
 
 export interface ToolDescribeRequest {
+  view?: string;
   identity: IdentityScope;
   id: string;
   agent_id?: string;
@@ -3675,6 +3676,7 @@ export interface ToolGetRequest {
 }
 
 export interface ToolListRequest {
+  view?: string;
   identity: IdentityScope;
   agent_id?: string;
   filter: ToolFilter;

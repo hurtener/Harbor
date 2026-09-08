@@ -41,6 +41,9 @@ func TestDeferredMCPExposure_AllTiersAndLoadingModes(t *testing.T) {
 						if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "control", Loading: tools.LoadingAlways}, Invoke: invoke}); err != nil {
 							t.Fatal(err)
 						}
+						if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "guarded", Loading: tools.LoadingDeferred, AuthScopes: []string{"private"}}, Invoke: invoke}); err != nil {
+							t.Fatal(err)
+						}
 						resolver := testPhysicalSourceResolver{owners: map[tools.ToolSourceID]auth.Owner{source: owner}, logical: map[tools.ToolSourceID]string{source: "shared"}}
 						admin := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "shared", Transport: agentcfg.MCPTransportHTTP, URL: "https://example.test/mcp"}}}, ToolExposure: &agentcfg.ToolExposure{}}
 						if loading == "demoted" {
@@ -78,6 +81,16 @@ func TestDeferredMCPExposure_AllTiersAndLoadingModes(t *testing.T) {
 						}
 						if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, admin, agentcfg.SetOptions{}); err != nil {
 							t.Fatal(err)
+						}
+						inventory, err := (projection.CatalogViewResolver{Registry: reg, SessionOverlay: overlay, Catalog: cat, OwnerResolver: resolver}).ConfigurationCatalogView(ctx, projID().Identity, projAgent)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if hasName(viewNames(inventory), "guarded") {
+							t.Fatal("configuration elevated catalog auth scopes")
+						}
+						if !hasName(viewNames(inventory), physical) {
+							t.Fatalf("configuration omitted owned disabled/deferred tool: %v", viewNames(inventory))
 						}
 						view, err := projection.ActivePlannerCatalogView(ctx, reg, overlay, projAgent, projID(), cat, tools.CatalogFilter{}, resolver)
 						if err != nil {

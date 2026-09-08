@@ -240,6 +240,8 @@ type PostureDeps struct {
 	// *advertised* projection of that wiring decision. Optional — defaults
 	// false (a catalog stack that did not wire the annotator).
 	ToolAnnotationsAvailable bool
+	// ToolsConfigurationViewAvailable reflects the wired owned-source configuration inventory.
+	ToolsConfigurationViewAvailable bool
 	// SkillPublicationsAvailable indicates this Runtime mounted the
 	// same-runtime organization skill-publication store and Protocol
 	// transport. It is derived from the same construction condition as the
@@ -316,7 +318,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		displayName:            deps.DisplayName,
 		instanceID:             deps.InstanceID,
 		externalGrant:          deps.ExternalGrant,
-		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != ""),
+		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != "", deps.ToolsConfigurationViewAvailable),
 	}, nil
 }
 
@@ -329,7 +331,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable, toolsConfigurationViewAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -352,6 +354,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 	}
 	if sessionLifecycleAvailable {
 		caps = append(caps, types.CapSessionLifecycle)
+	}
+	if toolsConfigurationViewAvailable {
+		caps = append(caps, types.CapToolsConfigurationView)
 	}
 	if toolAnnotationsAvailable {
 		caps = append(caps, types.CapToolAnnotations)

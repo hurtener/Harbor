@@ -46,6 +46,15 @@ func TestAgentMCPProjection_ConcurrentOwnersAndLegacyResume(t *testing.T) {
 				return
 			}
 			want := mcp.PhysicalServerName("same", owner) + "_echo"
+			inventory, err := (projection.CatalogViewResolver{Registry: reg, Catalog: cat, OwnerResolver: resolver}).ConfigurationCatalogView(context.Background(), q.Identity, owner.Agent)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if list := inventory.List(); len(list) != 1 || list[0].Name != want {
+				t.Errorf("configuration cross-owner catalog=%v want %s", list, want)
+			}
+
 			if list := view.List(); len(list) != 1 || list[0].Name != want {
 				t.Errorf("catalog=%v want %s", list, want)
 			}
@@ -62,6 +71,22 @@ func TestAgentMCPProjection_ConcurrentOwnersAndLegacyResume(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	revokedOwner := owners[0]
+	revokedID := identity.Quadruple{Identity: identity.Identity{TenantID: revokedOwner.Tenant, UserID: "setup", SessionID: "setup"}}
+	if _, err := reg.SetRevision(context.Background(), revokedID, revokedOwner.Agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := (projection.CatalogViewResolver{Registry: reg, Catalog: cat, OwnerResolver: resolver}).ConfigurationCatalogView(context.Background(), revokedID.Identity, revokedOwner.Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.List()) != 0 {
+		t.Fatal("configuration retained revoked source")
+	}
+	descriptors := &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "same", Transport: agentcfg.MCPTransportHTTP, URL: "https://example.test/mcp"}}}
+	if _, err := reg.SetRevision(context.Background(), revokedID, revokedOwner.Agent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{Connections: descriptors}, agentcfg.SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Multiple physical rows for a legacy logical source do not select one
 	// by iteration order. An exact boot id retains its original meaning.

@@ -395,6 +395,10 @@ func (p *CatalogProjector) DescribeTool(ctx context.Context, id identity.Identit
 	if !ok {
 		return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
+	return p.describeDescriptor(ctx, id, toolID, agentID, t)
+}
+
+func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.Identity, toolID, agentID string, t tools.Tool) (prototypes.ToolManifest, error) {
 	examples := make([]string, 0, len(t.Examples))
 	for _, ex := range t.Examples {
 		examples = append(examples, ex.Description)
@@ -545,3 +549,46 @@ var (
 	_ ApprovalPolicySetter = (*CatalogProjector)(nil)
 	_ OAuthRevoker         = (*CatalogProjector)(nil)
 )
+
+// ConfigurationCatalogViewResolver supplies the same source admission as execution,
+// excluding only exposure restrictions and prompt loading selection.
+type ConfigurationCatalogViewResolver interface {
+	ConfigurationCatalogView(context.Context, identity.Identity, string) (tools.PlannerCatalogView, error)
+}
+
+// ListConfigurationTools implements ConfigurationProjector.
+func (p *CatalogProjector) ListConfigurationTools(ctx context.Context, id identity.Identity, agentID string) ([]prototypes.Tool, error) {
+	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
+	if !ok {
+		return nil, ErrAdminUnsupported
+	}
+	view, err := resolver.ConfigurationCatalogView(ctx, id, agentID)
+	if err != nil {
+		return nil, err
+	}
+	descriptors := view.List()
+	rows := make([]prototypes.Tool, 0, len(descriptors))
+	for _, t := range descriptors {
+		rows = append(rows, p.projectRow(ctx, id, t))
+	}
+	return rows, nil
+}
+
+// DescribeConfigurationTool implements ConfigurationProjector. Even a known physical
+// ID must occur in the admitted inventory; direct catalog resolution is forbidden.
+func (p *CatalogProjector) DescribeConfigurationTool(ctx context.Context, id identity.Identity, toolID, agentID string) (prototypes.ToolManifest, error) {
+	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
+	if !ok {
+		return prototypes.ToolManifest{}, ErrAdminUnsupported
+	}
+	view, err := resolver.ConfigurationCatalogView(ctx, id, agentID)
+	if err != nil {
+		return prototypes.ToolManifest{}, err
+	}
+	for _, t := range view.List() {
+		if t.Name == toolID {
+			return p.describeDescriptor(ctx, id, toolID, agentID, t)
+		}
+	}
+	return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
+}

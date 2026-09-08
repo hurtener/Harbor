@@ -449,6 +449,8 @@ const (
 	// advertised. Backward-compatible (RFC §5.3 minor-class addition) — no
 	// version bump.
 	CapToolAnnotations Capability = "tool_annotations"
+	// CapToolsConfigurationView advertises admitted admin configuration reads on tools.list and tools.describe.
+	CapToolsConfigurationView Capability = "tools_configuration_view_v1"
 	// CapCallerMemory — the `start` request's `caller_memory` admission:
 	// the Runtime accepts caller-supplied content into the run's
 	// UNTRUSTED-framed external memory tier.
@@ -506,6 +508,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapAgentConfig:                   {},
 	CapSessionLifecycle:              {},
 	CapToolAnnotations:               {},
+	CapToolsConfigurationView:        {},
 	CapCallerMemory:                  {},
 	CapSkillPublications:             {},
 	CapLLMProviderCatalog:            {},

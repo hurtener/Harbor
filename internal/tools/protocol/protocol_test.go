@@ -524,3 +524,38 @@ func TestList_WithAnnotator_AggregatesReflectAnnotations(t *testing.T) {
 		t.Errorf("Active = %d, want 3", resp.Aggregates.Active)
 	}
 }
+
+func TestConfigurationView_ServiceAdmissionFailsClosed(t *testing.T) {
+	svc := newService(t)
+	if _, err := svc.List(context.Background(), prototypes.ToolListRequest{Identity: validID(), AgentID: "agent", View: prototypes.ToolCatalogViewConfiguration}); !errors.Is(err, toolsprotocol.ErrAdminScopeRequired) {
+		t.Fatalf("ordinary List elevated configuration view: %v", err)
+	}
+	if _, err := svc.Describe(context.Background(), prototypes.ToolDescribeRequest{Identity: validID(), AgentID: "agent", ID: "alpha_search", View: prototypes.ToolCatalogViewConfiguration}); !errors.Is(err, toolsprotocol.ErrAdminScopeRequired) {
+		t.Fatalf("ordinary Describe elevated configuration view: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name                string
+		view                prototypes.ToolCatalogView
+		requested, admitted string
+		admin               bool
+		want                error
+	}{
+		{name: "nonadmin", view: prototypes.ToolCatalogViewConfiguration, requested: "agent", admitted: "agent", want: toolsprotocol.ErrAdminScopeRequired},
+		{name: "missing-agent", view: prototypes.ToolCatalogViewConfiguration, admin: true, want: toolsprotocol.ErrInvalidRequest},
+		{name: "unadmitted-agent", view: prototypes.ToolCatalogViewConfiguration, requested: "agent", admin: true, want: toolsprotocol.ErrInvalidRequest},
+		{name: "unknown-view", view: "fleet", requested: "agent", admitted: "agent", admin: true, want: toolsprotocol.ErrInvalidRequest},
+		{name: "missing-backend", view: prototypes.ToolCatalogViewConfiguration, requested: "agent", admitted: "agent", admin: true, want: toolsprotocol.ErrAdminUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.ListForView(context.Background(), prototypes.ToolListRequest{Identity: validID(), AgentID: tc.requested, View: tc.view}, tc.admin, tc.admitted)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("list error=%v want %v", err, tc.want)
+			}
+			_, err = svc.DescribeForView(context.Background(), prototypes.ToolDescribeRequest{Identity: validID(), ID: "alpha_search", AgentID: tc.requested, View: tc.view}, tc.admin, tc.admitted)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("describe error=%v want %v", err, tc.want)
+			}
+		})
+	}
+}

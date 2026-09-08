@@ -1152,6 +1152,13 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
 func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+	return activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, false, ownerResolvers...)
+}
+
+func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, configuration bool, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+	if configuration {
+		filter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+	}
 	// Admin exposure (the baseline). Loading-mode overrides are composed below
 	// with the durable user tier; the ephemeral session tier remains
 	// narrow-only and contributes disable sets only.
@@ -1267,7 +1274,7 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 		disabled = unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
 		base = userScopedMCPView{base: base, catalogTools: catalogTools, resolver: ownerResolver, owner: actingOwner, desiredPair: userPairNames, agentPair: agentPairNames}
 	}
-	if len(paused) == 0 && len(disabled) == 0 {
+	if configuration || (len(paused) == 0 && len(disabled) == 0) {
 		return base, nil
 	}
 	return tools.NewExclusionView(base, paused, disabled), nil
@@ -1769,4 +1776,18 @@ func FilterSkillViewsByMembership(views []skills.SkillView, names []string) []sk
 		}
 	}
 	return out
+}
+
+// ConfigurationCatalogView is a read-only inventory for a transport-admitted admin
+// and effective agent. It retains execution source ownership and current revision
+// admission, while exposing disabled tools and both loading modes for configuration.
+func (a CatalogViewResolver) ConfigurationCatalogView(ctx context.Context, id identity.Identity, agentID string) (tools.PlannerCatalogView, error) {
+	if agentID == "" || a.Catalog == nil || a.OwnerResolver == nil || a.Registry == nil {
+		return nil, errors.New("agentcfg/projection: configuration view requires agent, registry, catalog and source owner resolver")
+	}
+	if err := identity.Validate(id); err != nil {
+		return nil, err
+	}
+	filter := tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}}
+	return activeCatalogView(ctx, a.Registry, a.SessionOverlay, agentID, identity.Quadruple{Identity: id}, a.Catalog, filter, true, a.OwnerResolver)
 }

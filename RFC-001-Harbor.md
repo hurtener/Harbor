@@ -2390,6 +2390,19 @@ visibility from an empty owner user. This supersedes D-301/D-448 only for
 runtime-added MCP source admission and naming, retaining shared boot transport
 and registry/catalog architecture.
 
+The read-only `tools.list` and `tools.describe` configuration inventory (D-459)
+uses explicit `view: configuration`, verified admin authority, and a mandatory
+admitted effective `agent_id`. The default remains execution exposure. The
+configuration view preserves identity, source ownership, current revision,
+signed reach and auth-scope admission; it only includes both loading modes and
+omits exposure exclusions. A physical tool ID remains subject to those filters
+when describing its schema. Configuration reads never authorize invocation.
+
+Clients negotiate `tools_configuration_view_v1` before sending the configuration
+view selector. It is advertised only when the owned-source configuration backend
+is wired. An older runtime receives no selector; clients do not retry a refused
+configuration request by downgrading its view.
+
 ### 6.17 Run-completion hook
 
 The run-completion hook is the Runtime's one run-lifecycle egress point: an operator-configured hook, fired exactly once at the run loop's terminal boundary, that delivers the run's transcript to a **named catalog tool**. The motivating consumers are memory, audit, and analytics sinks that need the full conversation at completion **for runs no client observes** — background and disconnected runs have no observer to pull it, and a completed foreground embed run emits no generic completion event a subscriber could ride (only tasks-engine runs emit `task.completed` / `task.failed`). The hook is therefore **runtime mechanism on the run loop** — the single seam every run type (embed one-call, foreground task, background task) terminates through — never planner policy: no planner concrete knows the hook exists, and a swapped planner inherits it unchanged (§3.2).

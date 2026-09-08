@@ -295,8 +295,8 @@ export class ToolsNamespace {
 	/** `tools.list` — paginated, faceted catalog projection. `agentId`, when
 	 * set, projects the caller's effective per-agent catalog view; omitted
 	 * preserves the boot-effective view. */
-	list<R = unknown>(filter: Record<string, unknown> = {}, page = 1, pageSize = 50, agentId?: string): Promise<R> {
-		return this.#t.request<R>('/v1/tools/list', agentId ? { agent_id: agentId, filter, page, page_size: pageSize } : { filter, page, page_size: pageSize });
+	list<R = unknown>(filter: Record<string, unknown> = {}, page = 1, pageSize = 50, agentId?: string, view?: 'execution' | 'configuration'): Promise<R> {
+		return this.#t.request<R>('/v1/tools/list', { agent_id: agentId, filter, page, page_size: pageSize, view });
 	}
 	/** `tools.get` — single catalog-row projection. */
 	get<R = unknown>(id: string): Promise<R> {
@@ -306,8 +306,8 @@ export class ToolsNamespace {
 	 * projects the EFFECTIVE loading_mode through that agent's active
 	 * tool-exposure config (D-281); omitted reports the boot-effective
 	 * mode. */
-	describe<R = unknown>(id: string, agentId?: string): Promise<R> {
-		return this.#t.request<R>('/v1/tools/describe', agentId ? { id, agent_id: agentId } : { id });
+	describe<R = unknown>(id: string, agentId?: string, view?: 'execution' | 'configuration'): Promise<R> {
+		return this.#t.request<R>('/v1/tools/describe', { id, agent_id: agentId, view });
 	}
 	/** `tools.metrics` — per-tool error-rate gauges + status pill. */
 	metrics<R = unknown>(id: string, window = '1h'): Promise<R> {

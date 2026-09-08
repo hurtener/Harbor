@@ -1963,6 +1963,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapAgentConfig:                   {},
 		types.CapSessionLifecycle:              {},
 		types.CapToolAnnotations:               {},
+		types.CapToolsConfigurationView:        {},
 		types.CapCallerMemory:                  {},
 		types.CapSkillPublications:             {},
 		types.CapLLMProviderCatalog:            {},

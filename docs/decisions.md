@@ -15323,3 +15323,27 @@ errors are typed non-retryable. Existing env/static and inference custody is unc
 **Cross-references:** D-025, D-271, D-285, D-300; RFC §5.5; docs/CONFIG.md.
 
 D-457 contract clarification: tool catalog rows expose optional `logical_id` as the stable configured source plus registered tool suffix; `id` and `name` remain physical invocation identifiers. MCP server rows expose optional `logical_name` from the canonical registry. Clients use these logical fields for durable exposure policy and retain physical identifiers for invocation; these fields grant no additional visibility.
+
+## D-459 — Explicit admitted configuration inventory for tools
+
+**Status:** Accepted (2026-09-08)
+
+`tools.list` and `tools.describe` accept optional `view: configuration`.
+Omitted or `execution` retains the existing execution exposure. Configuration
+reads require verified `admin` scope and an explicit effective agent admitted
+through the same tenant-local resolver and signed reach checks as execution.
+The service receives that admission explicitly, not through a mode flag in
+context. A missing configuration backend fails loudly.
+
+Configuration projects the same source ownership, current agent/user revision,
+and catalog identity/auth-scope filters. It includes both loading modes and
+omits only admin/user/session exposure exclusions, allowing disabled tools to
+be inspected and re-enabled. It grants no invocation authority and no fleet
+visibility. Describe resolves physical IDs within that inventory; knowing a
+foreign ID does not expose its schema. Stable `logical_id`/`logical_name` keys
+are for policy storage; physical `id`/`name` identify invocation targets.
+
+Clients negotiate `tools_configuration_view_v1` before sending the configuration
+view selector. It is advertised only when the owned-source configuration backend
+is wired. An older runtime receives no selector; clients do not retry a refused
+configuration request by downgrading its view.
