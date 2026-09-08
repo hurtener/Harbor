@@ -557,6 +557,10 @@ func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 	// stateful work and App/result events, so this marker must take precedence
 	// over context and message heuristics (including a per-attempt timeout
 	// observed while writing the local artifact).
+	var permanent interface{ Permanent() bool }
+	if errors.As(err, &permanent) && permanent.Permanent() {
+		return ErrClassPermanent
+	}
 	if errors.Is(err, ErrToolResultMaterialization) {
 		return ErrClassPermanent
 	}

@@ -28,6 +28,8 @@ export type MCPServerState =
 
 /** One MCP server row — mirrors types.MCPServerView. */
 export interface MCPServerView {
+  /** Configured connection name used by source policy. */
+  logical_name?: string;
   name: string;
   transport: string;
   url_or_command: string;

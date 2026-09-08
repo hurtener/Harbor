@@ -394,6 +394,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			for _, row := range list.Tools {
 				seen[row.ID] = true
 				owners[row.ID] = row.Owner
+				if row.Owner == logicalName && row.LogicalID != logicalName+"_echo" {
+					t.Fatalf("tools.list logical key: %q", row.LogicalID)
+				}
 			}
 			ownTool := user.physical + "_echo"
 			foreignTool := user.foreign + "_echo"
@@ -420,6 +423,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatalf("decode tools.get own: %v (body %s)", err, body)
 			}
+			if got.LogicalID != logicalName+"_echo" {
+				t.Fatalf("tools.get logical key: %q", got.LogicalID)
+			}
 			if got.Owner != logicalName {
 				t.Fatalf("tools.get own Owner = %q, want logical source %q", got.Owner, logicalName)
 			}
@@ -441,6 +447,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			if err := json.Unmarshal(body, &manifest); err != nil {
 				t.Fatalf("decode tools.describe own: %v (body %s)", err, body)
 			}
+			if manifest.Tool.LogicalID != logicalName+"_echo" {
+				t.Fatalf("tools.describe logical key: %q", manifest.Tool.LogicalID)
+			}
 			if manifest.Tool.Owner != logicalName {
 				t.Fatalf("tools.describe own Owner = %q, want logical source %q", manifest.Tool.Owner, logicalName)
 			}
@@ -452,7 +461,99 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			if code != http.StatusNotFound {
 				t.Fatalf("tools.describe foreign: status %d, body %s, want 404", code, body)
 			}
+
+			// Configuration inventory has an explicit verified-admin admission;
+			// execution continues to deny the disabled physical tool.
+			if _, err := agentConfig.SetRevision(ctx, identity.Quadruple{Identity: user.id}, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{logicalName + "_echo"}}}, agentcfg.SetOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			adminCtx := protocolauth.WithScopes(requestCtx, []protocolauth.Scope{protocolauth.ScopeAdmin})
+			for _, endpoint := range []string{"list", "describe"} {
+				payload := `{"agent_id":"` + agentID + `","view":"configuration"`
+				if endpoint == "describe" {
+					payload += `,"id":"` + ownTool + `"`
+				}
+				payload += `}`
+				code, body = postMuxWithContext(t, built.Mux, "/v1/tools/"+endpoint, user.id, payload, requestCtx)
+				if code != http.StatusForbidden {
+					t.Fatalf("%s configuration nonadmin: %d %s", endpoint, code, body)
+				}
+				code, body = postMuxWithContext(t, built.Mux, "/v1/tools/"+endpoint, user.id, payload, adminCtx)
+				if code != http.StatusOK {
+					t.Fatalf("%s configuration admin: %d %s", endpoint, code, body)
+				}
+				forgedPayload := strings.TrimSuffix(payload, "}") + `,"identity":{"tenant":"foreign","user":"foreign","session":"foreign"}}`
+				forgedCode, forgedBody := postMuxWithContext(t, built.Mux, "/v1/tools/"+endpoint, user.id, forgedPayload, adminCtx)
+				if forgedCode != http.StatusUnauthorized {
+					t.Fatalf("configuration forged body identity %s: %d %s", endpoint, forgedCode, forgedBody)
+				}
+				if endpoint == "list" {
+					var inventory prototypes.ToolListResponse
+					if err := json.Unmarshal(body, &inventory); err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, row := range inventory.Tools {
+						if row.ID == foreignTool {
+							t.Fatal("configuration leaked foreign tool")
+						}
+						if row.ID == ownTool {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatal("configuration omitted disabled own tool")
+					}
+				}
+				missing := `{"view":"configuration"`
+				if endpoint == "describe" {
+					missing += `,"id":"` + ownTool + `"`
+				}
+				missing += `}`
+				code, body = postMuxWithContext(t, built.Mux, "/v1/tools/"+endpoint, user.id, missing, adminCtx)
+				if code != http.StatusBadRequest {
+					t.Fatalf("%s configuration missing agent: %d %s", endpoint, code, body)
+				}
+			}
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/describe", user.id, `{"agent_id":"`+agentID+`","view":"configuration","id":"`+foreignTool+`"}`, adminCtx)
+			if code != http.StatusNotFound {
+				t.Fatalf("configuration foreign physical describe: %d %s", code, body)
+			}
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/describe", user.id, `{"agent_id":"`+agentID+`","id":"`+ownTool+`"}`, adminCtx)
+			if code != http.StatusNotFound {
+				t.Fatalf("execution disabled describe: %d %s", code, body)
+			}
+			code, body = postMuxWithContext(t, built.Mux, "/v1/tools/list", user.id, `{"agent_id":"`+agentID+`"}`, adminCtx)
+			if code != http.StatusOK {
+				t.Fatalf("execution list: %d %s", code, body)
+			}
+			var execution prototypes.ToolListResponse
+			if err := json.Unmarshal(body, &execution); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range execution.Tools {
+				if row.ID == ownTool {
+					t.Fatal("execution exposed disabled tool")
+				}
+			}
+			if _, err := agentConfig.SetRevision(ctx, identity.Quadruple{Identity: user.id}, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+				t.Fatal(err)
+			}
 		})
+	}
+
+	for _, endpoint := range []string{"list", "describe"} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/tools/"+endpoint, strings.NewReader(`{"view":"configuration","agent_id":"`+agentID+`","id":"unknown"}`))
+		built.Mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("configuration unauthenticated %s: %d %s", endpoint, rr.Code, rr.Body.String())
+		}
+		wrongReach := protocolauth.WithScopes(protocolauth.WithAgentReach(ctx, []string{"unreached"}), []protocolauth.Scope{protocolauth.ScopeAdmin})
+		code, body := postMuxWithContext(t, built.Mux, "/v1/tools/"+endpoint, users[0].id, `{"view":"configuration","agent_id":"`+agentID+`"}`, wrongReach)
+		if code != http.StatusForbidden {
+			t.Fatalf("configuration wrong reach %s: %d %s", endpoint, code, body)
+		}
 	}
 
 	// An omitted selector preserves the boot-effective view and therefore does

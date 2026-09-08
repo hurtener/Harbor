@@ -164,7 +164,7 @@ func (h *rmHarness) registryLists(t *testing.T) bool {
 		t.Fatalf("ListServers: %v", lerr)
 	}
 	for _, s := range servers {
-		if s.Name == rmFixtureSrv {
+		if s.Name == ownedSource(rmFixtureSrv, rmTenant, rmAgent) {
 			return true
 		}
 	}
@@ -194,7 +194,7 @@ func TestE2E_AgentConfig_RemoveConnection_DetachOnReconcile(t *testing.T) {
 	if add.State != "online" || add.Revision == nil {
 		t.Fatalf("add state = %q (reason=%q)", add.State, add.Reason)
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); !ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo"); !ok {
 		t.Fatal("echo tool did not reach the catalog after add")
 	}
 	if !h.registryLists(t) {
@@ -236,7 +236,7 @@ func TestE2E_AgentConfig_RemoveConnection_DetachOnReconcile(t *testing.T) {
 	if n := h.reconcile(t); n != 1 {
 		t.Fatalf("reconcile detached %d, want 1", n)
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo"); ok {
 		t.Error("echo tool still in catalog after detach")
 	}
 	if h.registryLists(t) {
@@ -257,7 +257,7 @@ func TestE2E_AgentConfig_RemoveConnection_DetachOnReconcile(t *testing.T) {
 	if readd.State != "online" {
 		t.Fatalf("re-add state = %q", readd.State)
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); !ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo"); !ok {
 		t.Fatal("echo tool did not return to the catalog after re-add")
 	}
 }
@@ -293,7 +293,7 @@ func TestE2E_AgentConfig_RemoveConnection_RollbackPastAddDetaches(t *testing.T) 
 	if h.registryLists(t) {
 		t.Error("registry still lists mcptest after rollback-past-add detach")
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo"); ok {
 		t.Error("echo tool still in catalog after rollback-past-add detach")
 	}
 }
@@ -349,7 +349,7 @@ func TestE2E_AgentConfig_RemoveConnection_InFlightCallFailsLoud(t *testing.T) {
 	// Simulate an in-flight run's dispatch state: the run has already resolved
 	// the descriptor from the live catalog (as the dispatch executor does per
 	// step) and holds the run-scoped identity ctx.
-	desc, ok := h.catalog.Resolve("mcptest_echo")
+	desc, ok := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo")
 	if !ok {
 		t.Fatal("echo tool not resolvable before remove")
 	}
@@ -357,6 +357,7 @@ func TestE2E_AgentConfig_RemoveConnection_InFlightCallFailsLoud(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
+	inFlightCtx = tools.WithEffectiveAgentConfig(inFlightCtx, rmAgent)
 	// Prove the captured descriptor works BEFORE the detach.
 	if _, ierr := desc.Invoke(inFlightCtx, json.RawMessage(`{"message":"pre-detach"}`)); ierr != nil {
 		t.Fatalf("pre-detach invoke failed: %v", ierr)
@@ -375,7 +376,7 @@ func TestE2E_AgentConfig_RemoveConnection_InFlightCallFailsLoud(t *testing.T) {
 
 	// Loud shape 1 — dispatch-time resolve: the tool is gone from the shared
 	// catalog, so the executor's Resolve misses (its loud tool-not-found path).
-	if _, stillThere := h.catalog.Resolve("mcptest_echo"); stillThere {
+	if _, stillThere := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo"); stillThere {
 		t.Fatal("echo tool still resolvable after cross-session detach")
 	}
 
@@ -441,7 +442,7 @@ func TestE2E_AgentConfig_RemoveConnection_ConcurrentReconciles(t *testing.T) {
 	if h.registryLists(t) {
 		t.Error("registry still lists mcptest after concurrent reconciles")
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", rmTenant, rmAgent) + "_echo"); ok {
 		t.Error("echo tool still in catalog after concurrent reconciles")
 	}
 }

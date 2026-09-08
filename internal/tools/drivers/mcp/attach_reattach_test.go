@@ -189,7 +189,7 @@ func TestAttach_ReAttach_ReplacesLiveRegistration(t *testing.T) {
 	}
 
 	// The registry holds exactly the new provider, online with real tool count.
-	servers, _, lerr := reg.ListServers(idCtx(t), ListFilter{})
+	servers, _, lerr := reg.ListServers(idCtxForTenant(t, owner.Tenant), ListFilter{})
 	if lerr != nil {
 		t.Fatalf("ListServers: %v", lerr)
 	}
@@ -219,15 +219,15 @@ func TestAttach_ReAttach_CrossOwner_RejectedPreservesLiveRegistration(t *testing
 	ownerB := auth.Owner{Tenant: "tenant-B", Agent: "agent-B"}
 
 	// Owner A's still-live registration + its catalog tool.
-	provA := &stubProvider{id: tools.ToolSourceID(name), toolNames: []string{"echo"}}
+	provA := &stubProvider{id: tools.ToolSourceID(PhysicalServerName(name, ownerB)), toolNames: []string{"echo"}}
 	if err := reg.Register(idCtx(t), ServerRegistration{Provider: provA, Transport: "stdio", InitialState: ServerStateOnline, Owner: ownerA}); err != nil {
 		t.Fatalf("pre-seed owner A registry: %v", err)
 	}
 	if err := cat.Register(tools.ToolDescriptor{
 		Tool: tools.Tool{
-			Name:      name + "_echo",
+			Name:      PhysicalServerName(name, ownerB) + "_echo",
 			Transport: tools.TransportInProcess,
-			Source:    tools.ToolSourceID(name),
+			Source:    tools.ToolSourceID(PhysicalServerName(name, ownerB)),
 		},
 		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 			return tools.ToolResult{}, nil
@@ -265,7 +265,7 @@ func TestAttach_ReAttach_CrossOwner_RejectedPreservesLiveRegistration(t *testing
 		t.Fatalf("owner A's transport was closed %d times by a cross-owner attach (eviction/DoS!), want 0", aClosed)
 	}
 	// Owner A's tool is still resolvable (still the in-process placeholder).
-	d, ok := cat.Resolve(name + "_echo")
+	d, ok := cat.Resolve(PhysicalServerName(name, ownerB) + "_echo")
 	if !ok {
 		t.Fatal("owner A's tool was evicted from the catalog by a cross-owner attach")
 	}
@@ -273,7 +273,7 @@ func TestAttach_ReAttach_CrossOwner_RejectedPreservesLiveRegistration(t *testing
 		t.Fatalf("owner A's tool was replaced by a cross-owner attach: transport=%q", d.Tool.Transport)
 	}
 	// Owner A's registration stays put, still owned by A.
-	if got, exists := reg.OwnerOf(name); !exists || got != ownerA {
+	if got, exists := reg.OwnerOf(PhysicalServerName(name, ownerB)); !exists || got != ownerA {
 		t.Fatalf("owner A's registration was disturbed: exists=%v owner=%+v", exists, got)
 	}
 	// No closer was left behind (the reject happened before Connect).

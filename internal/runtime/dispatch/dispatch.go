@@ -544,9 +544,13 @@ func (e *toolExecutor) resolveForRun(ctx context.Context, rc planner.RunContext,
 		return tools.ToolDescriptor{}, false, fmt.Errorf("dispatch: sealed planner catalog is required")
 	}
 	if rc.Catalog != nil {
-		if _, ok := rc.Catalog.Resolve(name); !ok {
+		visible, ok := rc.Catalog.Resolve(name)
+		if !ok {
 			return tools.ToolDescriptor{}, false, nil
 		}
+		// The sealed view may resolve a durable legacy alias to the current
+		// owner-scoped physical descriptor; never resolve the old name again.
+		name = visible.Name
 	}
 	desc, ok := e.cat.Resolve(name)
 	return desc, ok, nil
@@ -567,9 +571,11 @@ func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
 		if r.view == nil {
 			return tools.ToolDescriptor{}, false
 		}
-		if _, ok := r.view.Resolve(name); !ok {
+		visible, ok := r.view.Resolve(name)
+		if !ok {
 			return tools.ToolDescriptor{}, false
 		}
+		name = visible.Name
 	}
 	return r.base.Resolve(name)
 }

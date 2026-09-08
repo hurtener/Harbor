@@ -2140,6 +2140,9 @@ func (c *Config) validateTools() error {
 				return fieldError(prefix+".remote",
 					"must be set when credential_source is \"remote\" (declares the coordinator url + auth_token_env)")
 			}
+			if p.Remote.CredentialScope != "" && p.Remote.CredentialScope != "tenant" && p.Remote.CredentialScope != "deployment" {
+				return fieldError(prefix+".remote.credential_scope", "must be tenant or deployment")
+			}
 			if p.Remote.URL == "" {
 				return fieldError(prefix+".remote.url", "must not be empty (the coordinator credential endpoint)")
 			}
@@ -2230,6 +2233,9 @@ func (c *Config) validateTools() error {
 	brokerNames := make(map[string]struct{}, len(c.Tools.OAuthCredentialBrokers))
 	for i, b := range c.Tools.OAuthCredentialBrokers {
 		prefix := fmt.Sprintf("tools.oauth_credential_brokers[%d]", i)
+		if b.CredentialScope != "" && b.CredentialScope != "tenant" && b.CredentialScope != "deployment" {
+			return fieldError(prefix+".credential_scope", "must be tenant or deployment")
+		}
 		if b.Name == "" {
 			return fieldError(prefix+".name", "must not be empty")
 		}

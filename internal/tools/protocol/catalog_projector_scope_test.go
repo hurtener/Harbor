@@ -207,6 +207,9 @@ func TestCatalogProjector_ProjectsLogicalOwnerPerUserView(t *testing.T) {
 			if own.ID != tc.physicalTool || own.Name != tc.physicalTool {
 				t.Fatalf("physical catalog identity changed: ID=%q Name=%q want %q", own.ID, own.Name, tc.physicalTool)
 			}
+			if own.LogicalID != logical+"_echo" {
+				t.Fatalf("logical policy key = %q", own.LogicalID)
+			}
 			if own.Owner != logical {
 				t.Fatalf("own Owner = %q, want logical source %q", own.Owner, logical)
 			}
@@ -214,12 +217,18 @@ func TestCatalogProjector_ProjectsLogicalOwnerPerUserView(t *testing.T) {
 			if !ok {
 				t.Fatalf("projected rows missing raw fallback tool %q: %v", raw, rows)
 			}
+			if fallback.LogicalID != raw {
+				t.Fatalf("fallback logical key = %q", fallback.LogicalID)
+			}
 			if fallback.Owner != string(rawSource) {
 				t.Fatalf("unmapped Owner = %q, want raw source %q", fallback.Owner, rawSource)
 			}
 			collision, ok := rows[nonMCP]
 			if !ok {
 				t.Fatalf("projected rows missing non-MCP collision tool %q: %v", nonMCP, rows)
+			}
+			if collision.LogicalID != nonMCP {
+				t.Fatalf("nonMCP logical key = %q", collision.LogicalID)
 			}
 			if collision.Owner != string(physicalSourceA) {
 				t.Fatalf("non-MCP Owner = %q, want raw source %q despite resolver collision", collision.Owner, physicalSourceA)

@@ -3203,6 +3203,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `logical_name` | `string` | optional (`omitempty`) |
 | `name` | `string` |  |
 | `transport` | `string` |  |
 | `url_or_command` | `string` |  |
@@ -4963,6 +4964,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `logical_id` | `string` | optional (`omitempty`) |
 | `id` | `string` |  |
 | `name` | `string` |  |
 | `version` | `string` |  |
@@ -5053,6 +5055,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `view` | `types.ToolCatalogView` | optional (`omitempty`) |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `id` | `string` |  |
 | `agent_id` | `string` | optional (`omitempty`) |
@@ -5085,6 +5088,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `view` | `types.ToolCatalogView` | optional (`omitempty`) |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` | optional (`omitempty`) |
 | `filter` | `types.ToolFilter` — see [`ToolFilter`](./types.md#toolfilter) |  |

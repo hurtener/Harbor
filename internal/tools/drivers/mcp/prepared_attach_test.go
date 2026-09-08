@@ -122,18 +122,18 @@ func TestPreparedAttachment_PostPublicationAdmissionErrorRetainsLiveGeneration(t
 	}); err != nil {
 		t.Fatalf("ActivateUnder after irreversible publication = %v, want success", err)
 	}
-	descriptor, ok := cat.Resolve("post-publish_echo")
+	descriptor, ok := cat.Resolve(PhysicalServerName("post-publish", auth.Owner{Tenant: "tenant", Agent: "agent"}) + "_echo")
 	if !ok {
 		t.Fatal("post-publication admission error withdrew the live catalog generation")
 	}
-	invokeCtx, err := identity.With(ctx, defaultIdentity())
+	invokeCtx, err := identity.With(ctx, identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := descriptor.Invoke(invokeCtx, json.RawMessage(`{"text":"still live"}`)); err != nil {
+	if _, err := descriptor.Invoke(tools.WithEffectiveAgentConfig(invokeCtx, "agent"), json.RawMessage(`{"text":"still live"}`)); err != nil {
 		t.Fatalf("live descriptor invoke after admission error: %v", err)
 	}
-	if _, _, ok := reg.RegistrationIdentity("post-publish"); !ok {
+	if _, _, ok := reg.RegistrationIdentityForOwner("post-publish", auth.Owner{Tenant: "tenant", Agent: "agent"}); !ok {
 		t.Fatal("post-publication admission error withdrew the live registry handle")
 	}
 	if !p.activated || !bytes.Contains(logs.Bytes(), []byte(releaseErr.Error())) {
@@ -194,7 +194,7 @@ func TestPreparedAttachment_ExactRemovalAfterReservationInvalidatesPublication(t
 	case <-time.After(5 * time.Second):
 		t.Fatal("ActivateIf never reached the post-reservation authority proof")
 	}
-	if pending, live, closing := reg.reservationState("removed-while-staged"); !pending || live || closing {
+	if pending, live, closing := reg.reservationState(PhysicalServerName("removed-while-staged", owner)); !pending || live || closing {
 		t.Fatalf("proof barrier reservation = pending=%t live=%t closing=%t, want true/false/false", pending, live, closing)
 	}
 	withdrawals := 0
@@ -212,7 +212,7 @@ func TestPreparedAttachment_ExactRemovalAfterReservationInvalidatesPublication(t
 	if _, ok := cat.Resolve("removed-while-staged_echo"); ok {
 		t.Fatal("invalidated staged provider became dispatchable")
 	}
-	if pending, live, closing := reg.reservationState("removed-while-staged"); pending || live || closing {
+	if pending, live, closing := reg.reservationState(PhysicalServerName("removed-while-staged", owner)); pending || live || closing {
 		t.Fatalf("invalidated reservation leaked: pending=%t live=%t closing=%t", pending, live, closing)
 	}
 	if err := p.Close(context.Background()); err != nil {
@@ -253,7 +253,7 @@ func TestPreparedAttachment_SignedToolProjectionAppliesAllowAndDenyBeforePublica
 			if err := prepared.Activate(ctx); err != nil {
 				t.Fatalf("activate: %v", err)
 			}
-			_, got := cat.Resolve("signed_echo")
+			_, got := cat.Resolve(PhysicalServerName("signed", auth.Owner{Tenant: "tenant", Agent: "agent"}) + "_echo")
 			if got != tc.want {
 				t.Fatalf("published echo=%v, want %v", got, tc.want)
 			}
@@ -403,7 +403,7 @@ func TestPreparedAttachment_ActivatedToolsEnterSearchIndex(t *testing.T) {
 	got := cat.Search(context.Background(), "echo", nil, 10)
 	found := false
 	for _, tool := range got {
-		found = found || tool.Name == "searchable_echo"
+		found = found || tool.Name == PhysicalServerName("searchable", auth.Owner{Tenant: "tenant", Agent: "agent"})+"_echo"
 	}
 	if !found {
 		t.Fatalf("activated tool missing from search index: %+v", got)

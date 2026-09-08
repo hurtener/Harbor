@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Candidate v1.31.5
+
+- Runtime-added MCP sources now isolate tenant, agent and user ownership from
+  explicitly shared boot infrastructure. Owner-derived physical names prevent
+  collisions; legacy references resolve only through current scoped authority.
+- Remote tool broker client credentials now select and verify the execution or signed
+  connection tenant, isolate cache and in-flight fetches, and fail permanent authority
+  errors without retrying. Legacy deployment credentials require explicit
+  `credential_scope: deployment`; scoped pulls never downgrade.
+
 ## [1.31.3] — 2026-08-30
 
 ### Fixed

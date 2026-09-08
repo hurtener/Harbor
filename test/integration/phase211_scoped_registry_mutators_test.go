@@ -37,6 +37,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/audit"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -53,6 +54,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
+	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -151,7 +153,8 @@ func buildP211Env(t *testing.T) *p211Env {
 		t.Fatalf("register boot: %v", rerr)
 	}
 
-	accessor, err := mcpconsole.NewRegistryAccessor(reg)
+	configReg := scopedIntegrationConfig(t, bus, map[string]toolauth.Owner{p211OwnedServer: p211Owner()})
+	accessor, err := mcpconsole.NewRegistryAccessor(reg, mcpconsole.WithSourceAuthorizer(mcpconsole.NewSourceAuthorizer(reg, configReg)))
 	if err != nil {
 		t.Fatalf("NewRegistryAccessor: %v", err)
 	}
@@ -189,7 +192,7 @@ func p211Ctx(t *testing.T, tenant string) context.Context {
 // p211AdminCtx is p211Ctx plus the admin scope claim the verb requires.
 func p211AdminCtx(t *testing.T, tenant string) context.Context {
 	t.Helper()
-	return protoauth.WithScopes(p211Ctx(t, tenant), []protoauth.Scope{protoauth.ScopeAdmin})
+	return protoauth.WithScopes(protoauth.WithAgentReach(p211Ctx(t, tenant), []string{p211Owner().Agent}), []protoauth.Scope{protoauth.ScopeAdmin})
 }
 
 // p211Toggle dispatches set_raw_html_trust as tenant.
@@ -203,11 +206,10 @@ func p211Toggle(t *testing.T, env *p211Env, tenant, name string, trusted bool) (
 		})
 }
 
-// p211Trust reads the live flag back through the read projection, which stays
-// bare-name and owner-blind (D-287 / D-301).
+// p211Trust reads the live flag as its owning tenant; foreign reads are hidden.
 func p211Trust(t *testing.T, env *p211Env, name string) bool {
 	t.Helper()
-	v, err := env.registry.GetServer(p211Ctx(t, p211OtherTenant), name)
+	v, err := env.registry.GetServer(p211Ctx(t, p211OwningTenant), name)
 	if err != nil {
 		t.Fatalf("GetServer(%q): %v", name, err)
 	}
@@ -420,4 +422,27 @@ func TestE2E_P211_ConcurrentCrossTenantWriters(t *testing.T) {
 	if got := p211Trust(t, env, p211OwnedServer); !got {
 		t.Fatalf("terminal flag = %v, want the owning tenant's true — a cross-tenant write landed", got)
 	}
+}
+
+// scopedIntegrationConfig records the real desired-state authority for fixture sources.
+func scopedIntegrationConfig(t *testing.T, bus events.EventBus, owners map[string]toolauth.Owner) agentcfg.Registry {
+	t.Helper()
+	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	reg, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: st, Bus: bus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reg.Close(context.Background()) })
+	for name, owner := range owners {
+		q := identity.Quadruple{Identity: identity.Identity{TenantID: owner.Tenant, UserID: "fixture-admin", SessionID: "fixture-session"}}
+		payload := agentcfg.ConfigPayload{Connections: &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: name, Transport: agentcfg.MCPTransportHTTP, URL: "https://fixture.example/mcp"}}}}
+		if _, err := reg.SetRevision(context.Background(), q, owner.Agent, agentcfg.ConfigScopeAgent, payload, agentcfg.SetOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return reg
 }

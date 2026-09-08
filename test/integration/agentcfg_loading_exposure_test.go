@@ -66,6 +66,7 @@ const (
 )
 
 type leHarness struct {
+	mcpReg   *mcpdrv.Registry
 	handler  http.Handler
 	registry agentcfg.Registry
 	catalog  tools.ToolCatalog
@@ -131,7 +132,7 @@ func newLEHarness(t *testing.T, stdioAllowlist []string) *leHarness {
 		_ = reg.Close(context.Background())
 		_ = bus.Close(context.Background())
 	})
-	return &leHarness{handler: h, registry: reg, catalog: cat, bus: bus}
+	return &leHarness{handler: h, registry: reg, catalog: cat, bus: bus, mcpReg: mcpReg}
 }
 
 func (h *leHarness) call(t *testing.T, path string, tenant string, body any, scopes []protoauth.Scope) *httptest.ResponseRecorder {
@@ -178,13 +179,13 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 	if addResp.State != "online" {
 		t.Fatalf("attach state = %q, want online (reason=%q)", addResp.State, addResp.Reason)
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); !ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", leTenant, leAgent) + "_echo"); !ok {
 		t.Fatal("the fixture's echo tool did not reach the live catalog")
 	}
 
 	// --- Boot-effective: the tool is prompt-visible (LoadingAlways) before
 	//     any override. ---
-	view, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leTenant), h.catalog, leFilter(leTenant))
+	view, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leTenant), h.catalog, leFilter(leTenant), h.mcpReg)
 	if err != nil {
 		t.Fatalf("projection (boot-effective): %v", err)
 	}
@@ -203,14 +204,14 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 	// --- Next run's List() excludes it; Resolve() still returns it
 	//     (dispatch-callable); tool_search (the raw-catalog meta-tool) still
 	//     surfaces it — the D-167 two-turn discovery cycle survives. ---
-	view, err = projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leTenant), h.catalog, leFilter(leTenant))
+	view, err = projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leTenant), h.catalog, leFilter(leTenant), h.mcpReg)
 	if err != nil {
 		t.Fatalf("projection (deferred): %v", err)
 	}
 	if hasEchoTool(view) {
 		t.Fatal("mcptest_echo must be absent from List() after the deferred override")
 	}
-	if tl, ok := view.Resolve("mcptest_echo"); !ok {
+	if tl, ok := view.Resolve(ownedSource("mcptest", leTenant, leAgent) + "_echo"); !ok {
 		t.Fatal("mcptest_echo must still resolve (discovery-callable) after the deferred override")
 	} else if tl.Loading != tools.LoadingDeferred {
 		t.Fatalf("Resolve(mcptest_echo).Loading = %q, want deferred", tl.Loading)
@@ -219,7 +220,7 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	if !searchFinds(searchCtx, h.catalog, "echo", "mcptest_echo") {
+	if !searchFinds(searchCtx, h.catalog, "echo", ownedSource("mcptest", leTenant, leAgent)+"_echo") {
 		t.Fatal("tool_search (raw catalog) must still surface the deferred-overridden tool")
 	}
 
@@ -228,7 +229,7 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 	if backResp.Code != http.StatusOK {
 		t.Fatalf("flip back: status=%d body=%s", backResp.Code, backResp.Body.String())
 	}
-	view, err = projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leTenant), h.catalog, leFilter(leTenant))
+	view, err = projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leTenant), h.catalog, leFilter(leTenant), h.mcpReg)
 	if err != nil {
 		t.Fatalf("projection (restored): %v", err)
 	}
@@ -269,15 +270,13 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 
-	// --- Identity propagation + cross-agent isolation: a second agent_id
-	//     under the SAME tenant, never touched by the override, sees the
-	//     boot-effective mode. ---
-	crossAgentView, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leOtherAgent, leQuad(leTenant), h.catalog, leFilter(leTenant))
+	// Another agent in the same tenant cannot see the owner's source.
+	crossAgentView, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leOtherAgent, leQuad(leTenant), h.catalog, leFilter(leTenant), h.mcpReg)
 	if err != nil {
 		t.Fatalf("projection (cross-agent): %v", err)
 	}
-	if !hasEchoTool(crossAgentView) {
-		t.Fatal("a second agent_id under the same tenant must see the boot-effective (unaffected) mode")
+	if hasEchoTool(crossAgentView) {
+		t.Fatal("another agent must not see the owned source")
 	}
 
 	// Re-apply the deferred override on leAgent for the cross-tenant check.
@@ -287,15 +286,13 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 		t.Fatalf("re-apply deferred: status=%d body=%s", resp.Code, resp.Body.String())
 	}
 
-	// --- Cross-tenant isolation: a DIFFERENT tenant using the IDENTICAL
-	//     agent_id string sees NO effect from leTenant's override (agent_id
-	//     is a key, never an isolation widener — CLAUDE.md §6 rule 10). ---
-	crossTenantView, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leOtherTenant), h.catalog, leFilter(leOtherTenant))
+	// Another tenant cannot see the source even with the identical agent id.
+	crossTenantView, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(leOtherTenant), h.catalog, leFilter(leOtherTenant), h.mcpReg)
 	if err != nil {
 		t.Fatalf("projection (cross-tenant): %v", err)
 	}
-	if !hasEchoTool(crossTenantView) {
-		t.Fatal("a different tenant using the identical agent_id must be unaffected by leTenant's override — isolation breach")
+	if hasEchoTool(crossTenantView) {
+		t.Fatal("another tenant must not see the owned source")
 	}
 }
 
@@ -303,7 +300,7 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 // in v.List().
 func hasEchoTool(v tools.PlannerCatalogView) bool {
 	for _, tl := range v.List() {
-		if tl.Name == "mcptest_echo" {
+		if tl.Name == ownedSource("mcptest", leTenant, leAgent)+"_echo" {
 			return true
 		}
 	}

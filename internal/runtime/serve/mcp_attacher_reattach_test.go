@@ -378,7 +378,7 @@ func TestMCPConnectionAttacher_Reattach_OAuthProviderBindingResolves(t *testing.
 			if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 				t.Fatalf("a name binding whose host is allow-listed must re-attach: %v", err)
 			}
-			if _, exists := reg.OwnerOf("bound-ok"); !exists {
+			if _, exists := reg.OwnerOf(mcpdrv.PhysicalServerName("bound-ok", reOwner())); !exists {
 				t.Fatal("the re-attached server is not in the registry")
 			}
 			// The credential-plane assertion: resolving the binding read the
@@ -482,7 +482,7 @@ func TestMCPConnectionAttacher_Reattach_IsCredentialNeutral(t *testing.T) {
 			if _, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil {
 				t.Fatalf("a credential-less re-attach must SUCCEED (the attach has no token step): %v", err)
 			}
-			if _, exists := reg.OwnerOf("creditless"); !exists {
+			if _, exists := reg.OwnerOf(mcpdrv.PhysicalServerName("creditless", reOwner())); !exists {
 				t.Fatal("the credential-less connection is not live")
 			}
 			if n := prov.tokenCalls.Load(); n != 0 {
@@ -537,7 +537,7 @@ func TestMCPConnectionAttacher_Reattach_ShortfallSurfacesOnFirstCallNotOnAttach(
 
 	// The tool is live in the catalog; invoking it is where the credential is
 	// needed — and where the SHIPPED typed sentinel fires.
-	d, ok := cat.Resolve("shortfall_echo")
+	d, ok := cat.Resolve(mcpdrv.PhysicalServerName("shortfall", reOwner()) + "_echo")
 	if !ok {
 		t.Fatal("the re-attached server's tool is not in the catalog")
 	}
@@ -547,7 +547,7 @@ func TestMCPConnectionAttacher_Reattach_ShortfallSurfacesOnFirstCallNotOnAttach(
 	if idErr != nil {
 		t.Fatalf("identity.With: %v", idErr)
 	}
-	_, callErr := d.Invoke(callCtx, []byte(`{"text":"hi"}`))
+	_, callErr := d.Invoke(tools.WithEffectiveAgentConfig(callCtx, reAgent), []byte(`{"text":"hi"}`))
 	if callErr == nil {
 		t.Fatal("a call with no available credential must fail loud, not silently succeed unauthenticated")
 	}
@@ -618,7 +618,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 		a, _, reg, bus := reAttacherFor(t)
 		evs := newREvents(t, bus, reQuad())
 		other := toolauth.Owner{Tenant: "tenant-other", Agent: "agent-other"}
-		otherProv := &reattachFakeProvider{id: tools.ToolSourceID("shared-name")}
+		otherProv := &reattachFakeProvider{id: tools.ToolSourceID(mcpdrv.PhysicalServerName("shared-name", reOwner()))}
 		if err := reg.Register(reattachIDCtx(t), mcpdrv.ServerRegistration{
 			Provider: otherProv, Transport: "stdio", InitialState: mcpdrv.ServerStateOnline, Owner: other,
 		}); err != nil {
@@ -632,7 +632,7 @@ func TestReattach_FailureClassesAreDistinctAndAllReported(t *testing.T) {
 		if otherProv.closeCount() != 0 {
 			t.Fatal("a cross-owner conflict must NEVER tear down the other owner's transport")
 		}
-		if o, ok := reg.OwnerOf("shared-name"); !ok || o != other {
+		if o, ok := reg.OwnerOf(mcpdrv.PhysicalServerName("shared-name", reOwner())); !ok || o != other {
 			t.Fatalf("the other owner's registration was replaced: owner=%+v ok=%t", o, ok)
 		}
 		assertClass(t, evs, agentcfg.MCPReattachClassOwnerConflict)
@@ -752,7 +752,7 @@ func TestMCPConnectionAttacher_Reattach_AlreadyRegisteredUnderOwnerIsNoOp(t *tes
 	} else if !changed {
 		t.Fatal("first re-attach reported no change")
 	}
-	before, err := reg.GetServer(reattachIDCtx(t), "noop")
+	before, err := reg.GetServer(reOwnedCtx(t), mcpdrv.PhysicalServerName("noop", reOwner()))
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestMCPConnectionAttacher_Reattach_AlreadyRegisteredUnderOwnerIsNoOp(t *tes
 	} else if changed {
 		t.Fatal("exact descriptor re-attach reported a replacement")
 	}
-	after, err := reg.GetServer(reattachIDCtx(t), "noop")
+	after, err := reg.GetServer(reOwnedCtx(t), mcpdrv.PhysicalServerName("noop", reOwner()))
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)
 	}
@@ -787,7 +787,7 @@ func TestMCPConnectionAttacher_Reattach_SameOwnerChangedDescriptorReplaces(t *te
 	if changed, err := a.Reattach(context.Background(), reOwner(), reQuad(), desc); err != nil || !changed {
 		t.Fatalf("first Reattach changed=%t err=%v", changed, err)
 	}
-	_, beforeFingerprint, ok := reg.RegistrationIdentity(desc.Name)
+	_, beforeFingerprint, ok := reg.RegistrationIdentityForOwner(desc.Name, reOwner())
 	if !ok {
 		t.Fatal("first descriptor not registered")
 	}
@@ -796,7 +796,7 @@ func TestMCPConnectionAttacher_Reattach_SameOwnerChangedDescriptorReplaces(t *te
 	if changed, err := a.Reattach(context.Background(), reOwner(), reQuad(), edited); err != nil || !changed {
 		t.Fatalf("changed Reattach changed=%t err=%v", changed, err)
 	}
-	owner, afterFingerprint, ok := reg.RegistrationIdentity(desc.Name)
+	owner, afterFingerprint, ok := reg.RegistrationIdentityForOwner(desc.Name, reOwner())
 	if !ok || owner != reOwner() {
 		t.Fatalf("replacement registration owner=%+v ok=%t", owner, ok)
 	}
@@ -1036,6 +1036,7 @@ func TestMCPConnectionAttacher_Reattach_ConcurrentOwners(t *testing.T) {
 		identity.Identity{TenantID: "sys", UserID: "sys", SessionID: "sys"}, nil, nil, nil,
 		WithReattachTimeout(20*time.Second))
 
+	t.Cleanup(func() { _ = a.Close(context.Background()) })
 	ownerA := toolauth.Owner{Tenant: "tenant-a", Agent: "agent-a"}
 	ownerB := toolauth.Owner{Tenant: "tenant-b", Agent: "agent-b"}
 	quadA := identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "s"}, RunID: "run-a"}
@@ -1075,28 +1076,25 @@ func TestMCPConnectionAttacher_Reattach_ConcurrentOwners(t *testing.T) {
 	}
 
 	// Exactly one registration per (owner, name), each under its OWN owner.
-	if o, ok := reg.OwnerOf("conn-b"); !ok || o != ownerB {
+	if o, ok := reg.OwnerOf(mcpdrv.PhysicalServerName("conn-b", ownerB)); !ok || o != ownerB {
 		t.Fatalf("conn-b owner = %+v ok=%t, want %+v", o, ok, ownerB)
 	}
-	if o, ok := reg.OwnerOf("conn-a"); ok && o != ownerA {
+	if o, ok := reg.OwnerOf(mcpdrv.PhysicalServerName("conn-a", ownerA)); ok && o != ownerA {
 		t.Fatalf("conn-a owner = %+v, want %+v (no cross-owner bleed)", o, ownerA)
 	}
-	servers, _, lerr := reg.ListServers(reattachIDCtx(t), mcpdrv.ListFilter{})
-	if lerr != nil {
-		t.Fatalf("ListServers: %v", lerr)
-	}
+	servers := reg.SourceIDs()
 	names := map[string]int{}
 	for _, s := range servers {
-		names[s.Name]++
+		names[s]++
 	}
-	if names["conn-b"] != 1 {
-		t.Fatalf("conn-b registrations = %d, want exactly 1 (no double-attach across %d concurrent run starts)", names["conn-b"], N)
+	if names[mcpdrv.PhysicalServerName("conn-b", ownerB)] != 1 {
+		t.Fatalf("conn-b registrations = %d, want exactly 1 (no double-attach across %d concurrent run starts)", names[mcpdrv.PhysicalServerName("conn-b", ownerB)], N)
 	}
-	if names["conn-a"] > 1 {
-		t.Fatalf("conn-a registrations = %d, want at most 1", names["conn-a"])
+	if names[mcpdrv.PhysicalServerName("conn-a", ownerA)] > 1 {
+		t.Fatalf("conn-a registrations = %d, want at most 1", names[mcpdrv.PhysicalServerName("conn-a", ownerA)])
 	}
 	// B's tool set is live and is B's — never A's.
-	if d, ok := cat.Resolve("conn-b_echo"); !ok || d.Tool.Source != tools.ToolSourceID("conn-b") {
+	if d, ok := cat.Resolve(mcpdrv.PhysicalServerName("conn-b", ownerB) + "_echo"); !ok || d.Tool.Source != tools.ToolSourceID(mcpdrv.PhysicalServerName("conn-b", ownerB)) {
 		t.Fatalf("conn-b_echo resolve = %+v ok=%t, want B's own descriptor", d.Tool, ok)
 	}
 
@@ -1111,4 +1109,13 @@ func TestMCPConnectionAttacher_Reattach_ConcurrentOwners(t *testing.T) {
 		t.Errorf("goroutine leak after the concurrent re-attach run + Close: baseline=%d now=%d (leaked ~%d)",
 			base, goruntime.NumGoroutine(), leaked)
 	}
+}
+
+func reOwnedCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), reQuad().Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tools.WithEffectiveAgentConfig(ctx, reAgent)
 }

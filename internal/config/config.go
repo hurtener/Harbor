@@ -1773,6 +1773,9 @@ type ToolOAuthProviderConfig struct {
 //	      cache_ttl: 5m       # optional
 //	      timeout: 10s        # optional
 type ToolOAuthCredentialBrokerConfig struct {
+	// CredentialScope is tenant (default) or explicit deployment-wide compatibility.
+	// Signed capabilities always require tenant scope.
+	CredentialScope string `yaml:"credential_scope,omitempty"`
 	// Name is the operator-facing broker identifier (unique within the
 	// slice; referenced by name from a Protocol-installed provider
 	// descriptor). Required.
@@ -1888,6 +1891,8 @@ type ToolSignedOAuthMCPCapabilityAuthorityConfig struct {
 // Restart-required (the provider LIST is boot-declared; only credential
 // resolution is late).
 type ToolOAuthRemoteConfig struct {
+	// CredentialScope is tenant (default) or explicit deployment-wide compatibility.
+	CredentialScope string `yaml:"credential_scope,omitempty"`
 	// URL is the coordinator credential endpoint. Required; validated
 	// well-formed at boot. MUST be https — the fetch sends the runtime's
 	// service bearer token, so TLS is mandatory; plaintext http is

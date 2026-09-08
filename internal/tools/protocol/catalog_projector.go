@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,7 +96,7 @@ func WithCatalogViewResolver(r CatalogViewResolver) CatalogProjectorOption {
 }
 
 // WithLogicalSourceResolver wires the runtime's canonical physical-to-logical
-// MCP source projection. It changes only the wire Owner field; the physical
+// MCP source projection. It projects the wire Owner and LogicalID fields; the physical
 // catalog ID, Name, and identity-scoped visibility remain unchanged.
 func WithLogicalSourceResolver(r LogicalSourceResolver) CatalogProjectorOption {
 	return func(p *CatalogProjector) {
@@ -248,13 +249,18 @@ func reliabilityTierOf(t tools.Tool) string {
 // resolving the annotated fields through the Annotator (or defaults).
 func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity, t tools.Tool) prototypes.Tool {
 	owner := string(t.Source)
+	logicalID := t.Name
 	if t.Transport == tools.TransportMCP && p.logicalSources != nil {
 		if logical, ok := p.logicalSources.LogicalNameOfSource(t.Source); ok && logical != "" {
 			owner = logical
+			if suffix, found := strings.CutPrefix(t.Name, string(t.Source)+"_"); found {
+				logicalID = logical + "_" + suffix
+			}
 		}
 	}
 	row := prototypes.Tool{
 		ID:              t.Name,
+		LogicalID:       logicalID,
 		Name:            t.Name,
 		Description:     t.Description,
 		Scope:           scopeOf(t),
@@ -389,6 +395,10 @@ func (p *CatalogProjector) DescribeTool(ctx context.Context, id identity.Identit
 	if !ok {
 		return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
+	return p.describeDescriptor(ctx, id, toolID, agentID, t)
+}
+
+func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.Identity, toolID, agentID string, t tools.Tool) (prototypes.ToolManifest, error) {
 	examples := make([]string, 0, len(t.Examples))
 	for _, ex := range t.Examples {
 		examples = append(examples, ex.Description)
@@ -539,3 +549,46 @@ var (
 	_ ApprovalPolicySetter = (*CatalogProjector)(nil)
 	_ OAuthRevoker         = (*CatalogProjector)(nil)
 )
+
+// ConfigurationCatalogViewResolver supplies the same source admission as execution,
+// excluding only exposure restrictions and prompt loading selection.
+type ConfigurationCatalogViewResolver interface {
+	ConfigurationCatalogView(context.Context, identity.Identity, string) (tools.PlannerCatalogView, error)
+}
+
+// ListConfigurationTools implements ConfigurationProjector.
+func (p *CatalogProjector) ListConfigurationTools(ctx context.Context, id identity.Identity, agentID string) ([]prototypes.Tool, error) {
+	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
+	if !ok {
+		return nil, ErrAdminUnsupported
+	}
+	view, err := resolver.ConfigurationCatalogView(ctx, id, agentID)
+	if err != nil {
+		return nil, err
+	}
+	descriptors := view.List()
+	rows := make([]prototypes.Tool, 0, len(descriptors))
+	for _, t := range descriptors {
+		rows = append(rows, p.projectRow(ctx, id, t))
+	}
+	return rows, nil
+}
+
+// DescribeConfigurationTool implements ConfigurationProjector. Even a known physical
+// ID must occur in the admitted inventory; direct catalog resolution is forbidden.
+func (p *CatalogProjector) DescribeConfigurationTool(ctx context.Context, id identity.Identity, toolID, agentID string) (prototypes.ToolManifest, error) {
+	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
+	if !ok {
+		return prototypes.ToolManifest{}, ErrAdminUnsupported
+	}
+	view, err := resolver.ConfigurationCatalogView(ctx, id, agentID)
+	if err != nil {
+		return prototypes.ToolManifest{}, err
+	}
+	for _, t := range view.List() {
+		if t.Name == toolID {
+			return p.describeDescriptor(ctx, id, toolID, agentID, t)
+		}
+	}
+	return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
+}

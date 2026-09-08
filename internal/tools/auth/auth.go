@@ -382,7 +382,7 @@ var (
 	// ErrIdentityRequired — a Provider / TokenStore method was called
 	// with a context whose identity triple is missing or incomplete.
 	// Fails closed (CLAUDE.md §6 rule 9).
-	ErrIdentityRequired = errors.New("auth: identity triple incomplete")
+	ErrIdentityRequired = permanentAuthError("auth: identity triple incomplete")
 
 	// ErrInvalidBindingScope — OAuthConfig.BindingScope is not one
 	// of the two canonical values.
@@ -439,7 +439,7 @@ var (
 	ErrRegistrationFailed = errors.New("auth: dynamic client registration failed")
 
 	// ErrProviderClosed — any operation called after Close.
-	ErrProviderClosed = errors.New("auth: provider closed")
+	ErrProviderClosed = permanentAuthError("auth: provider closed")
 
 	// ErrAdminScopeRequired — a ScopeAgent flow was initiated /
 	// completed / revoked without the admin scope claim. Harbor
@@ -618,3 +618,11 @@ type OAuthProvider interface {
 func wrap(sentinel error, format string, args ...any) error {
 	return joinFmt(sentinel, format, args...)
 }
+
+type permanentAuthError string
+
+func (e permanentAuthError) Error() string   { return string(e) }
+func (e permanentAuthError) Permanent() bool { return true }
+
+// ErrCredentialRejected is a permanent broker authority or configuration refusal.
+var ErrCredentialRejected = permanentAuthError("auth: credential rejected")

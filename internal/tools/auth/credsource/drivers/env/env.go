@@ -91,3 +91,9 @@ func (s *source) resolve() (credsource.ClientCredential, error) {
 	}
 	return s.cred, nil
 }
+
+// Invalidate preserves immutable boot credentials.
+func (s *source) Invalidate(ctx context.Context) error { return ctx.Err() }
+
+// Close has no resources to release for immutable boot credentials.
+func (s *source) Close(ctx context.Context) error { return ctx.Err() }

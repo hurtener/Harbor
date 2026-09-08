@@ -259,3 +259,9 @@ Every error carries the `file:line` of the offending key. Fix one, re-run, repea
 - [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) — the memory strategies + runtime skill catalog in depth.
 - [`validate-and-package`](../validate-and-package/SKILL.md) — preflight before shipping.
 - The full per-key reference: `docs/CONFIG.md`.
+
+Remote tool brokers now default to verified tenant credential selection. Upgrade the
+coordinator to the scoped response contract before deploying. An intentionally
+deployment-wide legacy broker must explicitly declare `credential_scope: deployment`;
+signed capability providers always remain tenant scoped. See `docs/CONFIG.md`,
+“Tenant-scoped broker credential pulls”, for the request, response and migration.

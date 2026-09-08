@@ -71,6 +71,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	)
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}
+	physicalName := mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID})
 
 	catalog := tools.NewCatalog()
 	var mcpRequests atomic.Int64
@@ -113,7 +114,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		methods[message.Method]++
 		authHeaders[message.Method] = append(authHeaders[message.Method], req.Header.Get("Authorization"))
 		requestMu.Unlock()
-		if _, ok := catalog.Resolve(connectionName + "_echo"); ok {
+		if _, ok := catalog.Resolve(physicalName + "_echo"); ok {
 			catalogVisibleDuringPrepare.Store(true)
 		}
 		if req.Header.Get("Authorization") != "Bearer "+downstreamBearer {
@@ -142,7 +143,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"format_version": 1, "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
+			"format_version": 2, "tenant_id": req.Header.Get("X-Harbor-Credential-Tenant"), "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
 		})
 	})
 	brokerMux.HandleFunc("/token", func(w http.ResponseWriter, req *http.Request) {
@@ -316,7 +317,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if got := mcpRequests.Load(); got != 0 {
 		t.Fatalf("empty token reached MCP: requests=%d", got)
 	}
-	if _, ok := catalog.Resolve(connectionName + "_echo"); ok {
+	if _, ok := catalog.Resolve(physicalName + "_echo"); ok {
 		t.Fatal("catalog published after failed private preparation")
 	}
 	failedPreparation, err := operationStore.Load(context.Background(), agentcfg.SignedOAuthMCPReplayKey{
@@ -341,7 +342,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if catalogVisibleDuringPrepare.Load() {
 		t.Fatal("catalog became visible before authenticated preparation completed")
 	}
-	if _, ok := catalog.Resolve(connectionName + "_echo"); !ok {
+	if _, ok := catalog.Resolve(physicalName + "_echo"); !ok {
 		t.Fatal("catalog did not publish after authenticated preparation succeeded")
 	}
 	if _, ok := providerSet.Get(providerName); ok {
@@ -405,7 +406,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatal(err)
 	}
 	dispatchCtx = protocolauth.WithAgentReach(dispatchCtx, []string{agentID})
-	runtimeATool, ok := catalog.Resolve(connectionName + "_echo")
+	runtimeATool, ok := catalog.Resolve(physicalName + "_echo")
 	if !ok {
 		t.Fatal("runtime A tool is not published")
 	}
@@ -500,7 +501,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	}
 	if _, err := appsSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPAppsCallTool, &prototypes.MCPAppCallToolRequest{
 		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
-		AgentID:  agentID, Tool: connectionName + "_echo", Arguments: json.RawMessage(`{}`),
+		AgentID:  agentID, Tool: physicalName + "_echo", Arguments: json.RawMessage(`{}`),
 	}); err != nil {
 		t.Fatalf("Apps signed tool dispatch: %v", err)
 	}
@@ -578,7 +579,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if runtimeBOperation.PublisherEpoch == "" || runtimeBOperation.PublisherEpoch == runtimeAOperation.PublisherEpoch {
 		t.Fatalf("runtime B did not take over publisher epoch: A=%q B=%q", runtimeAOperation.PublisherEpoch, runtimeBOperation.PublisherEpoch)
 	}
-	runtimeBTool, ok := secondCatalog.Resolve(connectionName + "_echo")
+	runtimeBTool, ok := secondCatalog.Resolve(physicalName + "_echo")
 	if !ok {
 		t.Fatal("runtime B tool is not published after reconcile")
 	}
@@ -649,7 +650,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if removed.OperationPhase != string(agentcfg.SignedOAuthMCPPhaseRemoved) {
 		t.Fatalf("empty-runtime removal phase = %q, want removed", removed.OperationPhase)
 	}
-	if _, ok := thirdCatalog.Resolve(connectionName + "_echo"); ok {
+	if _, ok := thirdCatalog.Resolve(physicalName + "_echo"); ok {
 		t.Fatal("empty remover unexpectedly acquired a local catalog handle")
 	}
 	exchangeMu.Lock()
@@ -672,10 +673,10 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if err := secondReconciler.ReconcileSignedOAuthMCPCapability(dispatchCtx, quad, agentID); err != nil {
 		t.Fatalf("runtime B terminal cleanup reconcile: %v", err)
 	}
-	if _, ok := secondCatalog.Resolve(connectionName + "_echo"); ok {
+	if _, ok := secondCatalog.Resolve(physicalName + "_echo"); ok {
 		t.Fatal("runtime B terminal reconcile left catalog dispatch visible")
 	}
-	if _, _, ok := secondMCPRegistry.RegistrationIdentity(connectionName); ok {
+	if _, _, ok := secondMCPRegistry.RegistrationIdentity(physicalName); ok {
 		t.Fatal("runtime B terminal reconcile left matching publisher handle registered")
 	}
 }
@@ -802,7 +803,7 @@ func TestRegisterUserOAuthMCPCapability_ProductionPathAuthenticatesPerUserAndIso
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"format_version": 1, "client_id": "fixture-user-client", "client_secret": "fixture-user-secret", "expires_in": 300,
+			"format_version": 2, "tenant_id": req.Header.Get("X-Harbor-Credential-Tenant"), "client_id": "fixture-user-client", "client_secret": "fixture-user-secret", "expires_in": 300,
 		})
 	})
 	brokerMux.HandleFunc("/token", func(w http.ResponseWriter, req *http.Request) {

@@ -1938,8 +1938,9 @@ func runVersionHandshake(t *testing.T) {
 	caps := types.Capabilities()
 	// task-control + streaming-events + runtime-posture + topology-snapshot +
 	// state-snapshots + agent-config + session-lifecycle + tool annotations +
-	// caller memory + skill publications + provider catalog + provider route
-	// = 12 canonical capabilities at Protocol 0.1.0. (The capability
+	// caller memory + skill publications + provider catalog + provider route +
+	// tenant-scoped broker credentials + tools configuration view
+	// = 14 canonical capabilities at Protocol 0.1.0. (The capability
 	// constants live in
 	// internal/protocol/types/version.go; a new capability is a new
 	// constant + a new entry in canonicalCapabilities. A checkpoint fix
@@ -1951,22 +1952,24 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 12 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 12 (including CapSkillPublications, CapLLMProviderCatalog, and CapLLMProviderRoute) at Protocol 0.1.0", len(caps))
+	if len(caps) != 14 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 14 (including CapTenantScopedBrokerCredentials and CapToolsConfigurationView) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
-		types.CapTaskControl:        {},
-		types.CapEventsSubscribe:    {},
-		types.CapRuntimePosture:     {},
-		types.CapTopologySnapshot:   {},
-		types.CapStateSnapshots:     {},
-		types.CapAgentConfig:        {},
-		types.CapSessionLifecycle:   {},
-		types.CapToolAnnotations:    {},
-		types.CapCallerMemory:       {},
-		types.CapSkillPublications:  {},
-		types.CapLLMProviderCatalog: {},
-		types.CapLLMProviderRoute:   {},
+		types.CapTaskControl:                   {},
+		types.CapEventsSubscribe:               {},
+		types.CapRuntimePosture:                {},
+		types.CapTopologySnapshot:              {},
+		types.CapStateSnapshots:                {},
+		types.CapAgentConfig:                   {},
+		types.CapSessionLifecycle:              {},
+		types.CapToolAnnotations:               {},
+		types.CapToolsConfigurationView:        {},
+		types.CapCallerMemory:                  {},
+		types.CapSkillPublications:             {},
+		types.CapLLMProviderCatalog:            {},
+		types.CapLLMProviderRoute:              {},
+		types.CapTenantScopedBrokerCredentials: {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

@@ -57,8 +57,9 @@ type sourceLogicalNameResolver interface {
 // Translate the user tier only for the matching owner, preserving the
 // original names so the same narrow policy still applies to an operator/boot
 // source with that logical name or to a source that is not attached yet.
-func physicalizeUserExposure(base tools.PlannerCatalogView, resolver SourceOwnerResolver, owner auth.Owner, paused, disabled []string) ([]string, []string) {
-	if base == nil || resolver == nil || owner.User == "" || (len(paused) == 0 && len(disabled) == 0) {
+// catalogTools includes both loading modes, independent of prompt visibility.
+func physicalizeUserExposure(catalogTools []tools.Tool, resolver SourceOwnerResolver, owner auth.Owner, paused, disabled []string) ([]string, []string) {
+	if resolver == nil || owner.User == "" || (len(paused) == 0 && len(disabled) == 0) {
 		return paused, disabled
 	}
 	logicalNames, ok := resolver.(sourceLogicalNameResolver)
@@ -80,12 +81,12 @@ func physicalizeUserExposure(base tools.PlannerCatalogView, resolver SourceOwner
 	}
 	physicalPaused := make(map[string]struct{})
 	physicalDisabled := make(map[string]struct{})
-	for _, tool := range base.List() {
+	for _, tool := range catalogTools {
 		if tool.Source == "" {
 			continue
 		}
 		sourceOwner, found := resolver.OwnerOfSource(tool.Source)
-		if !found || sourceOwner != owner {
+		if !found || (sourceOwner.Agent != owner.Agent || !sourceOwner.AllowsPrincipal(owner.Tenant, owner.User)) {
 			continue
 		}
 		logicalSource, found := logicalNames.LogicalNameOfSource(tool.Source)
@@ -139,7 +140,7 @@ func physicalizeUserLoadingModes(cat tools.ToolCatalog, filter tools.CatalogFilt
 			continue
 		}
 		sourceOwner, found := resolver.OwnerOfSource(tool.Source)
-		if !found || sourceOwner != owner {
+		if !found || (sourceOwner.Agent != owner.Agent || !sourceOwner.AllowsPrincipal(owner.Tenant, owner.User)) {
 			continue
 		}
 		logical, found := logicalNames.LogicalNameOfSource(tool.Source)
@@ -187,10 +188,10 @@ func userLoadingTool(t tools.Tool, resolver SourceOwnerResolver, owner auth.Owne
 		return t, true
 	}
 	sourceOwner, found := resolver.OwnerOfSource(t.Source)
-	if !found || sourceOwner.User == "" {
+	if !found || sourceOwner.Scope() == auth.ScopeBootGlobal {
 		return t, true
 	}
-	if sourceOwner != owner {
+	if sourceOwner.Agent != owner.Agent || !sourceOwner.AllowsPrincipal(owner.Tenant, owner.User) {
 		return tools.Tool{}, false
 	}
 	logicalNames, ok := resolver.(sourceLogicalNameResolver)
@@ -212,18 +213,21 @@ func userLoadingTool(t tools.Tool, resolver SourceOwnerResolver, owner auth.Owne
 }
 
 type userScopedMCPView struct {
-	base        tools.PlannerCatalogView
-	resolver    SourceOwnerResolver
-	owner       auth.Owner
-	desiredPair map[string]struct{}
+	// catalogTools includes both loading modes; prompt presence is not authority.
+	catalogTools []tools.Tool
+	base         tools.PlannerCatalogView
+	resolver     SourceOwnerResolver
+	owner        auth.Owner
+	desiredPair  map[string]struct{}
+	agentPair    map[string]struct{}
 }
 
 func (v userScopedMCPView) allows(tool tools.Tool) bool {
 	owner, ok := v.resolver.OwnerOfSource(tool.Source)
-	if !ok || owner.User == "" {
+	if !ok || owner.Scope() == auth.ScopeBootGlobal {
 		return true
 	}
-	if owner != v.owner {
+	if owner.Agent != v.owner.Agent || !owner.AllowsPrincipal(v.owner.Tenant, v.owner.User) {
 		return false
 	}
 	logical := string(tool.Source)
@@ -232,16 +236,46 @@ func (v userScopedMCPView) allows(tool tools.Tool) bool {
 			logical = resolved
 		}
 	}
-	_, ok = v.desiredPair[logical]
+	if owner.Scope() == auth.ScopeTenantAgent {
+		_, ok = v.agentPair[logical]
+	} else {
+		_, ok = v.desiredPair[logical]
+	}
 	return ok
 }
 
 func (v userScopedMCPView) Resolve(name string) (tools.Tool, bool) {
-	t, ok := v.base.Resolve(name)
-	if !ok || !v.allows(t) {
+	if t, ok := v.base.Resolve(name); ok {
+		if !v.allows(t) {
+			return tools.Tool{}, false
+		}
+		return t, true
+	}
+	// Resume references written before owner namespacing through the same
+	// current admitted view. Only agent sources had legacy bare names.
+	var found tools.Tool
+	for _, t := range v.catalogTools {
+		owner, ok := v.resolver.OwnerOfSource(t.Source)
+		if !ok || owner.Scope() != auth.ScopeTenantAgent || !v.allows(t) {
+			continue
+		}
+		logical, allowed := userLoadingTool(t, v.resolver, v.owner)
+		if allowed && logical.Name == name {
+			if found.Name != "" {
+				return tools.Tool{}, false
+			}
+			found = t
+		}
+	}
+	if found.Name == "" {
 		return tools.Tool{}, false
 	}
-	return t, true
+	// Preserve effective loading metadata and the underlying resolution policy.
+	resolved, ok := v.base.Resolve(found.Name)
+	if !ok || resolved.Source != found.Source || !v.allows(resolved) {
+		return tools.Tool{}, false
+	}
+	return resolved, true
 }
 
 func (v userScopedMCPView) List() []tools.Tool {
@@ -1118,15 +1152,39 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
 func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+	return activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, false, ownerResolvers...)
+}
+
+func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, configuration bool, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+	if configuration {
+		filter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+	}
 	// Admin exposure (the baseline). Loading-mode overrides are composed below
 	// with the durable user tier; the ephemeral session tier remains
 	// narrow-only and contributes disable sets only.
 	var adminPaused, adminDisabled []string
 	var adminToolExposure *agentcfg.ToolExposure
+	agentPairNames := make(map[string]struct{})
 	if reg != nil && agentID != "" {
 		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
 		if err != nil {
 			return nil, err
+		}
+		if ok {
+			for _, descriptor := range rev.Payload.ConnectionDescriptors() {
+				agentPairNames[descriptor.Name] = struct{}{}
+			}
+			pairs, err := rev.Payload.EffectiveSignedOAuthMCPPairs()
+			if err != nil {
+				return nil, err
+			}
+			for _, pair := range pairs {
+				// An agent-scope pair retains its registering signer user; that is
+				// lifecycle provenance, not a user-scoped ownership constraint.
+				if pair.OwnerAgentID == agentID {
+					agentPairNames[pair.Connection.Name] = struct{}{}
+				}
+			}
 		}
 		if ok && rev.Payload.ToolExposure != nil {
 			adminPaused = rev.Payload.PausedServers()
@@ -1162,7 +1220,7 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 				return nil, pairErr
 			}
 			for _, pair := range pairs {
-				if pair.Connection.Name != "" {
+				if pair.Connection.Name != "" && pair.OwnerAgentID == agentID && pair.OwnerUserID == id.UserID {
 					userPairNames[pair.Connection.Name] = struct{}{}
 				}
 			}
@@ -1182,7 +1240,8 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// prompt-time filter is applied. The effective map is resolved once per run
 	// from an immutable view snapshot; the session tier has no loading-mode
 	// write path and can only narrow through the disable union below.
-	base := composeLoadingView(cat, filter, adminToolExposure, userLoadingExposure)
+	adminLoadingExposure := physicalizeUserLoadingModes(cat, filter, ownerResolver, actingOwner, adminToolExposure)
+	base := composeLoadingView(cat, filter, adminLoadingExposure, userLoadingExposure)
 
 	// Session overlay (narrow-only): the session's disable set is UNIONED into
 	// the exclusion set — it can only ADD to the disabled set, never remove an
@@ -1202,13 +1261,20 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	// re-widen past the admin-provisioned palette.
 	paused := unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
 	disabled := unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
-	if ownerResolver != nil && id.UserID != "" {
-		userPaused, userDisabled = physicalizeUserExposure(base, ownerResolver, actingOwner, userPaused, userDisabled)
+	if ownerResolver != nil {
+		// Exclusions and resume aliases must include deferred/demoted tools.
+		// Keep all other catalog filters intact; only prompt loading is widened.
+		broad := filter
+		broad.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+		catalogTools := cat.List(broad)
+		adminPaused, adminDisabled = physicalizeUserExposure(catalogTools, ownerResolver, actingOwner, adminPaused, adminDisabled)
+		overlay.DisabledServers, overlay.DisabledTools = physicalizeUserExposure(catalogTools, ownerResolver, actingOwner, overlay.DisabledServers, overlay.DisabledTools)
+		userPaused, userDisabled = physicalizeUserExposure(catalogTools, ownerResolver, actingOwner, userPaused, userDisabled)
 		paused = unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
 		disabled = unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
-		base = userScopedMCPView{base: base, resolver: ownerResolver, owner: actingOwner, desiredPair: userPairNames}
+		base = userScopedMCPView{base: base, catalogTools: catalogTools, resolver: ownerResolver, owner: actingOwner, desiredPair: userPairNames, agentPair: agentPairNames}
 	}
-	if len(paused) == 0 && len(disabled) == 0 {
+	if configuration || (len(paused) == 0 && len(disabled) == 0) {
 		return base, nil
 	}
 	return tools.NewExclusionView(base, paused, disabled), nil
@@ -1394,6 +1460,15 @@ func EffectiveLoadingMode(ctx context.Context, reg agentcfg.Registry, agentID st
 	if err != nil {
 		return "", err
 	}
+	var ownerResolver SourceOwnerResolver
+	if len(ownerResolvers) > 0 {
+		ownerResolver = ownerResolvers[0]
+	}
+	logical, allowed := userLoadingTool(t, ownerResolver, auth.Owner{Tenant: id.TenantID, Agent: agentID, User: id.UserID})
+	if !allowed {
+		return boot, nil
+	}
+	t = logical
 	mode := boot
 	if adminOK {
 		if resolved, ok := resolveEffectiveLoading(admin.Payload.ToolExposure, t); ok {
@@ -1701,4 +1776,18 @@ func FilterSkillViewsByMembership(views []skills.SkillView, names []string) []sk
 		}
 	}
 	return out
+}
+
+// ConfigurationCatalogView is a read-only inventory for a transport-admitted admin
+// and effective agent. It retains execution source ownership and current revision
+// admission, while exposing disabled tools and both loading modes for configuration.
+func (a CatalogViewResolver) ConfigurationCatalogView(ctx context.Context, id identity.Identity, agentID string) (tools.PlannerCatalogView, error) {
+	if agentID == "" || a.Catalog == nil || a.OwnerResolver == nil || a.Registry == nil {
+		return nil, errors.New("agentcfg/projection: configuration view requires agent, registry, catalog and source owner resolver")
+	}
+	if err := identity.Validate(id); err != nil {
+		return nil, err
+	}
+	filter := tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}}
+	return activeCatalogView(ctx, a.Registry, a.SessionOverlay, agentID, identity.Quadruple{Identity: id}, a.Catalog, filter, true, a.OwnerResolver)
 }

@@ -161,6 +161,8 @@ func IsValidToolMetricsWindow(w ToolMetricsWindow) bool {
 // the payload `tools.get` returns. Flat, low-cardinality strings — the
 // Console branches on the enum fields.
 type Tool struct {
+	// LogicalID is the stable configuration/policy key. ID and Name remain invocation keys.
+	LogicalID string `json:"logical_id,omitempty"`
 	// ID is the stable catalog key (the tool's registered name).
 	ID string `json:"id"`
 	// Name is the planner-facing display name (equal to ID in V1).
@@ -209,8 +211,21 @@ type ToolFilter struct {
 	Search string `json:"search,omitempty"`
 }
 
+// ToolCatalogView selects execution exposure or an admin configuration inventory.
+type ToolCatalogView string
+
+const (
+	// ToolCatalogViewExecution preserves the effective execution exposure (the default).
+	ToolCatalogViewExecution ToolCatalogView = "execution"
+	// ToolCatalogViewConfiguration includes disabled tools for an admitted agent.
+	// It requires verified admin authority and never bypasses source ownership.
+	ToolCatalogViewConfiguration ToolCatalogView = "configuration"
+)
+
 // ToolListRequest is the `tools.list` request body.
 type ToolListRequest struct {
+	// View defaults to execution. Configuration requires verified admin and agent_id.
+	View ToolCatalogView `json:"view,omitempty"`
 	// Identity is the (tenant, user, session) scope the catalog is
 	// projected for. Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`
@@ -284,6 +299,8 @@ type ToolGetRequest struct {
 
 // ToolDescribeRequest is the `tools.describe` request body.
 type ToolDescribeRequest struct {
+	// View defaults to execution. Configuration requires verified admin and agent_id.
+	View ToolCatalogView `json:"view,omitempty"`
 	// Identity is the (tenant, user, session) scope. Mandatory.
 	Identity IdentityScope `json:"identity"`
 	// ID is the catalog key of the tool to describe.

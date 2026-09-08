@@ -74,7 +74,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"format_version": 1, "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
+			"format_version": 2, "tenant_id": req.Header.Get("X-Harbor-Credential-Tenant"), "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
 		})
 	})
 	brokerMux.HandleFunc("/token", func(w http.ResponseWriter, req *http.Request) {
@@ -242,7 +242,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 				if prepared != nil {
 					t.Fatal("failed preparation returned a prepared connection")
 				}
-				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, connectionName, binding.ProviderName)
+				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, binding.ProviderName)
 				if _, err := provider.Token(ctx, tools.ToolSourceID(binding.ProviderName)); !errors.Is(err, toolauth.ErrProviderClosed) {
 					t.Fatalf("failed preparation left private token cache/worker usable: %v", err)
 				}
@@ -250,14 +250,14 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 				if prepareErr != nil {
 					t.Fatalf("method-not-found preparation: %v", prepareErr)
 				}
-				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, connectionName, binding.ProviderName)
+				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, binding.ProviderName)
 				if err := prepared.Activate(ctx); err != nil {
 					t.Fatalf("activate method-not-found preparation: %v", err)
 				}
-				if _, ok := catalog.Resolve(connectionName + "_echo"); !ok {
+				if _, ok := catalog.Resolve(mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agent}) + "_echo"); !ok {
 					t.Fatal("method-not-found preparation did not publish tool after activation")
 				}
-				if _, _, ok := registry.RegistrationIdentity(connectionName); !ok {
+				if _, _, ok := registry.RegistrationIdentityForOwner(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agent}); !ok {
 					t.Fatal("method-not-found preparation did not publish registry entry after activation")
 				}
 				if err := attacher.DetachExactConnection(ctx, id.TenantID, agent, connectionName, fingerprint); err != nil {
@@ -307,12 +307,12 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 	}
 }
 
-func assertSignedDiscoveryUnpublished(t *testing.T, catalog tools.ToolCatalog, registry *mcpdrv.Registry, providerSet toolauth.ProviderSet, connectionName, providerName string) {
+func assertSignedDiscoveryUnpublished(t *testing.T, catalog tools.ToolCatalog, registry *mcpdrv.Registry, providerSet toolauth.ProviderSet, providerName string) {
 	t.Helper()
 	if got := catalog.List(tools.CatalogFilter{}); len(got) != 0 {
 		t.Fatalf("failed/private preparation leaked %d tool(s) into the catalog", len(got))
 	}
-	if _, _, ok := registry.RegistrationIdentity(connectionName); ok {
+	if len(registry.SourceIDs()) != 0 {
 		t.Fatal("failed/private preparation leaked into the MCP registry")
 	}
 	if _, ok := providerSet.Get(providerName); ok {

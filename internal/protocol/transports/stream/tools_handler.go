@@ -222,6 +222,7 @@ func (h *ToolsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 		return
 	}
 	req.Identity = scope
+	var admittedAgentID string
 	if req.AgentID != "" {
 		effectiveID, admissionErr := protocol.AdmitEffectiveAgent(r.Context(), string(methods.MethodToolsList), identity.Identity{
 			TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
@@ -230,9 +231,10 @@ func (h *ToolsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 			h.writeAgentAdmissionError(w, r, methods.MethodToolsList, admissionErr)
 			return
 		}
+		admittedAgentID = effectiveID
 		r = r.WithContext(tools.WithEffectiveAgentConfig(r.Context(), effectiveID))
 	}
-	resp, err := h.service.List(r.Context(), req)
+	resp, err := h.service.ListForView(r.Context(), req, auth.HasScope(r.Context(), auth.ScopeAdmin), admittedAgentID)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodToolsList, err)
 		return
@@ -272,6 +274,7 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 	req.Identity = scope
+	var admittedAgentID string
 	if req.AgentID != "" {
 		effectiveID, admissionErr := protocol.AdmitEffectiveAgent(r.Context(), string(methods.MethodToolsDescribe), identity.Identity{
 			TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
@@ -280,9 +283,10 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 			h.writeAgentAdmissionError(w, r, methods.MethodToolsDescribe, admissionErr)
 			return
 		}
+		admittedAgentID = effectiveID
 		r = r.WithContext(tools.WithEffectiveAgentConfig(r.Context(), effectiveID))
 	}
-	resp, err := h.service.Describe(r.Context(), req)
+	resp, err := h.service.DescribeForView(r.Context(), req, auth.HasScope(r.Context(), auth.ScopeAdmin), admittedAgentID)
 	if err != nil {
 		h.writeServiceError(w, r, methods.MethodToolsDescribe, err)
 		return

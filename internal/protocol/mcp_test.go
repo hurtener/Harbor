@@ -151,7 +151,7 @@ func newMCPSurface(t *testing.T) (*protocol.MCPSurface, events.EventBus) {
 	s, err := protocol.NewMCPSurface(protocol.MCPDeps{
 		MCP: &stubMCP{servers: map[string]protocol.MCPServerRow{
 			"github-server": {
-				Name: "github-server", Transport: "http+sse", State: "online",
+				Name: "github-server", LogicalName: "configured-source", Transport: "http+sse", State: "online",
 				ToolCount: 3, OAuthBindingCount: 2, PolicyTimeoutMs: 30000, PolicyMaxRetries: 3,
 			},
 		}},
@@ -241,7 +241,7 @@ func TestMCPSurface_List_Happy(t *testing.T) {
 	if !ok {
 		t.Fatalf("want *MCPServersListResponse, got %T", resp)
 	}
-	if len(lr.Servers) != 1 || lr.Servers[0].Name != "github-server" {
+	if len(lr.Servers) != 1 || lr.Servers[0].Name != "github-server" || lr.Servers[0].LogicalName != "configured-source" {
 		t.Fatalf("list shape wrong: %+v", lr.Servers)
 	}
 }
@@ -296,7 +296,7 @@ func TestMCPSurface_Get_Happy(t *testing.T) {
 		t.Fatalf("Dispatch get: %v", err)
 	}
 	gr := resp.(*types.MCPServerGetResponse)
-	if gr.Server.Name != "github-server" {
+	if gr.Server.Name != "github-server" || gr.Server.LogicalName != "configured-source" {
 		t.Fatalf("get shape wrong: %+v", gr)
 	}
 	if len(gr.BindingsSummary) != 1 || gr.BindingsSummary[0].BindingScope != "user" {

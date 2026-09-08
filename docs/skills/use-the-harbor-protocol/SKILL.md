@@ -10,6 +10,29 @@ metadata:
 
 # Use the Harbor Protocol
 
+## MCP source ownership
+
+Use returned MCP source/tool IDs for new calls. Boot-configured infrastructure
+is shared, while runtime-added sources require the verified owning tenant and
+current effective agent configuration; personal sources also require the user.
+Agent-owned sources can share a logical name across tenants and agents without
+sharing the same physical source ID. Historical agent source/App/tool references
+resolve only under the verified tenant and admitted effective agent, with fresh
+App generation checks. A name never grants reach or selects a tenant.
+
+For durable policy keys, use tool `logical_id` and MCP server `logical_name`;
+keep physical `id`/`name` for calls. Admin configuration discovery can request
+`view: "configuration"` on `tools.list` and `tools.describe`, always with an
+`agent_id` admitted by signed reach. This includes owned disabled tools and both
+loading modes. Default reads retain execution exposure, and configuration
+reads preserve tenant/user/source/revision/auth constraints. They never grant
+permission to execute a disabled tool.
+
+Clients negotiate `tools_configuration_view_v1` before sending the configuration
+view selector. It is advertised only when the owned-source configuration backend
+is wired. An older runtime receives no selector; clients do not retry a refused
+configuration request by downgrading its view.
+
 ## Route-aware provider checks
 
 The existing admin-scoped `llm.posture` provider `validate` and `discover`
@@ -970,3 +993,8 @@ That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/what
 - The public Go client: `sdk/protocolclient`.
 - The docs generator: `cmd/harbor-gen-protocol-docs/` (D-209). The external-client TS wire-type generator: `cmd/harbor-protocol-ts-types/` (D-269) → `examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts`. The FULL Console-`protocol.ts` TS-client generator remains deferred (D-132 / issue #179, name `cmd/harbor-gen-protocol-ts` reserved); `protocol.ts` is hand-maintained.
 - RFC §5 — Harbor Protocol design.
+
+For shared-runtime broker custody, require the runtime.info capability
+`tenant_scoped_broker_credentials_v1`; its absence means tenant-selected broker
+client credentials are unsupported. This describes the runtime pull implementation,
+not proof that a particular coordinator endpoint or grant is ready.

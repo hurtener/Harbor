@@ -2361,6 +2361,48 @@ fails closed, and the Protocol version is unchanged.
 
 **Consumers.** Phase 30 (tool-side OAuth) keys agent-bound tokens by the registration `agent_id`. The Console Agents page renders the three-ID model and the fleet-control surface. Briefs: `09-mcp-oauth-from-bifrost.md` (agent-as-actor), `11-console-feature-surface.md` (operator mockup).
 
+### Tenant-owned MCP source admission amendment (D-457)
+
+Boot-declared MCP infrastructure remains process-global in the shared registry
+and catalog. Runtime-added sources use an exhaustive ownership discriminator:
+`boot_global` only for the fully empty owner, `tenant_agent` for complete tenant
+and agent ownership, and `tenant_user` for complete tenant, agent, and user
+ownership. Partial owners fail closed. The discriminator is computed from
+immutable server-derived ownership, not persisted as another grant.
+
+Runtime-owned source visibility requires the verified tenant, admitted effective
+agent, and current owning agent/user revision; user sources additionally require
+the verified owner user. Signed pair ownership is checked separately from
+ordinary connection descriptors, and signed publisher-epoch authorization
+remains the final invocation fence. Effective agent is configuration authority,
+not an addition to the `(tenant, user, session)` identity or storage partition.
+Identical source labels across tenants or derived agents do not imply authority.
+
+Tenant-owned physical source names are deterministic owner-qualified catalog
+keys; durable descriptors remain logical. Protocol tool rows expose `logical_id`
+for stable policy keys and MCP server rows expose `logical_name` from registry
+metadata; physical `id`/`name` remain invocation identifiers. Legacy agent source/resource/App and
+paused tool references resolve only through the current verified tenant and
+admitted effective-agent view, with fresh generation checks for Apps and no
+ambiguous or personal-source alias fallback. Explicit low-level operator
+inventory remains available; ordinary identity-scoped reads never acquire fleet
+visibility from an empty owner user. This supersedes D-301/D-448 only for
+runtime-added MCP source admission and naming, retaining shared boot transport
+and registry/catalog architecture.
+
+The read-only `tools.list` and `tools.describe` configuration inventory (D-459)
+uses explicit `view: configuration`, verified admin authority, and a mandatory
+admitted effective `agent_id`. The default remains execution exposure. The
+configuration view preserves identity, source ownership, current revision,
+signed reach and auth-scope admission; it only includes both loading modes and
+omits exposure exclusions. A physical tool ID remains subject to those filters
+when describing its schema. Configuration reads never authorize invocation.
+
+Clients negotiate `tools_configuration_view_v1` before sending the configuration
+view selector. It is advertised only when the owned-source configuration backend
+is wired. An older runtime receives no selector; clients do not retry a refused
+configuration request by downgrading its view.
+
 ### 6.17 Run-completion hook
 
 The run-completion hook is the Runtime's one run-lifecycle egress point: an operator-configured hook, fired exactly once at the run loop's terminal boundary, that delivers the run's transcript to a **named catalog tool**. The motivating consumers are memory, audit, and analytics sinks that need the full conversation at completion **for runs no client observes** — background and disconnected runs have no observer to pull it, and a completed foreground embed run emits no generic completion event a subscriber could ride (only tasks-engine runs emit `task.completed` / `task.failed`). The hook is therefore **runtime mechanism on the run loop** — the single seam every run type (embed one-call, foreground task, background task) terminates through — never planner policy: no planner concrete knows the hook exists, and a swapped planner inherits it unchanged (§3.2).
@@ -2626,3 +2668,13 @@ These are the doctrine. Phase plans cite them by number when justifying design c
 ---
 
 *This RFC is the source of truth for V1 architecture. Updates land via PRs labeled `rfc`. Phase plans defer to it; if a phase plan and this RFC drift, the RFC wins and the plan is updated in the same PR.*
+
+### Tenant authority for tool broker client credentials (D-458)
+
+Remote tool broker client credentials resolve under the verified execution tenant,
+or the immutable authenticated signed connection tenant after caller validation.
+The versioned scoped GET and strict tenant echo are defined in `docs/CONFIG.md`.
+Runtime authentication plus coordinator-side runtime/tenant mapping authorizes the
+selection; a wire tenant field alone never does. Cache, flight and revocation state
+preserve tenant authority. Explicit deployment credential compatibility remains
+available for ordinary brokers; signed capabilities never downgrade to that path.

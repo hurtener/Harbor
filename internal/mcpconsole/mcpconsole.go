@@ -244,7 +244,7 @@ func (a *RegistryAccessor) Probe(ctx context.Context, name string) (protocol.MCP
 		if err := a.ensureSourceVisible(ctx, name); err != nil {
 			return protocol.MCPProbeRow{}, markNotFound(err)
 		}
-	} else if owner, known := a.reg.OwnerOfSource(tools.ToolSourceID(name)); known && owner.User != "" {
+	} else if owner, known := a.reg.OwnerOfSource(tools.ToolSourceID(name)); known && owner.Scope() != auth.ScopeBootGlobal {
 		// The compatibility probe path permits ownerless boot entries to
 		// capture OAuth challenge metadata without a request identity. A
 		// user-owned source never receives that exception.
@@ -280,7 +280,7 @@ func (a *RegistryAccessor) maybeDiscoverOAuthRequirement(ctx context.Context, na
 		// may inspect only process-wide (ownerless) boot entries; a user-owned
 		// source must never become discoverable through this compatibility path.
 		owner, known := a.reg.OwnerOfSource(tools.ToolSourceID(name))
-		if known && owner.User != "" {
+		if known && owner.Scope() != auth.ScopeBootGlobal {
 			return
 		}
 		challenge, serverURL, allowedOrigins, err = a.reg.OAuthDiscoveryTarget(name)
@@ -336,6 +336,7 @@ func (a *RegistryAccessor) SetRawHTMLTrust(ctx context.Context, name string, tru
 func serverRow(v mcp.ServerView) protocol.MCPServerRow {
 	return protocol.MCPServerRow{
 		Name:               v.Name,
+		LogicalName:        v.LogicalName,
 		Transport:          v.Transport,
 		URLOrCommand:       v.URLOrCommand,
 		State:              string(v.State),

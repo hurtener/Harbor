@@ -342,7 +342,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		return nil, fmt.Errorf("%w: runtime-added connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
 			ErrRuntimeAddOwnerMissing, req.Name, owner.Tenant, owner.Agent)
 	}
-	if owner.Tenant != req.Identity.TenantID || (owner.User != "" && owner.User != req.Identity.UserID) {
+	if owner.Agent != req.AgentID || owner.Tenant != req.Identity.TenantID || (owner.User != "" && owner.User != req.Identity.UserID) {
 		return nil, fmt.Errorf("%w: runtime-added connection %q owner does not match verified identity", ErrRuntimeAddOwnerMissing, req.Name)
 	}
 
@@ -527,7 +527,7 @@ func (a *MCPConnectionAttacher) SetOAuthDiscoveryOrigins(ctx context.Context, te
 		return nil, fmt.Errorf("%w: discovery-origin write for connection %q requires a (tenant, agent) owner (tenant=%q agent=%q)",
 			ErrRuntimeAddOwnerMissing, name, owner.Tenant, owner.Agent)
 	}
-	if priorOwner, exists := a.registry.OwnerOf(name); exists && priorOwner != owner {
+	if priorOwner, exists := a.registry.OwnerOf(a.registry.PhysicalSourceForOwner(name, owner)); exists && priorOwner != owner {
 		return nil, fmt.Errorf("%w: %q", agentcfgprotocol.ErrConnectionOwnerMismatch, name)
 	}
 	prev, err = a.registry.SetOAuthDiscoveryOrigins(ctx, name, owner, origins)

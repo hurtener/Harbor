@@ -54,7 +54,23 @@ type Config struct {
 
 // RemoteConfig is the `remote` source's operator-declared parameters,
 // mapped from `config.ToolOAuthRemoteConfig` at the boundary.
+// ResolutionScope declares credential authority independently of caller input.
+type ResolutionScope uint8
+
+const (
+	// DeploymentScope retains the explicit boot/static deployment credential contract.
+	DeploymentScope ResolutionScope = iota
+	// ExecutionTenantScope selects the verified execution identity tenant.
+	ExecutionTenantScope
+	// BoundTenantScope selects an immutable authenticated connection tenant.
+	BoundTenantScope
+)
+
 type RemoteConfig struct {
+	// Scope selects deployment, verified execution, or authenticated binding authority.
+	Scope ResolutionScope
+	// TenantID is populated only from an authenticated immutable binding.
+	TenantID string
 	// URL is the coordinator credential endpoint (the authenticated GET
 	// target). Required; validated well-formed at boot.
 	URL string

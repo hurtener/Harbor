@@ -63,7 +63,7 @@ func newTenantScopedRegistry(t *testing.T) *Registry {
 // owner-blind, as the reads stay).
 func rawHTMLTrustOf(t *testing.T, r *Registry, name string) bool {
 	t.Helper()
-	v, err := r.GetServer(idCtx(t), name)
+	v, err := r.GetServer(idCtxForTenant(t, "tenant-a"), name)
 	if err != nil {
 		t.Fatalf("GetServer(%q): %v", name, err)
 	}
@@ -345,34 +345,28 @@ func TestRegistry_Deregister_ConcurrentOwners(t *testing.T) {
 	}
 }
 
-// TestRegistry_ReadsStayBareName re-affirms D-287 / D-301: this phase scopes
-// the WRITES only. Every read projection still resolves a registration owned by
-// a different tenant, and a boot-declared one, by bare name from any session.
-func TestRegistry_ReadsStayBareName(t *testing.T) {
+// TestRegistry_ReadsAreTenantScoped keeps boot visibility but refuses owned
+// sources before transport activity for a foreign verified tenant.
+func TestRegistry_ReadsAreTenantScoped(t *testing.T) {
 	r := newTenantScopedRegistry(t)
 	foreign := idCtxForTenant(t, "tenant-b")
-
-	for _, name := range []string{"owned-srv", "boot-srv"} {
-		if _, err := r.GetServer(foreign, name); err != nil {
-			t.Errorf("GetServer(%q) from another tenant: %v", name, err)
+	checks := []func(string) error{
+		func(n string) error { _, e := r.GetServer(foreign, n); return e },
+		func(n string) error { _, e := r.ListResources(foreign, n); return e },
+		func(n string) error { _, e := r.Health(foreign, n, 0); return e },
+		func(n string) error { _, e := r.RefreshDiscovery(foreign, n); return e },
+		func(n string) error { _, e := r.Probe(foreign, n); return e },
+	}
+	for _, check := range checks {
+		if err := check("owned-srv"); !errors.Is(err, ErrServerNotFound) {
+			t.Errorf("foreign source: %v", err)
 		}
-		if _, err := r.ListResources(foreign, name); err != nil {
-			t.Errorf("ListResources(%q) from another tenant: %v", name, err)
-		}
-		if _, err := r.Health(foreign, name, 0); err != nil {
-			t.Errorf("Health(%q) from another tenant: %v", name, err)
-		}
-		// RefreshDiscovery and Probe are classified as READS: they record only
-		// what their own round-trip observed, so bare-name resolution stays.
-		if _, err := r.RefreshDiscovery(foreign, name); err != nil {
-			t.Errorf("RefreshDiscovery(%q) from another tenant: %v", name, err)
-		}
-		if _, err := r.Probe(foreign, name); err != nil {
-			t.Errorf("Probe(%q) from another tenant: %v", name, err)
+		if err := check("boot-srv"); err != nil {
+			t.Errorf("boot source: %v", err)
 		}
 	}
 	rows, _, err := r.ListServers(foreign, ListFilter{})
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("ListServers from another tenant = %d rows, err %v; want 2 rows", len(rows), err)
+	if err != nil || len(rows) != 1 || rows[0].Name != "boot-srv" {
+		t.Fatalf("foreign list: %v %v", rows, err)
 	}
 }

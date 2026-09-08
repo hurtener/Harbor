@@ -80,18 +80,24 @@ func TestE2E_WaveV118_HA33_ReAttachIdempotentAndOwnerIsolated(t *testing.T) {
 	if err := attacher.Attach(context.Background(), req("agent-owner")); err != nil {
 		t.Fatalf("idempotent re-attach: %v", err)
 	}
-	if _, ok := cat.Resolve("recv_echo"); !ok {
+	if _, ok := cat.Resolve(mcpdrv.PhysicalServerName("recv", toolauth.Owner{Tenant: sysID.TenantID, Agent: "agent-owner"}) + "_echo"); !ok {
 		t.Fatal("recv_echo not live after re-attach")
 	}
-	// A cross-owner same-name add is rejected loud (never tears down another
-	// owner's live registration).
-	err = attacher.Attach(context.Background(), req("agent-other"))
-	if err == nil {
-		t.Fatal("cross-owner same-name attach succeeded — an isolation breach")
+	// Distinct owners can coexist under the same logical name.
+	if err := attacher.Attach(context.Background(), req("agent-other")); err != nil {
+		t.Fatal(err)
 	}
-	if !errors.Is(err, mcpdrv.ErrConnectionNameOwnerConflict) {
-		t.Fatalf("cross-owner attach: want ErrConnectionNameOwnerConflict, got %v", err)
+	for _, agent := range []string{"agent-owner", "agent-other"} {
+		owner := toolauth.Owner{Tenant: sysID.TenantID, Agent: agent}
+		source := mcpdrv.PhysicalServerName("recv", owner)
+		if got, ok := reg.OwnerOf(source); !ok || got != owner {
+			t.Fatalf("owner %s: %+v %v", source, got, ok)
+		}
+		if _, ok := cat.Resolve(source + "_echo"); !ok {
+			t.Fatalf("missing tool %s", source)
+		}
 	}
+
 }
 
 // --- HA-32: wire OAuth descriptor rejected with the opt-in OFF ---------------

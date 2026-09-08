@@ -30,14 +30,10 @@ import (
 // Service + wire handler (reusing the daHarness from the discovery-allowance
 // suite, which wires exactly that stack).
 //
-// It proves: (1) an allowance write lands on the CALLER'S OWN connection and a
-// caller presenting another owner's connection name is refused with
-// CodeScopeMismatch / 403 while the other owner's live allow-list is untouched;
-// (2) the refusal leaves the caller's revision unchanged (rolled back — no
-// observable effect); (3) a boot-declared name is refused on BOTH the
-// not-declared and the declared path; (4) `agent_config.set_revision` rejects a
-// malformed connection descriptor with 400 and persists nothing; and (5) the
-// seam holds under concurrent cross-owner writes. Runs under -race.
+// It proves caller-owned allowance changes cannot mutate another owner's live
+// source or durable revision. A same logical name declared only by the caller
+// remains an offline caller-owned update. Boot names remain protected, malformed
+// descriptors fail closed, and the write boundary holds under concurrency.
 
 const (
 	p206BootServer = "boot-declared-srv"
@@ -98,9 +94,8 @@ func (h *daHarness) activeRevisionID(t *testing.T, tenant, agentID string) strin
 
 // TestE2E_OwnerScopedDiscoveryWrite_AppliesToOwnConnectionOnly drives two owners
 // through the real wire handler against ONE shared process-global MCP registry:
-// each owner's write lands on its own connection, and a caller naming the OTHER
-// owner's connection is refused with CodeScopeMismatch while that owner's live
-// allow-list keeps its own value.
+// each owner writes its own connection. An independently declared same-name
+// source updates only the caller's desired state; the other owner stays untouched.
 func TestE2E_OwnerScopedDiscoveryWrite_AppliesToOwnConnectionOnly(t *testing.T) {
 	h := newDaHarness(t)
 	h.registerServer(t, daTenantA, daAgentA, "srv-a", []string{"https://as-a.example.net"})
@@ -129,15 +124,13 @@ func TestE2E_OwnerScopedDiscoveryWrite_AppliesToOwnConnectionOnly(t *testing.T) 
 	}, admin); rec.Code != http.StatusOK {
 		t.Fatalf("owner A set_revision: %d body=%s", rec.Code, rec.Body.String())
 	}
-	beforeA := h.activeConnections(t, daTenantA, daAgentA)
-	beforeRevA := h.activeRevisionID(t, daTenantA, daAgentA)
-
+	beforeRevB := h.activeRevisionID(t, daTenantB, daAgentB)
 	rec := h.setOrigins(t, daTenantA, daAgentA, "srv-b", []string{"https://as-a3.example.net"}, admin)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("owner A write against owner B's connection = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"applied_live":false`)) {
+		t.Fatalf("same logical name must update only A's offline desired source: %d %s", rec.Code, rec.Body.String())
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte(protoerrors.CodeScopeMismatch)) {
-		t.Fatalf("body = %s, want CodeScopeMismatch", rec.Body.String())
+	if h.activeRevisionID(t, daTenantB, daAgentB) != beforeRevB {
+		t.Fatal("A changed B's durable revision")
 	}
 
 	// Owner B's live allow-list is its own.
@@ -149,22 +142,15 @@ func TestE2E_OwnerScopedDiscoveryWrite_AppliesToOwnConnectionOnly(t *testing.T) 
 		t.Fatalf("owner B live allow-list = %v, want [https://as-b.example.net]", liveB)
 	}
 
-	// Owner A's revision is unchanged — the refused write was rolled back.
-	// The rollback restores the EXACT pre-write revision, not merely a
-	// same-shaped one: the active revision id is unchanged and every descriptor
-	// matches by name AND by origin values.
-	if afterRevA := h.activeRevisionID(t, daTenantA, daAgentA); afterRevA != beforeRevA {
-		t.Fatalf("owner A active revision = %q, want the pre-write %q (a refused write must roll back)", afterRevA, beforeRevA)
-	}
-	afterA := h.activeConnections(t, daTenantA, daAgentA)
-	if len(afterA) != len(beforeA) {
-		t.Fatalf("owner A connections = %d, want %d (refused write must roll back)", len(afterA), len(beforeA))
-	}
-	for i := range afterA {
-		if afterA[i].Name != beforeA[i].Name ||
-			!slices.Equal(afterA[i].OAuthDiscoveryAllowedOrigins, beforeA[i].OAuthDiscoveryAllowedOrigins) {
-			t.Fatalf("owner A revision mutated by a refused write: %#v (was %#v)", afterA, beforeA)
+	// A's own same-name descriptor records its allowance; B remains independent.
+	var found bool
+	for _, descriptor := range h.activeConnections(t, daTenantA, daAgentA) {
+		if descriptor.Name == "srv-b" {
+			found = slices.Equal(descriptor.OAuthDiscoveryAllowedOrigins, []string{"https://as-a3.example.net"})
 		}
+	}
+	if !found {
+		t.Fatal("A's own desired allowance was not recorded")
 	}
 
 	// Owner B still writes its OWN connection successfully.
@@ -348,16 +334,16 @@ func TestE2E_MissingIdentity_SetRevisionRefused(t *testing.T) {
 
 // TestE2E_OwnerScopedDiscoveryWrite_ConcurrentCrossOwner stresses the seam
 // (§17.3): N≥10 concurrent writers per owner against ONE shared registry. Every
-// own-connection write succeeds, every cross-owner write is refused, and each
-// live allow-list ends holding only its own owner's origins.
+// own-connection write succeeds, same-name offline writes stay caller-owned,
+// and every live allow-list keeps only its own owner's origins.
 func TestE2E_OwnerScopedDiscoveryWrite_ConcurrentCrossOwner(t *testing.T) {
 	h := newDaHarness(t)
 	h.registerServer(t, daTenantA, daAgentA, "srv-a", []string{"https://as-a.example.net"})
 	h.registerServer(t, daTenantB, daAgentB, "srv-b", []string{"https://as-b.example.net"})
 	admin := []protoauth.Scope{protoauth.ScopeAdmin}
 
-	// Owner A declares owner B's name in its own revision so the cross-owner
-	// write reaches the live applier rather than stopping at not-found.
+	// Owner A independently declares the same logical name; its offline write
+	// must never reach owner B's live source.
 	if rec := h.setRevisionWire(t, daTenantA, daAgentA, prototypes.AgentConfigPayload{
 		Connections: &prototypes.AgentConfigConnections{Servers: []prototypes.AgentConfigMCPConnectionDescriptor{
 			{Name: "srv-a", Transport: "http", URL: "https://srv-a.invalid/rpc", OAuthDiscoveryAllowedOrigins: []string{"https://as-a.example.net"}},
@@ -379,8 +365,8 @@ func TestE2E_OwnerScopedDiscoveryWrite_ConcurrentCrossOwner(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if rec := h.setOrigins(t, daTenantA, daAgentA, "srv-b", []string{"https://as-a-cross.example.net"}, admin); rec.Code != http.StatusForbidden {
-				t.Errorf("owner A cross-owner write = %d body=%s, want 403", rec.Code, rec.Body.String())
+			if rec := h.setOrigins(t, daTenantA, daAgentA, "srv-b", []string{"https://as-a-cross.example.net"}, admin); rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"applied_live":false`)) {
+				t.Errorf("owner A same-name offline write = %d body=%s", rec.Code, rec.Body.String())
 			}
 		}()
 	}

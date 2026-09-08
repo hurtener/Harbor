@@ -260,7 +260,7 @@ func TestMCPConnectionAttacher_ReAttach_Concurrent(t *testing.T) {
 	if lerr != nil {
 		t.Fatalf("ListServers: %v", lerr)
 	}
-	if len(servers) != 1 || servers[0].Name != name {
+	if len(servers) != 1 || servers[0].Name != mcpdrv.PhysicalServerName(name, toolauth.Owner{Tenant: "t", Agent: "agent-1"}) {
 		t.Fatalf("want exactly one surviving registration %q, got %+v", name, servers)
 	}
 }

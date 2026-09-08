@@ -222,6 +222,16 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 // facet filter + free-text search + pagination, and computes the
 // filtered-view aggregates.
 func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (prototypes.ToolListResponse, error) {
+	return s.ListForView(ctx, req, false, "")
+}
+
+// ListForView accepts the transport's verified admin decision and admitted effective agent.
+// Configuration inventory is read-only and never grants invocation authority.
+func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListRequest, adminScoped bool, admittedAgentID string) (prototypes.ToolListResponse, error) {
+	if err := validateCatalogView(req.View, req.AgentID, admittedAgentID, adminScoped); err != nil {
+		return prototypes.ToolListResponse{}, err
+	}
+
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.ToolListResponse{}, err
@@ -264,7 +274,16 @@ func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (pro
 		}
 	}
 
-	all, err := s.projector.ListTools(ctx, id)
+	var all []prototypes.Tool
+	if req.View == prototypes.ToolCatalogViewConfiguration {
+		backend, ok := s.projector.(ConfigurationProjector)
+		if !ok {
+			return prototypes.ToolListResponse{}, ErrAdminUnsupported
+		}
+		all, err = backend.ListConfigurationTools(ctx, id, admittedAgentID)
+	} else {
+		all, err = s.projector.ListTools(ctx, id)
+	}
 	if err != nil {
 		return prototypes.ToolListResponse{}, fmt.Errorf("tools/protocol: list: %w", err)
 	}
@@ -345,6 +364,15 @@ func (s *Service) Get(ctx context.Context, req prototypes.ToolGetRequest) (proto
 // Describe implements the `tools.describe` method — the full manifest
 // projection.
 func (s *Service) Describe(ctx context.Context, req prototypes.ToolDescribeRequest) (prototypes.ToolManifest, error) {
+	return s.DescribeForView(ctx, req, false, "")
+}
+
+// DescribeForView describes a tool using a transport-verified configuration admission.
+func (s *Service) DescribeForView(ctx context.Context, req prototypes.ToolDescribeRequest, adminScoped bool, admittedAgentID string) (prototypes.ToolManifest, error) {
+	if err := validateCatalogView(req.View, req.AgentID, admittedAgentID, adminScoped); err != nil {
+		return prototypes.ToolManifest{}, err
+	}
+
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.ToolManifest{}, err
@@ -352,7 +380,16 @@ func (s *Service) Describe(ctx context.Context, req prototypes.ToolDescribeReque
 	if strings.TrimSpace(req.ID) == "" {
 		return prototypes.ToolManifest{}, fmt.Errorf("%w: tool id is empty", ErrInvalidRequest)
 	}
-	m, err := s.projector.DescribeTool(ctx, id, req.ID, req.AgentID)
+	var m prototypes.ToolManifest
+	if req.View == prototypes.ToolCatalogViewConfiguration {
+		backend, ok := s.projector.(ConfigurationProjector)
+		if !ok {
+			return prototypes.ToolManifest{}, ErrAdminUnsupported
+		}
+		m, err = backend.DescribeConfigurationTool(ctx, id, req.ID, admittedAgentID)
+	} else {
+		m, err = s.projector.DescribeTool(ctx, id, req.ID, req.AgentID)
+	}
 	if err != nil {
 		return prototypes.ToolManifest{}, mapProjectorErr(err)
 	}
@@ -468,4 +505,28 @@ func mapProjectorErr(err error) error {
 		return err
 	}
 	return fmt.Errorf("tools/protocol: projector: %w", err)
+}
+
+// ConfigurationProjector supplies an ownership-filtered configuration inventory.
+// Implementations must not fall back to an unscoped catalog when unavailable.
+type ConfigurationProjector interface {
+	ListConfigurationTools(context.Context, identity.Identity, string) ([]prototypes.Tool, error)
+	DescribeConfigurationTool(context.Context, identity.Identity, string, string) (prototypes.ToolManifest, error)
+}
+
+func validateCatalogView(view prototypes.ToolCatalogView, requested, admitted string, admin bool) error {
+	switch view {
+	case "", prototypes.ToolCatalogViewExecution:
+		return nil
+	case prototypes.ToolCatalogViewConfiguration:
+		if !admin {
+			return ErrAdminScopeRequired
+		}
+		if strings.TrimSpace(requested) == "" || strings.TrimSpace(admitted) == "" {
+			return fmt.Errorf("%w: configuration view requires an admitted agent_id", ErrInvalidRequest)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown catalog view %q", ErrInvalidRequest, view)
+	}
 }

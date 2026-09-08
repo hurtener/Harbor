@@ -7637,7 +7637,7 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Date:** 2026-07-04
 
-**Status:** Shipped (Phase 154, V1.11)
+**Status:** Shipped (Phase 154, V1.11); tenant scope amended by D-458
 
 **Where it lives:** `docs/plans/phase-154-broker-credential-source.md`, `internal/tools/auth/credsource/` (seam + drivers), `internal/tools/auth/build_providers.go`, RFC §6.4 (the D-271 paragraph's additive credential-source sentence).
 
@@ -7925,6 +7925,10 @@ Forcing elevation on a single own-other-session read would break the single most
 ---
 
 ## D-301 — Runtime-added MCP connections + Protocol-installed providers carry an OWNER tag used only for revision ownership + reconcile-view scoping; boot infra + the bare-name catalog stay process-global (extends D-287, does NOT reverse it)
+
+**Status amendment (2026-09-08):** Partially superseded by D-457 for
+runtime-added MCP source naming and admission; the historical rationale below
+is retained. Boot-global infrastructure and provider registration are unchanged.
 
 **Context.** Harbor is a FRAMEWORK: a downstream team runs one runtime per tenant OR one runtime serving many. An earlier v1.14 draft (a superseded coordinator instruction) proposed keying the MCP connection registry and the OAuth-provider set by the `(tenant, user, session)` triple. Two delta reviews returned NO-GO and converged, and the objection is confirmed against code on three counts. (1) It BREAKS the common deployment: boot-declared MCP servers attach ONCE under a single deployment identity (`mcpDefault`, `internal/runtime/assemble/assemble.go:929`) but are read under many session triples, so full-triple keying fragments deployment-wide servers into per-session buckets and they vanish from the Console / posture for real sessions. (2) It does NOT even isolate: tool DISPATCH + bearer injection go through the process-global, BARE-NAME tool catalog (`internal/tools/catalog.go` — `byName`, `Resolve(name)`, not identity-filtered), which Phase 169 explicitly declines to widen — so keying the registry METADATA leaves same-named runtime-added connections colliding (`ErrToolDuplicateName`) or cross-serving another tenant's OAuth bearer. (3) It silently REVERSES D-287 (settled + PR-464-hardened: "the catalog + MCP registry are shared across sessions … a refcount/drain protocol was considered and rejected") without a superseding decision. The reviewer was right that the two in-code NOTEs (`projection.go:125-132`, `mcp_detacher.go:77-87`) asked for a per-AGENT reconcile VIEW ("scope the attached set per agent"), NOT full-triple isolation keying — and §6 says `agent_id` is not an isolation key.
 
@@ -14776,6 +14780,9 @@ materialization seam.
 
 ## D-448 — User-scoped signed OAuth MCP capability lifecycle is an identity-scoped sibling
 
+**Status amendment (2026-09-08):** D-457 supersedes the agent-source
+global-visibility and unchanged-physical-name exceptions below.
+
 **Date:** 2026-08-28
 
 **Status:** Accepted for the next Harbor patch release; downstream/runtime
@@ -15238,3 +15245,105 @@ release workflow `33321563993` published 13 assets, and public module
 provenance resolves `refs/tags/v1.31.3` to the same commit. The scaffold
 fallback and goldens are updated directly to v1.31.3 in this follow-up.
 Downstream deployment and acceptance remain unclaimed.
+
+## D-457 — Tenant-owned MCP source admission is distinct from boot-global infrastructure
+
+**Date:** 2026-09-08
+
+**Status:** Accepted; hosted verification and release pending.
+
+**Partially supersedes:** D-301 and D-448 for runtime-added MCP source
+visibility and physical naming. D-287's one shared registry/catalog and warm
+transport model is retained. OAuth provider registration semantics are not
+changed by this decision.
+
+An empty user field is not a global-source grant. Immutable server-derived
+source ownership has an exhaustive computed discriminator: `boot_global`
+requires the entirely empty owner tuple; `tenant_agent` requires tenant and
+agent with no user; `tenant_user` additionally requires user. Incomplete tuples
+are rejected. This derives from existing ownership rather than adding a second
+persisted authority field. The verified `(tenant, user, session)` remains the
+identity; effective agent is the separately admitted configuration selection,
+not a new identity principal or a session storage partition.
+
+Boot infrastructure remains deliberately shared. Runtime-added agent sources
+require the exact tenant and effective agent, signed agent reach on public
+source reads, and selection in the current agent revision. User sources also
+require the owning user and current user revision. Ordinary connection
+selection and signed pair selection are separate: signed pair owner fields
+must match, and the existing publisher-epoch credential fence continues to
+validate the exact signed lifecycle immediately before invocation. A derived
+agent does not inherit another agent's live registration merely because their
+labels or descriptors match; its own current revision and registration must
+admit the source.
+
+Both registry and catalog physical names include a deterministic owner suffix
+for tenant-owned sources, allowing identical logical connection names across
+tenants and agents without shadowing. User physical names remain stable.
+Durable desired descriptors retain logical names. Reconciliation, teardown,
+replacement, and restart use exact owners. A directly registered legacy bare
+source remains removable and replaceable only by its exact owner. Historical
+agent-owned resource/App references and paused tool names resolve to a current
+physical descriptor only under the verified tenant plus admitted effective
+agent, through the current source/catalog authority. Ambiguous aliases fail
+closed; user sources receive no new bare-name aliases. Render admission is
+fresh against the current generation, never restored from the old reference.
+
+Identity-scoped registry reads, source lists, resources, prompts, Apps, planner
+catalogs, loading/exposure projection, and provider invocation apply this split.
+An ownership refusal is permanent and occurs before transport work. Low-level
+operator registry inventory (`SourceIDs`, exact registration metadata) remains
+available for runtime maintenance; no consumer read gains fleet authority from
+an admin label, empty user, or client-selected identity. Explicit fleet tooling
+must use its separately authorized operator seam.
+
+**Validation:** Focused race tests exercise 128 concurrent callers, same labels
+across tenants and base/derived agents, legacy reference resolution, current
+revision removal, and invocation refusal. Local full preflight is intentionally
+skipped at the owner's request; hosted CI is the release gate. No release or
+live deployment is claimed by this change.
+
+## D-458 — Tool broker client credentials follow verified tenant authority
+
+**Status:** Accepted
+
+**Context:** A runtime may serve several tenants whose broker client credentials
+have different custody. A runtime-only credential pull cannot select their grants
+unambiguously, and one source-wide cache can reuse the wrong credential.
+
+**Decision:** Remote tool brokers default to verified execution-tenant resolution;
+signed capability providers use their immutable authenticated tenant binding and
+validate caller authority before resolution. The versioned scoped GET and strict
+response echo in `docs/CONFIG.md` are mandatory; no legacy downgrade occurs. Only an
+explicit deployment compatibility configuration uses the old runtime-only contract.
+Cache and flights include tenant and runtime bearer generation, expiry and bounded
+capacity; revocation fences pending publication. Permanent authority/configuration
+errors are typed non-retryable. Existing env/static and inference custody is unchanged.
+
+**Cross-references:** D-025, D-271, D-285, D-300; RFC §5.5; docs/CONFIG.md.
+
+D-457 contract clarification: tool catalog rows expose optional `logical_id` as the stable configured source plus registered tool suffix; `id` and `name` remain physical invocation identifiers. MCP server rows expose optional `logical_name` from the canonical registry. Clients use these logical fields for durable exposure policy and retain physical identifiers for invocation; these fields grant no additional visibility.
+
+## D-459 — Explicit admitted configuration inventory for tools
+
+**Status:** Accepted (2026-09-08)
+
+`tools.list` and `tools.describe` accept optional `view: configuration`.
+Omitted or `execution` retains the existing execution exposure. Configuration
+reads require verified `admin` scope and an explicit effective agent admitted
+through the same tenant-local resolver and signed reach checks as execution.
+The service receives that admission explicitly, not through a mode flag in
+context. A missing configuration backend fails loudly.
+
+Configuration projects the same source ownership, current agent/user revision,
+and catalog identity/auth-scope filters. It includes both loading modes and
+omits only admin/user/session exposure exclusions, allowing disabled tools to
+be inspected and re-enabled. It grants no invocation authority and no fleet
+visibility. Describe resolves physical IDs within that inventory; knowing a
+foreign ID does not expose its schema. Stable `logical_id`/`logical_name` keys
+are for policy storage; physical `id`/`name` identify invocation targets.
+
+Clients negotiate `tools_configuration_view_v1` before sending the configuration
+view selector. It is advertised only when the owned-source configuration backend
+is wired. An older runtime receives no selector; clients do not retry a refused
+configuration request by downgrading its view.
