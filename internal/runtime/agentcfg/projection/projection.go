@@ -1161,7 +1161,9 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 				return nil, err
 			}
 			for _, pair := range pairs {
-				if pair.OwnerAgentID == agentID && pair.OwnerUserID == "" {
+				// An agent-scope pair retains its registering signer user; that is
+				// lifecycle provenance, not a user-scoped ownership constraint.
+				if pair.OwnerAgentID == agentID {
 					agentPairNames[pair.Connection.Name] = struct{}{}
 				}
 			}

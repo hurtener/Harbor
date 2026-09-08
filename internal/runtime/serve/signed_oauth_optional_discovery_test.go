@@ -242,7 +242,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 				if prepared != nil {
 					t.Fatal("failed preparation returned a prepared connection")
 				}
-				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, connectionName, binding.ProviderName)
+				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, binding.ProviderName)
 				if _, err := provider.Token(ctx, tools.ToolSourceID(binding.ProviderName)); !errors.Is(err, toolauth.ErrProviderClosed) {
 					t.Fatalf("failed preparation left private token cache/worker usable: %v", err)
 				}
@@ -250,7 +250,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 				if prepareErr != nil {
 					t.Fatalf("method-not-found preparation: %v", prepareErr)
 				}
-				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, connectionName, binding.ProviderName)
+				assertSignedDiscoveryUnpublished(t, catalog, registry, providerSet, binding.ProviderName)
 				if err := prepared.Activate(ctx); err != nil {
 					t.Fatalf("activate method-not-found preparation: %v", err)
 				}
@@ -307,7 +307,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 	}
 }
 
-func assertSignedDiscoveryUnpublished(t *testing.T, catalog tools.ToolCatalog, registry *mcpdrv.Registry, providerSet toolauth.ProviderSet, connectionName, providerName string) {
+func assertSignedDiscoveryUnpublished(t *testing.T, catalog tools.ToolCatalog, registry *mcpdrv.Registry, providerSet toolauth.ProviderSet, providerName string) {
 	t.Helper()
 	if got := catalog.List(tools.CatalogFilter{}); len(got) != 0 {
 		t.Fatalf("failed/private preparation leaked %d tool(s) into the catalog", len(got))

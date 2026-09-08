@@ -324,16 +324,15 @@ func (s *source) Resolve(ctx context.Context) (credsource.ClientCredential, erro
 		s.mu.Unlock()
 		return cred, nil
 	}
-	s.mu.Unlock()
 	return s.fetchSingleFlight(ctx, entry, tenant, token)
 }
 
-// fetchSingleFlight collapses concurrent misses onto one fetch. The fetch
+// fetchSingleFlight consumes the held source lock, atomically admitting a miss
+// before another tenant can reclaim an empty cache entry. The fetch
 // runs on a context DETACHED from the initiating caller's cancellation
 // (values — identity, trace — preserved; deadline is the fetch timeout)
 // so a cancelled caller never poisons the collapsed waiters.
 func (s *source) fetchSingleFlight(ctx context.Context, entry *cacheEntry, tenant, token string) (credsource.ClientCredential, error) {
-	s.mu.Lock()
 	if s.closing || entry.invalidated {
 		s.mu.Unlock()
 		return credsource.ClientCredential{}, fmt.Errorf("%w: credential generation invalidated", credsource.ErrCredentialSourceRejected)

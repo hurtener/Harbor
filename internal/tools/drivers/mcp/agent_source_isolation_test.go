@@ -23,7 +23,7 @@ func TestAgentSource_ConcurrentInvocationAndRestoredReference(t *testing.T) {
 		}
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

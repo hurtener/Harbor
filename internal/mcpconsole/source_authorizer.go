@@ -134,7 +134,9 @@ func (a *SourceAuthorizer) VisibleRegistration(ctx context.Context, _ tools.Tool
 		return false, fmt.Errorf("read source connection pairs: %w", err)
 	}
 	for _, pair := range pairs {
-		if pair.Connection.Name == logical && pair.OwnerAgentID == owner.Agent && pair.OwnerUserID == owner.User {
+		// Agent-scope pairs retain their registering signer user. Only user
+		// scope binds visibility to that user; both scopes bind the agent.
+		if pair.Connection.Name == logical && pair.OwnerAgentID == owner.Agent && (scope == agentcfg.ConfigScopeAgent || pair.OwnerUserID == owner.User) {
 			return true, nil
 		}
 	}

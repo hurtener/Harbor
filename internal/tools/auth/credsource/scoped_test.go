@@ -275,3 +275,36 @@ func TestScopedRemote_RuntimeBearerGenerationDoesNotReuseWarmCredential(t *testi
 		t.Fatalf("generation hits = %d", hits.Load())
 	}
 }
+
+func TestScopedRemote_FailedTenantCapacityRecovers(t *testing.T) {
+	t.Setenv(cAuthTokenEnv, cDummyServiceToken)
+	var recoverEndpoint atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !recoverEndpoint.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"format_version": 2, "tenant_id": req.Header.Get("X-Harbor-Credential-Tenant"), "client_id": "dummy", "client_secret": "dummy"})
+	}))
+	defer server.Close()
+	red := mkRedactor()
+	s, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{ProviderName: "fixture", Bus: mkBus(t, red), Redactor: red, Remote: &credsource.RemoteConfig{URL: server.URL, AuthTokenEnv: cAuthTokenEnv, Scope: credsource.ExecutionTenantScope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// More failed tenant misses than the source's bounded capacity must not
+	// reserve idle slots forever or stop a later authorized recovery.
+	for i := range 300 {
+		ctx, err := identity.With(context.Background(), identity.Identity{TenantID: fmt.Sprintf("tenant-%d", i), UserID: "user", SessionID: "session"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.Resolve(ctx); !errors.Is(err, credsource.ErrCredentialSourceUnavailable) {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	recoverEndpoint.Store(true)
+	if _, err = s.Resolve(mkCtx(t)); err != nil {
+		t.Fatalf("failed entries exhausted capacity: %v", err)
+	}
+}
