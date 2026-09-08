@@ -69,13 +69,13 @@ func TestAgentMCPProjection_ConcurrentOwnersAndLegacyResume(t *testing.T) {
 	duplicate := tools.ToolSourceID("duplicate-physical")
 	resolver.owners[duplicate] = owner
 	resolver.logical[duplicate] = "same"
-	add := func(name string, source tools.ToolSourceID) {
+	add := func(name string, source tools.ToolSourceID, loading tools.LoadingMode) {
 		t.Helper()
-		if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: name, Source: source, Loading: tools.LoadingAlways}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil }}); err != nil {
+		if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: name, Source: source, Loading: loading}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) { return tools.ToolResult{}, nil }}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	add("duplicate-physical_echo", duplicate)
+	add("duplicate-physical_echo", duplicate, tools.LoadingDeferred)
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: owner.Tenant, UserID: "u", SessionID: "s"}}
 	view, err := projection.ActivePlannerCatalogView(context.Background(), reg, nil, owner.Agent, q, cat, tools.CatalogFilter{}, resolver)
 	if err != nil {
@@ -85,7 +85,7 @@ func TestAgentMCPProjection_ConcurrentOwnersAndLegacyResume(t *testing.T) {
 		t.Fatal("ambiguous legacy alias admitted")
 	}
 	resolver.owners["same"] = auth.Owner{}
-	add("same_echo", "same")
+	add("same_echo", "same", tools.LoadingAlways)
 	if got, ok := view.Resolve("same_echo"); !ok || got.Source != "same" {
 		t.Fatalf("exact boot precedence: %v %v", got, ok)
 	}

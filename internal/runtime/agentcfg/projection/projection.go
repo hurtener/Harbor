@@ -57,8 +57,9 @@ type sourceLogicalNameResolver interface {
 // Translate the user tier only for the matching owner, preserving the
 // original names so the same narrow policy still applies to an operator/boot
 // source with that logical name or to a source that is not attached yet.
-func physicalizeUserExposure(base tools.PlannerCatalogView, resolver SourceOwnerResolver, owner auth.Owner, paused, disabled []string) ([]string, []string) {
-	if base == nil || resolver == nil || owner.User == "" || (len(paused) == 0 && len(disabled) == 0) {
+// catalogTools includes both loading modes, independent of prompt visibility.
+func physicalizeUserExposure(catalogTools []tools.Tool, resolver SourceOwnerResolver, owner auth.Owner, paused, disabled []string) ([]string, []string) {
+	if resolver == nil || owner.User == "" || (len(paused) == 0 && len(disabled) == 0) {
 		return paused, disabled
 	}
 	logicalNames, ok := resolver.(sourceLogicalNameResolver)
@@ -80,7 +81,7 @@ func physicalizeUserExposure(base tools.PlannerCatalogView, resolver SourceOwner
 	}
 	physicalPaused := make(map[string]struct{})
 	physicalDisabled := make(map[string]struct{})
-	for _, tool := range base.List() {
+	for _, tool := range catalogTools {
 		if tool.Source == "" {
 			continue
 		}
@@ -212,11 +213,13 @@ func userLoadingTool(t tools.Tool, resolver SourceOwnerResolver, owner auth.Owne
 }
 
 type userScopedMCPView struct {
-	base        tools.PlannerCatalogView
-	resolver    SourceOwnerResolver
-	owner       auth.Owner
-	desiredPair map[string]struct{}
-	agentPair   map[string]struct{}
+	// catalogTools includes both loading modes; prompt presence is not authority.
+	catalogTools []tools.Tool
+	base         tools.PlannerCatalogView
+	resolver     SourceOwnerResolver
+	owner        auth.Owner
+	desiredPair  map[string]struct{}
+	agentPair    map[string]struct{}
 }
 
 func (v userScopedMCPView) allows(tool tools.Tool) bool {
@@ -251,7 +254,7 @@ func (v userScopedMCPView) Resolve(name string) (tools.Tool, bool) {
 	// Resume references written before owner namespacing through the same
 	// current admitted view. Only agent sources had legacy bare names.
 	var found tools.Tool
-	for _, t := range v.base.List() {
+	for _, t := range v.catalogTools {
 		owner, ok := v.resolver.OwnerOfSource(t.Source)
 		if !ok || owner.Scope() != auth.ScopeTenantAgent || !v.allows(t) {
 			continue
@@ -264,7 +267,15 @@ func (v userScopedMCPView) Resolve(name string) (tools.Tool, bool) {
 			found = t
 		}
 	}
-	return found, found.Name != ""
+	if found.Name == "" {
+		return tools.Tool{}, false
+	}
+	// Preserve effective loading metadata and the underlying resolution policy.
+	resolved, ok := v.base.Resolve(found.Name)
+	if !ok || resolved.Source != found.Source || !v.allows(resolved) {
+		return tools.Tool{}, false
+	}
+	return resolved, true
 }
 
 func (v userScopedMCPView) List() []tools.Tool {
@@ -1244,12 +1255,17 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	paused := unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
 	disabled := unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
 	if ownerResolver != nil {
-		adminPaused, adminDisabled = physicalizeUserExposure(base, ownerResolver, actingOwner, adminPaused, adminDisabled)
-		overlay.DisabledServers, overlay.DisabledTools = physicalizeUserExposure(base, ownerResolver, actingOwner, overlay.DisabledServers, overlay.DisabledTools)
-		userPaused, userDisabled = physicalizeUserExposure(base, ownerResolver, actingOwner, userPaused, userDisabled)
+		// Exclusions and resume aliases must include deferred/demoted tools.
+		// Keep all other catalog filters intact; only prompt loading is widened.
+		broad := filter
+		broad.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
+		catalogTools := cat.List(broad)
+		adminPaused, adminDisabled = physicalizeUserExposure(catalogTools, ownerResolver, actingOwner, adminPaused, adminDisabled)
+		overlay.DisabledServers, overlay.DisabledTools = physicalizeUserExposure(catalogTools, ownerResolver, actingOwner, overlay.DisabledServers, overlay.DisabledTools)
+		userPaused, userDisabled = physicalizeUserExposure(catalogTools, ownerResolver, actingOwner, userPaused, userDisabled)
 		paused = unionSorted(unionSorted(adminPaused, userPaused), overlay.DisabledServers)
 		disabled = unionSorted(unionSorted(adminDisabled, userDisabled), overlay.DisabledTools)
-		base = userScopedMCPView{base: base, resolver: ownerResolver, owner: actingOwner, desiredPair: userPairNames, agentPair: agentPairNames}
+		base = userScopedMCPView{base: base, catalogTools: catalogTools, resolver: ownerResolver, owner: actingOwner, desiredPair: userPairNames, agentPair: agentPairNames}
 	}
 	if len(paused) == 0 && len(disabled) == 0 {
 		return base, nil
