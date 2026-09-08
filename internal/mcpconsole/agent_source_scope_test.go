@@ -75,6 +75,15 @@ func TestSourceAuthorizer_AgentScopeConcurrentIsolationAndRevocation(t *testing.
 			if e != nil || len(rows) != want {
 				t.Errorf("catalog count: %d want %d err %v", len(rows), want, e)
 			}
+			for _, row := range rows {
+				if row.Name == "boot" {
+					if row.LogicalName != "boot" {
+						t.Errorf("boot logical name: %q", row.LogicalName)
+					}
+				} else if row.LogicalName != "same" {
+					t.Errorf("owned logical name: %q", row.LogicalName)
+				}
+			}
 			revoked := mcpconsole.NewSourceAuthorizer(reg, agentScopeReader{})
 			if visible, e := revoked.Visible(ctx, source, "base"); e != nil || visible {
 				t.Errorf("revoked source: %v %v", visible, e)

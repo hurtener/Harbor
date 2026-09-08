@@ -336,6 +336,7 @@ func (a *RegistryAccessor) SetRawHTMLTrust(ctx context.Context, name string, tru
 func serverRow(v mcp.ServerView) protocol.MCPServerRow {
 	return protocol.MCPServerRow{
 		Name:               v.Name,
+		LogicalName:        v.LogicalName,
 		Transport:          v.Transport,
 		URLOrCommand:       v.URLOrCommand,
 		State:              string(v.State),

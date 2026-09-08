@@ -120,6 +120,8 @@ const (
 // ServerView is the per-server projection the Registry returns. It is a
 // flat shape — no MCP-SDK type crosses the package boundary.
 type ServerView struct {
+	// LogicalName is the canonical configured connection name.
+	LogicalName string
 	// Name is the unique server / source id.
 	Name string
 	// Transport is the wire transport string.
@@ -2147,8 +2149,13 @@ func (r *Registry) identityVisibleEntry(ctx context.Context, name string) (*serv
 // viewLocked builds a ServerView snapshot from an entry. Caller MUST
 // hold r.mu (read or write).
 func (e *serverEntry) viewLocked() ServerView {
+	logical := e.logicalName
+	if logical == "" {
+		logical = string(e.provider.SourceID())
+	}
 	return ServerView{
 		Name:              string(e.provider.SourceID()),
+		LogicalName:       logical,
 		Transport:         e.transport,
 		URLOrCommand:      e.urlOrCommand,
 		State:             e.stats.state,

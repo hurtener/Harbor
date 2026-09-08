@@ -2379,7 +2379,9 @@ not an addition to the `(tenant, user, session)` identity or storage partition.
 Identical source labels across tenants or derived agents do not imply authority.
 
 Tenant-owned physical source names are deterministic owner-qualified catalog
-keys; durable descriptors remain logical. Legacy agent source/resource/App and
+keys; durable descriptors remain logical. Protocol tool rows expose `logical_id`
+for stable policy keys and MCP server rows expose `logical_name` from registry
+metadata; physical `id`/`name` remain invocation identifiers. Legacy agent source/resource/App and
 paused tool references resolve only through the current verified tenant and
 admitted effective-agent view, with fresh generation checks for Apps and no
 ambiguous or personal-source alias fallback. Explicit low-level operator

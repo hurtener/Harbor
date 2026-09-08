@@ -85,6 +85,7 @@ type MCPSurface struct {
 // onto `types.MCPServerView`. Keeping the projection here (not importing
 // the driver type) keeps the `protocol` package driver-free.
 type MCPServerRow struct {
+	LogicalName       string
 	Name              string
 	Transport         string
 	URLOrCommand      string
@@ -1006,6 +1007,7 @@ func (s *MCPSurface) emitRawHTMLTrustToggled(ctx context.Context, actor identity
 func projectServerRow(row MCPServerRow) types.MCPServerView {
 	return types.MCPServerView{
 		Name:               row.Name,
+		LogicalName:        row.LogicalName,
 		Transport:          row.Transport,
 		URLOrCommand:       row.URLOrCommand,
 		State:              types.MCPServerStateView(row.State),

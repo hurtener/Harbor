@@ -15321,3 +15321,5 @@ capacity; revocation fences pending publication. Permanent authority/configurati
 errors are typed non-retryable. Existing env/static and inference custody is unchanged.
 
 **Cross-references:** D-025, D-271, D-285, D-300; RFC §5.5; docs/CONFIG.md.
+
+D-457 contract clarification: tool catalog rows expose optional `logical_id` as the stable configured source plus registered tool suffix; `id` and `name` remain physical invocation identifiers. MCP server rows expose optional `logical_name` from the canonical registry. Clients use these logical fields for durable exposure policy and retain physical identifiers for invocation; these fields grant no additional visibility.

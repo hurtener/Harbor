@@ -6819,6 +6819,11 @@
       "home": "types",
       "fields": [
         {
+          "key": "logical_name",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "name",
           "type": "string"
         },
@@ -10995,6 +11000,11 @@
     "Tool": {
       "home": "types",
       "fields": [
+        {
+          "key": "logical_id",
+          "type": "string",
+          "optional": true
+        },
         {
           "key": "id",
           "type": "string"

@@ -3203,6 +3203,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `logical_name` | `string` | optional (`omitempty`) |
 | `name` | `string` |  |
 | `transport` | `string` |  |
 | `url_or_command` | `string` |  |
@@ -4963,6 +4964,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `logical_id` | `string` | optional (`omitempty`) |
 | `id` | `string` |  |
 | `name` | `string` |  |
 | `version` | `string` |  |

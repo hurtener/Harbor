@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:3326f4fd8d46c73c5d017f78a1320b31bccc2f8a83c35ba7b50c1546c889e798";
+export const WIRE_SURFACE_DIGEST = "sha256:680e64124f6e58cbe40bd5de45b763ecee2d336e6195afdf8f8cda364edb73d3";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2411,6 +2411,7 @@ export interface MCPServerSetRawHTMLTrustResponse {
 }
 
 export interface MCPServerView {
+  logical_name?: string;
   name: string;
   transport: string;
   url_or_command: string;
@@ -3595,6 +3596,7 @@ export interface TimeRange {
 }
 
 export interface Tool {
+  logical_id?: string;
   id: string;
   name: string;
   version: string;

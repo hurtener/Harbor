@@ -36,6 +36,8 @@ export type ToolMetricsWindow = '1h' | '24h' | '7d';
 
 /** The catalog-row projection of a registered tool. */
 export interface Tool {
+  /** Stable configuration/policy key; id/name remain invocation keys. */
+  logical_id?: string;
   id: string;
   name: string;
   version: string;

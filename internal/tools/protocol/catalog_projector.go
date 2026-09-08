@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,7 +96,7 @@ func WithCatalogViewResolver(r CatalogViewResolver) CatalogProjectorOption {
 }
 
 // WithLogicalSourceResolver wires the runtime's canonical physical-to-logical
-// MCP source projection. It changes only the wire Owner field; the physical
+// MCP source projection. It projects the wire Owner and LogicalID fields; the physical
 // catalog ID, Name, and identity-scoped visibility remain unchanged.
 func WithLogicalSourceResolver(r LogicalSourceResolver) CatalogProjectorOption {
 	return func(p *CatalogProjector) {
@@ -248,13 +249,18 @@ func reliabilityTierOf(t tools.Tool) string {
 // resolving the annotated fields through the Annotator (or defaults).
 func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity, t tools.Tool) prototypes.Tool {
 	owner := string(t.Source)
+	logicalID := t.Name
 	if t.Transport == tools.TransportMCP && p.logicalSources != nil {
 		if logical, ok := p.logicalSources.LogicalNameOfSource(t.Source); ok && logical != "" {
 			owner = logical
+			if suffix, found := strings.CutPrefix(t.Name, string(t.Source)+"_"); found {
+				logicalID = logical + "_" + suffix
+			}
 		}
 	}
 	row := prototypes.Tool{
 		ID:              t.Name,
+		LogicalID:       logicalID,
 		Name:            t.Name,
 		Description:     t.Description,
 		Scope:           scopeOf(t),

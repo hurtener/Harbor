@@ -394,6 +394,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			for _, row := range list.Tools {
 				seen[row.ID] = true
 				owners[row.ID] = row.Owner
+				if row.Owner == logicalName && row.LogicalID != logicalName+"_echo" {
+					t.Fatalf("tools.list logical key: %q", row.LogicalID)
+				}
 			}
 			ownTool := user.physical + "_echo"
 			foreignTool := user.foreign + "_echo"
@@ -420,6 +423,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatalf("decode tools.get own: %v (body %s)", err, body)
 			}
+			if got.LogicalID != logicalName+"_echo" {
+				t.Fatalf("tools.get logical key: %q", got.LogicalID)
+			}
 			if got.Owner != logicalName {
 				t.Fatalf("tools.get own Owner = %q, want logical source %q", got.Owner, logicalName)
 			}
@@ -440,6 +446,9 @@ func TestProdWiring_ToolsCatalogViewIsUserScopedThroughBuildMux(t *testing.T) {
 			var manifest prototypes.ToolManifest
 			if err := json.Unmarshal(body, &manifest); err != nil {
 				t.Fatalf("decode tools.describe own: %v (body %s)", err, body)
+			}
+			if manifest.Tool.LogicalID != logicalName+"_echo" {
+				t.Fatalf("tools.describe logical key: %q", manifest.Tool.LogicalID)
 			}
 			if manifest.Tool.Owner != logicalName {
 				t.Fatalf("tools.describe own Owner = %q, want logical source %q", manifest.Tool.Owner, logicalName)

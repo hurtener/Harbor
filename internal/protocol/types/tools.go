@@ -161,6 +161,8 @@ func IsValidToolMetricsWindow(w ToolMetricsWindow) bool {
 // the payload `tools.get` returns. Flat, low-cardinality strings — the
 // Console branches on the enum fields.
 type Tool struct {
+	// LogicalID is the stable configuration/policy key. ID and Name remain invocation keys.
+	LogicalID string `json:"logical_id,omitempty"`
 	// ID is the stable catalog key (the tool's registered name).
 	ID string `json:"id"`
 	// Name is the planner-facing display name (equal to ID in V1).

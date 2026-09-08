@@ -49,6 +49,8 @@ const (
 // (extended) by mcp.servers.get. It is a flat projection of the runtime
 // MCP driver's per-server state — never a re-export of the driver type.
 type MCPServerView struct {
+	// LogicalName is the configured connection name used by source policy.
+	LogicalName string `json:"logical_name,omitempty"`
 	// Name is the unique MCP server / source id.
 	Name string `json:"name"`
 	// Transport is the wire transport — "stdio", "http+sse",
