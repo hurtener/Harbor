@@ -185,7 +185,7 @@ func v123CarrierAdmin(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ctx = protoauth.WithScopes(ctx, []protoauth.Scope{protoauth.ScopeAdmin})
+		ctx = protoauth.WithScopes(protoauth.WithAgentReach(ctx, []string{v123Agent}), []protoauth.Scope{protoauth.ScopeAdmin})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -274,7 +274,8 @@ func newV123Stack(t *testing.T) *v123Stack {
 			t.Fatalf("register %s: %v", reg.name, rerr)
 		}
 	}
-	accessor, err := mcpconsole.NewRegistryAccessor(registry)
+	configReg := scopedIntegrationConfig(t, bus, map[string]toolauth.Owner{v123ServerA: {Tenant: v123TenantA, Agent: v123Agent}, v123ServerB: {Tenant: v123TenantB, Agent: v123Agent}})
+	accessor, err := mcpconsole.NewRegistryAccessor(registry, mcpconsole.WithSourceAuthorizer(mcpconsole.NewSourceAuthorizer(registry, configReg)))
 	if err != nil {
 		t.Fatalf("mcpconsole.NewRegistryAccessor: %v", err)
 	}
@@ -908,11 +909,14 @@ func v123SetTrust(t *testing.T, st *v123Stack, tenant, name string, trusted bool
 		name, trusted)
 }
 
-// v123Trust reads the live flag back through the read projection, which stays
-// bare-name and owner-blind.
+// v123Trust inspects each flag as that source's owning tenant.
 func v123Trust(t *testing.T, st *v123Stack, name string) bool {
 	t.Helper()
-	view, err := st.registry.GetServer(v123Ctx(t, v123TenantB), name)
+	tenant := v123TenantA
+	if name == v123ServerB {
+		tenant = v123TenantB
+	}
+	view, err := st.registry.GetServer(v123Ctx(t, tenant), name)
 	if err != nil {
 		t.Fatalf("GetServer(%q): %v", name, err)
 	}

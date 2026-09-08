@@ -141,7 +141,7 @@ func TestE2E_Phase203_OptInOff_InjectionRejected(t *testing.T) {
 	if !errors.Is(err, agentcfgprotocol.ErrWireInjectionNotAllowed) {
 		t.Fatalf("want ErrWireInjectionNotAllowed with the opt-in off, got %v", err)
 	}
-	if _, ok := h.catalog.Resolve("recv_echo"); ok {
+	if _, ok := h.catalog.Resolve(mcpdrv.PhysicalServerName("recv", toolauth.Owner{Tenant: p203Tenant, Agent: p203Agent}) + "_echo"); ok {
 		t.Fatal("a gated-off add must register no tool")
 	}
 }
@@ -175,11 +175,11 @@ func TestE2E_Phase203_OptInOn_HeaderForm_OnlinePersistsInjectsRedacts(t *testing
 
 	// The attach actually wired injection: invoke the registered tool and observe
 	// the per-user pulled value at the receiver.
-	echo, ok := h.catalog.Resolve("recv_echo")
+	echo, ok := h.catalog.Resolve(mcpdrv.PhysicalServerName("recv", toolauth.Owner{Tenant: p203Tenant, Agent: p203Agent}) + "_echo")
 	if !ok {
 		t.Fatal("recv_echo not registered after online add")
 	}
-	id := identity.Identity{TenantID: "t1", UserID: "alice", SessionID: "s1"}
+	id := identity.Identity{TenantID: p203Tenant, UserID: "alice", SessionID: "s1"}
 	if _, err := echo.Invoke(p148Ctx(t, id, p203Agent), json.RawMessage(`{"text":"hi"}`)); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -187,8 +187,8 @@ func TestE2E_Phase203_OptInOn_HeaderForm_OnlinePersistsInjectsRedacts(t *testing
 	if len(calls) != 1 {
 		t.Fatalf("receiver saw %d calls, want 1", len(calls))
 	}
-	if got := calls[0].headers["X-Vendor-Api-Key"]; got != "brokered-t1-alice" {
-		t.Fatalf("injected header = %q, want brokered-t1-alice", got)
+	if got := calls[0].headers["X-Vendor-Api-Key"]; got != "brokered-"+p203Tenant+"-alice" {
+		t.Fatalf("injected header = %q, want brokered-%s-alice", got, p203Tenant)
 	}
 	red := redactedPayload(t, calls[0])
 	if v := red["headers"].(map[string]any)["X-Vendor-Api-Key"]; v != "***" {
@@ -209,19 +209,25 @@ func TestE2E_Phase203_OptInOn_PerUserIsolation(t *testing.T) {
 	if err != nil || resp.State != "online" {
 		t.Fatalf("add: err=%v state=%s", err, resp.State)
 	}
-	echo, ok := h.catalog.Resolve("recv_echo")
+	echo, ok := h.catalog.Resolve(mcpdrv.PhysicalServerName("recv", toolauth.Owner{Tenant: p203Tenant, Agent: p203Agent}) + "_echo")
 	if !ok {
 		t.Fatal("recv_echo not registered")
 	}
 	for _, id := range []identity.Identity{
-		{TenantID: "t-a", UserID: "amy", SessionID: "s"},
-		{TenantID: "t-b", UserID: "bob", SessionID: "s"},
+		{TenantID: p203Tenant, UserID: "amy", SessionID: "s"},
+		{TenantID: p203Tenant, UserID: "bob", SessionID: "s"},
 	} {
 		if _, err := echo.Invoke(p148Ctx(t, id, p203Agent), json.RawMessage(`{"text":"hi"}`)); err != nil {
 			t.Fatalf("invoke(%s): %v", id.UserID, err)
 		}
 	}
-	want := map[string]string{"amy": "brokered-t-a-amy", "bob": "brokered-t-b-bob"}
+	before := len(h.rec.snapshot())
+	_, denied := echo.Invoke(p148Ctx(t, identity.Identity{TenantID: "foreign-tenant", UserID: "amy", SessionID: "s"}, p203Agent), json.RawMessage(`{"text":"denied"}`))
+	var ownerDenied mcpdrv.ErrSourceOwnerDenied
+	if !errors.As(denied, &ownerDenied) || len(h.rec.snapshot()) != before {
+		t.Fatalf("foreign tenant must fail before receiver: %v", denied)
+	}
+	want := map[string]string{"amy": "brokered-" + p203Tenant + "-amy", "bob": "brokered-" + p203Tenant + "-bob"}
 	for _, c := range h.rec.snapshot() {
 		user, _ := c.meta["user"].(string)
 		exp, ok := want[user]
@@ -249,12 +255,12 @@ func TestE2E_Phase203_OptInOn_BrokerOutage_FailsLoud_NoWireCall(t *testing.T) {
 	if err != nil || resp.State != "online" {
 		t.Fatalf("add: err=%v state=%s", err, resp.State)
 	}
-	echo, ok := h.catalog.Resolve("recv_echo")
+	echo, ok := h.catalog.Resolve(mcpdrv.PhysicalServerName("recv", toolauth.Owner{Tenant: p203Tenant, Agent: p203Agent}) + "_echo")
 	if !ok {
 		t.Fatal("recv_echo not registered")
 	}
 	h.broker.setPosture("error500")
-	id := identity.Identity{TenantID: "t1", UserID: "dave", SessionID: "s1"}
+	id := identity.Identity{TenantID: p203Tenant, UserID: "dave", SessionID: "s1"}
 	if _, err := echo.Invoke(p148Ctx(t, id, p203Agent), json.RawMessage(`{"text":"hi"}`)); err == nil {
 		t.Fatal("want error on broker outage, got nil (an unauthenticated call would leak)")
 	}

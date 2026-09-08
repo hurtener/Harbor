@@ -3,7 +3,6 @@ package integration_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,12 +30,10 @@ import (
 // owners each runtime-add a connection into ONE shared runtime, plus a
 // boot-declared server. Owner A's run-start reconcile detaches ONLY A's
 // undeclared runtime-add — never the boot server, never owner B's add. It also
-// proves the bounded guarantee (a shared-runtime same-name collision fails
-// loud, no false dispatch isolation), boot visibility to an arbitrary session,
+// proves same-name owners coexist independently, boot visibility to an arbitrary session,
 // the fail-closed missing-owner guard, and the concurrent-reuse contract.
 //
-// It EXTENDS the D-287 model (process-global registry/catalog/dispatch): the
-// registry is NOT re-keyed; only the reconcile VIEW is owner-scoped.
+// Runtime-added sources use owner-derived physical names; durable descriptors stay logical.
 
 // ownerCfg names one runtime-add owner (a distinct tenant + agent in the shared
 // runtime).
@@ -153,7 +150,15 @@ func (h *ownerHarness) reconcile(t *testing.T, o ownerCfg) int {
 
 func (h *ownerHarness) registryLists(t *testing.T, name string) bool {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), identity.Identity{TenantID: "obs", UserID: "obs", SessionID: "obs"})
+	o := ownerA167()
+	if name == "beta" {
+		o = ownerB167()
+	}
+	physical := ownedSource(name, o.tenant, o.agent)
+	if name == "boot-srv" {
+		physical = name
+	}
+	ctx, err := identity.With(context.Background(), o.quad().Identity)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -162,7 +167,7 @@ func (h *ownerHarness) registryLists(t *testing.T, name string) bool {
 		t.Fatalf("ListServers: %v", lerr)
 	}
 	for _, s := range servers {
-		if s.Name == name {
+		if s.Name == physical {
 			return true
 		}
 	}
@@ -280,12 +285,11 @@ func TestE2E_Phase167_OwnerScopedReconcile_NeverDetachesBootOrOtherOwner(t *test
 	}
 }
 
-// TestE2E_Phase167_RuntimeAdd_SharedRuntime_NameCollisionFailsLoud proves the
+// TestE2E_Phase167_RuntimeAdd_SharedRuntime_SameNameOwnersCoexist proves the
 // bounded guarantee: two owners adding the SAME connection name in a shared
-// runtime is NOT a silent overwrite / cross-serve — the second add fails LOUD
-// (the bare-name catalog rejects the duplicate, ErrToolDuplicateName), and the
-// first owner keeps its connection.
-func TestE2E_Phase167_RuntimeAdd_SharedRuntime_NameCollisionFailsLoud(t *testing.T) {
+// runtime creates independent physical registrations, and removing one leaves
+// the other owner live.
+func TestE2E_Phase167_RuntimeAdd_SharedRuntime_SameNameOwnersCoexist(t *testing.T) {
 	binPath := buildMCPTestServer(t)
 	h := newOwnerHarness(t, binPath)
 	a, b := ownerA167(), ownerB167()
@@ -293,9 +297,7 @@ func TestE2E_Phase167_RuntimeAdd_SharedRuntime_NameCollisionFailsLoud(t *testing
 	if st := h.add(t, a, "collide"); st != string(agentcfgprotocol.ConnectionStateOnline) {
 		t.Fatalf("owner A add collide state = %q, want online", st)
 	}
-	// Owner B adds the SAME name — the bare-name catalog collision surfaces
-	// LOUD as a failed lifecycle (state=failed + a reason), never a silent
-	// overwrite of owner A's connection.
+	// Owner B adds the same logical name into its independent namespace.
 	resp, err := h.svc.AddMCPConnection(context.Background(), prototypes.AgentConfigAddMCPConnectionRequest{
 		Identity: b.scope(), AgentID: b.agent,
 		Connection: prototypes.AgentConfigMCPConnectionDescriptor{
@@ -303,21 +305,26 @@ func TestE2E_Phase167_RuntimeAdd_SharedRuntime_NameCollisionFailsLoud(t *testing
 		},
 	})
 	if err != nil {
-		t.Fatalf("owner B add (collision) returned a transport error, want a recorded failed state: %v", err)
+		t.Fatalf("owner B same-name add returned a transport error: %v", err)
 	}
-	if resp.State != string(agentcfgprotocol.ConnectionStateFailed) {
-		t.Fatalf("owner B collision add state = %q, want failed (loud, not a silent overwrite)", resp.State)
+	if resp.State != string(agentcfgprotocol.ConnectionStateOnline) {
+		t.Fatalf("owner B same-name add failed: %+v", resp)
 	}
-	if strings.TrimSpace(resp.Reason) == "" {
-		t.Fatal("owner B collision add has an empty reason — the loud failure must carry a reason")
+	for _, o := range []ownerCfg{a, b} {
+		physical := ownedSource("collide", o.tenant, o.agent)
+		if got, ok := h.mcpReg.OwnerOf(physical); !ok || got != (toolauth.Owner{Tenant: o.tenant, Agent: o.agent}) {
+			t.Fatalf("owner row %s: %+v %v", physical, got, ok)
+		}
+		if _, ok := h.catalog.Resolve(physical + "_echo"); !ok {
+			t.Fatalf("missing physical tool %s", physical)
+		}
 	}
-	// The connection still belongs to owner A only — B never shadowed it.
-	if got := h.mcpReg.RuntimeAddedSources(toolauth.Owner{Tenant: a.tenant, Agent: a.agent}); len(got) != 1 || got[0] != "collide" {
-		t.Fatalf("owner A view after collision = %v, want [collide] (unchanged)", got)
+	h.remove(t, a, "collide")
+	h.reconcile(t, a)
+	if _, ok := h.mcpReg.OwnerOf(ownedSource("collide", b.tenant, b.agent)); !ok {
+		t.Fatal("A's removal detached B's same-name source")
 	}
-	if got := h.mcpReg.RuntimeAddedSources(toolauth.Owner{Tenant: b.tenant, Agent: b.agent}); len(got) != 0 {
-		t.Fatalf("owner B view after failed collision = %v, want empty (no shadow entry)", got)
-	}
+
 }
 
 // TestE2E_Phase167_RuntimeAdd_MissingOwner_FailsClosed is the fail-closed

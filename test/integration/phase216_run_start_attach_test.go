@@ -295,17 +295,17 @@ func TestE2E_Phase216_RestartSurvival(t *testing.T) {
 	h := newRaHarness(t)
 
 	h.addHTTP(t, raSrv, fixture.URL)
-	if _, ok := h.catalog.Resolve(raSrv + "_echo"); !ok {
+	if _, ok := h.catalog.Resolve(ownedSource(raSrv, raTenant, raAgent) + "_echo"); !ok {
 		t.Fatal("the add did not register the fixture's tool")
 	}
 
 	// THE RESTART: a fresh process — new MCP registry, new catalog, new attacher
 	// — over the SAME state store. Nothing but the revision spine survives.
 	h.bootRuntimeSide(t)
-	if _, ok := h.catalog.Resolve(raSrv + "_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource(raSrv, raTenant, raAgent) + "_echo"); ok {
 		t.Fatal("the rebuilt catalog is not actually fresh — the restart is not being simulated")
 	}
-	if _, exists := h.mcpReg.OwnerOf(raSrv); exists {
+	if _, exists := h.mcpReg.OwnerOf(ownedSource(raSrv, raTenant, raAgent)); exists {
 		t.Fatal("the rebuilt MCP registry is not actually fresh")
 	}
 
@@ -321,7 +321,7 @@ func TestE2E_Phase216_RestartSurvival(t *testing.T) {
 	}
 
 	// The tool is back in the projected catalog.
-	d, ok := h.catalog.Resolve(raSrv + "_echo")
+	d, ok := h.catalog.Resolve(ownedSource(raSrv, raTenant, raAgent) + "_echo")
 	if !ok {
 		t.Fatal("the re-attached server's tool is NOT back in the catalog — restart survival is broken")
 	}
@@ -335,7 +335,7 @@ func TestE2E_Phase216_RestartSurvival(t *testing.T) {
 	if idErr != nil {
 		t.Fatalf("identity.With: %v", idErr)
 	}
-	res, callErr := d.Invoke(callCtx, []byte(`{"text":"back online"}`))
+	res, callErr := d.Invoke(tools.WithEffectiveAgentConfig(callCtx, raAgent), []byte(`{"text":"back online"}`))
 	if callErr != nil {
 		t.Fatalf("calling the re-attached tool: %v", callErr)
 	}
@@ -350,7 +350,7 @@ func TestE2E_Phase216_RestartSurvival(t *testing.T) {
 	}
 	found := false
 	for _, s := range servers {
-		if s.Name == raSrv {
+		if s.Name == ownedSource(raSrv, raTenant, raAgent) {
 			found = true
 			if s.State != mcpdrv.ServerStateOnline {
 				t.Fatalf("re-attached server state = %q, want online", s.State)
@@ -366,7 +366,7 @@ func TestE2E_Phase216_RestartSurvival(t *testing.T) {
 
 	// IDENTITY PROPAGATION: the registration carries the reconciling owner, and
 	// the event carries the reconciling RUN.
-	owner, ok := h.mcpReg.OwnerOf(raSrv)
+	owner, ok := h.mcpReg.OwnerOf(ownedSource(raSrv, raTenant, raAgent))
 	if !ok {
 		t.Fatal("no owner tag on the re-attached registration")
 	}
@@ -411,7 +411,7 @@ func TestE2E_Phase216_CrossTenantSweepTouchesNothing(t *testing.T) {
 	if detached != 0 || attached != 0 {
 		t.Fatalf("cross-tenant sweep detached=%d attached=%d, want 0/0 (owner isolation)", detached, attached)
 	}
-	if _, exists := h.mcpReg.OwnerOf(raSrv); exists {
+	if _, exists := h.mcpReg.OwnerOf(ownedSource(raSrv, raTenant, raAgent)); exists {
 		t.Fatal("the cross-tenant sweep attached tenant-ra's connection")
 	}
 
@@ -419,7 +419,7 @@ func TestE2E_Phase216_CrossTenantSweepTouchesNothing(t *testing.T) {
 	if _, attachedA, err := h.reconcile(t, raQuad(), raAgent); err != nil || attachedA != 1 {
 		t.Fatalf("owner A reconcile after B's sweep: attached=%d err=%v, want 1,nil", attachedA, err)
 	}
-	owner, _ := h.mcpReg.OwnerOf(raSrv)
+	owner, _ := h.mcpReg.OwnerOf(ownedSource(raSrv, raTenant, raAgent))
 	if want := (toolauth.Owner{Tenant: raTenant, Agent: raAgent}); owner != want {
 		t.Fatalf("owner = %+v, want %+v", owner, want)
 	}
@@ -454,7 +454,7 @@ func TestE2E_Phase216_RollbackReDeclareReAttaches(t *testing.T) {
 	if detached != 1 || attached != 0 {
 		t.Fatalf("after remove: detached=%d attached=%d, want 1/0", detached, attached)
 	}
-	if _, ok := h.catalog.Resolve(raSrv + "_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource(raSrv, raTenant, raAgent) + "_echo"); ok {
 		t.Fatal("the removed server's tool is still in the catalog")
 	}
 
@@ -474,7 +474,7 @@ func TestE2E_Phase216_RollbackReDeclareReAttaches(t *testing.T) {
 	if detached != 0 || attached != 1 {
 		t.Fatalf("after rollback: detached=%d attached=%d, want 0/1", detached, attached)
 	}
-	if _, ok := h.catalog.Resolve(raSrv + "_echo"); !ok {
+	if _, ok := h.catalog.Resolve(ownedSource(raSrv, raTenant, raAgent) + "_echo"); !ok {
 		t.Fatal("the rolled-back-to connection's tool is NOT back in the catalog")
 	}
 }
@@ -508,11 +508,11 @@ func TestE2E_Phase216_FailureModes(t *testing.T) {
 		if attached != 1 {
 			t.Fatalf("attached = %d, want 1 (one refused server must not strand the rest)", attached)
 		}
-		if _, ok := h.catalog.Resolve("ra-alive_echo"); !ok {
+		if _, ok := h.catalog.Resolve(ownedSource("ra-alive", raTenant, raAgent) + "_echo"); !ok {
 			t.Fatal("the reachable connection did not come back")
 		}
 		// Nothing half-registered for the dead one.
-		if _, exists := h.mcpReg.OwnerOf(raSrv); exists {
+		if _, exists := h.mcpReg.OwnerOf(ownedSource(raSrv, raTenant, raAgent)); exists {
 			t.Fatal("a failed re-attach left a registration behind")
 		}
 		// REPORTED with a scrubbed reason.
@@ -571,10 +571,10 @@ func TestE2E_Phase216_FailureModes(t *testing.T) {
 		if attached != 1 {
 			t.Fatalf("attached = %d, want 1 (the plain sibling must still re-attach)", attached)
 		}
-		if _, exists := h.mcpReg.OwnerOf("ra-inj"); exists {
+		if _, exists := h.mcpReg.OwnerOf(ownedSource("ra-inj", raTenant, raAgent)); exists {
 			t.Fatal("a kill-switched re-attach registered the server anyway")
 		}
-		if _, exists := h.mcpReg.OwnerOf("ra-plain"); !exists {
+		if _, exists := h.mcpReg.OwnerOf(ownedSource("ra-plain", raTenant, raAgent)); !exists {
 			t.Fatal("the plain sibling did not re-attach")
 		}
 		seen := coll.await(t, "the reattach_failed event", func(e []events.Event) bool {
@@ -630,14 +630,14 @@ func TestE2E_Phase216_ConcurrentCrossOwnerSweeps(t *testing.T) {
 
 	// Exactly one live registration per connection, each under its OWN owner.
 	for name, agent := range map[string]string{"ra-conc-a": raAgent, "ra-conc-b": "agent-ra-b"} {
-		owner, ok := h.mcpReg.OwnerOf(name)
+		owner, ok := h.mcpReg.OwnerOf(ownedSource(name, raTenant, agent))
 		if !ok {
 			t.Fatalf("%q is not live after the concurrent sweeps", name)
 		}
 		if want := (toolauth.Owner{Tenant: raTenant, Agent: agent}); owner != want {
 			t.Fatalf("%q owner = %+v, want %+v (cross-owner bleed)", name, owner, want)
 		}
-		if _, ok := h.catalog.Resolve(name + "_echo"); !ok {
+		if _, ok := h.catalog.Resolve(ownedSource(name, raTenant, agent) + "_echo"); !ok {
 			t.Fatalf("%q's tool is not in the catalog", name)
 		}
 	}
@@ -649,7 +649,7 @@ func TestE2E_Phase216_ConcurrentCrossOwnerSweeps(t *testing.T) {
 	for _, s := range servers {
 		counts[s.Name]++
 	}
-	if counts["ra-conc-a"] != 1 || counts["ra-conc-b"] != 1 {
+	if counts[ownedSource("ra-conc-a", raTenant, raAgent)] != 1 || counts[ownedSource("ra-conc-b", raTenant, "agent-ra-b")] != 1 {
 		t.Fatalf("registration counts = %v, want exactly 1 each across %d concurrent run starts", counts, N)
 	}
 }

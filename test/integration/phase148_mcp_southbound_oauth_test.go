@@ -262,7 +262,7 @@ func p148Ctx(t *testing.T, id identity.Identity, agentID string) context.Context
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	return tools.WithInvokingAgent(ctx, agentID)
+	return tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, agentID), agentID)
 }
 
 // TestE2E_Phase148_ColdPathInjectAndProvenance drives the cold-path token
@@ -405,13 +405,13 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	echo, ok := cat.Resolve("added_echo")
+	echo, ok := cat.Resolve(mcpdrv.PhysicalServerName("added", auth.Owner{Tenant: sysID.TenantID, Agent: "agent-p148"}) + "_echo")
 	if !ok {
 		t.Fatal("added_echo not registered after runtime add")
 	}
 
-	id := identity.Identity{TenantID: "tenant-add", UserID: "erin", SessionID: "s1"}
-	if _, err := echo.Invoke(p148Ctx(t, id, "agent-add"), json.RawMessage(`{"text":"hi"}`)); err != nil {
+	id := identity.Identity{TenantID: sysID.TenantID, UserID: "erin", SessionID: "s1"}
+	if _, err := echo.Invoke(p148Ctx(t, id, "agent-p148"), json.RawMessage(`{"text":"hi"}`)); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	calls := rec.snapshot()
@@ -419,10 +419,10 @@ func TestE2E_Phase148_DevstackAttacher_BindingOverAddConnection(t *testing.T) {
 		t.Fatalf("server saw %d tools/call, want 1", len(calls))
 	}
 	c := calls[0]
-	if c.authz != "Bearer brokered-tenant-add-erin" {
+	if c.authz != "Bearer brokered-"+sysID.TenantID+"-erin" {
 		t.Fatalf("runtime-added connection did not inject the per-identity bearer: Authorization = %q", c.authz)
 	}
-	if c.meta["deployment"] != "prod" || c.meta["agent_id"] != "agent-add" {
+	if c.meta["deployment"] != "prod" || c.meta["agent_id"] != "agent-p148" {
 		t.Fatalf("runtime-added connection dropped annotations/provenance: %+v", c.meta)
 	}
 }

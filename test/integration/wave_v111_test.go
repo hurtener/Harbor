@@ -278,7 +278,7 @@ func TestE2E_WaveV111_ControlPlane_HookSurvivesConnectionEdits(t *testing.T) {
 
 	// The added server's tool reaches the next-turn PROJECTED catalog.
 	view := waveV111ProjectedView(t, stack, agentID, id)
-	toolName, ok := waveV111ViewSourceTool(view, connName)
+	toolName, ok := waveV111ViewSourceTool(view, mcpdrv.PhysicalServerName(connName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID}))
 	if !ok {
 		t.Fatalf("added server %q has no tool in the projected catalog: %v", connName, viewToolNames(view))
 	}
@@ -368,7 +368,7 @@ func TestE2E_WaveV111_DetachOnReconcile_AndReAdd(t *testing.T) {
 		t.Fatalf("add_mcp_connection: state=%q err=%v", add.State, err)
 	}
 	view := waveV111ProjectedView(t, stack, agentID, id)
-	toolName, ok := waveV111ViewSourceTool(view, connName)
+	toolName, ok := waveV111ViewSourceTool(view, mcpdrv.PhysicalServerName(connName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID}))
 	if !ok {
 		t.Fatalf("added server %q not projected", connName)
 	}
@@ -406,7 +406,7 @@ func TestE2E_WaveV111_DetachOnReconcile_AndReAdd(t *testing.T) {
 
 	// Post-reconcile: gone from the projected catalog AND the catalog itself,
 	// deregistered from the MCP registry, transport closed.
-	if _, still := waveV111ViewSourceTool(waveV111ProjectedView(t, stack, agentID, id), connName); still {
+	if _, still := waveV111ViewSourceTool(waveV111ProjectedView(t, stack, agentID, id), mcpdrv.PhysicalServerName(connName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID})); still {
 		t.Errorf("removed server %q still projected after reconcile", connName)
 	}
 	if _, still := stack.Catalog.Resolve(toolName); still {
@@ -436,7 +436,7 @@ func TestE2E_WaveV111_DetachOnReconcile_AndReAdd(t *testing.T) {
 	if err != nil || readd.State != string(agentcfgprotocol.ConnectionStateOnline) {
 		t.Fatalf("re-add: state=%q err=%v — re-attach must reuse the persisted binding with no re-consent", readd.State, err)
 	}
-	if _, ok := waveV111ViewSourceTool(waveV111ProjectedView(t, stack, agentID, id), connName); !ok {
+	if _, ok := waveV111ViewSourceTool(waveV111ProjectedView(t, stack, agentID, id), mcpdrv.PhysicalServerName(connName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID})); !ok {
 		t.Errorf("re-added server %q not projected", connName)
 	}
 }

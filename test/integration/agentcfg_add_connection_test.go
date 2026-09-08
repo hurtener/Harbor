@@ -25,6 +25,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -146,7 +147,7 @@ func TestE2E_AgentConfig_AddConnection(t *testing.T) {
 	if resp.Revision == nil {
 		t.Fatal("online add recorded no revision")
 	}
-	if _, ok := h.catalog.Resolve("mcptest_echo"); !ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", addcTenant, addcAgent) + "_echo"); !ok {
 		t.Fatal("the fixture's echo tool did not reach the live catalog after the add")
 	}
 	// The MCP registry reflects the new server.
@@ -158,7 +159,7 @@ func TestE2E_AgentConfig_AddConnection(t *testing.T) {
 	if lerr != nil {
 		t.Fatalf("ListServers: %v", lerr)
 	}
-	if len(servers) != 1 || servers[0].Name != "mcptest" {
+	if len(servers) != 1 || servers[0].Name != ownedSource("mcptest", addcTenant, addcAgent) {
 		t.Fatalf("registry servers = %+v, want one named mcptest", servers)
 	}
 	firstRev := resp.Revision.RevisionID
@@ -206,7 +207,7 @@ func TestE2E_AgentConfig_AddConnection(t *testing.T) {
 	if failResp.Revision != nil {
 		t.Error("failing dial recorded a revision")
 	}
-	if _, ok := h.catalog.Resolve("broken_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource("broken", addcTenant, addcAgent) + "_echo"); ok {
 		t.Error("failing dial registered a tool (half-attach)")
 	}
 }
@@ -233,7 +234,7 @@ func TestE2E_AgentConfig_AddConnection_StdioGate(t *testing.T) {
 		t.Errorf("error code = %q, want %q", perr.Code, protoerrors.CodeScopeMismatch)
 	}
 	// The catalog must not have gained the tool.
-	if _, ok := h.catalog.Resolve("mcptest_echo"); ok {
+	if _, ok := h.catalog.Resolve(ownedSource("mcptest", addcTenant, addcAgent) + "_echo"); ok {
 		t.Error("a gated stdio add registered a tool")
 	}
 
@@ -244,4 +245,8 @@ func TestE2E_AgentConfig_AddConnection_StdioGate(t *testing.T) {
 	if nonAdmin.Code != http.StatusForbidden {
 		t.Fatalf("non-admin status = %d, want 403; body=%s", nonAdmin.Code, nonAdmin.Body.String())
 	}
+}
+
+func ownedSource(logical, tenant, agent string) string {
+	return mcpdrv.PhysicalServerName(logical, toolauth.Owner{Tenant: tenant, Agent: agent})
 }

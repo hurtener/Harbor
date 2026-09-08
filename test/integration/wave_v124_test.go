@@ -478,7 +478,8 @@ func wvHTTPConn(name, url string) agentcfg.MCPConnectionDescriptor {
 // wvInvoke calls a re-attached tool through the catalog under `id`.
 func (r *wvRig) wvInvoke(t *testing.T, id identity.Identity, tool, args string) {
 	t.Helper()
-	d, ok := r.catalog.Resolve(tool)
+	source := strings.TrimSuffix(tool, "_ingest")
+	d, ok := r.catalog.Resolve(wvPhysical(source) + "_ingest")
 	if !ok {
 		t.Fatalf("%q is not in the catalog — the connection did not come back", tool)
 	}
@@ -488,7 +489,7 @@ func (r *wvRig) wvInvoke(t *testing.T, id identity.Identity, tool, args string) 
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	if _, err := d.Invoke(ctx, json.RawMessage(args)); err != nil {
+	if _, err := d.Invoke(tools.WithEffectiveAgentConfig(ctx, wvAgentA), json.RawMessage(args)); err != nil {
 		t.Fatalf("invoking %q: %v", tool, err)
 	}
 }
@@ -562,7 +563,7 @@ func TestE2E_WaveV124_NamedAgentRunReattachesItsOwnDeclaredConnection(t *testing
 	}
 	r.wvRunNamingAgent(t, idA, wvAgentB, "wv-pre-b")
 	for name := range map[string]struct{}{"wv-a": {}, "wv-b": {}} {
-		if _, ok := r.mcpReg.OwnerOf(name); !ok {
+		if _, ok := r.mcpReg.OwnerOf(wvPhysical(name)); !ok {
 			t.Fatalf("%q is not live before the restart — the restart leg would prove nothing", name)
 		}
 	}
@@ -576,11 +577,11 @@ func TestE2E_WaveV124_NamedAgentRunReattachesItsOwnDeclaredConnection(t *testing
 	// revision spine survives.
 	r.boot(t)
 	for _, name := range []string{"wv-a", "wv-b"} {
-		if _, ok := r.mcpReg.OwnerOf(name); ok {
+		if _, ok := r.mcpReg.OwnerOf(wvPhysical(name)); ok {
 			t.Fatalf("%q survived the rebuild — the runtime side is not actually fresh", name)
 		}
 	}
-	if _, ok := r.catalog.Resolve("wv-a_ingest"); ok {
+	if _, ok := r.catalog.Resolve(wvPhysical("wv-a") + "_ingest"); ok {
 		t.Fatal("the rebuilt catalog still carries the pre-restart tool")
 	}
 
@@ -590,7 +591,7 @@ func TestE2E_WaveV124_NamedAgentRunReattachesItsOwnDeclaredConnection(t *testing
 	if qA.RunID == "" {
 		t.Fatal("the run carries no run id")
 	}
-	owner, ok := r.mcpReg.OwnerOf("wv-a")
+	owner, ok := r.mcpReg.OwnerOf(wvPhysical("wv-a"))
 	if !ok {
 		t.Fatal("agent A's declared connection did not come back at its run start")
 	}
@@ -603,7 +604,7 @@ func TestE2E_WaveV124_NamedAgentRunReattachesItsOwnDeclaredConnection(t *testing
 			"reach the reconcile, so the two phases are not actually wired together")
 	}
 	// Agent B's set is NOT touched by agent A's sweep: it is still absent.
-	if _, ok := r.mcpReg.OwnerOf("wv-b"); ok {
+	if _, ok := r.mcpReg.OwnerOf(wvPhysical("wv-b")); ok {
 		t.Fatal("agent A's run start attached agent B's declared connection — the reconcile " +
 			"view is not owner-scoped")
 	}
@@ -664,10 +665,10 @@ func TestE2E_WaveV124_NamedAgentRunReattachesItsOwnDeclaredConnection(t *testing
 	case <-time.After(30 * time.Second):
 		t.Fatal("an unreachable declared connection produced no reattach_failed event")
 	}
-	if _, ok := r.mcpReg.OwnerOf("wv-b"); ok {
+	if _, ok := r.mcpReg.OwnerOf(wvPhysical("wv-b")); ok {
 		t.Fatal("a failed re-attach still registered the connection")
 	}
-	if _, ok := r.catalog.Resolve("wv-a_ingest"); !ok {
+	if _, ok := r.catalog.Resolve(wvPhysical("wv-a") + "_ingest"); !ok {
 		t.Fatal("agent B's failed re-attach disturbed agent A's live connection")
 	}
 
@@ -710,15 +711,15 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 
 	// Live once, then restart, then bring it back through a caller-named run.
 	r.wvRunNamingAgent(t, id, wvAgentA, "wv-eg-pre")
-	if _, ok := r.mcpReg.OwnerOf("wv-egress"); !ok {
+	if _, ok := r.mcpReg.OwnerOf(wvPhysical("wv-egress")); !ok {
 		t.Fatal("the byte-eligible connection was not attached before the restart")
 	}
 	r.boot(t)
-	if _, ok := r.mcpReg.OwnerOf("wv-egress"); ok {
+	if _, ok := r.mcpReg.OwnerOf(wvPhysical("wv-egress")); ok {
 		t.Fatal("the runtime side is not actually fresh")
 	}
 	r.wvRunNamingAgent(t, id, wvAgentA, "wv-eg-post")
-	if _, ok := r.mcpReg.OwnerOf("wv-egress"); !ok {
+	if _, ok := r.mcpReg.OwnerOf(wvPhysical("wv-egress")); !ok {
 		t.Fatal("the byte-eligible connection did not come back")
 	}
 
@@ -741,11 +742,11 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 
 	// Through the PRODUCTION dispatch executor — the seat that makes the
 	// artifact resolver available, exactly as a planner CallTool decision does.
-	if _, _, err := r.exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q,
+	if _, _, err := r.exec.ExecuteDecision(tools.WithEffectiveAgentConfig(ctx, wvAgentA), planner.RunContext{Quadruple: q,
 		Catalog: tools.NewPlannerView(r.catalog, tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID})},
 		planner.CallTool{
 			CallID: "wv-eg-call",
-			Tool:   "wv-egress_ingest",
+			Tool:   wvPhysical("wv-egress") + "_ingest",
 			Args:   json.RawMessage(fmt.Sprintf(`{"doc":%q,"note":"post-restart"}`, ref.ID)),
 		}); err != nil {
 		t.Fatalf("ExecuteDecision on the re-attached byte-eligible connection: %v", err)
@@ -799,7 +800,7 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 		Catalog: tools.NewPlannerView(r.catalog, tools.CatalogFilter{TenantID: other.TenantID, UserID: other.UserID, SessionID: other.SessionID})},
 		planner.CallTool{
 			CallID: "wv-eg-foreign",
-			Tool:   "wv-egress_ingest",
+			Tool:   wvPhysical("wv-egress") + "_ingest",
 			Args:   json.RawMessage(fmt.Sprintf(`{"doc":%q}`, ref.ID)),
 		}); ferr == nil {
 		t.Fatalf("a run under %s/%s resolved %s/%s's artifact %q — the re-attached "+
@@ -825,11 +826,11 @@ func TestE2E_WaveV124_ByteEligibleConnectionStillSubstitutesAfterReattach(t *tes
 		t.Fatalf("PutBytes(oversize): %v", err)
 	}
 	callsBefore := fix.callCount()
-	_, _, eerr := r.exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q,
+	_, _, eerr := r.exec.ExecuteDecision(tools.WithEffectiveAgentConfig(ctx, wvAgentA), planner.RunContext{Quadruple: q,
 		Catalog: tools.NewPlannerView(r.catalog, tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID})},
 		planner.CallTool{
 			CallID: "wv-eg-oversize",
-			Tool:   "wv-egress_ingest",
+			Tool:   wvPhysical("wv-egress") + "_ingest",
 			Args:   json.RawMessage(fmt.Sprintf(`{"doc":%q}`, bigRef.ID)),
 		})
 	if eerr == nil {
@@ -912,7 +913,7 @@ func TestE2E_WaveV124_ReconcileIsBoundedByTheIdentityTriple(t *testing.T) {
 		{"wv-iso-b", toolauth.Owner{Tenant: wvTenantB, Agent: wvAgentA}},
 		{"wv-iso-a2", toolauth.Owner{Tenant: wvTenantA, Agent: wvAgentB}},
 	} {
-		got, ok := r.mcpReg.OwnerOf(c.name)
+		got, ok := r.mcpReg.OwnerOf(mcpdrv.PhysicalServerName(c.name, c.owner))
 		if !ok {
 			t.Fatalf("%q did not come back", c.name)
 		}
@@ -924,19 +925,15 @@ func TestE2E_WaveV124_ReconcileIsBoundedByTheIdentityTriple(t *testing.T) {
 
 	// NEGATIVE 1 — the RECONCILE VIEW is the boundary, and it is owner-scoped.
 	//
-	// The MCP registry itself is deliberately PROCESS-GLOBAL: the owner tag is
-	// a reconcile-view filter, never a dispatch or isolation key. So the thing
-	// to assert is not "tenant A cannot list tenant B's registration" (it
-	// can — by design), it is that tenant A's run start cannot REACH tenant
-	// B's registration. Tenant A's agent A un-declares its connection; its
-	// next run start must tear down exactly ITS OWN and nothing else.
+	// Tenant A's next run tears down only its own un-declared source; other
+	// physical owner registrations must remain live independently.
 	r.wvDeclare(t, idA1, wvAgentA)
 	r.wvRunNamingAgent(t, idA1, wvAgentA, "wv-iso-a1-undeclare")
-	if _, ok := r.mcpReg.OwnerOf("wv-iso-a"); ok {
+	if _, ok := r.mcpReg.OwnerOf(wvPhysical("wv-iso-a")); ok {
 		t.Fatal("the un-declared connection survived its owner's run-start reconcile")
 	}
 	for _, survivor := range []string{"wv-iso-b", "wv-iso-a2"} {
-		if _, ok := r.mcpReg.OwnerOf(survivor); !ok {
+		if _, ok := r.mcpReg.OwnerOf(wvPhysical(survivor)); !ok {
 			t.Fatalf("CROSS-OWNER TEARDOWN: tenant A / agent A's reconcile detached %q, which "+
 				"belongs to a different (tenant, agent) owner", survivor)
 		}
@@ -1114,7 +1111,7 @@ func TestE2E_WaveV124_ConcurrentComposedSweepHoldsEverySeam(t *testing.T) {
 				}
 				// The reachable declared set is this owner's own.
 				if w.wantOwn != "wv-conc-dead" {
-					owner, ok := r.mcpReg.OwnerOf(w.wantOwn)
+					owner, ok := r.mcpReg.OwnerOf(wvPhysical(w.wantOwn))
 					if !ok {
 						errCh <- fmt.Errorf("worker %d/%d: %q is not live", wi, i, w.wantOwn)
 						return
@@ -1146,15 +1143,15 @@ func TestE2E_WaveV124_ConcurrentComposedSweepHoldsEverySeam(t *testing.T) {
 	for _, s := range servers {
 		counts[s.Name]++
 	}
-	if counts["wv-conc-a"] != 1 {
+	if counts[wvPhysical("wv-conc-a")] != 1 {
 		t.Fatalf("wv-conc-a registrations = %d after %d concurrent run starts, want exactly 1",
-			counts["wv-conc-a"], n)
+			counts[wvPhysical("wv-conc-a")], n)
 	}
-	if counts["wv-conc-dead"] != 0 {
+	if counts[wvPhysical("wv-conc-dead")] != 0 {
 		t.Fatalf("wv-conc-dead registrations = %d, want 0 (its third party is down)",
-			counts["wv-conc-dead"])
+			counts[wvPhysical("wv-conc-dead")])
 	}
-	if _, ok := r.catalog.Resolve("wv-conc-a_ingest"); !ok {
+	if _, ok := r.catalog.Resolve(wvPhysical("wv-conc-a") + "_ingest"); !ok {
 		t.Fatal("the healthy connection's tool did not survive the concurrent storm")
 	}
 
@@ -1172,4 +1169,16 @@ func TestE2E_WaveV124_ConcurrentComposedSweepHoldsEverySeam(t *testing.T) {
 		t.Errorf("goroutine leak after %d concurrent run starts: baseline=%d, after=%d (+%d)",
 			n*len(workers), baseline, goruntime.NumGoroutine(), delta)
 	}
+}
+
+// wvPhysical names the fixture's explicit durable owner, never a global lookup.
+func wvPhysical(name string) string {
+	owner := toolauth.Owner{Tenant: wvTenantA, Agent: wvAgentA}
+	switch name {
+	case "wv-b", "wv-iso-a2", "wv-conc-dead":
+		owner.Agent = wvAgentB
+	case "wv-iso-b", "wv-conc-b":
+		owner.Tenant = wvTenantB
+	}
+	return mcpdrv.PhysicalServerName(name, owner)
 }
