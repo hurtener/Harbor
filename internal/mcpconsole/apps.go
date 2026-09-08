@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -431,6 +432,12 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 }
 
 func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+	originalServer := serverID
+	serverID = a.reg.CanonicalSourceID(ctx, serverID)
+	if originalServer != serverID && strings.HasPrefix(tool, originalServer+"_") {
+		tool = serverID + strings.TrimPrefix(tool, originalServer)
+	}
+
 	desc, ok := a.cat.Resolve(tool)
 	if !ok {
 		// Not in the ordinary planner/model catalog. The only authority
@@ -488,7 +495,7 @@ func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tool
 	// pauses the tool's server (or disables the tool), the App's callbacks
 	// are rejected here, before any side effect, while any still-running
 	// planner snapshot is undisturbed.
-	if err := a.gateToolExposure(ctx, tool, desc.Tool.Source); err != nil {
+	if err := a.gateToolExposure(ctx, desc.Tool.Name, desc.Tool.Source); err != nil {
 		return protocol.MCPAppToolResultRow{}, err
 	}
 	// Invoke the wrapped descriptor. For a gated tool this parks on the

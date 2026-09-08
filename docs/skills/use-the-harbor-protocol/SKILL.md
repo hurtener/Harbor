@@ -10,6 +10,16 @@ metadata:
 
 # Use the Harbor Protocol
 
+## MCP source ownership
+
+Use returned MCP source/tool IDs for new calls. Boot-configured infrastructure
+is shared, while runtime-added sources require the verified owning tenant and
+current effective agent configuration; personal sources also require the user.
+Agent-owned sources can share a logical name across tenants and agents without
+sharing the same physical source ID. Historical agent source/App/tool references
+resolve only under the verified tenant and admitted effective agent, with fresh
+App generation checks. A name never grants reach or selects a tenant.
+
 ## Route-aware provider checks
 
 The existing admin-scoped `llm.posture` provider `validate` and `discover`

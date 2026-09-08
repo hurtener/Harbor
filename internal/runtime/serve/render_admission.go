@@ -285,7 +285,7 @@ func (g *renderAdmissionGate) AuthorizeRender(ctx context.Context, serverID, res
 			disabledTools = append(disabledTools, overlay.DisabledTools...)
 		}
 		for _, s := range pausedServers {
-			if s == serverID {
+			if g.registry.CanonicalSourceID(ctx, s) == g.registry.CanonicalSourceID(ctx, serverID) {
 				return "", fmt.Errorf("%w: mcpconsole: render-admission gate: server %q is paused", protocol.ErrRenderAdmissionRefused, serverID)
 			}
 		}

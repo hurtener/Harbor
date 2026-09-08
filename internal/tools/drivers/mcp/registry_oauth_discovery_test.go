@@ -79,7 +79,7 @@ func TestRegistry_RecordOAuthRequirement_ProjectedOnGet(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 	// The requirement rides the DETAIL read (GetServer), NOT the list row.
-	v, err := r.GetServer(idCtx(t), "auth-server")
+	v, err := r.GetServer(idCtxForTenant(t, ownerA().Tenant), "auth-server")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRegistry_RecordOAuthRequirement_ProjectedOnGet(t *testing.T) {
 		t.Fatalf("requirement not projected on get: %+v", v.OAuthRequirement)
 	}
 
-	views, _, err := r.ListServers(idCtx(t), ListFilter{})
+	views, _, err := r.ListServers(idCtxForTenant(t, ownerA().Tenant), ListFilter{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRegistry_OAuthDiscovery_ConcurrentReuse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, _, _, _ = r.OAuthDiscoveryTarget("auth-server")
-			_, _ = r.GetServer(idCtx(t), "auth-server")
+			_, _ = r.GetServer(idCtxForTenant(t, ownerA().Tenant), "auth-server")
 		}()
 	}
 	wg.Wait()

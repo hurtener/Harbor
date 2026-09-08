@@ -19,6 +19,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
@@ -115,7 +116,7 @@ func attachAppServer(t *testing.T, a *MCPConnectionAttacher, cat tools.ToolCatal
 	}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	d, ok := cat.Resolve(name + "_report")
+	d, ok := cat.Resolve(mcpdrv.PhysicalServerName(name, toolauth.Owner{Tenant: "t", Agent: "agent-1"}) + "_report")
 	if !ok {
 		t.Fatalf("catalog missing the attached app tool %s_report", name)
 	}
@@ -135,7 +136,7 @@ func runScopedCtx(t *testing.T, runID string) context.Context {
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
-	return ctx
+	return tools.WithEffectiveAgentConfig(ctx, "agent-1")
 }
 
 // TestMCPConnectionAttacher_ToolContextCaptured_RuntimeAddedServer drives the
@@ -184,7 +185,7 @@ func TestMCPConnectionAttacher_ToolContextCaptured_RuntimeAddedServer(t *testing
 		t.Fatalf("capturer recorded %d contexts, want 1 — the runtime-added connection did not capture", len(calls))
 	}
 	got := calls[0]
-	if string(got.ServerID) != name || got.Tool != "report" {
+	if string(got.ServerID) != mcpdrv.PhysicalServerName(name, toolauth.Owner{Tenant: "t", Agent: "agent-1"}) || got.Tool != "report" {
 		t.Errorf("captured metadata = server %q tool %q, want %q / report", got.ServerID, got.Tool, name)
 	}
 	if len(got.Result) == 0 {

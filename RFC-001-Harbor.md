@@ -2361,6 +2361,33 @@ fails closed, and the Protocol version is unchanged.
 
 **Consumers.** Phase 30 (tool-side OAuth) keys agent-bound tokens by the registration `agent_id`. The Console Agents page renders the three-ID model and the fleet-control surface. Briefs: `09-mcp-oauth-from-bifrost.md` (agent-as-actor), `11-console-feature-surface.md` (operator mockup).
 
+### Tenant-owned MCP source admission amendment (D-457)
+
+Boot-declared MCP infrastructure remains process-global in the shared registry
+and catalog. Runtime-added sources use an exhaustive ownership discriminator:
+`boot_global` only for the fully empty owner, `tenant_agent` for complete tenant
+and agent ownership, and `tenant_user` for complete tenant, agent, and user
+ownership. Partial owners fail closed. The discriminator is computed from
+immutable server-derived ownership, not persisted as another grant.
+
+Runtime-owned source visibility requires the verified tenant, admitted effective
+agent, and current owning agent/user revision; user sources additionally require
+the verified owner user. Signed pair ownership is checked separately from
+ordinary connection descriptors, and signed publisher-epoch authorization
+remains the final invocation fence. Effective agent is configuration authority,
+not an addition to the `(tenant, user, session)` identity or storage partition.
+Identical source labels across tenants or derived agents do not imply authority.
+
+Tenant-owned physical source names are deterministic owner-qualified catalog
+keys; durable descriptors remain logical. Legacy agent source/resource/App and
+paused tool references resolve only through the current verified tenant and
+admitted effective-agent view, with fresh generation checks for Apps and no
+ambiguous or personal-source alias fallback. Explicit low-level operator
+inventory remains available; ordinary identity-scoped reads never acquire fleet
+visibility from an empty owner user. This supersedes D-301/D-448 only for
+runtime-added MCP source admission and naming, retaining shared boot transport
+and registry/catalog architecture.
+
 ### 6.17 Run-completion hook
 
 The run-completion hook is the Runtime's one run-lifecycle egress point: an operator-configured hook, fired exactly once at the run loop's terminal boundary, that delivers the run's transcript to a **named catalog tool**. The motivating consumers are memory, audit, and analytics sinks that need the full conversation at completion **for runs no client observes** — background and disconnected runs have no observer to pull it, and a completed foreground embed run emits no generic completion event a subscriber could ride (only tasks-engine runs emit `task.completed` / `task.failed`). The hook is therefore **runtime mechanism on the run loop** — the single seam every run type (embed one-call, foreground task, background task) terminates through — never planner policy: no planner concrete knows the hook exists, and a swapped planner inherits it unchanged (§3.2).

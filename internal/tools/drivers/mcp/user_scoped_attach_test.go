@@ -96,7 +96,7 @@ func TestUserScopedAttach_AllowsSameLogicalDescriptorPerUser(t *testing.T) {
 		if err != nil {
 			t.Fatalf("identity context %s: %v", owner.User, err)
 		}
-		result, err := tool.Invoke(callCtx, json.RawMessage(`{"text":"`+text+`"}`))
+		result, err := tool.Invoke(tools.WithEffectiveAgentConfig(callCtx, owner.Agent), json.RawMessage(`{"text":"`+text+`"}`))
 		if err != nil {
 			t.Fatalf("invoke %s: %v", owner.User, err)
 		}

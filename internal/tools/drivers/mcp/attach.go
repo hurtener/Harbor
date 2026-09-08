@@ -323,8 +323,11 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		return nil, fmt.Errorf("mcp attach: logical connection name is required")
 	}
 	deps.LogicalName = logicalName
-	if deps.Owner.User != "" {
-		ms.Name = PhysicalServerName(logicalName, deps.Owner)
+	if deps.Owner.Scope() == auth.ScopeInvalid {
+		return nil, fmt.Errorf("mcp attach: incomplete source ownership")
+	}
+	if deps.Owner.Scope() != auth.ScopeBootGlobal {
+		ms.Name = deps.Registry.physicalNameForOwner(logicalName, deps.Owner)
 	}
 	// Separator safety, checked BEFORE any side effect (no transport spawned,
 	// no catalog rows written), so an ambiguous id is refused cleanly rather
@@ -405,6 +408,7 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	}
 	observations := &preparationObservations{}
 	provider, err := New(Config{
+		Owner:                  deps.Owner,
 		Name:                   ms.Name,
 		TransportMode:          mode,
 		URL:                    ms.URL,

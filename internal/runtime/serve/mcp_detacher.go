@@ -188,6 +188,9 @@ func (d *MCPConnectionDetacher) Detach(ctx context.Context, source string, owner
 // cannot know how far the attach got.
 func detachSource(ctx context.Context, catalog tools.ToolCatalog, registry *mcpdrv.Registry, source string, owner toolauth.Owner, logger *slog.Logger, reason string) error {
 	physical := mcpdrv.PhysicalServerName(source, owner)
+	if registry != nil {
+		physical = registry.PhysicalSourceForOwner(source, owner)
+	}
 	if dc, ok := catalog.(tools.CatalogSourceDeregisterer); ok {
 		removed := dc.DeregisterSource(tools.ToolSourceID(physical))
 		if logger != nil {
@@ -216,6 +219,9 @@ func detachSourceExpected(ctx context.Context, catalog tools.ToolCatalog, regist
 		return errors.New("mcp: exact teardown requires catalog source deregistration")
 	}
 	physical := mcpdrv.PhysicalServerName(source, owner)
+	if registry != nil {
+		physical = registry.PhysicalSourceForOwner(source, owner)
+	}
 	removed, err := registry.DeregisterExactPublisher(ctx, source, owner, fingerprint, func() int {
 		return dc.DeregisterSource(tools.ToolSourceID(physical))
 	})

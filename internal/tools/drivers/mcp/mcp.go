@@ -103,6 +103,9 @@ const (
 // (cmd/harbor wiring, future phase) is responsible for the
 // projection.
 type Config struct {
+	// Owner binds runtime-owned invocation to the verified principal and effective agent.
+	Owner auth.Owner
+
 	// Name is the unique source ID prefix. Empty rejects with
 	// ErrInvalidConfig.
 	Name string
@@ -1205,7 +1208,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
-	meta, err := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+	meta, err := p.buildIdentityMeta(ctx)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -1463,7 +1466,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 					return tools.ToolResult{}, err
 				}
 				params := &mcpsdk.ReadResourceParams{URI: uri}
-				meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+				meta, mErr := p.buildIdentityMeta(ctx)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -1524,7 +1527,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 					}
 				}
 				params := &mcpsdk.GetPromptParams{Name: name, Arguments: argMap}
-				meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+				meta, mErr := p.buildIdentityMeta(ctx)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
@@ -1574,7 +1577,7 @@ func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte
 	if sErr != nil {
 		return nil, "", sErr
 	}
-	meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+	meta, mErr := p.buildIdentityMeta(ctx)
 	if mErr != nil {
 		return nil, "", mErr
 	}
@@ -1651,7 +1654,7 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 		return err
 	}
 	params := &mcpsdk.SubscribeParams{URI: uri}
-	meta, mErr := buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+	meta, mErr := p.buildIdentityMeta(ctx)
 	if mErr != nil {
 		return mErr
 	}
@@ -2092,4 +2095,23 @@ func promptArgsSchema(pr *mcpsdk.Prompt) json.RawMessage {
 		return emptyArgsSchema()
 	}
 	return b
+}
+
+// ErrSourceOwnerDenied is a permanent pre-transport ownership refusal.
+type ErrSourceOwnerDenied struct{}
+
+func (ErrSourceOwnerDenied) Error() string { return "mcp: source owner denied" }
+
+// Permanent prevents retrying an unchanged ownership refusal.
+func (ErrSourceOwnerDenied) Permanent() bool { return true }
+
+func (p *Provider) buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
+	if p.cfg.Owner.Scope() != auth.ScopeBootGlobal {
+		id, present := identity.From(ctx)
+		agent, admitted := tools.EffectiveAgentConfigFrom(ctx)
+		if !present || !admitted || agent != p.cfg.Owner.Agent || !p.cfg.Owner.AllowsPrincipal(id.TenantID, id.UserID) {
+			return nil, ErrSourceOwnerDenied{}
+		}
+	}
+	return buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
 }

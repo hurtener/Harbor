@@ -176,6 +176,13 @@ Pick a session → see the memory state the planner has access to. Useful when d
 
 ### MCP Connections — the southbound control plane
 
+Boot-configured servers remain shared. Runtime-added connections appear only
+for their owning tenant and reachable agent while selected in the current
+configuration; personal connections also require the owning user. An empty
+owner user does not make an agent connection global. Identical logical names
+may appear on separate agents with distinct runtime source IDs. Use returned
+IDs rather than constructing a source ID from its display name.
+
 The configured MCP servers that supply tools / resources / prompts to the runtime's agents (`mcp.servers.*`). A servers table on the left, a right-rail server detail on the right. Where you confirm an MCP server is connected and what it's contributing to the tool catalog. When a server advertises an OAuth requirement (a `401` + `WWW-Authenticate` step-up), running **Test connection** (`mcp.servers.probe`) triggers requirement discovery and the detail rail shows the discovered authorization server(s), endpoints, scopes, and PKCE posture — marked **unverified (advertised by the connected server)**. Harbor only reports it: it never runs the OAuth flow, holds a token, or dials a discovered endpoint.
 
 ### Artifacts — the artifact store browser

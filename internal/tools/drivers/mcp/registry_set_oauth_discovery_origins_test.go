@@ -201,7 +201,7 @@ func TestSetMCPDiscoveryOrigins_RevokePrunesRecordedRequirement(t *testing.T) {
 	if _, err := r.SetOAuthDiscoveryOrigins(idCtx(t), "auth-server", ownerA(), nil); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	v, err := r.GetServer(idCtx(t), "auth-server")
+	v, err := r.GetServer(idCtxForTenant(t, ownerA().Tenant), "auth-server")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestSetMCPDiscoveryOrigins_RevokePrune_KeepsStillAllowed(t *testing.T) {
 	if _, err := r.SetOAuthDiscoveryOrigins(idCtx(t), "auth-server", ownerA(), []string{"https://as.example.net"}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	v, err := r.GetServer(idCtx(t), "auth-server")
+	v, err := r.GetServer(idCtxForTenant(t, ownerA().Tenant), "auth-server")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestSetMCPDiscoveryOrigins_RevokePrune_NoPointerRace(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			v, err := r.GetServer(idCtx(t), "auth-server")
+			v, err := r.GetServer(idCtxForTenant(t, ownerA().Tenant), "auth-server")
 			if err == nil && v.OAuthRequirement != nil {
 				// Dereference the handed-out pointer concurrently with the swap.
 				_ = len(v.OAuthRequirement.AuthorizationServers)
@@ -290,7 +290,7 @@ func TestRegistry_SetOAuthDiscoveryOrigins_ConcurrentReuse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, _, _, _ = r.OAuthDiscoveryTarget("auth-server")
-			_, _ = r.GetServer(idCtx(t), "auth-server")
+			_, _ = r.GetServer(idCtxForTenant(t, ownerA().Tenant), "auth-server")
 		}()
 	}
 	wg.Wait()

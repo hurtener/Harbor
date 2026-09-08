@@ -254,10 +254,10 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 				if err := prepared.Activate(ctx); err != nil {
 					t.Fatalf("activate method-not-found preparation: %v", err)
 				}
-				if _, ok := catalog.Resolve(connectionName + "_echo"); !ok {
+				if _, ok := catalog.Resolve(mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agent}) + "_echo"); !ok {
 					t.Fatal("method-not-found preparation did not publish tool after activation")
 				}
-				if _, _, ok := registry.RegistrationIdentity(connectionName); !ok {
+				if _, _, ok := registry.RegistrationIdentityForOwner(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agent}); !ok {
 					t.Fatal("method-not-found preparation did not publish registry entry after activation")
 				}
 				if err := attacher.DetachExactConnection(ctx, id.TenantID, agent, connectionName, fingerprint); err != nil {
@@ -312,7 +312,7 @@ func assertSignedDiscoveryUnpublished(t *testing.T, catalog tools.ToolCatalog, r
 	if got := catalog.List(tools.CatalogFilter{}); len(got) != 0 {
 		t.Fatalf("failed/private preparation leaked %d tool(s) into the catalog", len(got))
 	}
-	if _, _, ok := registry.RegistrationIdentity(connectionName); ok {
+	if len(registry.SourceIDs()) != 0 {
 		t.Fatal("failed/private preparation leaked into the MCP registry")
 	}
 	if _, ok := providerSet.Get(providerName); ok {
