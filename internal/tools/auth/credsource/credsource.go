@@ -102,6 +102,11 @@ type ClientCredential struct {
 // in-memory cache; per-run identity is read from `ctx`, never from the
 // Source.
 type Source interface {
+	// Close cancels and joins remote fetches; immutable sources have no resources.
+	Close(ctx context.Context) error
+	// Invalidate discards remotely cached credentials and fences in-flight publication.
+	// Static and env sources are immutable and retain their boot credential.
+	Invalidate(ctx context.Context) error
 	// ValidateAtBoot performs the source's boot-time readiness check,
 	// called ONCE by `BuildProviders` while the config is still being
 	// assembled.
@@ -150,3 +155,7 @@ func Static(clientID, clientSecret string) Source {
 func (s static) ValidateAtBoot(context.Context) error { return nil }
 
 func (s static) Resolve(context.Context) (ClientCredential, error) { return s.cred, nil }
+
+func (s static) Invalidate(ctx context.Context) error { return ctx.Err() }
+
+func (s static) Close(ctx context.Context) error { return ctx.Err() }

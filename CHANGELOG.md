@@ -17,6 +17,11 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+- Remote tool broker client credentials now select and verify the execution or signed
+  connection tenant, isolate cache and in-flight fetches, and fail permanent authority
+  errors without retrying. Legacy deployment credentials require explicit
+  `credential_scope: deployment`; scoped pulls never downgrade.
+
 ## [1.31.3] — 2026-08-30
 
 ### Fixed

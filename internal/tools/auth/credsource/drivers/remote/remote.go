@@ -43,6 +43,12 @@
 // that redirects is a fault, and following one could replay the bearer
 // to a host the operator never configured).
 //
+// Tenant scope adds X-Harbor-Credential-Scope-Version: 1 and
+// X-Harbor-Credential-Tenant, and requires format_version: 2 with a matching
+// tenant_id response. Builders use tenant scope by default; the version 1
+// contract above is available only through explicit deployment compatibility.
+// The coordinator must validate runtime-to-tenant mapping, not trust the selector.
+//
 // # Memory-only, TTL-capped, single-flight
 //
 // The fetched credential is held in memory only — never persisted (a
@@ -51,9 +57,8 @@
 // the EARLIER of the response's
 // `expires_in` and the operator `cache_ttl` cap; a fetch on expiry
 // refetches. A burst of concurrent misses collapses onto ONE fetch
-// (single-flight per source instance — the client credential is
-// runtime-level, not identity-scoped, so one credential serves every
-// identity).
+// (single-flight per tenant and runtime bearer generation). Deployment scope
+// is an explicit compatibility mode; it retains one runtime-level credential.
 //
 // # Fail loud, never fall back
 //
@@ -68,7 +73,9 @@ package remote
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -132,7 +139,7 @@ func New(cfg credsource.Config) (credsource.Source, error) {
 	}
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return fmt.Errorf("%w: credential endpoint attempted a redirect (a credential endpoint that redirects is a fault, not a hop to follow)",
-			credsource.ErrCredentialSourceUnavailable)
+			errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected))
 	}
 	clock := cfg.Clock
 	if clock == nil {
@@ -142,8 +149,12 @@ func New(cfg credsource.Config) (credsource.Source, error) {
 	if cacheTTL <= 0 {
 		cacheTTL = defaultCacheTTL
 	}
+	closeCtx, closeCancel := context.WithCancel(context.Background())
 	return &source{
+		closeCtx: closeCtx, closeCancel: closeCancel, drained: make(chan struct{}),
 		providerName: cfg.ProviderName,
+		scope:        cfg.Remote.Scope, tenantID: cfg.Remote.TenantID,
+		entries:      make(map[cacheKey]*cacheEntry),
 		endpoint:     cfg.Remote.URL,
 		authTokenEnv: cfg.Remote.AuthTokenEnv,
 		cacheTTL:     cacheTTL,
@@ -163,6 +174,8 @@ func New(cfg credsource.Config) (credsource.Source, error) {
 // mutable state, guarded by one mutex; per-run identity is read from ctx
 // on every Resolve, never from the source.
 type source struct {
+	scope        credsource.ResolutionScope
+	tenantID     string
 	providerName string
 	endpoint     string
 	authTokenEnv string
@@ -176,11 +189,26 @@ type source struct {
 	// rotated token is picked up without restart). Overridable in tests.
 	getenv func(string) string
 
-	mu         sync.Mutex
-	cred       credsource.ClientCredential
-	serveUntil time.Time
-	haveCred   bool
-	flight     *fetchCall
+	mu            sync.Mutex
+	entries       map[cacheKey]*cacheEntry
+	activeFetches int
+	closing       bool
+	closeCtx      context.Context
+	closeCancel   context.CancelFunc
+	drained       chan struct{}
+}
+
+type cacheKey struct {
+	tenant     string
+	generation [32]byte
+}
+
+type cacheEntry struct {
+	invalidated bool
+	cred        credsource.ClientCredential
+	serveUntil  time.Time
+	haveCred    bool
+	flight      *fetchCall
 }
 
 // fetchCall is one in-flight remote fetch shared by N collapsed callers.
@@ -195,6 +223,9 @@ type fetchCall struct {
 // It does NOT fetch: the credential resolves lazily at first use so a
 // coordinator-minted credential reaches an already-running runtime.
 func (s *source) ValidateAtBoot(context.Context) error {
+	if s.scope > credsource.BoundTenantScope || (s.scope == credsource.BoundTenantScope && strings.TrimSpace(s.tenantID) == "") || (s.scope != credsource.BoundTenantScope && s.tenantID != "") {
+		return fmt.Errorf("credsource/remote: invalid credential resolution scope")
+	}
 	if strings.TrimSpace(s.endpoint) == "" {
 		return fmt.Errorf("credsource/remote: provider %q: remote.url must not be empty", s.providerName)
 	}
@@ -243,28 +274,80 @@ func (s *source) Resolve(ctx context.Context) (credsource.ClientCredential, erro
 	if err := ctx.Err(); err != nil {
 		return credsource.ClientCredential{}, fmt.Errorf("credsource/remote: Resolve cancelled: %w", err)
 	}
+	tenant := ""
+	if s.scope != credsource.DeploymentScope {
+		id, ok := identity.From(ctx)
+		if !ok || id.TenantID == "" {
+			return credsource.ClientCredential{}, fmt.Errorf("%w: verified tenant required", credsource.ErrCredentialSourceRejected)
+		}
+		tenant = id.TenantID
+		if s.scope == credsource.BoundTenantScope && tenant != s.tenantID {
+			return credsource.ClientCredential{}, fmt.Errorf("%w: binding tenant mismatch", credsource.ErrCredentialSourceRejected)
+		}
+	}
+	token := s.getenv(s.authTokenEnv)
+	key := cacheKey{tenant: tenant, generation: sha256.Sum256([]byte(token))}
 	// Hot path: fresh cache hit.
 	s.mu.Lock()
-	if s.haveCred && s.now().Before(s.serveUntil) {
-		cred := s.cred
+	if s.closing {
+		s.mu.Unlock()
+		return credsource.ClientCredential{}, fmt.Errorf("%w: source closed", credsource.ErrCredentialSourceRejected)
+	}
+	entry := s.entries[key]
+	if entry == nil {
+		// Discard expired generations; in-flight workers retain their private entry.
+		for oldKey, old := range s.entries {
+			if old.flight == nil && (!s.now().Before(old.serveUntil) || oldKey.tenant == tenant && oldKey.generation != key.generation) {
+				delete(s.entries, oldKey)
+			}
+		}
+		if len(s.entries) >= 256 {
+			evicted := false
+			for oldKey, old := range s.entries {
+				if old.flight == nil {
+					old.invalidated = true
+					delete(s.entries, oldKey)
+					evicted = true
+					break
+				}
+			}
+			if !evicted {
+				s.mu.Unlock()
+				return credsource.ClientCredential{}, fmt.Errorf("%w: credential fetch capacity reached", credsource.ErrCredentialSourceUnavailable)
+			}
+		}
+		entry = &cacheEntry{}
+		s.entries[key] = entry
+	}
+	if entry.haveCred && s.now().Before(entry.serveUntil) {
+		cred := entry.cred
 		s.mu.Unlock()
 		return cred, nil
 	}
 	s.mu.Unlock()
-	return s.fetchSingleFlight(ctx)
+	return s.fetchSingleFlight(ctx, entry, tenant, token)
 }
 
 // fetchSingleFlight collapses concurrent misses onto one fetch. The fetch
 // runs on a context DETACHED from the initiating caller's cancellation
 // (values — identity, trace — preserved; deadline is the fetch timeout)
 // so a cancelled caller never poisons the collapsed waiters.
-func (s *source) fetchSingleFlight(ctx context.Context) (credsource.ClientCredential, error) {
+func (s *source) fetchSingleFlight(ctx context.Context, entry *cacheEntry, tenant, token string) (credsource.ClientCredential, error) {
 	s.mu.Lock()
-	call := s.flight
+	if s.closing || entry.invalidated {
+		s.mu.Unlock()
+		return credsource.ClientCredential{}, fmt.Errorf("%w: credential generation invalidated", credsource.ErrCredentialSourceRejected)
+	}
+	call := entry.flight
 	if call == nil {
+		if s.activeFetches >= 256 {
+			s.mu.Unlock()
+			return credsource.ClientCredential{}, fmt.Errorf("%w: credential fetch capacity reached", credsource.ErrCredentialSourceUnavailable)
+		}
+		s.activeFetches++
 		call = &fetchCall{done: make(chan struct{})}
-		s.flight = call
-		go s.runFetch(ctx, call)
+		entry.flight = call
+		go s.runFetch(ctx, call, entry, tenant, token)
 	}
 	s.mu.Unlock()
 
@@ -280,31 +363,37 @@ func (s *source) fetchSingleFlight(ctx context.Context) (credsource.ClientCreden
 // every collapsed caller. It emits the fetch outcome event and caches on
 // success. Its lifetime is bounded by the fetch timeout so a wedged
 // coordinator cannot leak the goroutine.
-func (s *source) runFetch(callerCtx context.Context, call *fetchCall) {
+func (s *source) runFetch(callerCtx context.Context, call *fetchCall, entry *cacheEntry, tenant, token string) {
 	defer func() {
 		// Leave the flight table BEFORE releasing waiters, so a released
 		// caller that immediately re-misses starts a fresh fetch rather
 		// than joining this completed one.
 		s.mu.Lock()
-		s.flight = nil
+		entry.flight = nil
+		s.activeFetches--
+		if s.closing && s.activeFetches == 0 {
+			close(s.drained)
+		}
 		s.mu.Unlock()
 		close(call.done)
 	}()
 
 	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(callerCtx), s.timeout)
 	defer cancel()
+	stop := context.AfterFunc(s.closeCtx, cancel)
+	defer stop()
 
 	// Re-check the cache under the flight: a flight that completed
 	// between the caller's miss and this start may have populated it.
 	s.mu.Lock()
-	if s.haveCred && s.now().Before(s.serveUntil) {
-		call.cred = s.cred
+	if entry.haveCred && s.now().Before(entry.serveUntil) {
+		call.cred = entry.cred
 		s.mu.Unlock()
 		return
 	}
 	s.mu.Unlock()
 
-	cred, formatVersion, err := s.fetch(fetchCtx)
+	cred, formatVersion, err := s.fetch(fetchCtx, tenant, token)
 	if err != nil {
 		// Fail loud + observable. The failure event is best-effort-after:
 		// the sentinel already propagates to the run regardless.
@@ -322,9 +411,14 @@ func (s *source) runFetch(callerCtx context.Context, call *fetchCall) {
 	}
 
 	s.mu.Lock()
-	s.cred = cred
-	s.serveUntil = s.serveHorizon(cred.ExpiresAt)
-	s.haveCred = true
+	if entry.invalidated {
+		s.mu.Unlock()
+		call.err = fmt.Errorf("%w: credential generation invalidated", credsource.ErrCredentialSourceRejected)
+		return
+	}
+	entry.cred = cred
+	entry.serveUntil = s.serveHorizon(cred.ExpiresAt)
+	entry.haveCred = true
 	s.mu.Unlock()
 	call.cred = cred
 }
@@ -344,6 +438,7 @@ func (s *source) serveHorizon(expiresAt time.Time) time.Time {
 // credentialResponse is the coordinator's strict JSON shape.
 type credentialResponse struct {
 	FormatVersion int    `json:"format_version"`
+	TenantID      string `json:"tenant_id,omitempty"`
 	ClientID      string `json:"client_id"`
 	ClientSecret  string `json:"client_secret"`
 	ExpiresIn     int    `json:"expires_in"`
@@ -352,11 +447,10 @@ type credentialResponse struct {
 // fetch performs one authenticated GET and strict-parses the response.
 // The returned error is a wrapped ErrCredentialSourceUnavailable with
 // ZERO secret bytes.
-func (s *source) fetch(ctx context.Context) (credsource.ClientCredential, int, error) {
-	token := s.getenv(s.authTokenEnv)
+func (s *source) fetch(ctx context.Context, tenant, token string) (credsource.ClientCredential, int, error) {
 	if token == "" {
 		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: provider %q endpoint %q: env var %q (named by auth_token_env) is unset or empty",
-			credsource.ErrCredentialSourceUnavailable, s.providerName, s.endpoint, s.authTokenEnv)
+			errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected), s.providerName, s.endpoint, s.authTokenEnv)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.endpoint, nil)
@@ -366,6 +460,10 @@ func (s *source) fetch(ctx context.Context) (credsource.ClientCredential, int, e
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	if tenant != "" {
+		req.Header.Set("X-Harbor-Credential-Scope-Version", "1")
+		req.Header.Set("X-Harbor-Credential-Tenant", tenant)
+	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -375,7 +473,10 @@ func (s *source) fetch(ctx context.Context) (credsource.ClientCredential, int, e
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseByte)) //nolint:errcheck // a partial read still yields a usable error; the status code drives the branch
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
+		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: %w: status %d", credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected, resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
 		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: provider %q endpoint %q: status %d",
 			credsource.ErrCredentialSourceUnavailable, s.providerName, s.endpoint, resp.StatusCode)
 	}
@@ -385,19 +486,29 @@ func (s *source) fetch(ctx context.Context) (credsource.ClientCredential, int, e
 	var cr credentialResponse
 	if err := dec.Decode(&cr); err != nil {
 		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: provider %q endpoint %q: malformed response: %w",
-			credsource.ErrCredentialSourceUnavailable, s.providerName, s.endpoint, err)
+			errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected), s.providerName, s.endpoint, err)
 	}
-	if cr.FormatVersion != supportedFormatVersion {
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: malformed trailing response", errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected))
+	}
+	expectedVersion := supportedFormatVersion
+	if tenant != "" {
+		expectedVersion = 2
+	}
+	if cr.TenantID != tenant {
+		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: credential response tenant mismatch", credsource.ErrCredentialSourceRejected)
+	}
+	if cr.FormatVersion != expectedVersion {
 		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: provider %q endpoint %q: unsupported format_version %d (runtime accepts %d)",
-			credsource.ErrCredentialSourceUnavailable, s.providerName, s.endpoint, cr.FormatVersion, supportedFormatVersion)
+			errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected), s.providerName, s.endpoint, cr.FormatVersion, expectedVersion)
 	}
 	if cr.ClientID == "" || cr.ClientSecret == "" {
 		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: provider %q endpoint %q: response missing client_id / client_secret",
-			credsource.ErrCredentialSourceUnavailable, s.providerName, s.endpoint)
+			errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected), s.providerName, s.endpoint)
 	}
 	if cr.ExpiresIn < 0 {
 		return credsource.ClientCredential{}, 0, fmt.Errorf("%w: provider %q endpoint %q: negative expires_in %d",
-			credsource.ErrCredentialSourceUnavailable, s.providerName, s.endpoint, cr.ExpiresIn)
+			errors.Join(credsource.ErrCredentialSourceUnavailable, credsource.ErrCredentialSourceRejected), s.providerName, s.endpoint, cr.ExpiresIn)
 	}
 
 	var expiresAt time.Time
@@ -414,8 +525,8 @@ func (s *source) fetch(ctx context.Context) (credsource.ClientCredential, int, e
 // emitFetched publishes the success event (zero credential bytes). The
 // event is attributed to the identity of whichever collapsed caller's
 // ctx initiated the single-flight fetch — not to every waiter; the
-// credential is runtime-level, so one fetch (and one audit record)
-// serves the whole burst.
+// credential is scoped, so one fetch (and one audit record) serves the
+// same-tenant burst.
 func (s *source) emitFetched(ctx context.Context, cred credsource.ClientCredential, formatVersion int) error {
 	payload := credsource.ProviderCredentialFetchedPayload{
 		Provider:      s.providerName,
@@ -491,5 +602,51 @@ func redactReason(err error) string {
 		return "service token unset"
 	default:
 		return "unreachable"
+	}
+}
+
+// Invalidate fences the caller tenant, or all entries during identity-free shutdown.
+func (s *source) Invalidate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, scoped := identity.From(ctx)
+	for key, entry := range s.entries {
+		if scoped && s.scope != credsource.DeploymentScope && key.tenant != id.TenantID {
+			continue
+		}
+		delete(s.entries, key)
+		entry.invalidated = true
+		entry.cred = credsource.ClientCredential{}
+		entry.haveCred = false
+	}
+	return nil
+}
+
+// Close cancels outstanding fetches and waits until all workers have exited.
+func (s *source) Close(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.closing {
+		s.closing = true
+		s.closeCancel()
+		for key, entry := range s.entries {
+			entry.invalidated = true
+			entry.haveCred = false
+			entry.cred = credsource.ClientCredential{}
+			delete(s.entries, key)
+		}
+		if s.activeFetches == 0 {
+			close(s.drained)
+		}
+	}
+	drained := s.drained
+	s.mu.Unlock()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

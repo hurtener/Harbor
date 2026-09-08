@@ -345,7 +345,7 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 		caps = append(caps, types.CapTopologySnapshot)
 	}
 	if agentConfigAvailable {
-		caps = append(caps, types.CapAgentConfig)
+		caps = append(caps, types.CapAgentConfig, types.CapTenantScopedBrokerCredentials)
 	}
 	if stateSnapshotsAvailable {
 		caps = append(caps, types.CapStateSnapshots)

@@ -87,10 +87,10 @@ func newP169Fixtures(t *testing.T) *p169Fixtures {
 		f.coordHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"format_version": 1,
-			"client_id":      "org-client-id",
-			"client_secret":  "org-client-secret",
-			"expires_in":     3600,
+			"format_version": 2, "tenant_id": r.Header.Get("X-Harbor-Credential-Tenant"),
+			"client_id":     "org-client-id",
+			"client_secret": "org-client-secret",
+			"expires_in":    3600,
 		})
 	}))
 	t.Cleanup(f.coordinator.Close)

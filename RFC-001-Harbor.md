@@ -2626,3 +2626,13 @@ These are the doctrine. Phase plans cite them by number when justifying design c
 ---
 
 *This RFC is the source of truth for V1 architecture. Updates land via PRs labeled `rfc`. Phase plans defer to it; if a phase plan and this RFC drift, the RFC wins and the plan is updated in the same PR.*
+
+### Tenant authority for tool broker client credentials (D-458)
+
+Remote tool broker client credentials resolve under the verified execution tenant,
+or the immutable authenticated signed connection tenant after caller validation.
+The versioned scoped GET and strict tenant echo are defined in `docs/CONFIG.md`.
+Runtime authentication plus coordinator-side runtime/tenant mapping authorizes the
+selection; a wire tenant field alone never does. Cache, flight and revocation state
+preserve tenant authority. Explicit deployment credential compatibility remains
+available for ordinary brokers; signed capabilities never downgrade to that path.

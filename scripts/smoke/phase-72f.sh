@@ -247,6 +247,23 @@ probe_posture_method() {
 }
 
 probe_posture_method 'runtime.info'      'phase 72f: runtime.info responds 200'
+# D-458: a runtime with agent-config wiring must advertise scoped custody.
+if command -v jq >/dev/null 2>&1 && [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
+    scoped_info=$(curl -fsS --max-time 5 -X POST \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
+        --data '{}' "$(api_url '/v1/control/runtime.info')" 2>/dev/null) || scoped_info='{}'
+    if printf '%s' "$scoped_info" | jq -e '.capabilities | index("agent_config") != null' >/dev/null 2>&1; then
+        if printf '%s' "$scoped_info" | jq -e '.capabilities | index("tenant_scoped_broker_credentials_v1") != null' >/dev/null 2>&1; then
+            ok 'phase 72f: tenant-scoped broker custody advertised'
+        else
+            fail 'phase 72f: agent-config runtime lacks tenant-scoped broker custody'
+        fi
+    else
+        skip 'phase 72f: agent-config surface not wired for scoped custody'
+    fi
+fi
+
 probe_posture_method 'runtime.health'    'phase 72f: runtime.health responds 200'
 probe_posture_method 'runtime.counters'  'phase 72f: runtime.counters responds 200'
 probe_posture_method 'runtime.drivers'   'phase 72f: runtime.drivers responds 200'

@@ -63,6 +63,7 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 
 	var mu sync.Mutex
 	var exchanges int
+	var credentialHits int
 	var recorded url.Values
 	responseAudience := "capability-audience"
 	accessToken := unsignedJWTForTest(t, "00000000-0000-0000-0000-000000000001")
@@ -70,11 +71,17 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	mux.HandleFunc("/credential", func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		credentialHits++
+		mu.Unlock()
+		if req.Header.Get("X-Harbor-Credential-Scope-Version") != "1" || req.Header.Get("X-Harbor-Credential-Tenant") != "tenant" {
+			t.Error("credential request lacks authenticated tenant scope")
+		}
 		if got := req.Header.Get("Authorization"); got != "Bearer fixture-broker-auth" {
 			t.Errorf("credential authorization = %q", got)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"format_version": 1, "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
+			"format_version": 2, "tenant_id": "tenant", "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
 		})
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, req *http.Request) {
@@ -133,6 +140,21 @@ func TestBuildSignedCapability_ProductionBuilder_BindsExchangeAndCloseKillsCache
 		t.Fatal(err)
 	}
 	ctx = tools.WithEffectiveAgentConfig(ctx, "agent")
+	wrong, err := identity.With(context.Background(), identity.Identity{TenantID: "other", UserID: "user", SessionID: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong = tools.WithEffectiveAgentConfig(wrong, "agent")
+	if _, err := provider.Token(wrong, tools.ToolSourceID("provider")); !errors.Is(err, toolauth.ErrIdentityRequired) || tools.ClassifyError(err, false) != tools.ErrClassPermanent {
+		t.Fatalf("wrong caller not permanently rejected: %v", err)
+	}
+	mu.Lock()
+	before := credentialHits
+	mu.Unlock()
+	if before != 0 {
+		t.Fatal("wrong caller reached credential source")
+	}
+
 	first, err := provider.Token(ctx, tools.ToolSourceID("provider"))
 	if err != nil || first.AccessToken != accessToken {
 		t.Fatalf("first token: %+v err=%v", first, err)

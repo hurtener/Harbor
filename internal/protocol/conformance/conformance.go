@@ -1951,22 +1951,23 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 12 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 12 (including CapSkillPublications, CapLLMProviderCatalog, and CapLLMProviderRoute) at Protocol 0.1.0", len(caps))
+	if len(caps) != 13 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 13 (including CapSkillPublications, CapLLMProviderCatalog, and CapLLMProviderRoute) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
-		types.CapTaskControl:        {},
-		types.CapEventsSubscribe:    {},
-		types.CapRuntimePosture:     {},
-		types.CapTopologySnapshot:   {},
-		types.CapStateSnapshots:     {},
-		types.CapAgentConfig:        {},
-		types.CapSessionLifecycle:   {},
-		types.CapToolAnnotations:    {},
-		types.CapCallerMemory:       {},
-		types.CapSkillPublications:  {},
-		types.CapLLMProviderCatalog: {},
-		types.CapLLMProviderRoute:   {},
+		types.CapTaskControl:                   {},
+		types.CapEventsSubscribe:               {},
+		types.CapRuntimePosture:                {},
+		types.CapTopologySnapshot:              {},
+		types.CapStateSnapshots:                {},
+		types.CapAgentConfig:                   {},
+		types.CapSessionLifecycle:              {},
+		types.CapToolAnnotations:               {},
+		types.CapCallerMemory:                  {},
+		types.CapSkillPublications:             {},
+		types.CapLLMProviderCatalog:            {},
+		types.CapLLMProviderRoute:              {},
+		types.CapTenantScopedBrokerCredentials: {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

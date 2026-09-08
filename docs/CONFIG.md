@@ -1787,6 +1787,8 @@ Each provider's OWN client credential resolves through the
   - `cache_ttl` — optional; caps the in-memory serve horizon (a Go
     duration; default 5m). The effective horizon is `min(response
     expires_in, cache_ttl)`.
+  - `credential_scope` — `tenant` by default; `deployment` explicitly selects the
+    legacy runtime-wide contract. Signed capability bindings always use tenant scope.
   - `timeout` — optional; bounds a single fetch (default 30s).
 
   **The fetch contract** (Harbor-defined, versioned) — a single
@@ -1796,13 +1798,16 @@ Each provider's OWN client credential resolves through the
   GET <url>
   Authorization: Bearer <token from auth_token_env>
   Accept: application/json
+  X-Harbor-Credential-Scope-Version: 1
+  X-Harbor-Credential-Tenant: <verified tenant>
   ```
 
   The coordinator responds with a strict JSON object:
 
   ```json
   {
-    "format_version": 1,
+    "format_version": 2,
+    "tenant_id":      "<verified tenant>",
     "client_id":      "...",
     "client_secret":  "...",
     "expires_in":     3600
@@ -1810,7 +1815,8 @@ Each provider's OWN client credential resolves through the
   ```
 
   `format_version` (required) is the contract version — the runtime
-  accepts version `1`; unknown top-level fields are rejected (strict
+  requires version `2` with the matching tenant echo (`deployment` explicitly uses
+  the old header-free version `1`); unknown top-level fields are rejected (strict
   parse). `expires_in` (optional, seconds) drives the cache TTL. A fetch
   that is unreachable, non-200, or malformed fails the tool call loud with
   a typed sentinel and emits a `tool.provider_credential_fetch_failed`
@@ -2405,3 +2411,42 @@ Omission (no block) is byte-compatible. Restart-required.
 The maximum number of virtual-agent profiles the owning agent may expose. The
 value is carried with the `virtual_agents:` section and enforced at the
 run-loop boundary. Restart-required.
+
+## Tenant-scoped broker credential pulls
+
+Remote tool `tokenexchange` credentials default to the verified execution tenant.
+Signed capability providers instead bind the same selection to their authenticated,
+immutable connection tenant and validate the caller before resolving any credential.
+The runtime service bearer authenticates the runtime; the tenant selector grants
+no authority by itself. The coordinator must validate that the authenticated runtime
+is mapped to that exact tenant before returning its credential.
+
+The request remains an authenticated GET to the boot-pinned URL and adds
+`X-Harbor-Credential-Scope-Version: 1` and
+`X-Harbor-Credential-Tenant: <verified tenant>`. A successful response is a strict
+JSON object with `format_version: 2`, `tenant_id` echoing the selected tenant,
+`client_id`, `client_secret`, and optional `expires_in` seconds. Missing or different
+tenants, legacy responses, unknown fields, malformed JSON and permanent HTTP
+refusals fail closed without automatic tool retries. HTTP 408, 429 and server
+outages remain transient. The runtime never retries a scoped request as legacy.
+
+Upgrade the coordinator endpoint before adopting the runtime default. For an
+intentionally deployment-wide legacy tool broker, explicitly set
+`credential_scope: deployment` on `tools.oauth_credential_brokers[]` or the
+`tools.oauth_providers[].remote` block. This uses the original header-free
+`format_version: 1` contract. A legacy coordinator must reject ambiguous runtime
+mappings rather than select an arbitrary tenant. Signed capability providers always
+use scoped pulls regardless of this compatibility setting. Env/static credentials
+and inference-plane boot credentials retain their existing behavior.
+
+Cache and single-flight entries are isolated by tenant and runtime bearer generation.
+They are memory-only, expiry/TTL bounded, limited to 256 entries per source, and
+invalidated for the caller tenant on provider revocation. A revoked in-flight fetch
+cannot repopulate the cache. Cancellation of one waiter does not cancel its peers;
+HTTP work remains timeout bounded. Providers are reconstructed on recovery, so no
+broker credential survives restart. Coordinator revocation is observed on the next
+uncached pull, within the configured TTL; this is not an instantaneous push channel.
+
+`runtime.info.capabilities` advertises `tenant_scoped_broker_credentials_v1` when
+the agent-config surface is wired. Consumers require this capability before relying
+on shared-runtime tenant isolation; a build-version guess is not equivalent evidence.

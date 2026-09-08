@@ -134,6 +134,9 @@ func (b *fakeBroker) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch b.posture.Load().(string) {
+	case "error403":
+		http.Error(w, `{"error":"unauthorized_tenant"}`, http.StatusForbidden)
+		return
 	case "error500":
 		http.Error(w, "broker down", http.StatusInternalServerError)
 		return
@@ -1096,5 +1099,16 @@ func assertNoTokenBytes(t *testing.T, payload events.EventPayload, token string)
 	}
 	if token != "" && strings.Contains(string(b), token) {
 		t.Fatalf("TOKEN LEAK: event payload contains access token bytes: %s", b)
+	}
+}
+
+func TestToken_BrokerAuthorityRefusalPermanent(t *testing.T) {
+	t.Parallel()
+	broker := newFakeBroker(t)
+	broker.setPosture("error403")
+	provider, _, _ := mkProvider(t, broker)
+	_, err := provider.Token(mkCtx(t, aliceID()), "any")
+	if !errors.Is(err, auth.ErrCredentialRejected) || tools.ClassifyError(err, false) != tools.ErrClassPermanent {
+		t.Fatalf("broker authority error not permanent: %v", err)
 	}
 }

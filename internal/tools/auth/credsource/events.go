@@ -86,3 +86,13 @@ type ProviderCredentialFetchFailedPayload struct {
 	// carries response bodies or credential bytes.
 	Reason string
 }
+
+// ErrCredentialSourceRejected identifies a permanent authority or configuration refusal.
+var ErrCredentialSourceRejected = permanentError("credsource: credential source rejected")
+
+type permanentError string
+
+func (e permanentError) Error() string   { return string(e) }
+func (e permanentError) Permanent() bool { return true }
+
+func (e permanentError) Unwrap() error { return ErrCredentialSourceUnavailable }

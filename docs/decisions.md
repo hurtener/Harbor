@@ -7637,7 +7637,7 @@ run through one shared catalog under `-race`. No deviation from the plan.
 
 **Date:** 2026-07-04
 
-**Status:** Shipped (Phase 154, V1.11)
+**Status:** Shipped (Phase 154, V1.11); tenant scope amended by D-458
 
 **Where it lives:** `docs/plans/phase-154-broker-credential-source.md`, `internal/tools/auth/credsource/` (seam + drivers), `internal/tools/auth/build_providers.go`, RFC §6.4 (the D-271 paragraph's additive credential-source sentence).
 
@@ -15238,3 +15238,22 @@ release workflow `33321563993` published 13 assets, and public module
 provenance resolves `refs/tags/v1.31.3` to the same commit. The scaffold
 fallback and goldens are updated directly to v1.31.3 in this follow-up.
 Downstream deployment and acceptance remain unclaimed.
+
+## D-458 — Tool broker client credentials follow verified tenant authority
+
+**Status:** Accepted
+
+**Context:** A runtime may serve several tenants whose broker client credentials
+have different custody. A runtime-only credential pull cannot select their grants
+unambiguously, and one source-wide cache can reuse the wrong credential.
+
+**Decision:** Remote tool brokers default to verified execution-tenant resolution;
+signed capability providers use their immutable authenticated tenant binding and
+validate caller authority before resolution. The versioned scoped GET and strict
+response echo in `docs/CONFIG.md` are mandatory; no legacy downgrade occurs. Only an
+explicit deployment compatibility configuration uses the old runtime-only contract.
+Cache and flights include tenant and runtime bearer generation, expiry and bounded
+capacity; revocation fences pending publication. Permanent authority/configuration
+errors are typed non-retryable. Existing env/static and inference custody is unchanged.
+
+**Cross-references:** D-025, D-271, D-285, D-300; RFC §5.5; docs/CONFIG.md.

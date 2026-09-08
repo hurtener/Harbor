@@ -74,7 +74,7 @@ func TestMCPConnectionAttacher_SignedPrivateOptionalDiscoveryErrors(t *testing.T
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"format_version": 1, "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
+			"format_version": 2, "tenant_id": req.Header.Get("X-Harbor-Credential-Tenant"), "client_id": "fixture-client", "client_secret": "fixture-secret", "expires_in": 300,
 		})
 	})
 	brokerMux.HandleFunc("/token", func(w http.ResponseWriter, req *http.Request) {

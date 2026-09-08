@@ -210,7 +210,8 @@ central grant serves a whole fleet, and brokered tokens are never persisted.
 The provider's own client credential resolves from the process env by
 default, or — with `credential_source: remote` — is pulled from a
 coordinator endpoint at first need, so a credential minted after boot
-reaches a running runtime with zero touch and never enters its environment.
+reaches a running runtime with zero touch and never enters its environment. Remote
+tool brokers select the verified tenant by default; see [the migration contract](docs/CONFIG.md#tenant-scoped-broker-credential-pulls) before upgrading a legacy coordinator.
 
 ## Using Harbor
 

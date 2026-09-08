@@ -749,6 +749,16 @@ func TestRegisteredSourcesMatchConfigAllowlist(t *testing.T) {
 		t.Fatalf("validate credential_source=remote: %v", err)
 	}
 
+	// Explicit compatibility is accepted; unknown resolution modes fail boot.
+	cfg.Tools.OAuthProviders[0].Remote.CredentialScope = "deployment"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("deployment scope: %v", err)
+	}
+	cfg.Tools.OAuthProviders[0].Remote.CredentialScope = "untrusted"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unknown credential scope accepted")
+	}
+
 	// unknown rejected.
 	cfg = minimalToolsConfig()
 	cfg.Tools.OAuthProviders[0].CredentialSource = "no-such-source-xyz"

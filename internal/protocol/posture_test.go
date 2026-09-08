@@ -831,6 +831,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapRuntimePosture,
 			types.CapStateSnapshots,
 			types.CapTaskControl,
+			types.CapTenantScopedBrokerCredentials,
 		}
 		if !reflect.DeepEqual(ri.Capabilities, want) {
 			t.Fatalf("capabilities = %v, want %v", ri.Capabilities, want)
@@ -876,6 +877,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapSessionLifecycle,
 			types.CapStateSnapshots,
 			types.CapTaskControl,
+			types.CapTenantScopedBrokerCredentials,
 			types.CapTopologySnapshot,
 		}
 		if !reflect.DeepEqual(ri.Capabilities, want) {

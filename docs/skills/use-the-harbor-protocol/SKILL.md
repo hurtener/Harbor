@@ -970,3 +970,8 @@ That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/what
 - The public Go client: `sdk/protocolclient`.
 - The docs generator: `cmd/harbor-gen-protocol-docs/` (D-209). The external-client TS wire-type generator: `cmd/harbor-protocol-ts-types/` (D-269) → `examples/protocol-clients/event-viewer-ts/harbor-protocol.gen.ts`. The FULL Console-`protocol.ts` TS-client generator remains deferred (D-132 / issue #179, name `cmd/harbor-gen-protocol-ts` reserved); `protocol.ts` is hand-maintained.
 - RFC §5 — Harbor Protocol design.
+
+For shared-runtime broker custody, require the runtime.info capability
+`tenant_scoped_broker_credentials_v1`; its absence means tenant-selected broker
+client credentials are unsupported. This describes the runtime pull implementation,
+not proof that a particular coordinator endpoint or grant is ready.

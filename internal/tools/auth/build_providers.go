@@ -374,12 +374,25 @@ func (b *ProviderBuilder) buildBrokerPull(ctx context.Context, name, brokerName 
 	if broker.CredentialURL == "" {
 		return nil, fmt.Errorf("%w: broker %q", ErrBrokerMissingCredentialURL, brokerName)
 	}
+	scope := credsource.ExecutionTenantScope
+	tenantID := ""
+	if broker.CredentialScope == "deployment" {
+		scope = credsource.DeploymentScope
+	}
+	if broker.CredentialScope != "" && broker.CredentialScope != "tenant" && broker.CredentialScope != "deployment" {
+		return nil, fmt.Errorf("auth: invalid broker credential_scope")
+	}
+	if ov.signedCapability != nil {
+		scope = credsource.BoundTenantScope
+		tenantID = ov.signedCapability.TenantID
+	}
 	src, err := credsource.Resolve(credsource.SourceRemote, credsource.Config{
 		ProviderName: name,
 		Bus:          b.bus,
 		Redactor:     b.redactor,
 		Clock:        time.Now,
 		Remote: &credsource.RemoteConfig{
+			Scope: scope, TenantID: tenantID,
 			URL:          broker.CredentialURL,
 			AuthTokenEnv: broker.AuthTokenEnv,
 			CacheTTL:     broker.CacheTTL,
@@ -450,7 +463,15 @@ func buildCredentialSource(index int, p config.ToolOAuthProviderConfig, deps Bui
 		Redactor:        deps.Redactor,
 	}
 	if p.Remote != nil {
+		scope := credsource.ExecutionTenantScope
+		if p.Remote.CredentialScope == "deployment" {
+			scope = credsource.DeploymentScope
+		}
+		if p.Remote.CredentialScope != "" && p.Remote.CredentialScope != "tenant" && p.Remote.CredentialScope != "deployment" {
+			return nil, fmt.Errorf("auth: invalid remote credential_scope")
+		}
 		scfg.Remote = &credsource.RemoteConfig{
+			Scope:        scope,
 			URL:          p.Remote.URL,
 			AuthTokenEnv: p.Remote.AuthTokenEnv,
 			CacheTTL:     p.Remote.CacheTTL,

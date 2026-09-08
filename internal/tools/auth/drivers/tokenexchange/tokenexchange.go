@@ -886,6 +886,9 @@ type exchangeMeta struct {
 // exchange performs one RFC-8693 token-exchange POST against the broker
 // and maps the outcome onto (token / *consentError / ErrExchangeFailed).
 func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Token, exchangeMeta, error) {
+	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
+		return auth.Token{}, exchangeMeta{}, err
+	}
 	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
 		return auth.Token{}, exchangeMeta{}, err
 	}
@@ -973,6 +976,9 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 		if isConsentRequired(be.Err) {
 			return auth.Token{}, exchangeMeta{}, &consentError{consentURL: firstNonEmpty(be.ConsentURL, be.VerificationURI)}
 		}
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w: broker %s status %d", auth.ErrExchangeFailed, auth.ErrCredentialRejected, p.brokerHost, resp.StatusCode)
+		}
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: broker %s status %d (error=%q)",
 			auth.ErrExchangeFailed, p.brokerHost, resp.StatusCode, be.Err)
 	}
@@ -1059,16 +1065,14 @@ func verifyAudience(accessToken, resource string) (bool, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		// Not a decodable JWT payload — treat as opaque, not a mismatch.
-		//nolint:nilerr // an undecodable JWT payload is a deliberate opaque no-op, not an exchange error
-		return false, nil
+		return false, nil //nolint:nilerr // an undecodable JWT payload is deliberately treated as opaque
 	}
 	var claims struct {
 		Aud json.RawMessage `json:"aud"`
 	}
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		// Not a JSON JWT payload — treat as opaque, not a mismatch.
-		//nolint:nilerr // a non-JSON JWT payload is a deliberate opaque no-op, not an exchange error
-		return false, nil
+		return false, nil //nolint:nilerr // a non-JSON JWT payload is deliberately treated as opaque
 	}
 	auds := parseAudClaim(claims.Aud)
 	if len(auds) == 0 {
@@ -1245,7 +1249,7 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	p.gens[key]++
 	delete(p.cache, key)
 	p.cacheMu.Unlock()
-	return nil
+	return p.credSource.Invalidate(ctx)
 }
 
 // Close implements auth.OAuthProvider.Close. It is an idempotent lifecycle
@@ -1266,6 +1270,9 @@ func (p *provider) Close(ctx context.Context) error {
 	}
 	activeDrained := p.activeDrained
 	p.lifecycleMu.Unlock()
+	if err := p.credSource.Close(ctx); err != nil {
+		return err
+	}
 
 	select {
 	case <-activeDrained:

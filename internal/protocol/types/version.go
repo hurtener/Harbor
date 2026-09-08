@@ -380,6 +380,8 @@ const (
 	// backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapRuntimePosture Capability = "runtime_posture"
+	// CapTenantScopedBrokerCredentials advertises strict tenant-selected broker credential pulls.
+	CapTenantScopedBrokerCredentials Capability = "tenant_scoped_broker_credentials_v1" //nolint:gosec // capability identifier, not a credential
 	// CapLLMProviderCatalog advertises the protected runtime-origin provider
 	// descriptor/validate/discover operation. It is conditional: a runtime
 	// only advertises it when its provider catalog is wired at boot.
@@ -495,18 +497,19 @@ const (
 // `topology_snapshot` is in the canonical set, but only runtimes
 // hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
-	CapTaskControl:        {},
-	CapEventsSubscribe:    {},
-	CapRuntimePosture:     {},
-	CapTopologySnapshot:   {},
-	CapStateSnapshots:     {},
-	CapAgentConfig:        {},
-	CapSessionLifecycle:   {},
-	CapToolAnnotations:    {},
-	CapCallerMemory:       {},
-	CapSkillPublications:  {},
-	CapLLMProviderCatalog: {},
-	CapLLMProviderRoute:   {},
+	CapTaskControl:                   {},
+	CapEventsSubscribe:               {},
+	CapRuntimePosture:                {},
+	CapTenantScopedBrokerCredentials: {},
+	CapTopologySnapshot:              {},
+	CapStateSnapshots:                {},
+	CapAgentConfig:                   {},
+	CapSessionLifecycle:              {},
+	CapToolAnnotations:               {},
+	CapCallerMemory:                  {},
+	CapSkillPublications:             {},
+	CapLLMProviderCatalog:            {},
+	CapLLMProviderRoute:              {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol
