@@ -7,39 +7,118 @@ on:
 
 permissions:
   contents: read
-  actions: read
+
+env:
+  PATCH_PARTS: '810eb8ea87f96987d3eda64757d125d7f846d14c 34f0807743214abebebe8ade1e01b81217d64c30 1f929900c24fff3dfadbd02ecc18fb120b33f42a ae2e0f67c57895c1198199a26bacd4a912db88be'
+  PATCH_SHA256: 9f3d692f07556e15599cc57e6795f855f9a88cad1612aa76cdc37530ed84c1ed
 
 jobs:
-  diagnostics:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 40
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
-      - name: Collect failed preflight log and exact branch identity
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Apply checksum-verified local follow-up patch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p /tmp/replay-evidence
-          gh api --allow-escape-sequences repos/hurtener/Harbor/actions/jobs/103375001217/logs > /tmp/replay-evidence/macos-preflight.log
-          git rev-parse HEAD > /tmp/replay-evidence/source-sha.txt
-          git archive --format=tar.gz --output=/tmp/replay-evidence/branch-source.tar.gz HEAD
           python3 - <<'PY'
+          import os, json, base64, gzip, hashlib, subprocess
           from pathlib import Path
-          import re
-          raw = Path('/tmp/replay-evidence/macos-preflight.log').read_text()
-          lines = re.sub(r'\x1b\[[0-9;]*m', '', raw).splitlines()
-          selected = set()
-          for i, line in enumerate(lines):
-              if any(s in line for s in ['[FAIL]', 'FAIL:', 'preflight: FAIL', 'preflight: FAILED', 'asserted nothing']):
-                  selected.update(range(max(0, i - 3), min(len(lines), i + 5)))
-          selected.update(range(max(0, len(lines) - 65), len(lines)))
-          summary = '\n'.join(f'{i + 1}: {lines[i]}' for i in sorted(selected))
-          Path('/tmp/replay-evidence/failures.txt').write_text(summary)
-          print(summary)
+          parts = []
+          for sha in os.environ['PATCH_PARTS'].split():
+              obj = json.loads(subprocess.check_output(['gh', 'api', 'repos/hurtener/Harbor/git/blobs/' + sha]))
+              parts.append(base64.b64decode(obj['content']).decode())
+          patch = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
+          assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
+          Path('/tmp/replay-evidence/changes.patch').write_bytes(patch)
           PY
+          git apply --check /tmp/replay-evidence/changes.patch
+          git apply --index /tmp/replay-evidence/changes.patch
+          git diff --cached --check
+          git diff --cached --stat
+      - name: Real provider-to-SQLite restart and SSE replay regressions
+        run: |
+          set -o pipefail
+          go test -race -count=1 -timeout=5m -v -run '^TestE2E_ProgressReplay_' ./test/integration/ 2>&1 | tee /tmp/replay-evidence/progress-replay.log
+      - name: Planner, streaming, persistence, runtime, and Protocol regressions
+        run: |
+          set -o pipefail
+          go test -race -count=1 -timeout=8m ./internal/llm/... ./internal/planner/... ./sdk/planner/... ./internal/events/... ./internal/runtime/steering/... ./internal/runtime/serve/... ./internal/protocol/transports/stream/... 2>&1 | tee /tmp/replay-evidence/race-suites.log
+          go vet ./internal/llm/... ./internal/planner/... ./internal/runtime/steering/... ./internal/runtime/serve/... ./test/integration/... 2>&1 | tee /tmp/replay-evidence/vet.log
+      - name: Exact failing smokes and harness regression guards
+        run: |
+          set -o pipefail
+          for phase in 82 250 167 229 223 83a; do
+            bash scripts/smoke/phase-${phase}.sh 2>&1 | tee /tmp/replay-evidence/smoke-${phase}.log
+          done
+          bash -n scripts/preflight.sh scripts/smoke/phase-{167,229,250}.sh
+          test -z "$(gofmt -l internal/llm/events.go test/integration/progress_replay_test.go test/integration/phase83l_real_bifrost_test.go)"
+          make check-mirror
+          git diff --cached --check
+      - name: Publish verified product changes without overwriting concurrent work
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          git fetch origin fix/live-progress-and-guidance-boundaries
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          git config user.name 'Santiago Benvenuto'
+          git config user.email '117486687+hurtener@users.noreply.github.com'
+          git commit -m 'fix: verify durable progress replay and repair preflight guards'
+          git push origin HEAD:refs/heads/fix/live-progress-and-guidance-boundaries
+          git rev-parse HEAD | tee /tmp/replay-evidence/product-sha.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: replay-preflight-diagnostics
+          name: progress-replay-verification
           path: /tmp/replay-evidence
-          retention-days: 1
+          retention-days: 5
+
+  preflight:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Apply the same checksum-verified patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/replay-evidence
+          python3 - <<'PY'
+          import os, json, base64, gzip, hashlib, subprocess
+          from pathlib import Path
+          parts = []
+          for sha in os.environ['PATCH_PARTS'].split():
+              obj = json.loads(subprocess.check_output(['gh', 'api', 'repos/hurtener/Harbor/git/blobs/' + sha]))
+              parts.append(base64.b64decode(obj['content']).decode())
+          patch = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
+          assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
+          Path('/tmp/replay-evidence/changes.patch').write_bytes(patch)
+          PY
+          git apply --check /tmp/replay-evidence/changes.patch
+          git apply /tmp/replay-evidence/changes.patch
+      - name: Full preflight without skips or inert waivers
+        run: |
+          set -o pipefail
+          make preflight 2>&1 | tee /tmp/replay-evidence/preflight.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: progress-preflight-${{ matrix.os }}
+          path: /tmp/replay-evidence
+          retention-days: 5
