@@ -1,0 +1,44 @@
+name: prompt-policy-workbench
+
+on:
+  push:
+    branches: [fix/live-progress-and-guidance-boundaries]
+    paths: [.github/workflows/prompt-policy-workbench.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Remove only duplicated blank lines after the new policy notes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          old = '> and the checked-in default-prompt golden for the current contract.\n\n\n'
+          new = '> and the checked-in default-prompt golden for the current contract.\n\n'
+          for name in ['docs/plans/phase-83a-react-prompt-structured-sections.md', 'docs/research/13-react-prompt-engineering.md']:
+              path = Path(name)
+              text = path.read_text()
+              assert text.count(old) == 1, name
+              path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+      - uses: DavidAnson/markdownlint-cli2-action@v24
+        with:
+          globs: |
+            CHANGELOG.md
+            docs/CONFIG.md
+            docs/plans/phase-83a-react-prompt-structured-sections.md
+            docs/research/13-react-prompt-engineering.md
+            docs/skills/define-the-agent-yaml/SKILL.md
+      - name: Publish documentation-only cleanup
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- docs/plans/phase-83a-react-prompt-structured-sections.md docs/research/13-react-prompt-engineering.md
+          git commit -m 'docs: normalize prompt policy note spacing'
+          git push origin HEAD:refs/heads/fix/live-progress-and-guidance-boundaries
