@@ -15352,8 +15352,8 @@ configuration request by downgrading its view.
 
 **Date:** 2026-09-10
 
-**Status:** Accepted; hosted verification, release, and downstream deployment
-remain pending.
+**Status:** Shipped in Harbor v1.31.6; downstream/runtime deployment and
+acceptance remain pending.
 
 An exact-bound external provider route may return an optional `model_profile`
 descriptor on both the credential-free selection and attempt-time resolution
@@ -15383,3 +15383,25 @@ resolution must carry equal descriptors, and no route with a missing dynamic
 and static profile can pass the safety guard.
 
 **Cross-references:** D-444, D-435, D-025, RFC §5.3, §6.5, §6.15.
+
+**Release evidence (2026-09-11).** PR #774 merged as
+`9c51e05dd2431a826897cfad5d8a1827cdb5d596`. Its exact PR-head CI run
+`34552596447` passed all completed non-preflight jobs, including
+`frontend-e2e`. Hosted preflight was still pending at the owner-authorized
+merge and later failed on the existing `v1.31.3` scaffold versus `v1.31.5`
+release-ledger state, a publication mount pattern, the changelog phase-numbering
+guard, the namespace guarantee, and sealed consumer-turn assertions. Those
+checks were outside the authorized hotfix scope, so full CI/preflight green is
+not claimed. The annotated `v1.31.6` tag object
+`64f33a11d74aa75dc4603f207a2fa8b6caee9cf4` peels to that merge commit.
+Release workflow `34556670631` succeeded with 13 published assets. The
+published `checksums.txt` SHA-256 is
+`16ce242c5bbce534635a93f198772e024fec341690900602f9dce8a28324dd11`; the
+downloaded Linux amd64 artifact matched its sidecar and aggregate checksum
+entry, its embedded revision matched the tagged commit, and GitHub attestation
+verification succeeded. Public module provenance resolves
+`Sum=h1:wMtBsEt9uiK2Cwx4Oja3IuE+WCaWAAecUBjSPnunbe8=`,
+`GoModSum=h1:fpxHYfJP3V1QbmKZH/t5XMiol5o1cJ0stHoNBl7kT8M=`,
+`Origin.Hash=9c51e05dd2431a826897cfad5d8a1827cdb5d596`, and
+`Origin.Ref=refs/tags/v1.31.6`. Downstream deployment and acceptance remain
+unclaimed.

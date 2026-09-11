@@ -17,7 +17,9 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-### Candidate v1.31.6
+## [1.31.6] — 2026-09-10
+
+### Fixed
 
 - Provider-route selection and attempt-time resolution can now return an optional,
   request-local `model_profile` containing only the selected model's technical
@@ -32,15 +34,31 @@ Two versions move independently in Harbor (RFC §5.3):
   rolled out. The runtime sends the optional descriptor only when that bit is
   accepted; otherwise the existing static-profile fallback remains in force.
 
-### Release candidate evidence
+### Release evidence
 
-- Candidate implementation commits are `fcf177c4` and `662d12f9`. Local
-  focused `go test` and `go test -race` coverage for `internal/llm`,
-  `internal/llm/providerroute`, `internal/llm/corrections`, and
-  `internal/llm/drivers/bifrost` passed; `go test` coverage for `sdk/llm`,
-  `internal/protocol`, and `internal/runtime/serve` passed; and
-  `go build ./cmd/harbor` passed. Hosted CI, a v1.31.6 tag, release assets,
-  and downstream deployment or acceptance are not claimed by this candidate.
+- PR #774 merged as
+  `9c51e05dd2431a826897cfad5d8a1827cdb5d596`. Its exact PR-head CI run
+  `34552596447` passed all completed non-preflight jobs, including
+  `frontend-e2e`. Hosted preflight was still pending at the owner-authorized
+  merge and later failed on the existing `v1.31.3` scaffold versus `v1.31.5`
+  release-ledger state, a publication mount pattern, the changelog
+  phase-numbering guard, the namespace guarantee, and sealed consumer-turn
+  assertions. Those checks were outside the authorized hotfix scope, so full
+  CI/preflight green is not claimed.
+  The annotated `v1.31.6` tag object is
+  `64f33a11d74aa75dc4603f207a2fa8b6caee9cf4` and peels to that merge commit.
+  Release workflow `34556670631` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.6);
+  the published `checksums.txt` has SHA-256
+  `16ce242c5bbce534635a93f198772e024fec341690900602f9dce8a28324dd11`.
+  The downloaded Linux amd64 artifact matched both its published sidecar and
+  the aggregate checksum entry; its embedded revision is the tagged commit,
+  and GitHub attestation verification succeeded. Public module provenance
+  records
+  `Sum=h1:wMtBsEt9uiK2Cwx4Oja3IuE+WCaWAAecUBjSPnunbe8=`,
+  `GoModSum=h1:fpxHYfJP3V1QbmKZH/t5XMiol5o1cJ0stHoNBl7kT8M=`,
+  `Origin.Hash=9c51e05dd2431a826897cfad5d8a1827cdb5d596`, and
+  `Origin.Ref=refs/tags/v1.31.6`. Downstream deployment and acceptance remain
+  separate gates and are not claimed here.
 
 ### Candidate v1.31.5
 
@@ -5445,7 +5463,8 @@ grouped by subsystem.
   checksum, attaches SLSA-style build provenance, and publishes a GitHub
   Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.3...HEAD
+[Unreleased]: https://github.com/hurtener/Harbor/compare/v1.31.6...HEAD
+[1.31.6]: https://github.com/hurtener/Harbor/compare/v1.31.5...v1.31.6
 [1.31.3]: https://github.com/hurtener/Harbor/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/hurtener/Harbor/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/hurtener/Harbor/compare/v1.31.0...v1.31.1
