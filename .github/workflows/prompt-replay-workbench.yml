@@ -11,6 +11,25 @@ permissions:
 env:
   PATCH_PARTS: '810eb8ea87f96987d3eda64757d125d7f846d14c 34f0807743214abebebe8ade1e01b81217d64c30 1f929900c24fff3dfadbd02ecc18fb120b33f42a ae2e0f67c57895c1198199a26bacd4a912db88be'
   PATCH_SHA256: 9f3d692f07556e15599cc57e6795f855f9a88cad1612aa76cdc37530ed84c1ed
+  APPLY_PATCH: |
+    import os, json, base64, gzip, hashlib, subprocess
+    from pathlib import Path
+    out = Path('/tmp/replay-evidence')
+    out.mkdir(exist_ok=True)
+    def blob(sha):
+        obj = json.loads(subprocess.check_output(['gh', 'api', 'repos/hurtener/Harbor/git/blobs/' + sha]))
+        return base64.b64decode(obj['content'])
+    patch = gzip.decompress(base64.b64decode(b''.join(blob(s) for s in os.environ['PATCH_PARTS'].split()), validate=True))
+    assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
+    overlay = blob('1c56f37fd25fd85445ce5b656c8ddb0ffce1cb03')
+    assert hashlib.sha256(overlay).hexdigest() == '3fc2155b12457d76f4bb5290ceed728d42fb87499515302e3d9977cbfac0137a'
+    for name, content in [('base.patch', patch), ('overlay.patch', overlay)]:
+        path = out / name
+        path.write_bytes(content)
+        subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+        subprocess.run(['git', 'apply', '--index', str(path)], check=True)
+    (out / 'changes.patch').write_bytes(subprocess.check_output(['git', 'diff', '--cached', '--binary']))
+    subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
 
 jobs:
   verify:
@@ -24,28 +43,10 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Apply verified patch with corrected replay payload type
+      - name: Apply checksum-verified base and adversarial overlay
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p /tmp/replay-evidence
-          python3 - <<'PY'
-          import os, json, base64, gzip, hashlib, subprocess
-          from pathlib import Path
-          parts = []
-          for sha in os.environ['PATCH_PARTS'].split():
-              obj = json.loads(subprocess.check_output(['gh', 'api', 'repos/hurtener/Harbor/git/blobs/' + sha]))
-              parts.append(base64.b64decode(obj['content']).decode())
-          patch = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
-          assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
-          assert patch.count(b'events.RedactedPayload') == 1
-          patch = patch.replace(b'events.RedactedPayload', b'events.RedactedMap')
-          Path('/tmp/replay-evidence/changes.patch').write_bytes(patch)
-          print('applied patch sha256:', hashlib.sha256(patch).hexdigest())
-          PY
-          git apply --check /tmp/replay-evidence/changes.patch
-          git apply --index /tmp/replay-evidence/changes.patch
-          git diff --cached --check
+        run: python3 -c "$APPLY_PATCH"
       - name: Real provider-to-SQLite restart and SSE replay regressions
         run: |
           set -o pipefail
@@ -96,27 +97,10 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Apply the same verified patch and payload type correction
+      - name: Apply identical checksum-verified source
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p /tmp/replay-evidence
-          python3 - <<'PY'
-          import os, json, base64, gzip, hashlib, subprocess
-          from pathlib import Path
-          parts = []
-          for sha in os.environ['PATCH_PARTS'].split():
-              obj = json.loads(subprocess.check_output(['gh', 'api', 'repos/hurtener/Harbor/git/blobs/' + sha]))
-              parts.append(base64.b64decode(obj['content']).decode())
-          patch = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
-          assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
-          assert patch.count(b'events.RedactedPayload') == 1
-          patch = patch.replace(b'events.RedactedPayload', b'events.RedactedMap')
-          Path('/tmp/replay-evidence/changes.patch').write_bytes(patch)
-          print('applied patch sha256:', hashlib.sha256(patch).hexdigest())
-          PY
-          git apply --check /tmp/replay-evidence/changes.patch
-          git apply /tmp/replay-evidence/changes.patch
+        run: python3 -c "$APPLY_PATCH"
       - name: Full preflight without skips or inert waivers
         run: |
           set -o pipefail
