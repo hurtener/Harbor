@@ -134,7 +134,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		req.Model = c.cfg.Model
 	}
 
-	profile, hasProfile := c.cfg.ModelProfiles[req.Model]
+	profile, hasProfile := llm.EffectiveModelProfile(req, c.cfg)
 
 	// If no profile exists for the model, run the inner client
 	// unmodified — the safety pass will reject with

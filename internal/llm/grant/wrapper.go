@@ -326,9 +326,9 @@ func bindRequestDefaults(req llm.CompleteRequest, grant llm.ExternalGrant, cfg l
 		return llm.CompleteRequest{}, fmt.Errorf("%w: no configured model for grant", llm.ErrExternalGrantInvalid)
 	}
 	if req.ReasoningEffort == "" && !req.ReasoningEffortExplicit {
-		if profile, ok := cfg.ModelProfiles[req.Model]; ok && profile.ReasoningEffort != "" {
+		if profile, ok := llm.EffectiveModelProfile(req, cfg); ok && profile.ReasoningEffort != "" {
 			req.ReasoningEffort = profile.ReasoningEffort
-		} else {
+		} else if !llm.HasTrustedModelProfile(req) {
 			req.ReasoningEffort = grant.MaxReasoning
 		}
 	}
@@ -516,7 +516,8 @@ func boundedCallUnits(req llm.CompleteRequest, grant llm.ExternalGrant, cfg llm.
 	if err != nil {
 		return 0, err
 	}
-	prompt := int64(llm.EstimateRequestTokens(req, cfg.ModelProfiles[req.Model]))
+	profile, _ := llm.EffectiveModelProfile(req, cfg)
+	prompt := int64(llm.EstimateRequestTokens(req, profile))
 	if prompt < 0 || output > math.MaxInt64-prompt {
 		return 0, fmt.Errorf("%w: total call bound exceeds local integer range", llm.ErrExternalGrantInvalid)
 	}

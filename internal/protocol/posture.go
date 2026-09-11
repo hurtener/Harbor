@@ -368,7 +368,7 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 		caps = append(caps, types.CapLLMProviderCatalog)
 	}
 	if providerRouteAvailable {
-		caps = append(caps, types.CapLLMProviderRoute)
+		caps = append(caps, types.CapLLMProviderRoute, types.CapLLMProviderRouteModelProfile)
 	}
 	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	return caps

@@ -268,7 +268,8 @@ func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Cont
 		ProviderConnectionID:         trusted.Route.ProviderConnectionID,
 		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
-		Purpose: trusted.Purpose,
+		ModelProfileSupported: true,
+		Purpose:               trusted.Purpose,
 	}, time.Now())
 	providerID := bfschemas.ModelProvider(resolved.Provider)
 	if err != nil || !curatedRouteProvider(providerID) || validateCuratedRouteEndpoint(providerID, resolved.Endpoint) != nil {

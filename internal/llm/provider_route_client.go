@@ -42,6 +42,15 @@ func (c *providerRouteClient) Complete(ctx context.Context, req CompleteRequest)
 		return CompleteResponse{}, ErrProviderRouteInvalid
 	}
 	req.Model = selected.Model
+	if selected.ModelProfile != nil {
+		if req.MaxTokens != nil && *req.MaxTokens > selected.ModelProfile.MaxOutputTokens {
+			return CompleteResponse{}, ErrProviderRouteInvalid
+		}
+		if req.ReasoningEffort != "" && !selected.ModelProfile.SupportsReasoningEffort(req.ReasoningEffort) {
+			return CompleteResponse{}, ErrProviderRouteInvalid
+		}
+		req = withTrustedModelProfile(req, selected.Model, selected.ModelProfile.modelProfile())
+	}
 	return c.inner.Complete(WithSelectedProviderRoute(requestCtx, selected), req)
 }
 
@@ -78,6 +87,7 @@ func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, t
 		RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
 		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
-		Purpose: ProviderRoutePurposeRun,
+		ModelProfileSupported: true,
+		Purpose:               ProviderRoutePurposeRun,
 	}, nil
 }

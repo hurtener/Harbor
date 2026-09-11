@@ -88,7 +88,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		req.Model = c.cfg.Model
 	}
 
-	maxRetries := resolveMaxRetries(c.cfg, req.Model)
+	maxRetries := resolveMaxRetries(c.cfg, req)
 	id := identityFromCtx(ctx)
 
 	var (
@@ -154,12 +154,12 @@ func (c *client) Close(ctx context.Context) error {
 	return c.inner.Close(ctx)
 }
 
-// resolveMaxRetries reads `ModelProfile.MaxRetries` for the given
-// model. Returns `DefaultMaxRetries` when no profile exists or
+// resolveMaxRetries reads `ModelProfile.MaxRetries` for the request's
+// trusted route profile or configured model. Returns `DefaultMaxRetries` when no profile exists or
 // `MaxRetries` is unset (zero). Negative values are rejected at config
 // validation; defensively we clamp to zero here.
-func resolveMaxRetries(cfg llm.ConfigSnapshot, model string) int {
-	if p, ok := cfg.ModelProfiles[model]; ok {
+func resolveMaxRetries(cfg llm.ConfigSnapshot, req llm.CompleteRequest) int {
+	if p, ok := llm.EffectiveModelProfile(req, cfg); ok {
 		if p.MaxRetries > 0 {
 			return p.MaxRetries
 		}

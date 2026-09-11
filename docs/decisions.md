@@ -15347,3 +15347,39 @@ Clients negotiate `tools_configuration_view_v1` before sending the configuration
 view selector. It is advertised only when the owned-source configuration backend
 is wired. An older runtime receives no selector; clients do not retry a refused
 configuration request by downgrading its view.
+
+## D-460 — Route-bound model capabilities remain technical and request-local
+
+**Date:** 2026-09-10
+
+**Status:** Accepted; hosted verification, release, and downstream deployment
+remain pending.
+
+An exact-bound external provider route may return an optional `model_profile`
+descriptor on both the credential-free selection and attempt-time resolution
+responses. Its four fields are `context_window_tokens`, `max_output_tokens`, an
+optional canonical `reasoning_effort` default, and an explicit
+`reasoning_effort_levels` list. The descriptor is technical capability data;
+correction, retry, cost, sampling policy, credentials, endpoints, and provider
+response material remain outside it.
+
+The route exchange remains Protocol version 1 and keeps older responses
+compatible by treating a missing descriptor as the existing static
+`ModelProfiles[model]` lookup. A new runtime advertises
+`llm_provider_route_model_profile_v1` and sets the additive
+`model_profile_supported` request bit. A resolver sends the descriptor only
+when that bit is present; older runtimes therefore never receive the new
+response member. Missing reasoning levels mean unknown support, while an
+explicit empty list means no reasoning support; `off` is always a valid
+disable control. Dynamic selection fails closed on malformed capability data,
+unknown explicit reasoning, or an output limit above the advertised ceiling.
+
+The runtime stores the descriptor only in one request value. The model-bound
+request slot cannot be reused after a model switch, and configured static
+corrections, retry, output, cost, and reasoning policy fields are preserved
+when a descriptor overlays an existing model. Native per-request temperature,
+output-token, and reasoning controls remain authoritative. Selection and
+resolution must carry equal descriptors, and no route with a missing dynamic
+and static profile can pass the safety guard.
+
+**Cross-references:** D-444, D-435, D-025, RFC §5.3, §6.5, §6.15.

@@ -38,23 +38,35 @@ type requestWire struct {
 	ProviderConnectionGeneration uint64 `json:"provider_connection_generation"`
 	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
 	ModelSelector                string `json:"model_selector"`
+	ModelProfileSupported        bool   `json:"model_profile_supported,omitempty"`
 	Purpose                      string `json:"purpose"`
 }
 
 type responseWire struct {
-	Version                      int           `json:"version"`
-	Provider                     string        `json:"provider"`
-	Model                        string        `json:"model"`
-	KeyName                      string        `json:"key_name"`
-	RouteID                      string        `json:"route_id"`
-	RouteGeneration              uint64        `json:"route_generation"`
-	ProviderConnectionID         string        `json:"provider_connection_id"`
-	ProviderConnectionGeneration uint64        `json:"provider_connection_generation"`
-	CredentialAssetGeneration    uint64        `json:"credential_asset_generation"`
-	ModelSelector                string        `json:"model_selector"`
-	Endpoint                     *endpointWire `json:"endpoint,omitempty"`
-	Credential                   string        `json:"credential,omitempty"`
-	ExpiresAt                    time.Time     `json:"expires_at"`
+	Version                      int               `json:"version"`
+	Provider                     string            `json:"provider"`
+	Model                        string            `json:"model"`
+	KeyName                      string            `json:"key_name"`
+	RouteID                      string            `json:"route_id"`
+	RouteGeneration              uint64            `json:"route_generation"`
+	ProviderConnectionID         string            `json:"provider_connection_id"`
+	ProviderConnectionGeneration uint64            `json:"provider_connection_generation"`
+	CredentialAssetGeneration    uint64            `json:"credential_asset_generation"`
+	ModelSelector                string            `json:"model_selector"`
+	Endpoint                     *endpointWire     `json:"endpoint,omitempty"`
+	Credential                   string            `json:"credential,omitempty"`
+	ExpiresAt                    time.Time         `json:"expires_at"`
+	ModelProfile                 *modelProfileWire `json:"model_profile,omitempty"`
+}
+
+// modelProfileWire is the additive, resolver-owned technical capability
+// descriptor. It intentionally excludes Harbor policy and correction knobs;
+// those remain runtime/request authoritative.
+type modelProfileWire struct {
+	ContextWindowTokens   int                   `json:"context_window_tokens"`
+	MaxOutputTokens       int                   `json:"max_output_tokens"`
+	ReasoningEffort       llm.ReasoningEffort   `json:"reasoning_effort,omitempty"`
+	ReasoningEffortLevels []llm.ReasoningEffort `json:"reasoning_effort_levels"`
 }
 
 type endpointWire struct {
@@ -82,7 +94,8 @@ func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, err
 		RouteGeneration: req.RouteGeneration, ProviderConnectionID: req.ProviderConnectionID,
 		ProviderConnectionGeneration: req.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    req.CredentialAssetGeneration, ModelSelector: req.ModelSelector,
-		Purpose: string(req.Purpose),
+		ModelProfileSupported: req.ModelProfileSupported,
+		Purpose:               string(req.Purpose),
 	}
 	if (w.Operation != OperationSelect && w.Operation != OperationResolve) ||
 		(w.Purpose != string(llm.ProviderRoutePurposeRun) && w.Purpose != string(llm.ProviderRoutePurposePosture)) ||
@@ -128,7 +141,8 @@ func UnmarshalOperationRequest(body []byte) (string, llm.ProviderRouteRequest, e
 		RouteID: w.RouteID, RouteGeneration: w.RouteGeneration, ProviderConnectionID: w.ProviderConnectionID,
 		ProviderConnectionGeneration: w.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    w.CredentialAssetGeneration, ModelSelector: w.ModelSelector,
-		Purpose: llm.ProviderRoutePurpose(w.Purpose),
+		ModelProfileSupported: w.ModelProfileSupported,
+		Purpose:               llm.ProviderRoutePurpose(w.Purpose),
 	}
 	if _, err := MarshalRequest(req); err != nil {
 		return "", llm.ProviderRouteRequest{}, err
@@ -150,6 +164,7 @@ func ParseSelectionResponse(req llm.ProviderRouteRequest, body []byte) (llm.Sele
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) || w.Version != Version ||
 		w.Provider == "" || w.Model == "" || w.KeyName == "" || w.Credential != "" ||
+		(w.ModelProfile != nil && !req.ModelProfileSupported) ||
 		w.RouteID != req.RouteID || w.RouteGeneration != req.RouteGeneration ||
 		w.ProviderConnectionID != req.ProviderConnectionID ||
 		w.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||
@@ -161,6 +176,10 @@ func ParseSelectionResponse(req llm.ProviderRouteRequest, body []byte) (llm.Sele
 	if err != nil {
 		return llm.SelectedProviderRoute{}, err
 	}
+	modelProfile, err := parseModelProfile(w.ModelProfile)
+	if err != nil {
+		return llm.SelectedProviderRoute{}, err
+	}
 	return llm.SelectedProviderRoute{
 		Provider: w.Provider, Model: w.Model, KeyName: w.KeyName, RouteID: w.RouteID, RouteGeneration: w.RouteGeneration,
 		ProviderConnectionID:         w.ProviderConnectionID,
@@ -169,6 +188,7 @@ func ParseSelectionResponse(req llm.ProviderRouteRequest, body []byte) (llm.Sele
 		ModelSelector:                w.ModelSelector,
 		Endpoint:                     endpoint,
 		ExpiresAt:                    w.ExpiresAt.UTC(),
+		ModelProfile:                 modelProfile,
 	}, nil
 }
 
@@ -179,7 +199,7 @@ func MarshalResponse(req llm.ProviderRouteRequest, response llm.ResolvedProvider
 		response.ProviderConnectionID != req.ProviderConnectionID ||
 		response.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||
 		response.CredentialAssetGeneration != req.CredentialAssetGeneration ||
-		response.ModelSelector != req.ModelSelector {
+		response.ModelSelector != req.ModelSelector || validateModelProfile(response.ModelProfile) != nil {
 		return nil, llm.ErrProviderRouteInvalid
 	}
 	body, err := json.Marshal(responseWire{
@@ -191,6 +211,7 @@ func MarshalResponse(req llm.ProviderRouteRequest, response llm.ResolvedProvider
 		ModelSelector:                response.ModelSelector,
 		Endpoint:                     marshalEndpoint(response.Endpoint),
 		Credential:                   response.Credential, ExpiresAt: response.ExpiresAt.UTC(),
+		ModelProfile: marshalModelProfile(response.ModelProfile),
 	})
 	if err != nil || len(body) > MaxResponseBytes {
 		return nil, llm.ErrProviderRouteInvalid
@@ -204,7 +225,8 @@ func MarshalSelectionResponse(req llm.ProviderRouteRequest, selected llm.Selecte
 		selected.RouteID != req.RouteID || selected.RouteGeneration != req.RouteGeneration ||
 		selected.ProviderConnectionID != req.ProviderConnectionID ||
 		selected.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||
-		selected.CredentialAssetGeneration != req.CredentialAssetGeneration || selected.ModelSelector != req.ModelSelector {
+		selected.CredentialAssetGeneration != req.CredentialAssetGeneration || selected.ModelSelector != req.ModelSelector ||
+		validateModelProfile(selected.ModelProfile) != nil {
 		return nil, llm.ErrProviderRouteInvalid
 	}
 	body, err := json.Marshal(responseWire{
@@ -216,6 +238,7 @@ func MarshalSelectionResponse(req llm.ProviderRouteRequest, selected llm.Selecte
 		ModelSelector:                selected.ModelSelector,
 		Endpoint:                     marshalEndpoint(selected.Endpoint),
 		ExpiresAt:                    selected.ExpiresAt.UTC(),
+		ModelProfile:                 marshalModelProfile(selected.ModelProfile),
 	})
 	if err != nil || len(body) > MaxResponseBytes {
 		return nil, llm.ErrProviderRouteInvalid
@@ -238,6 +261,7 @@ func ParseResponse(req llm.ProviderRouteRequest, body []byte) (llm.ResolvedProvi
 		return llm.ResolvedProviderRoute{}, llm.ErrProviderRouteInvalid
 	}
 	if w.Version != Version || w.Provider == "" || w.Model == "" || w.KeyName == "" || w.Credential == "" ||
+		(w.ModelProfile != nil && !req.ModelProfileSupported) ||
 		w.RouteID != req.RouteID || w.RouteGeneration != req.RouteGeneration ||
 		w.ProviderConnectionID != req.ProviderConnectionID ||
 		w.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||
@@ -249,6 +273,10 @@ func ParseResponse(req llm.ProviderRouteRequest, body []byte) (llm.ResolvedProvi
 	if err != nil {
 		return llm.ResolvedProviderRoute{}, err
 	}
+	modelProfile, err := parseModelProfile(w.ModelProfile)
+	if err != nil {
+		return llm.ResolvedProviderRoute{}, err
+	}
 	return llm.ResolvedProviderRoute{
 		Provider: w.Provider, Model: w.Model, KeyName: w.KeyName, RouteID: w.RouteID, RouteGeneration: w.RouteGeneration,
 		ProviderConnectionID:         w.ProviderConnectionID,
@@ -256,8 +284,52 @@ func ParseResponse(req llm.ProviderRouteRequest, body []byte) (llm.ResolvedProvi
 		CredentialAssetGeneration:    w.CredentialAssetGeneration,
 		ModelSelector:                w.ModelSelector,
 		Endpoint:                     endpoint,
-		ExpiresAt:                    w.ExpiresAt.UTC(), Credential: w.Credential,
+		ExpiresAt:                    w.ExpiresAt.UTC(), Credential: w.Credential, ModelProfile: modelProfile,
 	}, nil
+}
+
+func marshalModelProfile(profile *llm.ProviderModelProfile) *modelProfileWire {
+	if profile == nil {
+		return nil
+	}
+	return &modelProfileWire{
+		ContextWindowTokens:   profile.ContextWindowTokens,
+		MaxOutputTokens:       profile.MaxOutputTokens,
+		ReasoningEffort:       profile.ReasoningEffort,
+		ReasoningEffortLevels: cloneReasoningEffortLevels(profile.ReasoningEffortLevels),
+	}
+}
+
+func parseModelProfile(wire *modelProfileWire) (*llm.ProviderModelProfile, error) {
+	if wire == nil {
+		return nil, nil
+	}
+	profile := &llm.ProviderModelProfile{
+		ContextWindowTokens:   wire.ContextWindowTokens,
+		MaxOutputTokens:       wire.MaxOutputTokens,
+		ReasoningEffort:       wire.ReasoningEffort,
+		ReasoningEffortLevels: cloneReasoningEffortLevels(wire.ReasoningEffortLevels),
+	}
+	if err := llm.ValidateProviderModelProfile(*profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func validateModelProfile(profile *llm.ProviderModelProfile) error {
+	if profile == nil {
+		return nil
+	}
+	return llm.ValidateProviderModelProfile(*profile)
+}
+
+func cloneReasoningEffortLevels(levels []llm.ReasoningEffort) []llm.ReasoningEffort {
+	if levels == nil {
+		return nil
+	}
+	clone := make([]llm.ReasoningEffort, len(levels))
+	copy(clone, levels)
+	return clone
 }
 
 func marshalEndpoint(endpoint *llm.ProviderEndpointBinding) *endpointWire {
