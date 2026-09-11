@@ -23,7 +23,10 @@ env:
     assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
     overlay = blob('1c56f37fd25fd85445ce5b656c8ddb0ffce1cb03')
     assert hashlib.sha256(overlay).hexdigest() == '3fc2155b12457d76f4bb5290ceed728d42fb87499515302e3d9977cbfac0137a'
-    for name, content in [('base.patch', patch), ('overlay.patch', overlay)]:
+    wire_parts = ['c10147ba954ee283b8c79535265d69ae88876ed9', '30f83b81f7d77375a9964527d6554bffc025e6ba', '03c2ee9946555f8636024415d4dbfd2f1018ba6d']
+    wire = gzip.decompress(base64.b64decode(b''.join(blob(s) for s in wire_parts), validate=True))
+    assert hashlib.sha256(wire).hexdigest() == '201939fb7f532062044a5b3df0f0d074710b722a81826db84091ea6222c1b0ce'
+    for name, content in [('base.patch', patch), ('overlay.patch', overlay), ('wire.patch', wire)]:
         path = out / name
         path.write_bytes(content)
         subprocess.run(['git', 'apply', '--check', str(path)], check=True)
@@ -43,19 +46,19 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Apply checksum-verified base and adversarial overlay
+      - name: Apply checksum-verified source and replay repair
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -c "$APPLY_PATCH"
-      - name: Real provider-to-SQLite restart and SSE replay regressions
+      - name: Provider-to-SQLite restart, SSE cursor, and isolation regressions
         run: |
           set -o pipefail
-          go test -race -count=1 -timeout=5m -v -run '^TestE2E_ProgressReplay_' ./test/integration/ 2>&1 | tee /tmp/replay-evidence/progress-replay.log
+          go test -race -count=1 -timeout=5m -v -run '^TestE2E_(ProgressReplay_|Phase233c|Phase83l)' ./test/integration/ 2>&1 | tee /tmp/replay-evidence/progress-replay.log
       - name: Planner, streaming, persistence, runtime, and Protocol regressions
         run: |
           set -o pipefail
           go test -race -count=1 -timeout=8m ./internal/llm/... ./internal/planner/... ./sdk/planner/... ./internal/events/... ./internal/runtime/steering/... ./internal/runtime/serve/... ./internal/protocol/transports/stream/... 2>&1 | tee /tmp/replay-evidence/race-suites.log
-          go vet ./internal/llm/... ./internal/planner/... ./internal/runtime/steering/... ./internal/runtime/serve/... ./test/integration/... 2>&1 | tee /tmp/replay-evidence/vet.log
+          go vet ./internal/llm/... ./internal/planner/... ./internal/runtime/steering/... ./internal/runtime/serve/... ./internal/protocol/transports/stream/... ./test/integration/... 2>&1 | tee /tmp/replay-evidence/vet.log
       - name: Exact failing smokes and harness regression guards
         run: |
           set -o pipefail
@@ -63,7 +66,7 @@ jobs:
             bash scripts/smoke/phase-${phase}.sh 2>&1 | tee /tmp/replay-evidence/smoke-${phase}.log
           done
           bash -n scripts/preflight.sh scripts/smoke/phase-{167,229,250}.sh
-          test -z "$(gofmt -l internal/llm/events.go test/integration/progress_replay_test.go test/integration/phase83l_real_bifrost_test.go)"
+          test -z "$(gofmt -l internal/llm/events.go internal/protocol/transports/stream/{frame.go,frame_test.go,state_history_handler.go} test/integration/progress_replay_test.go test/integration/phase83l_real_bifrost_test.go)"
           make check-mirror
           git diff --cached --check
       - name: Publish verified product changes without overwriting concurrent work
@@ -74,7 +77,7 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
           git config user.name 'Santiago Benvenuto'
           git config user.email '117486687+hurtener@users.noreply.github.com'
-          git commit -m 'fix: verify durable progress replay and repair preflight guards'
+          git commit -m 'fix: preserve SSE replay payloads and repair preflight failures'
           git push origin HEAD:refs/heads/fix/live-progress-and-guidance-boundaries
           git rev-parse HEAD | tee /tmp/replay-evidence/product-sha.txt
       - uses: actions/upload-artifact@v4
