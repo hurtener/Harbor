@@ -393,14 +393,17 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapLLMProviderRoute) {
 		t.Fatal("handshake.Accepts(CapLLMProviderRoute) = false; the provider-route surface must appear in the canonical capability set")
 	}
+	if !h.Accepts(types.CapLLMProviderRouteModelProfile) {
+		t.Fatal("handshake.Accepts(CapLLMProviderRouteModelProfile) = false; dynamic route model profiles must appear in the canonical capability set")
+	}
 	for _, capability := range []types.Capability{"tenant_scoped_broker_credentials_v1", "tools_configuration_view_v1"} {
 		if !h.Accepts(capability) {
 			t.Fatalf("missing capability %s", capability)
 		}
 	}
 	caps := h.Capabilities
-	if len(caps) != 14 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly 14 canonical capabilities including llm_provider_catalog and llm_provider_route", caps)
+	if len(caps) != 15 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly 15 canonical capabilities including provider-route model profiles", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

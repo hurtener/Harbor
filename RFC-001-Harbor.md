@@ -863,6 +863,23 @@ return the credential or endpoint value. This additive route contract does not
 authorize a run, meter usage, or duplicate JWT/reach policy, and has no
 dependency on `ExternalGrant`.
 
+**Route-bound model capabilities (D-460).** A route resolver may add the
+optional `model_profile` descriptor to either exact-bound response. The
+descriptor contains only positive context and output ceilings plus the
+canonical reasoning default/levels; it carries no correction, retry, cost,
+sampling policy, credential, or endpoint data. The runtime advertises
+`llm_provider_route_model_profile_v1` when the route surface is wired and sets
+the additive `model_profile_supported` bit on authenticated resolver requests.
+Resolvers omit the descriptor when that bit is absent, so older runtimes keep
+their static model-profile fallback. A descriptor is validated before policy
+wrappers run, is copied into one request only, and is exact-bound across the
+selection and resolve legs. Native request temperature, output-token, and
+reasoning controls remain authoritative; static policy fields for a configured
+model are preserved. An explicit output or reasoning control outside the
+descriptor is rejected before provider work, and an unknown model still fails
+closed when neither dynamic nor static profile exists. Protocol version remains
+`0.1.0`.
+
 **Provider-neutral technical descriptors and runtime-origin model discovery (Planned — HA-71 / D-435).** A provider control-plane consumer may need technical facts from the same Bifrost integration Harbor uses for execution, but those facts must not be re-derived in a second provider registry or mixed with presentation policy. Harbor's typed descriptor reports an opaque provider id/kind, credential modes and logical secret/url/text field kinds, custom-endpoint support, and whether bounded runtime-origin validation or model discovery is available. It carries no logo, friendly label, help copy, endpoint value, environment variable name, credential, provider response body, or identity value. Native provider endpoint handling remains `manual` where provider-specific semantics are not portable; declared OpenAI-compatible custom endpoints are the supported custom-endpoint fact.
 
 The catalog is an immutable local snapshot with bounded, cancellable `Validate` and `Discover` operations. Discovery reuses the same Bifrost account construction as an LLM call, caps page size and page count, rejects malformed or duplicate model rows, and normalizes only reported provider-neutral facts: context/input/output limits, input/output modalities, tool support when a canonical parameter is reported, canonical `off|low|medium|high` reasoning levels when reported, deprecation, and pricing provenance. Missing facts remain `unknown`, absent pricing is `unpriced`, incomplete results are `partial`, cached results are explicitly `stale`, and configured model ids are `manual` when discovery is unavailable or empty. Provider errors map to stable sanitized outcomes rather than raw messages or response bodies. The offline `harbor llm providers` CLI is explicitly non-runtime-origin; the booted runtime also projects descriptor, validation, and discovery through the existing protected `llm.posture` request envelope (`provider_operation=validate|discover`) for admin-tier callers, with shared runtime credential state. No new Protocol method or version is added.

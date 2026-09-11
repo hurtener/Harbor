@@ -47,6 +47,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -167,6 +168,14 @@ type CompleteRequest struct {
 	// bifrost maps it per provider). The planner sets this per the
 	// operator's yaml knob + the runloop executor's capability signal.
 	ParallelToolCalls bool
+
+	// modelProfile is a trusted, request-local technical descriptor attached by
+	// the provider-route selector. It is deliberately unexported: callers must
+	// not be able to smuggle a profile into the model-sensitive wrapper chain.
+	// When absent, wrappers use the static ConfigSnapshot profile as the legacy
+	// fallback.
+	modelProfile      *ModelProfile
+	modelProfileModel string
 }
 
 // CompleteResponse is the LLM-call return shape.
@@ -437,6 +446,34 @@ const (
 	ReasoningHigh   ReasoningEffort = "high"
 )
 
+// EffectiveReasoningEffort returns the canonical reasoning control carried by
+// a request. The corrections layer may move a validated effort into the
+// reserved Extra key for provider-specific routing; drivers must still honor
+// that value rather than silently dropping it. An invalid reserved value is a
+// malformed request and fails closed.
+func EffectiveReasoningEffort(req CompleteRequest) (ReasoningEffort, error) {
+	effort := req.ReasoningEffort
+	if effort == "" {
+		raw, ok := req.Extra["reasoning_effort"]
+		if !ok {
+			return "", nil
+		}
+		var stringValue bool
+		effortString, stringOK := raw.(string)
+		if stringOK {
+			effort = ReasoningEffort(effortString)
+			stringValue = true
+		}
+		if !stringValue {
+			return "", fmt.Errorf("%w: Extra[reasoning_effort] must be a string", ErrProviderRouteInvalid)
+		}
+	}
+	if !validProviderReasoningEffort(effort) || effort == "" {
+		return "", fmt.Errorf("%w: reasoning_effort=%q is unknown", ErrProviderRouteInvalid, effort)
+	}
+	return effort, nil
+}
+
 // OutputMode selects the request-shaping strategy for structured
 // output (RFC §6.5). Three modes:
 //
@@ -623,6 +660,159 @@ type ModelProfile struct {
 	// `DefaultMaxRetries` (1). A negative value is rejected at config
 	// validation.
 	MaxRetries int
+}
+
+// ProviderModelProfile is the bounded technical capability descriptor a
+// provider-route resolver may return for its selected model. It is deliberately
+// smaller than ModelProfile: route selection supplies model facts, while
+// Harbor's request and operator policy remain authoritative for sampling,
+// output limits, corrections, and retries.
+//
+// A nil ReasoningEffortLevels value means the resolver did not describe the
+// supported levels. A non-nil empty slice explicitly means that the provider
+// supports no reasoning levels; ReasoningOff remains universally valid.
+type ProviderModelProfile struct {
+	ContextWindowTokens   int
+	MaxOutputTokens       int
+	ReasoningEffort       ReasoningEffort
+	ReasoningEffortLevels []ReasoningEffort
+}
+
+const (
+	maxProviderModelContextTokens = 1 << 30
+	maxProviderModelOutputTokens  = 1 << 30
+)
+
+// ValidateProviderModelProfile validates a route-supplied technical
+// descriptor before it can enter any model-sensitive wrapper.
+func ValidateProviderModelProfile(profile ProviderModelProfile) error {
+	if profile.ContextWindowTokens <= 0 || profile.ContextWindowTokens > maxProviderModelContextTokens {
+		return fmt.Errorf("%w: context_window_tokens=%d is outside the allowed range", ErrProviderRouteInvalid, profile.ContextWindowTokens)
+	}
+	if profile.MaxOutputTokens <= 0 || profile.MaxOutputTokens > maxProviderModelOutputTokens {
+		return fmt.Errorf("%w: max_output_tokens=%d is outside the allowed range", ErrProviderRouteInvalid, profile.MaxOutputTokens)
+	}
+	if profile.MaxOutputTokens > profile.ContextWindowTokens {
+		return fmt.Errorf("%w: max_output_tokens=%d exceeds context_window_tokens=%d", ErrProviderRouteInvalid, profile.MaxOutputTokens, profile.ContextWindowTokens)
+	}
+	if !validProviderReasoningEffort(profile.ReasoningEffort) {
+		return fmt.Errorf("%w: reasoning_effort=%q is unknown", ErrProviderRouteInvalid, profile.ReasoningEffort)
+	}
+	if profile.ReasoningEffort != "" && profile.ReasoningEffort != ReasoningOff && profile.ReasoningEffortLevels == nil {
+		return fmt.Errorf("%w: default reasoning effort %q requires an explicit supported-level list", ErrProviderRouteInvalid, profile.ReasoningEffort)
+	}
+	if len(profile.ReasoningEffortLevels) > 4 {
+		return fmt.Errorf("%w: reasoning_effort_levels has too many entries", ErrProviderRouteInvalid)
+	}
+	seen := make(map[ReasoningEffort]struct{}, len(profile.ReasoningEffortLevels))
+	for _, level := range profile.ReasoningEffortLevels {
+		if !validProviderReasoningEffort(level) || level == "" {
+			return fmt.Errorf("%w: reasoning_effort_levels contains unknown level %q", ErrProviderRouteInvalid, level)
+		}
+		if _, ok := seen[level]; ok {
+			return fmt.Errorf("%w: reasoning_effort_levels contains duplicate level %q", ErrProviderRouteInvalid, level)
+		}
+		seen[level] = struct{}{}
+	}
+	if profile.ReasoningEffort != "" && profile.ReasoningEffort != ReasoningOff && profile.ReasoningEffortLevels != nil {
+		if _, ok := seen[profile.ReasoningEffort]; !ok {
+			return fmt.Errorf("%w: default reasoning effort %q is not supported", ErrProviderRouteInvalid, profile.ReasoningEffort)
+		}
+	}
+	return nil
+}
+
+// SupportsReasoningEffort reports whether a route descriptor accepts one
+// explicit request-level reasoning value. The off value is a universal
+// disable control, including when the provider advertises no reasoning list.
+func (profile ProviderModelProfile) SupportsReasoningEffort(effort ReasoningEffort) bool {
+	if effort == ReasoningOff {
+		return true
+	}
+	if !validProviderReasoningEffort(effort) || profile.ReasoningEffortLevels == nil {
+		return false
+	}
+	for _, supported := range profile.ReasoningEffortLevels {
+		if supported == effort {
+			return true
+		}
+	}
+	return false
+}
+
+func validProviderReasoningEffort(effort ReasoningEffort) bool {
+	switch effort {
+	case "", ReasoningOff, ReasoningLow, ReasoningMedium, ReasoningHigh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (profile ProviderModelProfile) modelProfile() ModelProfile {
+	maxTokens := profile.MaxOutputTokens
+	return ModelProfile{
+		ContextWindowTokens: profile.ContextWindowTokens,
+		DefaultMaxTokens:    &maxTokens,
+		ReasoningEffort:     profile.ReasoningEffort,
+	}
+}
+
+func cloneModelProfile(profile ModelProfile) ModelProfile {
+	clone := profile
+	if profile.DefaultMaxTokens != nil {
+		maxTokens := *profile.DefaultMaxTokens
+		clone.DefaultMaxTokens = &maxTokens
+	}
+	if profile.CostOverrides != nil {
+		costs := *profile.CostOverrides
+		clone.CostOverrides = &costs
+	}
+	return clone
+}
+
+func withTrustedModelProfile(req CompleteRequest, model string, profile ModelProfile) CompleteRequest {
+	clone := cloneModelProfile(profile)
+	req.modelProfile = &clone
+	req.modelProfileModel = model
+	return req
+}
+
+// EffectiveModelProfile returns the trusted per-request route descriptor when
+// present, otherwise the configured static profile for req.Model. The route
+// descriptor is request-local and cannot mutate the shared configuration.
+func EffectiveModelProfile(req CompleteRequest, cfg ConfigSnapshot) (ModelProfile, bool) {
+	if req.modelProfile != nil && req.modelProfileModel == req.Model {
+		profile, ok := cfg.ModelProfiles[req.Model]
+		if !ok {
+			profile = ModelProfile{}
+		}
+		// The route descriptor owns technical context facts. Existing operator
+		// policy on a configured model remains intact; a route default reasoning
+		// value is used only when no static policy value exists.
+		profile.ContextWindowTokens = req.modelProfile.ContextWindowTokens
+		if routeMaxTokens := req.modelProfile.DefaultMaxTokens; routeMaxTokens != nil &&
+			(profile.DefaultMaxTokens == nil || *profile.DefaultMaxTokens <= 0 || *profile.DefaultMaxTokens > *routeMaxTokens) {
+			maxTokens := *routeMaxTokens
+			profile.DefaultMaxTokens = &maxTokens
+		}
+		if profile.ReasoningEffort == "" {
+			profile.ReasoningEffort = req.modelProfile.ReasoningEffort
+		}
+		return cloneModelProfile(profile), true
+	}
+	profile, ok := cfg.ModelProfiles[req.Model]
+	if !ok {
+		return ModelProfile{}, false
+	}
+	return cloneModelProfile(profile), true
+}
+
+// HasTrustedModelProfile reports whether req carries a route-bound profile for
+// its current model. It is used by policy wrappers to avoid replacing the
+// resolver's native request controls with a generic grant default.
+func HasTrustedModelProfile(req CompleteRequest) bool {
+	return req.modelProfile != nil && req.modelProfileModel == req.Model
 }
 
 // CorrectionsProfile carries the per-model quirk flags the

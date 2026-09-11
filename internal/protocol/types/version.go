@@ -391,6 +391,11 @@ const (
 	// provider_route member on control.start. Absence means unsupported or not
 	// configured; coordinators must not activate route assignments.
 	CapLLMProviderRoute Capability = "llm_provider_route"
+	// CapLLMProviderRouteModelProfile advertises that provider-route selection
+	// may carry the additive model_profile technical capability descriptor.
+	// Clients must gate dynamic model-profile payloads on this capability;
+	// runtimes without it retain the legacy static ModelProfiles fallback.
+	CapLLMProviderRouteModelProfile Capability = "llm_provider_route_model_profile_v1"
 	// CapTopologySnapshot — the engine-graph topology projection
 	// (`topology.snapshot`,). Conditional: a runtime
 	// only advertises this capability when it hosts an engine (the
@@ -513,6 +518,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapSkillPublications:             {},
 	CapLLMProviderCatalog:            {},
 	CapLLMProviderRoute:              {},
+	CapLLMProviderRouteModelProfile:  {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

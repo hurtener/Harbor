@@ -199,7 +199,8 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
 			ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,
 			CredentialAssetGeneration:    trusted.Route.CredentialAssetGeneration, ModelSelector: trusted.Route.ModelSelector,
-			Purpose: trusted.Purpose,
+			ModelProfileSupported: true,
+			Purpose:               trusted.Purpose,
 		}, time.Now())
 		if err != nil {
 			return llm.CompleteResponse{}, err

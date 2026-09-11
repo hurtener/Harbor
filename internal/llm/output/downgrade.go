@@ -58,7 +58,7 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 	// the mode is unset, the wrapper is a pure pass-through — the
 	// inner safety pass already rejects unknown models, so we don't
 	// duplicate that check here.
-	profile, hasProfile := d.cfg.ModelProfiles[req.Model]
+	profile, hasProfile := llm.EffectiveModelProfile(req, d.cfg)
 	if !hasProfile || profile.OutputMode == llm.OutputModeUnset {
 		return d.inner.Complete(ctx, req)
 	}

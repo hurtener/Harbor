@@ -14,6 +14,7 @@ type Purpose = llm.ProviderRoutePurpose
 type Response = llm.ResolvedProviderRoute
 type SelectedResponse = llm.SelectedProviderRoute
 type SelectedProviderRoute = llm.SelectedProviderRoute
+type ProviderModelProfile = llm.ProviderModelProfile
 type EndpointBinding = llm.ProviderEndpointBinding
 type EndpointKind = llm.ProviderEndpointKind
 
@@ -39,13 +40,14 @@ const (
 )
 
 var (
-	MarshalRequest            = internal.MarshalRequest
-	MarshalSelectionRequest   = internal.MarshalSelectionRequest
-	UnmarshalRequest          = internal.UnmarshalRequest
-	UnmarshalOperationRequest = internal.UnmarshalOperationRequest
-	MarshalResponse           = internal.MarshalResponse
-	MarshalSelectionResponse  = internal.MarshalSelectionResponse
-	ParseResponse             = internal.ParseResponse
-	ParseSelectionResponse    = internal.ParseSelectionResponse
-	NormalizeEndpoint         = llm.NormalizeProviderEndpoint
+	MarshalRequest               = internal.MarshalRequest
+	MarshalSelectionRequest      = internal.MarshalSelectionRequest
+	UnmarshalRequest             = internal.UnmarshalRequest
+	UnmarshalOperationRequest    = internal.UnmarshalOperationRequest
+	MarshalResponse              = internal.MarshalResponse
+	MarshalSelectionResponse     = internal.MarshalSelectionResponse
+	ParseResponse                = internal.ParseResponse
+	ParseSelectionResponse       = internal.ParseSelectionResponse
+	NormalizeEndpoint            = llm.NormalizeProviderEndpoint
+	ValidateProviderModelProfile = llm.ValidateProviderModelProfile
 )

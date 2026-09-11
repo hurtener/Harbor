@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/corrections"
 )
 
 // TestTranslateRequest_TextOnly — the common text-only path.
@@ -514,6 +516,38 @@ func TestTranslateRequest_ReasoningEffort(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCorrectionsReasoningRouteReachesBifrostNativeControl(t *testing.T) {
+	const model = "deepseek/deepseek-reasoner"
+	stub := newStubClient()
+	driver := newDriverWithClient(stub, bfschemas.OpenRouter, nil)
+	client := corrections.Wrap(driver, llm.ConfigSnapshot{
+		Model: model,
+		ModelProfiles: map[string]llm.ModelProfile{
+			model: {
+				ContextWindowTokens: 64_000,
+				ReasoningEffort:     llm.ReasoningHigh,
+				Corrections:         llm.CorrectionsProfile{ReasoningEffortRouting: llm.ReasoningRouteThinking},
+			},
+		},
+	})
+	defer func() { _ = client.Close(context.Background()) }()
+	ctx := withIdentity(t, context.Background(), "reasoning-route")
+	text := "solve"
+	if _, err := client.Complete(ctx, llm.CompleteRequest{
+		Model:    model,
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	request := stub.lastRequest()
+	if request == nil || request.Params == nil || request.Params.Reasoning == nil || request.Params.Reasoning.Effort == nil {
+		t.Fatalf("native reasoning control missing after correction: %#v", request)
+	}
+	if got := *request.Params.Reasoning.Effort; got != "high" {
+		t.Fatalf("native reasoning effort = %q, want high", got)
 	}
 }
 

@@ -80,7 +80,12 @@ type ProviderRouteRequest struct {
 	ProviderConnectionGeneration uint64
 	CredentialAssetGeneration    uint64
 	ModelSelector                string
-	Purpose                      ProviderRoutePurpose
+	// ModelProfileSupported is a runtime-to-resolver negotiation bit. New
+	// runtimes set it on authenticated route requests so a resolver may safely
+	// include the additive model_profile response member; older runtimes omit
+	// it and continue using static profiles.
+	ModelProfileSupported bool
+	Purpose               ProviderRoutePurpose
 }
 
 // ProviderEndpointKind identifies one supported typed endpoint projection.
@@ -130,6 +135,7 @@ type SelectedProviderRoute struct {
 	ModelSelector                string
 	Endpoint                     *ProviderEndpointBinding
 	ExpiresAt                    time.Time
+	ModelProfile                 *ProviderModelProfile
 }
 
 func (r SelectedProviderRoute) String() string {
@@ -169,6 +175,7 @@ type ResolvedProviderRoute struct {
 	Endpoint                     *ProviderEndpointBinding `json:"-"`
 	ExpiresAt                    time.Time                `json:"expires_at"`
 	Credential                   string                   `json:"-"`
+	ModelProfile                 *ProviderModelProfile    `json:"-"`
 }
 
 // LogValue deliberately omits credential material when a resolved route is
@@ -301,9 +308,10 @@ func SelectProviderRoute(ctx context.Context, cfg ProviderRouteConfig, req Provi
 	}
 	if !validProviderRouteSelection(selected.Provider, selected.Model, selected.KeyName, selected.RouteID, selected.RouteGeneration,
 		selected.ProviderConnectionID, selected.ProviderConnectionGeneration, selected.CredentialAssetGeneration,
-		selected.ModelSelector, selected.Endpoint, selected.ExpiresAt, req, now) {
+		selected.ModelSelector, selected.Endpoint, selected.ExpiresAt, selected.ModelProfile, req, now) {
 		return SelectedProviderRoute{}, ErrProviderRouteInvalid
 	}
+	selected.ModelProfile = cloneProviderModelProfile(selected.ModelProfile)
 	return selected, nil
 }
 
@@ -330,15 +338,18 @@ func ResolveProviderRoute(ctx context.Context, cfg ProviderRouteConfig, req Prov
 		resolved.ProviderConnectionID != req.ProviderConnectionID ||
 		resolved.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||
 		resolved.CredentialAssetGeneration != req.CredentialAssetGeneration ||
-		resolved.ModelSelector != req.ModelSelector || validateProviderEndpoint(resolved.Provider, resolved.Endpoint) != nil {
+		resolved.ModelSelector != req.ModelSelector || validateProviderEndpoint(resolved.Provider, resolved.Endpoint) != nil ||
+		validateProviderModelProfile(resolved.ModelProfile) != nil {
 		return ResolvedProviderRoute{}, ErrProviderRouteInvalid
 	}
+	resolved.ModelProfile = cloneProviderModelProfile(resolved.ModelProfile)
 	return resolved, nil
 }
 
 func validProviderRouteSelection(provider, model, keyName, routeID string, routeGeneration uint64,
 	providerConnectionID string, providerConnectionGeneration, credentialAssetGeneration uint64,
-	modelSelector string, endpoint *ProviderEndpointBinding, expiresAt time.Time, req ProviderRouteRequest, now time.Time,
+	modelSelector string, endpoint *ProviderEndpointBinding, expiresAt time.Time, modelProfile *ProviderModelProfile,
+	req ProviderRouteRequest, now time.Time,
 ) bool {
 	return provider != "" && len(provider) <= maxProviderRouteFieldBytes &&
 		model != "" && len(model) <= maxProviderRouteFieldBytes &&
@@ -348,7 +359,26 @@ func validProviderRouteSelection(provider, model, keyName, routeID string, route
 		providerConnectionID == req.ProviderConnectionID &&
 		providerConnectionGeneration == req.ProviderConnectionGeneration &&
 		credentialAssetGeneration == req.CredentialAssetGeneration && modelSelector == req.ModelSelector &&
-		validateProviderEndpoint(provider, endpoint) == nil
+		validateProviderEndpoint(provider, endpoint) == nil && validateProviderModelProfile(modelProfile) == nil
+}
+
+func validateProviderModelProfile(profile *ProviderModelProfile) error {
+	if profile == nil {
+		return nil
+	}
+	return ValidateProviderModelProfile(*profile)
+}
+
+func cloneProviderModelProfile(profile *ProviderModelProfile) *ProviderModelProfile {
+	if profile == nil {
+		return nil
+	}
+	clone := *profile
+	if profile.ReasoningEffortLevels != nil {
+		clone.ReasoningEffortLevels = make([]ReasoningEffort, len(profile.ReasoningEffortLevels))
+		copy(clone.ReasoningEffortLevels, profile.ReasoningEffortLevels)
+	}
+	return &clone
 }
 
 func providerRouteResolverError(ctx context.Context, err error) error {
@@ -388,7 +418,27 @@ func ProviderRouteResolutionMatchesSelection(resolved ResolvedProviderRoute, sel
 		resolved.ProviderConnectionID == selected.ProviderConnectionID &&
 		resolved.ProviderConnectionGeneration == selected.ProviderConnectionGeneration &&
 		resolved.CredentialAssetGeneration == selected.CredentialAssetGeneration &&
-		resolved.ModelSelector == selected.ModelSelector
+		resolved.ModelSelector == selected.ModelSelector &&
+		providerModelProfilesEqual(resolved.ModelProfile, selected.ModelProfile)
+}
+
+func providerModelProfilesEqual(a, b *ProviderModelProfile) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.ContextWindowTokens != b.ContextWindowTokens || a.MaxOutputTokens != b.MaxOutputTokens ||
+		a.ReasoningEffort != b.ReasoningEffort || len(a.ReasoningEffortLevels) != len(b.ReasoningEffortLevels) {
+		return false
+	}
+	if (a.ReasoningEffortLevels == nil) != (b.ReasoningEffortLevels == nil) {
+		return false
+	}
+	for i := range a.ReasoningEffortLevels {
+		if a.ReasoningEffortLevels[i] != b.ReasoningEffortLevels[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // NormalizeProviderEndpoint validates and canonicalizes one resolver-selected

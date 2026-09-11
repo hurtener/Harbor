@@ -446,12 +446,16 @@ func translateParams(provider bfschemas.ModelProvider, req llm.CompleteRequest) 
 		params.Stop = append(params.Stop, req.Stops...)
 		used = true
 	}
-	if req.ReasoningEffort != "" {
-		eff := translateReasoningEffort(req.ReasoningEffort)
+	reasoningEffort, err := llm.EffectiveReasoningEffort(req)
+	if err != nil {
+		return nil, err
+	}
+	if reasoningEffort != "" {
+		eff := translateReasoningEffort(reasoningEffort)
 		// Honour explicit "off" by setting Enabled=false; other
 		// values pass through as the Effort string.
 		params.Reasoning = &bfschemas.ChatReasoning{}
-		if req.ReasoningEffort == llm.ReasoningOff {
+		if reasoningEffort == llm.ReasoningOff {
 			off := false
 			params.Reasoning.Enabled = &off
 		} else {
@@ -462,11 +466,11 @@ func translateParams(provider bfschemas.ModelProvider, req llm.CompleteRequest) 
 			// process. A budget below the floor fails loud rather than
 			// silently clamping.
 			if provider == bfschemas.Anthropic {
-				budget := anthropicReasoningBudget(req.ReasoningEffort)
+				budget := anthropicReasoningBudget(reasoningEffort)
 				if budget < anthropicReasoningMinTokens {
 					return nil, fmt.Errorf(
 						"%w: provider=anthropic effort=%q maps to %d tokens, floor is %d",
-						ErrReasoningBudgetTooLow, req.ReasoningEffort, budget, anthropicReasoningMinTokens)
+						ErrReasoningBudgetTooLow, reasoningEffort, budget, anthropicReasoningMinTokens)
 				}
 				params.Reasoning.MaxTokens = &budget
 			}

@@ -570,7 +570,7 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 			t.Fatalf("runtime.info Capabilities %v must advertise skill_publications", info.Capabilities)
 		}
 		// The conformance universe is internally consistent: every
-		// advertised capability is canonical, and the canonical set is 14
+		// advertised capability is canonical, and the canonical set is 15
 		// (Phase 177 / D-313 added tool_annotations; D-374 added
 		// caller_memory; HA-68 added skill_publications; the provider
 		// catalog and route surfaces are additive as well).
@@ -584,8 +584,8 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 				t.Fatalf("missing canonical capability %s", capability)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 14 {
-			t.Errorf("canonical capability universe has %d entries, want 14", n)
+		if n := len(prototypes.Capabilities()); n != 15 {
+			t.Errorf("canonical capability universe has %d entries, want 15", n)
 		}
 	})
 

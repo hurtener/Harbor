@@ -17,6 +17,31 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Candidate v1.31.6
+
+- Provider-route selection and attempt-time resolution can now return an optional,
+  request-local `model_profile` containing only the selected model's technical
+  context/output ceilings and canonical reasoning default/levels. The runtime
+  advertises `llm_provider_route_model_profile_v1`; explicit native per-request
+  temperature, `MaxTokens`, and reasoning controls remain authoritative, while
+  an omitted output limit is bounded by the selected route's technical ceiling.
+  An arbitrary selected model therefore does not require a static deployment
+  `ModelProfile` entry or a deployment YAML/profile edit.
+- Resolver consumers must accept the additive
+  `model_profile_supported` request member before the upgraded runtime is
+  rolled out. The runtime sends the optional descriptor only when that bit is
+  accepted; otherwise the existing static-profile fallback remains in force.
+
+### Release candidate evidence
+
+- Candidate implementation commits are `fcf177c4` and `662d12f9`. Local
+  focused `go test` and `go test -race` coverage for `internal/llm`,
+  `internal/llm/providerroute`, `internal/llm/corrections`, and
+  `internal/llm/drivers/bifrost` passed; `go test` coverage for `sdk/llm`,
+  `internal/protocol`, and `internal/runtime/serve` passed; and
+  `go build ./cmd/harbor` passed. Hosted CI, a v1.31.6 tag, release assets,
+  and downstream deployment or acceptance are not claimed by this candidate.
+
 ### Candidate v1.31.5
 
 - Runtime-added MCP sources now isolate tenant, agent and user ownership from

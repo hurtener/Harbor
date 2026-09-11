@@ -137,7 +137,7 @@ func TestBoot_ProviderRouteUsesSharedKEKReachAdmissionFallback(t *testing.T) {
 		t.Fatalf("decode runtime.info: %v", err)
 	}
 	if !hasProviderRouteCapability(info.Capabilities) {
-		t.Fatalf("configured runtime capabilities = %v, want %q", info.Capabilities, types.CapLLMProviderRoute)
+		t.Fatalf("configured runtime capabilities = %v, want %q and %q", info.Capabilities, types.CapLLMProviderRoute, types.CapLLMProviderRouteModelProfile)
 	}
 	startBody, err := json.Marshal(types.StartRequest{
 		Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
@@ -214,12 +214,17 @@ func TestBoot_ProviderRouteUsesSharedKEKReachAdmissionFallback(t *testing.T) {
 }
 
 func hasProviderRouteCapability(capabilities []types.Capability) bool {
+	seenRoute := false
+	seenProfile := false
 	for _, capability := range capabilities {
 		if capability == types.CapLLMProviderRoute {
-			return true
+			seenRoute = true
+		}
+		if capability == types.CapLLMProviderRouteModelProfile {
+			seenProfile = true
 		}
 	}
-	return false
+	return seenRoute && seenProfile
 }
 
 type admissionRouteResolver struct{ endpoint *llm.ProviderEndpointBinding }

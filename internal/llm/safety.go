@@ -80,10 +80,24 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 
 	// Profile lookup. Required for the token-budget guard; missing
 	// is a config error the operator should fix.
-	profile, ok := c.cfg.ModelProfiles[req.Model]
+	profile, ok := EffectiveModelProfile(req, c.cfg)
 	if !ok {
 		return CompleteResponse{}, fmt.Errorf("%w: model=%q (configure ModelProfiles[%q] in harbor.yaml)",
 			ErrUnsupportedModel, req.Model, req.Model)
+	}
+	if req.MaxTokens == nil && profile.DefaultMaxTokens != nil {
+		maxTokens := *profile.DefaultMaxTokens
+		req.MaxTokens = &maxTokens
+	}
+	if selected, selectedOK := SelectedProviderRouteFrom(ctx); selectedOK && selected.ModelProfile != nil {
+		reasoningEffort, reasoningErr := EffectiveReasoningEffort(req)
+		if reasoningErr != nil {
+			return CompleteResponse{}, reasoningErr
+		}
+		if selected.Model != req.Model || (req.MaxTokens != nil && *req.MaxTokens > selected.ModelProfile.MaxOutputTokens) ||
+			(reasoningEffort != "" && !selected.ModelProfile.SupportsReasoningEffort(reasoningEffort)) {
+			return CompleteResponse{}, ErrProviderRouteInvalid
+		}
 	}
 
 	// Step 1: auto-materialize. Rewrites oversize DataURLs in-place

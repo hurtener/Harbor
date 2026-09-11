@@ -111,7 +111,9 @@ type (
 	// ResolvedProviderRoute is the exact-bound short-lived route result.
 	ResolvedProviderRoute = internal.ResolvedProviderRoute
 	// SelectedProviderRoute is the credential-free pre-policy route decision.
-	SelectedProviderRoute   = internal.SelectedProviderRoute
+	SelectedProviderRoute = internal.SelectedProviderRoute
+	// ProviderModelProfile is the resolver-owned technical model capability descriptor.
+	ProviderModelProfile    = internal.ProviderModelProfile
 	ProviderEndpointBinding = internal.ProviderEndpointBinding
 	ProviderEndpointKind    = internal.ProviderEndpointKind
 	// ProviderRouteResolver is the optional external route seam.
@@ -274,6 +276,9 @@ var Open = internal.Open
 // SnapshotFromConfig projects the operator config blocks into the
 // resolved ConfigSnapshot Open consumes.
 var SnapshotFromConfig = internal.SnapshotFromConfig
+
+// ValidateProviderModelProfile validates a provider-route technical descriptor.
+var ValidateProviderModelProfile = internal.ValidateProviderModelProfile
 
 // RegisteredDrivers lists the seated LLM driver names (blank-import
 // sdk/drivers/prod to seat the production set).
