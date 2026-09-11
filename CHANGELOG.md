@@ -38,8 +38,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 - PR #774 merged as
   `9c51e05dd2431a826897cfad5d8a1827cdb5d596`. Its exact PR-head CI run
-  `34552596447` passed all completed jobs; hosted preflight was still pending
-  at the owner-authorized merge, so full CI/preflight green is not claimed.
+  `34552596447` passed all completed non-preflight jobs, including
+  `frontend-e2e`. Hosted preflight was still pending at the owner-authorized
+  merge and later failed on the existing `v1.31.3` scaffold versus `v1.31.5`
+  release-ledger state, a phase-250 mount pattern, the changelog
+  phase-numbering guard, the namespace guarantee, and sealed consumer-turn
+  assertions. Those checks were outside the authorized hotfix scope, so full
+  CI/preflight green is not claimed.
   The annotated `v1.31.6` tag object is
   `64f33a11d74aa75dc4603f207a2fa8b6caee9cf4` and peels to that merge commit.
   Release workflow `34556670631` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.6);
