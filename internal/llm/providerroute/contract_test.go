@@ -150,7 +150,7 @@ func TestRouteContractRejectsUnprovenDefaultReasoning(t *testing.T) {
 	}); !errors.Is(err, llm.ErrProviderRouteInvalid) {
 		t.Fatalf("unknown-support default validation error = %v, want ErrProviderRouteInvalid", err)
 	}
-	for _, levels := range [][]llm.ReasoningEffort{nil, []llm.ReasoningEffort{}} {
+	for _, levels := range [][]llm.ReasoningEffort{nil, {}} {
 		if err := llm.ValidateProviderModelProfile(llm.ProviderModelProfile{
 			ContextWindowTokens:   8192,
 			MaxOutputTokens:       1024,
