@@ -24,7 +24,7 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Apply checksum-verified local follow-up patch
+      - name: Apply verified patch with corrected replay payload type
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -38,12 +38,14 @@ jobs:
               parts.append(base64.b64decode(obj['content']).decode())
           patch = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
           assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
+          assert patch.count(b'events.RedactedPayload') == 1
+          patch = patch.replace(b'events.RedactedPayload', b'events.RedactedMap')
           Path('/tmp/replay-evidence/changes.patch').write_bytes(patch)
+          print('applied patch sha256:', hashlib.sha256(patch).hexdigest())
           PY
           git apply --check /tmp/replay-evidence/changes.patch
           git apply --index /tmp/replay-evidence/changes.patch
           git diff --cached --check
-          git diff --cached --stat
       - name: Real provider-to-SQLite restart and SSE replay regressions
         run: |
           set -o pipefail
@@ -94,7 +96,7 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Apply the same checksum-verified patch
+      - name: Apply the same verified patch and payload type correction
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -108,7 +110,10 @@ jobs:
               parts.append(base64.b64decode(obj['content']).decode())
           patch = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
           assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256']
+          assert patch.count(b'events.RedactedPayload') == 1
+          patch = patch.replace(b'events.RedactedPayload', b'events.RedactedMap')
           Path('/tmp/replay-evidence/changes.patch').write_bytes(patch)
+          print('applied patch sha256:', hashlib.sha256(patch).hexdigest())
           PY
           git apply --check /tmp/replay-evidence/changes.patch
           git apply /tmp/replay-evidence/changes.patch
