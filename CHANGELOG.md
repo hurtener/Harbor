@@ -41,7 +41,7 @@ Two versions move independently in Harbor (RFC §5.3):
   `34552596447` passed all completed non-preflight jobs, including
   `frontend-e2e`. Hosted preflight was still pending at the owner-authorized
   merge and later failed on the existing `v1.31.3` scaffold versus `v1.31.5`
-  release-ledger state, a phase-250 mount pattern, the changelog
+  release-ledger state, a publication mount pattern, the changelog
   phase-numbering guard, the namespace guarantee, and sealed consumer-turn
   assertions. Those checks were outside the authorized hotfix scope, so full
   CI/preflight green is not claimed.
