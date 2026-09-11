@@ -31,6 +31,7 @@ assert_go_tests_pass "${P229_GOLOG}" './cmd/harbor-gen-protocol-docs/' \
 P229_NO_SUMMARY="${P229_TMP}/no-summary.out"
 printf '%s\n' '[OK] fixture printed a lookalike line but no canonical summary' > "${P229_NO_SUMMARY}"
 TOTAL_FAIL=0
+FAILED_CHECKS=()
 INERT_PENDING=()
 INERT_BASELINED=()
 INERT_SHIPPED=()
@@ -42,6 +43,52 @@ if [ "${TOTAL_FAIL}" -eq 1 ] && grep -qF 'did not call smoke_summary' "${P229_TM
     ok 'phase 229: summary-less exit-0 smoke fails through the production preflight assessor'
 else
     fail "phase 229: summary-less smoke did not increment TOTAL_FAIL exactly once (got ${TOTAL_FAIL})"
+fi
+
+# Exercise the failure priority and final report, including a dishonest exit-0
+# script with FAIL counters. These are the actual production functions, not a
+# second implementation of preflight's policy. Run in a subshell so fixtures
+# cannot poison the smoke's own OK/FAIL counters or later checks.
+if (
+    eval "$(sed -n '/^report_smoke_failures() {/,/^}/p' scripts/preflight.sh)"
+    eval "$(sed -n '/^is_baselined() {/,/^}/p' scripts/preflight.sh)"
+    eval "$(sed -n '/^phase_row_status() {/,/^}/p' scripts/preflight.sh)"
+    eval "$(sed -n '/^phase_status_arm() {/,/^}/p' scripts/preflight.sh)"
+    eval "$(sed -n '/^phase_is_shipped() {/,/^}/p' scripts/preflight.sh)"
+    eval "$(sed -n '/^note_unreadable_phase_row() {/,/^}/p' scripts/preflight.sh)"
+    # Use an isolated plan fixture: real phases changing status must not break
+    # this policy regression. The production status parser still runs unchanged.
+    mkdir -p "${P229_TMP}/plan-fixture/docs/plans"
+    printf '| 104 | Pending |\n| 250 | Shipped |\n' > "${P229_TMP}/plan-fixture/docs/plans/README.md"
+    cd "${P229_TMP}/plan-fixture" || exit 1
+    INERT_BASELINE_FILE='absent-baseline.txt'
+    TOTAL_FAIL=0; FAILED_CHECKS=(); INERT_PENDING=(); INERT_SHIPPED=()
+    printf 'OK: 0\nFAIL: 0\n' > "${P229_TMP}/empty.out"
+    printf '\033[31m[FAIL] broken fixture assertion\033[0m\nOK: 2\nFAIL: 1\n' > "${P229_TMP}/failed.out"
+    assess_smoke_output scripts/smoke/phase-104.sh "${P229_TMP}/empty.out" 0
+    [ "${TOTAL_FAIL}" -eq 0 ] && [ "${#INERT_PENDING[@]}" -eq 1 ] || exit 1
+    assess_smoke_output scripts/smoke/phase-250.sh "${P229_TMP}/empty.out" 0
+    [ "${#INERT_SHIPPED[@]}" -eq 1 ] || exit 1
+    # Non-zero exit cannot hide in the pending bucket, and counts only once.
+    assess_smoke_output scripts/smoke/phase-104.sh "${P229_TMP}/empty.out" 7
+    [ "${TOTAL_FAIL}" -eq 1 ] && [ "${#INERT_PENDING[@]}" -eq 1 ] || exit 1
+    assess_smoke_output scripts/smoke/phase-fixture-red.sh "${P229_TMP}/failed.out" 1
+    [ "${TOTAL_FAIL}" -eq 2 ] || exit 1
+    assess_smoke_output scripts/smoke/phase-fixture-exit0.sh "${P229_TMP}/failed.out" 0
+    [ "${TOTAL_FAIL}" -eq 3 ] || exit 1
+    assess_smoke_output scripts/smoke/phase-fixture-missing.sh "${P229_TMP}/absent.out" 0
+    [ "${TOTAL_FAIL}" -eq 4 ] && [ "${#FAILED_CHECKS[@]}" -eq 4 ] || exit 1
+    report_smoke_failures > "${P229_TMP}/failure-report.out"
+    for expected in 'phase-104.sh: rc=7' 'phase-fixture-red.sh: rc=1' \
+        'phase-fixture-exit0.sh: rc=0' 'phase-fixture-missing.sh: missing captured output' \
+        '[FAIL] broken fixture assertion'; do
+        grep -qF -- "${expected}" "${P229_TMP}/failure-report.out" || exit 1
+    done
+    ! grep -qF 'phase-250.sh' "${P229_TMP}/failure-report.out"
+); then
+    ok 'phase 229: preflight names real failures, preserves skip/shipped policy, and never double-counts'
+else
+    fail 'phase 229: preflight failure classification or final diagnostic report regressed'
 fi
 
 # docs_concurrency_errors <workflow>

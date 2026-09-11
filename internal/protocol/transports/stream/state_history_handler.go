@@ -333,8 +333,8 @@ func projectStateEvent(ctx context.Context, arts artifacts.ArtifactStore, ev eve
 
 // payloadWireValue normalises an event payload to a JSON-friendly wire
 // value. A RedactedMap (the durable-log post-redaction shape) surfaces
-// its inner Data map; any other payload is passed through (the SSE
-// projection's posture — the bus already redacted it on Publish).
+// its inner Data map; any other payload is passed through. SSE frames and
+// retained-history rows share this projection; the bus already redacted on Publish.
 func payloadWireValue(p events.EventPayload) any {
 	if p == nil {
 		return nil

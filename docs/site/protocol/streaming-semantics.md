@@ -12,7 +12,8 @@ token chunks, tool execution, pause/resume, governance, audit — is narrated on
 **one** typed event bus. There is no parallel observability channel. The
 Protocol exposes that bus as Server-Sent Events. Durable semantic/lifecycle
 events use the replayable `Publish` contract; LLM completion chunks use the
-non-durable `PublishLive` contract for present-tense animation.
+non-durable `PublishLive` contract for immediate animation, followed by
+persist-only batches at each completed planner step and at run sealing.
 
 Durable batches remain wire-invisible: each member keeps its own event frame,
 strictly increasing sequence, and reconnect cursor. Internally, cost and
@@ -76,25 +77,60 @@ Last-Event-ID: 41
 ```
 
 — and the Runtime **replays every retained durable event strictly newer than
-that cursor** from its ring buffer before resuming the live tail. The ring's
-size is operator-configured (`events.replay_buffer_size`). `Last-Event-ID: 0`
+that cursor** before resuming the live tail. The in-memory driver retains
+a ring; the durable driver reads its retained StateStore-backed log. Retention
+and replay availability are operator-configured. Restart recovery requires
+`events.driver: durable` backed by a persistent StateStore, not an in-memory
+store. Merely selecting the durable bus with an in-memory store does not survive
+a process restart. `Last-Event-ID: 0`
 replays everything durable retained for your scope — the trick the
 [quickstart](./quickstart.md) uses to read a run that finished before the tail
 opened.
 
-`llm.completion.chunk` frames are deliberately not retained and carry no
-`id:`. A reconnect can therefore miss token animation between durable frames;
-that is expected lossy delivery, not a cursor gap. The terminal `task.completed`
-and session-turn `AnswerEnvelope` are authoritative, so the client reconciles
-the final answer and task state when the run completes. A failed or cancelled
-run does not receive a synthetic answer from the live lane.
+### Intermediate assistant updates
+
+`llm.completion.chunk` has two delivery stages. Live frames have sequence zero
+and no `id:`. The runtime buffers those frames and, when the planner step
+returns, persists them **before executing that step's tool**. Persist-only
+writes assign durable sequences without publishing a second live copy. The
+run's terminal seal drains accepted callbacks before successful completion;
+a failed persistence barrier must not become a successful task completion.
+Completed-step frames can therefore be recovered by SSE replay or
+`state.history`, including after reopening a persistent database. Both delivery
+stages expose the same payload fields; durable storage's internal `Data` wrapper
+is not part of the wire payload.
+
+Group chunks by run/task and `payload.Kind`: `content` is ordinary assistant
+text, while `reasoning` belongs only in a separate reasoning/activity view.
+`payload.Done` closes that LLM response's lane, **not the task**. A nonterminal
+response can contain a user-facing update alongside native tool calls; several
+such responses can precede the final answer. Do not concatenate progress updates
+or reasoning into the final `AnswerEnvelope`.
+
+Durability starts at the persistence boundary, not at live delivery. A crash,
+cancellation, or failed write before the boundary can lose an already animated
+unflushed tail. Clients must treat sequence-zero text as provisional. On
+reconstruction, rebuild the affected run's progress from retained history rather
+than appending replayed text on top of provisional animation: those two deliveries
+do not share a durable event ID. A cursor later than a step intentionally omits
+its older chunks. Use history backfill for old updates, not just the newest live
+cursor. Retention gaps remain explicit; never synthesize missing updates or a
+successful answer for a failed/cancelled run. Schema-constrained tasks retain
+the existing suppression of unvalidated text deltas.
+
+The session-turn projection is **not a raw progress transcript**.
+`sessions.turns.list/get` provides the final answer and consumer-safe activity;
+it does not embed completion chunks or raw provider reasoning. A client that
+needs historical intermediate text must also consume the authorized retained
+event history. In-memory `tasks.get` trajectory enrichment is not a restart
+recovery source.
 
 The authoritative reopen choreography is unchanged: read
 `sessions.turns.list`, establish running/paused membership, and open SSE with
 that page's `live_resume_seq`; browser `Last-Event-ID` still wins on reconnect.
 One terminal frame still causes one `sessions.turns.get` reconciliation.
 
-When the cursor has aged out of the ring (or the configured bus driver has no
+When the cursor has aged out of retention (or the configured bus driver has no
 replay), the gap is **surfaced, never silently swallowed**: the stream emits
 an explicit `stream.replay_unavailable` comment frame so your client knows it
 has a hole and can re-snapshot via the read methods (`tasks.list`,
@@ -173,8 +209,9 @@ Request/response shapes:
 [`EventAggregateRequest`](./types.md#eventaggregaterequest) /
 [`EventAggregateResponse`](./types.md#eventaggregateresponse). The same
 cross-tenant scope rules as the stream apply (`admin` / `console:fleet`). The
-aggregate is computed from durable event history; transient
-`llm.completion.chunk` animation is intentionally absent from these counts.
+aggregate is computed from retained durable event history. Sequence-zero live
+frames are absent; completion chunks persisted at step boundaries are present.
+Do not interpret chunk counts as task or assistant-message counts.
 
 ## A correct minimal consumer, in pseudocode
 

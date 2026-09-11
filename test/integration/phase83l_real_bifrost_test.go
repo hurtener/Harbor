@@ -66,6 +66,8 @@ type scriptedLLMServer struct {
 	responses []string // canned JSON responses, one per request
 	mu        sync.Mutex
 	received  []openAIRequestEnvelope // records ALL inbound requests
+	// Optional test barrier, configured before requests start.
+	beforeResponse func(context.Context, int) bool
 }
 
 // openAIRequestEnvelope is the subset of the OpenAI chat-completions
@@ -119,6 +121,9 @@ func (s *scriptedLLMServer) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "script exhausted", http.StatusInternalServerError)
 		return
 	}
+	if s.beforeResponse != nil && !s.beforeResponse(r.Context(), idx) {
+		return
+	}
 	if env.Stream {
 		s.writeSSE(w, s.responses[idx])
 		return
@@ -156,6 +161,7 @@ func (s *scriptedLLMServer) writeSSE(w http.ResponseWriter, canned string) {
 		Role      string          `json:"role"`
 		Content   *string         `json:"content"`
 		ToolCalls json.RawMessage `json:"tool_calls"`
+		Reasoning string          `json:"reasoning"`
 	}
 	if err := json.Unmarshal(full.Choices[0].Message, &msg); err != nil {
 		s.t.Errorf("scriptedLLMServer: canned message does not parse for SSE transcode: %v", err)
@@ -164,6 +170,9 @@ func (s *scriptedLLMServer) writeSSE(w http.ResponseWriter, canned string) {
 	}
 
 	delta := map[string]any{"role": msg.Role}
+	if msg.Reasoning != "" {
+		delta["reasoning"] = msg.Reasoning
+	}
 	if msg.Content != nil {
 		delta["content"] = *msg.Content
 	}
