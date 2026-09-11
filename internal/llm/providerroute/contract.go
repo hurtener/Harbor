@@ -195,6 +195,7 @@ func ParseSelectionResponse(req llm.ProviderRouteRequest, body []byte) (llm.Sele
 // MarshalResponse emits one exact-bound bounded resolver response.
 func MarshalResponse(req llm.ProviderRouteRequest, response llm.ResolvedProviderRoute) ([]byte, error) {
 	if response.Provider == "" || response.Model == "" || response.KeyName == "" || response.Credential == "" || response.ExpiresAt.IsZero() ||
+		(response.ModelProfile != nil && !req.ModelProfileSupported) ||
 		response.RouteID != req.RouteID || response.RouteGeneration != req.RouteGeneration ||
 		response.ProviderConnectionID != req.ProviderConnectionID ||
 		response.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||
@@ -222,6 +223,7 @@ func MarshalResponse(req llm.ProviderRouteRequest, response llm.ResolvedProvider
 // MarshalSelectionResponse emits one exact-bound credential-free selection.
 func MarshalSelectionResponse(req llm.ProviderRouteRequest, selected llm.SelectedProviderRoute) ([]byte, error) {
 	if selected.Provider == "" || selected.Model == "" || selected.KeyName == "" || selected.ExpiresAt.IsZero() ||
+		(selected.ModelProfile != nil && !req.ModelProfileSupported) ||
 		selected.RouteID != req.RouteID || selected.RouteGeneration != req.RouteGeneration ||
 		selected.ProviderConnectionID != req.ProviderConnectionID ||
 		selected.ProviderConnectionGeneration != req.ProviderConnectionGeneration ||

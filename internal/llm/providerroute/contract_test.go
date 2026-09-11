@@ -98,6 +98,19 @@ func TestRouteContractCarriesOptionalModelProfile(t *testing.T) {
 	if _, err := ParseSelectionResponse(legacyRequest, body); !errors.Is(err, llm.ErrProviderRouteInvalid) {
 		t.Fatalf("descriptor on an unsupported request error = %v, want ErrProviderRouteInvalid", err)
 	}
+	if _, err := MarshalSelectionResponse(legacyRequest, selected); !errors.Is(err, llm.ErrProviderRouteInvalid) {
+		t.Fatalf("selection marshal on an unsupported request error = %v, want ErrProviderRouteInvalid", err)
+	}
+	resolved := llm.ResolvedProviderRoute{
+		Provider: selected.Provider, Model: selected.Model, KeyName: selected.KeyName,
+		RouteID: selected.RouteID, RouteGeneration: selected.RouteGeneration,
+		ProviderConnectionID: selected.ProviderConnectionID, ProviderConnectionGeneration: selected.ProviderConnectionGeneration,
+		CredentialAssetGeneration: selected.CredentialAssetGeneration, ModelSelector: selected.ModelSelector,
+		ExpiresAt: selected.ExpiresAt, Credential: "credential", ModelProfile: selected.ModelProfile,
+	}
+	if _, err := MarshalResponse(legacyRequest, resolved); !errors.Is(err, llm.ErrProviderRouteInvalid) {
+		t.Fatalf("resolve marshal on an unsupported request error = %v, want ErrProviderRouteInvalid", err)
+	}
 
 	legacy := selected
 	legacy.ModelProfile = nil
@@ -121,10 +134,30 @@ func TestRouteContractRejectsUnsupportedModelProfile(t *testing.T) {
 		ProviderConnectionID: req.ProviderConnectionID, ProviderConnectionGeneration: req.ProviderConnectionGeneration,
 		CredentialAssetGeneration: req.CredentialAssetGeneration, ModelSelector: req.ModelSelector,
 		ExpiresAt: time.Now().Add(time.Minute), ModelProfile: &llm.ProviderModelProfile{
-			ContextWindowTokens: 100, MaxOutputTokens: 101,
+			ContextWindowTokens: 100, MaxOutputTokens: 100,
 		},
 	}
 	if _, err := MarshalSelectionResponse(req, selected); !errors.Is(err, llm.ErrProviderRouteInvalid) {
 		t.Fatalf("invalid profile marshal error = %v, want ErrProviderRouteInvalid", err)
+	}
+}
+
+func TestRouteContractRejectsUnprovenDefaultReasoning(t *testing.T) {
+	if err := llm.ValidateProviderModelProfile(llm.ProviderModelProfile{
+		ContextWindowTokens: 8192,
+		MaxOutputTokens:     1024,
+		ReasoningEffort:     llm.ReasoningLow,
+	}); !errors.Is(err, llm.ErrProviderRouteInvalid) {
+		t.Fatalf("unknown-support default validation error = %v, want ErrProviderRouteInvalid", err)
+	}
+	for _, levels := range [][]llm.ReasoningEffort{nil, []llm.ReasoningEffort{}} {
+		if err := llm.ValidateProviderModelProfile(llm.ProviderModelProfile{
+			ContextWindowTokens:   8192,
+			MaxOutputTokens:       1024,
+			ReasoningEffort:       llm.ReasoningOff,
+			ReasoningEffortLevels: levels,
+		}); err != nil {
+			t.Fatalf("off default with levels=%#v rejected: %v", levels, err)
+		}
 	}
 }

@@ -446,6 +446,34 @@ const (
 	ReasoningHigh   ReasoningEffort = "high"
 )
 
+// EffectiveReasoningEffort returns the canonical reasoning control carried by
+// a request. The corrections layer may move a validated effort into the
+// reserved Extra key for provider-specific routing; drivers must still honor
+// that value rather than silently dropping it. An invalid reserved value is a
+// malformed request and fails closed.
+func EffectiveReasoningEffort(req CompleteRequest) (ReasoningEffort, error) {
+	effort := req.ReasoningEffort
+	if effort == "" {
+		raw, ok := req.Extra["reasoning_effort"]
+		if !ok {
+			return "", nil
+		}
+		var stringValue bool
+		effortString, stringOK := raw.(string)
+		if stringOK {
+			effort = ReasoningEffort(effortString)
+			stringValue = true
+		}
+		if !stringValue {
+			return "", fmt.Errorf("%w: Extra[reasoning_effort] must be a string", ErrProviderRouteInvalid)
+		}
+	}
+	if !validProviderReasoningEffort(effort) || effort == "" {
+		return "", fmt.Errorf("%w: reasoning_effort=%q is unknown", ErrProviderRouteInvalid, effort)
+	}
+	return effort, nil
+}
+
 // OutputMode selects the request-shaping strategy for structured
 // output (RFC §6.5). Three modes:
 //
@@ -670,6 +698,9 @@ func ValidateProviderModelProfile(profile ProviderModelProfile) error {
 	if !validProviderReasoningEffort(profile.ReasoningEffort) {
 		return fmt.Errorf("%w: reasoning_effort=%q is unknown", ErrProviderRouteInvalid, profile.ReasoningEffort)
 	}
+	if profile.ReasoningEffort != "" && profile.ReasoningEffort != ReasoningOff && profile.ReasoningEffortLevels == nil {
+		return fmt.Errorf("%w: default reasoning effort %q requires an explicit supported-level list", ErrProviderRouteInvalid, profile.ReasoningEffort)
+	}
 	if len(profile.ReasoningEffortLevels) > 4 {
 		return fmt.Errorf("%w: reasoning_effort_levels has too many entries", ErrProviderRouteInvalid)
 	}
@@ -683,7 +714,7 @@ func ValidateProviderModelProfile(profile ProviderModelProfile) error {
 		}
 		seen[level] = struct{}{}
 	}
-	if profile.ReasoningEffort != "" && profile.ReasoningEffortLevels != nil {
+	if profile.ReasoningEffort != "" && profile.ReasoningEffort != ReasoningOff && profile.ReasoningEffortLevels != nil {
 		if _, ok := seen[profile.ReasoningEffort]; !ok {
 			return fmt.Errorf("%w: default reasoning effort %q is not supported", ErrProviderRouteInvalid, profile.ReasoningEffort)
 		}
@@ -719,8 +750,10 @@ func validProviderReasoningEffort(effort ReasoningEffort) bool {
 }
 
 func (profile ProviderModelProfile) modelProfile() ModelProfile {
+	maxTokens := profile.MaxOutputTokens
 	return ModelProfile{
 		ContextWindowTokens: profile.ContextWindowTokens,
+		DefaultMaxTokens:    &maxTokens,
 		ReasoningEffort:     profile.ReasoningEffort,
 	}
 }
@@ -758,6 +791,11 @@ func EffectiveModelProfile(req CompleteRequest, cfg ConfigSnapshot) (ModelProfil
 		// policy on a configured model remains intact; a route default reasoning
 		// value is used only when no static policy value exists.
 		profile.ContextWindowTokens = req.modelProfile.ContextWindowTokens
+		if routeMaxTokens := req.modelProfile.DefaultMaxTokens; routeMaxTokens != nil &&
+			(profile.DefaultMaxTokens == nil || *profile.DefaultMaxTokens <= 0 || *profile.DefaultMaxTokens > *routeMaxTokens) {
+			maxTokens := *routeMaxTokens
+			profile.DefaultMaxTokens = &maxTokens
+		}
 		if profile.ReasoningEffort == "" {
 			profile.ReasoningEffort = req.modelProfile.ReasoningEffort
 		}

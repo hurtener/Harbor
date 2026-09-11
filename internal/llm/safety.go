@@ -85,9 +85,17 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		return CompleteResponse{}, fmt.Errorf("%w: model=%q (configure ModelProfiles[%q] in harbor.yaml)",
 			ErrUnsupportedModel, req.Model, req.Model)
 	}
+	if req.MaxTokens == nil && profile.DefaultMaxTokens != nil {
+		maxTokens := *profile.DefaultMaxTokens
+		req.MaxTokens = &maxTokens
+	}
 	if selected, selectedOK := SelectedProviderRouteFrom(ctx); selectedOK && selected.ModelProfile != nil {
+		reasoningEffort, reasoningErr := EffectiveReasoningEffort(req)
+		if reasoningErr != nil {
+			return CompleteResponse{}, reasoningErr
+		}
 		if selected.Model != req.Model || (req.MaxTokens != nil && *req.MaxTokens > selected.ModelProfile.MaxOutputTokens) ||
-			(req.ReasoningEffort != "" && !selected.ModelProfile.SupportsReasoningEffort(req.ReasoningEffort)) {
+			(reasoningEffort != "" && !selected.ModelProfile.SupportsReasoningEffort(reasoningEffort)) {
 			return CompleteResponse{}, ErrProviderRouteInvalid
 		}
 	}

@@ -129,8 +129,34 @@ func TestProviderRouteClient_UsesRouteModelProfileWithoutStaticProfile(t *testin
 		t.Fatalf("downstream model = %q, want %q", probe.seen.Model, selected.Model)
 	}
 	profile, ok := EffectiveModelProfile(probe.seen, ConfigSnapshot{})
-	if !ok || profile.ContextWindowTokens != 8192 || profile.DefaultMaxTokens != nil || profile.ReasoningEffort != "" {
-		t.Fatalf("downstream effective profile = %#v, ok=%t; want context only and no policy defaults", profile, ok)
+	if !ok || profile.ContextWindowTokens != 8192 || profile.DefaultMaxTokens == nil || *profile.DefaultMaxTokens != 1024 || profile.ReasoningEffort != "" {
+		t.Fatalf("downstream effective profile = %#v, ok=%t; want route output ceiling and no policy reasoning default", profile, ok)
+	}
+}
+
+func TestProviderRouteClient_DefaultsOmittedMaxTokensToRouteCeiling(t *testing.T) {
+	now := time.Now().UTC()
+	route := ProviderRoute{RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "fast"}
+	selected := SelectedProviderRoute{
+		Provider: "openai", Model: "arbitrary/model", KeyName: "route key", RouteID: route.RouteID, RouteGeneration: route.RouteGeneration,
+		ProviderConnectionID: route.ProviderConnectionID, ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+		CredentialAssetGeneration: route.CredentialAssetGeneration, ModelSelector: route.ModelSelector, ExpiresAt: now.Add(time.Minute),
+		ModelProfile: &ProviderModelProfile{ContextWindowTokens: 8192, MaxOutputTokens: 1024},
+	}
+	probe := &routePolicyProbe{profiles: map[string]int{"arbitrary/model": 1000}}
+	safe := newSafetyClient(probe, ConfigSnapshot{HeavyOutputThreshold: 32 << 10}, Deps{})
+	client := &providerRouteClient{inner: safe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}, RuntimeID: "runtime"}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
+	ctx, err := identity.WithRun(context.Background(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+	text := "hello"
+	if _, err := client.Complete(ctx, CompleteRequest{Model: "boot/profile", Messages: []ChatMessage{{Role: RoleUser, Content: Content{Text: &text}}}}); err != nil {
+		t.Fatalf("route completion error = %v", err)
+	}
+	if probe.seen.MaxTokens == nil || *probe.seen.MaxTokens != selected.ModelProfile.MaxOutputTokens {
+		t.Fatalf("downstream MaxTokens = %v, want route ceiling %d", probe.seen.MaxTokens, selected.ModelProfile.MaxOutputTokens)
 	}
 }
 
