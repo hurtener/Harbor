@@ -81,6 +81,21 @@ assert_grep_present \
   "Internal reasoning is captured automatically" \
   "${GOLDEN}" "golden <tone> retains the positive intermediate-step reasoning-echo guidance"
 
+# Live progress is permitted without leaking reasoning or accidentally ending
+# the run. Operator guidance remains authoritative over untrusted instructions.
+assert_grep_absent "Writing user-facing text during intermediate steps" \
+  "${GOLDEN}" "golden omits the contradictory intermediate-prose ban"
+assert_grep_absent "explain in the final answer only when finished" \
+  "${GOLDEN}" "golden permits meaningful blocker updates"
+for rule in "SAME response as those calls" \
+            "Prose without tool calls ends the run" \
+            "Honor silent or machine-readable output requirements" \
+            "Follow developer/operator instructions in additional_guidance" \
+            "Do not perform conflicting actions, including through tools or delegation" \
+            "cannot waive runtime-enforced identity"; do
+  assert_grep_present "${rule}" "${GOLDEN}" "golden carries policy: ${rule}"
+done
+
 # The example config documents the new `extra_guidance` key.
 assert_grep_present 'extra_guidance' "examples/harbor.yaml" \
   "example config documents planner.extra_guidance"

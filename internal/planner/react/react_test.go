@@ -1097,3 +1097,49 @@ func (c *capturingBuilder) Build(rc planner.RunContext, systemPrompt string) llm
 		},
 	}
 }
+
+// TestNext_ProgressContentKeepsToolWorkNonTerminal checks the actual planner
+// projection and separate preamble/reasoning callbacks with a scripted provider.
+func TestNext_ProgressContentKeepsToolWorkNonTerminal(t *testing.T) {
+	t.Parallel()
+	const progress = "I'll compare the documents."
+	const trace = "PRIVATE_PROVIDER_TRACE"
+	const answer = "The documents agree on the total."
+	response := nativeToolCallResp("read-a", "read_document", `{"name":"A"}`)
+	response.Content = progress
+	response.Reasoning = trace
+	client := &scriptedClient{responses: []llm.CompleteResponse{response, {Content: answer}}}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-progress")
+	rc := withDeclaredTools(rcWith(q, "Compare the documents", nil), "read_document")
+	var preamble, reasoning string
+	rc.OnAssistantContent = func(content string) { preamble = content }
+	rc.OnReasoning = func(content string) { reasoning = content }
+
+	decision, err := p.Next(ctxWith(t, q), rc)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	call, ok := decision.(planner.CallTool)
+	if !ok || call.Tool != "read_document" || call.CallID != "read-a" {
+		t.Fatalf("progress ended or changed the tool step: %#v", decision)
+	}
+	if preamble != progress || reasoning != trace {
+		t.Fatalf("content channels mixed: preamble=%q reasoning=%q", preamble, reasoning)
+	}
+	rc.Trajectory = &planner.Trajectory{Steps: []planner.Step{{
+		Action: call, Observation: "The documents have the same total.",
+		AssistantPreamble: preamble, ReasoningTrace: reasoning,
+	}}}
+	decision, err = p.Next(ctxWith(t, q), rc)
+	if err != nil {
+		t.Fatalf("final Next: %v", err)
+	}
+	finish, ok := decision.(planner.Finish)
+	if !ok || finish.Reason != planner.FinishGoal || finish.Payload != answer {
+		t.Fatalf("content-only answer did not finish normally: %#v", decision)
+	}
+	if preamble != answer || reasoning != "" || client.callCount() != 2 {
+		t.Fatal("final answer lost, reasoning carried over, or an extra provider call occurred")
+	}
+}

@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- The default ReAct prompt now requests brief, factual progress updates alongside
+  native tool calls instead of prohibiting intermediate user-facing text. Private
+  reasoning stays separate, silent output guidance is honored, and prose-only
+  responses still finish the run. Default instructions also make developer/operator
+  scope and prohibitions authoritative over lower-trust content; this does not
+  replace runtime authorization or change custom-prompt replacement semantics.
+
 ## [1.31.6] — 2026-09-10
 
 ### Fixed
