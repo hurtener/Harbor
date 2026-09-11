@@ -1,0 +1,23 @@
+name: prompt-policy-workbench
+
+on:
+  push:
+    branches: [fix/live-progress-and-guidance-boundaries]
+    paths: [.github/workflows/prompt-policy-workbench.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Export exact reviewed source
+        run: git archive --format=tar.gz --output=/tmp/harbor-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor-prompt-policy-source
+          path: /tmp/harbor-source.tar.gz
+          retention-days: 1
