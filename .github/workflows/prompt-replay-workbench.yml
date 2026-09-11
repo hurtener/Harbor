@@ -20,12 +20,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p /tmp/replay-evidence
-          gh api repos/hurtener/Harbor/actions/jobs/103375001217/logs > /tmp/replay-evidence/macos-preflight.log
+          gh api --allow-escape-sequences repos/hurtener/Harbor/actions/jobs/103375001217/logs > /tmp/replay-evidence/macos-preflight.log
           git rev-parse HEAD > /tmp/replay-evidence/source-sha.txt
           git archive --format=tar.gz --output=/tmp/replay-evidence/branch-source.tar.gz HEAD
           python3 - <<'PY'
           from pathlib import Path
-          lines = Path('/tmp/replay-evidence/macos-preflight.log').read_text().splitlines()
+          import re
+          raw = Path('/tmp/replay-evidence/macos-preflight.log').read_text()
+          lines = re.sub(r'\x1b\[[0-9;]*m', '', raw).splitlines()
           selected = set()
           for i, line in enumerate(lines):
               if any(s in line for s in ['[FAIL]', 'FAIL:', 'preflight: FAIL', 'preflight: FAILED', 'asserted nothing']):
