@@ -7,7 +7,6 @@
 > authority. See [`planner.extra_guidance`](../CONFIG.md#plannerextra_guidance)
 > and the checked-in default-prompt golden for the current contract.
 
-
 **Date:** 2026-05-18 (initial); revised 2026-05-19 (empirical Bifrost surface + reasoning-channel decoupling).
 **Subsystem:** `internal/planner/react`
 **RFC anchors:** §6.2 (Planner), §6.5 (LLM client)

@@ -7,7 +7,6 @@
 > authority. See [`planner.extra_guidance`](../CONFIG.md#plannerextra_guidance)
 > and the checked-in default-prompt golden for the current contract.
 
-
 ## Summary
 
 Refactor `internal/planner/react/prompt.go`'s `defaultBuilder` from a single flat string into the twelve XML-tagged sections inventoried in brief 13 §2.1 (`<identity>`, `<output_format>`, `<action_schema>`, `<finishing>`, `<tool_usage>`, `<parallel_execution>`, `<reasoning>`, `<tone>`, `<error_handling>`, `<available_tools>`, `<additional_guidance>`, `<planning_constraints>`). Introduce explicit injection points (`extra_guidance`, `current_date`) and a `PlannerConfig.ExtraGuidance` config key so operators can shape the prompt without forking the builder. The adapted prompt **drops the `reasoning` field from the action JSON** and ports the predecessor's `<tone>` CRITICAL clamp verbatim (`reasoning` is captured from the provider channel — Phase 83e — never required in structured output). The `<finishing>` block carries **only** `answer`; rich-output fields (`confidence` / `route` / `requires_followup` / `warnings`) are not reserved, not deferred — Harbor delivers rich UI via MCP-Apps tools (brief 13 §5). The downstream phases (83b/c/d) extend the sections this phase establishes.
