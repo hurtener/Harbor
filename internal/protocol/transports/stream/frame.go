@@ -17,7 +17,8 @@ import (
 // identity quadruple to strings and carries the payload as a generic
 // JSON value: the Protocol surface owns its own wire vocabulary.
 //
-// Payload is whatever the event's EventPayload marshals to. The bus has
+// Payload uses the same projection as state.history: a retained RedactedMap
+// exposes its already-redacted Data, not the internal Go wrapper. The bus has
 // already run the payload through the audit redactor on Publish for any
 // payload that is not SafePayload, so what reaches the
 // wire here is redaction-safe by construction — the SSE transport does
@@ -44,7 +45,7 @@ func toWireEvent(ev events.Event) wireEvent {
 		User:       ev.Identity.UserID,
 		Session:    ev.Identity.SessionID,
 		Run:        ev.Identity.RunID,
-		Payload:    ev.Payload,
+		Payload:    payloadWireValue(ev.Payload),
 		Extra:      ev.Extra,
 	}
 }

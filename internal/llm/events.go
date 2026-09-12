@@ -56,8 +56,10 @@ const (
 	// EventTypeCompletionChunk — streaming completion event.
 	// Emitted per token delta from the LLM provider under the originating
 	// run's identity quadruple through EventBus.PublishLive. These are
-	// present-tense animation frames with Sequence == 0 and no replay row;
-	// durable task/session completion state is authoritative. The `Done=true`
+	// present-tense animation frames with Sequence == 0. The buffered runtime
+	// publisher persists copies at planner-step boundaries and run sealing for
+	// sequenced replay, without a second live fan-out. An unflushed tail remains
+	// provisional; durable task/session completion state is authoritative. The `Done=true`
 	// chunk fires exactly once per stream (terminator marker). SafePayload —
 	// deltas are per-session operator-visible content and therefore retain the
 	// existing audit-redactor bypass; this lane does not broaden exposure.

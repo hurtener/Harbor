@@ -17,6 +17,27 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- The default ReAct prompt now requests brief, factual progress updates alongside
+  native tool calls instead of prohibiting intermediate user-facing text. Private
+  reasoning stays separate, silent output guidance is honored, and prose-only
+  responses still finish the run. Default instructions also make developer/operator
+  scope and prohibitions authoritative over lower-trust content; this does not
+  replace runtime authorization or change custom-prompt replacement semantics.
+
+- Preflight now lists the actual failing checks beside its final verdict, counts
+  each failing smoke once, and rejects failed summaries even when a script exits
+  successfully. Namespace guards follow current owner-isolated source semantics;
+  capability checks tolerate formatting without weakening the required value.
+- Fixed SSE replay payloads gaining an internal `Data` wrapper after persistence.
+  Live and retained events now share the existing history payload projection,
+  preserving content/reasoning fields and already-redacted values across reconnects.
+- Clarified intermediate-update replay: completed-step chunks are retained for
+  authorized event-history replay on persistent event stores, while live unflushed
+  text remains provisional. Restart and SSE cursor regressions exercise multiple
+  updates, tool calls, final answers, and separate reasoning lanes.
+
 ## [1.31.6] — 2026-09-10
 
 ### Fixed
@@ -86,7 +107,7 @@ Two versions move independently in Harbor (RFC §5.3):
   `b836d0649327a6879cf6b3866d7cba584410e6d7`. Every independent code,
   platform, conformance, frontend, and browser gate on PR-head CI run
   `33320554635` completed successfully; release proceeded under the explicit
-  owner override for its sole lingering full-preflight/Phase-231 path rather
+  owner override for its sole lingering full-preflight conversation-turn check rather
   than representing that path as green. The annotated `v1.31.3` tag object is
   `791a3308d961afae0610465bf4b34d6e956b4f7d` and peels to that merge commit.
   Release workflow `33321563993` succeeded, publishing [13 assets](https://github.com/hurtener/Harbor/releases/tag/v1.31.3);

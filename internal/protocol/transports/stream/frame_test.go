@@ -1,13 +1,16 @@
 package stream
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 )
 
 func TestEncodeEvent_FrameShape(t *testing.T) {
@@ -116,5 +119,70 @@ func TestStream_EncodeEvent_OmitsIDForZeroSequence(t *testing.T) {
 	}
 	if !strings.Contains(string(frame), "id: 7\n") {
 		t.Errorf("Sequence 7 frame missing id: 7 line\n%s", frame)
+	}
+}
+
+// Typed live payloads and durable-log maps must expose the same JSON shape.
+// Internal RedactedMap.Data is not another level in the Protocol vocabulary.
+func TestEncodeEvent_ReplayPayloadMatchesTypedPayload(t *testing.T) {
+	for _, kind := range []string{"content", "reasoning"} {
+		t.Run(kind, func(t *testing.T) {
+			at := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+			id := identity.Quadruple{Identity: identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}, RunID: "r1"}
+			payload := llm.CompletionChunkPayload{Identity: id, TaskID: "r1", RunID: "r1", Delta: "step update\n", Done: true, Kind: kind, OccurredAt: at}
+			ev := events.Event{Type: llm.EventTypeCompletionChunk, Sequence: 42, OccurredAt: at, Identity: id, Payload: payload}
+			typed, err := encodeEvent(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored map[string]any
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				t.Fatal(err)
+			}
+			ev.Payload = events.RedactedMap{Data: stored}
+			replayed, err := encodeEvent(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(typed, replayed) {
+				// Object key ordering is not a wire requirement; compare the
+				// decoded frames while still exercising the real SSE encoder.
+				var liveWire, replayWire wireEvent
+				decode := func(frame []byte, wire *wireEvent) {
+					t.Helper()
+					for _, line := range strings.Split(string(frame), "\n") {
+						if strings.HasPrefix(line, "data: ") {
+							if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), wire); err != nil {
+								t.Fatal(err)
+							}
+							return
+						}
+					}
+					t.Fatal("missing SSE data line")
+				}
+				decode(typed, &liveWire)
+				decode(replayed, &replayWire)
+				if !reflect.DeepEqual(liveWire, replayWire) {
+					t.Fatalf("typed=%s replay=%s", typed, replayed)
+				}
+			}
+		})
+	}
+}
+
+func TestToWireEvent_RedactedDomainDataIsNotUnwrappedTwice(t *testing.T) {
+	data := map[string]any{"Data": map[string]any{"answer": "domain data"}, "Credential": "[REDACTED]"}
+	want := map[string]any{"Data": map[string]any{"answer": "domain data"}, "Credential": "[REDACTED]"}
+	payload := events.RedactedMap{Data: data}
+	wire := toWireEvent(events.Event{Payload: payload})
+	if !reflect.DeepEqual(wire.Payload, want) {
+		t.Fatalf("domain Data or redacted value changed: %#v", wire.Payload)
+	}
+	if !reflect.DeepEqual(payload.Data, want) {
+		t.Fatal("wire projection mutated stored payload")
 	}
 }

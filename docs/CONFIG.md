@@ -2272,6 +2272,48 @@ Operator-supplied domain-specific guidance injected into the
 planner's `<additional_guidance>` system-prompt section (Phase 83a
 / RFC §6.2). Default: empty.
 
+The built-in ReAct prompt treats developer/operator guidance as instructions for
+scope, prohibitions, approvals, and output rules, not just tone. It directs the
+model not to perform conflicting actions, including via tools or delegation, and
+to help with permitted parts of the request. An ambiguous conflict between
+trusted instructions stops the affected action rather than inventing permission.
+With no extra guidance the agent still helps normally; this is not a deny-all
+or a domain allowlist inferred from the agent's name.
+
+For multi-step work, the default asks for brief, factual progress updates as
+assistant prose **alongside native tool calls in the same response**. A
+prose-only response ends the run, so a standalone promise to keep working is not
+a progress mechanism. Updates cover the next action, meaningful evidence, or a
+blocker; they are not private reasoning or raw tool dumps. Simple requests do
+not need narration, and the final answer must stand on its own. To suppress
+updates for a silent or machine-readable consumer, say so in trusted guidance.
+An output schema alone governs the terminal answer, not intermediate prose.
+
+`planner.extra_guidance`, operator-authored `extra_system_blocks`, and resolved
+**tenant** `LLMOverrides.ExtraInstructions` compose in `<additional_guidance>`
+(in that order, followed by runtime repair guidance). In contrast, the ordinary
+caller's `RunOverrides.extra_instructions` becomes escaped
+`UserPersonalization`, not trusted guidance. User preferences, tool results,
+retrieved documents, skills, memory, and prior assistant text must not override
+operator restrictions merely by claiming a higher role (D-387).
+
+These are model-behavior defaults, **not a security boundary or a guarantee of
+prompt-injection resistance**. Developers still define the domain rules and
+configure runtime identity, permissions, tool exposure, approval policies, and
+governance. Test representative benign and adversarial requests against each
+chosen model. Prompt/golden tests verify assembly; scripted-provider tests verify
+transport behavior, not whether a live model obeys the policy.
+
+An explicit custom system prompt, durable base replacement, one-shot
+`SystemPromptOverride`, or custom prompt builder retains its existing replacement
+semantics. It does not automatically inherit these built-in sections. Additive
+guidance still survives the default builder's base replacement; authors of custom
+prompts/builders must supply equivalent behavioral instructions themselves.
+No event schema or client rendering changes are implied: clients must consume
+assistant-content updates and keep provider reasoning separate. A provider that
+only emits a different status channel needs an adapter; never display private
+reasoning as a substitute for a missing progress update.
+
 ### planner.reasoning_replay
 
 Whether the ReAct planner re-injects a prior step's captured

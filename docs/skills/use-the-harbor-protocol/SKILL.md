@@ -400,24 +400,33 @@ X-Harbor-Session: <session_id>
 
 The subscription is **identity-scoped** — it streams the whole session's events — so there is **no `task_id` query param**. A client that can set headers narrows server-side with the optional `X-Harbor-Run` (a task id) and the repeatable `X-Harbor-Event-Type` headers. A browser `EventSource` (which can't set custom headers) authenticates via the `?access_token=` query-param shim — same JWT, same identity triple, its `session` claim scoping the stream — and filters client-side on the event payload's task id. The query-param shim is documented in `internal/protocol/transports/transports.go`.
 
-The stream is a sequence of `event: <type>\ndata: <JSON>\n\n` blocks:
+Each `data:` value is an event envelope, not a bare payload. For example,
+a live assistant update has no SSE `id:` because its sequence is zero:
 
 ```text
 event: llm.completion.chunk
-data: {"task_id":"tsk_01HXYZ","chunk":"Hello"}
-
-event: llm.completion.chunk
-data: {"task_id":"tsk_01HXYZ","chunk":" there!"}
-
-event: tool.invoked
-data: {"task_id":"tsk_01HXYZ","tool":"weather.get_current","args":{"city":"Madrid"}}
-
-event: tool.result
-data: {"task_id":"tsk_01HXYZ","tool":"weather.get_current","result":{"temperature_c":21.3}}
-
-event: task.completed
-data: {"task_id":"tsk_01HXYZ","status":"completed"}
+data: {"type":"llm.completion.chunk","sequence":0,"tenant":"dev","user":"dev","session":"dev","run":"tsk_01HXYZ","payload":{"TaskID":"tsk_01HXYZ","RunID":"tsk_01HXYZ","Kind":"content","Delta":"I will compare the documents.","Done":false}}
 ```
+
+This example elides timestamps. A replayed copy has a positive `sequence` and
+matching SSE `id:`. The runtime persists buffered chunks at completed planner
+steps before tool execution, and seals/drains the run before successful terminal
+completion. Persistence is not a second live fan-out. Restart replay requires
+a durable event bus backed by a persistent StateStore.
+
+Use `payload.Kind` to keep `content` in the conversation and `reasoning` only in
+the activity/reasoning view. `payload.Done` ends one LLM response lane, not the
+whole task. Tool-call preambles remain intermediate updates; the terminal
+`AnswerEnvelope` remains the final answer. Treat sequence-zero animation as
+provisional: an unflushed tail can be lost on crash/cancellation/write failure.
+Do not append replayed history on top of that provisional text; reconstruct the
+affected run from retained events and respect explicit retention gaps.
+
+`sessions.turns.list/get` remains a consumer-safe projection, not the raw update
+transcript. Recover historical intermediate text through authorized `state.history`
+or SSE replay; its newest `live_resume_seq` alone does not backfill older steps.
+See [streaming semantics](../../site/protocol/streaming-semantics.md) for the
+persistence boundary and cursor choreography.
 
 Governance emits its own canonical events on the same stream — subscribe with `X-Harbor-Event-Type: governance.failover` to observe LLM-provider failover. When a runtime is configured with a broker-pulled failover chain, each HOP the Harbor-orchestrated walk takes on a retryable provider error emits a `governance.failover` event carrying the run identity, the `from_provider` / `to_provider`, the 1-based `hop_index`, the accumulated per-identity cost the re-run budget check gates against, and a bounded retryable-error class (never the raw provider error). Every hop is a Harbor event through audit + bus + cost — the provider SDK's native fallback array is deliberately unused (D-018) — and a hop whose re-run budget/rate check trips fails the run loud rather than silently walking further down the chain. The full event catalogue (147 types) is the generated [events reference](https://hurtener.github.io/Harbor/protocol/events).
 
@@ -428,7 +437,7 @@ For a chat UI, you'd:
 1. Append a "user turn" bubble to the chat.
 2. POST `start`, get `task_id`.
 3. Open an SSE stream for that `task_id`.
-4. Append `llm.completion.chunk` content to a streaming "assistant turn" bubble.
+4. Group `llm.completion.chunk` by task/run, response boundary and `payload.Kind`; show only content in the conversation.
 5. Render `tool.invoked` / `tool.result` as collapsed cards inside the assistant bubble.
 6. Close the bubble on `task.completed`.
 
@@ -961,14 +970,20 @@ const { task_id } = await call<{ task_id: string }>("/v1/control/start", { ident
 const sse = new EventSource(`${baseUrl}/v1/events?access_token=${encodeURIComponent(token)}`);
 sse.addEventListener("llm.completion.chunk", (e) => {
   const data = JSON.parse(e.data);
-  if (data.task_id === task_id) process.stdout.write(data.chunk);
+  const chunk = data.payload;
+  if (chunk.TaskID === task_id && chunk.Kind === "content") {
+    process.stdout.write(chunk.Delta); // Provisional animation, not the final answer.
+  }
 });
 sse.addEventListener("task.completed", (e) => {
-  if (JSON.parse(e.data).task_id === task_id) sse.close();
+  if (JSON.parse(e.data).payload.TaskID === task_id) sse.close();
 });
 ```
 
-That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/whatever your stack is, render the chunks into a bubble, and you have a chat UI.
+This fragment demonstrates live content routing only. A production chat client
+also needs the restart/history choreography above, response-boundary grouping,
+failed/cancelled terminal handling, and final-answer reconciliation; it must not
+treat concatenated progress text as the final answer.
 
 ## Common failure modes
 

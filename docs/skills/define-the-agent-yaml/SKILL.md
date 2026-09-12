@@ -73,6 +73,16 @@ planner:
 
 `max_steps` is a **continuable tranche**, not a termination knob. When a tranche of planner steps is consumed without a terminal Finish, the run is **parked** through the unified pause primitive — a typed `constraints_conflict` pause carrying `{cause: max_steps_exceeded, max_steps, steps_observed}` — instead of being forced to finalise. An authorised RESUME continues the SAME run with a fresh tranche (the tranche counter resets; the cumulative trajectory is untouched), so long-running work spans repeated cycles as ONE run (D-418); a fresh process cannot resume a parked run and answers the typed `ErrRestartUnavailable` (D-417). Zero (the default) resolves to the driver default (12) and never means unbounded; the planner-side per-tranche breaker ends the cycle with the typed `NoPath` Finish (`max_steps_exceeded`), and the runtime's outer `ErrMaxStepsExceeded` guard (default 64) remains the runaway backstop when tranche pausing is unavailable. See `docs/CONFIG.md` › `planner.max_steps`.
 
+The default ReAct prompt already tells the agent to respect developer/operator
+scope, prohibitions, approvals, and output rules supplied through `extra_guidance`.
+Define the actual domain rules here; do not rely on an agent name to imply them.
+It also requests brief progress prose alongside tool calls during multi-step work,
+not private reasoning. For a silent/JSON-only consumer, explicitly suppress
+progress prose in trusted guidance. A custom base prompt replaces these defaults.
+Prompt instructions do not replace runtime permissions, tool restrictions, or
+approvals. See [`planner.extra_guidance`](../../CONFIG.md#plannerextra_guidance)
+for the trust tiers, replacement behavior, and validation limits.
+
 ### `memory`
 
 Multi-turn context. Default strategy is `none` (no memory across runs in a session); flip to `rolling_summary` for chatbot agents that need it.

@@ -1,5 +1,12 @@
 # Brief 13 — ReAct planner prompt engineering
 
+> **Current policy (2026-09-11):** The historical intermediate-narration clamps
+> below are superseded. Native tool calling permits assistant progress prose
+> alongside calls; private reasoning stays separate. The built-in prompt also
+> establishes developer-guidance boundaries without granting prompt text runtime
+> authority. See [`planner.extra_guidance`](../CONFIG.md#plannerextra_guidance)
+> and the checked-in default-prompt golden for the current contract.
+
 **Date:** 2026-05-18 (initial); revised 2026-05-19 (empirical Bifrost surface + reasoning-channel decoupling).
 **Subsystem:** `internal/planner/react`
 **RFC anchors:** §6.2 (Planner), §6.5 (LLM client)

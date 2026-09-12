@@ -19,11 +19,10 @@
 #   2. unit-tests: the owner-tag + owner-scoped-reconcile packages under -race
 #      (TestRegistry_BootServerVisibleToEverySession,
 #       TestReconcile_OwnerScoped_NeverDetachesBootOrOtherOwner, + siblings).
-#   2b. namespace-guarantee: the OTHER half of D-301 — a cross-owner same-name
-#      attach fails LOUD and PRE-DIAL, and the process-global bare-name catalog
-#      refuses the collision independently. Counts the PASS lines so a renamed
-#      or deleted test FAILS instead of passing vacuously ("no tests to run" is
-#      a `go test` success).
+#   2b. namespace-guarantee: D-457 supersedes D-301's bare-name refusal with
+#      owner-isolated physical sources and an independently isolated catalog.
+#      The current exact-name guards must actually run and pass; renamed,
+#      deleted, skipped, or failed tests cannot become vacuous green.
 #   3. The §17.1 integration test (real drivers, two owners + a boot server).
 #
 # Done-definition: OK >= 3, FAIL = 0.
@@ -88,32 +87,20 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 2b. The D-301 NAMESPACE guarantee — a cross-owner same-name attach fails loud
-#     and PRE-DIAL; the bare-name catalog refuses the collision independently.
+# 2b. Owner-isolated physical namespaces (D-457 supersedes D-301's bare-name
+#     refusal): identical logical source names must coexist without crossing
+#     owners, and the catalog namespace must independently remain isolated.
 #
-# The count check is deliberate. `go test -run <pattern>` with a pattern that
-# matches NOTHING prints "no tests to run" and exits 0, so an arm that only
-# checked the exit code would report OK forever after a rename — the vacuous
-# instrument this wave keeps finding. Requiring the exact PASS count makes a
-# renamed, deleted, or skipped test a FAIL.
+# Assert each current test by exact name AND require a successful go exit. A
+# deleted, renamed, skipped, or failing guard must not become vacuous green.
 # ----------------------------------------------------------------------------
 
-GUARD_FILE="internal/tools/drivers/mcp/cross_owner_name_collision_test.go"
-GUARD_EXPECTED=3
-
-if [ ! -f "${GUARD_FILE}" ]; then
-    skip "namespace-guarantee: ${GUARD_FILE} absent (guard not yet landed)"
-else
-    guard_out="$(go test -race -count=1 -timeout 240s -v \
-        -run 'TestAttach_CrossOwnerSameName_RefusedPreDial|TestAttach_CrossOwnerDistinctNames_BothAttach|TestAttach_CrossOwnerSameName_CatalogIsTheSecondGate' \
-        ./internal/tools/drivers/mcp/ 2>&1 || true)"
-    guard_pass="$(printf '%s\n' "${guard_out}" | grep -c '^--- PASS: TestAttach_CrossOwner' || true)"
-    if [ "${guard_pass}" -eq "${GUARD_EXPECTED}" ]; then
-        ok "namespace-guarantee: cross-owner same-name attach fails loud + pre-dial (${guard_pass}/${GUARD_EXPECTED} D-301 guards pass)"
-    else
-        fail "namespace-guarantee: expected ${GUARD_EXPECTED} passing D-301 namespace guards, got ${guard_pass} (run: go test -race -v -run TestAttach_CrossOwner ./internal/tools/drivers/mcp/)"
-    fi
-fi
+GUARD_LOG="$(mktemp "${TMPDIR:-/tmp}/harbor-owner-namespace.XXXXXX")"
+trap 'rm -f "${GUARD_LOG}"' EXIT
+assert_go_tests_pass "${GUARD_LOG}" '-race -count=1 -timeout 240s ./internal/tools/drivers/mcp/' \
+    'namespace-guarantee: cross-owner logical names have independent physical and catalog sources' \
+    TestAttach_CrossOwnerSameName_IndependentPhysicalSources \
+    TestAttach_CrossOwnerSameName_CatalogNamespaceIsIndependent
 
 # ----------------------------------------------------------------------------
 # 3. §17.1 integration test (real drivers, two owners + a boot server).

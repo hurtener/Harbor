@@ -198,6 +198,7 @@ INERT_BASELINED=()        # inert, shipped, baselined     -> reported as debt
 INERT_PENDING=()          # inert, not shipped            -> expected
 INERT_SEEN_BASELINED=''   # newline-joined; used to find stale baseline entries
 UNRESOLVED_PHASE_ROWS=()  # classified-but-unreadable master-plan rows -> reported
+FAILED_CHECKS=()          # actual failures, repeated next to the final verdict
 
 # is_baselined <smoke-path>
 is_baselined() {
@@ -304,22 +305,29 @@ note_unreadable_phase_row() {
 
 # assess_smoke_output <smoke-path> <captured-output-path> <exit-code>
 assess_smoke_output() {
-    local smoke="$1" out_path="$2" rc="${3:-0}" ok_n fail_n n
-    [ -f "${out_path}" ] || return 0
+    local smoke="$1" out_path="$2" rc="${3:-0}" ok_n fail_n n detail
+    if [ ! -f "${out_path}" ]; then
+        FAILED_CHECKS+=("${smoke}: missing captured output (rc=${rc})")
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        return 0
+    fi
     ok_n="$(grep -m1 -E '^OK:[[:space:]]+[0-9]+' "${out_path}" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
     fail_n="$(grep -m1 -E '^FAIL:[[:space:]]+[0-9]+' "${out_path}" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    # Count a failing script once, even when both its exit code and counters
+    # are red. Never classify a failed all-SKIP script as an expected skip.
+    if [ "${rc}" -ne 0 ] || { [ -n "${fail_n}" ] && [ "${fail_n}" -gt 0 ]; }; then
+        detail="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "${out_path}" | grep -E '\[FAIL\]|^--- FAIL:|^FAIL([[:space:]]|$)' | head -5 || true)"
+        FAILED_CHECKS+=("${smoke}: rc=${rc}, OK=${ok_n:-missing}, FAIL=${fail_n:-missing}${detail:+
+${detail}}")
+        echo "preflight: ${smoke} reported failures (rc=${rc}, OK=${ok_n:-missing}, FAIL=${fail_n:-missing})"
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        return 0
+    fi
     if [ -z "${ok_n}" ] || [ -z "${fail_n}" ]; then
-        # No summary block at all. A script that DIED mid-run is already
-        # counted by the non-zero-exit path — but one that exits 0 without
-        # ever calling smoke_summary is invisible to BOTH gates: no counters
-        # for the inert detector to read, no non-zero rc for TOTAL_FAIL.
-        # Probed, not assumed: such a script recorded nothing anywhere and
-        # preflight said PASS. Nothing in this harness REQUIRES a smoke to
-        # print a summary; this is that requirement.
-        if [ "${rc}" -eq 0 ]; then
-            echo "preflight: ${smoke} exited 0 but printed no OK:/FAIL: summary — it did not call smoke_summary, so neither the inert gate nor the exit-code gate can see what it asserted. Every smoke must end with smoke_summary."
-            TOTAL_FAIL=$((TOTAL_FAIL + 1))
-        fi
+        detail="${smoke} exited 0 but printed no OK:/FAIL: summary — it did not call smoke_summary, so neither the inert gate nor the exit-code gate can see what it asserted. Every smoke must end with smoke_summary."
+        echo "preflight: ${detail}"
+        FAILED_CHECKS+=("${detail}")
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
         return 0
     fi
     [ "${ok_n}" = "0" ] && [ "${fail_n}" = "0" ] || return 0
@@ -336,10 +344,21 @@ ${smoke}"
     fi
 }
 
+# Keep real failures beside the verdict, not buried before the expected skips.
+# Each entry owns its path and bounded assertion details from the original log.
+report_smoke_failures() {
+    local failure
+    echo "preflight: failing checks (expected pending-phase skips are not failures):"
+    for failure in ${FAILED_CHECKS[@]+"${FAILED_CHECKS[@]}"}; do
+        printf '%s\n' "${failure}" | sed 's/^/    /'
+    done
+}
+
 echo ""
 echo "preflight: running scripts/drift-audit.sh"
 if ! bash scripts/drift-audit.sh; then
     echo "preflight: drift-audit reported failures"
+    FAILED_CHECKS+=("scripts/drift-audit.sh: reported failures")
     TOTAL_FAIL=$((TOTAL_FAIL + 1))
 fi
 
@@ -431,20 +450,14 @@ run_parallel_batch() {
 
     # Aggregate, sorted by smoke name so output is deterministic
     # regardless of completion order.
-    local batch_fail=0
     local s_name rc_code out_path
     while IFS=$'\t' read -r s_name rc_code out_path; do
         echo ""
         echo "preflight: running ${s_name}"
         cat "${out_path}" || true
-        if [ "${rc_code}" -ne 0 ]; then
-            echo "preflight: ${s_name} reported failures (rc=${rc_code})"
-            batch_fail=$((batch_fail + 1))
-        fi
         assess_smoke_output "${s_name}" "${out_path}" "${rc_code}"
     done < <(sort "${rc_file}")
 
-    TOTAL_FAIL=$((TOTAL_FAIL + batch_fail))
     rm -rf "${out_dir}"
     return 0
 }
@@ -607,10 +620,6 @@ for smoke in ${LIVE_SERVER[@]+"${LIVE_SERVER[@]}"}; do
     # report every failing smoke as rc=0. Verified, not assumed.
     smoke_rc=0
     { bash "${smoke}" 2>&1 | tee "${live_out}"; smoke_rc="${PIPESTATUS[0]}"; } || true
-    if [ "${smoke_rc}" -ne 0 ]; then
-        echo "preflight: ${smoke} reported failures"
-        TOTAL_FAIL=$((TOTAL_FAIL + 1))
-    fi
     assess_smoke_output "${smoke}" "${live_out}" "${smoke_rc}"
 done
 rm -rf "${LIVE_OUT_DIR}"
@@ -685,11 +694,15 @@ if [ "${#INERT_SHIPPED[@]}" -gt 0 ]; then
         echo "  HARBOR_PREFLIGHT_ALLOW_INERT=1 — downgraded to a report. Justify this in the PR."
     else
         TOTAL_FAIL=$((TOTAL_FAIL + ${#INERT_SHIPPED[@]}))
+        for s in "${INERT_SHIPPED[@]}"; do
+            FAILED_CHECKS+=("${s}: shipped phase asserted nothing (OK=0, FAIL=0)")
+        done
     fi
 fi
 
 if [ "${TOTAL_FAIL}" -gt 0 ]; then
-    echo "preflight: FAIL (${TOTAL_FAIL} smoke script(s) reported failures or asserted nothing)"
+    report_smoke_failures
+    echo "preflight: FAIL (${TOTAL_FAIL} check(s) failed or asserted nothing)"
     exit 1
 fi
 echo "preflight: PASS"

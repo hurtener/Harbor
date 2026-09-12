@@ -238,7 +238,7 @@ assert_grep_present \
     "internal/runtime/serve/mux.go" \
     "phase 250 serve mux mounts the Protocol surface"
 assert_grep_present \
-    'SkillPublicationsAvailable: publicationAvailable' \
+    'SkillPublicationsAvailable:[[:space:]]+publicationAvailable' \
     "internal/runtime/serve/mux.go" \
     "phase 250 serve mux gates capability on the mount"
 assert_grep_present \
