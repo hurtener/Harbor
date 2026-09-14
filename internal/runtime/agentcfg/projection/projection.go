@@ -1155,6 +1155,15 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 	return activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, false, ownerResolvers...)
 }
 
+// ActiveCompletionCatalogView supplies the trusted terminal hook with the
+// acting principal's full catalog, including disabled and deferred tools. It
+// shares source ownership, desired-connection admission and alias resolution
+// with the planner projection; only planner exposure exclusions are omitted.
+// The returned view must never be used for planner decisions.
+func ActiveCompletionCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+	return activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, true, ownerResolvers...)
+}
+
 func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, configuration bool, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
 	if configuration {
 		filter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}

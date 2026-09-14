@@ -944,7 +944,22 @@ func (d *RunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, agen
 // invisible to an in-flight run.
 func (d *RunLoopDriver) projectRunCompletionHook(ctx context.Context, agentID string, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
 	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, agentID, q, d.runCompletionHook)
-	return hook, err
+	if err != nil || hook == nil || d.catalog == nil {
+		return hook, err
+	}
+	var ownerResolver projection.SourceOwnerResolver
+	if candidate, ok := d.connectionDetacher.(projection.SourceOwnerResolver); ok {
+		ownerResolver = candidate
+	}
+	view, err := projection.ActiveCompletionCatalogView(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, tools.CatalogFilter{
+		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
+		GrantedScopes: d.grantedScopes,
+	}, ownerResolver)
+	if err != nil {
+		return nil, err
+	}
+	hook.Catalog = view
+	return hook, nil
 }
 
 // projectNaming resolves the effective session auto-naming spec for this run

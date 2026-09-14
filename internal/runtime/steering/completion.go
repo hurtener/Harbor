@@ -64,6 +64,10 @@ type CompletionHookSpec struct {
 	// metadata (never an isolation key — §6). Empty for a bare embed run
 	// whose wiring layer knows no agent.
 	AgentID string
+	// Catalog is the runtime-owned, identity-scoped completion view. It includes
+	// planner-excluded tools while retaining source ownership and logical aliases.
+	// It is never passed to the planner. A nil view preserves bare embed behavior.
+	Catalog planner.ToolCatalogView
 }
 
 // TranscriptEntry is one turn in the ordered run transcript. Role is
@@ -460,7 +464,7 @@ func (rl *RunLoop) fireCompletionHook(runCtx context.Context, spec RunSpec, q id
 	defer cancel()
 
 	dispatchStart := rl.clock.Now()
-	rc := planner.RunContext{Quadruple: q, Goal: initialGoal, Trajectory: spec.Base.Trajectory}
+	rc := planner.RunContext{Quadruple: q, Goal: initialGoal, Trajectory: spec.Base.Trajectory, Catalog: hook.Catalog}
 	hookCtx = WithTrustedCompletionHook(hookCtx)
 	if _, _, execErr := spec.ToolExecutor.ExecuteDecision(hookCtx, rc, planner.CallTool{Tool: hook.Tool, Args: args}); execErr != nil {
 		rl.completionHookFailed(runCtx, q, hook.Tool, outcome, classifyHookErr(execErr))
