@@ -17,6 +17,18 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.31.8] — 2026-09-14
+
+### Fixed
+
+- Run-completion hooks now resolve logical tool names through a per-run catalog
+  that retains tenant/agent/user source ownership and desired-connection admission.
+  Disabled and deferred sinks remain available to the trusted completion hook
+  without becoming planner-callable. This fixes capture on owner-namespaced MCP
+  connections and rejects configured foreign physical source names.
+
+## [1.31.7] — 2026-09-12
+
 ### Fixed
 
 - The default ReAct prompt now requests brief, factual progress updates alongside
