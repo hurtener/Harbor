@@ -220,8 +220,11 @@ type Task struct {
 	// endpoint, or credential; only the server-installed trusted context can
 	// make the persisted intent available to a resolver.
 	ProviderRoute *llm.ProviderRoute `json:",omitempty"`
-	CreatedAt     int64              // unix nanoseconds; matches sessions / events convention
-	UpdatedAt     int64              // unix nanoseconds
+	// LLMSettings is immutable execution input, copied at Spawn and recovered
+	// with this task. It never enters the pending session override store.
+	LLMSettings *llm.RunSettings `json:",omitempty"`
+	CreatedAt   int64            // unix nanoseconds; matches sessions / events convention
+	UpdatedAt   int64            // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
 	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
@@ -382,6 +385,8 @@ type SpawnRequest struct {
 	// task persistence. It is included in idempotency identity and does not
 	// itself confer authority.
 	ProviderRoute *llm.ProviderRoute
+	// LLMSettings participates in task identity and is detached at acceptance.
+	LLMSettings *llm.RunSettings
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
 	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
@@ -1081,6 +1086,9 @@ func ValidateRequest(req SpawnRequest) error {
 		if req.ParentTaskID == nil || *req.ParentTaskID == "" {
 			return fmt.Errorf("%w: virtual profile child requires a parent task", ErrInvalidRequest)
 		}
+	}
+	if err := llm.ValidateRunSettings(req.LLMSettings, req.ProviderRoute); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 	if req.ProviderRoute != nil {
 		if err := llm.ValidateProviderRoute(*req.ProviderRoute); err != nil || req.ProviderRoute.RouteID == "" {

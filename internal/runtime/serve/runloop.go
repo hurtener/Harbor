@@ -772,6 +772,10 @@ func (d *RunLoopDriver) handleEvent(ev events.Event) {
 // tenant-resolver error is returned (the caller fails the run loudly);
 // the session Consume cannot error (in-process map read).
 func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, agentID string, q identity.Quadruple) (*planner.LLMOverrides, error) {
+	return d.resolveTaskLLMOverrides(ctx, agentID, q, false)
+}
+
+func (d *RunLoopDriver) resolveTaskLLMOverrides(ctx context.Context, agentID string, q identity.Quadruple, explicit bool) (*planner.LLMOverrides, error) {
 	// Tenant arm.
 	var tenant *planner.LLMOverrides
 	if d.tenantOverrides != nil {
@@ -799,7 +803,7 @@ func (d *RunLoopDriver) resolveLLMOverrides(ctx context.Context, agentID string,
 	}
 	// Session arm — Consume the one-shot pending override (read-once).
 	var session *runsprotocol.PendingOverride
-	if d.sessionOverrides != nil {
+	if !explicit && d.sessionOverrides != nil {
 		if po, found := d.sessionOverrides.Consume(q.Identity); found {
 			session = &po
 		}
@@ -1797,7 +1801,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// rather than silently dropping the admin's policy (CLAUDE.md §13) —
 	// the override store IS the runtime StateStore, so a read error here
 	// means the runtime is already unhealthy.
-	llmOverrides, ovErr := d.resolveLLMOverrides(taskCtx, effectiveAgentID, q)
+	llmOverrides, ovErr := d.resolveTaskLLMOverrides(taskCtx, effectiveAgentID, q, task.LLMSettings != nil)
 	if ovErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: tenant-override resolution failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -1848,6 +1852,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		llmOverrides = applyVirtualOverlay(llmOverrides, profile)
 	}
+	// Explicit task settings win over all model/sampling defaults, including
+	// virtual-agent defaults. Prompt and governance authority is unchanged.
+	llmOverrides = applyTaskLLMSettings(llmOverrides, task.LLMSettings)
 	maxSteps := d.maxStepsRunLoop
 	tokenBudget := d.tokenBudget
 	if virtualProfile != nil {

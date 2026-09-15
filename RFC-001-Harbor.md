@@ -2695,3 +2695,16 @@ Runtime authentication plus coordinator-side runtime/tenant mapping authorizes t
 selection; a wire tenant field alone never does. Cache, flight and revocation state
 preserve tenant authority. Explicit deployment credential compatibility remains
 available for ordinary brokers; signed capabilities never downgrade to that path.
+
+### Atomic per-task model and thinking selection (D-461)
+
+`control.start` accepts `llm_settings` with optional native `model`,
+`reasoning_effort` and `max_tokens`. Routed models use `provider_route` in the
+same Start request; a native model and provider route cannot be combined. The
+bundle is copied into the existing task record and idempotency identity, then
+applied to that run without a session-preference write or runtime restart.
+Present bundles bypass the old pending-session slot; omitted bundles preserve
+legacy behavior. Supplied values override runtime/agent/virtual-agent defaults,
+while governance and provider capability checks still apply. Changed settings
+with one idempotency key conflict. The advertised capability is
+`run_llm_settings_v1`; Protocol remains `0.1.0`.

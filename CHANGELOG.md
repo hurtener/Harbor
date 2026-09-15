@@ -17,6 +17,25 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.31.9] — 2026-09-15
+
+### Fixed
+
+- `control.start` now accepts task-bound `llm_settings` for native model,
+  thinking effort and output-token limit. External model selection stays in
+  `provider_route` on the same request. Settings are isolated across concurrent
+  tasks, retained through recovery, and included in retry identity. An explicit
+  bundle bypasses the legacy next-message slot without a preference write or
+  runtime restart. Advertised capability: `run_llm_settings_v1`.
+- Empty thinking effort now explicitly requests provider defaults through the
+  planner, matching the LLM request contract.
+
+### Release scope
+
+- Owner-authorized quick release: local and hosted CI preflight are skipped.
+  Focused settings/replay/concurrency checks are recorded separately; no full
+  preflight or full-suite claim is made.
+
 ## [1.31.8] — 2026-09-14
 
 ### Fixed

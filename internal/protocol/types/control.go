@@ -88,6 +88,19 @@ func (s IdentityScope) IsImpersonating() bool {
 	return s.Impersonating != nil
 }
 
+// RunLLMSettings binds model and generation settings to one accepted task.
+// Omitted fields inherit runtime/agent defaults, never a pending session override.
+// An empty reasoning_effort explicitly leaves reasoning to the provider; off
+// disables reasoning. Native models use model; routed models use provider_route
+// on StartRequest instead. Invalid selections fail, never silently fall back.
+// A present bundle (including {}) bypasses and leaves the legacy next-message
+// slot untouched. Settings participate in Start's idempotency identity.
+type RunLLMSettings struct {
+	Model           *string `json:"model,omitempty"`
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	MaxTokens       *int    `json:"max_tokens,omitempty"`
+}
+
 // StartRequest is the wire request for the `start` Protocol method — it
 // asks the Runtime to spawn a new task / foreground run. It maps onto the
 // tasks.TaskRegistry.Spawn surface.
@@ -105,6 +118,9 @@ type StartRequest struct {
 	// optional resolver exact-binds it at the LLM edge. Omitted preserves the
 	// runtime-configured provider path without consulting a resolver.
 	ProviderRoute *LLMProviderRouteSelector `json:"provider_route,omitempty"`
+	// LLMSettings is copied into this task at acceptance, including durable
+	// recovery and retries. It changes neither runtime config nor preferences.
+	LLMSettings *RunLLMSettings `json:"llm_settings,omitempty"`
 	// Query is the user-facing query that starts the run. Optional —
 	// some runs are kicked off without a natural-language query.
 	Query string `json:"query,omitempty"`

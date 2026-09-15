@@ -321,6 +321,7 @@ var CanonicalWireTypes = map[string]string{
 	// internal/protocol/types (internal/protocol/types/posture.go).
 	"RuntimeInfoRequest":       "types",
 	"LLMProviderRouteSelector": "types",
+	"RunLLMSettings":           "types",
 	"RuntimeInfo":              "types",
 	"ExternalGrantReadiness":   "types",
 	"SubsystemHealth":          "types",

@@ -253,6 +253,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"LLMProviderOperationResponse":                      reflect.TypeOf(types.LLMProviderOperationResponse{}),
 	"LLMProviderRouteObservation":                       reflect.TypeOf(types.LLMProviderRouteObservation{}),
 	"LLMProviderRouteSelector":                          reflect.TypeOf(types.LLMProviderRouteSelector{}),
+	"RunLLMSettings":                                    reflect.TypeOf(types.RunLLMSettings{}),
 	"LLMProviderDescriptor":                             reflect.TypeOf(types.LLMProviderDescriptor{}),
 	"LLMProviderOperation":                              reflect.TypeOf(types.LLMProviderOperation{}),
 	"LLMProviderValidation":                             reflect.TypeOf(types.LLMProviderValidation{}),

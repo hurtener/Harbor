@@ -15405,3 +15405,29 @@ verification succeeded. Public module provenance resolves
 `Origin.Hash=9c51e05dd2431a826897cfad5d8a1827cdb5d596`, and
 `Origin.Ref=refs/tags/v1.31.6`. Downstream deployment and acceptance remain
 unclaimed.
+
+---
+
+## D-461 — Model and thinking settings travel with task start
+
+**Status:** Accepted, 2026-09-15.
+
+A client changing its model or thinking selection must not race a separate
+next-message settings call. `StartRequest.llm_settings` carries optional native
+`model`, `reasoning_effort`, and `max_tokens` as task execution input. External
+models continue to use the existing `provider_route` on the same request;
+combining a native model with a provider route is rejected.
+
+The task engine deep-copies the bundle, persists it with the existing task, and
+includes its presence and exact optional scalar values in idempotency identity.
+A changed choice with the same key conflicts. An accepted task, including one
+recovered after restart, retains its own settings. There is no preference store,
+agent rebuild, or runtime restart on selection.
+
+A present bundle bypasses and leaves the legacy pending-session slot untouched.
+Omitted members inherit runtime/agent defaults; supplied members win over those
+defaults, including virtual-agent defaults. Prompt authority, model support,
+provider-route capability validation and governance remain enforced. An empty
+reasoning value explicitly requests provider defaults; `off` disables thinking.
+The runtime advertises `run_llm_settings_v1`. Omitted bundles preserve legacy
+behavior. The Protocol version remains `0.1.0`.

@@ -591,6 +591,10 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
+	settings := runSettingsFromWire(sr.LLMSettings)
+	if err := llm.ValidateRunSettings(settings, providerRouteFromWire(sr.ProviderRoute)); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %v", string(method), err)
+	}
 	spawnCtx := ctx
 	if s.reachAdmissions != nil {
 		var admissionErr error
@@ -614,6 +618,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		CallerMemory:              sr.CallerMemory,
 		ExternalGrant:             append([]byte(nil), sr.ExternalGrant...),
 		ProviderRoute:             providerRouteFromWire(sr.ProviderRoute),
+		LLMSettings:               settings,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)
@@ -624,6 +629,13 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		Reused:          handle.Reused,
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+func runSettingsFromWire(s *types.RunLLMSettings) *llm.RunSettings {
+	if s == nil {
+		return nil
+	}
+	return llm.CloneRunSettings(&llm.RunSettings{Model: s.Model, ReasoningEffort: s.ReasoningEffort, MaxTokens: s.MaxTokens})
 }
 
 func providerRouteFromWire(route *types.LLMProviderRouteSelector) *llm.ProviderRoute {

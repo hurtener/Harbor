@@ -62,9 +62,11 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 		ProviderConnectionID: "connection-restart", ProviderConnectionGeneration: 3,
 		CredentialAssetGeneration: 2, ModelSelector: "balanced",
 	}
+	effort, maxTokens := "high", 512
 	pending, err := r1.Spawn(admittedCtx, tasks.SpawnRequest{
 		Identity: id, Kind: tasks.KindForeground, Description: "pending-task",
 		ProviderRoute: route,
+		LLMSettings:   &llm.RunSettings{ReasoningEffort: &effort, MaxTokens: &maxTokens},
 	})
 	if err != nil {
 		t.Fatalf("Spawn pending: %v", err)
@@ -120,6 +122,9 @@ func TestDurable_RestartSurvival_TasksGroupsPatches(t *testing.T) {
 	}
 	if _, gotAgent, admitted := authority.Restore(context.Background(), gotPending); !admitted || gotAgent != "agent-restart" {
 		t.Errorf("pending task admission after restart = (%q, %v), want (agent-restart, true)", gotAgent, admitted)
+	}
+	if gotPending.LLMSettings == nil || *gotPending.LLMSettings.ReasoningEffort != effort || *gotPending.LLMSettings.MaxTokens != maxTokens {
+		t.Fatalf("lost task settings after restart: %+v", gotPending.LLMSettings)
 	}
 	if gotPending.ProviderRoute == nil || *gotPending.ProviderRoute != *route {
 		t.Errorf("pending task provider route after restart = %+v, want %+v", gotPending.ProviderRoute, route)

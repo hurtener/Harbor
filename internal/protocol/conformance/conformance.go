@@ -1970,6 +1970,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapSkillPublications:             {},
 		types.CapLLMProviderCatalog:            {},
 		types.CapLLMProviderRoute:              {},
+		types.CapRunLLMSettings:                {},
 		types.CapLLMProviderRouteModelProfile:  {},
 		types.CapTenantScopedBrokerCredentials: {},
 	}
