@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:1e27971c950cdac3e1116caac4a5b7aad5164c438cc2ad154a2e92fb8bdcb194";
+export const WIRE_SURFACE_DIGEST = "sha256:1ee2d3bcf265c9245338bb660de0a5f124b560149815b2a489859b7cf6b4fa87";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2747,6 +2747,12 @@ export interface RetentionHorizon {
   oldest_retained_at?: string;
 }
 
+export interface RunLLMSettings {
+  model?: string;
+  reasoning_effort?: string;
+  max_tokens?: number;
+}
+
 export interface RunOverrides {
   session_id: string;
   reasoning_effort?: string;
@@ -3373,6 +3379,7 @@ export interface StartRequest {
   identity: IdentityScope;
   external_grant?: unknown;
   provider_route?: LLMProviderRouteSelector;
+  llm_settings?: RunLLMSettings;
   query?: string;
   description?: string;
   priority?: number;

@@ -1013,3 +1013,22 @@ For shared-runtime broker custody, require the runtime.info capability
 `tenant_scoped_broker_credentials_v1`; its absence means tenant-selected broker
 client credentials are unsupported. This describes the runtime pull implementation,
 not proof that a particular coordinator endpoint or grant is ready.
+
+### Send model and thinking with Start
+
+For a run-specific selection, use `llm_settings` on `control.start` instead of
+pairing `runs.set_overrides` with a later Start. Negotiate
+`run_llm_settings_v1` when supporting older runtimes. Example request members:
+
+```json
+{"llm_settings":{"model":"configured-model","reasoning_effort":"high","max_tokens":2048}}
+```
+
+For an external model, omit `llm_settings.model` and include the existing opaque
+`provider_route` beside `llm_settings` on Start. Never supply both model sources.
+Settings are copied into the accepted task; concurrent selections cannot replace
+them. Exact retries reuse the task; changing settings under the same idempotency
+key conflicts. A present bundle skips the legacy next-message slot. Omitted
+fields use runtime/agent defaults, an empty reasoning value requests provider
+defaults, and `off` disables thinking. No preference is saved and no restart is
+needed. Governance and selected-model support remain authoritative.

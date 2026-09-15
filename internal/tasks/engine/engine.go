@@ -399,6 +399,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		IdempotencyKey:    req.IdempotencyKey,
 		ExternalGrant:     append([]byte(nil), req.ExternalGrant...),
 		ProviderRoute:     cloneProviderRoute(req.ProviderRoute),
+		LLMSettings:       llm.CloneRunSettings(req.LLMSettings),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		InputArtifactIDs:  inputArtifactIDs,
@@ -559,6 +560,7 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 	cp := *t
 	cp.ExternalGrant = append([]byte(nil), t.ExternalGrant...)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
+	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -737,6 +739,7 @@ func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 func copyTask(t *tasks.Task) *tasks.Task {
 	cp := *t
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
+	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1570,6 +1573,12 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 			req.ProviderRoute.ProviderConnectionGeneration,
 			req.ProviderRoute.CredentialAssetGeneration,
 			req.ProviderRoute.ModelSelector)
+	}
+	if req.LLMSettings != nil {
+		// JSON preserves nil versus explicit zero/empty scalar semantics.
+		settings, _ := json.Marshal(req.LLMSettings)
+		h.Write([]byte("\x1fllm_settings\x1f"))
+		h.Write(settings)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

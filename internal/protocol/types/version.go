@@ -386,6 +386,9 @@ const (
 	// descriptor/validate/discover operation. It is conditional: a runtime
 	// only advertises it when its provider catalog is wired at boot.
 	CapLLMProviderCatalog Capability = "llm_provider_catalog"
+	// CapRunLLMSettings advertises atomic model and thinking settings on Start.
+	CapRunLLMSettings Capability = "run_llm_settings_v1"
+
 	// CapLLMProviderRoute advertises that this runtime is booted with the
 	// optional grant-free provider-route resolver and can safely accept the
 	// provider_route member on control.start. Absence means unsupported or not

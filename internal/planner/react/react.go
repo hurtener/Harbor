@@ -1004,8 +1004,9 @@ func applyLLMOverrides(req *llm.CompleteRequest, ov *planner.LLMOverrides) {
 	}
 	if ov.ReasoningEffort != nil {
 		switch llm.ReasoningEffort(*ov.ReasoningEffort) {
-		case llm.ReasoningOff, llm.ReasoningLow, llm.ReasoningMedium, llm.ReasoningHigh:
+		case "", llm.ReasoningOff, llm.ReasoningLow, llm.ReasoningMedium, llm.ReasoningHigh:
 			req.ReasoningEffort = llm.ReasoningEffort(*ov.ReasoningEffort)
+			req.ReasoningEffortExplicit = true
 		}
 	}
 }

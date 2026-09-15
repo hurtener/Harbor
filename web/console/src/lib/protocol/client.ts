@@ -156,6 +156,13 @@ export interface LLMProviderRouteSelector {
 	model_selector: string;
 }
 
+/** Model and thinking settings attached to one accepted task. */
+export interface RunLLMSettings {
+ model?: string;
+ reasoning_effort?: string;
+ max_tokens?: number;
+}
+
 /** Options the `HarborClient` is constructed with. */
 export interface HarborClientOptions {
 	/** The resolved Runtime connection (base URL + token + identity triple). */
@@ -889,9 +896,11 @@ export class ControlNamespace {
 			 * configured default provider path.
 			 */
 			providerRoute?: LLMProviderRouteSelector;
+			llmSettings?: RunLLMSettings;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
+		if (opts.llmSettings !== undefined) body.llm_settings = opts.llmSettings;
 		if (opts.description !== undefined) {
 			body.description = opts.description;
 		}

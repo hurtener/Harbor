@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 456 canonical Harbor Protocol wire types, generated from the single-source
+The 457 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -3714,6 +3714,16 @@ Declared in `internal/protocol/types`.
 | `scope` | `string` | optional (`omitempty`) |
 | `oldest_retained_at` | `*time.Time` | optional (`omitempty`) |
 
+## RunLLMSettings
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `model` | `*string` | optional (`omitempty`) |
+| `reasoning_effort` | `*string` | optional (`omitempty`) |
+| `max_tokens` | `*int` | optional (`omitempty`) |
+
 ## RunOverrides
 
 Declared in `internal/protocol/types`.
@@ -4633,6 +4643,7 @@ Declared in `internal/protocol/types`.
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `external_grant` | `json.RawMessage` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
+| `llm_settings` | `*types.RunLLMSettings` — see [`RunLLMSettings`](./types.md#runllmsettings) | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
 | `description` | `string` | optional (`omitempty`) |
 | `priority` | `int` | optional (`omitempty`) |

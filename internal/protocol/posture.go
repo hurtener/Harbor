@@ -342,6 +342,7 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 		// A client reads its ABSENCE to identify a Runtime that predates
 		// the field and would discard it silently.
 		types.CapCallerMemory,
+		types.CapRunLLMSettings,
 	}
 	if topologyAvailable {
 		caps = append(caps, types.CapTopologySnapshot)
