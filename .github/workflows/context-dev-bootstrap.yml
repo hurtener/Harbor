@@ -1,47 +1,62 @@
-name: context development bootstrap
+name: context development checkpoint
 
-# Temporary PR-local development aid. Remove before the release candidate.
-# Only tracked source, vendored public modules and the Go toolchain are bundled.
+# Temporary PR-local transport for locally tested patches while Git networking
+# is unavailable. No runtime or release job depends on this; remove before RC.
 on:
   pull_request:
     branches: [main]
     paths:
       - .github/workflows/context-dev-bootstrap.yml
+      - .github/context-dev-change.json
 
 permissions:
   contents: read
 
 jobs:
-  offline-bundle:
-    if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository
+  checkpoint:
+    if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'docs/portable-session-context-plan'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: false
-      - name: Prepare source and pinned dependencies
-        shell: bash
+          fetch-depth: 2
+      - name: Apply exact tested tree
+        if: hashFiles('.github/context-dev-change.json') != ''
+        shell: python
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/context-offline"
-          git archive --format=tar.gz HEAD -o "$RUNNER_TEMP/context-offline/source.tgz"
-          git rev-parse HEAD > "$RUNNER_TEMP/context-offline/source-commit.txt"
-          go version > "$RUNNER_TEMP/context-offline/go-version.txt"
-          go mod vendor
-          tar -czf "$RUNNER_TEMP/context-offline/vendor.tgz" vendor
-          tar -C "$(go env GOROOT)" -czf "$RUNNER_TEMP/context-offline/toolchain.tgz" .
-          cd "$RUNNER_TEMP/context-offline"
-          sha256sum source.tgz vendor.tgz toolchain.tgz > SHA256SUMS
-      - uses: actions/upload-artifact@v7
-        with:
-          name: harbor-context-offline
-          path: ${{ runner.temp }}/context-offline/
-          retention-days: 1
-          compression-level: 0
-          if-no-files-found: error
+          import base64, hashlib, json, os, pathlib, subprocess, zlib
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          manifest = pathlib.Path('.github/context-dev-change.json')
+          change = json.loads(manifest.read_text())
+          if git('rev-parse', 'HEAD^') != change['base']:
+              raise SystemExit('Remote base changed; refusing checkpoint')
+          compressed = base64.b64decode(change['patch'], validate=True)
+          decoder = zlib.decompressobj()
+          patch = decoder.decompress(compressed, 2 * 1024 * 1024 + 1)
+          if len(patch) > 2 * 1024 * 1024 or not decoder.eof or decoder.unused_data:
+              raise SystemExit('Patch is oversized or incomplete')
+          if hashlib.sha256(patch).hexdigest() != change['sha256']:
+              raise SystemExit('Patch checksum differs')
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'context.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '--index', '--whitespace=error-all', str(path)], check=True)
+          subprocess.run(['git', 'apply', '--index', '--whitespace=error-all', str(path)], check=True)
+          allowed_roots = ('internal/', 'sdk/', 'test/', 'harbortest/', 'scripts/', 'docs/', 'examples/')
+          allowed_files = {'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'README.md', 'CHANGELOG.md'}
+          for name in git('diff', '--cached', '--name-only').splitlines():
+              if name not in allowed_files and not name.startswith(allowed_roots):
+                  raise SystemExit('Patch changes a path outside the implementation scope')
+          subprocess.run(['git', 'rm', '--', str(manifest)], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          if git('write-tree') != change['tree']:
+              raise SystemExit('Result differs from locally tested tree; refusing push')
+          git('config', 'user.name', 'github-actions[bot]')
+          git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
+          subprocess.run(['git', 'commit', '-m', change['message']], check=True)
+          subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/docs/portable-session-context-plan'], check=True)
+          print('Verified checkpoint:', git('rev-parse', 'HEAD'))
