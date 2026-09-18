@@ -6,42 +6,10 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
-// estimateRequestTokens mirrors the safety-pass estimator (chars/4 +
-// per-message overhead) so the backfill numbers match the
-// token-budget guard. Kept inline so the corrections package does
-// not depend on `internal/llm`'s unexported `estimateTokens` helper.
-//
-// The estimator walks the message slice and sums:
-//   - Text-mode content: `len(*m.Content.Text)/4 + 1` (the +1 is
-//     role overhead).
-//   - Multimodal parts: per-part text characters / 4 + 1 per part.
-//   - Audio/image/file parts that arrive as `ArtifactStub` JSON: the
-//     stub's serialized form is short (well under threshold), so we
-//     count a constant 16 tokens — close enough that operator
-//     dashboards see consistent numbers without paying for marshal.
-//
-// Synthetic; not a replacement for a real tokenizer. Later phases may
-// register tiktoken-equivalent estimators via
-// `ModelProfile.TokenEstimator`; this fallback runs when the named
-// estimator is empty or "chars_div_4".
+// estimateRequestTokens uses the same input estimator as request admission.
+// Usage backfill remains explicitly estimated; provider-reported usage wins.
 func estimateRequestTokens(req llm.CompleteRequest) int {
-	total := 0
-	for _, m := range req.Messages {
-		total += 1 // role overhead
-		if m.Content.Text != nil {
-			total += len(*m.Content.Text) / 4
-			continue
-		}
-		for _, p := range m.Content.Parts {
-			switch p.Type {
-			case llm.PartText:
-				total += len(p.Text) / 4
-			case llm.PartImage, llm.PartAudio, llm.PartFile:
-				total += 16
-			}
-		}
-	}
-	return total
+	return llm.EstimateRequestTokens(req, llm.ModelProfile{})
 }
 
 // estimateStringTokens returns the chars/4 estimate for a free-form

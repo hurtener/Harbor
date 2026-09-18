@@ -26,6 +26,11 @@ import (
 //     well under 200 tokens) so the safety pass rarely fires on
 //     legitimately-bounded multimodal requests.
 //
+// Native tool declarations, historical call arguments and correlation IDs
+// contribute to input too. Output reservations are intentionally separate:
+// callers must subtract output headroom from the model window, not bill it
+// as already consumed input.
+//
 // Response-format JSON schemas contribute to the prompt — schemas
 // over a few hundred tokens are real. the downgrade chain
 // will hand-balance schema size vs prompt size; estimates
@@ -77,6 +82,24 @@ func chars4Estimator(req CompleteRequest) int {
 		if m.Name != nil {
 			total += len(*m.Name)/4 + 1
 		}
+		if m.ToolCallID != nil {
+			total += len(*m.ToolCallID)/4 + 1
+		}
+		for _, call := range m.ToolCalls {
+			total += messageRoleOverhead
+			total += len(call.ID)/4 + 1
+			total += len(call.Name)/4 + 1
+			total += len(call.Args)/4 + 1
+		}
+	}
+	for _, tool := range req.Tools {
+		total += messageRoleOverhead
+		total += len(tool.Name)/4 + 1
+		total += len(tool.Description)/4 + 1
+		total += len(tool.Schema)/4 + 1
+	}
+	if req.ToolChoice != "" {
+		total += len(req.ToolChoice)/4 + 1
 	}
 	// Response-format schema contribution.
 	if req.ResponseFormat != nil && len(req.ResponseFormat.JSONSchema) > 0 {
