@@ -1,6 +1,10 @@
 # RFC 002 — Portable session context
 
-**Status:** Proposed; planning only, no runtime behavior shipped.
+**Status:** Accepted for incremental implementation in PR #779; not released.
+
+Phase 268 implements the first slice. Its plan distinguishes completed
+checkpoints from the remaining budget and summarizer work. Later slices remain
+pending; this status does not claim durable session continuity or RC readiness.
 
 **Date:** 2026-09-18.
 

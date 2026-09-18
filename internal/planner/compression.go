@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -49,67 +50,42 @@ type Summariser interface {
 	Summarise(ctx context.Context, rc RunContext, tr *Trajectory) (*TrajectorySummary, error)
 }
 
-// TokenEstimator is the runner's pluggable token-count function. The
-// default implementation ([DefaultTokenEstimator]) walks
-// [trajectory.Trajectory.Serialize] bytes and returns `len/4 + 1` —
-// mirroring [internal/llm/tokens.go]'s `chars4Estimator` so the two
-// estimators agree (single surface; no parallel implementation per
-// §13).
-//
-// Estimator errors propagate; an [trajectory.ErrUnserializable] from
-// Serialize is the typical failure mode and is surfaced verbatim
-// (fail-loudly contract).
+// TokenEstimator estimates the active trajectory projection for standalone
+// compaction callers. Complete request admission remains the LLM edge's job.
 type TokenEstimator func(tr *Trajectory) (int, error)
 
-// DefaultTokenEstimator is the chars/4 estimator backed by
-// [trajectory.Trajectory.Serialize]. Used when [WithTokenEstimator]
-// is not set.
-//
-// A nil trajectory returns (0, [ErrNilTrajectory]) — the estimator
-// fails closed rather than returning a meaningless zero estimate.
-//
-// The chars/4 algorithm under-counts multimodal content compared to
-// the LLM-edge estimator (which adds 256 tokens per non-text part);
-// trajectories don't typically carry multimodal parts directly in
-// LLMContext (heavy content is upstream of the trajectory per the
-// safety pass), so the simpler walker is sufficient.
-// A future estimator that structurally walks the trajectory is a
-// later refinement; the [TokenEstimator] functional-option seam
-// is the unwind point.
+// DefaultTokenEstimator excludes covered steps and diagnostic/raw duplicates.
+// The reference planner's assembled-request budget includes its other sections.
 func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 	if tr == nil {
 		return 0, ErrNilTrajectory
 	}
-	b, err := tr.Serialize()
+	start, err := tr.ReplayStart()
+	if err != nil {
+		return 0, err
+	}
+	view := *tr
+	view.Summary = tr.ActiveSummary()
+	view.Steps = make([]Step, len(tr.Steps)-start)
+	for i, step := range tr.Steps[start:] {
+		view.Steps[i] = trajectory.ModelStep(step)
+	}
+	view.ToolContext = trajectory.ToolContext{}
+	view.Background = nil
+	view.HintState = nil
+	view.Sources = nil
+	view.Artifacts = nil
+	view.ResumeHint = nil
+	view.TrancheBaseline = 0
+	b, err := view.Serialize()
 	if err != nil {
 		return 0, fmt.Errorf("default token estimator: %w", err)
 	}
-	// chars/4 + 1 mirrors internal/llm/tokens.go::chars4Estimator's
-	// per-fragment formula. The trailing +1 is the single-token
-	// overhead the LLM-edge estimator applies per text fragment;
-	// applied once here (the trajectory is treated as one fragment by
-	// the runner since the Serialize byte stream is the planner-facing
-	// projection).
 	return len(b)/4 + 1, nil
 }
 
-// CompressionRunner drives the "estimate → optional summariser → stamp
-// Trajectory.Summary" loop the runtime invokes between planner steps.
-// The production cadence is the steering RunLoop's step boundary
-// (one MaybeCompress call per step, gated on
-// Budget.TokenBudget > 0 and a configured runner).
-//
-// Reusable artifact: one constructed instance is safe to
-// share across N concurrent runs; per-call state lives entirely in
-// `ctx` + [RunContext] + the per-call serialised bytes. The receiver
-// is read-only after construction.
-//
-// **Idempotent on `tr.Summary != nil`.** A second call with an
-// already-stamped trajectory returns nil without invoking the
-// summariser — this short-circuit IS the V1.1.x "one compression per
-// run, no auto-cascade" scope fence (RFC §6.5; re-compaction cadence
-// is the recorded follow-up). The layer that owns a future
-// re-compaction policy clears the summary before re-invoking.
+// CompressionRunner replaces eligible older exchanges with a portable summary.
+// The receiver is immutable; callers serialize mutation of each trajectory.
 type CompressionRunner struct {
 	summariser Summariser
 	estimator  TokenEstimator
@@ -153,49 +129,12 @@ func NewCompressionRunner(summariser Summariser, opts ...CompressionOption) *Com
 	return r
 }
 
-// MaybeCompress is the runner's entrypoint. The flow (in order):
-//
-//  1. Honour `ctx.Err()` at entry; return verbatim if cancelled.
-//  2. Reject missing identity (wrapped [llm.ErrIdentityMissing]).
-//  3. Defensive nil guard: nil `tr` returns wrapped
-//     [ErrNilTrajectory].
-//  4. Already-compressed short-circuit: when `tr.Summary != nil`,
-//     return nil without calling the summariser (idempotent).
-//  5. Compute the token estimate via the configured estimator.
-//     Estimator errors propagate (with the
-//     `trajectory.compression_failed` emit carrying error code
-//     "estimator_error").
-//  6. Budget check: when `rc.Budget.TokenBudget <= 0`, return nil (no
-//     budget enforced).
-//  7. When `estimate <= rc.Budget.TokenBudget`, return nil (below
-//     threshold).
-//  8. Invoke `summariser.Summarise(ctx, rc, tr)`. A non-nil error →
-//     emit `trajectory.compression_failed` with code
-//     "summariser_error", return the error wrapped. A nil
-//     `*TrajectorySummary` with nil error → wrapped [ErrEmptySummary]
-//     + emit with code "empty_summary".
-//  9. Stamp `tr.Summary = result` and emit `trajectory.compressed`
-//     carrying the identity + before/after step count + token
-//     estimate.
-//  10. Return nil.
-//
-// **Fail-loudly (CLAUDE.md §13).** Every error path emits the
-// failure event before returning; there is no silent fall-through to
-// raw history. The success-path emit pairs with the failure-path emit
-// so compression is observable in both directions.
-//
-// **Identity is mandatory (§6 rule 9).** A partial quadruple
-// returns wrapped [llm.ErrIdentityMissing] — parity with the
-// react/repair planner's identity-rejection sentinel.
-//
-// **Reusable.** Safe to invoke concurrently against a single
-// shared runner from N goroutines. Per-call state lives in ctx + rc
-// + the per-call serialised bytes; the receiver is read-only.
-func (r *CompressionRunner) MaybeCompress(
-	ctx context.Context,
-	rc RunContext,
-	tr *Trajectory,
-) error {
+// MaybeCompress summarizes an older prefix, retaining the latest exchange and
+// a recent tail targeted at one quarter of the working budget. Existing steps
+// remain available for inspection; coverage alone selects prompt replay.
+// Failures leave the previous checkpoint unchanged. Callers must serialize
+// writes to tr; the steering loop snapshots outside its inspection mutex.
+func (r *CompressionRunner) MaybeCompress(ctx context.Context, rc RunContext, tr *Trajectory) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -203,66 +142,106 @@ func (r *CompressionRunner) MaybeCompress(
 		return err
 	}
 	if tr == nil {
-		return fmt.Errorf("planner.CompressionRunner.MaybeCompress: %w", ErrNilTrajectory)
+		return ErrNilTrajectory
 	}
-
-	// Idempotency: already compressed, nothing to do. This is the
-	// V1.1.x single-compression scope fence; a future
-	// re-compaction policy clears tr.Summary before re-invoking.
-	if tr.Summary != nil {
-		return nil
-	}
-
-	estimate, err := r.estimator(tr)
+	start, err := tr.ReplayStart()
 	if err != nil {
-		// Fail-loudly per §13: emit the failure event before
-		// returning so observability picks up the estimator failure
-		// (typically an ErrUnserializable surfaced through
-		// Serialize).
-		emitCompressionFailed(ctx, rc, tr, 0, "estimator_error", err)
-		return fmt.Errorf("planner.CompressionRunner.MaybeCompress: estimator: %w", err)
+		return err
 	}
-
-	// No budget set → no compression. Zero is the "unset" sentinel,
-	// matching the Budget.HopBudget / Budget.CostCap conventions.
 	if rc.Budget.TokenBudget <= 0 {
 		return nil
 	}
-
-	// Under threshold → no compression.
-	if estimate <= rc.Budget.TokenBudget {
+	estimate, err := r.estimator(tr)
+	if err != nil {
+		emitCompressionFailed(ctx, rc, tr, 0, "estimator_error", err)
+		return fmt.Errorf("planner compression: estimator: %w", err)
+	}
+	if estimate <= rc.Budget.TokenBudget || len(tr.Steps)-start < 2 {
 		return nil
 	}
-
-	// Over budget — invoke the summariser.
-	result, summErr := r.summariser.Summarise(ctx, rc, tr)
-	if summErr != nil {
-		emitCompressionFailed(ctx, rc, tr, estimate, "summariser_error", summErr)
-		return fmt.Errorf("planner.CompressionRunner.MaybeCompress: summariser: %w", summErr)
+	// Always preserve the last complete exchange, even when it alone exceeds
+	// the tail target. The physical request guard still applies afterward.
+	end := len(tr.Steps) - 1
+	tailTokens := 0
+	for i := len(tr.Steps) - 1; i >= start; i-- {
+		b, encErr := json.Marshal(trajectory.ModelStep(tr.Steps[i]))
+		if encErr != nil {
+			return fmt.Errorf("planner compression: step encoding: %w", encErr)
+		}
+		n := len(b)/4 + 1
+		if i != len(tr.Steps)-1 && tailTokens+n > rc.Budget.TokenBudget/4 {
+			break
+		}
+		tailTokens += n
+		end = i
 	}
-	if result == nil {
-		// Contract violation: the Summariser returned (nil, nil).
-		// This is a fail-loud surface (§13) — the bug is the
-		// implementation's, not the runner's; we surface it loudly
-		// rather than papering over with raw history.
+	if tr.UnseenFrom != nil {
+		if *tr.UnseenFrom < 0 || *tr.UnseenFrom > len(tr.Steps) {
+			return trajectory.ErrInvalidCoverage
+		}
+		end = min(end, *tr.UnseenFrom)
+	}
+	if end <= start {
+		return nil
+	}
+	original := tr.Summary
+	digest, err := tr.PrefixDigest(end)
+	if err != nil {
+		return err
+	}
+	input := &Trajectory{Query: tr.Query, Summary: trajectory.CloneSummary(tr.ActiveSummary())}
+	if input.Summary != nil {
+		input.Summary.Coverage = nil // metadata is not generated narrative
+	}
+	for _, step := range tr.Steps[start:end] {
+		input.Steps = append(input.Steps, trajectory.ModelStep(step))
+	}
+	// Detach JSON trees from caller-owned observations before invoking an
+	// extension. A misbehaving summarizer cannot mutate live evidence.
+	encoded, err := input.Serialize()
+	if err != nil {
+		return err
+	}
+	input, err = trajectory.Deserialize(encoded)
+	if err != nil {
+		return err
+	}
+	summaryRC := rc
+	summaryRC.Trajectory = input
+	result, err := r.summariser.Summarise(ctx, summaryRC, input)
+	if err != nil {
+		emitCompressionFailed(ctx, rc, tr, estimate, "summariser_error", err)
+		return fmt.Errorf("planner compression: summariser: %w", err)
+	}
+	if !result.HasContent() {
 		emitCompressionFailed(ctx, rc, tr, estimate, "empty_summary", ErrEmptySummary)
-		return fmt.Errorf("planner.CompressionRunner.MaybeCompress: %w", ErrEmptySummary)
+		return ErrEmptySummary
 	}
-
-	stepsBefore := len(tr.Steps)
-	// Stamp the summary. Harbor does NOT truncate the Steps slice;
-	// the planner observes the compacted view through the prompt
-	// builder's summary-only rendering. A future phase MAY truncate;
-	// the StepsBefore / StepsAfter event-payload fields are the seam.
-	tr.Summary = result
-	stepsAfter := len(tr.Steps)
-
-	emitCompressionSucceeded(ctx, rc, stepsBefore, stepsAfter, estimate)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, err := tr.PrefixDigest(end)
+	if err != nil || current != digest || tr.Summary != original {
+		return ErrStaleSummary
+	}
+	generation := uint64(1)
+	if original != nil && original.Coverage != nil {
+		generation = original.Coverage.Generation + 1
+		if generation == 0 {
+			return trajectory.ErrInvalidCoverage
+		}
+	}
+	candidate := trajectory.CloneSummary(result)
+	candidate.Coverage = &trajectory.SummaryCoverage{Version: 1, Generation: generation, ThroughStep: end, PrefixDigest: digest}
+	tr.Summary = candidate
+	emitCompressionSucceeded(ctx, rc, len(tr.Steps), len(tr.Steps), estimate)
 	return nil
 }
 
 // Sentinel errors. Use errors.Is.
 var (
+	// ErrStaleSummary refuses a checkpoint whose source changed during generation.
+	ErrStaleSummary = errors.New("planner: summary source changed during generation")
 	// ErrNilTrajectory is the fail-loud sentinel returned by
 	// [CompressionRunner.MaybeCompress] (and [DefaultTokenEstimator])
 	// when the supplied trajectory pointer is nil. Distinct from the

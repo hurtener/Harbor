@@ -340,7 +340,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 	errs := make([]error, n)
 	for i := range n {
 		marker := fmt.Sprintf("run-marker-%03d", i)
-		tr := &planner.Trajectory{Query: marker}
+		tr := &planner.Trajectory{Query: marker, Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}}}
 		trajectories[i] = tr
 		rc := trajRC(fmt.Sprintf("run-%03d", i))
 		rc.Query = marker
@@ -404,7 +404,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 	cancelCtx, cancelBlocked := context.WithCancel(context.Background())
 	for i := range half {
 		// Blocked runs: the fake client parks on ctx.Done.
-		trB := &planner.Trajectory{Query: "blocker"}
+		trB := &planner.Trajectory{Query: "blocker", Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}}}
 		rcB := trajRC(fmt.Sprintf("blocked-%03d", i))
 		rcB.Budget = planner.Budget{TokenBudget: 10}
 		wg2.Add(1)
@@ -414,7 +414,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 		}()
 		// Free runs: independent ctx; must succeed despite siblings
 		// being cancelled mid-summarise.
-		trF := &planner.Trajectory{Query: "free"}
+		trF := &planner.Trajectory{Query: "free", Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}}}
 		freeTrajs[i] = trF
 		rcF := trajRC(fmt.Sprintf("free-%03d", i))
 		rcF.Budget = planner.Budget{TokenBudget: 10}

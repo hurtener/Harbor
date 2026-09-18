@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 3
+          fetch-depth: 2
       - name: Apply exact tested tree
         if: hashFiles('.github/context-dev-change.json') != ''
         shell: python
@@ -34,17 +34,8 @@ jobs:
           manifest = pathlib.Path('.github/context-dev-change.json')
           change = json.loads(manifest.read_text())
           if git('rev-parse', 'HEAD^') != change['base']:
-              if git('rev-parse', 'HEAD^^') != change['base']:
-                  raise SystemExit('Remote base changed; refusing checkpoint')
-              changed = set(git('diff', '--name-only', change['base'], 'HEAD').splitlines())
-              transport = {'.github/context-dev-change.json', '.github/workflows/context-dev-bootstrap.yml'}
-              if not changed.issubset(transport):
-                  raise SystemExit('Non-transport changes after tested base')
-              subprocess.run(['git', 'checkout', change['base'], '--', '.github/workflows/context-dev-bootstrap.yml'], check=True)
-          # Repair two known transcription errors in this one transport payload.
-          # The original SHA-256 and complete target tree remain mandatory.
-          encoded = change['patch'].replace('qpgRBLSo', 'qpgkRBLSo').replace('EvFisDis54', 'EvFis54')
-          compressed = base64.b64decode(encoded, validate=True)
+              raise SystemExit('Remote base changed; refusing checkpoint')
+          compressed = base64.b64decode(change['patch'], validate=True)
           decoder = zlib.decompressobj()
           patch = decoder.decompress(compressed, 2 * 1024 * 1024 + 1)
           if len(patch) > 2 * 1024 * 1024 or not decoder.eof or decoder.unused_data:
@@ -56,7 +47,7 @@ jobs:
           subprocess.run(['git', 'apply', '--check', '--index', '--whitespace=error-all', str(path)], check=True)
           subprocess.run(['git', 'apply', '--index', '--whitespace=error-all', str(path)], check=True)
           allowed_roots = ('internal/', 'sdk/', 'test/', 'harbortest/', 'scripts/', 'docs/', 'examples/')
-          allowed_files = {'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'README.md', 'CHANGELOG.md', '.github/workflows/context-dev-bootstrap.yml'}
+          allowed_files = {'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'README.md', 'CHANGELOG.md'}
           for name in git('diff', '--cached', '--name-only').splitlines():
               if name not in allowed_files and not name.startswith(allowed_roots):
                   raise SystemExit('Patch changes a path outside the implementation scope')

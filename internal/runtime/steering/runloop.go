@@ -408,24 +408,10 @@ type RunSpec struct {
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
 
-	// Compression is the optional trajectory-compression runner
-	// (the §13 first call site of
-	// planner.CompressionRunner.MaybeCompress). When non-nil AND the
-	// run's Base.Budget.TokenBudget > 0, the runloop invokes
-	// MaybeCompress at each step boundary (after the control drain +
-	// projection, before Planner.Next) so an over-budget trajectory is
-	// compacted into Trajectory.Summary BEFORE the next prompt build —
-	// the React prompt builder's `Summary != nil` branch then renders
-	// the five-field summary instead of the per-step history and the
-	// prompt shrinks. Nil (or a zero TokenBudget) is byte-identical to
-	// the pre-111e behaviour: no estimate, no summariser, no events.
-	//
-	// One compression per run at V1.1.x: the runner is idempotent on
-	// `Trajectory.Summary != nil` (the documented scope fence — RFC
-	// §6.5; re-compaction cadence is the recorded follow-up).
-	// A MaybeCompress error fails the run LOUDLY (the runner already
-	// emitted trajectory.compression_failed) — never a silent
-	// fall-through that pretends compression happened.
+	// Compression maintains a summary of older exchanges plus a recent tail.
+	// A positive TokenBudget enables the step-boundary gate. Checkpoint
+	// publication shares TrajectoryMu with inspection, but generation does not
+	// hold that mutex. Compression errors stop the run explicitly.
 	Compression *planner.CompressionRunner
 
 	// OnToolDispatched is the optional per-run hook the runloop invokes
@@ -549,6 +535,18 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	maxConsecutiveInvalid := spec.MaxConsecutiveInvalidDecisions
 	if maxConsecutiveInvalid <= 0 {
 		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
+	}
+	if spec.Base.Trajectory != nil {
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Lock()
+		}
+		if spec.Base.Trajectory.UnseenFrom == nil {
+			unseen := 0
+			spec.Base.Trajectory.UnseenFrom = &unseen
+		}
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Unlock()
+		}
 	}
 	if spec.TrancheSteps > 0 && spec.Base.Trajectory != nil {
 		if spec.TrajectoryMu != nil {
@@ -981,19 +979,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			stepPending = pending
 		}
 
-		// --- COMPRESS: the trajectory-compression
-		// gate, after the drain/projection and before Planner.Next so
-		// THIS step's prompt build already sees the compacted view.
-		// The runner owns the semantics (estimate → threshold →
-		// summarise → stamp Summary → emit trajectory.compressed;
-		// idempotent on Summary != nil — one compression per run at
-		// V1.1.x). The gate below keeps the nil-runner / zero-budget
-		// paths byte-identical to the pre-111e loop. An error is
-		// fail-loud: the runner emitted trajectory.compression_failed
-		// and the run terminates with the wrapped error — never a
-		// silent fall-through to raw history (CLAUDE.md §13).
+		// Compact outside the inspection mutex, then publish the checkpoint.
 		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
-			if cerr := spec.Compression.MaybeCompress(runCtx, rc, rc.Trajectory); cerr != nil {
+			if cerr := compressTrajectory(runCtx, spec, rc); cerr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 			}
 		}
@@ -1004,6 +992,18 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// this coordinate, while retries of this same step retain it.
 		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
+		// A pending-call drain does not ask for another decision. Its results
+		// remain protected until the complete pending group has been presented.
+		if rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
+			if spec.TrajectoryMu != nil {
+				spec.TrajectoryMu.Lock()
+			}
+			presented := len(rc.Trajectory.Steps)
+			rc.Trajectory.UnseenFrom = &presented
+			if spec.TrajectoryMu != nil {
+				spec.TrajectoryMu.Unlock()
+			}
+		}
 		if flush := rc.AfterPlannerStep; flush != nil {
 			if ferr := flush(plannerCtx); ferr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: persist completion chunks after planner step %d: %w", step, ferr)

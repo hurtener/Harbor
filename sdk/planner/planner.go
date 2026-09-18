@@ -55,6 +55,8 @@ type (
 	Step = internal.Step
 	// Summary is the compaction artefact of a compressed trajectory.
 	Summary = internal.Summary
+	// SummaryCoverage identifies the exact summarized prefix.
+	SummaryCoverage = internal.SummaryCoverage
 	// Source records a step's provenance.
 	Source = internal.Source
 	// StreamChunk is one chunked-output fragment on the trajectory.

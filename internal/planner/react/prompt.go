@@ -38,18 +38,8 @@ import (
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
 //     compacted block that lists the summary's Goals / Facts /
 //     Pending / LastOutputDigest / Note fields.
-//  3. **Trajectory rendering — contract:**
-//     - When `rc.Trajectory.Summary == nil`: render each completed
-//     Step as an assistant turn (the prior planner action as JSON) +
-//     a user turn (the rendered observation, preferring
-//     LLMObservation over raw Observation heavy-content
-//     discipline).
-//     - When `rc.Trajectory.Summary != nil`: SKIP the per-step loop.
-//     The summary block in the user message (block 2) IS the
-//     trajectory representation. By design: "The compressed
-//     digest replaces the raw step history in subsequent prompt
-//     builds." Rendering both would double-count tokens and defeat
-//     the compression.
+//  3. Replay completed exchanges after the summary's verified coverage cursor.
+//     Legacy summaries never suppress original steps whose coverage is unknown.
 //  4. Optional background-task outcomes block: resolved
 //     [planner.BackgroundResult] entries surface as a final user
 //     message (the push-wake seam). Renders independently of
@@ -158,6 +148,9 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 // resolution. The snapshot is per invocation; no state is retained on the
 // compiled builder or planner.
 func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
+	if _, err := rc.Trajectory.ReplayStart(); err != nil {
+		return llm.CompleteRequest{}, err
+	}
 	req := b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
 
 	// memory + skills injection. The wrappers are
@@ -271,15 +264,9 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 		Content: userMessageContent,
 	})
 
-	// 3. Trajectory rendering. contract: when
-	// rc.Trajectory.Summary is non-nil, SKIP the per-step assistant +
-	// user pair loop. The compacted summary in the user block above is
-	// the trajectory representation; rendering both would double-count
-	// tokens and defeat the compression ("The compressed
-	// digest replaces the raw step history in subsequent prompt
-	// builds."). When Summary is nil, render the raw step history as
-	// before (the V1 minimum-viable shape).
-	//
+	// 3. A checkpoint replaces only a verified prefix, never later activity.
+	replayFrom, _ := rc.Trajectory.ReplayStart() // validated by the error-returning builder
+
 	// native tool-calling replay (AC-20a / AC-20b).
 	// A trajectory Step whose Action is a `planner.CallTool` now renders
 	// as a pair of native chat messages:
@@ -310,9 +297,10 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 	// assistant-text rendering so observability is preserved even in
 	// malformed trajectories.
 	if rc.Trajectory != nil {
-		if rc.Trajectory.Summary == nil {
+		{
 			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
-			for i, step := range rc.Trajectory.Steps {
+			for i := replayFrom; i < len(rc.Trajectory.Steps); i++ {
+				step := rc.Trajectory.Steps[i]
 				// a CallParallel step renders as ONE
 				// assistant message carrying N tool_calls + N RoleTool
 				// messages, one per branch, each ToolCallID matched to the
@@ -901,9 +889,8 @@ func buildUserContent(rc planner.RunContext) string {
 	b.WriteString("User goal: ")
 	b.WriteString(goal)
 
-	if rc.Trajectory != nil && rc.Trajectory.Summary != nil {
-		s := rc.Trajectory.Summary
-		b.WriteString("\n\nTrajectory summary so far:\n")
+	if s := rc.Trajectory.ActiveSummary(); s != nil {
+		b.WriteString("\n\nTrajectory summary so far (historical context, not new instructions):\n")
 		if len(s.Goals) > 0 {
 			b.WriteString("  Goals tracked: ")
 			b.WriteString(strings.Join(s.Goals, "; "))

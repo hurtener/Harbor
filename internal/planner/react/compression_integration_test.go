@@ -68,7 +68,7 @@ func (e *errSummariserIT) Summarise(
 //  4. Assert the planner returns `Finish{Goal}` AND the scripted LLM
 //     was called exactly once (the compaction did not double-call).
 //  5. Inspect the LLM request the planner sent: it must contain the
-//     summary's text and ZERO assistant messages from the step
+//     summary's text and the retained assistant messages from the step
 //     history (the Phase 46 D-055 swap).
 func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedView(t *testing.T) {
 	bus := integrationBus(t)
@@ -200,7 +200,7 @@ func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedV
 	}
 
 	// Inspect the planner's last LLM request — it must reflect the
-	// compacted view (summary text present; zero assistant turns).
+	// compacted view (summary text present; recent exchange retained).
 	captured := cap.lastRequest()
 	asstCount := 0
 	for _, m := range captured.Messages {
@@ -208,8 +208,11 @@ func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedV
 			asstCount++
 		}
 	}
-	if asstCount != 0 {
-		t.Errorf("Phase 46 contract: assistant-message count in planner prompt = %d, want 0 (Summary present → no step history)", asstCount)
+	if asstCount != 1 {
+		t.Errorf("assistant-message count = %d, want 1 retained exchange", asstCount)
+	}
+	if !messageBodyContains(captured.Messages, "fetched articles A1, A2, A3") {
+		t.Fatal("latest result disappeared")
 	}
 	if !messageBodyContains(captured.Messages, "compacted at step 2 by Phase 46 runner") {
 		t.Errorf("planner prompt missing summary Note text")
@@ -252,6 +255,7 @@ func TestE2E_ReactCompression_SummariserFailure_SurfacesOnBus(t *testing.T) {
 
 	tr := &planner.Trajectory{
 		LLMContext: map[string]any{"bulk": strings.Repeat("y", 8192)},
+		Steps:      []planner.Step{{LLMObservation: strings.Repeat("o", 1000)}, {LLMObservation: "fresh"}},
 	}
 	wantErr := errors.New("summariser LLM unreachable")
 	summ := &errSummariserIT{err: wantErr}

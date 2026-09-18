@@ -15431,3 +15431,21 @@ provider-route capability validation and governance remain enforced. An empty
 reasoning value explicitly requests provider defaults; `off` disables thinking.
 The runtime advertises `run_llm_settings_v1`. Omitted bundles preserve legacy
 behavior. The Protocol version remains `0.1.0`.
+
+
+## D-462 — Portable compaction covers a prefix, not subsequent activity
+
+**Date:** 2026-09-18. **Scope:** RFC 002, phase 268; incremental implementation.
+
+A summary carries a runtime-owned version, generation, exclusive step boundary,
+and canonical source-prefix digest. ReAct renders that summary and the uncovered
+suffix. Complete recent exchanges and fresh queued outcomes are protected.
+Repeated compaction incorporates the previous narrative and newly eligible older
+exchanges; it does not resummarize archived raw duplicates. Failed, vacuous,
+cancelled, or stale candidates leave the previous checkpoint unchanged.
+
+This supersedes D-055/D-202 only where they prescribe one compression per run or
+suppress all step replay after a summary exists. Existing identity, artifact,
+consumer-turn, pause, and observability authority remain intact. Long-term memory
+stays external, and compaction uses the governed ordinary Bifrost-backed client.
+The phase plan records unimplemented budget/summarizer acceptance explicitly.

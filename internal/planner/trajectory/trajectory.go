@@ -61,6 +61,11 @@ type Trajectory struct {
 	// Steps is the append-only list of trajectory steps.
 	Steps []Step `json:"steps,omitempty"`
 
+	// UnseenFrom is the first exchange not yet presented to a decision. The
+	// runtime maintains it, including across queued tool-call drains. Nil is
+	// legacy/direct-caller state, which still protects the latest exchange.
+	UnseenFrom *int `json:"unseen_from,omitempty"`
+
 	// TrancheBaseline is the index into Steps where the CURRENT bounded
 	// tranche began. A bounded tranche is the slice of tool-bearing
 	// planner iterations the runtime runs between two max_steps-pause
@@ -78,7 +83,7 @@ type Trajectory struct {
 
 	// Summary is the compaction artefact produced by the trajectory
 	// summariser. Non-nil when the runtime compressed the
-	// trajectory; the planner sees only the compacted view.
+	// trajectory; the planner replays the summary plus the uncovered tail.
 	Summary *Summary `json:"summary,omitempty"`
 
 	// Sources captures the citations / provenance for the planner's
@@ -185,9 +190,11 @@ type Step struct {
 }
 
 // Summary is the compaction artefact produced by the
-// summariser. Replaces the raw step history in subsequent prompt
-// builds when the trajectory exceeds the configured budget.
+// summariser. Replaces only its explicitly covered historical prefix.
 type Summary struct {
+	// Coverage is runtime-owned; nil identifies an unversioned legacy summary.
+	Coverage *SummaryCoverage `json:"coverage,omitempty"`
+
 	// Goals captures the planner's running goal-tracking.
 	Goals []string `json:"goals,omitempty"`
 

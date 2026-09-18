@@ -224,29 +224,22 @@ func TestMaybeCompress_OverBudget_StampsSummary(t *testing.T) {
 	}
 }
 
-// TestMaybeCompress_AlreadyCompressed_Idempotent asserts the
-// short-circuit when tr.Summary is already non-nil.
+// A checkpoint remains unchanged when there are no newly eligible steps.
 func TestMaybeCompress_AlreadyCompressed_Idempotent(t *testing.T) {
 	t.Parallel()
 	summ := &staticSummariser{summary: cannedSummary()}
-	rec := &recordingEmit{}
 	runner := planner.NewCompressionRunner(summ)
-
-	rc := rcWith(fixedQuadruple("r3"), 10, rec.emit)
+	rc := rcWith(fixedQuadruple("r3"), 10, nil)
 	tr := bigTrajectory(5000)
-	tr.Summary = &planner.TrajectorySummary{Note: "pre-stamped"}
-
-	if err := runner.MaybeCompress(context.Background(), rc, tr); err != nil {
-		t.Fatalf("MaybeCompress: %v", err)
+	if err := runner.MaybeCompress(t.Context(), rc, tr); err != nil {
+		t.Fatal(err)
 	}
-	if tr.Summary.Note != "pre-stamped" {
-		t.Errorf("pre-stamped Summary clobbered: Note = %q", tr.Summary.Note)
+	checkpoint := tr.Summary
+	if err := runner.MaybeCompress(t.Context(), rc, tr); err != nil {
+		t.Fatal(err)
 	}
-	if summ.calls.Load() != 0 {
-		t.Errorf("summariser invoked %d times on idempotent path — want 0", summ.calls.Load())
-	}
-	if got := rec.snapshot(); len(got) != 0 {
-		t.Errorf("emitted %d events on idempotent path — want 0", len(got))
+	if tr.Summary != checkpoint || summ.calls.Load() != 1 {
+		t.Fatal("unchanged tail was summarized again")
 	}
 }
 

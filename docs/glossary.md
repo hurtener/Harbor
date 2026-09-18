@@ -337,9 +337,22 @@ D-316.
 
 **ConformanceScenario** — one named subtest inside the conformance pack. Subtest names are pinned (stable strings) so per-concrete suites' pass/fail boards remain comparable across phases. A scenario whose required capability is absent calls `t.Skip(...)` with a reason — never silently passes. The pack's `ScenarioFactory` hook lets per-concrete tests supply a scenario-specific planner configuration (ReAct: a scripted-mock LLM that emits the right envelope; Deterministic: a bespoke `DecisionTreeStep` set that emits the right Decision shape). RFC §6.2, D-058.
 
-**Compression budget** — `Budget.TokenBudget int` (Phase 46). The token-estimate threshold above which the runtime invokes the trajectory summariser via `CompressionRunner.MaybeCompress`. Zero means no compression (parity with `HopBudget` / `CostCap` conventions). Estimated via the pluggable `TokenEstimator` callback; the default `DefaultTokenEstimator` walks `Trajectory.Serialize` bytes and returns `len/4 + 1` — mirrors `internal/llm/tokens.go::chars4Estimator` so the two estimators agree (single surface; no parallel implementation per §13). RFC §6.2, brief 02 §4, D-055.
+**Compression budget** — `Budget.TokenBudget` triggers runtime compaction; zero
+keeps compression disabled. The standalone estimator measures the active
+model-facing trajectory, excluding covered steps and raw diagnostic duplicates.
+Assembled-request capacity and output reservation are separate admission concerns;
+phase 268 unifies their production use without treating output as consumed input.
+RFC §6.2, RFC §6.5, D-462.
 
-**`CompressionRunner`** — runtime-side reusable artifact (D-025) at `internal/planner.CompressionRunner` that owns the "estimate → optional summariser invocation → stamp `Trajectory.Summary`" loop. Constructed via `NewCompressionRunner(summariser Summariser, opts ...CompressionOption)`; entrypoint is `MaybeCompress(ctx, rc, tr) error`. Idempotent on `Summary != nil` — the V1.1.x single-compression-per-run scope fence (re-compaction cadence is the recorded D-202 follow-up). Production call site: the steering RunLoop's step boundary, gated on `Budget.TokenBudget > 0` (Phase 111e). Identity-mandatory (§6 rule 9 + D-001 — wrapped `llm.ErrIdentityMissing` on a partial quadruple). Fail-loudly per §13: summariser errors propagate verbatim; the `(nil, nil)` contract violation surfaces as `ErrEmptySummary`; both failure paths emit `trajectory.compression_failed` before returning. RFC §6.2, D-055.
+**`CompressionRunner`** — the reusable runtime mechanism that selects an eligible
+older prefix, generates a candidate, validates its source, and publishes a
+checkpoint. A summary is not a permanent short-circuit: new eligible history can
+be compacted again. Errors preserve the prior checkpoint. RFC §6.2, D-462.
+
+**Summary coverage** — runtime-owned checkpoint version, generation, exclusive
+covered-through step index, and canonical source-prefix digest. The request
+replays every exchange after this boundary. The summarizer cannot mint coverage,
+and legacy summaries are never assigned a guessed boundary. RFC §6.2, D-462.
 
 **Context-window safety net** — Harbor's runtime-wide invariant that **no message reaching the `LLMClient` carries raw heavy content**. Multi-stage: producers (tool dispatcher, memory, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s during normal output; a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` (≥-threshold raw payload found) or `ErrContextWindowExceeded` (estimated tokens within `ContextWindowReserve` of the model's context limit, default 5%). V1 fails loudly; auto-cascading recovery is post-V1. The pass is mandatory by construction — `internal/llm.Open` returns a wrapper that runs it before delegating to the underlying driver (D-039). RFC §6.5, D-026, D-039.
 
