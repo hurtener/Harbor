@@ -1,0 +1,47 @@
+name: context development bootstrap
+
+# Temporary PR-local development aid. Remove before the release candidate.
+# Only tracked source, vendored public modules and the Go toolchain are bundled.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/context-dev-bootstrap.yml
+
+permissions:
+  contents: read
+
+jobs:
+  offline-bundle:
+    if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Prepare source and pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/context-offline"
+          git archive --format=tar.gz HEAD -o "$RUNNER_TEMP/context-offline/source.tgz"
+          git rev-parse HEAD > "$RUNNER_TEMP/context-offline/source-commit.txt"
+          go version > "$RUNNER_TEMP/context-offline/go-version.txt"
+          go mod vendor
+          tar -czf "$RUNNER_TEMP/context-offline/vendor.tgz" vendor
+          tar -C "$(go env GOROOT)" -czf "$RUNNER_TEMP/context-offline/toolchain.tgz" .
+          cd "$RUNNER_TEMP/context-offline"
+          sha256sum source.tgz vendor.tgz toolchain.tgz > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: harbor-context-offline
+          path: ${{ runner.temp }}/context-offline/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
