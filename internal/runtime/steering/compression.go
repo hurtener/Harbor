@@ -11,9 +11,25 @@ import (
 // must see either the old checkpoint or its fully installed successor, and may
 // continue reading while the summarizing model is running.
 func compressTrajectory(ctx context.Context, spec RunSpec, rc planner.RunContext) error {
+	return compressTrajectoryWith(ctx, spec, rc, spec.Compression.MaybeCompress)
+}
+
+func compressRequest(ctx context.Context, spec RunSpec, rc planner.RunContext, inputTokens, target int) (bool, error) {
+	if rc.Trajectory == nil {
+		return false, planner.ErrNilTrajectory
+	}
+	original := rc.Trajectory.Summary
+	rc.Budget.TokenBudget = target
+	err := compressTrajectoryWith(ctx, spec, rc, func(ctx context.Context, rc planner.RunContext, tr *planner.Trajectory) error {
+		return spec.Compression.MaybeCompressRequest(ctx, rc, tr, inputTokens)
+	})
+	return rc.Trajectory.Summary != original, err
+}
+
+func compressTrajectoryWith(ctx context.Context, spec RunSpec, rc planner.RunContext, compress func(context.Context, planner.RunContext, *planner.Trajectory) error) error {
 	tr := rc.Trajectory
 	if spec.TrajectoryMu == nil || tr == nil {
-		return spec.Compression.MaybeCompress(ctx, rc, tr)
+		return compress(ctx, rc, tr)
 	}
 	mu := spec.TrajectoryMu
 	mu.RLock()
@@ -26,7 +42,7 @@ func compressTrajectory(ctx context.Context, spec RunSpec, rc planner.RunContext
 	copyRC := rc
 	copyRC.Trajectory = &snapshot
 	copyRC.Emit = func(ev events.Event) { pending = append(pending, ev) }
-	err := spec.Compression.MaybeCompress(ctx, copyRC, &snapshot)
+	err := compress(ctx, copyRC, &snapshot)
 	if err == nil && snapshot.Summary != original {
 		mu.Lock()
 		candidate := snapshot.Summary

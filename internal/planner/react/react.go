@@ -662,16 +662,11 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// silently dropped memory tier. An operator-supplied builder owns
 	// its own assembly and uses the interface `Build` (custom builders
 	// do not render the wrappers).
-	var req llm.CompleteRequest
-	if db, ok := p.builder.(defaultBuilder); ok {
-		var buildErr error
-		req, buildErr = db.buildRequestWithProjectedTools(rc, p.systemPrompt, projectedTools)
-		if buildErr != nil {
-			return nil, buildErr
-		}
-	} else {
-		req = p.builder.Build(rc, p.systemPrompt)
+	req, buildErr := p.buildContextRequest(rc, projectedTools)
+	if buildErr != nil {
+		return nil, buildErr
 	}
+	req.RebuildMessages = p.rebuildMessages(rc, projectedTools)
 
 	// Apply the run-start-resolved per-run LLM-parameter overrides
 	// (model / temperature / max-tokens / reasoning-effort). The bundle is

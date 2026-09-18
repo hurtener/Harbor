@@ -136,6 +136,20 @@ func NewCompressionRunner(summariser Summariser, opts ...CompressionOption) *Com
 // Failures leave the previous checkpoint unchanged. Callers must serialize
 // writes to tr; the steering loop snapshots outside its inspection mutex.
 func (r *CompressionRunner) MaybeCompress(ctx context.Context, rc RunContext, tr *Trajectory) error {
+	return r.maybeCompress(ctx, rc, tr, nil)
+}
+
+// MaybeCompressRequest uses the already assembled request's input estimate.
+// The effective input target is rc.Budget.TokenBudget. Standalone callers use
+// MaybeCompress; both paths share the same selection and checkpoint mechanism.
+func (r *CompressionRunner) MaybeCompressRequest(ctx context.Context, rc RunContext, tr *Trajectory, inputTokens int) error {
+	if inputTokens < 0 {
+		return fmt.Errorf("planner compression: negative input estimate")
+	}
+	return r.maybeCompress(ctx, rc, tr, &inputTokens)
+}
+
+func (r *CompressionRunner) maybeCompress(ctx context.Context, rc RunContext, tr *Trajectory, inputTokens *int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -152,7 +166,12 @@ func (r *CompressionRunner) MaybeCompress(ctx context.Context, rc RunContext, tr
 	if rc.Budget.TokenBudget <= 0 {
 		return nil
 	}
-	estimate, err := r.estimator(tr)
+	var estimate int
+	if inputTokens != nil {
+		estimate = *inputTokens
+	} else {
+		estimate, err = r.estimator(tr)
+	}
 	if err != nil {
 		emitCompressionFailed(ctx, rc, tr, 0, "estimator_error", err)
 		return fmt.Errorf("planner compression: estimator: %w", err)

@@ -979,18 +979,23 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			stepPending = pending
 		}
 
-		// Compact outside the inspection mutex, then publish the checkpoint.
+		// Request-aware planners compact only after their complete request is
+		// assembled and its route/profile is resolved. Non-LLM planners keep
+		// the standalone compaction contract at the step boundary.
+		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
-			if cerr := compressTrajectory(runCtx, spec, rc); cerr != nil {
+			if _, requestAware := spec.Planner.(planner.RequestContextPlanner); requestAware {
+				plannerCtx = llm.WithContextPreparation(plannerCtx, llm.ContextPreparation{
+					InputTarget: rc.Budget.TokenBudget,
+					Compact: func(ctx context.Context, inputTokens, target int) (bool, error) {
+						return compressRequest(ctx, spec, rc, inputTokens, target)
+					},
+				})
+			} else if cerr := compressTrajectory(plannerCtx, spec, rc); cerr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 			}
 		}
 
-		// --- NEXT: the planner contributes exactly this. ---
-		// The run loop is the trusted owner of planner-step identity. The
-		// grant wrapper derives a distinct signed-grant child call id from
-		// this coordinate, while retries of this same step retain it.
-		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		// A pending-call drain does not ask for another decision. Its results
 		// remain protected until the complete pending group has been presented.

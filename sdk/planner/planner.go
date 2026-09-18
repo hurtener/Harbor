@@ -16,6 +16,8 @@ type (
 	// Planner is the swappable reasoning-policy interface (CLAUDE.md
 	// §1 property 3). Concretes implement Next(ctx, rc) (Decision, error).
 	Planner = internal.Planner
+	// RequestContextPlanner opts into assembled-request context preparation.
+	RequestContextPlanner = internal.RequestContextPlanner
 	// RunContext is the per-step view the runtime projects for the
 	// planner (identity, goal, trajectory, catalog, memory, skills).
 	RunContext = internal.RunContext

@@ -64,7 +64,7 @@ reasoning, tool handles, and duplicate raw observations are not summary input.
       history through a guessed coverage boundary.
 - [x] Summarization visits all selected steps chronologically under bounded
       byte-input/output/call limits; no silent step elision or metadata clipping.
-- [ ] Production compaction measures the assembled request, including tools,
+- [x] Production compaction measures the assembled request, including tools,
       arguments, instructions, output schema, context, and media estimates.
 - [ ] Effective model/route capacity, output headroom, and fallback attempts are
       validated before sending; maintenance has a distinct governed call identity.
@@ -179,3 +179,30 @@ The same increment repairs baseline task error handling and the canonical
 `run_llm_settings_v1` capability registry/conformance mismatch found by CI. Wire
 digests are regenerated with the repository's Go 1.26 toolchain; Go 1.27-only
 reflected type spelling is not introduced into generated documentation.
+
+## Assembled-request compaction increment
+
+The reference ReAct planner exposes a message rebuild callback, and the runtime
+binds its existing compactor through a run-local request preparation context.
+The composed LLM client invokes preparation after route selection and before
+governance/provider execution. The effective request estimate includes native
+declarations and arguments, instructions, response schema and the existing media
+estimate. Its target is bounded by the model window minus output and margin;
+physical admission remains mandatory after all downstream transformations.
+
+`MaybeCompressRequest` reuses the same selection/generation/publication algorithm
+as `MaybeCompress`. Non-request-aware planners retain standalone compression;
+there is no second compaction implementation. A maintenance request has no
+message rebuild callback, so it cannot recursively start context preparation.
+Each prepared decision performs at most one compaction and then rebuilds messages
+without duplicating guidance events or changing tools, grants or sampling controls.
+A protected tail may exceed the soft target; physical overflow is an explicit
+error, not another compaction loop or silent evidence drop.
+
+The run-loop/Bifrost HTTP regression proves that guidance can trigger compaction
+while the trajectory alone remains below target. It asserts exact fresh result
+replay, matching call identity, a single compression event and failure isolation.
+Unit tests cover declaration/argument/schema accounting, output-default capacity,
+invalid input, cancellation, failures, bypasses and 128 concurrent scoped calls.
+Strict maintenance-grant identity/accounting and model-aware summary chunk sizing
+remain outstanding; this increment does not declare phase or RC completion.

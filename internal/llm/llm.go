@@ -153,6 +153,11 @@ type CompleteRequest struct {
 	// wrapper itself enforces the concurrent-reuse contract; the validator runs once per call).
 	Validator func(CompleteResponse) error
 
+	// RebuildMessages reconstructs this request's messages after the runtime
+	// installs a context checkpoint. It is used only by request preparation,
+	// before provider work, and never serialized or retained by the driver.
+	RebuildMessages func() ([]ChatMessage, error) `json:"-"`
+
 	// Tools is the per-turn tool catalog. When
 	// nil the driver calls the provider without the tool-calling
 	// block (text-only completion — preserves non-React planner

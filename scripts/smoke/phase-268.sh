@@ -14,12 +14,12 @@ else
     fail "portable replay or inspection regression failed"
 fi
 if go test -race ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
-    -run 'TestTrajectoryChronological_|TestTrajectoryBudget_|TestTrajectorySummariser_Payload_|TestFinishReason_|TestE2E_PortableCompaction_' -count=1; then
+    -run 'TestTrajectoryChronological_|TestTrajectoryBudget_|TestTrajectorySummariser_Payload_|TestFinishReason_|TestE2E_PortableCompaction_|TestRequestContext_' -count=1; then
     ok "bounded chronological summary and real Bifrost regressions pass"
 else
     fail "chronological summary or Bifrost regression failed"
 fi
-if go test -race ./internal/llm -run 'TestRequestInputLimit|TestSafety_OutputReservation' -count=1; then
+if go test -race ./internal/llm -run 'TestRequestInputLimit|TestSafety_OutputReservation|TestContextPreparation_' -count=1; then
     ok "assembled input and output-reservation safety regressions pass"
 else
     fail "request capacity regression failed"
