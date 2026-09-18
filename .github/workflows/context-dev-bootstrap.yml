@@ -47,7 +47,7 @@ jobs:
           subprocess.run(['git', 'apply', '--check', '--index', '--whitespace=error-all', str(path)], check=True)
           subprocess.run(['git', 'apply', '--index', '--whitespace=error-all', str(path)], check=True)
           allowed_roots = ('internal/', 'sdk/', 'test/', 'harbortest/', 'scripts/', 'docs/', 'examples/')
-          allowed_files = {'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'README.md', 'CHANGELOG.md'}
+          allowed_files = {'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'README.md', 'CHANGELOG.md', 'web/console/src/lib/protocol/wire-manifest.gen.json'}
           for name in git('diff', '--cached', '--name-only').splitlines():
               if name not in allowed_files and not name.startswith(allowed_roots):
                   raise SystemExit('Patch changes a path outside the implementation scope')
