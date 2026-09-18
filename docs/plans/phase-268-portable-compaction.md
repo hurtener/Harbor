@@ -62,14 +62,17 @@ reasoning, tool handles, and duplicate raw observations are not summary input.
 - [x] Inspection proceeds during generation; checkpoint publication is guarded.
 - [x] Serialization preserves validated coverage; legacy summaries never hide
       history through a guessed coverage boundary.
-- [ ] Summarization visits all selected steps chronologically under bounded
-      input/output/call limits; no silent step elision or metadata clipping.
+- [x] Summarization visits all selected steps chronologically under bounded
+      byte-input/output/call limits; no silent step elision or metadata clipping.
 - [ ] Production compaction measures the assembled request, including tools,
       arguments, instructions, output schema, context, and media estimates.
 - [ ] Effective model/route capacity, output headroom, and fallback attempts are
       validated before sending; maintenance has a distinct governed call identity.
-- [ ] Real Bifrost scripted-HTTP integration covers success, failure, and
-      provider-independent continuation; no paid model call is required.
+- [x] Real Bifrost scripted-HTTP integration covers chunked success, known
+      truncation failure, and compatible model switching with fresh native
+      receipts intact; no native compaction endpoint or paid model is used.
+- [ ] Route/grant maintenance admission and differing provider wire formats
+      have full integration coverage before completing this phase.
 - [ ] Full phase smoke, existing regressions, drift, coverage, and preflight
       gates pass before declaring the phase finished.
 
@@ -121,7 +124,11 @@ The incremental race suite is not a claim that coverage/preflight already pass.
 A valid JSON summary is not proof of semantic completeness. Legacy history can
 be incomplete; no guessed cursor is allowed. Large protected results can exceed
 physical capacity and must fail or remain behind authorized references, never
-silently disappear. Full request budgets remain pending in the first checkpoint.
+silently disappear. Full request budgets and maintenance grant identity remain pending.
+Raw JSON trajectory deserialization yields action maps, not executable Decision
+values; cold native-call replay needs an explicit representation in the durable
+context slice. The model-switch test here uses the retained live trajectory and
+does not claim cold-run replay.
 
 ## Glossary additions
 
@@ -138,3 +145,20 @@ Summary coverage; updated compression-budget and runner semantics.
 - [ ] Real-driver integration includes identity and failure paths
 - [x] New vocabulary is in the glossary
 - [x] Departures are recorded in D-462
+
+## Chronological summarizer increment
+
+D-463 removes pre-summary step elision and fragment clipping. Every selected
+exchange enters one bounded chronological request; the prior narrative carries
+forward. Defaults cap generation at 16 completion calls, 2,048 output tokens per
+call, and 16 KiB returned narrative (or half the smaller payload allowance).
+An indivisible oversized exchange requires a bounded reference or raises an
+explicit capacity error. The effective composed-client model window is still
+an additional guard, not interchangeable with this byte budget.
+
+Local validation rejects unknown/duplicate/missing fields, null/non-string
+array values, note-only output, invalid encoding, extra content, known length or
+non-stop termination, and unexpected tools. Bifrost unary/streaming adapters now
+preserve choice-zero finish reasons; absent reasons remain unknown. Exact JSON
+integers survive the runner's detached summary-input copy. No partial candidate
+is installed after failure, cancellation, or bounded-maintenance exhaustion.

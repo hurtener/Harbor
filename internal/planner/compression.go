@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -202,10 +203,15 @@ func (r *CompressionRunner) MaybeCompress(ctx context.Context, rc RunContext, tr
 	if err != nil {
 		return err
 	}
-	input, err = trajectory.Deserialize(encoded)
-	if err != nil {
+	// Preserve exact JSON integers while detaching evidence; float64 would
+	// round large resource/version identifiers before the model receives them.
+	var detached Trajectory
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err = decoder.Decode(&detached); err != nil {
 		return err
 	}
+	input = &detached
 	summaryRC := rc
 	summaryRC.Trajectory = input
 	result, err := r.summariser.Summarise(ctx, summaryRC, input)

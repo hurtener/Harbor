@@ -2,6 +2,7 @@ package planner_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -173,5 +174,21 @@ func TestPortableCompaction_EstimateExcludesRawAndCoveredDuplicates(t *testing.T
 	}
 	if before != after {
 		t.Fatal("diagnostic duplicate affects active estimate")
+	}
+}
+
+func TestPortableCompaction_DetachedEvidencePreservesLargeInteger(t *testing.T) {
+	t.Parallel()
+	tr := bigTrajectory(10000)
+	tr.Steps[0].LLMObservation = map[string]any{"version": uint64(9007199254740993)}
+	runner := planner.NewCompressionRunner(compactionFunc(func(_ context.Context, _ planner.RunContext, input *planner.Trajectory) (*planner.TrajectorySummary, error) {
+		encoded, err := json.Marshal(input.Steps[0].LLMObservation)
+		if err != nil || !strings.Contains(string(encoded), "9007199254740993") {
+			t.Fatalf("exact identifier rounded: %s %v", encoded, err)
+		}
+		return cannedSummary(), nil
+	}))
+	if err := runner.MaybeCompress(t.Context(), rcWith(fixedQuadruple("integer"), 10, nil), tr); err != nil {
+		t.Fatal(err)
 	}
 }

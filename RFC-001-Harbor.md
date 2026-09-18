@@ -516,7 +516,7 @@ The first increment fixes replay and standalone trajectory estimation; complete
 assembled-request capacity enforcement remains a phase 268 acceptance criterion.
 No long-term memory, provider-native compaction, public transcript expansion,
 or cold execution relaunch is introduced. See
-[RFC 002](RFC-002-Session-Context.md) and the
+[RFC 002](https://github.com/hurtener/Harbor/blob/9741c6bcc204b3a7c95f939183178dd9eeb5a2f6/RFC-002-Session-Context.md) and the
 [phase 268 plan](docs/plans/phase-268-portable-compaction.md).
 
 ### 6.3 Steering and the unified pause/resume primitive

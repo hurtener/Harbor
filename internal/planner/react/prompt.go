@@ -148,10 +148,11 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 // resolution. The snapshot is per invocation; no state is retained on the
 // compiled builder or planner.
 func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
-	if _, err := rc.Trajectory.ReplayStart(); err != nil {
+	replayFrom, err := rc.Trajectory.ReplayStart()
+	if err != nil {
 		return llm.CompleteRequest{}, err
 	}
-	req := b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
+	req := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
 
 	// memory + skills injection. The wrappers are
 	// emitted as SEPARATE system-role messages immediately after the
@@ -202,10 +203,16 @@ func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, sy
 //     escaped lower-authority section. Both survive a spine replacement.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
 	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
-	return b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
+	replayFrom, err := rc.Trajectory.ReplayStart()
+	if err != nil {
+		// Build's legacy signature cannot return an error. Do not construct
+		// a sendable prompt from invalid coverage; Next uses the checked path.
+		return llm.CompleteRequest{}
+	}
+	return b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
 }
 
-func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) llm.CompleteRequest {
+func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, replayFrom int) llm.CompleteRequest {
 	// userLayer is the durable lower-trust user-instruction layer; it is
 	// suppressed when a session override replaces the whole spine.
 	var userLayer string
@@ -265,7 +272,7 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 	})
 
 	// 3. A checkpoint replaces only a verified prefix, never later activity.
-	replayFrom, _ := rc.Trajectory.ReplayStart() // validated by the error-returning builder
+	// replayFrom was validated by the caller before constructing any messages.
 
 	// native tool-calling replay (AC-20a / AC-20b).
 	// A trajectory Step whose Action is a `planner.CallTool` now renders

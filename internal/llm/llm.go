@@ -209,11 +209,15 @@ type CompleteRequest struct {
 // driver-level completion (governance accounting is in-band synchronous,
 // not a bus subscriber).
 type CompleteResponse struct {
-	Content   string
-	ToolCalls []ToolCallStructured
-	Reasoning string
-	Cost      Cost
-	Usage     Usage
+	// FinishReason is the selected completion's provider-normalized termination
+	// reason (for example "stop" or "length"). Empty means not reported, never
+	// an inferred successful stop. Maintenance consumers reject known truncation.
+	FinishReason string
+	Content      string
+	ToolCalls    []ToolCallStructured
+	Reasoning    string
+	Cost         Cost
+	Usage        Usage
 }
 
 // ToolCallStructured is a provider-validated tool-call entry (

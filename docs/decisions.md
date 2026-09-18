@@ -15432,7 +15432,6 @@ reasoning value explicitly requests provider defaults; `off` disables thinking.
 The runtime advertises `run_llm_settings_v1`. Omitted bundles preserve legacy
 behavior. The Protocol version remains `0.1.0`.
 
-
 ## D-462 — Portable compaction covers a prefix, not subsequent activity
 
 **Date:** 2026-09-18. **Scope:** RFC 002, phase 268; incremental implementation.
@@ -15449,3 +15448,27 @@ suppress all step replay after a summary exists. Existing identity, artifact,
 consumer-turn, pause, and observability authority remain intact. Long-term memory
 stays external, and compaction uses the governed ordinary Bifrost-backed client.
 The phase plan records unimplemented budget/summarizer acceptance explicitly.
+
+## D-463 — Bounded chronological portable summarization
+
+Date: 2026-09-18. Status: accepted for incremental implementation in phase 268.
+
+The production trajectory summarizer processes the selected prefix in bounded
+chronological chunks, carrying prior narrative forward. It never silently skips
+earlier exchanges or byte-clips exact result metadata. An indivisible exchange
+that cannot fit needs an authorized bounded reference or fails explicitly.
+Maintenance is limited to 16 completions; each defaults to 2,048 output tokens,
+with a separate 16 KiB narrative ceiling bounded further by the input allowance.
+All completions use the existing LLM client. Native compaction remains excluded.
+
+Checkpoint coverage stays runtime-owned. Portable output is validated locally
+regardless of native JSON-schema support, and known length/non-stop completions
+are rejected even when the body parses. Bifrost choice-zero finish reasons are
+preserved for both unary and streaming output; absent metadata is not a claimed
+successful stop. Narrative validation proves shape, not semantic completeness.
+The previous checkpoint remains unchanged on any failed chunk.
+
+This supersedes phase 111e's fragment-capping and oldest-step-elision policy, not
+its governed-client, identity, or fail-loud boundaries. Full assembled-request
+capacity and authorized maintenance grant identities remain unfinished phase
+268 acceptance criteria; no durable cross-turn or RC completion is implied.
