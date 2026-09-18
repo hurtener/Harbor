@@ -19,4 +19,9 @@ if go test -race ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
 else
     fail "chronological summary or Bifrost regression failed"
 fi
+if go test -race ./internal/llm -run 'TestRequestInputLimit|TestSafety_OutputReservation' -count=1; then
+    ok "assembled input and output-reservation safety regressions pass"
+else
+    fail "request capacity regression failed"
+fi
 smoke_summary

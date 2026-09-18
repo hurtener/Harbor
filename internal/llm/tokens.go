@@ -2,6 +2,8 @@ package llm
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 )
 
 // EstimateRequestTokens returns Harbor's canonical token-count estimate for an assembled
@@ -116,4 +118,38 @@ func chars4Estimator(req CompleteRequest) int {
 		}
 	}
 	return total
+}
+
+// requestInputLimit is the one capacity calculation used by request admission.
+// The limit is exclusive, preserving the existing reserve-boundary check. An
+// unspecified output bound stays unknown (zero here), not an invented provider
+// default. Explicit or profile-default output bounds must be positive. Reasoning
+// that shares the output allowance is not reserved a second time.
+func requestInputLimit(req CompleteRequest, profile ModelProfile, reserve float64) (int, int, error) {
+	if profile.ContextWindowTokens <= 0 || math.IsNaN(reserve) || math.IsInf(reserve, 0) || reserve < 0 || reserve >= 1 {
+		return 0, 0, fmt.Errorf("%w: invalid context capacity or reserve", ErrInvalidConfig)
+	}
+	output := req.MaxTokens
+	if output == nil {
+		output = profile.DefaultMaxTokens
+	}
+	reserved := 0
+	if output != nil {
+		if *output <= 0 {
+			return 0, 0, fmt.Errorf("%w: output-token allowance must be positive", ErrInvalidConfig)
+		}
+		reserved = *output
+	}
+	// Convert only the margin, which is strictly below the integer window.
+	// Converting the entire float64 window can overflow at the int boundary.
+	roundedMargin := math.Ceil(float64(profile.ContextWindowTokens) * reserve)
+	if roundedMargin >= float64(profile.ContextWindowTokens) {
+		return 0, reserved, nil
+	}
+	margin := int(roundedMargin)
+	capacity := profile.ContextWindowTokens - margin
+	if reserved >= capacity {
+		return 0, reserved, nil
+	}
+	return capacity - reserved, reserved, nil
 }

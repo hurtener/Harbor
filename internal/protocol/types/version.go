@@ -522,6 +522,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapLLMProviderCatalog:            {},
 	CapLLMProviderRoute:              {},
 	CapLLMProviderRouteModelProfile:  {},
+	CapRunLLMSettings:                {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

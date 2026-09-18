@@ -162,3 +162,20 @@ non-stop termination, and unexpected tools. Bifrost unary/streaming adapters now
 preserve choice-zero finish reasons; absent reasons remain unknown. Exact JSON
 integers survive the runner's detached summary-input copy. No partial candidate
 is installed after failure, cancellation, or bounded-maintenance exhaustion.
+
+## Physical request capacity increment
+
+The mandatory final safety guard subtracts explicit or profile-default output
+allowances and the existing conservative margin from the effective model window.
+It counts native declarations and historical arguments through the shared request
+estimator. The check applies again on every leaf attempt; changing to a smaller
+model cannot reuse the larger model's capacity. An absent output bound remains
+unknown for legacy callers, not an invented provider default. Production automatic
+compaction over the assembled request and strict maintenance grants remain pending.
+
+Regression tests cover exclusive boundaries, defaults/overrides, invalid bounds,
+integer extremes, native input, smaller-model rejection, and 128 concurrent calls.
+The same increment repairs baseline task error handling and the canonical
+`run_llm_settings_v1` capability registry/conformance mismatch found by CI. Wire
+digests are regenerated with the repository's Go 1.26 toolchain; Go 1.27-only
+reflected type spelling is not introduced into generated documentation.
