@@ -1,46 +1,35 @@
 name: context development source recovery
 
-# Temporary read-only recovery of this PR's tracked source for local tests.
-# Remove before RC. This job never executes a patch or writes repository content.
+# Temporary read-only source recovery while local Git DNS is unavailable.
+# Remove before RC. No patch execution, secrets, or repository write authority.
 on:
   pull_request:
     branches: [main]
     paths:
       - .github/workflows/context-dev-bootstrap.yml
+      - internal/runtime/**
+      - docs/plans/phase-269-retained-session-context.md
 permissions:
   contents: read
 jobs:
   source:
     if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'docs/portable-session-context-plan'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.8'
-          cache: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-      - name: Fetch pinned validation tools
-        run: |
-          mkdir -p "$RUNNER_TEMP/validation-tools/bin"
-          GOBIN="$RUNNER_TEMP/validation-tools/bin" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-          npm install --prefix "$RUNNER_TEMP/validation-tools" --ignore-scripts --no-audit --no-fund markdownlint-cli2@0.22.1
       - name: Archive tracked source
         run: |
           mkdir -p "$RUNNER_TEMP/context-source"
           git archive --format=tar.gz HEAD > "$RUNNER_TEMP/context-source/source.tgz"
-          tar -czf "$RUNNER_TEMP/context-source/validation-tools.tgz" -C "$RUNNER_TEMP" validation-tools
           git rev-parse HEAD > "$RUNNER_TEMP/context-source/commit.txt"
           git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/context-source/tree.txt"
           cd "$RUNNER_TEMP/context-source"
-          sha256sum source.tgz validation-tools.tgz > SHA256SUMS
+          sha256sum source.tgz > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: context-source-${{ github.run_id }}
