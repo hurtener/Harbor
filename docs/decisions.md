@@ -15628,3 +15628,32 @@ existing checkpoint can still cover its original prefix with later sibling turns
 left outside it. No additional inference, store, registry, default, or provider
 API is introduced. Interrupted-prefix reconciliation and result recovery remain
 separate unfinished acceptance work.
+
+## D-470 — Explicitly reconcile settled retained journals
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+An explicitly authorized embedded caller may reconcile a retained run by its
+full tenant/user/session/run identity through `Stack.ReconcileRetainedContext`.
+The existing journal must be fully settled and unexpired. Its exact generation
+is sealed atomically with publication of interrupted evidence and removal of
+the old admission. Competing dispatch either commits its pending intent first,
+preventing reconciliation, or loses the admission fence and cannot invoke a tool.
+No model, tool, completion hook, or cold-run relaunch is performed by recovery.
+
+A pending intent is an unknown external outcome and returns
+`ErrRetainedContextUnsettled`; it is never converted to a failed/retryable action.
+Reconciliation requires runtime-level retained context to be enabled and never
+extends source expiry. Exact committed evidence is recovered as inert history;
+untagged journal actions do not acquire guessed native types. Missing/corrupt
+frames, erasure, changed generations, redaction failure, and inability to retain
+the selected source fail explicitly. Successfully sealed context is idempotent
+while retained; exact-generation cleanup can be retried without another action.
+A concurrent reader may receive unavailable state and retry reconciliation, not
+execution. A cleanup error does not undo the sealed outcome or admission fence.
+
+The operation does not cancel a provider request already in flight. Existing
+post-decision admission checks prevent its later dispatch after the fence.
+The first consumer is the embedding API; a served Protocol reconciliation
+operation remains separate acceptance work. No storage format, default
+retention, provider dependency, or automatic recovery behavior changes.

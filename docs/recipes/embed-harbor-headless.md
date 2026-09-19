@@ -112,7 +112,7 @@ Register your own in-process tools before assembling via
 
 ## Retain recent execution evidence across embedded calls
 
-On the incremental portable-context branch, explicitly enable terminal retention
+On the incremental portable-context branch, explicitly enable retained execution context
 with `sessions.retained_context_turns` for both serving and embedded calls, or
 set the per-call option below. Reuse the same identity triple and configured
 StateStore; SQLite or Postgres is needed to retain content across process exits.
@@ -133,12 +133,41 @@ retention for that invocation. A positive value replaces legacy pair-only memory
 projection, not external-memory retrieval or trusted completion-hook capture.
 Historical tool actions are supplied as inert evidence, never dispatched.
 
-This increment is terminal-only. Hard interruption may leave an admission with
-unknown outcomes; per-action durability and interrupted-action recovery remain
-pending. The window is limited to 32 turns, 256 own steps per turn,
+Retained mode commits admitted input, dispatch intent, and settlement before the
+next dependent decision. Hard interruption may still leave an unknown external
+outcome. No historical write is retried automatically. The window is limited to 32 turns, 256 own steps per turn,
 and 512 KiB, with the session idle TTL (24 hours when unspecified). Expiry and
 whole-turn eviction are disclosed; an oversized indivisible turn fails explicitly.
 See the [phase 269 plan](../plans/phase-269-retained-session-context.md).
+
+### Reconcile a fully settled interrupted run
+
+For an explicitly selected source run, an embedder can recover its committed
+evidence without relaunching execution. Enable `sessions.retained_context_turns`
+on the stack; per-call retention alone is not permission to change that policy.
+Use the same tenant/user/session identity and the original run ID.
+
+```go
+err := stack.ReconcileRetainedContext(ctx, id, sourceRunID)
+if errors.Is(err, assemble.ErrRetainedContextUnsettled) {
+    // The external operation may have succeeded or still be running.
+    // Check the owning service; do not retry the write or the whole run.
+    return err
+}
+if err != nil {
+    return err
+}
+// A new RunOnce can now receive the recovered interrupted evidence.
+// This is a new run, not a cold resume or a replay of sourceRunID.
+```
+
+Import `errors` from the standard library for the sentinel check above. Recovery
+atomically fences the source admission, preserves its original expiry, and
+records interrupted status rather than invented completion. It performs no model
+request, tool call, or completion ingestion. A provider call already in progress
+is not cancelled, but its later dispatch must pass the admission fence. Missing,
+expired, or corrupt evidence fails explicitly. A cleanup failure can be retried
+through this same method; it is never a reason to repeat external actions.
 
 ## 4. Run one goal
 

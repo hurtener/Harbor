@@ -183,6 +183,10 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 // active execution has returned and any final answer has been validated.
 // A failed required write remains an error even when side effects succeeded.
 func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query, answer, status string) error {
+	return r.finishRetained(ctx, tr, query, answer, status, r.now().Add(r.ttl), false)
+}
+
+func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory, query, answer, status string, expiresAt time.Time, mustRetain bool) error {
 	if r.journalFailure != nil {
 		return fmt.Errorf("%w: dispatch persistence failed: %w", ErrRetainedContextUnavailable, r.journalFailure)
 	}
@@ -195,7 +199,10 @@ func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query,
 	if len(tr.Steps)-r.prefixLen > maxRetainedContextSteps {
 		return ErrRetainedContextCapacity
 	}
-	turn := retainedTurn{Admission: r.admission, ExpiresAt: r.now().Add(r.ttl), Status: status, Query: query, Answer: answer}
+	if !expiresAt.After(r.now()) {
+		return ErrRetainedContextUnavailable
+	}
+	turn := retainedTurn{Admission: r.admission, ExpiresAt: expiresAt, Status: status, Query: query, Answer: answer}
 	for index, step := range tr.Steps[r.prefixLen:] {
 		// Only the permitted model-facing representation is retained. No raw
 		// diagnostic duplicate, tool handles, credentials, or reasoning trace.
@@ -277,6 +284,18 @@ func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query,
 			window.Turns = window.Turns[1:]
 			window.Partial = true
 			pruneRetainedCheckpoint(&window)
+		}
+		if !expiresAt.After(r.now()) {
+			return ErrRetainedContextUnavailable
+		}
+		if mustRetain {
+			retained := false
+			for _, entry := range window.Turns {
+				retained = retained || entry.Admission == r.admission
+			}
+			if !retained {
+				return ErrRetainedContextCapacity
+			}
 		}
 		if err = r.saveTerminal(ctx, recordID, window, status); errors.Is(err, state.ErrConditionFailed) {
 			continue

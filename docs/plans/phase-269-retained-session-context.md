@@ -248,3 +248,31 @@ RunOnce/RunLoop/ReAct/composed-client test asserts that the next request receive
 the saved narrative and exact latest source without an extra summary call or
 historical tool execution. These are scripted-runtime results, not model-quality
 measurements or an RC completion claim.
+
+## Explicit settled-journal reconciliation increment
+
+D-470 adds the first recovery consumer, `Stack.ReconcileRetainedContext`, with
+SDK error aliases and an embedding recipe. It requires configured retained
+context and the full identity of one specific source run. The operation checks
+every bounded committed frame and atomically seals that exact journal generation
+as interrupted evidence. The source admission is fenced before any future
+dispatch can commit. It does not execute a model/tool/hook or resume a lost run.
+
+Pending intents return a distinct unknown-outcome error and remain unchanged.
+Expired, erased, malformed, missing, or immediately evicted sources are not
+acknowledged as recovered. Original expiry is preserved. Required redaction and
+seal failures are explicit; cleanup failure preserves the committed outcome and
+fence and supports exact-generation cleanup on a later call. An already running
+provider request is not cancelled by this operation, but its next dispatch must
+pass the existing admission checks.
+
+Tests exercise in-memory/SQLite reopen, exact large numeric IDs, pending refusal,
+identity separation, source TTL, erasure, corrupt/missing frames, write/redaction
+failures, interrupted cleanup, and 128-way dispatch/reconciliation races. A real
+embedded RunOnce request receives the recovered receipt without invoking its
+historical action. Native rendering of untagged journal frames is not guessed.
+
+The embedding consumer does not complete the served reconciliation requirement.
+Served Protocol wiring, authorized result recovery, attachment/steering context,
+Postgres conformance, and full release gates remain pending. This is not an RC
+readiness claim or an exactly-once external-side-effect guarantee.

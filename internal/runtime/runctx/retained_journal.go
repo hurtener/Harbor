@@ -304,6 +304,9 @@ func (r *RetainedRun) cleanupJournal(ctx context.Context) error {
 		return nil
 	}
 	for i, id := range r.frameIDs {
+		if id == "" {
+			continue // an idempotent reconciliation observed prior cleanup
+		}
 		if _, err := r.store.DeleteIf(ctx, state.InternalSlotExpectation(r.q, retainedFrameKind(i), id)); err != nil {
 			return fmt.Errorf("%w: cleanup dispatch frame: %w", ErrRetainedContextUnavailable, err)
 		}

@@ -2274,3 +2274,9 @@ an existing retained execution window, bound to exact source-turn admissions and
 content. Restoration rebinds the verified prefix to the current query without
 inference. Source expiry/eviction invalidates the summary; it never extends
 retention or authorizes replay. RFC 002, D-469.
+
+**Settled-journal reconciliation** — an explicit identity-scoped operation that
+seals committed, fully settled execution evidence as interrupted session context
+while fencing the source admission. It never invokes historical actions, resets
+retention, or decides the outcome of a pending external operation. Available to
+embedded callers through `Stack.ReconcileRetainedContext`. RFC 002, D-470.

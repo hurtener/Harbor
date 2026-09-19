@@ -1360,6 +1360,14 @@ redaction must not leave a derived summary extending the source's lifetime.
 Versions 1 and 2 without checkpoints remain readable; older readers reject the
 new format. This adds no model call, backend, or provider-owned state.
 
+**Explicit settled-journal reconciliation (D-470; RFC 002).** An embedded caller
+with configured retained context may seal a fully settled journal as interrupted
+evidence through `Stack.ReconcileRetainedContext`. The existing conditional
+StateStore transaction publishes evidence and fences its source admission before
+future dispatch. A pending intent remains unknown and is refused; recovery does
+not relaunch a run, call a model/tool/hook, or extend expiry. Served Protocol
+reconciliation remains pending in the phase 269 plan.
+
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 
 ```go
