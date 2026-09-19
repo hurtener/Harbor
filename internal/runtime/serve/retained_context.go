@@ -11,7 +11,8 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 )
 
-// runWithRetainedContext shares the embedded runner's private context window.
+// runWithRetainedContext shares the embedded runner's private context window
+// and required dispatch checkpoints.
 // Admission occurs after agent/route/catalog resolution, before the first model
 // or tool action. Child tasks never import or publish a root conversation turn.
 func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steering.RunSpec, root bool) (planner.Finish, error) {
@@ -33,6 +34,10 @@ func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steerin
 	}
 	var fin planner.Finish
 	if err == nil {
+		err = retained.Start(ctx, spec.Base)
+	}
+	if err == nil {
+		spec.DispatchCheckpoint = retained
 		spec.Planner = retained.GuardPlanner(spec.Planner)
 		fin, err = d.runLoop.Run(ctx, spec)
 	}

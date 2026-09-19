@@ -2248,3 +2248,10 @@ embedded configuration stores own terminal root evidence and imports prior
 retained turns as inert history; children keep their explicit task context. Whole-turn expiry/eviction is explicit; source lifetime and session
 erasure still constrain an admitted view. Per-action crash durability is separate
 pending acceptance, not implied by terminal retention. RFC §6.9, RFC 002, D-464.
+
+**Dispatch checkpoint** — required persistence in retained-context mode before
+runtime dispatch and before another model decision consumes its outcome.
+A run-scoped bounded head and action frame use the existing StateStore's atomic
+conditional writes; a pending frame records an unknown outcome, not a failed
+external action. Terminal publication and transient cleanup are separate from
+the trusted completion hook. RFC 002, D-466.

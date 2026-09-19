@@ -63,8 +63,9 @@ type retainedWindow struct {
 // RetainedRun is a run-local handle on a bounded, identity-scoped execution
 // window. It is not long-term memory, a transcript API, or an execution-relaunch
 // capability. Different handles share only the existing conditional StateStore.
-// The current increment retains terminal outcomes; per-action crash checkpoints
-// are not implied by this handle or by an admitted run record.
+// Start and dispatch callbacks persist query/intent/settlement in a bounded
+// private run journal. Cold action replay or automatic reacquisition is not
+// authorized by this handle or by a retained admission.
 type RetainedRun struct {
 	store           state.StateStore
 	redactor        audit.Redactor
@@ -77,9 +78,13 @@ type RetainedRun struct {
 	prefixLen       int
 	prefixExpiresAt time.Time
 	finished        bool
+	journal         retainedJournal
+	journalID       state.EventID
+	frameIDs        []state.EventID
+	journalFailure  error
 }
 
-// BeginRetainedRun explicitly opts one run into terminal execution-context
+// BeginRetainedRun explicitly opts one run into retained execution-context
 // retention. Admission freezes the preceding terminal window and establishes a
 // conditional erasure fence before any model/tool work. Zero is not an enable
 // value: callers leave this helper unwired when retention is disabled.
@@ -167,6 +172,12 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 // active execution has returned and any final answer has been validated.
 // A failed required write remains an error even when side effects succeeded.
 func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query, answer, status string) error {
+	if r.journalFailure != nil {
+		return fmt.Errorf("%w: dispatch persistence failed: %w", ErrRetainedContextUnavailable, r.journalFailure)
+	}
+	if r.journal.Pending {
+		return fmt.Errorf("%w: dispatch outcome is unsettled", ErrRetainedContextUnavailable)
+	}
 	if r.finished || tr == nil || r.prefixLen > len(tr.Steps) || !validRetainedStatus(status) || !utf8.ValidString(query) || !utf8.ValidString(answer) {
 		return ErrRetainedContextUnavailable
 	}
@@ -243,13 +254,13 @@ func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query,
 			window.Turns = window.Turns[1:]
 			window.Partial = true
 		}
-		if err = r.save(ctx, recordID, window); errors.Is(err, state.ErrConditionFailed) {
+		if err = r.saveTerminal(ctx, recordID, window, status); errors.Is(err, state.ErrConditionFailed) {
 			continue
 		} else if err != nil {
 			return err
 		}
 		r.finished = true
-		return nil
+		return r.cleanupJournal(ctx)
 	}
 	return ErrRetainedContextUnavailable
 }

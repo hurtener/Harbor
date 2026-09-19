@@ -239,3 +239,15 @@ func TestRunOnce_RetainedContextConfigAndExplicitDisable(t *testing.T) {
 		t.Fatal("disabled call erased retained history or persisted its own content")
 	}
 }
+
+func (s *failingRetainedWrite) SaveBatchIf(ctx context.Context, p []state.SlotExpectation, writes []state.StateRecord) error {
+	for _, record := range writes {
+		if record.Kind == state.InternalKindPrefix+"session-execution-context" {
+			s.calls++
+			if s.calls == s.failAt {
+				return errors.New("injected retention write failure")
+			}
+		}
+	}
+	return s.StateStore.SaveBatchIf(ctx, p, writes)
+}

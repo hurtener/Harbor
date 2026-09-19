@@ -15530,3 +15530,30 @@ This extends D-464's embedded consumer; it does not declare full phase completio
 Per-action intent/settlement durability, safely fenced interrupted-prefix reuse,
 historical native projection/checkpoint reuse, and authorized artifact recovery
 remain separate acceptance work. No automatic external-action retry is added.
+
+## D-466 — Required dispatch checkpoints for retained execution
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Retained served roots and embedded runs persist the query before inference and
+require intent/settlement at the runtime dispatch boundary. One run-scoped head
+and one bounded action frame are written atomically through existing
+`StateStore.SaveBatchIf`; preceding frames are not rewritten per tool call.
+Generation predicates include the session admission and erasure fences.
+An uncommitted outcome is unknown, not a failed external write or retry license.
+
+A required persistence failure terminates the run, never becomes planner-visible
+tool feedback inviting another action. Returned results survive cancellation
+through a bounded post-execution write before dependent inference and dispatch
+counters. Parallel branches settle as one complete exchange. The first
+increment journals dispatch boundaries, not every streamed token or thought.
+
+Terminal window publication seals the journal in the same transaction; bounded
+exact-generation cleanup removes transient run records afterward. Errors remain
+explicit. Existing opt-in/default semantics, consumer-turn privacy, external
+memory hooks, and provider-neutral compaction remain unchanged.
+
+This extends the terminal-only increments of D-464/D-465. It does not authorize
+automatic cold-run relaunch or replay of an interrupted write. Explicit
+reconciliation and safe interrupted-prefix continuation remain pending, along
+with historical native projection and large-result recovery.

@@ -408,6 +408,10 @@ type RunSpec struct {
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
 
+	// DispatchCheckpoint is required in retained-context mode and nil otherwise.
+	// It persists intent before a dispatch and settlement before dependent work.
+	DispatchCheckpoint DispatchCheckpoint
+
 	// Compression maintains a summary of older exchanges plus a recent tail.
 	// A positive TokenBudget enables the step-boundary gate. Checkpoint
 	// publication shares TrajectoryMu with inspection, but generation does not
@@ -506,6 +510,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	q := spec.Base.Quadruple
 	if err := validateQuadruple(q); err != nil {
 		return planner.Finish{}, err
+	}
+	if spec.DispatchCheckpoint != nil && spec.Base.Trajectory == nil {
+		return planner.Finish{}, fmt.Errorf("%w: dispatch checkpoints require a trajectory", ErrRunLoopMisconfigured)
 	}
 	if spec.TrancheSteps > 0 {
 		if _, ok := rl.coord.(pauseresume.TrancheCanceller); !ok {
@@ -1138,6 +1145,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// Observation so the planner sees its decision did NOT
 			// silently disappear (audit lesson: silent execution gaps
 			// are §13-forbidden silent degradation).
+			if spec.DispatchCheckpoint != nil && spec.ToolExecutor == nil {
+				return planner.Finish{}, fmt.Errorf("%w: retained dispatch requires an executor", ErrRunLoopMisconfigured)
+			}
 			var observation, llmObservation any
 			var execErr error
 			// failureStructured records whether the failed dispatch
@@ -1148,6 +1158,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// LLMObservation. Stack-local per-run state.
 			failureStructured := false
 			if spec.ToolExecutor != nil {
+				if spec.DispatchCheckpoint != nil {
+					intent := planner.Step{Action: decision, AssistantPreamble: stepAssistantContent}
+					if persistErr := spec.DispatchCheckpoint.BeforeDispatch(runCtx, rc, intent); persistErr != nil {
+						return planner.Finish{}, fmt.Errorf("steering: persist dispatch intent: %w", persistErr)
+					}
+				}
 				// dispatch on a per-step goroutine and keep
 				// draining the inbox while the execution is in flight,
 				// routing ONLY approval-bridge-eligible APPROVE /
@@ -1217,13 +1233,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// tool-invocation count. Hook errors are surfaced
 					// loud — silent degradation of an observability
 					// counter is §13-forbidden.
-					if spec.OnToolDispatched != nil {
-						if n := planner.DecisionInvocationCount(decision); n > 0 {
-							if hookErr := spec.OnToolDispatched(runCtx, n); hookErr != nil {
-								return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
-							}
-						}
-					}
+					// The counter hook runs after settlement below. A counter
+					// failure must not lose an already returned tool receipt.
 				}
 			}
 			// Append the step to the run's Trajectory so the planner
@@ -1270,6 +1281,24 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
 				if spec.TrajectoryMu != nil {
 					spec.TrajectoryMu.Unlock()
+				}
+				if spec.ToolExecutor != nil && spec.DispatchCheckpoint != nil {
+					// The executor has returned and its goroutine is joined.
+					// Preserve a known outcome even if the run was cancelled;
+					// this bounded write cannot start another external action.
+					persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
+					persistErr := spec.DispatchCheckpoint.AfterDispatch(persistCtx, rc, stepRecord)
+					cancel()
+					if persistErr != nil {
+						return planner.Finish{}, fmt.Errorf("steering: persist dispatch settlement: %w", persistErr)
+					}
+				}
+			}
+			if spec.ToolExecutor != nil && execErr == nil && spec.OnToolDispatched != nil {
+				if n := planner.DecisionInvocationCount(decision); n > 0 {
+					if hookErr := spec.OnToolDispatched(runCtx, n); hookErr != nil {
+						return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
+					}
 				}
 			}
 		}

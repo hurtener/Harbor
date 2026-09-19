@@ -334,3 +334,17 @@ Completion means observed evidence reaches the right request, retained sessions
 restore honestly, and compatible Bifrost routes work without native compaction or
 external long-term memory. It does not mean identical model decisions, perfect
 summary fidelity, or automatic recovery of arbitrary external side effects.
+
+## Dispatch-boundary implementation checkpoint
+
+D-466 adds required query, dispatch-intent and dispatch-settlement persistence
+to the existing retained served/embedded mode. The StateStore writes a small
+run head and a bounded action frame atomically, preserving preceding frames.
+Terminal window publication seals the run journal; conditional cleanup follows.
+Failure before dispatch blocks the action; failure after dispatch blocks the
+next decision and cannot be converted into a tool retry.
+
+This is an incremental durability checkpoint, not completion of slice 2:
+interrupted-prefix continuation still requires explicit reconciliation and
+execution fencing. See [the checkpoint note](docs/notes/retained-dispatch-durability.md)
+and the [phase 269 plan](docs/plans/phase-269-retained-session-context.md).

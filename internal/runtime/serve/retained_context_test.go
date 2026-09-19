@@ -347,3 +347,14 @@ func TestRetainedServer_BootConfig(t *testing.T) {
 		})
 	}
 }
+
+func (s *retainedServerFailStore) SaveBatchIf(ctx context.Context, p []state.SlotExpectation, writes []state.StateRecord) error {
+	for _, record := range writes {
+		if record.Kind == serverRetainedKind {
+			if s.remaining.Add(-1) == 0 {
+				return errors.New("injected required state failure")
+			}
+		}
+	}
+	return s.StateStore.SaveBatchIf(ctx, p, writes)
+}

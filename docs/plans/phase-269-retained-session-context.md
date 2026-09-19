@@ -66,8 +66,11 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
 - [x] Serve consumes the same projection under explicit runtime configuration
       after the existing agent/route/catalog resolution. Root and child context
       stay separate; required persistence precedes task completion.
-- [ ] Per-action intent/settlement persistence closes the required crash-boundary
-      acceptance; interrupted-prefix reuse has an explicit execution fence.
+- [x] Required query, dispatch intent and returned settlement are committed at
+      their runtime boundaries; failed writes block dependent work, and bounded
+      per-action frames avoid rewriting the whole trajectory on each call.
+- [ ] Interrupted-prefix reuse has an explicit reconciliation/execution fence
+      and end-to-end authorized recovery before phase completion.
 - [ ] Cross-turn checkpoint reuse and typed historical native exchange projection
       preserve provider formatting without becoming executable Decisions.
 - [ ] Authorized large-result reference recovery, freshness/expiry, attachment
@@ -174,3 +177,18 @@ resolution remain upstream of the shared retained-window helper.
 
 This checkpoint remains terminal-only. It does not establish crash-safe tool
 settlement, restored native tool formatting, or completion of phase 269.
+
+## Dispatch-checkpoint increment
+
+D-466 extends retained mode to required dispatch-boundary persistence for both
+production consumers. The runtime records one intent and settled frame per
+whole exchange using the existing atomic conditional StateStore contract.
+Terminal publication seals the journal, then exact-generation cleanup removes
+the transient records. Scope deletion also covers the run-scoped frames.
+
+A persistence error is a fatal runtime error, never tool feedback to retry a
+write. A known returned result receives a bounded post-cancellation persistence
+attempt. Failed/unsettled journals cannot be sealed as successful terminal turns.
+The old terminal-only status above describes the preceding checkpoints, not a
+claim that current action-boundary writes are absent. Safe interrupted-prefix
+reuse and the remaining phase acceptance criteria remain unclaimed.

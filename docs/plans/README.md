@@ -5982,3 +5982,11 @@ Brief 07 codified Harbor's "code-level tool calling" principle (RFC §6.4) and s
 | `SchemaSanitizer` (`internal/llm/correction/`) | 34 (Provider correction layer) | Lives between runtime and LLM client; per-provider `response_format` adjustments. |
 
 If a future PR renames the package layout from `internal/runtime/planner/...` to a flatter `internal/dispatch/` etc., the mapping table above moves with it and the phases retain their numbers. The trio is a design unit; splitting a single phase into "parser" + "dispatcher" + "renderer" sub-phases is allowed but not required.
+
+### Phase 269 dispatch-checkpoint increment
+
+PR #779 now also wires required admitted-query, dispatch-intent and settlement
+persistence into retained served/embedded runs (D-466). Atomic bounded frames
+use existing StateStore contracts; prior trajectories are not rewritten per
+dispatch. This is not a release or completion of the phase: interrupted-prefix
+reconciliation, native historical projection and artifact recovery remain pending.

@@ -101,7 +101,8 @@ func WithRunID(runID string) RunOption {
 // projection. It overrides sessions.retained_context_turns, including zero to
 // keep legacy behavior for this invocation. Retention follows session idle
 // TTL; it is not long-term memory or authorization to replay interrupted actions.
-// Per-action crash recovery is not provided by terminal retention.
+// Dispatch intent and returned outcomes are persisted before dependent work.
+// Automatic cold-run recovery or replay of interrupted actions is not provided.
 func WithRetainedContext(turns int) RunOption {
 	return func(c *runOnceConfig) { c.retainedContextTurns = turns }
 }
@@ -365,6 +366,9 @@ func (s *Stack) RunOnce(
 		if err := retained.Apply(&base); err != nil {
 			return planner.AnswerEnvelope{}, err
 		}
+		if err := retained.Start(runCtx, base); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
 	}
 
 	// Streaming sink wiring. WithStream rides the SAME blocking RunOnce
@@ -427,6 +431,9 @@ func (s *Stack) RunOnce(
 		MaxSteps:       s.Cfg.Planner.MaxSteps,
 		Compression:    s.Compression,
 		CompletionHook: completionHook,
+	}
+	if retained != nil {
+		spec.DispatchCheckpoint = retained
 	}
 	if cfg.stream != nil {
 		// One StreamToolDispatched event PER dispatched tool: a

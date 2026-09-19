@@ -1205,12 +1205,14 @@ erasure, and whole-turn eviction apply; an indivisible oversized turn fails
 instead of being clipped. This is private execution evidence, not additional
 content in `sessions.turns.*`.
 
-This increment commits admission before work and terminal evidence before a
-served task is marked complete. It does **not** yet persist each action before
-or after dispatch. An interrupted run may have unknown outcomes; a required
-terminal write can fail after an external save succeeded. Reconcile with the
-owning service rather than automatically repeating that operation. No native
-compaction, provider-owned state, or automatic cold execution is required.
+Admission and the query are committed before work. Each dispatch requires an
+intent checkpoint before execution and a settlement checkpoint before dependent
+inference. A failed persistence write stops the run, never asks the planner to
+retry the action. Terminal publication seals the journal atomically with the
+session window, then removes transient frames by exact generation. An interrupted
+run can still have an unknown outcome between external execution and settlement.
+Reconcile with the owning service rather than automatically repeating it.
+Automatic cold-run continuation remains unsupported.
 
 ### sessions.idle_ttl
 
