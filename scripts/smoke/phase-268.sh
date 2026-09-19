@@ -24,4 +24,9 @@ if go test -race ./internal/llm -run 'TestRequestInputLimit|TestSafety_OutputRes
 else
     fail "request capacity regression failed"
 fi
+if go test -race ./internal/llm ./internal/llm/grant -run '^TestCompaction' -count=1; then
+    ok "model-sized and granted maintenance regressions pass"
+else
+    fail "model-sized or granted maintenance regression failed"
+fi
 smoke_summary

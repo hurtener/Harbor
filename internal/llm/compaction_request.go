@@ -28,6 +28,10 @@ func withCompactionRequest(ctx context.Context, req CompleteRequest, cfg ConfigS
 	// or provider endpoints into the maintenance context.
 	parent := CompleteRequest{Model: req.Model, ReasoningEffort: req.ReasoningEffort,
 		ReasoningEffortExplicit: req.ReasoningEffortExplicit}
+	if req.ExternalGrant != nil {
+		grant := *req.ExternalGrant
+		parent.ExternalGrant = &grant
+	}
 	if req.MaxTokens != nil {
 		value := *req.MaxTokens
 		parent.MaxTokens = &value
@@ -57,6 +61,10 @@ func PrepareCompactionRequest(ctx context.Context, req CompleteRequest) (Complet
 	}
 	if req.Model != config.parent.Model && config.routeBound {
 		return CompleteRequest{}, CompactionBudget{}, fmt.Errorf("%w: compaction model differs from bound route", ErrProviderRouteInvalid)
+	}
+	if config.parent.ExternalGrant != nil {
+		grant := *config.parent.ExternalGrant
+		req.ExternalGrant = &grant
 	}
 	if req.Model == config.parent.Model {
 		req.ReasoningEffort = config.parent.ReasoningEffort

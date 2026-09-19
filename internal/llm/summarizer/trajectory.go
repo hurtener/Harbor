@@ -51,7 +51,7 @@ const (
 	defaultTrajectoryPayloadBudget = llm.DefaultHeavyOutputThreshold - trajectoryPayloadHeadroom
 	defaultTrajectorySummaryTokens = 2048
 	maxTrajectorySummaryBytes      = 16 * 1024
-	maxTrajectorySummaryCalls      = 16
+	maxTrajectorySummaryCalls      = llm.MaxCompactionCalls
 )
 
 // ErrTrajectorySummaryCapacity means the selected evidence cannot be processed
@@ -173,6 +173,15 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 	if len(query) > s.payloadBudget || len(goal) > s.payloadBudget {
 		return nil, ErrTrajectorySummaryCapacity
 	}
+	// Forward the signed run envelope even for standalone callers. Never let
+	// optional grant mode turn a supplied grant into ungoverned maintenance.
+	var grant *llm.ExternalGrant
+	if len(rc.ExternalGrant) > 0 {
+		grant = &llm.ExternalGrant{}
+		if err := json.Unmarshal(rc.ExternalGrant, grant); err != nil {
+			return nil, llm.ErrExternalGrantInvalid
+		}
+	}
 	previous := tr.Summary
 	position := 0
 	for calls := 0; calls < maxTrajectorySummaryCalls; calls++ {
@@ -196,7 +205,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		}
 		userText, systemText, outputLimit := payload.String(), s.systemPrompt, s.maxSummaryTokens
 		req := llm.CompleteRequest{
-			Model: model, MaxTokens: &outputLimit,
+			Model: model, MaxTokens: &outputLimit, ExternalGrant: grant,
 			Messages: []llm.ChatMessage{
 				{Role: llm.RoleSystem, Content: llm.Content{Text: &systemText}},
 				{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
@@ -238,7 +247,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		}
 		// Each actual completion is a separate maintenance invocation. Existing
 		// retry wrappers keep that invocation's scope stable across its attempts.
-		callCtx, _, err := llm.EnsureAttemptScope(llm.WithAttemptScope(ctx, nil))
+		callCtx, err := llm.CompactionAttemptContext(ctx, calls+1)
 		if err != nil {
 			return nil, err
 		}
