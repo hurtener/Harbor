@@ -15602,3 +15602,29 @@ shapes remain inert rather than being inferred from arbitrary tool output.
 This extends D-467 without changing the retained window format, external-memory
 hooks, provider requirements or default retention behavior. Cross-turn checkpoint
 reuse, interrupted-prefix reconciliation and large-result recovery remain pending.
+
+## D-469 — Reuse only source-bound retained checkpoints
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+The existing bounded session window may carry one portable narrative checkpoint.
+Its coverage is translated from the live trajectory to the canonical retained
+exchange prefix, with exact admission identities and a digest of every source
+turn (including the summarizer's current query). A subsequent run verifies that
+prefix and binds coverage to its own trajectory without another model call.
+Newer exchanges and the new user request stay outside the covered range.
+
+Retained windows advance to version 3. Versions 1 and 2 without checkpoints remain
+readable; older readers reject version 3 rather than guessing coverage. Retention
+and erasure are unchanged: source expiry or eviction discards derived summaries,
+not the remaining exact evidence. Frozen views still honor their original expiry.
+A source digest mismatch or invalid checkpoint fails before a new admission.
+
+Narrative redaction uses the existing audit boundary. Changes to covered evidence
+through redaction or failed-argument scrubbing prevent checkpoint reuse. A fresh
+summary cannot claim a concurrent sibling it never observed, and transient active
+run notices are never carried forward as a generated status assertion. A valid
+existing checkpoint can still cover its original prefix with later sibling turns
+left outside it. No additional inference, store, registry, default, or provider
+API is introduced. Interrupted-prefix reconciliation and result recovery remain
+separate unfinished acceptance work.

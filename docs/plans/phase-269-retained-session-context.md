@@ -73,7 +73,7 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       and end-to-end authorized recovery before phase completion.
 - [x] Typed historical exchange envelopes reuse native call/result rendering
       without becoming dispatchable actions, including aggregate/failure paths.
-- [ ] Cross-turn checkpoint reuse preserves prior narrative and bounded work
+- [x] Cross-turn checkpoint reuse preserves prior narrative and bounded work
       across user turns without re-summarizing the complete retained window.
 - [x] Retained native discovery and canonical invoked tool names are bounded,
       resolved against current schemas/scopes/exclusions, and never auto-executed.
@@ -225,3 +225,26 @@ The embedded request regression observes a prior search, a changed descriptor,
 and then scope revocation over three retained turns. The search executes once,
 no historical edit executes, and actual outgoing declarations track the catalog.
 Shared-catalog and historical-reader tests exercise 128 concurrent invocations.
+
+## Retained checkpoint reuse increment
+
+D-469 stores one source-bound narrative in the existing session window. It is
+restored without inference only while its exact source prefix remains retained.
+Current queries, uncovered exchanges and transient status notices remain visible.
+The ordinary compactor advances coverage using the previous narrative rather
+than summarizing covered raw history again. Source redaction, expiry, eviction,
+concurrent membership and corrupt metadata are checked explicitly.
+
+The window advances to version 3; prior v1/v2 evidence-only windows migrate on
+write, and old readers reject the new format. The journal format is unchanged.
+Whole-source expiry or eviction invalidates the checkpoint instead of extending
+retention through a summary. Recompaction of the remaining retained window may
+therefore be necessary at a retention boundary.
+
+Regressions cover three-turn rolling coverage, a changed query, SQLite close and
+reopen, corruption, older-version injection, redaction, count/TTL invalidation,
+concurrent completion ordering and 128 scoped checkpoint restorations. The real
+RunOnce/RunLoop/ReAct/composed-client test asserts that the next request receives
+the saved narrative and exact latest source without an extra summary call or
+historical tool execution. These are scripted-runtime results, not model-quality
+measurements or an RC completion claim.

@@ -2265,5 +2265,12 @@ the trusted completion hook. RFC 002, D-466.
 **Historical exchange envelope** — a versioned, non-executable record of one
 retained exchange, with source run, ordinal, concrete action kind and permitted
 body. It is rendered with the existing live native-call/result renderer, not
-placed on a dispatch queue. New windows are version 2; legacy windows remain
-inert rather than receiving guessed action types. RFC 002, D-467.
+placed on a dispatch queue. The exchange envelope remains version 1 inside
+version-3 retained windows; older untagged entries stay inert rather than
+receiving guessed action types. RFC 002, D-467, D-469.
+
+**Retained checkpoint** — one portable narrative and covered-through cursor in
+an existing retained execution window, bound to exact source-turn admissions and
+content. Restoration rebinds the verified prefix to the current query without
+inference. Source expiry/eviction invalidates the summary; it never extends
+retention or authorizes replay. RFC 002, D-469.

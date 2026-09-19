@@ -430,7 +430,7 @@ func TestRetainedContext_LegacyWindowUpgradeIsExplicit(t *testing.T) {
 	var window struct {
 		Version int `json:"version"`
 	}
-	if err = json.Unmarshal(record.Bytes, &window); err != nil || window.Version != 2 {
+	if err = json.Unmarshal(record.Bytes, &window); err != nil || window.Version != 3 {
 		t.Fatal("new representation is not fenced from old v1 readers")
 	}
 }

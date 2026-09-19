@@ -5951,9 +5951,12 @@ deployment, or downstream acceptance is claimed.
   and embedded runs, with a per-call `WithRetainedContext` override. Bounded
   terminal evidence, exact JSON/source restoration, erasure/expiry guards,
   mandatory write errors, and no duplicate legacy-memory or completion ingestion.
-- **Pending:** per-action durability, native history/checkpoint reuse,
-  artifact recovery, Postgres and full release gates. Terminal persistence
-  does not establish crash-safe action settlement or an automatic recovery policy.
+- **Additional increments:** required per-action intent/settlement persistence,
+  native historical projection and current-tool revalidation, plus source-bound
+  checkpoint reuse (D-466 through D-469).
+- **Pending:** explicitly fenced interrupted-prefix reconciliation, authorized
+  result recovery, attachment/steering continuity, Postgres and release gates.
+  No automatic cold-run relaunch or external-action retry is authorized.
 - **Plan:** `docs/plans/phase-269-retained-session-context.md`; D-464.
 
 ## Notes

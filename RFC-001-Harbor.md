@@ -1352,6 +1352,14 @@ Required terminal persistence precedes served task completion; per-action
 crash durability remains required before phase 269 is complete. See [RFC 002](https://github.com/hurtener/Harbor/blob/553ff4365b6d7a7b4a67604226b661572d0b7019/RFC-002-Session-Context.md) and the
 [phase 269 plan](docs/plans/phase-269-retained-session-context.md).
 
+**Retained checkpoints (D-469; RFC 002).** Version-3 retained windows may carry
+one portable summary bound to exact source-turn membership and content. Restore
+it only against a matching retained prefix, rebind runtime coverage to the new
+query, and replay every uncovered exchange. Source expiry, eviction, erasure or
+redaction must not leave a derived summary extending the source's lifetime.
+Versions 1 and 2 without checkpoints remain readable; older readers reject the
+new format. This adds no model call, backend, or provider-owned state.
+
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 
 ```go
