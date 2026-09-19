@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hurtener/Harbor/internal/llm"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/hurtener/Harbor/internal/llm"
 )
 
 func TestFinishReason_UnarySelectedChoiceOnly(t *testing.T) {

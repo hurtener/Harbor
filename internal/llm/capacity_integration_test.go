@@ -99,7 +99,7 @@ func TestSafety_OutputReservationConcurrentReuse(t *testing.T) {
 	ctx := withIdentity(t, context.Background())
 	text := strings.Repeat("x", 1600)
 	var wg sync.WaitGroup
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

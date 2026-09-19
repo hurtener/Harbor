@@ -184,7 +184,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 	}
 	previous := tr.Summary
 	position := 0
-	for calls := 0; calls < maxTrajectorySummaryCalls; calls++ {
+	for calls := range maxTrajectorySummaryCalls {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

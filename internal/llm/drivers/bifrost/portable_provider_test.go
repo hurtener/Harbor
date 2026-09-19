@@ -15,8 +15,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	// Register the real output-mode wrapper without importing unrelated production drivers.
-	_ "github.com/hurtener/Harbor/internal/llm/output"
+	_ "github.com/hurtener/Harbor/internal/llm/output" // Register the real output wrapper without unrelated production drivers.
 	"github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"

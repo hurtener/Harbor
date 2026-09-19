@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -99,7 +98,7 @@ func TestCompactionRequest_ConcurrentPerRunBounds(t *testing.T) {
 			output := 2048
 			req, budget, err := PrepareCompactionRequest(ctx, CompleteRequest{MaxTokens: &output})
 			if err != nil || *req.MaxTokens != parentLimit || budget.InputLimit != 3891-parentLimit {
-				t.Error(fmt.Sprintf("scope %d: output/capacity %v/%v/%v", i, req.MaxTokens, budget, err))
+				t.Errorf("scope %d: output/capacity %v/%v/%v", i, req.MaxTokens, budget, err)
 			}
 		}()
 	}
