@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - .github/context-increment.json
+      - .github/context-recovery.json
 permissions:
   contents: read
 jobs:
@@ -30,6 +31,15 @@ jobs:
               return subprocess.check_output(['git', *args], text=True).strip()
           manifest = pathlib.Path('.github/context-increment.json')
           change = json.loads(manifest.read_text())
+          # Recovery reuses the existing patch bytes, but supplies newly tested
+          # base/checksum/tree metadata. The same strict validations follow.
+          recovery = pathlib.Path('.github/context-recovery.json')
+          if recovery.exists():
+              verified = json.loads(recovery.read_text())
+              if set(verified) != {'base', 'sha256', 'tree', 'message'}:
+                  raise SystemExit('Invalid recovery metadata')
+              verified['patch'] = change['patch']
+              change = verified
           if git('rev-parse', 'HEAD^') != change['base']:
               raise SystemExit('Base changed; refusing stale increment')
           patch = change['patch'].encode('utf-8')
@@ -45,6 +55,8 @@ jobs:
               if name not in roots and not name.startswith(allowed):
                   raise SystemExit('Patch changes an unauthorized path')
           subprocess.run(['git', 'rm', '--', str(manifest)], check=True)
+          if recovery.exists():
+              subprocess.run(['git', 'rm', '--', str(recovery)], check=True)
           subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
           if git('write-tree') != change['tree']:
               raise SystemExit('Result differs from the locally validated tree')
