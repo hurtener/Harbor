@@ -109,7 +109,7 @@ func TestCompactionGrant_ComposedClientKeepsParentAuthority(t *testing.T) {
 			}
 			ctx = llm.WithAttemptStep(llm.WithVerifiedOrganization(ctx, "org"), 3)
 			tr := &planner.Trajectory{Query: "edit"}
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				tr.Steps = append(tr.Steps, planner.Step{LLMObservation: fmt.Sprintf("receipt-%d %s", i, strings.Repeat("x", 5000))})
 			}
 			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: "run"}, Query: "edit"} // The signed parent request, not this optional carrier, is authoritative.

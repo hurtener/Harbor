@@ -16,7 +16,8 @@ func TestCompactionAttempt_DeterministicDistinctAndReadOnly(t *testing.T) {
 	}
 	original := *parent
 	seen := map[string]bool{}
-	for ordinal := 1; ordinal <= MaxCompactionCalls; ordinal++ {
+	for i := range MaxCompactionCalls {
+		ordinal := i + 1
 		child, err := CompactionAttemptContext(ctx, ordinal)
 		if err != nil {
 			t.Fatal(err)

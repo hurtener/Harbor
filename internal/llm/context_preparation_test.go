@@ -67,6 +67,9 @@ func TestContextPreparation_AssembledInputAndResolvedCapacity(t *testing.T) {
 			}})
 			client := &contextPreparationClient{cfg: cfg, inner: preparationClientFunc(func(_ context.Context, got CompleteRequest) (CompleteResponse, error) {
 				sends++
+				if got.Model != cfg.Model {
+					t.Fatal("resolved decision and maintenance would use different governance model keys")
+				}
 				if got.RebuildMessages != nil || len(got.Messages) != 1 || *got.Messages[0].Content.Text != compacted {
 					t.Fatal("messages were not rebuilt once or callback escaped to downstream")
 				}

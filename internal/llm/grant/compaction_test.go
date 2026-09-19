@@ -48,7 +48,7 @@ func TestCompactionGrant_EachChunkIsVerifiedMeteredAndReplaySafe(t *testing.T) {
 			}
 			rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: identity.Identity{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a"}, RunID: "run-a"}, Query: "edit", ExternalGrant: raw}
 			tr := &planner.Trajectory{Query: "edit"}
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				tr.Steps = append(tr.Steps, planner.Step{LLMObservation: fmt.Sprintf("receipt-%d %s", i, strings.Repeat("x", 2800))})
 			}
 			if _, err := sum.Summarise(ctx, rc, tr); err != nil {

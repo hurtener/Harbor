@@ -87,6 +87,11 @@ func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteReq
 			}
 		}
 	}
+	// The decision and its maintenance used the same resolved model for
+	// capacity. Keep that model explicit for downstream governance as well;
+	// an empty caller default must not create a second per-model rate bucket.
+	// Grant verification still owns authorization of these provisional controls.
+	req.Model = bound.Model
 	// No maintenance loop: protect the latest exchange even if it exceeds the
 	// soft target. The hard input/output limit is always enforced downstream.
 	// Do not carry the renderer closure into retry or provider implementations.

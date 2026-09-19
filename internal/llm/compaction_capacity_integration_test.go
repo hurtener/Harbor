@@ -54,7 +54,7 @@ func TestCompactionCapacity_ChronologicalChunksFitSelectedModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := &planner.Trajectory{Query: "edit"}
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		tr.Steps = append(tr.Steps, planner.Step{LLMObservation: fmt.Sprintf("receipt-%d:%s", i, strings.Repeat("x", 5000))})
 	}
 	calls := 0
@@ -93,7 +93,7 @@ func TestCompactionCapacity_ChronologicalChunksFitSelectedModel(t *testing.T) {
 			}
 		}
 	}
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		if strings.Count(all, fmt.Sprintf("receipt-%d:", i)) != 1 {
 			t.Fatalf("receipt %d missing/duplicated", i)
 		}
