@@ -206,3 +206,12 @@ Unit tests cover declaration/argument/schema accounting, output-default capacity
 invalid input, cancellation, failures, bypasses and 128 concurrent scoped calls.
 Strict maintenance-grant identity/accounting and model-aware summary chunk sizing
 remain outstanding; this increment does not declare phase or RC completion.
+
+## Disabled-compaction compatibility correction
+
+Fresh-result exposure tracking is installed and advanced only when a compactor
+and positive working-input budget are configured. Disabled compaction leaves
+legacy pause-checkpoint bytes unchanged; it does not silently add execution
+retention state. The no-runner and zero-budget regressions first failed with the
+unconditional tracking and now pass with the steering and pause/resume race
+suites. This is a compatibility correction, not durable cross-turn delivery.

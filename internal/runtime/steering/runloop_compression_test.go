@@ -118,6 +118,9 @@ func TestRunLoop_Compression_NoOpWhenRunnerNil(t *testing.T) {
 	if tr.Summary != nil {
 		t.Error("Summary stamped with a nil Compression runner — the gate leaked")
 	}
+	if tr.UnseenFrom != nil {
+		t.Error("disabled compression changed persisted fresh-result state")
+	}
 	if got := rec.typesSeen(); len(got) != 0 {
 		t.Errorf("events emitted on the no-runner path: %v, want none", got)
 	}
@@ -145,6 +148,9 @@ func TestRunLoop_Compression_NoOpWhenBudgetZero(t *testing.T) {
 	}
 	if tr.Summary != nil {
 		t.Error("Summary stamped with TokenBudget=0")
+	}
+	if tr.UnseenFrom != nil {
+		t.Error("zero compression budget changed persisted fresh-result state")
 	}
 	if got := rec.typesSeen(); len(got) != 0 {
 		t.Errorf("events emitted on the zero-budget path: %v, want none", got)

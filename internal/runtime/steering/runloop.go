@@ -536,7 +536,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if maxConsecutiveInvalid <= 0 {
 		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
 	}
-	if spec.Base.Trajectory != nil {
+	if spec.Compression != nil && spec.Base.Budget.TokenBudget > 0 && spec.Base.Trajectory != nil {
 		if spec.TrajectoryMu != nil {
 			spec.TrajectoryMu.Lock()
 		}
@@ -999,7 +999,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		// A pending-call drain does not ask for another decision. Its results
 		// remain protected until the complete pending group has been presented.
-		if rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
+		if spec.Compression != nil && rc.Budget.TokenBudget > 0 && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
 			if spec.TrajectoryMu != nil {
 				spec.TrajectoryMu.Lock()
 			}
