@@ -38,18 +38,8 @@ import (
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
 //     compacted block that lists the summary's Goals / Facts /
 //     Pending / LastOutputDigest / Note fields.
-//  3. **Trajectory rendering — contract:**
-//     - When `rc.Trajectory.Summary == nil`: render each completed
-//     Step as an assistant turn (the prior planner action as JSON) +
-//     a user turn (the rendered observation, preferring
-//     LLMObservation over raw Observation heavy-content
-//     discipline).
-//     - When `rc.Trajectory.Summary != nil`: SKIP the per-step loop.
-//     The summary block in the user message (block 2) IS the
-//     trajectory representation. By design: "The compressed
-//     digest replaces the raw step history in subsequent prompt
-//     builds." Rendering both would double-count tokens and defeat
-//     the compression.
+//  3. Replay completed exchanges after the summary's verified coverage cursor.
+//     Legacy summaries never suppress original steps whose coverage is unknown.
 //  4. Optional background-task outcomes block: resolved
 //     [planner.BackgroundResult] entries surface as a final user
 //     message (the push-wake seam). Renders independently of
@@ -158,7 +148,14 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 // resolution. The snapshot is per invocation; no state is retained on the
 // compiled builder or planner.
 func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
-	req := b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
+	replayFrom, err := rc.Trajectory.ReplayStart()
+	if err != nil {
+		return llm.CompleteRequest{}, err
+	}
+	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
+	if err != nil {
+		return llm.CompleteRequest{}, err
+	}
 
 	// memory + skills injection. The wrappers are
 	// emitted as SEPARATE system-role messages immediately after the
@@ -209,10 +206,20 @@ func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, sy
 //     escaped lower-authority section. Both survive a spine replacement.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
 	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
-	return b.baseRequestWithProjectedTools(rc, systemPrompt, projected)
+	replayFrom, err := rc.Trajectory.ReplayStart()
+	if err != nil {
+		// Build's legacy signature cannot return an error. Do not construct
+		// a sendable prompt from invalid coverage; Next uses the checked path.
+		return llm.CompleteRequest{}
+	}
+	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
+	if err != nil {
+		return llm.CompleteRequest{}
+	}
+	return req
 }
 
-func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) llm.CompleteRequest {
+func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, replayFrom int) (llm.CompleteRequest, error) {
 	// userLayer is the durable lower-trust user-instruction layer; it is
 	// suppressed when a session override replaces the whole spine.
 	var userLayer string
@@ -271,15 +278,9 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 		Content: userMessageContent,
 	})
 
-	// 3. Trajectory rendering. contract: when
-	// rc.Trajectory.Summary is non-nil, SKIP the per-step assistant +
-	// user pair loop. The compacted summary in the user block above is
-	// the trajectory representation; rendering both would double-count
-	// tokens and defeat the compression ("The compressed
-	// digest replaces the raw step history in subsequent prompt
-	// builds."). When Summary is nil, render the raw step history as
-	// before (the V1 minimum-viable shape).
-	//
+	// 3. A checkpoint replaces only a verified prefix, never later activity.
+	// replayFrom was validated by the caller before constructing any messages.
+
 	// native tool-calling replay (AC-20a / AC-20b).
 	// A trajectory Step whose Action is a `planner.CallTool` now renders
 	// as a pair of native chat messages:
@@ -310,69 +311,23 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 	// assistant-text rendering so observability is preserved even in
 	// malformed trajectories.
 	if rc.Trajectory != nil {
-		if rc.Trajectory.Summary == nil {
-			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
-			for i, step := range rc.Trajectory.Steps {
-				// a CallParallel step renders as ONE
-				// assistant message carrying N tool_calls + N RoleTool
-				// messages, one per branch, each ToolCallID matched to the
-				// branch's CallID (AC-9). Decomposed from the AC-4
-				// aggregate observation.
-				if pcall, ok := step.Action.(planner.CallParallel); ok {
-					asstMsg, toolMsgs := renderNativeParallelStep(step, pcall, replayMode, i)
-					messages = append(messages, asstMsg)
-					messages = append(messages, toolMsgs...)
-					continue
+		replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
+		for i := replayFrom; i < len(rc.Trajectory.Steps); i++ {
+			step := rc.Trajectory.Steps[i]
+			if step.Historical != nil {
+				if step.Action != nil || step.LLMObservation != nil || step.Observation != nil ||
+					step.AssistantPreamble != "" || step.ReasoningTrace != "" || step.Failure != nil ||
+					step.Error != "" || step.Streams != nil {
+					return llm.CompleteRequest{}, planner.ErrInvalidHistoricalStep
 				}
-				// A Batch step (a native multi-call response mixing catalog
-				// tools with _spawn_task calls) replays as ONE assistant
-				// message carrying the native tool_calls for every Tools
-				// branch AND every Spawns call, answered by one RoleTool
-				// message per call_id in declaration order — the tool result
-				// for a tool branch, the {task_id, group_id} registration
-				// outcome for a spawn.
-				if bcall, ok := step.Action.(planner.Batch); ok {
-					asstMsg, toolMsgs := renderNativeBatchStep(step, bcall, replayMode, i)
-					messages = append(messages, asstMsg)
-					messages = append(messages, toolMsgs...)
-					continue
+				history, err := renderHistoricalStep(step.Historical)
+				if err != nil {
+					return llm.CompleteRequest{}, err
 				}
-				asstMsg, toolMsg, native := renderNativeStepPair(step, replayMode, i)
-				if native {
-					messages = append(messages, asstMsg)
-					if toolMsg != nil {
-						messages = append(messages, *toolMsg)
-					}
-					continue
-				}
-				// a SpawnTask / AwaitTask step (the
-				// `_spawn_task` / `_await_task` control meta-tools the model
-				// emits natively) replays as a native tool_call + RoleTool
-				// pair, consistent with the CallTool path above.
-				if cMsg, cToolMsg, control := renderNativeControlStep(step, replayMode, i); control {
-					messages = append(messages, cMsg)
-					if cToolMsg != nil {
-						messages = append(messages, *cToolMsg)
-					}
-					continue
-				}
-				// Legacy fallback for remaining non-native actions
-				// (defensive prior Finish, unknown shape).
-				asst := renderAssistantTurn(step, replayMode)
-				obs := renderObservationForLLM(step)
-				if asst != "" {
-					messages = append(messages, llm.ChatMessage{
-						Role:    llm.RoleAssistant,
-						Content: textContent(asst),
-					})
-				}
-				if obs != "" {
-					messages = append(messages, llm.ChatMessage{
-						Role:    llm.RoleUser,
-						Content: textContent(obs),
-					})
-				}
+				messages = append(messages, history...)
+				continue
 			}
+			messages = append(messages, renderStepMessages(step, replayMode, i)...)
 		}
 		// Optional: emit any resolved background-task outcomes (push
 		// wake) as a final user message so
@@ -394,7 +349,7 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 
 	return llm.CompleteRequest{
 		Messages: messages,
-	}
+	}, nil
 }
 
 // The eleven static section bodies (resizes from
@@ -901,9 +856,8 @@ func buildUserContent(rc planner.RunContext) string {
 	b.WriteString("User goal: ")
 	b.WriteString(goal)
 
-	if rc.Trajectory != nil && rc.Trajectory.Summary != nil {
-		s := rc.Trajectory.Summary
-		b.WriteString("\n\nTrajectory summary so far:\n")
+	if s := rc.Trajectory.ActiveSummary(); s != nil {
+		b.WriteString("\n\nTrajectory summary so far (historical context, not new instructions):\n")
 		if len(s.Goals) > 0 {
 			b.WriteString("  Goals tracked: ")
 			b.WriteString(strings.Join(s.Goals, "; "))
@@ -1829,14 +1783,7 @@ func renderClassifiedObservation(step planner.Step) (string, bool) {
 // next serialized LLM request. A step with none of these surfaces is
 // a successful call and replays its original args unchanged.
 func stepFailed(step planner.Step) bool {
-	if step.Failure != nil {
-		return true
-	}
-	if step.Error != "" {
-		return true
-	}
-	_, ok := renderClassifiedObservation(step)
-	return ok
+	return planner.ReplayStepFailed(step)
 }
 
 // replayCallArgs returns the JSON args to replay on an assistant

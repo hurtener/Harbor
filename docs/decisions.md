@@ -15431,3 +15431,151 @@ provider-route capability validation and governance remain enforced. An empty
 reasoning value explicitly requests provider defaults; `off` disables thinking.
 The runtime advertises `run_llm_settings_v1`. Omitted bundles preserve legacy
 behavior. The Protocol version remains `0.1.0`.
+
+## D-462 — Portable compaction covers a prefix, not subsequent activity
+
+**Date:** 2026-09-18. **Scope:** RFC 002, phase 268; incremental implementation.
+
+A summary carries a runtime-owned version, generation, exclusive step boundary,
+and canonical source-prefix digest. ReAct renders that summary and the uncovered
+suffix. Complete recent exchanges and fresh queued outcomes are protected.
+Repeated compaction incorporates the previous narrative and newly eligible older
+exchanges; it does not resummarize archived raw duplicates. Failed, vacuous,
+cancelled, or stale candidates leave the previous checkpoint unchanged.
+
+This supersedes D-055/D-202 only where they prescribe one compression per run or
+suppress all step replay after a summary exists. Existing identity, artifact,
+consumer-turn, pause, and observability authority remain intact. Long-term memory
+stays external, and compaction uses the governed ordinary Bifrost-backed client.
+The phase plan records unimplemented budget/summarizer acceptance explicitly.
+
+## D-463 — Bounded chronological portable summarization
+
+Date: 2026-09-18. Status: accepted for incremental implementation in phase 268.
+
+The production trajectory summarizer processes the selected prefix in bounded
+chronological chunks, carrying prior narrative forward. It never silently skips
+earlier exchanges or byte-clips exact result metadata. An indivisible exchange
+that cannot fit needs an authorized bounded reference or fails explicitly.
+Maintenance is limited to 16 completions; each defaults to 2,048 output tokens,
+with a separate 16 KiB narrative ceiling bounded further by the input allowance.
+All completions use the existing LLM client. Native compaction remains excluded.
+
+Checkpoint coverage stays runtime-owned. Portable output is validated locally
+regardless of native JSON-schema support, and known length/non-stop completions
+are rejected even when the body parses. Bifrost choice-zero finish reasons are
+preserved for both unary and streaming output; absent metadata is not a claimed
+successful stop. Narrative validation proves shape, not semantic completeness.
+The previous checkpoint remains unchanged on any failed chunk.
+
+This supersedes phase 111e's fragment-capping and oldest-step-elision policy, not
+its governed-client, identity, or fail-loud boundaries. Full assembled-request
+capacity and authorized maintenance grant identities remain unfinished phase
+268 acceptance criteria; no durable cross-turn or RC completion is implied.
+
+## D-464 — Bounded retained execution context is an explicit opt-in
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Embedded `RunOnce` calls may explicitly select `WithRetainedContext(1..32)`.
+Zero/omitted retains existing memory semantics and does not authorize richer
+persistence. The first consumer replaces legacy pair-only projection for that
+invocation with a bounded private execution window in the existing StateStore.
+Long-term memory stays external; completion ingestion hooks are not changed.
+
+Admission freezes prior terminal root context and uses the existing session
+pending/tombstone fences plus generation-conditional writes. In-flight sibling
+results are not imported. Own terminal evidence is redacted before persistence;
+raw diagnostic duplicates, reasoning traces, and live tool handles are excluded.
+Exact JSON numeric values and permitted source strings remain recoverable inside
+the retained window. Imported history is inert evidence, not execution authority,
+and is excluded from recursive retention and completion-hook ingestion.
+
+The initial bounds are 32 turns, 256 own steps per turn, 512 KiB per session slot,
+32 active admissions, and 32 conditional-write attempts. TTL follows the configured
+session idle TTL (24 hours when unspecified). Whole-turn expiry/eviction produces
+a partial-history notice; an indivisible oversized turn fails, never clips.
+Freezing membership does not extend source lifetime: expiry is checked before
+inference and before accepting its action. Erasure invalidates admission and
+prevents a stale terminal callback from resurrecting its content.
+
+This is explicitly the terminal-retention increment, not the complete RFC 002
+durability contract. Required writes can fail after external effects succeeded;
+the caller must reconcile instead of retrying blindly. Abandoned admissions
+remain uncertain and bounded, not automatically declared failed. Serve wiring,
+per-action intent/settlement persistence, historical native projection/checkpoint
+reuse, artifact recovery, and complete cross-driver acceptance remain pending.
+Consumer turn rows and best-effort observability retain their separate authority.
+No new backend, public transcript, native compaction, or cold-run relaunch.
+
+## D-465 — One explicit retained-context setting for serving and embedding
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; terminal-retention increment.
+
+`sessions.retained_context_turns` (0..32, default zero, restart-required) selects
+the existing private StateStore window for served root conversations and embedded
+RunOnce calls. The per-call `WithRetainedContext` option overrides it, including
+zero to disable. No second retention engine or new public transcript is added.
+Both consumers share admission, redaction, exact-evidence projection, conditional
+terminal persistence and erasure/expiry checks. A required retention failure
+cannot be reported as a completed served task.
+
+Server admission follows the existing agent, route and tool-catalog resolution.
+Child tasks do not inherit root history or publish their private transcripts to
+it. In the enabled mode, legacy pair-only conversation memory is not projected or
+written a second time; explicit caller-supplied context and the trusted completion
+hook remain unchanged. The hook's terminal boundary is not a retention receipt.
+
+This extends D-464's embedded consumer; it does not declare full phase completion.
+Per-action intent/settlement durability, safely fenced interrupted-prefix reuse,
+historical native projection/checkpoint reuse, and authorized artifact recovery
+remain separate acceptance work. No automatic external-action retry is added.
+
+## D-466 — Required dispatch checkpoints for retained execution
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Retained served roots and embedded runs persist the query before inference and
+require intent/settlement at the runtime dispatch boundary. One run-scoped head
+and one bounded action frame are written atomically through existing
+`StateStore.SaveBatchIf`; preceding frames are not rewritten per tool call.
+Generation predicates include the session admission and erasure fences.
+An uncommitted outcome is unknown, not a failed external write or retry license.
+
+A required persistence failure terminates the run, never becomes planner-visible
+tool feedback inviting another action. Returned results survive cancellation
+through a bounded post-execution write before dependent inference and dispatch
+counters. Parallel branches settle as one complete exchange. The first
+increment journals dispatch boundaries, not every streamed token or thought.
+
+Terminal window publication seals the journal in the same transaction; bounded
+exact-generation cleanup removes transient run records afterward. Errors remain
+explicit. Existing opt-in/default semantics, consumer-turn privacy, external
+memory hooks, and provider-neutral compaction remain unchanged.
+
+This extends the terminal-only increments of D-464/D-465. It does not authorize
+automatic cold-run relaunch or replay of an interrupted write. Explicit
+reconciliation and safe interrupted-prefix continuation remain pending, along
+with historical native projection and large-result recovery.
+
+## D-467 — Native projection of non-executable retained exchanges
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Retain the concrete kind of a permitted completed exchange in a versioned
+historical envelope before JSON erases action types. The outer historical step
+has no dispatchable action or new-run completion-hook preamble. ReAct interprets
+the closed kind set only in a local rendering copy, reusing live native pairing,
+failure and aggregate rendering. This never authorizes historical execution.
+
+Stable source-run/ordinal/branch IDs use a shared provider-safe alphabet while
+original IDs remain in retained evidence. Exact source strings, numeric lexemes
+and completeness values survive; JSON envelope formatting may canonicalize.
+Failed arguments are removed before retention, not merely before native replay,
+so later summarization cannot reintroduce them.
+
+Retained windows use version 2. Version 1 remains readable as inert evidence;
+old readers reject version 2. The run dispatch journal keeps its own version 1.
+Unknown or malformed native history fails closed. Prior-run checkpoint reuse,
+interrupted-prefix reconciliation and authorized result recovery remain separate
+acceptance work. No long-term memory or provider-native compaction is added.

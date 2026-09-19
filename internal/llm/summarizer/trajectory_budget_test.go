@@ -20,7 +20,7 @@ import (
 )
 
 // budgetTrajectory returns a trajectory whose naive rendering far
-// exceeds any plausible budget, so the builder must elide.
+// exceeds any plausible budget, so the builder must use bounded chronological chunks.
 func budgetTrajectory(steps int) *planner.Trajectory {
 	tr := trajFixture()
 	tr.Steps = nil
@@ -80,9 +80,7 @@ func TestTrajectoryBudget_OperatorThresholdStillWins(t *testing.T) {
 		t.Fatalf("payload is %d bytes — a configured 32 KiB threshold must bound it below 32768",
 			len(payload))
 	}
-	if !strings.Contains(payload, "earlier steps elided to fit the compaction payload budget") {
-		t.Error("the configured budget rendered no elision marker")
-	}
+	assertChronologicalCalls(t, client.seenCalls(), 120, 32*1024)
 }
 
 // TestTrajectoryBudget_TracksTheLLMContextArmNotTheConsolePin — the

@@ -502,6 +502,23 @@ type Trajectory struct {
 
 **Schema repair pipeline** lives in `internal/planner/repair/` and is reusable across concretes: salvage → schema repair → graceful failure → multi-action salvage. Configurable per-concrete (`arg_fill_enabled`, `repair_attempts`, `max_consecutive_arg_failures`). (Settled.)
 
+**Portable compaction (D-462; RFC 002, phase 268).** A runtime-owned coverage
+record identifies the exact trajectory prefix replaced by a summary. ReAct
+replays the summary plus every uncovered exchange, preserving complete native
+call/result groups, a recent tail, and newly settled results not yet presented
+to a decision. Compaction may repeat; an existing summary is not a fence against
+future activity. This supersedes only the single-compression / summary-only
+projection of D-055 and D-202. Candidate generation occurs outside inspection
+locks and publication validates the source prefix; failure preserves the prior
+checkpoint. Unversioned legacy summaries never receive guessed coverage.
+
+The first increment fixes replay and standalone trajectory estimation; complete
+assembled-request capacity enforcement remains a phase 268 acceptance criterion.
+No long-term memory, provider-native compaction, public transcript expansion,
+or cold execution relaunch is introduced. See
+[RFC 002](https://github.com/hurtener/Harbor/blob/9741c6bcc204b3a7c95f939183178dd9eeb5a2f6/RFC-002-Session-Context.md) and the
+[phase 268 plan](docs/plans/phase-268-portable-compaction.md).
+
 ### 6.3 Steering and the unified pause/resume primitive
 
 **Same-run step tranches.** A configured finite tranche charges each
@@ -1321,6 +1338,19 @@ type TaskRegistry interface {
 **Retain-turn timeouts and continuation hops — Settled.** Per-session config (matching the predecessor's stance), with per-spawn override via `SpawnRequest`. (Resolves brief 05 Q-5.)
 
 ### 6.9 Sessions and SessionManager
+
+**Retained execution context (D-464/D-465; RFC 002).** Explicitly opted-in root
+runs retain a bounded private terminal execution window through the existing
+StateStore. `sessions.retained_context_turns` enables the same projection for
+serve and embedded runs; `WithRetainedContext` overrides it for one embedded
+invocation, including zero to disable. This replaces legacy pair-only projection
+in the selected mode, not consumer turn rows or external long-term memory.
+Child tasks use explicit task context and never publish their private transcripts
+into the root window. Restored history is inert and must satisfy current erasure
+and source-expiry checks. Omitted configuration does not authorize new retention.
+Required terminal persistence precedes served task completion; per-action
+crash durability remains required before phase 269 is complete. See [RFC 002](RFC-002-Session-Context.md) and the
+[phase 269 plan](docs/plans/phase-269-retained-session-context.md).
 
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 

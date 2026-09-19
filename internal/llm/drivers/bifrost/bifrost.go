@@ -301,6 +301,7 @@ func (d *Driver) streamComplete(
 		finalToolCalls []llm.ToolCallStructured
 		finalUsage     llm.Usage
 		finalCost      llm.Cost
+		finishReason   string
 		streamErr      error
 		gotAnyChunk    bool
 	)
@@ -329,6 +330,11 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
+				for _, choice := range chunk.BifrostChatResponse.Choices {
+					if choice.Index == 0 && choice.FinishReason != nil {
+						finishReason = *choice.FinishReason
+					}
+				}
 				processStreamChunk(chunk.BifrostChatResponse, &contentB, reasoning, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
 			}
 		}
@@ -353,11 +359,12 @@ readLoop:
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: stream returned no chunks")
 	}
 	out := llm.CompleteResponse{
-		Content:   contentB.String(),
-		ToolCalls: finalToolCalls,
-		Reasoning: reasoning.result(),
-		Usage:     finalUsage,
-		Cost:      finalCost,
+		FinishReason: finishReason,
+		Content:      contentB.String(),
+		ToolCalls:    finalToolCalls,
+		Reasoning:    reasoning.result(),
+		Usage:        finalUsage,
+		Cost:         finalCost,
 	}
 	return out, nil
 }

@@ -1011,14 +1011,22 @@ type DistributedConfig struct {
 	BusPollInterval time.Duration `yaml:"bus_poll_interval,omitempty"`
 }
 
-// SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
-// match RFC §6.9: idle TTL 24h, hard cap 30 days, sweep every 15 min.
-// Fields are not hot-reloadable in V1 (changing GC cadence at runtime
-// would race with the sweeper goroutine).
+// MaxRetainedContextTurns bounds private execution-history retention.
+const MaxRetainedContextTurns = 32
+
+// SessionsConfig configures the SessionRegistry's GC sweeper and optional
+// private execution-context retention. Defaults match RFC §6.9: idle TTL 24h,
+// hard cap 30 days, sweep every 15 min, and execution retention disabled.
+// Fields are not hot-reloadable; changing them requires a restart.
 type SessionsConfig struct {
-	IdleTTL       time.Duration `yaml:"idle_ttl"`
-	HardCap       time.Duration `yaml:"hard_cap"`
-	SweepInterval time.Duration `yaml:"sweep_interval"`
+	// RetainedContextTurns explicitly retains this many recent root-run
+	// execution records. Zero preserves legacy memory behavior. This private
+	// StateStore projection is independent of the consumer Turns store and
+	// external long-term memory. Restart-required; bounded by session idle TTL.
+	RetainedContextTurns int           `yaml:"retained_context_turns,omitempty"`
+	IdleTTL              time.Duration `yaml:"idle_ttl"`
+	HardCap              time.Duration `yaml:"hard_cap"`
+	SweepInterval        time.Duration `yaml:"sweep_interval"`
 
 	// Turns configures the durable conversation-turn projection store
 	// (HA-64) — the indexed read model backing

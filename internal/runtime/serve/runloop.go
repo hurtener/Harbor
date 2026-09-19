@@ -88,6 +88,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
@@ -105,6 +106,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/publication"
+	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/virtualagent"
@@ -117,6 +119,15 @@ import (
 // MarkRunning / MarkComplete / MarkFailed on to advance the FSM
 // (closes issue #123).
 type RunLoopDriverOptions struct {
+	// RetainedContextTurns opts root runs into the shared bounded execution
+	// window instead of pair-only memory. Children use their explicit task
+	// context and do not read or append root conversation history. The store,
+	// redactor and positive TTL are mandatory only when retention is enabled.
+	RetainedContextTurns int
+	RetainedContextTTL   time.Duration
+	StateStore           state.StateStore
+	Redactor             audit.Redactor
+
 	Logger   *slog.Logger
 	Bus      events.EventBus
 	RunLoop  *steering.RunLoop
@@ -361,6 +372,11 @@ type trackedTrajectory struct {
 // RunLoop per spawned foreground task. The driver is constructed by
 // bootDevStack and Closed during stack teardown.
 type RunLoopDriver struct {
+	retainedContextTurns int
+	retainedContextTTL   time.Duration
+	stateStore           state.StateStore
+	redactor             audit.Redactor
+
 	logger          *slog.Logger
 	bus             events.EventBus
 	runLoop         *steering.RunLoop
@@ -485,6 +501,12 @@ var ErrRunLoopDriverMisconfigured = errors.New("dev: per-task RunLoop driver mis
 // NewRunLoopDriver validates the opts and returns a stopped
 // driver. Call Start before serving; call Close to drain.
 func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
+	if opts.RetainedContextTurns < 0 || opts.RetainedContextTurns > config.MaxRetainedContextTurns {
+		return nil, fmt.Errorf("%w: retained context turn limit is invalid", ErrRunLoopDriverMisconfigured)
+	}
+	if opts.RetainedContextTurns > 0 && (opts.StateStore == nil || opts.Redactor == nil || opts.RetainedContextTTL <= 0) {
+		return nil, fmt.Errorf("%w: retained context requires StateStore, Redactor and a positive TTL", ErrRunLoopDriverMisconfigured)
+	}
 	if opts.Bus == nil {
 		return nil, fmt.Errorf("%w: bus is nil", ErrRunLoopDriverMisconfigured)
 	}
@@ -522,6 +544,10 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		opts.TaskKind = tasks.KindForeground
 	}
 	return &RunLoopDriver{
+		retainedContextTurns:  opts.RetainedContextTurns,
+		retainedContextTTL:    opts.RetainedContextTTL,
+		stateStore:            opts.StateStore,
+		redactor:              opts.Redactor,
 		logger:                opts.Logger,
 		bus:                   opts.Bus,
 		runLoop:               opts.RunLoop,
@@ -1503,7 +1529,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// slice. Directory wiring.
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
-	if d.memory != nil {
+	if d.memory != nil && d.retainedContextTurns == 0 {
 		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall, d.logger)
 		if mErr != nil {
 			d.logger.Warn("RunLoopDriver: FetchMemoryBlocks failed; failing run",
@@ -1998,7 +2024,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	if hasSkillSnapshot {
 		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)
 	}
-	fin, err := d.runLoop.Run(runCtx, spec)
+	fin, err := d.runWithRetainedContext(runCtx, spec, task.ParentTaskID == nil)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
 		// The FSM has no auto-cancelled status (Cancel is the external-
@@ -2011,7 +2037,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			code = planner.TaskErrorCodeCancelled
 			d.logger.Debug("RunLoopDriver: run cancelled",
 				slog.String("task_id", string(taskID)))
-		case compiledSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
+		case compiledSchema != nil && (errors.Is(err, planner.ErrOutputInvalid) || errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
 			// A schema-constrained run whose generation-steering retry loop
 			// or provider-downgrade chain exhausted its budget fails LOUD
 			// with the output_invalid terminal code — never a schemaless
@@ -2119,7 +2145,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		// the operator should see Complete. AssistantResponse is the
 		// envelope's Answer (the validated payload string on a schema
 		// run; the extracted answer text otherwise).
-		if d.memory != nil {
+		if d.memory != nil && d.retainedContextTurns == 0 {
 			turn := memory.ConversationTurn{
 				UserMessage:       task.Query,
 				AssistantResponse: envelope.Answer,

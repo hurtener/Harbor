@@ -931,6 +931,9 @@ func (c *Config) validateEvents() error {
 }
 
 func (c *Config) validateSessions() error {
+	if c.Sessions.RetainedContextTurns < 0 || c.Sessions.RetainedContextTurns > MaxRetainedContextTurns {
+		return fieldError("sessions.retained_context_turns", fmt.Sprintf("must be between 0 and %d", MaxRetainedContextTurns))
+	}
 	if c.Sessions.IdleTTL <= 0 {
 		return fieldError("sessions.idle_ttl", "must be > 0")
 	}

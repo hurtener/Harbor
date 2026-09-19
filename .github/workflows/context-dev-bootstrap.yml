@@ -1,0 +1,38 @@
+name: context development source recovery
+
+# Temporary read-only source recovery while local Git DNS is unavailable.
+# Remove before RC. No patch execution, secrets, or repository write authority.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/context-dev-bootstrap.yml
+      - internal/runtime/**
+      - docs/plans/phase-269-retained-session-context.md
+permissions:
+  contents: read
+jobs:
+  source:
+    if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'docs/portable-session-context-plan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Archive tracked source
+        run: |
+          mkdir -p "$RUNNER_TEMP/context-source"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/context-source/source.tgz"
+          git rev-parse HEAD > "$RUNNER_TEMP/context-source/commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/context-source/tree.txt"
+          cd "$RUNNER_TEMP/context-source"
+          sha256sum source.tgz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: context-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/context-source/
+          retention-days: 3
+          if-no-files-found: error

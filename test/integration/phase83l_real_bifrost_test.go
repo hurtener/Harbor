@@ -75,9 +75,11 @@ type scriptedLLMServer struct {
 // what the tests inspect lives here. `Stream` routes the scripted
 // reply between the unary JSON body and the SSE transcode (110b).
 type openAIRequestEnvelope struct {
-	Model    string                  `json:"model"`
-	Messages []openAIChatMessageJSON `json:"messages"`
-	Stream   bool                    `json:"stream"`
+	MaxCompletionTokens *int                    `json:"max_completion_tokens"`
+	MaxTokens           *int                    `json:"max_tokens"`
+	Model               string                  `json:"model"`
+	Messages            []openAIChatMessageJSON `json:"messages"`
+	Stream              bool                    `json:"stream"`
 }
 
 type openAIChatMessageJSON struct {

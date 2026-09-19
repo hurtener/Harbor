@@ -153,6 +153,11 @@ type CompleteRequest struct {
 	// wrapper itself enforces the concurrent-reuse contract; the validator runs once per call).
 	Validator func(CompleteResponse) error
 
+	// RebuildMessages reconstructs this request's messages after the runtime
+	// installs a context checkpoint. It is used only by request preparation,
+	// before provider work, and never serialized or retained by the driver.
+	RebuildMessages func() ([]ChatMessage, error) `json:"-"`
+
 	// Tools is the per-turn tool catalog. When
 	// nil the driver calls the provider without the tool-calling
 	// block (text-only completion — preserves non-React planner
@@ -209,11 +214,15 @@ type CompleteRequest struct {
 // driver-level completion (governance accounting is in-band synchronous,
 // not a bus subscriber).
 type CompleteResponse struct {
-	Content   string
-	ToolCalls []ToolCallStructured
-	Reasoning string
-	Cost      Cost
-	Usage     Usage
+	// FinishReason is the selected completion's provider-normalized termination
+	// reason (for example "stop" or "length"). Empty means not reported, never
+	// an inferred successful stop. Maintenance consumers reject known truncation.
+	FinishReason string
+	Content      string
+	ToolCalls    []ToolCallStructured
+	Reasoning    string
+	Cost         Cost
+	Usage        Usage
 }
 
 // ToolCallStructured is a provider-validated tool-call entry (

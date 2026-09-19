@@ -264,7 +264,10 @@ func TestE2E_Phase111a_LatentDefault_EmptyTiers(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	over := 1 << 20 // would trip any plausible MaxTokens cap if one were enforced
+	// No configured governance tier is not unlimited physical model capacity.
+	// This explicit allowance exceeds ordinary governance caps but still fits
+	// the fixture's 100,000-token model window and its input/margin reservation.
+	over := 64000
 	for i := range 8 {
 		if _, err := phase111aComplete(ctx, stack, fmt.Sprintf("latent call %d", i), &over); err != nil {
 			t.Fatalf("call %d under the latent default must permit: %v", i, err)

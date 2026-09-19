@@ -170,3 +170,10 @@ tools:
 distributed:
   bus_driver: loopback
   remote_driver: loopback
+
+# Explicit private execution evidence for subsequent root turns. Zero preserves
+# existing behavior. SQLite/Postgres StateStore is needed across process exits.
+# A failed terminal write can follow a successful external save: reconcile it;
+# this terminal-only increment does not automatically retry interrupted actions.
+sessions:
+  retained_context_turns: 0  # set to 4 to retain four recent terminal root runs

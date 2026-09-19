@@ -408,24 +408,14 @@ type RunSpec struct {
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
 
-	// Compression is the optional trajectory-compression runner
-	// (the §13 first call site of
-	// planner.CompressionRunner.MaybeCompress). When non-nil AND the
-	// run's Base.Budget.TokenBudget > 0, the runloop invokes
-	// MaybeCompress at each step boundary (after the control drain +
-	// projection, before Planner.Next) so an over-budget trajectory is
-	// compacted into Trajectory.Summary BEFORE the next prompt build —
-	// the React prompt builder's `Summary != nil` branch then renders
-	// the five-field summary instead of the per-step history and the
-	// prompt shrinks. Nil (or a zero TokenBudget) is byte-identical to
-	// the pre-111e behaviour: no estimate, no summariser, no events.
-	//
-	// One compression per run at V1.1.x: the runner is idempotent on
-	// `Trajectory.Summary != nil` (the documented scope fence — RFC
-	// §6.5; re-compaction cadence is the recorded follow-up).
-	// A MaybeCompress error fails the run LOUDLY (the runner already
-	// emitted trajectory.compression_failed) — never a silent
-	// fall-through that pretends compression happened.
+	// DispatchCheckpoint is required in retained-context mode and nil otherwise.
+	// It persists intent before a dispatch and settlement before dependent work.
+	DispatchCheckpoint DispatchCheckpoint
+
+	// Compression maintains a summary of older exchanges plus a recent tail.
+	// A positive TokenBudget enables the step-boundary gate. Checkpoint
+	// publication shares TrajectoryMu with inspection, but generation does not
+	// hold that mutex. Compression errors stop the run explicitly.
 	Compression *planner.CompressionRunner
 
 	// OnToolDispatched is the optional per-run hook the runloop invokes
@@ -521,6 +511,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if err := validateQuadruple(q); err != nil {
 		return planner.Finish{}, err
 	}
+	if spec.DispatchCheckpoint != nil && spec.Base.Trajectory == nil {
+		return planner.Finish{}, fmt.Errorf("%w: dispatch checkpoints require a trajectory", ErrRunLoopMisconfigured)
+	}
 	if spec.TrancheSteps > 0 {
 		if _, ok := rl.coord.(pauseresume.TrancheCanceller); !ok {
 			return planner.Finish{}, fmt.Errorf("%w: step-tranche pauses require a live cancellation capability", pauseresume.ErrTrancheCancellerRequired)
@@ -549,6 +542,18 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	maxConsecutiveInvalid := spec.MaxConsecutiveInvalidDecisions
 	if maxConsecutiveInvalid <= 0 {
 		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
+	}
+	if spec.Compression != nil && spec.Base.Budget.TokenBudget > 0 && spec.Base.Trajectory != nil {
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Lock()
+		}
+		if spec.Base.Trajectory.UnseenFrom == nil {
+			unseen := 0
+			spec.Base.Trajectory.UnseenFrom = &unseen
+		}
+		if spec.TrajectoryMu != nil {
+			spec.TrajectoryMu.Unlock()
+		}
 	}
 	if spec.TrancheSteps > 0 && spec.Base.Trajectory != nil {
 		if spec.TrajectoryMu != nil {
@@ -981,29 +986,36 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			stepPending = pending
 		}
 
-		// --- COMPRESS: the trajectory-compression
-		// gate, after the drain/projection and before Planner.Next so
-		// THIS step's prompt build already sees the compacted view.
-		// The runner owns the semantics (estimate → threshold →
-		// summarise → stamp Summary → emit trajectory.compressed;
-		// idempotent on Summary != nil — one compression per run at
-		// V1.1.x). The gate below keeps the nil-runner / zero-budget
-		// paths byte-identical to the pre-111e loop. An error is
-		// fail-loud: the runner emitted trajectory.compression_failed
-		// and the run terminates with the wrapped error — never a
-		// silent fall-through to raw history (CLAUDE.md §13).
+		// Request-aware planners compact only after their complete request is
+		// assembled and its route/profile is resolved. Non-LLM planners keep
+		// the standalone compaction contract at the step boundary.
+		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
-			if cerr := spec.Compression.MaybeCompress(runCtx, rc, rc.Trajectory); cerr != nil {
+			if _, requestAware := spec.Planner.(planner.RequestContextPlanner); requestAware {
+				plannerCtx = llm.WithContextPreparation(plannerCtx, llm.ContextPreparation{
+					InputTarget: rc.Budget.TokenBudget,
+					Compact: func(ctx context.Context, inputTokens, target int) (bool, error) {
+						return compressRequest(ctx, spec, rc, inputTokens, target)
+					},
+				})
+			} else if cerr := compressTrajectory(plannerCtx, spec, rc); cerr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 			}
 		}
 
-		// --- NEXT: the planner contributes exactly this. ---
-		// The run loop is the trusted owner of planner-step identity. The
-		// grant wrapper derives a distinct signed-grant child call id from
-		// this coordinate, while retries of this same step retain it.
-		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
+		// A pending-call drain does not ask for another decision. Its results
+		// remain protected until the complete pending group has been presented.
+		if spec.Compression != nil && rc.Budget.TokenBudget > 0 && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
+			if spec.TrajectoryMu != nil {
+				spec.TrajectoryMu.Lock()
+			}
+			presented := len(rc.Trajectory.Steps)
+			rc.Trajectory.UnseenFrom = &presented
+			if spec.TrajectoryMu != nil {
+				spec.TrajectoryMu.Unlock()
+			}
+		}
 		if flush := rc.AfterPlannerStep; flush != nil {
 			if ferr := flush(plannerCtx); ferr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: persist completion chunks after planner step %d: %w", step, ferr)
@@ -1133,8 +1145,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// Observation so the planner sees its decision did NOT
 			// silently disappear (audit lesson: silent execution gaps
 			// are §13-forbidden silent degradation).
+			if spec.DispatchCheckpoint != nil && spec.ToolExecutor == nil {
+				return planner.Finish{}, fmt.Errorf("%w: retained dispatch requires an executor", ErrRunLoopMisconfigured)
+			}
 			var observation, llmObservation any
-			var execErr error
+			var execErr, dispatchBridgeErr error
 			// failureStructured records whether the failed dispatch
 			// carried a structured classified projection (bounded result,
 			// planner class, typed MCP class, or terminal policy
@@ -1143,6 +1158,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			// LLMObservation. Stack-local per-run state.
 			failureStructured := false
 			if spec.ToolExecutor != nil {
+				if spec.DispatchCheckpoint != nil {
+					intent := planner.Step{Action: decision, AssistantPreamble: stepAssistantContent}
+					if persistErr := spec.DispatchCheckpoint.BeforeDispatch(runCtx, rc, intent); persistErr != nil {
+						return planner.Finish{}, fmt.Errorf("steering: persist dispatch intent: %w", persistErr)
+					}
+				}
 				// dispatch on a per-step goroutine and keep
 				// draining the inbox while the execution is in flight,
 				// routing ONLY approval-bridge-eligible APPROVE /
@@ -1159,12 +1180,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// decision (the step ctx is a child of runCtx).
 				out, deferred, bridgeErr := rl.dispatchDecision(runCtx, q, inbox, spec.ToolExecutor, rc, decision)
 				carryEvents = deferred
-				if bridgeErr != nil {
-					// A mid-step gate-bridge failure is the same
-					// fail-loud shape as a step-boundary apply
-					// failure — surface it verbatim.
-					return planner.Finish{}, bridgeErr
-				}
+				// The joined executor may have returned a real receipt while the
+				// control bridge failed. Preserve it before surfacing that failure;
+				// the error still stops the run before another decision or action.
+				dispatchBridgeErr = bridgeErr
 				obs, llmObs := out.observation, out.llmObservation
 				execErr = out.err
 				if execErr != nil {
@@ -1212,13 +1231,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// tool-invocation count. Hook errors are surfaced
 					// loud — silent degradation of an observability
 					// counter is §13-forbidden.
-					if spec.OnToolDispatched != nil {
-						if n := planner.DecisionInvocationCount(decision); n > 0 {
-							if hookErr := spec.OnToolDispatched(runCtx, n); hookErr != nil {
-								return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
-							}
-						}
-					}
+					// The counter hook runs after settlement below. A counter
+					// failure must not lose an already returned tool receipt.
 				}
 			}
 			// Append the step to the run's Trajectory so the planner
@@ -1265,6 +1279,27 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
 				if spec.TrajectoryMu != nil {
 					spec.TrajectoryMu.Unlock()
+				}
+				if spec.ToolExecutor != nil && spec.DispatchCheckpoint != nil {
+					// The executor has returned and its goroutine is joined.
+					// Preserve a known outcome even if the run was cancelled;
+					// this bounded write cannot start another external action.
+					persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
+					persistErr := spec.DispatchCheckpoint.AfterDispatch(persistCtx, rc, stepRecord)
+					cancel()
+					if persistErr != nil {
+						return planner.Finish{}, errors.Join(dispatchBridgeErr, fmt.Errorf("steering: persist dispatch settlement: %w", persistErr))
+					}
+				}
+			}
+			if dispatchBridgeErr != nil {
+				return planner.Finish{}, dispatchBridgeErr
+			}
+			if spec.ToolExecutor != nil && execErr == nil && spec.OnToolDispatched != nil {
+				if n := planner.DecisionInvocationCount(decision); n > 0 {
+					if hookErr := spec.OnToolDispatched(runCtx, n); hookErr != nil {
+						return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
+					}
 				}
 			}
 		}

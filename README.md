@@ -326,3 +326,14 @@ make install-hooks # one-time per clone
 ## License
 
 [Apache-2.0](LICENSE). See `RFC-001-Harbor.md` §10 for the rationale.
+
+### Portable session context (in progress)
+
+The incremental context branch supports explicit terminal execution-evidence
+retention for serving and embedded root conversations through
+`sessions.retained_context_turns`. It is disabled by default, uses the existing
+StateStore, and leaves long-term memory external. See the
+[configuration contract](docs/CONFIG.md#sessionsretained_context_turns),
+[serving example](examples/serve.yaml), and
+[implementation status](docs/plans/phase-269-retained-session-context.md).
+Per-action crash durability and RC acceptance remain unfinished.

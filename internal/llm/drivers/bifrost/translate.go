@@ -587,6 +587,9 @@ func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse
 	out.Content = extractContent(resp)
 	out.ToolCalls = extractToolCalls(resp)
 	out.Reasoning = extractReasoning(resp)
+	if choice := selectedNonStreamChoice(resp); choice != nil && choice.FinishReason != nil {
+		out.FinishReason = *choice.FinishReason
+	}
 	out.Usage, out.Cost = extractUsageAndCost(resp)
 	return out
 }

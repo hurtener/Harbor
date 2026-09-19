@@ -778,14 +778,15 @@ func ValidateAttemptUsageReceiptAgainstGrant(receipt AttemptUsageReceipt, grant 
 		if receipt.ParentLogicalCallID != grant.LogicalCallID || receipt.ParentAttemptNonce != grant.AttemptNonce {
 			return fmt.Errorf("%w: parent attempt mismatch", ErrInvalidUsageReceipt)
 		}
+		wantID, wantNonce := grant.LogicalCallID, grant.AttemptNonce
 		if receipt.PlannerStep > 0 {
 			digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", grant.AttemptNonce, receipt.PlannerStep)))
-			wantNonce := hex.EncodeToString(digest[:])
-			if receipt.LogicalCallID != fmt.Sprintf("%s/step/%d", grant.LogicalCallID, receipt.PlannerStep) || receipt.AttemptNonce != wantNonce {
-				return fmt.Errorf("%w: planner step derivation mismatch", ErrInvalidUsageReceipt)
-			}
-		} else if receipt.LogicalCallID != grant.LogicalCallID || receipt.AttemptNonce != grant.AttemptNonce {
-			return fmt.Errorf("%w: root attempt derivation mismatch", ErrInvalidUsageReceipt)
+			wantNonce = hex.EncodeToString(digest[:])
+			wantID = fmt.Sprintf("%s/step/%d", grant.LogicalCallID, receipt.PlannerStep)
+		}
+		if (receipt.LogicalCallID != wantID || receipt.AttemptNonce != wantNonce) &&
+			!validCompactionAttempt(receipt.LogicalCallID, receipt.AttemptNonce, wantID, wantNonce) {
+			return fmt.Errorf("%w: child attempt derivation mismatch", ErrInvalidUsageReceipt)
 		}
 	} else if receipt.LogicalCallID != grant.LogicalCallID || receipt.AttemptNonce != grant.AttemptNonce {
 		return fmt.Errorf("%w: attempt identity mismatch", ErrInvalidUsageReceipt)
@@ -1110,6 +1111,13 @@ func EnsureGrantAttemptScope(ctx context.Context, grant ExternalGrant) (context.
 		copyScope.CallID = copyScope.LogicalCallID
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", grant.AttemptNonce, step)))
 		copyScope.AttemptNonce = hex.EncodeToString(digest[:])
+	}
+	if ordinal, present := ctx.Value(compactionAttemptKey{}).(int); present {
+		if ordinal < 1 || ordinal > MaxCompactionCalls {
+			return ctx, nil, ErrExternalGrantInvalid
+		}
+		copyScope.LogicalCallID, copyScope.AttemptNonce = compactionAttemptIdentity(copyScope.LogicalCallID, copyScope.AttemptNonce, ordinal)
+		copyScope.CallID = copyScope.LogicalCallID
 	}
 	return WithAttemptScope(ctx, &copyScope), &copyScope, nil
 }

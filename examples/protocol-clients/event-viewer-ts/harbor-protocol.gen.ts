@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:1ee2d3bcf265c9245338bb660de0a5f124b560149815b2a489859b7cf6b4fa87";
+export const WIRE_SURFACE_DIGEST = "sha256:768f880089ba1d89a3f51f05c02245d7f818b538d825325c9bcb5922cd755e13";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =

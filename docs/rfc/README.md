@@ -7,6 +7,7 @@ Merged RFCs land here. The active RFC sits at the repo root (`/RFC-001-Harbor.md
 | RFC | Title | Status |
 |-----|-------|--------|
 | 001 | Harbor — Architecture & V1 Scope | Drafting |
+| [002](../../RFC-002-Session-Context.md) | Portable session context | Accepted — incremental implementation, not released |
 
 ## Authoring an RFC
 

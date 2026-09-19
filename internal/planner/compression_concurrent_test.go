@@ -90,6 +90,7 @@ func TestCompressionRunner_ConcurrentReuse_D025(t *testing.T) {
 			// any cross-goroutine summary clobber.
 			tr := &planner.Trajectory{
 				Query: runID,
+				Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}},
 				LLMContext: map[string]any{
 					"bulk":  strings.Repeat("x", 4096),
 					"runid": runID,
@@ -252,6 +253,7 @@ func TestCompressionRunner_EmitClosure_ConcurrentSafe(t *testing.T) {
 			}
 			tr := &planner.Trajectory{
 				LLMContext: map[string]any{"bulk": strings.Repeat("x", 4096)},
+				Steps:      []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}},
 			}
 			_ = runner.MaybeCompress(context.Background(), rc, tr)
 		}()

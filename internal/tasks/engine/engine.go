@@ -302,7 +302,10 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	// Idempotency check: same (tenant, user, session, IdempotencyKey)
 	// seen? Empty IdempotencyKey disables dedup (every Spawn yields a
 	// fresh handle).
-	contentHash := spawnRequestContentHash(req, agentReachAdmission)
+	contentHash, err := spawnRequestContentHash(req, agentReachAdmission)
+	if err != nil {
+		return tasks.TaskHandle{}, err
+	}
 	if req.IdempotencyKey != "" {
 		idemK := idemKeyFor(req.Identity.Identity, req.IdempotencyKey)
 		if existing, ok := e.idemIdx[idemK]; ok {
@@ -1500,7 +1503,7 @@ func virtualAgentEqual(a, b *tasks.VirtualAgent) bool {
 // The separator byte (0x1F — ASCII Unit Separator) prevents
 // preimage attacks where two distinct (Description, Query) pairs
 // concatenate to the same byte sequence ("ab" + "c" vs "a" + "bc").
-func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReachAdmission) [32]byte {
+func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReachAdmission) ([32]byte, error) {
 	h := sha256.New()
 	h.Write([]byte(req.Description))
 	h.Write([]byte{0x1F})
@@ -1576,13 +1579,16 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 	}
 	if req.LLMSettings != nil {
 		// JSON preserves nil versus explicit zero/empty scalar semantics.
-		settings, _ := json.Marshal(req.LLMSettings)
+		settings, err := json.Marshal(req.LLMSettings)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("%w: encode LLM settings: %w", tasks.ErrInvalidRequest, err)
+		}
 		h.Write([]byte("\x1fllm_settings\x1f"))
 		h.Write(settings)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
-	return out
+	return out, nil
 }
 
 func cloneProviderRoute(route *llm.ProviderRoute) *llm.ProviderRoute {

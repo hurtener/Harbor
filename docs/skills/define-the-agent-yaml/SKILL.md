@@ -66,9 +66,9 @@ planner:
     Operator-supplied; injected into the planner's system prompt.
   reasoning_replay: never                      # or `text` to round-trip the trace into the next turn
   token_budget: 0                              # 0 (default) = trajectory compression OFF; > 0 = once the
-                                               # trajectory's token estimate exceeds it, the runtime
-                                               # compacts step history into a summary (one compression
-                                               # per run; needs the llm block)
+                                               # active trajectory estimate exceeds it, the runtime
+                                               # summarizes an older prefix and keeps recent exchanges;
+                                               # repeats as the tail grows (needs the llm block)
 ```
 
 `max_steps` is a **continuable tranche**, not a termination knob. When a tranche of planner steps is consumed without a terminal Finish, the run is **parked** through the unified pause primitive — a typed `constraints_conflict` pause carrying `{cause: max_steps_exceeded, max_steps, steps_observed}` — instead of being forced to finalise. An authorised RESUME continues the SAME run with a fresh tranche (the tranche counter resets; the cumulative trajectory is untouched), so long-running work spans repeated cycles as ONE run (D-418); a fresh process cannot resume a parked run and answers the typed `ErrRestartUnavailable` (D-417). Zero (the default) resolves to the driver default (12) and never means unbounded; the planner-side per-tranche breaker ends the cycle with the typed `NoPath` Finish (`max_steps_exceeded`), and the runtime's outer `ErrMaxStepsExceeded` guard (default 64) remains the runaway backstop when tranche pausing is unavailable. See `docs/CONFIG.md` › `planner.max_steps`.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 )
 
@@ -91,8 +92,8 @@ func ValidateEncodable(v any, root string) error {
 
 // Deserialize parses canonical JSON bytes into a Trajectory. The
 // returned *Trajectory has all `any`-valued fields decoded as the
-// natural JSON tree (map[string]any / []any / float64 / string / bool
-// / nil). The round-trip Serialize → Deserialize → Serialize is
+// natural JSON tree (map[string]any / []any / json.Number / string / bool
+// / nil). Numeric lexemes are preserved rather than rounded through float64. The round-trip Serialize → Deserialize → Serialize is
 // byte-identical for trajectories whose `any` fields were originally
 // JSON-tree shapes.
 //
@@ -108,12 +109,20 @@ func Deserialize(b []byte) (*Trajectory, error) {
 	// Use a Decoder to surface the offending offset on malformed
 	// inputs (slightly more actionable than json.Unmarshal's error).
 	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
 
-	var t Trajectory
+	var t *Trajectory
 	if err := dec.Decode(&t); err != nil {
 		return nil, fmt.Errorf("trajectory: deserialize: %w", err)
 	}
-	return &t, nil
+	if t == nil {
+		return nil, fmt.Errorf("trajectory: deserialize: null trajectory")
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("trajectory: deserialize: trailing data")
+	}
+	return t, nil
 }
 
 // walkEncodable recurses through v, returning ErrUnserializable for
@@ -122,13 +131,13 @@ func Deserialize(b []byte) (*Trajectory, error) {
 // location.
 //
 // The visited map tracks pointer addresses to detect cyclic graphs;
-// re-visiting a node returns ErrUnserializable with a "<cycle>" suffix.
+// re-visiting a node returns ErrUnserializable with the "<cycle>" suffix.
 //
 // Encoding-rules summary (must mirror encoding/json):
 //
 //   - chan, func, unsafe.Pointer: ErrUnserializable.
 //   - complex64, complex128: ErrUnserializable (json doesn't support).
-//   - nil interface / nil pointer: encodable as JSON null.
+//   - nil interface / nil pointer: encodes as JSON null.
 //   - map keys must be string (or implement encoding.TextMarshaler);
 //     non-string keys ErrUnserializable.
 //   - struct fields with `json:"-"` tag are skipped from the walk
@@ -225,7 +234,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 			} else {
 				keyStr = fmt.Sprintf("%v", k.Interface())
 			}
-			childPath := fmt.Sprintf("%s.%s", fieldPath, keyStr)
+			childPath := fieldPath + "." + keyStr
 			if err := walkEncodable(val, childPath, visited); err != nil {
 				return err
 			}

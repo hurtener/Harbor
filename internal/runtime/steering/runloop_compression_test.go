@@ -118,6 +118,9 @@ func TestRunLoop_Compression_NoOpWhenRunnerNil(t *testing.T) {
 	if tr.Summary != nil {
 		t.Error("Summary stamped with a nil Compression runner — the gate leaked")
 	}
+	if tr.UnseenFrom != nil {
+		t.Error("disabled compression changed persisted fresh-result state")
+	}
 	if got := rec.typesSeen(); len(got) != 0 {
 		t.Errorf("events emitted on the no-runner path: %v, want none", got)
 	}
@@ -146,12 +149,15 @@ func TestRunLoop_Compression_NoOpWhenBudgetZero(t *testing.T) {
 	if tr.Summary != nil {
 		t.Error("Summary stamped with TokenBudget=0")
 	}
+	if tr.UnseenFrom != nil {
+		t.Error("zero compression budget changed persisted fresh-result state")
+	}
 	if got := rec.typesSeen(); len(got) != 0 {
 		t.Errorf("events emitted on the zero-budget path: %v, want none", got)
 	}
 }
 
-func TestRunLoop_Compression_FiresOverBudget_OncePerRun(t *testing.T) {
+func TestRunLoop_Compression_FiresOverBudget_Repeatedly(t *testing.T) {
 	rl, _, _ := newTestRunLoop(t)
 	rec := &emitRecorder{}
 	spec, p, tr := compressionSpec(3, rec)
@@ -173,11 +179,9 @@ func TestRunLoop_Compression_FiresOverBudget_OncePerRun(t *testing.T) {
 	if tr.Summary.Note != "unit-test summary" {
 		t.Errorf("Summary.Note = %q, want the summariser's", tr.Summary.Note)
 	}
-	// V1.1.x scope fence: ONE compression per run even though the
-	// always-over estimator stays over budget on every subsequent step
-	// (the runner's Summary != nil idempotence).
-	if summ.callCount() != 1 {
-		t.Errorf("summariser invoked %d times, want exactly 1 (single compression per run)", summ.callCount())
+	// With three exchanges, the first two eligible prefixes compact once each.
+	if summ.callCount() != 2 {
+		t.Errorf("summariser invoked %d times, want exactly 2", summ.callCount())
 	}
 	// The planner re-entered after compression: 3 CallTool steps + the
 	// terminal Finish = 4 Next calls.
@@ -194,8 +198,8 @@ func TestRunLoop_Compression_FiresOverBudget_OncePerRun(t *testing.T) {
 			}
 		}
 	}
-	if compressed != 1 {
-		t.Errorf("trajectory.compressed emitted %d times, want 1", compressed)
+	if compressed != 2 {
+		t.Errorf("trajectory.compressed emitted %d times, want 2", compressed)
 	}
 }
 
@@ -228,5 +232,45 @@ func TestRunLoop_Compression_SummariserError_FailsRunLoud(t *testing.T) {
 	}
 	if !failed {
 		t.Error("trajectory.compression_failed was not emitted")
+	}
+}
+
+// A blocked summarizer must not block inspection, and publication is guarded.
+func TestRunLoop_Compression_InspectionDuringGeneration(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	rec := &emitRecorder{}
+	spec, _, tr := compressionSpec(3, rec)
+	var mu sync.RWMutex
+	spec.TrajectoryMu = &mu
+	started, release := make(chan struct{}), make(chan struct{})
+	spec.Compression = planner.NewCompressionRunner(&inspectionSummariser{started: started, release: release}, planner.WithTokenEstimator(overBudgetEstimator))
+	spec.Base.Budget = planner.Budget{TokenBudget: 10}
+	done := make(chan error, 1)
+	go func() { _, err := rl.Run(t.Context(), spec); done <- err }()
+	<-started
+	mu.RLock()
+	if tr.Summary != nil {
+		t.Error("candidate published before generation finished")
+	}
+	mu.RUnlock()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type inspectionSummariser struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *inspectionSummariser) Summarise(ctx context.Context, _ planner.RunContext, _ *planner.Trajectory) (*planner.TrajectorySummary, error) {
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		return compressionTestSummary(), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }

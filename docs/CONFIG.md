@@ -1181,6 +1181,45 @@ requiring user confirmation. Default: `8`. Validation: > 0.
 
 ## Sessions
 
+### sessions.retained_context_turns
+
+Explicit private execution-context retention for root conversations. Default:
+`0` (disabled). Validation: `0..32`. Restart-required. A positive value retains
+that many recent terminal root runs in the configured StateStore and projects
+permitted historical evidence into the next root request. It replaces legacy
+pair-only memory projection for this mode; external long-term memory and trusted
+completion hooks are unchanged. Child tasks use their explicit task context,
+not the root window, and their private transcripts are not added to it.
+
+```yaml
+sessions:
+  retained_context_turns: 4
+```
+
+`RunOnce` uses the same configured value; `WithRetainedContext(n)` overrides it
+for one embedded invocation, including explicit zero to disable. In-memory
+StateStore retention ends with the process; SQLite/Postgres preserve committed
+content across restarts. The retained window remains bounded by 32 turns,
+256 own steps per turn, 512 KiB, and the configured session idle TTL. Expiry,
+erasure, and whole-turn eviction apply; an indivisible oversized turn fails
+instead of being clipped. This is private execution evidence, not additional
+content in `sessions.turns.*`.
+
+Admission and the query are committed before work. Each dispatch requires an
+intent checkpoint before execution and a settlement checkpoint before dependent
+inference. A failed persistence write stops the run, never asks the planner to
+retry the action. Terminal publication seals the journal atomically with the
+session window, then removes transient frames by exact generation. An interrupted
+run can still have an unknown outcome between external execution and settlement.
+Reconcile with the owning service rather than automatically repeating it.
+Automatic cold-run continuation remains unsupported.
+
+Retained windows use format version 2 for native historical exchange projection.
+Source strings and identifier/completeness values remain exact, while JSON
+envelope formatting may canonicalize. Version-1 windows remain readable as inert
+evidence and upgrade on a write; older version-1 readers reject the new format.
+No stored historical action is executed by restoration.
+
 ### sessions.idle_ttl
 
 Time before an idle session is swept. Default: `24h`. Validation:

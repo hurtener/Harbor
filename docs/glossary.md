@@ -337,9 +337,22 @@ D-316.
 
 **ConformanceScenario** — one named subtest inside the conformance pack. Subtest names are pinned (stable strings) so per-concrete suites' pass/fail boards remain comparable across phases. A scenario whose required capability is absent calls `t.Skip(...)` with a reason — never silently passes. The pack's `ScenarioFactory` hook lets per-concrete tests supply a scenario-specific planner configuration (ReAct: a scripted-mock LLM that emits the right envelope; Deterministic: a bespoke `DecisionTreeStep` set that emits the right Decision shape). RFC §6.2, D-058.
 
-**Compression budget** — `Budget.TokenBudget int` (Phase 46). The token-estimate threshold above which the runtime invokes the trajectory summariser via `CompressionRunner.MaybeCompress`. Zero means no compression (parity with `HopBudget` / `CostCap` conventions). Estimated via the pluggable `TokenEstimator` callback; the default `DefaultTokenEstimator` walks `Trajectory.Serialize` bytes and returns `len/4 + 1` — mirrors `internal/llm/tokens.go::chars4Estimator` so the two estimators agree (single surface; no parallel implementation per §13). RFC §6.2, brief 02 §4, D-055.
+**Compression budget** — `Budget.TokenBudget` triggers runtime compaction; zero
+keeps compression disabled. The standalone estimator measures the active
+model-facing trajectory, excluding covered steps and raw diagnostic duplicates.
+Assembled-request capacity and output reservation are separate admission concerns;
+phase 268 unifies their production use without treating output as consumed input.
+RFC §6.2, RFC §6.5, D-462.
 
-**`CompressionRunner`** — runtime-side reusable artifact (D-025) at `internal/planner.CompressionRunner` that owns the "estimate → optional summariser invocation → stamp `Trajectory.Summary`" loop. Constructed via `NewCompressionRunner(summariser Summariser, opts ...CompressionOption)`; entrypoint is `MaybeCompress(ctx, rc, tr) error`. Idempotent on `Summary != nil` — the V1.1.x single-compression-per-run scope fence (re-compaction cadence is the recorded D-202 follow-up). Production call site: the steering RunLoop's step boundary, gated on `Budget.TokenBudget > 0` (Phase 111e). Identity-mandatory (§6 rule 9 + D-001 — wrapped `llm.ErrIdentityMissing` on a partial quadruple). Fail-loudly per §13: summariser errors propagate verbatim; the `(nil, nil)` contract violation surfaces as `ErrEmptySummary`; both failure paths emit `trajectory.compression_failed` before returning. RFC §6.2, D-055.
+**`CompressionRunner`** — the reusable runtime mechanism that selects an eligible
+older prefix, generates a candidate, validates its source, and publishes a
+checkpoint. A summary is not a permanent short-circuit: new eligible history can
+be compacted again. Errors preserve the prior checkpoint. RFC §6.2, D-462.
+
+**Summary coverage** — runtime-owned checkpoint version, generation, exclusive
+covered-through step index, and canonical source-prefix digest. The request
+replays every exchange after this boundary. The summarizer cannot mint coverage,
+and legacy summaries are never assigned a guessed boundary. RFC §6.2, D-462.
 
 **Context-window safety net** — Harbor's runtime-wide invariant that **no message reaching the `LLMClient` carries raw heavy content**. Multi-stage: producers (tool dispatcher, memory, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s during normal output; a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` (≥-threshold raw payload found) or `ErrContextWindowExceeded` (estimated tokens within `ContextWindowReserve` of the model's context limit, default 5%). V1 fails loudly; auto-cascading recovery is post-V1. The pass is mandatory by construction — `internal/llm.Open` returns a wrapper that runs it before delegating to the underlying driver (D-039). RFC §6.5, D-026, D-039.
 
@@ -1257,7 +1270,7 @@ D-316.
 
 **`saved_views` (Console DB table)** — Phase 72h Console DB table that persists per-operator dashboard layouts, column-set preferences, sort orders, and group-by on Console list pages. Columns: `page` (one of the named list pages), `name` (operator-picked label), `view_spec_json` (JSON-encoded view spec: columns, sort, group-by, density). NOT a runtime saved query, NOT a shared team view. Per-operator scoped. Consumers: every Stage-2 Console page that exposes a "saved views" dropdown (most prominently Sessions, Tasks, Events, Memory). RFC §7, D-061, Phase 72h.
 
-**`Summariser`** — runtime-side interface at `internal/planner.Summariser` (Phase 46): `Summarise(ctx, rc, tr) (*TrajectorySummary, error)`. The `CompressionRunner` calls Summarise when the trajectory's token estimate exceeds `Budget.TokenBudget`. Fail-loudly per §13: errors propagate verbatim through `MaybeCompress`; returning `(nil, nil)` is a contract violation surfaced as `ErrEmptySummary`. The production implementation is **`TrajectorySummariser`** (Phase 111e, D-202): an LLM client + versioned compaction prompt that invokes `llm.LLMClient.Complete` and parses the response into the five `TrajectorySummary` fields. Phase 46 shipped the seam + test fixtures (`staticSummariser` / `errSummariser`). RFC §6.2, brief 02 §4, D-055, D-202.
+**`Summariser`** — runtime-side interface at `internal/planner.Summariser` (Phase 46): `Summarise(ctx, rc, tr) (*TrajectorySummary, error)`. The `CompressionRunner` calls Summarise when the trajectory's token estimate exceeds `Budget.TokenBudget`. Fail-loudly per §13: errors propagate verbatim through `MaybeCompress`; returning `(nil, nil)` is a contract violation surfaced as `ErrEmptySummary`. The production implementation is **`TrajectorySummariser`** — the production portable `planner.Summariser` in `internal/llm/summarizer`. It visits selected older exchanges in bounded chronological chunks through the existing `LLMClient.Complete`, carrying forward the previous five-field narrative. Runtime coverage is not generated by the model. Inputs are not silently elided or fragment-clipped; an oversized exchange requires a bounded reference or an explicit capacity error. Output shape, byte size and reported termination are validated locally. Defaults: 16 completion calls, 2,048 output tokens per call, and a 16 KiB narrative ceiling further bounded by the input allowance. The model-window guard is additional; summary fidelity is not guaranteed by JSON validation. Distinct from the legacy memory-subsystem summarizer. RFC §6.2, §6.5, D-463.
 
 **`Subsystem` (governance)** — the Phase 36a interface every governance policy implements: `PreCall(ctx, req) error` + `PostCall(ctx, req, resp, callErr) error`. `governance.Wrap(inner, sub)` composes a Subsystem around `LLMClient`. `governance.NewCompound(subs...)` bundles many Subsystems into one (fan PreCall on first-failure, fan PostCall to all members). Concrete V1 implementations: `CostAccumulator`, `RateLimiter`, `MaxTokensEnforcer`. RFC §6.15, D-044.
 
@@ -2227,3 +2240,24 @@ used by the in-memory and durable drivers: exact `(tenant, user, session)`
 buckets for non-admin subscriptions plus one Admin bucket, with the complete
 `Filter.Matches` predicate retained before bounded enqueue. Subscribe, Cancel,
 and Close keep the indexes synchronized with canonical lifecycle state. D-453.
+
+**Retained execution window** — an explicitly enabled, bounded private session
+projection in the existing StateStore, distinct from long-term memory, consumer
+turn rows, and authorization to repeat external actions. Explicit serving or
+embedded configuration stores own terminal root evidence and imports prior
+retained turns as inert history; children keep their explicit task context. Whole-turn expiry/eviction is explicit; source lifetime and session
+erasure still constrain an admitted view. Per-action crash durability is separate
+pending acceptance, not implied by terminal retention. RFC §6.9, RFC 002, D-464.
+
+**Dispatch checkpoint** — required persistence in retained-context mode before
+runtime dispatch and before another model decision consumes its outcome.
+A run-scoped bounded head and action frame use the existing StateStore's atomic
+conditional writes; a pending frame records an unknown outcome, not a failed
+external action. Terminal publication and transient cleanup are separate from
+the trusted completion hook. RFC 002, D-466.
+
+**Historical exchange envelope** — a versioned, non-executable record of one
+retained exchange, with source run, ordinal, concrete action kind and permitted
+body. It is rendered with the existing live native-call/result renderer, not
+placed on a dispatch queue. New windows are version 2; legacy windows remain
+inert rather than receiving guessed action types. RFC 002, D-467.

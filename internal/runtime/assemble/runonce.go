@@ -29,6 +29,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -65,9 +66,10 @@ var (
 // RunOnce's signature. The streaming sink (WithStream) is one such
 // sibling addition.
 type runOnceConfig struct {
-	runID            string
-	inputArtifactIDs []string
-	stream           func(StreamEvent)
+	retainedContextTurns int
+	runID                string
+	inputArtifactIDs     []string
+	stream               func(StreamEvent)
 	// outputSchema carries the run-level output schema (raw JSON-Schema
 	// bytes) set via WithOutputSchema. Nil means "not set"; a set-but-
 	// empty schema is caught as a loud error in RunOnce (never a silent
@@ -91,6 +93,18 @@ type RunOption func(*runOnceConfig)
 // Useful for correlating a run with externally-minted identifiers.
 func WithRunID(runID string) RunOption {
 	return func(c *runOnceConfig) { c.runID = runID }
+}
+
+// WithRetainedContext retains up to turns completed execution records for the
+// same identity-scoped session. A positive value (1..32) opts this invocation
+// into required terminal persistence and replaces legacy pair-only memory
+// projection. It overrides sessions.retained_context_turns, including zero to
+// keep legacy behavior for this invocation. Retention follows session idle
+// TTL; it is not long-term memory or authorization to replay interrupted actions.
+// Dispatch intent and returned outcomes are persisted before dependent work.
+// Automatic cold-run recovery or replay of interrupted actions is not provided.
+func WithRetainedContext(turns int) RunOption {
+	return func(c *runOnceConfig) { c.retainedContextTurns = turns }
 }
 
 // WithInputArtifacts pre-resolves operator-uploaded artifact IDs into
@@ -153,7 +167,7 @@ func WithInputArtifacts(ids ...string) RunOption {
 // Streaming posture (composes with WithStream): tool_dispatched and step
 // events stream exactly as today, but ALL token chunks — content AND
 // reasoning — are SUPPRESSED for a schema-constrained run: a validate-
-// and-retry loop cannot retract tokens already streamed, so the
+// and-retry loop cannot retract tokens already-streamed, so the
 // validated answer arrives once, in the envelope. This is a documented
 // behaviour choice, deliberately more conservative than raw-JSON delta
 // streaming. Each corrective retry/downgrade attempt the schema
@@ -192,7 +206,7 @@ func WithCompletionHook(spec *steering.CompletionHookSpec) RunOption {
 }
 
 // RunOnce drives goal through the assembled planner/run-loop under the
-// mandatory identity triple and returns the terminal answer envelope.
+// mandatory identity triple and returns a terminal answer envelope.
 // It BLOCKS until the run reaches a terminal Finish (or errors). One
 // call replaces the hand-built RunContext + RunSpec + RunLoop.Run +
 // envelope-extraction ceremony an embedder previously wrote per run.
@@ -225,7 +239,7 @@ func (s *Stack) RunOnce(
 	goal string,
 	id identity.Identity,
 	opts ...RunOption,
-) (planner.AnswerEnvelope, error) {
+) (answer planner.AnswerEnvelope, retErr error) {
 	// Runnable posture FIRST: a zero-value or nil-config non-runnable
 	// stack (no RunLoop / no Planner) returns the typed ErrNotRunnable —
 	// never a panic on an absent Cfg. Only a RUNNABLE stack's
@@ -254,8 +268,14 @@ func (s *Stack) RunOnce(
 	}
 
 	var cfg runOnceConfig
+	if s.Cfg != nil {
+		cfg.retainedContextTurns = s.Cfg.Sessions.RetainedContextTurns
+	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.retainedContextTurns < 0 || cfg.retainedContextTurns > config.MaxRetainedContextTurns {
+		return planner.AnswerEnvelope{}, runctx.ErrRetainedContextCapacity
 	}
 	// WithOutputSchema fails loud on a nil/empty schema at call time — a
 	// set-but-empty schema is a config mistake, never a silent no-op.
@@ -292,9 +312,42 @@ func (s *Stack) RunOnce(
 		skillsDir = sd
 	}
 
+	memoryStore := s.Memory
+	recall := memory.RecallFromConfig(s.Cfg.Memory)
+	var retained *runctx.RetainedRun
+	if cfg.retainedContextTurns > 0 {
+		ttl := s.Cfg.Sessions.IdleTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		retained, err = runctx.BeginRetainedRun(runCtx, s.State, s.Redactor, q, cfg.retainedContextTurns, ttl, nil)
+		if err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
+		memoryStore = nil
+		recall = memory.RecallSettings{}
+	}
+	var retainedTrajectory *planner.Trajectory
+	retainedStatus, retainedAnswer := "interrupted", ""
+	defer func() {
+		if retained == nil {
+			return
+		}
+		if retainedTrajectory == nil {
+			retainedTrajectory = &planner.Trajectory{}
+		}
+		// A cancelled execution has already returned; its observed outcomes
+		// still need a bounded terminal write. No tool is retried here.
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
+		defer cancel()
+		if persistErr := retained.Finish(persistCtx, retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
+			retErr = errors.Join(retErr, persistErr)
+		}
+	}()
+
 	base, err := runctx.NewRunContext(runCtx, runctx.Sources{
-		Memory:          s.Memory,
-		MemoryRecall:    memory.RecallFromConfig(s.Cfg.Memory),
+		Memory:          memoryStore,
+		MemoryRecall:    recall,
 		SkillsDirectory: skillsDir,
 		Catalog:         s.Catalog,
 		Artifacts:       s.Artifacts,
@@ -306,6 +359,16 @@ func (s *Stack) RunOnce(
 	}, q, goal, runctx.WithInputArtifacts(cfg.inputArtifactIDs...))
 	if err != nil {
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce: %w", err)
+	}
+
+	retainedTrajectory = base.Trajectory
+	if retained != nil {
+		if err := retained.Apply(&base); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
+		if err := retained.Start(runCtx, base); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
 	}
 
 	// Streaming sink wiring. WithStream rides the SAME blocking RunOnce
@@ -356,8 +419,12 @@ func (s *Stack) RunOnce(
 		completionHook = projection.RunCompletionHookFromConfig(s.Cfg.Runtime.Hooks.RunCompletion)
 	}
 
+	runPlanner := s.Planner
+	if retained != nil {
+		runPlanner = retained.GuardPlanner(runPlanner)
+	}
 	spec := steering.RunSpec{
-		Planner:        s.Planner,
+		Planner:        runPlanner,
 		Base:           base,
 		TaskID:         tasks.TaskID(runID),
 		ToolExecutor:   s.Executor,
@@ -365,11 +432,14 @@ func (s *Stack) RunOnce(
 		Compression:    s.Compression,
 		CompletionHook: completionHook,
 	}
+	if retained != nil {
+		spec.DispatchCheckpoint = retained
+	}
 	if cfg.stream != nil {
 		// One StreamToolDispatched event PER dispatched tool: a
 		// CallParallel dispatch carries count == len(Branches), so the
-		// stream reports N tool dispatches, not one (see
-		// streamDispatchHook).
+		// stream reports N tool dispatches (the count matches the branches).
+		// StreamToolDispatched callback remains the shared dispatch tap.
 		spec.OnToolDispatched = streamDispatchHook(spec.OnToolDispatched, cfg.stream)
 	}
 
@@ -419,7 +489,7 @@ func (s *Stack) RunOnce(
 
 	// Best-effort memory writeback on a goal-satisfying finish (mirrors
 	// the drivers): a writeback error does not downgrade the answer.
-	if s.Memory != nil && fin.Reason == planner.FinishGoal {
+	if retained == nil && s.Memory != nil && fin.Reason == planner.FinishGoal {
 		sessionQ := identity.Quadruple{Identity: id}
 		if wErr := s.Memory.AddTurn(runCtx, sessionQ, memory.ConversationTurn{
 			UserMessage:       goal,
@@ -431,6 +501,12 @@ func (s *Stack) RunOnce(
 		}
 	}
 
+	switch fin.Reason {
+	case planner.FinishGoal:
+		retainedStatus, retainedAnswer = "complete", env.Answer
+	case planner.FinishCancelled:
+		retainedStatus = "cancelled"
+	}
 	return env, nil
 }
 
