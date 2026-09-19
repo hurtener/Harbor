@@ -65,16 +65,17 @@ type retainedWindow struct {
 // The current increment retains terminal outcomes; per-action crash checkpoints
 // are not implied by this handle or by an admitted run record.
 type RetainedRun struct {
-	store     state.StateStore
-	redactor  audit.Redactor
-	q         identity.Quadruple
-	admission retainedAdmission
-	turns     int
-	ttl       time.Duration
-	now       func() time.Time
-	prefix    []planner.Step
-	prefixLen int
-	finished  bool
+	store           state.StateStore
+	redactor        audit.Redactor
+	q               identity.Quadruple
+	admission       retainedAdmission
+	turns           int
+	ttl             time.Duration
+	now             func() time.Time
+	prefix          []planner.Step
+	prefixLen       int
+	prefixExpiresAt time.Time
+	finished        bool
 }
 
 // BeginRetainedRun explicitly opts one run into terminal execution-context
@@ -123,6 +124,11 @@ func BeginRetainedRun(ctx context.Context, store state.StateStore, redactor audi
 			return nil, err
 		}
 		r.prefix = prefix
+		for _, turn := range window.Turns {
+			if r.prefixExpiresAt.IsZero() || turn.ExpiresAt.Before(r.prefixExpiresAt) {
+				r.prefixExpiresAt = turn.ExpiresAt
+			}
+		}
 		return r, nil
 	}
 	return nil, ErrRetainedContextUnavailable
@@ -435,6 +441,11 @@ type retainedRequestPlanner struct{ retainedPlanner }
 func (retainedRequestPlanner) PreparesRequestContext() {}
 
 func (r *RetainedRun) validateAdmission(ctx context.Context) error {
+	// Freezing a view fixes its membership, not its retention deadline. Fail
+	// before another decision rather than retain expired source via a summary.
+	if !r.prefixExpiresAt.IsZero() && !r.prefixExpiresAt.After(r.now()) {
+		return ErrRetainedContextUnavailable
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
