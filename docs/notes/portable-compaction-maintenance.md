@@ -73,3 +73,21 @@ PR test, so this is not a full-PR validation claim. Broader provider-route/fallb
 integration, complete source/test reconstruction, full preflight, downstream
 receipt-consumer compatibility and durable cross-turn execution context remain
 release gates. No paid provider call, deployment, merge or RC is claimed.
+
+## Composed-stack accounting correction
+
+Request preparation now forwards the same resolved model used for capacity to
+governance. An omitted caller model must not put the decision in an empty-model
+bucket while its summary uses the configured-model bucket. A regression failed
+before the correction; the real-Bifrost composed-stack test now asserts exactly
+one identity/model bucket, every decision and maintenance allowance charged, and
+no provider work after exhaustion. Bounded summary output is charged as reserved
+tokens, not as one request. The fixture reads either supported OpenAI output-field
+spelling without weakening the runtime's physical capacity check.
+
+The older integration scenarios now give each fresh result a decision before
+compaction, retain the newest outcome, and still assert shrinking prompts and
+fail-loud summary errors. The oversized MCP-result fixture retains all projection
+checks under an explicitly adequate synthetic model window. Focused race tests
+cover these real stack paths and the canonical capability advertisement. Full
+preflight, broader provider coverage and RC readiness remain separate gates.
