@@ -1349,7 +1349,7 @@ Child tasks use explicit task context and never publish their private transcript
 into the root window. Restored history is inert and must satisfy current erasure
 and source-expiry checks. Omitted configuration does not authorize new retention.
 Required terminal persistence precedes served task completion; per-action
-crash durability remains required before phase 269 is complete. See [RFC 002](RFC-002-Session-Context.md) and the
+crash durability remains required before phase 269 is complete. See [RFC 002](https://github.com/hurtener/Harbor/blob/553ff4365b6d7a7b4a67604226b661572d0b7019/RFC-002-Session-Context.md) and the
 [phase 269 plan](docs/plans/phase-269-retained-session-context.md).
 
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.

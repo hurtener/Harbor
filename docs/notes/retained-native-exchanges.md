@@ -47,3 +47,20 @@ Cross-turn checkpoint reuse, explicit interrupted-prefix reconciliation,
 authorized large-result recovery and catalog refresh remain pending phase work.
 No new provider client, native compaction endpoint, public transcript, long-term
 memory subsystem, release tag or automatic cold execution is introduced.
+
+## Shared historical-envelope validation
+
+Admission, ordinary rendering, and compaction now use one host-envelope
+validator. It rejects private/raw fields, nested history, ambiguous outer
+execution fields, unsupported versions/kinds, duplicate or noncanonical host
+field names, invalid encodings and oversized envelopes before inference.
+Tool-result objects remain opaque data; a tool's own field names are not
+reinterpreted as runtime metadata. Exact numeric lexemes and source strings
+survive the detached decode, including concurrent readers.
+
+The regression reproduces the prior gap: a malformed historical envelope with
+private reasoning reached the summarization client even though native rendering
+would reject it. The corrected path returns a content-free typed error without
+calling the model. Both in-memory and SQLite admission tests reject the same
+corruption before creating a new retained run. This tightens D-467's existing
+contract; it does not add a new format, provider requirement or recovery mode.

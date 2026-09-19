@@ -24,8 +24,8 @@ if go test -race ./internal/runtime/steering -run 'TestRunLoop_DispatchCheckpoin
 else
     fail "dispatch failure lost returned execution evidence"
 fi
-if go test -race -p 1 ./internal/planner/react ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
-    -run 'TestHistoricalProjection_|TestTrajectoryHistorical_|TestPortableProviders_' -count=1; then
+if go test -race -p 1 ./internal/planner ./internal/planner/react ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
+    -run 'TestHistoricalValidation_|TestHistoricalProjection_|TestTrajectoryHistorical_|TestPortableProviders_' -count=1; then
     ok "native historical projection, migration and provider portability regressions pass"
 else
     fail "native historical projection regression failed"

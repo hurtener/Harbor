@@ -413,10 +413,10 @@ func projectRetainedWindow(window retainedWindow) ([]planner.Step, error) {
 				return nil, err
 			}
 			if historical := retained.Historical; historical != nil {
-				if historical.Version != 1 || historical.SourceRun != turn.Admission.RunID ||
-					historical.Index != index || retained.Action != nil || retained.LLMObservation != nil ||
-					retained.Observation != nil || retained.AssistantPreamble != "" || retained.Error != "" ||
-					retained.ReasoningTrace != "" || retained.Failure != nil || retained.Streams != nil {
+				if historical.SourceRun != turn.Admission.RunID || historical.Index != index {
+					return nil, ErrRetainedContextUnavailable
+				}
+				if _, err := planner.ReadHistoricalStep(retained); err != nil {
 					return nil, ErrRetainedContextUnavailable
 				}
 				steps = append(steps, retained)

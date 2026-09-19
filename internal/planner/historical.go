@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/planner/trajectory"
 )
@@ -155,4 +157,72 @@ func redactFailedHistoricalArguments(step Step, kind string, body []byte) ([]byt
 		return nil, ErrInvalidHistoricalStep
 	}
 	return out, nil
+}
+
+// ReadHistoricalStep validates the inert envelope before any inference path
+// consumes it. The returned Action is a JSON tree, never a Decision. Arbitrary
+// tool-result payloads remain data; only the host-owned envelope is interpreted.
+func ReadHistoricalStep(outer Step) (Step, error) {
+	h := outer.Historical
+	if h == nil || h.Version != 1 || h.SourceRun == "" || h.Index < 0 || len(h.Body) > 512*1024 ||
+		outer.Action != nil || outer.Observation != nil || outer.LLMObservation != nil ||
+		outer.AssistantPreamble != "" || outer.ReasoningTrace != "" || outer.Failure != nil ||
+		outer.Error != "" || outer.Streams != nil || !utf8.Valid(h.Body) {
+		return Step{}, ErrInvalidHistoricalStep
+	}
+	switch h.Kind {
+	case "context", "call_tool", "call_parallel", "batch", "progress", "spawn", "await",
+		"task_status", "cancel_task", "steer_task", "pause_task", "resume_task":
+	default:
+		return Step{}, ErrInvalidHistoricalStep
+	}
+	// A duplicate field must not let storage, compaction and the request renderer
+	// disagree on which value is authoritative. Require the canonical host field
+	// names rather than JSON's case-insensitive aliases. Result bodies are opaque.
+	fields := json.NewDecoder(bytes.NewReader(h.Body))
+	token, err := fields.Token()
+	if err != nil || token != json.Delim('{') {
+		return Step{}, ErrInvalidHistoricalStep
+	}
+	seen := make(map[string]bool)
+	for fields.More() {
+		token, err = fields.Token()
+		if err != nil {
+			return Step{}, ErrInvalidHistoricalStep
+		}
+		key, ok := token.(string)
+		if !ok {
+			return Step{}, ErrInvalidHistoricalStep
+		}
+		switch key {
+		case "action", "llm_observation", "assistant_preamble", "error", "failure",
+			"started_at", "latency_ms", "token_estimate":
+		default:
+			return Step{}, ErrInvalidHistoricalStep
+		}
+		if seen[key] {
+			return Step{}, ErrInvalidHistoricalStep
+		}
+		seen[key] = true
+		var value json.RawMessage
+		if err := fields.Decode(&value); err != nil {
+			return Step{}, ErrInvalidHistoricalStep
+		}
+	}
+	var step Step
+	decoder := json.NewDecoder(bytes.NewReader(h.Body))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&step); err != nil {
+		return Step{}, ErrInvalidHistoricalStep
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF || step.Historical != nil || step.Observation != nil ||
+		step.ReasoningTrace != "" || step.Streams != nil {
+		return Step{}, ErrInvalidHistoricalStep
+	}
+	if h.Kind != "context" && step.Action == nil {
+		return Step{}, ErrInvalidHistoricalStep
+	}
+	return step, nil
 }

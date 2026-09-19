@@ -52,13 +52,9 @@ func renderStepMessages(step planner.Step, replay planner.ReasoningReplayMode, i
 // Typed actions exist only in this local rendering copy. Historical data never
 // becomes RunContext.PendingToolCalls, a planner Decision or a dispatch request.
 func renderHistoricalStep(history *planner.HistoricalStep) ([]llm.ChatMessage, error) {
-	if history.Version != 1 || history.SourceRun == "" || history.Index < 0 || len(history.Body) > 512*1024 {
-		return nil, planner.ErrInvalidHistoricalStep
-	}
-	step, err := decodeHistorical[planner.Step](history.Body)
-	if err != nil || step.Historical != nil || step.Observation != nil ||
-		step.ReasoningTrace != "" || step.Streams != nil {
-		return nil, planner.ErrInvalidHistoricalStep
+	step, err := planner.ReadHistoricalStep(planner.Step{Historical: history})
+	if err != nil {
+		return nil, err
 	}
 	if history.Kind == "context" {
 		// A non-native/legacy decision is evidence, not a guessed native call.

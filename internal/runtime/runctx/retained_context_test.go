@@ -434,3 +434,58 @@ func TestRetainedContext_LegacyWindowUpgradeIsExplicit(t *testing.T) {
 		t.Fatal("new representation is not fenced from old v1 readers")
 	}
 }
+
+// Corruption must be rejected before admission, not merely by the eventual
+// native renderer after a summarizer could already have consumed the record.
+func TestRetainedContext_InvalidHistoricalBodyBlocksAdmission(t *testing.T) {
+	for _, driver := range []string{"inmem", "sqlite"} {
+		t.Run(driver, func(t *testing.T) {
+			store, redactor, _ := retainedStore(t, driver)
+			base := retainedBase("first", "corrupt-history")
+			first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = first.Apply(&base); err != nil {
+				t.Fatal(err)
+			}
+			base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{Action: planner.CallTool{Tool: "read", Args: json.RawMessage(`{}`)}, LLMObservation: "good"})
+			if err = first.Finish(t.Context(), base.Trajectory, "read", "done", "complete"); err != nil {
+				t.Fatal(err)
+			}
+			q := identity.Quadruple{Identity: base.Quadruple.Identity}
+			old, err := store.Load(t.Context(), q, retainedKind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var window map[string]json.RawMessage
+			if err = json.Unmarshal(old.Bytes, &window); err != nil {
+				t.Fatal(err)
+			}
+			var turns []map[string]json.RawMessage
+			if err = json.Unmarshal(window["turns"], &turns); err != nil {
+				t.Fatal(err)
+			}
+			badStep := planner.Step{Historical: &planner.HistoricalStep{Version: 1, SourceRun: "first", Kind: "call_tool", Body: json.RawMessage(`{"action":{"Tool":"read"},"reasoning_trace":"PRIVATE-CONTENT"}`)}}
+			turns[0]["steps"], err = json.Marshal([]planner.Step{badStep})
+			if err != nil {
+				t.Fatal(err)
+			}
+			window["turns"], err = json.Marshal(turns)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = store.SaveIf(t.Context(), []state.SlotExpectation{state.InternalSlotExpectation(q, retainedKind, old.ID)}, state.NewInternalRecord(state.NewEventID(), q, retainedKind, data)); err != nil {
+				t.Fatal(err)
+			}
+			next := retainedBase("second", "corrupt-history")
+			if r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) || r != nil {
+				t.Fatalf("invalid history admitted: %v", err)
+			}
+		})
+	}
+}
