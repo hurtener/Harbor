@@ -422,6 +422,14 @@ func projectRetainedWindow(window retainedWindow) ([]planner.Step, error) {
 				steps = append(steps, retained)
 				continue
 			}
+			// Legacy entries stay inert, but must satisfy the same private-field
+			// boundary as tagged history before they can enter any model input.
+			legacy := planner.Step{Historical: &planner.HistoricalStep{
+				Version: 1, SourceRun: turn.Admission.RunID, Index: index, Kind: "context", Body: entry,
+			}}
+			if _, err := planner.ReadHistoricalStep(legacy); err != nil {
+				return nil, ErrRetainedContextUnavailable
+			}
 			var evidence any
 			if err := decodeRetained(entry, &evidence); err != nil {
 				return nil, err

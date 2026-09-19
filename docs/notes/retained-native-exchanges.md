@@ -64,3 +64,13 @@ would reject it. The corrected path returns a content-free typed error without
 calling the model. Both in-memory and SQLite admission tests reject the same
 corruption before creating a new retained run. This tightens D-467's existing
 contract; it does not add a new format, provider requirement or recovery mode.
+
+## Legacy validation boundary
+
+An untagged version-1 entry stays inert and receives no guessed native action
+kind, but it is not exempt from the shared host-envelope validation. Migration
+rejects private raw observations, reasoning/stream fields, duplicate or aliased
+host keys and null records before admitting another run. The original record
+remains unchanged on rejection. Valid legacy source and numeric identifiers still
+round-trip as inert context. In-memory and SQLite regressions cover both legacy
+windows and mixed legacy entries inside a version-2 window.
