@@ -60,3 +60,17 @@ jobs:
           subprocess.run(['git', 'commit', '-m', change['message']], check=True)
           subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/docs/portable-session-context-plan'], check=True)
           print('Verified checkpoint:', git('rev-parse', 'HEAD'))
+      - name: Archive tracked source only
+        run: |
+          mkdir -p "$RUNNER_TEMP/context-source"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/context-source/source.tgz"
+          git rev-parse HEAD > "$RUNNER_TEMP/context-source/commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/context-source/tree.txt"
+          cd "$RUNNER_TEMP/context-source"
+          sha256sum source.tgz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: context-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/context-source/
+          retention-days: 3
+          if-no-files-found: error
