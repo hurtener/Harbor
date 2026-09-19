@@ -1197,7 +1197,13 @@ Non-batchable in this wave; each returns `{task_id, steered|paused|resumed}`.
 
 **RunContext** — passed to each `Planner.Next` call. Carries identity (the triple), tools available, memory snapshot, control surface (`RunContext.Control`), trajectory pointer, deadlines. The planner reads from this; it never reads runtime internals directly.
 
-**`RunContext.DiscoveredTools`** — Phase 107c (D-167) per-run `[]string` field carrying the names of deferred tools the LLM discovered via the `tool_search` meta-tool during this run. The React planner appends to it when it observes a `tool_search` tool-call result and reads it on the next step to extend the next turn's `req.Tools[]` declaration with the discovered tool. Stack-local-per-run (D-025) — pre-cleared at run start, accumulates within ONE run, never on the shared planner struct. The structural enforcement of the two-turn discovery cycle: turn N the LLM calls `tool_search`, turn N+1 the planner has the discovered tool in `Tools[]`, the LLM calls it. RFC §6.2, brief 15 §3.
+**`RunContext.DiscoveredTools`** — per-run names of deferred tools used to extend
+native declarations after discovery. ReAct derives current names from single,
+parallel and batch `tool_search` outcomes. Retained native history contributes
+at most 128 recent canonical invoked identities/discovered names, resolved through
+the current visibility-filtered catalog rather than replaying old schemas or
+permissions. No discovery state lives on the shared planner instance; unknown
+names are not fuzzy-dispatched. RFC §6.2, D-167, D-468.
 
 **`RunContext.PendingToolCalls`** — Phase 107c (D-167 — AC-19 + AC-19a) per-run `[]ToolCallDeferred` field that carries the N-1 remaining native tool-calls when the LLM emits N>1 ToolCalls in one response. The React planner emits `CallTool` for the head of the slice, records the tail, and consumes the queue before consulting the LLM again. **Phase 107d (D-169) demoted this from the default to the OPT-OUT + discovery-race path:** with `parallel_tool_calls: true` (the new default) the projector emits a native `CallParallel` instead, and the dev executor dispatches the branches concurrently. The serialization queue is now reached only when `parallel_tool_calls: false`, OR as the same-turn-discovery-race guard (D-167 risk #4 — a `tool_search` plus a call to the not-yet-declared tool must serialise). The runloop's `OnPendingToolCalls` closure captures the post-step queue and writes it back into `spec.Base`. Stack-local-per-run (D-025); never on the planner struct. Empty by default. RFC §6.2, brief 15 §6, D-169.
 

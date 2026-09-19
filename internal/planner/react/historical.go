@@ -49,27 +49,26 @@ func renderStepMessages(step planner.Step, replay planner.ReasoningReplayMode, i
 	return messages
 }
 
-// Typed actions exist only in this local rendering copy. Historical data never
-// becomes RunContext.PendingToolCalls, a planner Decision or a dispatch request.
-func renderHistoricalStep(history *planner.HistoricalStep) ([]llm.ChatMessage, error) {
+// Typed actions exist only in this local request-preparation copy. Rendering
+// and discovery reuse it; historical data never enters PendingToolCalls or
+// becomes a returned planner Decision or a dispatch request.
+func decodeHistoricalStep(history *planner.HistoricalStep) (planner.Step, error) {
 	step, err := planner.ReadHistoricalStep(planner.Step{Historical: history})
 	if err != nil {
-		return nil, err
+		return planner.Step{}, err
 	}
 	if history.Kind == "context" {
-		// A non-native/legacy decision is evidence, not a guessed native call.
-		return []llm.ChatMessage{{Role: llm.RoleUser, Content: textContent(
-			"Historical execution (context only): " + string(history.Body))}}, nil
+		return step, nil
 	}
 	var wire struct {
 		Action         json.RawMessage `json:"action"`
 		LLMObservation json.RawMessage `json:"llm_observation"`
 	}
 	if err := json.Unmarshal(history.Body, &wire); err != nil {
-		return nil, planner.ErrInvalidHistoricalStep
+		return planner.Step{}, planner.ErrInvalidHistoricalStep
 	}
 	if len(wire.Action) == 0 || bytes.Equal(bytes.TrimSpace(wire.Action), []byte("null")) {
-		return nil, planner.ErrInvalidHistoricalStep
+		return planner.Step{}, planner.ErrInvalidHistoricalStep
 	}
 	switch history.Kind {
 	case "call_tool":
@@ -95,10 +94,10 @@ func renderHistoricalStep(history *planner.HistoricalStep) ([]llm.ChatMessage, e
 	case "resume_task":
 		step.Action, err = decodeHistorical[planner.ResumeTask](wire.Action)
 	default:
-		return nil, planner.ErrInvalidHistoricalStep
+		return planner.Step{}, planner.ErrInvalidHistoricalStep
 	}
 	if err != nil {
-		return nil, err
+		return planner.Step{}, err
 	}
 	// Rehydrate only tagged aggregate shapes. Flat classified failures remain
 	// maps so the existing failure-first renderer can preserve them unchanged.
@@ -119,7 +118,20 @@ func renderHistoricalStep(history *planner.HistoricalStep) ([]llm.ChatMessage, e
 		}
 	}
 	if err != nil {
+		return planner.Step{}, err
+	}
+	return step, nil
+}
+
+func renderHistoricalStep(history *planner.HistoricalStep) ([]llm.ChatMessage, error) {
+	step, err := decodeHistoricalStep(history)
+	if err != nil {
 		return nil, err
+	}
+	if history.Kind == "context" {
+		// A non-native/legacy decision is evidence, not a guessed native call.
+		return []llm.ChatMessage{{Role: llm.RoleUser, Content: textContent(
+			"Historical execution (context only): " + string(history.Body))}}, nil
 	}
 	messages := renderStepMessages(step, planner.ReasoningReplayNever, history.Index)
 	// Providers may reuse a call ID in different turns. Keep stored original

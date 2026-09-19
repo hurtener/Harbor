@@ -25,10 +25,10 @@ import (
 const toolSearchToolName = "tool_search"
 
 // deriveDiscoveredFromTrajectory walks the trajectory's executed steps
-// and returns the union of tool names surfaced by every prior
-// `tool_search` invocation's observation (AC-18). The function reads
-// only — it never mutates the trajectory. Returns a nil slice when no
-// `tool_search` step landed yet.
+// and returns tool names surfaced by prior `tool_search` results (AC-18), plus
+// a bounded set of canonical tool identities used in retained native exchanges.
+// The function reads only; it never mutates the trajectory. No eligible history
+// or discovery results yields a nil slice.
 //
 // Per-step observation shape (the `tool_search` builtin's contract):
 //
@@ -55,30 +55,85 @@ func deriveDiscoveredFromTrajectory(t *planner.Trajectory) []string {
 	if t == nil || len(t.Steps) == 0 {
 		return nil
 	}
-	var out []string
-	seen := make(map[string]struct{})
-	for _, step := range t.Steps {
-		call, ok := step.Action.(planner.CallTool)
-		if !ok || call.Tool != toolSearchToolName {
+	var live, historical []string
+	for index, step := range t.Steps {
+		if step.Historical != nil {
+			// Only tagged, validated native history supplies canonical identities.
+			// Legacy action maps are not guessed. Invalid history is rejected by
+			// the shared admission/render path before it can reach inference.
+			if _, err := planner.ReadHistoricalStep(step); err != nil {
+				continue
+			}
+			decoded, err := decodeHistoricalStep(step.Historical)
+			if err != nil {
+				continue
+			}
+			for _, name := range discoveredStepNames(decoded, index, true) {
+				if name == "" {
+					continue
+				}
+				// A bounded recent set, no new persistent tool registry. Move a
+				// rediscovered name to the tail before evicting the oldest name.
+				for i, existing := range historical {
+					if existing == name {
+						historical = append(historical[:i], historical[i+1:]...)
+						break
+					}
+				}
+				historical = append(historical, name)
+				if len(historical) > maxRetainedDiscoveredTools {
+					historical = historical[1:]
+				}
+			}
 			continue
 		}
-		obs := step.LLMObservation
-		if obs == nil {
-			obs = step.Observation
-		}
-		names := extractDiscoveredNames(obs)
-		for _, n := range names {
-			if n == "" {
-				continue
-			}
-			if _, dup := seen[n]; dup {
-				continue
-			}
-			seen[n] = struct{}{}
-			out = append(out, n)
-		}
+		live = append(live, discoveredStepNames(step, index, false)...)
 	}
-	return out
+	return mergeDiscovered(historical, live)
+}
+
+const maxRetainedDiscoveredTools = 128
+
+// Reuse native exchange rendering for single/parallel/batch results so discovery
+// follows the same branch pairing and failure projection as the actual prompt.
+func discoveredStepNames(step planner.Step, index int, rememberInvoked bool) []string {
+	var calls []planner.CallTool
+	switch action := step.Action.(type) {
+	case planner.CallTool:
+		calls = []planner.CallTool{action}
+	case planner.CallParallel:
+		calls = action.Branches
+	case planner.Batch:
+		calls = action.Tools
+	default:
+		return nil
+	}
+	var names []string
+	hasSearch := false
+	for _, call := range calls {
+		if rememberInvoked && call.Tool != "" {
+			names = append(names, call.Tool)
+		}
+		hasSearch = hasSearch || call.Tool == toolSearchToolName
+	}
+	if !hasSearch {
+		return names
+	}
+	messages := renderStepMessages(step, planner.ReasoningReplayNever, index)
+	if len(messages) == 0 || len(messages) != len(messages[0].ToolCalls)+1 {
+		return names
+	}
+	for i, call := range messages[0].ToolCalls {
+		if call.Name != toolSearchToolName {
+			continue
+		}
+		result := messages[i+1]
+		if result.Role != llm.RoleTool || result.ToolCallID == nil || *result.ToolCallID != call.ID || result.Content.Text == nil {
+			continue
+		}
+		names = append(names, extractDiscoveredNames(*result.Content.Text)...)
+	}
+	return names
 }
 
 // extractDiscoveredNames returns the `tools[].name` slice carried by a

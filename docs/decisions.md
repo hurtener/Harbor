@@ -15579,3 +15579,26 @@ old readers reject version 2. The run dispatch journal keeps its own version 1.
 Unknown or malformed native history fails closed. Prior-run checkpoint reuse,
 interrupted-prefix reconciliation and authorized result recovery remain separate
 acceptance work. No long-term memory or provider-native compaction is added.
+
+## D-468 — Retained tool discovery uses current catalog authority
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Request preparation derives at most 128 recent unique historical tool names
+from validated retained native exchanges: canonical invoked identities and
+single/parallel/batch discovery results. Current-run discovery remains separate.
+No new registry or retained schema is introduced. The existing current catalog
+projection resolves names, schemas, exclusions and scope requirements anew;
+missing names are not guessed or fuzzy-dispatched. An evicted discovery may
+require another explicit search, but its execution evidence is not deleted.
+
+`PlannerView.Resolve` enforces the same visibility predicate as List except for
+loading mode: a deferred tool can be discovered, but naming a tool never bypasses
+its required scopes. Source/agent exclusion wrappers keep their existing checks.
+Historical action decoding remains local to request preparation; discovery does
+not return a Decision, queue actions or invoke tools. Unrecognized legacy action
+shapes remain inert rather than being inferred from arbitrary tool output.
+
+This extends D-467 without changing the retained window format, external-memory
+hooks, provider requirements or default retention behavior. Cross-turn checkpoint
+reuse, interrupted-prefix reconciliation and large-result recovery remain pending.

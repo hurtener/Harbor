@@ -8,7 +8,7 @@ source scripts/smoke/common.sh
 assert_file docs/plans/phase-269-retained-session-context.md "retained context plan exists"
 assert_grep_present '^## D-464 ' docs/decisions.md "retained window decision exists"
 if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble ./sdk/assemble ./internal/runtime/serve ./internal/config \
-    -run 'TestRetainedContext_|TestRunOnce_RetainedContext|TestRunOnce_RetainedNative|TestRetainedServer_|TestSessionsRetainedContext_' -count=1; then
+    -run 'TestRetainedContext_|TestRunOnce_RetainedContext|TestRunOnce_RetainedNative|TestRunOnce_RetainedDiscovery|TestRetainedServer_|TestSessionsRetainedContext_' -count=1; then
     ok "retained evidence, restore, erasure and served/embedded request regressions pass"
 else
     fail "retained execution context regression failed"
@@ -25,9 +25,14 @@ else
     fail "dispatch failure lost returned execution evidence"
 fi
 if go test -race -p 1 ./internal/planner ./internal/planner/react ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
-    -run 'TestHistoricalValidation_|TestHistoricalProjection_|TestTrajectoryHistorical_|TestPortableProviders_' -count=1; then
+    -run 'TestRetainedDiscovery_|TestHistoricalValidation_|TestHistoricalProjection_|TestTrajectoryHistorical_|TestPortableProviders_' -count=1; then
     ok "native historical projection, migration and provider portability regressions pass"
 else
     fail "native historical projection regression failed"
+fi
+if go test -race ./internal/tools -run 'TestPlannerView_ResolveRechecks|TestPlannerView_ConcurrentScoped' -count=1; then
+    ok "remembered tool names preserve current scope authority"
+else
+    fail "catalog name resolution bypassed current scopes"
 fi
 smoke_summary

@@ -75,8 +75,10 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       without becoming dispatchable actions, including aggregate/failure paths.
 - [ ] Cross-turn checkpoint reuse preserves prior narrative and bounded work
       across user turns without re-summarizing the complete retained window.
+- [x] Retained native discovery and canonical invoked tool names are bounded,
+      resolved against current schemas/scopes/exclusions, and never auto-executed.
 - [ ] Authorized large-result reference recovery, freshness/expiry, attachment
-      context, steering corrections, and discovered-tool revalidation are covered.
+      context and steering corrections are covered.
 - [ ] Postgres conformance, full coverage, preflight, and release gates pass.
 
 ## Files added or changed
@@ -208,3 +210,18 @@ evidence and fencing older readers from misinterpreting the new representation.
 The dispatch journal stays version 1. The production consumer, old/new format
 tests, cross-provider scripted wire tests and 128-way isolation land together.
 Checkpoint reuse and the other unchecked criteria remain unfinished.
+
+## Retained tool-discovery increment
+
+D-468 reuses existing native exchange projection and current catalog resolution.
+Single, parallel and batch discovery survive restoration, as do canonical names
+of actually invoked catalog tools. The historical contribution is capped at 128
+recent unique names; current-run discovery remains independent. A current schema
+update is reflected in the next declaration, and revoked scopes or removed/hidden
+tools cannot be re-enabled by historical names. Unresolved aliases are not guessed.
+No second catalog, schema cache, custom tool contract, or provider client is added.
+
+The embedded request regression observes a prior search, a changed descriptor,
+and then scope revocation over three retained turns. The search executes once,
+no historical edit executes, and actual outgoing declarations track the catalog.
+Shared-catalog and historical-reader tests exercise 128 concurrent invocations.
