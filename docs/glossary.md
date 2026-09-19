@@ -2287,3 +2287,9 @@ admission. Embedded callers use `Stack.ReconcileRetainedContext`; served callers
 use `sessions.reconcile_context` in their own verified session. A pending action
 is unknown and refused, never replayed. No private evidence is returned over the
 Protocol. RFC §6.9, D-470, D-471.
+
+**Retained result references** — a bounded, runtime-resolved metadata view of
+existing dispatcher-offloaded results. It is independent of lossy summary prose,
+uses the current session's ArtifactStore scope, and is read through the existing
+`artifact_fetch` tool. It is not a new registry or an external-resource version
+authority. RFC §6.9, D-472.

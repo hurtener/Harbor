@@ -338,7 +338,7 @@ func TestRetainedContext_ErasureBlocksFollowingDecision(t *testing.T) {
 	guarded := r.GuardPlanner(retainedDecisionFunc(func(context.Context, planner.RunContext) (planner.Decision, error) {
 		called = true
 		return planner.CallTool{Tool: "write"}, nil
-	}))
+	}), nil)
 	if _, err = store.DeleteScope(t.Context(), base.Quadruple.Identity); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestRetainedContext_ErasureDuringDecisionBlocksDispatch(t *testing.T) {
 			return nil, err
 		}
 		return planner.CallTool{Tool: "write"}, nil
-	}))
+	}), nil)
 	if decision, err := guarded.Next(t.Context(), base); !errors.Is(err, runctx.ErrRetainedContextUnavailable) || decision != nil {
 		t.Fatal("dispatch accepted after source erasure during model call")
 	}

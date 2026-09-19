@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -493,8 +494,8 @@ func projectRetainedWindow(window retainedWindow) ([]planner.Step, error) {
 // GuardPlanner keeps retained evidence behind its current admission and erasure
 // checks at decision boundaries. It preserves the planner's existing request-
 // context marker rather than selecting a different compaction path.
-func (r *RetainedRun) GuardPlanner(inner planner.Planner) planner.Planner {
-	guarded := retainedPlanner{inner: inner, run: r}
+func (r *RetainedRun) GuardPlanner(inner planner.Planner, store artifacts.ArtifactStore) planner.Planner {
+	guarded := retainedPlanner{inner: inner, run: r, artifacts: store}
 	if _, ok := inner.(planner.RequestContextPlanner); ok {
 		return retainedRequestPlanner{retainedPlanner: guarded}
 	}
@@ -502,8 +503,9 @@ func (r *RetainedRun) GuardPlanner(inner planner.Planner) planner.Planner {
 }
 
 type retainedPlanner struct {
-	inner planner.Planner
-	run   *RetainedRun
+	artifacts artifacts.ArtifactStore
+	inner     planner.Planner
+	run       *RetainedRun
 }
 
 func (p retainedPlanner) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
@@ -513,11 +515,21 @@ func (p retainedPlanner) Next(ctx context.Context, rc planner.RunContext) (plann
 	if err := p.run.validateAdmission(ctx); err != nil {
 		return nil, err
 	}
+	refs, err := retainedResultReferences(ctx, rc, p.artifacts)
+	if err != nil {
+		return nil, err
+	}
+	rc.RetainedResultRefs = refs
 	decision, err := p.inner.Next(ctx, rc)
 	if err != nil {
 		return nil, err
 	}
 	if err = p.run.validateAdmission(ctx); err != nil {
+		return nil, err
+	}
+	// A deletion while inference was in flight must not permit the resulting
+	// dependent action to dispatch using now-erased evidence.
+	if _, err := retainedResultReferences(ctx, rc, p.artifacts); err != nil {
 		return nil, err
 	}
 	return decision, nil

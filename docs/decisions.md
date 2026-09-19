@@ -15680,3 +15680,31 @@ The typed Go Protocol client and generated wire/reference surfaces consume the
 method. No new recovery service, Console page, provider API, or configuration
 switch is introduced. This completes D-470's served consumer, not the remaining
 large-result, attachment/steering, Postgres or release acceptance criteria.
+
+## D-472 — Recover retained offloaded results through existing artifact reads
+
+**Scope:** RFC 002, phase 269; incremental implementation, not released.
+
+The retained-run guard resolves existing dispatcher offload envelopes into a
+bounded metadata-only reference projection on every decision. References remain
+visible even when their source exchanges are covered by a narrative checkpoint.
+The guard reads only referenced IDs in the verified tenant/user/session scope;
+no whole-session listing or new persistent reference registry is introduced.
+Only existing structured offload envelopes are recognized, not model-generated
+summary prose, tool arguments, or guessed domain fields.
+
+The existing `artifact_fetch` tool supplies bounded exact bytes through normal
+catalog authorization and dispatch. It must be enabled when an agent needs
+retrieval. Recovery never reexecutes the original operation. A reference is not
+proof of an external resource's current version or the success of a later edit.
+The projection is capped at 64 unique references and 16 KiB of metadata; scanning
+is bounded by the retained-window plus current-run byte allowance. Overflows
+fail explicitly, never silently discard references.
+
+Both embedded and served retained consumers resolve through their private
+ArtifactStore dependency. The planner receives metadata, not a new unscoped
+store. Missing/deleted references or foreign returned metadata fail before
+inference, and reference checks after inference fence dependent dispatch when
+source deletion occurred during a model call. Already in-flight requests cannot
+be retracted. Retained source expiration continues to use the existing admission
+checks; no independent artifact TTL is invented.

@@ -527,3 +527,17 @@ A success seals context only; it does not rerun the source task. A 409
 `retained_context_unsettled` means the external outcome is still unknown.
 Resolve it with the owning service instead of repeating the write. A 409
 `retained_context_unavailable` does not permit inventing missing history.
+
+### Retrieve an earlier offloaded result
+
+For agents that need source recovery, enable the existing `artifact_fetch`
+builtin in the tool catalog. Retained runs surface the authorized reference and
+current stored metadata even after its earlier exchange is summarized. Read a
+bounded `Ref`/`Offset`/`MaxBytes` window through that tool; do not rerun the
+original write or read simply to recover an already retained receipt.
+
+The reference belongs to this session, not a global resource namespace. Missing
+or deleted source invalidates dependent continuation, while normal source-turn
+retention still applies. The source service remains authoritative for current
+external versions. Oversized reference projections fail explicitly; no separate
+retention toggle, artifact TTL, or long-term-memory integration is added.

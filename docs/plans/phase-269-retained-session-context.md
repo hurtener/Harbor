@@ -77,8 +77,9 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       across user turns without re-summarizing the complete retained window.
 - [x] Retained native discovery and canonical invoked tool names are bounded,
       resolved against current schemas/scopes/exclusions, and never auto-executed.
-- [ ] Authorized large-result reference recovery, freshness/expiry, attachment
-      context and steering corrections are covered.
+- [x] Authorized dispatcher-offloaded result recovery uses existing bounded
+      artifact reads, scoped lookup and source expiry/deletion guards.
+- [ ] Attachment context and steering corrections survive retained continuation.
 - [ ] Postgres conformance, full coverage, preflight, and release gates pass.
 
 ## Files added or changed
@@ -292,3 +293,23 @@ idempotence, admission fencing, pending refusal, all identity dimensions,
 cancellation, unknown/trailing payloads, disabled retention and 128 concurrent
 callers. Full runtime persistence and final release gates remain separately
 tracked; a green focused test does not mark the entire phase shipped.
+
+## Existing-artifact result recovery increment
+
+D-472 keeps bounded references to dispatcher-offloaded results in the actual
+request even when the corresponding exchange is covered by a retained summary.
+The runtime validates each reference under the run's identity before inference
+and before dependent dispatch; it does not expose an ArtifactStore to the planner.
+The ordinary `artifact_fetch` tool remains the only byte-retrieval operation.
+
+Request-level regressions first failed on the prior implementation: a compacted
+reference disappeared, and deletion of its blob still allowed inference against
+a retained summary. Tests now exercise the real dispatcher/offload, checkpoint,
+RunOnce/ReAct request and bounded artifact read, checking exact trailing source,
+version and completeness metadata. Served continuations use the same guard.
+Negative cases cover source deletion before/during inference, foreign metadata,
+lookup failure, cancellation, malformed envelopes, reference/metadata/scan bounds
+and 128 shared read-only projections. No historical action is rerun.
+
+This completes the generic offloaded-result recovery path, not attachment or
+steering continuity, remaining persistence conformance or final RC acceptance.

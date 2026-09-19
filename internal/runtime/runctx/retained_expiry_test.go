@@ -49,7 +49,7 @@ func TestRetainedContext_ExpiredFrozenSource(t *testing.T) {
 					now = now.Add(time.Minute)
 				}
 				return planner.CallTool{Tool: "save"}, nil
-			}))
+			}), nil)
 			if !during {
 				now = now.Add(time.Minute)
 			}

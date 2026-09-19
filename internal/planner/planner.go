@@ -209,6 +209,12 @@ type RunContext struct {
 	// Empty on text-only turns AND on every turn after the first.
 	InputArtifacts []InputArtifactView
 
+	// RetainedResultRefs are current, identity-checked metadata for the exact
+	// offloaded results in the bounded retained execution window. The runtime
+	// rebuilds this read-only projection independently of lossy summaries.
+	// Bytes remain in ArtifactStore and are read with the existing artifact_fetch.
+	RetainedResultRefs []ArtifactManifestEntry
+
 	// Control is the accumulated steering signals (control events
 	// observed since the last planner step). The Planner reads;
 	// the Runtime owns the inbox.

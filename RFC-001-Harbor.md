@@ -1375,6 +1375,14 @@ external effects, and returns only a content-free reconciliation acknowledgement
 The typed Go Protocol client exposes the operation. Retention must already be
 enabled; no new configuration, cold-run resume or automatic action retry is added.
 
+**Retained result retrieval (D-472).** The retained guard resolves structured
+model-facing dispatcher offload envelopes independently of narrative coverage.
+Its bounded metadata projection survives compaction; the existing `artifact_fetch`
+reads exact permitted ranges without repeating the original tool. Own-session
+reference validation runs before inference and before dependent dispatch. Missing
+or erased sources are unavailable, not retained as apparently valid evidence.
+No persistent registry, new tool, or artifact-lifetime policy is introduced.
+
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 
 ```go

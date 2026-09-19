@@ -41,4 +41,10 @@ if go test -race -p 1 ./internal/runtime/serve ./internal/protocol/client \
 else
     fail "served context reconciliation regression failed"
 fi
+if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble ./internal/runtime/serve \
+    -run 'TestRetainedResults_|TestRunOnce_RetainedResults_|TestRetainedServer_ResultReferences' -count=1; then
+    ok "exact retained result retrieval and deletion fencing regressions pass"
+else
+    fail "retained result reference recovery failed"
+fi
 smoke_summary

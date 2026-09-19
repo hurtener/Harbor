@@ -38,7 +38,7 @@ func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steerin
 	}
 	if err == nil {
 		spec.DispatchCheckpoint = retained
-		spec.Planner = retained.GuardPlanner(spec.Planner)
+		spec.Planner = retained.GuardPlanner(spec.Planner, d.artifactStore)
 		fin, err = d.runLoop.Run(ctx, spec)
 	}
 	status, answer := "interrupted", ""

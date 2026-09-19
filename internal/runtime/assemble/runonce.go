@@ -421,7 +421,7 @@ func (s *Stack) RunOnce(
 
 	runPlanner := s.Planner
 	if retained != nil {
-		runPlanner = retained.GuardPlanner(runPlanner)
+		runPlanner = retained.GuardPlanner(runPlanner, s.Artifacts)
 	}
 	spec := steering.RunSpec{
 		Planner:        runPlanner,
