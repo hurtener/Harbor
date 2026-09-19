@@ -50,7 +50,10 @@ jobs:
           subprocess.run(['git', 'apply', '--check', '--index', '--whitespace=error-all', str(path)], check=True)
           subprocess.run(['git', 'apply', '--index', '--whitespace=error-all', str(path)], check=True)
           allowed = ('internal/', 'sdk/', 'test/', 'harbortest/', 'scripts/', 'docs/', 'examples/')
-          roots = {'README.md', 'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'CHANGELOG.md'}
+          roots = {'README.md', 'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'CHANGELOG.md',
+                   'cmd/harbor-gen-protocol-docs/errors.go', 'cmd/harbor-gen-protocol-docs/methods.go',
+                   'cmd/harbor-gen-protocol-docs/typeindex.go', 'cmd/harbor-protocol-ts-lockstep/typeindex.go',
+                   'cmd/harbor-protocol-ts-types/typeindex.go', 'web/console/src/lib/protocol/wire-manifest.gen.json'}
           for name in git('diff', '--cached', '--name-only').splitlines():
               if name not in roots and not name.startswith(allowed):
                   raise SystemExit('Patch changes an unauthorized path')
