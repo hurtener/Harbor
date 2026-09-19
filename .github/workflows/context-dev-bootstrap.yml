@@ -1,66 +1,26 @@
-name: context development checkpoint
+name: context development source recovery
 
-# Temporary PR-local transport for locally tested patches while Git networking
-# is unavailable. No runtime or release job depends on this; remove before RC.
+# Temporary read-only recovery of this PR's tracked source for local tests.
+# Remove before RC. This job never executes a patch or writes repository content.
 on:
   pull_request:
     branches: [main]
     paths:
       - .github/workflows/context-dev-bootstrap.yml
-      - .github/context-dev-change.json
-
 permissions:
   contents: read
-
 jobs:
-  checkpoint:
+  source:
     if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'docs/portable-session-context-plan'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 2
-      - name: Apply exact tested tree
-        if: hashFiles('.github/context-dev-change.json') != ''
-        shell: python
-        run: |
-          import base64, hashlib, json, os, pathlib, subprocess, zlib
-          def git(*args):
-              return subprocess.check_output(['git', *args], text=True).strip()
-          manifest = pathlib.Path('.github/context-dev-change.json')
-          change = json.loads(manifest.read_text())
-          if git('rev-parse', 'HEAD^') != change['base']:
-              raise SystemExit('Remote base changed; refusing checkpoint')
-          compressed = base64.b64decode(change['patch'], validate=True)
-          decoder = zlib.decompressobj()
-          patch = decoder.decompress(compressed, 2 * 1024 * 1024 + 1)
-          if len(patch) > 2 * 1024 * 1024 or not decoder.eof or decoder.unused_data:
-              raise SystemExit('Patch is oversized or incomplete')
-          if hashlib.sha256(patch).hexdigest() != change['sha256']:
-              raise SystemExit('Patch checksum differs')
-          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'context.patch'
-          path.write_bytes(patch)
-          subprocess.run(['git', 'apply', '--check', '--index', '--whitespace=error-all', str(path)], check=True)
-          subprocess.run(['git', 'apply', '--index', '--whitespace=error-all', str(path)], check=True)
-          allowed_roots = ('internal/', 'sdk/', 'test/', 'harbortest/', 'scripts/', 'docs/', 'examples/')
-          allowed_files = {'RFC-001-Harbor.md', 'RFC-002-Session-Context.md', 'README.md', 'CHANGELOG.md', 'web/console/src/lib/protocol/wire-manifest.gen.json'}
-          for name in git('diff', '--cached', '--name-only').splitlines():
-              if name not in allowed_files and not name.startswith(allowed_roots):
-                  raise SystemExit('Patch changes a path outside the implementation scope')
-          subprocess.run(['git', 'rm', '--', str(manifest)], check=True)
-          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
-          if git('write-tree') != change['tree']:
-              raise SystemExit('Result differs from locally tested tree; refusing push')
-          git('config', 'user.name', 'github-actions[bot]')
-          git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
-          subprocess.run(['git', 'commit', '-m', change['message']], check=True)
-          subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/docs/portable-session-context-plan'], check=True)
-          print('Verified checkpoint:', git('rev-parse', 'HEAD'))
-      - name: Archive tracked source only
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Archive tracked source
         run: |
           mkdir -p "$RUNNER_TEMP/context-source"
           git archive --format=tar.gz HEAD > "$RUNNER_TEMP/context-source/source.tgz"
