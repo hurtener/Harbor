@@ -197,6 +197,21 @@ func publishEventsPageEvent(t *testing.T, bus events.EventBus, typ events.EventT
 // and returns the `event:` type of every frame seen.
 func readSSEEventTypes(t *testing.T, baseURL string, id identity.Identity, filterTypes []string, want int) []string {
 	t.Helper()
+	return readSSEEventTypesReady(t, baseURL, id, filterTypes, want, nil)
+}
+
+// The SSE handler flushes response headers after its subscription is attached.
+// Use that observable boundary instead of sleeping before publication. Release
+// the barrier on request failure too, so a failing subscriber cannot hang peers.
+func readSSEEventTypesReady(t *testing.T, baseURL string, id identity.Identity, filterTypes []string, want int, ready func()) []string {
+	t.Helper()
+	var once sync.Once
+	attached := func() {
+		if ready != nil {
+			once.Do(ready)
+		}
+	}
+	defer attached()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -218,6 +233,7 @@ func readSSEEventTypes(t *testing.T, baseURL string, id identity.Identity, filte
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("SSE GET: status = %d, want 200", resp.StatusCode)
 	}
+	attached()
 
 	var seen []string
 	sc := bufio.NewScanner(resp.Body)
@@ -475,7 +491,8 @@ func TestE2E_Phase73g_EventsPage_ArtifactGetRefIdentityRejected(t *testing.T) {
 // past teardown.
 func TestE2E_Phase73g_EventsPage_ConcurrentSubscribers(t *testing.T) {
 	stack := newEventsPageStack(t)
-	defer stack.cleanup()
+	cleanup := sync.OnceFunc(stack.cleanup)
+	defer cleanup()
 
 	srv := httptest.NewServer(stack.mux)
 	defer srv.Close()
@@ -499,8 +516,7 @@ func TestE2E_Phase73g_EventsPage_ConcurrentSubscribers(t *testing.T) {
 			defer wg.Done()
 			tenant := "tenant-" + string(rune('A'+(i%tenantCount)))
 			id := identity.Identity{TenantID: tenant, UserID: "u", SessionID: "s"}
-			ready.Done()
-			seen := readSSEEventTypes(t, srv.URL, id, []string{string(events.EventTypeRuntimeError)}, 1)
+			seen := readSSEEventTypesReady(t, srv.URL, id, []string{string(events.EventTypeRuntimeError)}, 1, ready.Done)
 			if len(seen) != 1 {
 				t.Errorf("subscriber %d (%s): got %d frames, want 1", i, tenant, len(seen))
 				failures.Add(1)
@@ -513,7 +529,6 @@ func TestE2E_Phase73g_EventsPage_ConcurrentSubscribers(t *testing.T) {
 		}()
 	}
 	ready.Wait()
-	time.Sleep(80 * time.Millisecond)
 
 	// One runtime.error per tenant — each subscriber for that tenant
 	// receives exactly that tenant's event.
@@ -529,6 +544,10 @@ func TestE2E_Phase73g_EventsPage_ConcurrentSubscribers(t *testing.T) {
 		t.Fatalf("%d concurrent-subscriber failures", failures.Load())
 	}
 
+	// Measure after actual teardown, not before deferred server/bus Close.
+	// In-flight handler/subscription workers are not post-teardown leaks.
+	srv.Close()
+	cleanup()
 	http.DefaultClient.CloseIdleConnections()
 	runtime.GC()
 	settled := runtime.NumGoroutine()
