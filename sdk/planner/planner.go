@@ -55,6 +55,8 @@ type (
 	Trajectory = internal.Trajectory
 	// Step is one trajectory step.
 	Step = internal.Step
+	// HistoricalStep carries non-executable, versioned prior execution.
+	HistoricalStep = internal.HistoricalStep
 	// Summary is the compaction artefact of a compressed trajectory.
 	Summary = internal.Summary
 	// SummaryCoverage identifies the exact summarized prefix.

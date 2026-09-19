@@ -1214,6 +1214,12 @@ run can still have an unknown outcome between external execution and settlement.
 Reconcile with the owning service rather than automatically repeating it.
 Automatic cold-run continuation remains unsupported.
 
+Retained windows use format version 2 for native historical exchange projection.
+Source strings and identifier/completeness values remain exact, while JSON
+envelope formatting may canonicalize. Version-1 windows remain readable as inert
+evidence and upgrade on a write; older version-1 readers reject the new format.
+No stored historical action is executed by restoration.
+
 ### sessions.idle_ttl
 
 Time before an idle session is swept. Default: `24h`. Validation:

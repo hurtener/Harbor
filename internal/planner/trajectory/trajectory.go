@@ -27,6 +27,7 @@
 package trajectory
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -123,6 +124,11 @@ type Trajectory struct {
 // representations; round-trip byte stability relies on the latter
 // (see Trajectory godoc).
 type Step struct {
+	// Historical holds a retained exchange, never a Decision to dispatch.
+	// The outer action/preamble/observation stay empty so prior work cannot
+	// reenter completion ingestion as newly executed activity.
+	Historical *HistoricalStep `json:"historical,omitempty"`
+
 	// Action is the Decision the planner returned for this step.
 	// Typed as `any` to avoid a cycle with the planner package;
 	// must be JSON-encodable (struct with JSON tags or
@@ -187,6 +193,17 @@ type Step struct {
 	// TokenEstimate is the LLM token consumption estimate for this
 	// step (input + output combined).
 	TokenEstimate int `json:"token_estimate,omitempty"`
+}
+
+// HistoricalStep is a portable, non-executable record of one prior exchange.
+// Kind is stamped from the original typed action, never inferred from tool text.
+// Body contains only its permitted model-facing Step, without nested history.
+type HistoricalStep struct {
+	Version   int             `json:"version"`
+	SourceRun string          `json:"source_run"`
+	Index     int             `json:"index"`
+	Kind      string          `json:"kind"`
+	Body      json.RawMessage `json:"body"`
 }
 
 // Summary is the compaction artefact produced by the

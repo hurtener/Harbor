@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
+	"github.com/hurtener/Harbor/internal/planner/trajectory"
 )
 
 // Both ends are the real pinned Bifrost adapters. Only provider responses are
@@ -26,8 +28,9 @@ import (
 // switching adapters must retain exact native call/result pairs, not opaque state.
 func TestPortableProviders_OrdinaryCompactionAndNativeReplay(t *testing.T) {
 	for _, source := range []string{"openai", "anthropic"} {
-		for _, truncated := range []bool{false, true} {
-			t.Run(fmt.Sprintf("source=%s/truncated=%t", source, truncated), func(t *testing.T) {
+		for _, mode := range []struct{ truncated, restored bool }{{}, {false, true}, {true, false}, {true, true}} {
+			truncated, restoredHistory := mode.truncated, mode.restored
+			t.Run(fmt.Sprintf("source=%s/truncated=%t/restored=%t", source, truncated, restoredHistory), func(t *testing.T) {
 				t.Setenv("HARBOR_PORTABLE_PROVIDER_KEY", "synthetic-test-key")
 				target := "anthropic"
 				if source == target {
@@ -152,6 +155,25 @@ func TestPortableProviders_OrdinaryCompactionAndNativeReplay(t *testing.T) {
 				if tr.Summary == nil || tr.Summary.Coverage == nil || tr.Summary.Coverage.ThroughStep != 2 {
 					t.Fatal("summary did not retain fresh exchange")
 				}
+				expectedCallID := "fresh"
+				if restoredHistory {
+					history, err := planner.RetainStep(tr.Steps[2], q.RunID, 2)
+					if err != nil {
+						t.Fatal(err)
+					}
+					tr.Steps[2] = history
+					encoded, err := tr.Serialize()
+					if err != nil {
+						t.Fatal(err)
+					}
+					restored, err := trajectory.Deserialize(encoded)
+					if err != nil {
+						t.Fatal(err)
+					}
+					rc.Trajectory = restored
+					origin := sha256.Sum256([]byte(q.RunID))
+					expectedCallID = fmt.Sprintf("hist_%x_2_0", origin[:12])
+				}
 				second := open(target)
 				if _, err := react.New(second).Next(ctx, rc); err != nil {
 					t.Fatal(err)
@@ -186,12 +208,12 @@ func TestPortableProviders_OrdinaryCompactionAndNativeReplay(t *testing.T) {
 				for _, msg := range body.Messages {
 					if target == "openai" {
 						for _, c := range msg.ToolCalls {
-							if c.ID == "fresh" && msg.Role == "assistant" {
+							if c.ID == expectedCallID && msg.Role == "assistant" {
 								call = true
 							}
 						}
 						var text string
-						if msg.Role == "tool" && msg.ToolCallID == "fresh" && json.Unmarshal(msg.Content, &text) == nil && strings.Contains(text, string(receipt)) {
+						if msg.Role == "tool" && msg.ToolCallID == expectedCallID && json.Unmarshal(msg.Content, &text) == nil && matchesPortableReceipt(text) {
 							result = true
 						}
 					} else if len(msg.Content) > 0 && msg.Content[0] == '[' {
@@ -205,13 +227,13 @@ func TestPortableProviders_OrdinaryCompactionAndNativeReplay(t *testing.T) {
 							t.Fatal(err)
 						}
 						for _, b := range blocks {
-							if b.Type == "tool_use" && b.ID == "fresh" && msg.Role == "assistant" {
+							if b.Type == "tool_use" && b.ID == expectedCallID && msg.Role == "assistant" {
 								call = true
 							}
-							if b.Type == "tool_result" && b.ToolUseID == "fresh" && msg.Role == "user" {
+							if b.Type == "tool_result" && b.ToolUseID == expectedCallID && msg.Role == "user" {
 								var text string
 								if json.Unmarshal(b.Content, &text) == nil {
-									result = strings.Contains(text, string(receipt))
+									result = matchesPortableReceipt(text)
 								} else {
 									var parts []struct {
 										Text string `json:"text"`
@@ -220,7 +242,7 @@ func TestPortableProviders_OrdinaryCompactionAndNativeReplay(t *testing.T) {
 										t.Fatal(err)
 									}
 									for _, p := range parts {
-										if strings.Contains(p.Text, string(receipt)) {
+										if matchesPortableReceipt(p.Text) {
 											result = true
 										}
 									}
@@ -235,4 +257,20 @@ func TestPortableProviders_OrdinaryCompactionAndNativeReplay(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Audit and JSON restoration may canonicalize envelope key ordering, but never
+// source strings, numeric identifier lexemes, or explicit completeness flags.
+func matchesPortableReceipt(text string) bool {
+	var receipt struct {
+		Source     string      `json:"source"`
+		ResourceID string      `json:"resource_id"`
+		Version    json.Number `json:"version"`
+		More       *bool       `json:"more"`
+	}
+	if err := json.Unmarshal([]byte(text), &receipt); err != nil {
+		return false
+	}
+	return receipt.Source == strings.Repeat("x", 14585) && receipt.ResourceID == "doc-a" &&
+		receipt.Version.String() == "9007199254740993" && receipt.More != nil && !*receipt.More
 }

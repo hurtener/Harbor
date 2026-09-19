@@ -16,13 +16,12 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/planner/trajectory"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
 const (
 	retainedContextKind      = state.InternalKindPrefix + "session-execution-context"
-	retainedContextVersion   = 1
+	retainedContextVersion   = 2
 	maxRetainedContextBytes  = 512 * 1024
 	maxRetainedContextTurns  = config.MaxRetainedContextTurns
 	maxRetainedContextActive = 32
@@ -140,10 +139,9 @@ func BeginRetainedRun(ctx context.Context, store state.StateStore, redactor audi
 	return nil, ErrRetainedContextUnavailable
 }
 
-// Apply supplies history as explicitly inert, lower-trust evidence entries.
-// Historical tool calls are never reconstructed as executable Decisions. The
-// same trajectory compactor may summarize older evidence, while current-run
-// native calls and their results keep the normal request path. The caller must
+// Apply supplies history as non-executable, lower-trust evidence entries.
+// Tagged historical exchanges reuse native rendering; legacy entries remain
+// inert text. The same compactor may summarize older history. The caller must
 // omit legacy conversation-memory projection for this retained-context run.
 func (r *RetainedRun) Apply(base *planner.RunContext) error {
 	if base == nil || base.Quadruple != r.q || base.Trajectory == nil || len(base.Trajectory.Steps) != 0 {
@@ -185,10 +183,13 @@ func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query,
 		return ErrRetainedContextCapacity
 	}
 	turn := retainedTurn{Admission: r.admission, ExpiresAt: r.now().Add(r.ttl), Status: status, Query: query, Answer: answer}
-	for _, step := range tr.Steps[r.prefixLen:] {
+	for index, step := range tr.Steps[r.prefixLen:] {
 		// Only the permitted model-facing representation is retained. No raw
 		// diagnostic duplicate, tool handles, credentials, or reasoning trace.
-		modelStep := trajectory.ModelStep(step)
+		modelStep, err := planner.RetainStep(step, r.q.RunID, index)
+		if err != nil {
+			return err
+		}
 		encoded, err := json.Marshal(modelStep)
 		if err != nil {
 			return ErrRetainedContextUnavailable
@@ -306,7 +307,7 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 	if err := decodeRetained(record.Bytes, &window); err != nil {
 		return retainedWindow{}, "", err
 	}
-	if window.Version != retainedContextVersion || len(window.Turns) > maxRetainedContextTurns || len(window.Active) > maxRetainedContextActive {
+	if (window.Version != 1 && window.Version != retainedContextVersion) || len(window.Turns) > maxRetainedContextTurns || len(window.Active) > maxRetainedContextActive {
 		return retainedWindow{}, "", ErrRetainedContextUnavailable
 	}
 	ids, runs := map[state.EventID]bool{}, map[string]bool{}
@@ -327,6 +328,9 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 			return retainedWindow{}, "", ErrRetainedContextUnavailable
 		}
 	}
+	// Read legacy terminal-only windows as inert evidence; a subsequent write
+	// upgrades the format. Old readers reject v2 rather than guessing replay.
+	window.Version = retainedContextVersion
 	return window, record.ID, nil
 }
 
@@ -403,7 +407,21 @@ func projectRetainedWindow(window retainedWindow) ([]planner.Step, error) {
 	}
 	for _, turn := range window.Turns {
 		steps = append(steps, planner.Step{LLMObservation: map[string]any{"historical_user_request": turn.Query, "source_run": turn.Admission.RunID}})
-		for _, entry := range turn.Steps {
+		for index, entry := range turn.Steps {
+			var retained planner.Step
+			if err := decodeRetained(entry, &retained); err != nil {
+				return nil, err
+			}
+			if historical := retained.Historical; historical != nil {
+				if historical.Version != 1 || historical.SourceRun != turn.Admission.RunID ||
+					historical.Index != index || retained.Action != nil || retained.LLMObservation != nil ||
+					retained.Observation != nil || retained.AssistantPreamble != "" || retained.Error != "" ||
+					retained.ReasoningTrace != "" || retained.Failure != nil || retained.Streams != nil {
+					return nil, ErrRetainedContextUnavailable
+				}
+				steps = append(steps, retained)
+				continue
+			}
 			var evidence any
 			if err := decodeRetained(entry, &evidence); err != nil {
 				return nil, err

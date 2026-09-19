@@ -348,3 +348,12 @@ This is an incremental durability checkpoint, not completion of slice 2:
 interrupted-prefix continuation still requires explicit reconciliation and
 execution fencing. See [the checkpoint note](docs/notes/retained-dispatch-durability.md)
 and the [phase 269 plan](docs/plans/phase-269-retained-session-context.md).
+
+## Historical native projection checkpoint
+
+D-467 implements the historical native-exchange part of slice 2. Retained
+records remain non-executable; the existing ReAct renderer projects their
+native call/result groups with stable source-scoped IDs. Version-2 windows
+preserve legacy data as inert context and reject unknown history explicitly.
+See [the checkpoint note](docs/notes/retained-native-exchanges.md).
+Cross-turn checkpoint reuse and the remaining phase 269 criteria are not implied.

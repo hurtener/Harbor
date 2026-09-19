@@ -2255,3 +2255,9 @@ A run-scoped bounded head and action frame use the existing StateStore's atomic
 conditional writes; a pending frame records an unknown outcome, not a failed
 external action. Terminal publication and transient cleanup are separate from
 the trusted completion hook. RFC 002, D-466.
+
+**Historical exchange envelope** — a versioned, non-executable record of one
+retained exchange, with source run, ordinal, concrete action kind and permitted
+body. It is rendered with the existing live native-call/result renderer, not
+placed on a dispatch queue. New windows are version 2; legacy windows remain
+inert rather than receiving guessed action types. RFC 002, D-467.

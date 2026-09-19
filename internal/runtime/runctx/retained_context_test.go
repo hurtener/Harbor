@@ -89,7 +89,7 @@ func TestRetainedContext_ExactEvidenceRestartAndNoRecursiveHistory(t *testing.T)
 				t.Fatal(err)
 			}
 			data := encodeRetained(t, next)
-			for _, want := range []string{strings.Repeat("x", 14564), `"version":9007199254740993`, `"more":false`, `"resource_id":"doc-a"`, "historical_execution"} {
+			for _, want := range []string{strings.Repeat("x", 14564), `"version":9007199254740993`, `"more":false`, `"resource_id":"doc-a"`, `"historical":`} {
 				if !strings.Contains(data, want) {
 					t.Fatalf("lost exact evidence %s", want[:min(50, len(want))])
 				}
@@ -383,5 +383,54 @@ func TestRetainedContext_CancelledAdmissionAndOversizedTerminal(t *testing.T) {
 	base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: strings.Repeat("x", 512*1024)})
 	if err = r.Finish(t.Context(), base.Trajectory, "request", "done", "complete"); !errors.Is(err, runctx.ErrRetainedContextCapacity) {
 		t.Fatalf("oversized evidence clipped: %v", err)
+	}
+}
+
+func TestRetainedContext_LegacyWindowUpgradeIsExplicit(t *testing.T) {
+	store, redactor, _ := retainedStore(t, "inmem")
+	base := retainedBase("new", "legacy-migration")
+	q := identity.Quadruple{Identity: base.Quadruple.Identity}
+	data, err := json.Marshal(map[string]any{
+		"version": 1,
+		"turns": []any{map[string]any{
+			"admission":  map[string]any{"id": state.NewEventID(), "run_id": "legacy"},
+			"expires_at": time.Now().Add(time.Hour),
+			"status":     "complete", "query": "old request",
+			"steps": []any{map[string]any{
+				"action":          map[string]any{"Tool": "read", "Args": map[string]any{"id": "legacy-doc"}},
+				"llm_observation": map[string]any{"version": json.Number("9007199254740993")},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(t.Context(), state.NewInternalRecord(state.NewEventID(), q, retainedKind, data)); err != nil {
+		t.Fatal(err)
+	}
+	run, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = run.Apply(&base); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range base.Trajectory.Steps {
+		if step.Historical != nil || step.Action != nil {
+			t.Fatal("legacy action acquired an invented native kind")
+		}
+	}
+	if body := encodeRetained(t, base); !strings.Contains(body, "legacy-doc") || !strings.Contains(body, "9007199254740993") {
+		t.Fatal("migration lost legacy evidence")
+	}
+	record, err := store.Load(t.Context(), q, retainedKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var window struct {
+		Version int `json:"version"`
+	}
+	if err = json.Unmarshal(record.Bytes, &window); err != nil || window.Version != 2 {
+		t.Fatal("new representation is not fenced from old v1 readers")
 	}
 }

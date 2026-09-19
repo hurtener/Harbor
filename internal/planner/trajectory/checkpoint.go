@@ -92,7 +92,7 @@ func ModelStep(s Step) Step {
 	if obs == nil {
 		obs = s.Observation
 	}
-	return Step{Action: s.Action, LLMObservation: obs, Error: s.Error, AssistantPreamble: s.AssistantPreamble}
+	return Step{Historical: s.Historical, Action: s.Action, LLMObservation: obs, Error: s.Error, AssistantPreamble: s.AssistantPreamble}
 }
 
 // HasContent rejects vacuous summaries; an explanatory note is not work state.

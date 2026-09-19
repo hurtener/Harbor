@@ -110,7 +110,7 @@ func TestRunOnce_RetainedContextActualRequestAndHook(t *testing.T) {
 		}
 	}
 	body := c.body(t, "session/second")
-	for _, want := range []string{"doc-a", "9007199254740993", `"more":false`, strings.Repeat("x", 14585), "historical_execution"} {
+	for _, want := range []string{"doc-a", "9007199254740993", `"more":false`, strings.Repeat("x", 14585)} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("next request lost %s", want[:min(len(want), 50)])
 		}

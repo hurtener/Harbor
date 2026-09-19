@@ -71,8 +71,10 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       per-action frames avoid rewriting the whole trajectory on each call.
 - [ ] Interrupted-prefix reuse has an explicit reconciliation/execution fence
       and end-to-end authorized recovery before phase completion.
-- [ ] Cross-turn checkpoint reuse and typed historical native exchange projection
-      preserve provider formatting without becoming executable Decisions.
+- [x] Typed historical exchange envelopes reuse native call/result rendering
+      without becoming dispatchable actions, including aggregate/failure paths.
+- [ ] Cross-turn checkpoint reuse preserves prior narrative and bounded work
+      across user turns without re-summarizing the complete retained window.
 - [ ] Authorized large-result reference recovery, freshness/expiry, attachment
       context, steering corrections, and discovered-tool revalidation are covered.
 - [ ] Postgres conformance, full coverage, preflight, and release gates pass.
@@ -192,3 +194,17 @@ attempt. Failed/unsettled journals cannot be sealed as successful terminal turns
 The old terminal-only status above describes the preceding checkpoints, not a
 claim that current action-boundary writes are absent. Safe interrupted-prefix
 reuse and the remaining phase acceptance criteria remain unclaimed.
+
+## Historical native projection increment
+
+D-467 adds non-executable historical envelopes and reuses the live ReAct renderer
+for native tool, parallel, batch, progress and task-control exchanges. Exact
+source strings/numeric lexemes/completeness values survive JSON restoration;
+envelope formatting may canonicalize. Stable origin-based wire IDs avoid
+cross-turn provider-ID reuse and remain unchanged across supported adapters.
+
+Retained windows advance to version 2, preserving legacy version-1 rows as inert
+evidence and fencing older readers from misinterpreting the new representation.
+The dispatch journal stays version 1. The production consumer, old/new format
+tests, cross-provider scripted wire tests and 128-way isolation land together.
+Checkpoint reuse and the other unchecked criteria remain unfinished.

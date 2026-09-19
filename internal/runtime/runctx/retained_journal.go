@@ -14,7 +14,10 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 )
 
-const retainedJournalKind = state.InternalKindPrefix + "session-execution-journal"
+const (
+	retainedJournalKind    = state.InternalKindPrefix + "session-execution-journal"
+	retainedJournalVersion = 1
+)
 
 type retainedJournal struct {
 	Version   int               `json:"version"`
@@ -57,7 +60,7 @@ func (r *RetainedRun) Start(ctx context.Context, base planner.RunContext) (err e
 		return err
 	}
 	head := retainedJournal{
-		Version: retainedContextVersion, Admission: r.admission,
+		Version: retainedJournalVersion, Admission: r.admission,
 		Query: safeQuery, Bytes: len(query), ExpiresAt: r.now().Add(r.ttl),
 	}
 	return r.commitJournal(ctx, head, nil, "")
@@ -127,7 +130,7 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	}
 	intentAction, intentErr := json.Marshal(intentStep.Action)
 	settledAction, settledErr := json.Marshal(settledStep.Action)
-	if intentErr != nil || settledErr != nil || before.Version != retainedContextVersion ||
+	if intentErr != nil || settledErr != nil || before.Version != retainedJournalVersion ||
 		before.Admission != r.admission || before.Index != index || before.Settled ||
 		!bytes.Equal(intentAction, settledAction) {
 		return ErrRetainedContextUnavailable
@@ -164,7 +167,7 @@ func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, st
 		return nil, ErrRetainedContextUnavailable
 	}
 	return json.Marshal(retainedFrame{
-		Version: retainedContextVersion, Admission: r.admission, Index: index,
+		Version: retainedJournalVersion, Admission: r.admission, Index: index,
 		Settled: settled, Step: evidence, ExpiresAt: r.journal.ExpiresAt,
 	})
 }

@@ -15557,3 +15557,25 @@ This extends the terminal-only increments of D-464/D-465. It does not authorize
 automatic cold-run relaunch or replay of an interrupted write. Explicit
 reconciliation and safe interrupted-prefix continuation remain pending, along
 with historical native projection and large-result recovery.
+
+## D-467 — Native projection of non-executable retained exchanges
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Retain the concrete kind of a permitted completed exchange in a versioned
+historical envelope before JSON erases action types. The outer historical step
+has no dispatchable action or new-run completion-hook preamble. ReAct interprets
+the closed kind set only in a local rendering copy, reusing live native pairing,
+failure and aggregate rendering. This never authorizes historical execution.
+
+Stable source-run/ordinal/branch IDs use a shared provider-safe alphabet while
+original IDs remain in retained evidence. Exact source strings, numeric lexemes
+and completeness values survive; JSON envelope formatting may canonicalize.
+Failed arguments are removed before retention, not merely before native replay,
+so later summarization cannot reintroduce them.
+
+Retained windows use version 2. Version 1 remains readable as inert evidence;
+old readers reject version 2. The run dispatch journal keeps its own version 1.
+Unknown or malformed native history fails closed. Prior-run checkpoint reuse,
+interrupted-prefix reconciliation and authorized result recovery remain separate
+acceptance work. No long-term memory or provider-native compaction is added.

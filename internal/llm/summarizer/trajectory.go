@@ -386,6 +386,12 @@ func stripJSONFence(s string) string {
 // renderStepBlock includes the entire permitted exchange. Encoding failure is
 // a real error rather than a marker that lets missing evidence look summarized.
 func renderStepBlock(n int, step planner.Step) (string, error) {
+	if h := step.Historical; h != nil {
+		if h.Version != 1 || h.SourceRun == "" || h.Index < 0 || !json.Valid(h.Body) {
+			return "", planner.ErrInvalidHistoricalStep
+		}
+		return fmt.Sprintf("Step %d historical execution (%s): %s\n", n, h.Kind, h.Body), nil
+	}
 	action, err := json.Marshal(step.Action)
 	if err != nil {
 		return "", planner.ErrUnserializable{Field: "summary.action"}
