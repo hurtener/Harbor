@@ -13,6 +13,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/trajectory"
@@ -23,7 +24,7 @@ const (
 	retainedContextKind      = state.InternalKindPrefix + "session-execution-context"
 	retainedContextVersion   = 1
 	maxRetainedContextBytes  = 512 * 1024
-	maxRetainedContextTurns  = 32
+	maxRetainedContextTurns  = config.MaxRetainedContextTurns
 	maxRetainedContextActive = 32
 	maxRetainedContextSteps  = 256
 	retainedContextAttempts  = 32

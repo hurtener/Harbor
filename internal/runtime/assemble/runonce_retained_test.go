@@ -212,3 +212,30 @@ func TestRunOnce_RetainedContextConcurrentReuse(t *testing.T) {
 		t.Fatalf("historical actions repeated: %d", calls.Load())
 	}
 }
+
+func TestRunOnce_RetainedContextConfigAndExplicitDisable(t *testing.T) {
+	s, client, _ := retainedRecordingStack(t)
+	s.Cfg.Sessions.RetainedContextTurns = 4
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "configured"}
+	for _, run := range []string{"first", "second"} {
+		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(run)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !strings.Contains(client.body(t, "configured/second"), "doc-a") {
+		t.Fatal("configured retention did not reach the next request")
+	}
+	if _, err := s.RunOnce(t.Context(), "without history", id, assemble.WithRunID("disabled"), assemble.WithRetainedContext(0)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(client.body(t, "configured/disabled"), "doc-a") {
+		t.Fatal("explicit zero did not override configured retention")
+	}
+	if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("third")); err != nil {
+		t.Fatal(err)
+	}
+	body := client.body(t, "configured/third")
+	if !strings.Contains(body, "doc-a") || strings.Contains(body, "without history") {
+		t.Fatal("disabled call erased retained history or persisted its own content")
+	}
+}

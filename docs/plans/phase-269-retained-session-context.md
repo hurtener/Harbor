@@ -3,8 +3,9 @@
 ## Summary
 
 Implement RFC 002's second slice using the existing StateStore, artifact
-machinery, and run-context projection. The first increment wires bounded terminal
-retention into embedded `RunOnce`; this phase remains in progress, not RC-ready.
+machinery, and run-context projection. The current increment wires bounded terminal
+retention into serving and embedded `RunOnce`; the phase remains in progress,
+not RC-ready.
 
 ## RFC anchor
 
@@ -48,8 +49,9 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
 
 ## Acceptance criteria
 
-- [x] Embedded runs explicitly opt in through `WithRetainedContext(1..32)`;
-      omitted/zero leaves existing memory and retention behavior unchanged.
+- [x] Positive `sessions.retained_context_turns` or `WithRetainedContext(1..32)`
+      explicitly opts in; configuration defaults to zero and the per-call option
+      can explicitly disable configured retention.
 - [x] One bounded session slot uses StateStore conditional writes and existing
       pending/tombstone erasure fences; stale terminal callbacks cannot resurrect
       erased admissions.
@@ -61,8 +63,9 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       or count-evicted turns produce a partial-history notice.
 - [x] N>=128 runs share a Stack and stores without session bleed or repeated
       historical dispatch; simultaneous siblings do not import in-flight steps.
-- [ ] Serve consumes the same projection under explicit runtime configuration,
-      resolved agent authority, and the session erasure lifecycle.
+- [x] Serve consumes the same projection under explicit runtime configuration
+      after the existing agent/route/catalog resolution. Root and child context
+      stay separate; required persistence precedes task completion.
 - [ ] Per-action intent/settlement persistence closes the required crash-boundary
       acceptance; interrupted-prefix reuse has an explicit execution fence.
 - [ ] Cross-turn checkpoint reuse and typed historical native exchange projection
@@ -75,6 +78,7 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
 
 - `internal/runtime/runctx/retained_context.go` and its driver/identity tests.
 - `internal/runtime/assemble/runonce.go` and request-level integration tests.
+- `internal/runtime/serve/`, `internal/config/`, configuration docs and example.
 - `sdk/assemble/assemble.go`, RFCs, decisions, glossary, and embedding recipe.
 - `scripts/smoke/phase-269.sh` and this phase's master-index entry.
 
@@ -86,7 +90,9 @@ func WithRetainedContext(turns int) RunOption
 
 The SDK aliases the existing assembly implementation. No Protocol method, wire
 schema, backend, production dependency, or default retention change is added.
-This increment applies to `RunOnce`, not `harbor serve` configuration.
+The explicit `sessions.retained_context_turns` setting applies to serving and
+embedding; the per-call option overrides it. Zero is disabled by default. Child
+tasks never publish private transcripts into the root conversation window.
 
 ## Test plan
 
@@ -103,7 +109,7 @@ This increment applies to `RunOnce`, not `harbor serve` configuration.
 
 Run the retained-context and embedded request tests under `go test -race` with
 real production stores. Assert the plan/decision and SDK consumer exist. No test
-or placeholder claims the pending serve or per-action durability surfaces shipped.
+or placeholder claims the pending per-action durability surfaces shipped.
 
 ## Coverage target
 
@@ -155,3 +161,16 @@ long-term memory, consumer turns, and authorization to repeat external actions.
 - [x] Cross-session and N>=128 shared-Stack race tests pass
 - [x] First production consumer and real-driver failure integration land together
 - [x] Vocabulary and incremental boundary are recorded in D-464
+
+## Serving-consumer checkpoint
+
+Real Boot and RunLoopDriver tests cover opt-in/default configuration, exact
+14,660-byte source receipts, numeric version preservation, required admission
+and terminal failures, and root/child separation. An N=128 shared driver test
+checks two-turn continuation across tenant/user/session tuples without replaying
+historical tool actions. Embedded tests pin configuration inheritance and an
+explicit zero override. Existing low-trust caller context and current catalog
+resolution remain upstream of the shared retained-window helper.
+
+This checkpoint remains terminal-only. It does not establish crash-safe tool
+settlement, restored native tool formatting, or completion of phase 269.

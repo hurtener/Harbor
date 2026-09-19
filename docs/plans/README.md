@@ -5947,11 +5947,12 @@ deployment, or downstream acceptance is claimed.
 
 - **Status:** In progress — PR #779, not released or RC-ready.
 - **Owner:** runtime/runctx + assembly + StateStore; RFC §6.2, §6.9, §6.11.
-- **Implemented increment:** explicit embedded `WithRetainedContext(1..32)`,
-  bounded terminal evidence, exact JSON/source restoration, erasure/expiry guards,
+- **Implemented increment:** explicit `sessions.retained_context_turns` for serving
+  and embedded runs, with a per-call `WithRetainedContext` override. Bounded
+  terminal evidence, exact JSON/source restoration, erasure/expiry guards,
   mandatory write errors, and no duplicate legacy-memory or completion ingestion.
-- **Pending:** serve wiring, per-action durability, native history/checkpoint
-  reuse, artifact recovery, Postgres and full release gates. Terminal persistence
+- **Pending:** per-action durability, native history/checkpoint reuse,
+  artifact recovery, Postgres and full release gates. Terminal persistence
   does not establish crash-safe action settlement or an automatic recovery policy.
 - **Plan:** `docs/plans/phase-269-retained-session-context.md`; D-464.
 

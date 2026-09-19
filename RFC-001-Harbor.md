@@ -1339,14 +1339,17 @@ type TaskRegistry interface {
 
 ### 6.9 Sessions and SessionManager
 
-**Retained execution context (D-464; RFC 002).** Explicitly opted-in embedded
-runs may retain a bounded private terminal execution window through the existing
-StateStore. This replaces legacy pair-only projection for that invocation, not
-consumer turn rows or external long-term memory. Restored history is inert and
-must satisfy current erasure and source-expiry checks. Omitted configuration does
-not authorize new retention. Terminal-only retention is the first increment;
-per-action durability and serve integration remain required before phase 269 is
-complete. See [RFC 002](RFC-002-Session-Context.md) and the
+**Retained execution context (D-464/D-465; RFC 002).** Explicitly opted-in root
+runs retain a bounded private terminal execution window through the existing
+StateStore. `sessions.retained_context_turns` enables the same projection for
+serve and embedded runs; `WithRetainedContext` overrides it for one embedded
+invocation, including zero to disable. This replaces legacy pair-only projection
+in the selected mode, not consumer turn rows or external long-term memory.
+Child tasks use explicit task context and never publish their private transcripts
+into the root window. Restored history is inert and must satisfy current erasure
+and source-expiry checks. Omitted configuration does not authorize new retention.
+Required terminal persistence precedes served task completion; per-action
+crash durability remains required before phase 269 is complete. See [RFC 002](RFC-002-Session-Context.md) and the
 [phase 269 plan](docs/plans/phase-269-retained-session-context.md).
 
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.

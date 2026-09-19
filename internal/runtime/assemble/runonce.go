@@ -29,6 +29,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -97,7 +98,8 @@ func WithRunID(runID string) RunOption {
 // WithRetainedContext retains up to turns completed execution records for the
 // same identity-scoped session. A positive value (1..32) opts this invocation
 // into required terminal persistence and replaces legacy pair-only memory
-// projection. Zero keeps the existing behavior. Retention follows session idle
+// projection. It overrides sessions.retained_context_turns, including zero to
+// keep legacy behavior for this invocation. Retention follows session idle
 // TTL; it is not long-term memory or authorization to replay interrupted actions.
 // Per-action crash recovery is not provided by terminal retention.
 func WithRetainedContext(turns int) RunOption {
@@ -265,10 +267,13 @@ func (s *Stack) RunOnce(
 	}
 
 	var cfg runOnceConfig
+	if s.Cfg != nil {
+		cfg.retainedContextTurns = s.Cfg.Sessions.RetainedContextTurns
+	}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	if cfg.retainedContextTurns < 0 || cfg.retainedContextTurns > 32 {
+	if cfg.retainedContextTurns < 0 || cfg.retainedContextTurns > config.MaxRetainedContextTurns {
 		return planner.AnswerEnvelope{}, runctx.ErrRetainedContextCapacity
 	}
 	// WithOutputSchema fails loud on a nil/empty schema at call time — a

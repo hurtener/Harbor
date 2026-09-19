@@ -2243,8 +2243,8 @@ and Close keep the indexes synchronized with canonical lifecycle state. D-453.
 
 **Retained execution window** — an explicitly enabled, bounded private session
 projection in the existing StateStore, distinct from long-term memory, consumer
-turn rows, and authorization to repeat external actions. The initial embedded
-consumer stores own terminal evidence and imports prior retained turns as inert
-history. Whole-turn expiry/eviction is explicit; source lifetime and session
+turn rows, and authorization to repeat external actions. Explicit serving or
+embedded configuration stores own terminal root evidence and imports prior
+retained turns as inert history; children keep their explicit task context. Whole-turn expiry/eviction is explicit; source lifetime and session
 erasure still constrain an admitted view. Per-action crash durability is separate
 pending acceptance, not implied by terminal retention. RFC §6.9, RFC 002, D-464.

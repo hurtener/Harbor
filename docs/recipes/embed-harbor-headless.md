@@ -112,8 +112,9 @@ Register your own in-process tools before assembling via
 
 ## Retain recent execution evidence across embedded calls
 
-On the incremental portable-context branch, explicitly opt each participating
-call into terminal retention. Reuse the same identity triple and configured
+On the incremental portable-context branch, explicitly enable terminal retention
+with `sessions.retained_context_turns` for both serving and embedded calls, or
+set the per-call option below. Reuse the same identity triple and configured
 StateStore; SQLite or Postgres is needed to retain content across process exits.
 
 ```go
@@ -126,14 +127,15 @@ if err != nil {
 }
 ```
 
-Omitted/zero leaves the existing memory and retention behavior unchanged. A
-positive value replaces legacy pair-only memory projection for that invocation;
-it does not introduce external-memory retrieval or duplicate completion-hook
-capture. Historical tool actions are supplied as inert evidence, not dispatched.
+The configured default is zero and preserves existing behavior. The per-call
+option overrides configuration; explicit `WithRetainedContext(0)` disables
+retention for that invocation. A positive value replaces legacy pair-only memory
+projection, not external-memory retrieval or trusted completion-hook capture.
+Historical tool actions are supplied as inert evidence, never dispatched.
 
-This increment is embedded-only and terminal-only. Hard interruption may leave an
-admission with unknown outcomes; per-action recovery and serve configuration are
-not yet implemented. The window is limited to 32 turns, 256 own steps per turn,
+This increment is terminal-only. Hard interruption may leave an admission with
+unknown outcomes; per-action durability and interrupted-action recovery remain
+pending. The window is limited to 32 turns, 256 own steps per turn,
 and 512 KiB, with the session idle TTL (24 hours when unspecified). Expiry and
 whole-turn eviction are disclosed; an oversized indivisible turn fails explicitly.
 See the [phase 269 plan](../plans/phase-269-retained-session-context.md).

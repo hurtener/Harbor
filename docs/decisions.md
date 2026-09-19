@@ -15507,3 +15507,26 @@ per-action intent/settlement persistence, historical native projection/checkpoin
 reuse, artifact recovery, and complete cross-driver acceptance remain pending.
 Consumer turn rows and best-effort observability retain their separate authority.
 No new backend, public transcript, native compaction, or cold-run relaunch.
+
+## D-465 — One explicit retained-context setting for serving and embedding
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; terminal-retention increment.
+
+`sessions.retained_context_turns` (0..32, default zero, restart-required) selects
+the existing private StateStore window for served root conversations and embedded
+RunOnce calls. The per-call `WithRetainedContext` option overrides it, including
+zero to disable. No second retention engine or new public transcript is added.
+Both consumers share admission, redaction, exact-evidence projection, conditional
+terminal persistence and erasure/expiry checks. A required retention failure
+cannot be reported as a completed served task.
+
+Server admission follows the existing agent, route and tool-catalog resolution.
+Child tasks do not inherit root history or publish their private transcripts to
+it. In the enabled mode, legacy pair-only conversation memory is not projected or
+written a second time; explicit caller-supplied context and the trusted completion
+hook remain unchanged. The hook's terminal boundary is not a retention receipt.
+
+This extends D-464's embedded consumer; it does not declare full phase completion.
+Per-action intent/settlement durability, safely fenced interrupted-prefix reuse,
+historical native projection/checkpoint reuse, and authorized artifact recovery
+remain separate acceptance work. No automatic external-action retry is added.

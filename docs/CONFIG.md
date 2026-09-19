@@ -1181,6 +1181,37 @@ requiring user confirmation. Default: `8`. Validation: > 0.
 
 ## Sessions
 
+### sessions.retained_context_turns
+
+Explicit private execution-context retention for root conversations. Default:
+`0` (disabled). Validation: `0..32`. Restart-required. A positive value retains
+that many recent terminal root runs in the configured StateStore and projects
+permitted historical evidence into the next root request. It replaces legacy
+pair-only memory projection for this mode; external long-term memory and trusted
+completion hooks are unchanged. Child tasks use their explicit task context,
+not the root window, and their private transcripts are not added to it.
+
+```yaml
+sessions:
+  retained_context_turns: 4
+```
+
+`RunOnce` uses the same configured value; `WithRetainedContext(n)` overrides it
+for one embedded invocation, including explicit zero to disable. In-memory
+StateStore retention ends with the process; SQLite/Postgres preserve committed
+content across restarts. The retained window remains bounded by 32 turns,
+256 own steps per turn, 512 KiB, and the configured session idle TTL. Expiry,
+erasure, and whole-turn eviction apply; an indivisible oversized turn fails
+instead of being clipped. This is private execution evidence, not additional
+content in `sessions.turns.*`.
+
+This increment commits admission before work and terminal evidence before a
+served task is marked complete. It does **not** yet persist each action before
+or after dispatch. An interrupted run may have unknown outcomes; a required
+terminal write can fail after an external save succeeded. Reconcile with the
+owning service rather than automatically repeating that operation. No native
+compaction, provider-owned state, or automatic cold execution is required.
+
 ### sessions.idle_ttl
 
 Time before an idle session is swept. Default: `24h`. Validation:

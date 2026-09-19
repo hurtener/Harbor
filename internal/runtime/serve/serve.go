@@ -1166,6 +1166,10 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		runLoopBootReader = bootIndex
 	}
 	runLoopDriver, err := NewRunLoopDriver(RunLoopDriverOptions{
+		RetainedContextTurns:     cfg.Sessions.RetainedContextTurns,
+		RetainedContextTTL:       cfg.Sessions.IdleTTL,
+		StateStore:               stack.State,
+		Redactor:                 stack.Redactor,
 		Logger:                   opts.Logger,
 		Bus:                      bus,
 		RunLoop:                  runLoop,
