@@ -98,6 +98,14 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "An `artifacts.get_ref` request reached an ArtifactStore driver without presigned-URL support (in-mem / fs / sqlite / postgres blob drivers). The resolver fails loud instead of silently streaming bytes.",
 		Retry: "No — the configured driver cannot satisfy it; use a presign-capable store (S3 family) or download via the Console proxy.",
 	},
+	protoerrors.CodeRetainedContextUnsettled: {
+		When:  "Explicit retained-context reconciliation found a pending external operation. The outcome is unknown, not failed; no historical action is retried.",
+		Retry: "Do not retry execution. Reconcile the external operation with its owning service; retry context reconciliation only after a trustworthy settlement is recorded.",
+	},
+	protoerrors.CodeRetainedContextUnavailable: {
+		When:  "The own-session retained evidence is missing, expired, erased, corrupt or changed concurrently. No partial context is published.",
+		Retry: "Only after resolving the evidence/state conflict. Never repeat a side effect based on this error.",
+	},
 	protoerrors.CodeRestartUnavailable: {
 		When:  "A persisted tranche pause has no live in-process run loop capable of exact restart redrive. Harbor fails closed rather than pretending to continue the run as a new task.",
 		Retry: "No — exact restart redrive is unavailable; start a new run instead.",

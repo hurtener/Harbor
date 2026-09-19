@@ -2280,3 +2280,10 @@ seals committed, fully settled execution evidence as interrupted session context
 while fencing the source admission. It never invokes historical actions, resets
 retention, or decides the outcome of a pending external operation. Available to
 embedded callers through `Stack.ReconcileRetainedContext`. RFC 002, D-470.
+
+**Retained context reconciliation** — an explicit request to seal fully settled,
+unexpired execution evidence as interrupted context while fencing its old
+admission. Embedded callers use `Stack.ReconcileRetainedContext`; served callers
+use `sessions.reconcile_context` in their own verified session. A pending action
+is unknown and refused, never replayed. No private evidence is returned over the
+Protocol. RFC §6.9, D-470, D-471.

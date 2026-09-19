@@ -15657,3 +15657,26 @@ post-decision admission checks prevent its later dispatch after the fence.
 The first consumer is the embedding API; a served Protocol reconciliation
 operation remains separate acceptance work. No storage format, default
 retention, provider dependency, or automatic recovery behavior changes.
+
+## D-471 — Own-session Protocol context reconciliation
+
+**Scope:** RFC 002, phase 269; incremental implementation, not released.
+
+`sessions.reconcile_context` is an explicit own-session mutation backed by the
+same settled-journal reconciliation primitive as embedded runs. The verified
+identity supplies tenant, user and session; the only target selector is the
+source run ID. Admin or fleet claims do not widen this operation. Retention must
+already be enabled; the method does not enable it or extend source expiration.
+
+The response acknowledges sealed evidence, not execution success, and exposes
+no journal or tool data. Pending external effects return
+`retained_context_unsettled` (409); missing, expired, erased or invalid evidence
+returns `retained_context_unavailable` (409). Required persistence failures are
+errors. Repeated calls converge without reexecuting tools, inference or hooks.
+Existing admission checks fence subsequent dispatch from the old run; a model
+request already in flight is not cancelled by this operation.
+
+The typed Go Protocol client and generated wire/reference surfaces consume the
+method. No new recovery service, Console page, provider API, or configuration
+switch is introduced. This completes D-470's served consumer, not the remaining
+large-result, attachment/steering, Postgres or release acceptance criteria.

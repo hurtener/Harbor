@@ -35,4 +35,10 @@ if go test -race ./internal/tools -run 'TestPlannerView_ResolveRechecks|TestPlan
 else
     fail "catalog name resolution bypassed current scopes"
 fi
+if go test -race -p 1 ./internal/runtime/serve ./internal/protocol/client \
+    -run 'TestE2E_ServedContextRecovery_|TestClient_SessionsReconcileContext_' -count=1; then
+    ok "served recovery, own-session authorization and typed client regressions pass"
+else
+    fail "served context reconciliation regression failed"
+fi
 smoke_summary

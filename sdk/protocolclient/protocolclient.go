@@ -75,6 +75,10 @@ type (
 	SessionsSetTitleResponse = types.SessionsSetTitleResponse
 	// SessionsDeleteResponse is the sessions.delete response.
 	SessionsDeleteResponse = types.SessionsDeleteResponse
+	// SessionsReconcileContextRequest selects a settled run in the client's session.
+	SessionsReconcileContextRequest = types.SessionsReconcileContextRequest
+	// SessionsReconcileContextResponse acknowledges sealed evidence, not execution.
+	SessionsReconcileContextResponse = types.SessionsReconcileContextResponse
 	// StateHistoryRequest is the state.history request.
 	StateHistoryRequest = types.StateHistoryRequest
 	// StateHistoryResponse is the state.history response.

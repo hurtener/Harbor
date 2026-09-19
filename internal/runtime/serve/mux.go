@@ -730,6 +730,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			}
 			sessionsOpts = append(sessionsOpts, sessionsprotocol.WithEraser(eraser))
 		}
+		if cfg.Sessions.RetainedContextTurns > 0 && in.State != nil && red != nil {
+			sessionsOpts = append(sessionsOpts, sessionsprotocol.WithContextReconciler(retainedContextReconciler{
+				store: in.State, redactor: red, turns: cfg.Sessions.RetainedContextTurns,
+			}))
+		}
 		sessionsService, sErr := sessionsprotocol.NewService(sessionsProjector, sessionsOpts...)
 		if sErr != nil {
 			return nil, wrapErr("sessions/protocol service", sErr)

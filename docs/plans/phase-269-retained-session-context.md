@@ -69,7 +69,7 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
 - [x] Required query, dispatch intent and returned settlement are committed at
       their runtime boundaries; failed writes block dependent work, and bounded
       per-action frames avoid rewriting the whole trajectory on each call.
-- [ ] Interrupted-prefix reuse has an explicit reconciliation/execution fence
+- [x] Interrupted-prefix reuse has an explicit reconciliation/execution fence
       and end-to-end authorized recovery before phase completion.
 - [x] Typed historical exchange envelopes reuse native call/result rendering
       without becoming dispatchable actions, including aggregate/failure paths.
@@ -95,8 +95,10 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
 func WithRetainedContext(turns int) RunOption
 ```
 
-The SDK aliases the existing assembly implementation. No Protocol method, wire
-schema, backend, production dependency, or default retention change is added.
+The SDK aliases the existing assembly implementation. The explicit own-session
+`sessions.reconcile_context` Protocol operation and typed Go client use the same
+settled-journal primitive. No backend, production dependency, or default retention
+change is added.
 The explicit `sessions.retained_context_turns` setting applies to serving and
 embedding; the per-call option overrides it. Zero is disabled by default. Child
 tasks never publish private transcripts into the root conversation window.
@@ -276,3 +278,17 @@ The embedding consumer does not complete the served reconciliation requirement.
 Served Protocol wiring, authorized result recovery, attachment/steering context,
 Postgres conformance, and full release gates remain pending. This is not an RC
 readiness claim or an exactly-once external-side-effect guarantee.
+
+## Served reconciliation increment
+
+D-471 wires `POST /v1/sessions/reconcile_context` through the production mux,
+identity/body-scope gate and session service. The sole target is `source_run_id`;
+admin/fleet does not bypass the caller's own-session boundary. Required retained
+context configuration remains unchanged. The response includes only session/run
+IDs and `reconciled: true`, never private execution evidence.
+
+Tests cover the actual next served ReAct request, exact 14,660-byte evidence,
+idempotence, admission fencing, pending refusal, all identity dimensions,
+cancellation, unknown/trailing payloads, disabled retention and 128 concurrent
+callers. Full runtime persistence and final release gates remain separately
+tracked; a green focused test does not mark the entire phase shipped.

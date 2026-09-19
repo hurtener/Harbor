@@ -515,3 +515,15 @@ Three things distinguish the serving path from the headless one:
   a custom-provider LLM entry (loopback BaseURL, env-var dummy key)
   plus `assemble.Options.PlannerOverride` with the deterministic
   planner — real drivers, no network.
+
+### Reconcile from a served client
+
+With `sessions.retained_context_turns` already enabled, a typed Protocol client
+may call `SessionsReconcileContext` with `SourceRunID`. The client's verified
+identity supplies the session; this operation has no cross-session admin mode.
+The HTTP equivalent is `POST /v1/sessions/reconcile_context` with
+`{"source_run_id":"the-source-run"}` under the normal authenticated connection.
+A success seals context only; it does not rerun the source task. A 409
+`retained_context_unsettled` means the external outcome is still unknown.
+Resolve it with the owning service instead of repeating the write. A 409
+`retained_context_unavailable` does not permit inventing missing history.

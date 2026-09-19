@@ -1365,8 +1365,15 @@ with configured retained context may seal a fully settled journal as interrupted
 evidence through `Stack.ReconcileRetainedContext`. The existing conditional
 StateStore transaction publishes evidence and fences its source admission before
 future dispatch. A pending intent remains unknown and is refused; recovery does
-not relaunch a run, call a model/tool/hook, or extend expiry. Served Protocol
-reconciliation remains pending in the phase 269 plan.
+not relaunch a run, call a model/tool/hook, or extend expiry. The served consumer
+is defined by D-471 below.
+
+**Served reconciliation (D-471).** `sessions.reconcile_context` accepts the
+source run ID under the caller's verified own-session identity. Admin claims do
+not widen scope. It calls the same settled-journal primitive, rejects pending
+external effects, and returns only a content-free reconciliation acknowledgement.
+The typed Go Protocol client exposes the operation. Retention must already be
+enabled; no new configuration, cold-run resume or automatic action retry is added.
 
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 

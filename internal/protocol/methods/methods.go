@@ -1129,6 +1129,9 @@ const (
 	// routes through the same Sessions handler. Identity-mandatory. The
 	// wire-transport route is `POST /v1/sessions/set_title`.
 	MethodSessionsSetTitle Method = "sessions.set_title"
+	// MethodSessionsReconcileContext seals settled retained evidence in the
+	// caller's own session; it never resumes or repeats execution (RFC 002).
+	MethodSessionsReconcileContext Method = "sessions.reconcile_context"
 
 	// MethodSessionTurnsList — the `sessions.turns.list` consumer
 	// conversation-page read: one newest-first keyset page of the
@@ -1345,10 +1348,11 @@ var canonicalMethods = map[Method]struct{}{
 	MethodTasksList: {},
 	MethodTasksGet:  {},
 
-	MethodSessionsList:     {},
-	MethodSessionsInspect:  {},
-	MethodSessionsDelete:   {},
-	MethodSessionsSetTitle: {},
+	MethodSessionsList:             {},
+	MethodSessionsInspect:          {},
+	MethodSessionsDelete:           {},
+	MethodSessionsSetTitle:         {},
+	MethodSessionsReconcileContext: {},
 
 	MethodSessionTurnsList: {},
 	MethodSessionTurnsGet:  {},
@@ -1952,15 +1956,16 @@ func IsFlowsMethod(m Method) bool {
 // `sessions.set_title` mutate (each gates its own identity-scoped write
 // at the handler / service edge).
 var canonicalSessionsMethods = map[Method]struct{}{
-	MethodSessionsList:     {},
-	MethodSessionsInspect:  {},
-	MethodSessionsDelete:   {},
-	MethodSessionsSetTitle: {},
+	MethodSessionsList:             {},
+	MethodSessionsInspect:          {},
+	MethodSessionsDelete:           {},
+	MethodSessionsSetTitle:         {},
+	MethodSessionsReconcileContext: {},
 }
 
-// IsSessionsMethod reports whether m is one of the four canonical
+// IsSessionsMethod reports whether m is one of the canonical
 // Sessions-page methods (— `sessions.list`, `sessions.inspect`,
-// `sessions.delete`, `sessions.set_title`). The stream transport
+// `sessions.delete`, `sessions.set_title`, `sessions.reconcile_context`). The stream transport
 // branches on this to route the request through the Sessions handler
 // instead of the task-control / search / posture / pause / topology /
 // artifacts / memory / mcp / tools / flows surfaces. NOT a control

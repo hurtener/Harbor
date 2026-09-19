@@ -99,6 +99,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsInspect,
 	methods.MethodSessionsDelete,
 	methods.MethodSessionsSetTitle,
+	methods.MethodSessionsReconcileContext,
 	methods.MethodRunsSetOverrides,
 	methods.MethodStateHistory,
 	methods.MethodEventsList,
@@ -225,8 +226,8 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// observability administrative read (observability.query) = 139, plus
 	// HA-68 same-runtime skill publications ten = 151, plus the user live
 	// profile reconciliation verb = 152.
-	if len(got) != 152 {
-		t.Fatalf("Methods() returned %d methods, want 152", len(got))
+	if len(got) != 153 {
+		t.Fatalf("Methods() returned %d methods, want 153", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -321,10 +322,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodTasksList: "tasks.list",
 		methods.MethodTasksGet:  "tasks.get",
 
-		methods.MethodSessionsList:     "sessions.list",
-		methods.MethodSessionsInspect:  "sessions.inspect",
-		methods.MethodSessionsDelete:   "sessions.delete",
-		methods.MethodSessionsSetTitle: "sessions.set_title",
+		methods.MethodSessionsList:             "sessions.list",
+		methods.MethodSessionsInspect:          "sessions.inspect",
+		methods.MethodSessionsDelete:           "sessions.delete",
+		methods.MethodSessionsSetTitle:         "sessions.set_title",
+		methods.MethodSessionsReconcileContext: "sessions.reconcile_context",
 
 		methods.MethodSessionTurnsList: "sessions.turns.list",
 		methods.MethodSessionTurnsGet:  "sessions.turns.get",
@@ -469,7 +471,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// through the Sessions-page handler, NOT the steering inbox.
 	for _, m := range []methods.Method{
 		methods.MethodSessionsList, methods.MethodSessionsInspect,
-		methods.MethodSessionsDelete, methods.MethodSessionsSetTitle,
+		methods.MethodSessionsDelete, methods.MethodSessionsSetTitle, methods.MethodSessionsReconcileContext,
 	} {
 		if methods.IsControlMethod(m) {
 			t.Errorf("IsControlMethod(%q) = true, want false — sessions.* methods route through the Sessions handler, not the steering inbox", m)

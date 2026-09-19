@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:768f880089ba1d89a3f51f05c02245d7f818b538d825325c9bcb5922cd755e13";
+export const WIRE_SURFACE_DIGEST = "sha256:9522d65c378eb2019467be3d546c5a9172209d86557693f6fd6a8dc11d97cc57";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -147,6 +147,7 @@ export type HarborMethod =
   | "sessions.delete"
   | "sessions.inspect"
   | "sessions.list"
+  | "sessions.reconcile_context"
   | "sessions.set_title"
   | "sessions.turns.get"
   | "sessions.turns.list"
@@ -197,6 +198,8 @@ export type HarborErrorCode =
   | "render_authority_ambiguous"
   | "request_too_large"
   | "restart_unavailable"
+  | "retained_context_unavailable"
+  | "retained_context_unsettled"
   | "revision_conflict"
   | "runtime_error"
   | "scope_mismatch"
@@ -3189,6 +3192,17 @@ export interface SessionsListResponse {
   rows: SessionRow[];
   next_cursor: string;
   truncated: boolean;
+}
+
+export interface SessionsReconcileContextRequest {
+  identity: IdentityScope;
+  source_run_id: string;
+}
+
+export interface SessionsReconcileContextResponse {
+  session_id: string;
+  source_run_id: string;
+  reconciled: boolean;
 }
 
 export interface SessionsSetTitleRequest {

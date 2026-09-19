@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 38 canonical Harbor Protocol error codes, generated from the single-source
+The 40 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -38,6 +38,8 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `render_authority_ambiguous` | 400 | An `mcp.apps.call_tool` request supplied BOTH the legacy `binding` authority and the fresh `render_admission` authority. The two are distinct; Harbor never guesses which the App meant. | No — supply exactly one authority. |
 | `request_too_large` | 413 | An `artifacts.put` body exceeded the configured `protocol.max_request_bytes` bound. The upload is refused loudly, never truncated. | No — shrink the payload or raise the operator-side bound. |
 | `restart_unavailable` | 409 | A persisted tranche pause has no live in-process run loop capable of exact restart redrive. Harbor fails closed rather than pretending to continue the run as a new task. | No — exact restart redrive is unavailable; start a new run instead. |
+| `retained_context_unavailable` | 409 | The own-session retained evidence is missing, expired, erased, corrupt or changed concurrently. No partial context is published. | Only after resolving the evidence/state conflict. Never repeat a side effect based on this error. |
+| `retained_context_unsettled` | 409 | Explicit retained-context reconciliation found a pending external operation. The outcome is unknown, not failed; no historical action is retried. | Do not retry execution. Reconcile the external operation with its owning service; retry context reconciliation only after a trustworthy settlement is recorded. |
 | `revision_conflict` | 409 | An `agent_config.*` write declared an `expected_content_hash` and the agent's active revision no longer carries it — another writer moved the base between the caller's read and its write — or the agent has no active revision at all. The request was well-formed and authorised; nothing was persisted (no revision, no active-pointer move, no `agent.config.revised` event). The refusal is exact across Runtime processes sharing a shipped StateStore: publication rechecks the active-pointer EventID through `StateStore.SaveIf`; the per-owner lock only reduces local contention. Omitting `expected_content_hash` keeps the unconditional last-writer-wins behaviour. | Yes, after re-reading — call `agent_config.get` (or `agent_config.user.get` if the door you are retrying is a `user.*` twin; they are separate revision spines and a hash from the wrong one never matches) for the current `revision_id` and `content_hash`, re-apply your edit on top (`agent_config.diff` compares what you read against what it is now), and resubmit with the fresh hash. |
 | `runtime_error` | 500 | An unclassified runtime-side failure — the catch-all. Also used on the SSE surface for subscriber-limit (429) and bus-closed (503) conditions. | Yes, with backoff — the request shape is not the problem. |
 | `scope_mismatch` | 403 | The caller's steering scope claim is below the control method's RFC §6.3 minimum, or a cross-tenant steering / mutation was attempted without `admin`. | No — the operation needs a higher scope. |

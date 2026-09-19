@@ -5993,3 +5993,10 @@ persistence into retained served/embedded runs (D-466). Atomic bounded frames
 use existing StateStore contracts; prior trajectories are not rewritten per
 dispatch. This is not a release or completion of the phase: interrupted-prefix
 reconciliation, native historical projection and artifact recovery remain pending.
+
+### Phase 269 checkpoint — served recovery
+
+The own-session `sessions.reconcile_context` Protocol consumer and typed Go
+client now use D-470's settled-journal primitive (D-471). Large-result retrieval,
+attachment/steering continuity and final persistence/release gates remain pending.
+The phase remains in progress and not RC-ready.

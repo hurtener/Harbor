@@ -587,6 +587,9 @@ func (f *pagedClient) SessionsList(context.Context, types.SessionsListRequest) (
 func (f *pagedClient) SessionsSetTitle(context.Context, types.SessionsSetTitleRequest) (types.SessionsSetTitleResponse, error) {
 	return types.SessionsSetTitleResponse{}, nil
 }
+func (f *pagedClient) SessionsReconcileContext(context.Context, types.SessionsReconcileContextRequest) (types.SessionsReconcileContextResponse, error) {
+	return types.SessionsReconcileContextResponse{}, errors.New("unused")
+}
 func (f *pagedClient) SessionsDelete(context.Context) (types.SessionsDeleteResponse, error) {
 	return types.SessionsDeleteResponse{}, nil
 }
