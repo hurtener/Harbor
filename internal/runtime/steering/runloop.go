@@ -1149,7 +1149,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				return planner.Finish{}, fmt.Errorf("%w: retained dispatch requires an executor", ErrRunLoopMisconfigured)
 			}
 			var observation, llmObservation any
-			var execErr error
+			var execErr, dispatchBridgeErr error
 			// failureStructured records whether the failed dispatch
 			// carried a structured classified projection (bounded result,
 			// planner class, typed MCP class, or terminal policy
@@ -1180,12 +1180,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// decision (the step ctx is a child of runCtx).
 				out, deferred, bridgeErr := rl.dispatchDecision(runCtx, q, inbox, spec.ToolExecutor, rc, decision)
 				carryEvents = deferred
-				if bridgeErr != nil {
-					// A mid-step gate-bridge failure is the same
-					// fail-loud shape as a step-boundary apply
-					// failure — surface it verbatim.
-					return planner.Finish{}, bridgeErr
-				}
+				// The joined executor may have returned a real receipt while the
+				// control bridge failed. Preserve it before surfacing that failure;
+				// the error still stops the run before another decision or action.
+				dispatchBridgeErr = bridgeErr
 				obs, llmObs := out.observation, out.llmObservation
 				execErr = out.err
 				if execErr != nil {
@@ -1290,9 +1288,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					persistErr := spec.DispatchCheckpoint.AfterDispatch(persistCtx, rc, stepRecord)
 					cancel()
 					if persistErr != nil {
-						return planner.Finish{}, fmt.Errorf("steering: persist dispatch settlement: %w", persistErr)
+						return planner.Finish{}, errors.Join(dispatchBridgeErr, fmt.Errorf("steering: persist dispatch settlement: %w", persistErr))
 					}
 				}
+			}
+			if dispatchBridgeErr != nil {
+				return planner.Finish{}, dispatchBridgeErr
 			}
 			if spec.ToolExecutor != nil && execErr == nil && spec.OnToolDispatched != nil {
 				if n := planner.DecisionInvocationCount(decision); n > 0 {

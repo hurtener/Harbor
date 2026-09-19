@@ -141,9 +141,9 @@ func (rl *RunLoop) dispatchDecision(
 				})
 				rl.emitLifecycle(ctx, q, ev.Type, EventTypeControlApplied, classifyApplyErr(rerr))
 				cancelStep()
-				<-done // join; the outcome is discarded — the run is failing
+				out := <-done // join and retain any returned evidence
 				deferred = append(deferred, drained[i+1:]...)
-				return execOutcome{}, deferred, rerr
+				return out, deferred, rerr
 			}
 			if !routed {
 				// Not bridge-eligible mid-step. Defer verbatim — the

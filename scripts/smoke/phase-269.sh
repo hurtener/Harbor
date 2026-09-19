@@ -19,4 +19,9 @@ if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble \
 else
     fail "required dispatch checkpoint regression failed"
 fi
+if go test -race ./internal/runtime/steering -run 'TestRunLoop_DispatchCheckpoint' -count=1; then
+    ok "cancellation, observer and approval-bridge failures preserve returned outcomes"
+else
+    fail "dispatch failure lost returned execution evidence"
+fi
 smoke_summary

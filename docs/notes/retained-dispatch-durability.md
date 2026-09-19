@@ -42,3 +42,18 @@ reuse. An interrupted admission stays fenced from ordinary reacquisition.
 Authorized reconciliation, native historical projection/checkpoint reuse,
 large-result recovery, and remaining full-repository release gates are still
 required before declaring the whole phase complete.
+
+## Approval-bridge failure correction
+
+A joined executor's returned outcome must also survive a simultaneous approval
+bridge failure. The run loop now records and settles that outcome before
+returning the original control error; it still cannot advance to another
+decision or action. If settlement itself fails, both errors remain discoverable
+through the error chain. No approval decision is relaxed or bypassed.
+
+The regression uses the real approval gate, closes it during an in-flight
+dispatch, and returns an acknowledgement while the executor unwinds. It failed
+before the correction because the outcome was discarded. Cancellation and
+dispatch-counter failures additionally assert that exact receipts reach
+settlement, identity is preserved, persistence has a bounded live context, and
+the inspection mutex is not held.
