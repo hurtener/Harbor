@@ -74,7 +74,7 @@ func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteReq
 		target := min(preparation.InputTarget, capacity-1)
 		estimated := EstimateRequestTokens(bound, profile)
 		if estimated > target {
-			changed, err := preparation.Compact(ctx, estimated, target)
+			changed, err := preparation.Compact(withCompactionRequest(ctx, bound, c.cfg), estimated, target)
 			if err != nil {
 				return CompleteResponse{}, err
 			}

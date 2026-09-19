@@ -194,6 +194,25 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		if payload.Len() > s.payloadBudget {
 			return nil, ErrTrajectorySummaryCapacity
 		}
+		userText, systemText, outputLimit := payload.String(), s.systemPrompt, s.maxSummaryTokens
+		req := llm.CompleteRequest{
+			Model: model, MaxTokens: &outputLimit,
+			Messages: []llm.ChatMessage{
+				{Role: llm.RoleSystem, Content: llm.Content{Text: &systemText}},
+				{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
+			},
+			ResponseFormat: &llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: append(json.RawMessage(nil), trajectorySummarySchemaV1...)},
+		}
+		req, capacity, err := llm.PrepareCompactionRequest(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		fits := func() bool {
+			return capacity.InputLimit == 0 || llm.EstimateRequestTokens(req, capacity.Profile) < capacity.InputLimit
+		}
+		if !fits() {
+			return nil, fmt.Errorf("%w: narrative and instructions exceed model input allowance", ErrTrajectorySummaryCapacity)
+		}
 		start := position
 		for position < len(tr.Steps) {
 			block, err := renderStepBlock(position+1, tr.Steps[position])
@@ -203,20 +222,19 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 			if len(block) > s.payloadBudget-payload.Len() {
 				break
 			}
+			// Count the whole request, including system instructions and response
+			// schema. Output headroom was reserved for this maintenance call,
+			// not copied from the planner's input target.
+			userText = payload.String() + block
+			if !fits() {
+				userText = payload.String()
+				break
+			}
 			payload.WriteString(block)
 			position++
 		}
 		if position == start && position < len(tr.Steps) {
 			return nil, fmt.Errorf("%w: exchange %d requires a bounded result reference", ErrTrajectorySummaryCapacity, position+1)
-		}
-		userText, systemText, outputLimit := payload.String(), s.systemPrompt, s.maxSummaryTokens
-		req := llm.CompleteRequest{
-			Model: model, MaxTokens: &outputLimit,
-			Messages: []llm.ChatMessage{
-				{Role: llm.RoleSystem, Content: llm.Content{Text: &systemText}},
-				{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
-			},
-			ResponseFormat: &llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: append(json.RawMessage(nil), trajectorySummarySchemaV1...)},
 		}
 		// Each actual completion is a separate maintenance invocation. Existing
 		// retry wrappers keep that invocation's scope stable across its attempts.
