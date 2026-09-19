@@ -18,8 +18,9 @@ Review is continuing before this becomes a finished phase. Required outstanding
 work includes intent/settlement persistence, serve wiring, historical native
 projection and checkpoint reuse, bounded artifact recovery, current tool authority,
 TTL handling during active runs, and canonical RFC/index/decision synchronization.
-The phase smoke's D-464 reference is not yet a completed documentation gate.
-Do not mark the phase complete from terminal-only retention or these focused tests.
+The D-464 decision, master index, glossary, RFC status and embedding recipe now
+describe this increment and its boundaries. Do not mark the phase complete from
+terminal-only retention or focused tests; pending acceptance remains in its plan.
 
 Long-term memory remains external. No native compaction, dependency update,
 production deployment, merge, tag, or automatic replay of interrupted writes.

@@ -2,9 +2,10 @@
 
 **Status:** Accepted for incremental implementation in PR #779; not released.
 
-Phase 268 implements the first slice. Its plan distinguishes completed
-checkpoints from the remaining budget and summarizer work. Later slices remain
-pending; this status does not claim durable session continuity or RC readiness.
+Phase 268 implements portable compaction and request budgeting. Phase 269 is in
+progress: its first embedded consumer retains exact terminal execution evidence
+under explicit opt-in. Serve integration, per-action durability and remaining
+acceptance are not yet complete. Neither phase is declared RC-ready.
 
 **Date:** 2026-09-18.
 
@@ -32,11 +33,11 @@ cache. Prompt caching is an optional transport optimization, never a requirement
 
 ## Authority and source basis
 
-This is a proposed scoped amendment to [RFC 001](RFC-001-Harbor.md), not a
-replacement for Harbor's architecture. It proposes changes to RFC §6.2
+This is an accepted scoped amendment to [RFC 001](RFC-001-Harbor.md), not a
+replacement for Harbor's architecture. It specifies changes to RFC §6.2
 (trajectory projection), RFC §6.5 (request budgets), and RFC §6.9 / RFC §6.11
 (session continuation and persistence). RFC §6.6's existing memory APIs are not
-removed in this planning PR; new session continuity must not add another
+removed by this work; new session continuity must not add another
 long-term-memory implementation or a second summary of the same active history.
 
 Preserve RFC §4 isolation, RFC §6.3 pause authority, RFC §6.4 runtime-owned

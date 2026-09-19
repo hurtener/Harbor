@@ -2240,3 +2240,11 @@ used by the in-memory and durable drivers: exact `(tenant, user, session)`
 buckets for non-admin subscriptions plus one Admin bucket, with the complete
 `Filter.Matches` predicate retained before bounded enqueue. Subscribe, Cancel,
 and Close keep the indexes synchronized with canonical lifecycle state. D-453.
+
+**Retained execution window** — an explicitly enabled, bounded private session
+projection in the existing StateStore, distinct from long-term memory, consumer
+turn rows, and authorization to repeat external actions. The initial embedded
+consumer stores own terminal evidence and imports prior retained turns as inert
+history. Whole-turn expiry/eviction is explicit; source lifetime and session
+erasure still constrain an admitted view. Per-action crash durability is separate
+pending acceptance, not implied by terminal retention. RFC §6.9, RFC 002, D-464.

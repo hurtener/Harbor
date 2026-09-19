@@ -110,6 +110,34 @@ Register your own in-process tools before assembling via
 `assemble.Options.PreRegisterTools`, or after assembling via
 `stack.Catalog.Register(...)`.
 
+## Retain recent execution evidence across embedded calls
+
+On the incremental portable-context branch, explicitly opt each participating
+call into terminal retention. Reuse the same identity triple and configured
+StateStore; SQLite or Postgres is needed to retain content across process exits.
+
+```go
+env, err := stack.RunOnce(ctx, "Edit the document from the previous turn.", id,
+    assemble.WithRetainedContext(4))
+if err != nil {
+    // A terminal write may fail after external effects succeeded.
+    // Reconcile through the owning service; do not repeat the run blindly.
+    return err
+}
+```
+
+Omitted/zero leaves the existing memory and retention behavior unchanged. A
+positive value replaces legacy pair-only memory projection for that invocation;
+it does not introduce external-memory retrieval or duplicate completion-hook
+capture. Historical tool actions are supplied as inert evidence, not dispatched.
+
+This increment is embedded-only and terminal-only. Hard interruption may leave an
+admission with unknown outcomes; per-action recovery and serve configuration are
+not yet implemented. The window is limited to 32 turns, 256 own steps per turn,
+and 512 KiB, with the session idle TTL (24 hours when unspecified). Expiry and
+whole-turn eviction are disclosed; an oversized indivisible turn fails explicitly.
+See the [phase 269 plan](../plans/phase-269-retained-session-context.md).
+
 ## 4. Run one goal
 
 Identity is mandatory (§6): every run carries the

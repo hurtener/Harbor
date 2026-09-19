@@ -15472,3 +15472,38 @@ This supersedes phase 111e's fragment-capping and oldest-step-elision policy, no
 its governed-client, identity, or fail-loud boundaries. Full assembled-request
 capacity and authorized maintenance grant identities remain unfinished phase
 268 acceptance criteria; no durable cross-turn or RC completion is implied.
+
+## D-464 — Bounded retained execution context is an explicit opt-in
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Embedded `RunOnce` calls may explicitly select `WithRetainedContext(1..32)`.
+Zero/omitted retains existing memory semantics and does not authorize richer
+persistence. The first consumer replaces legacy pair-only projection for that
+invocation with a bounded private execution window in the existing StateStore.
+Long-term memory stays external; completion ingestion hooks are not changed.
+
+Admission freezes prior terminal root context and uses the existing session
+pending/tombstone fences plus generation-conditional writes. In-flight sibling
+results are not imported. Own terminal evidence is redacted before persistence;
+raw diagnostic duplicates, reasoning traces, and live tool handles are excluded.
+Exact JSON numeric values and permitted source strings remain recoverable inside
+the retained window. Imported history is inert evidence, not execution authority,
+and is excluded from recursive retention and completion-hook ingestion.
+
+The initial bounds are 32 turns, 256 own steps per turn, 512 KiB per session slot,
+32 active admissions, and 32 conditional-write attempts. TTL follows the configured
+session idle TTL (24 hours when unspecified). Whole-turn expiry/eviction produces
+a partial-history notice; an indivisible oversized turn fails, never clips.
+Freezing membership does not extend source lifetime: expiry is checked before
+inference and before accepting its action. Erasure invalidates admission and
+prevents a stale terminal callback from resurrecting its content.
+
+This is explicitly the terminal-retention increment, not the complete RFC 002
+durability contract. Required writes can fail after external effects succeeded;
+the caller must reconcile instead of retrying blindly. Abandoned admissions
+remain uncertain and bounded, not automatically declared failed. Serve wiring,
+per-action intent/settlement persistence, historical native projection/checkpoint
+reuse, artifact recovery, and complete cross-driver acceptance remain pending.
+Consumer turn rows and best-effort observability retain their separate authority.
+No new backend, public transcript, native compaction, or cold-run relaunch.
