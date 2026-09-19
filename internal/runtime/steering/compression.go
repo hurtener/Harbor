@@ -2,8 +2,10 @@ package steering
 
 import (
 	"context"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 )
 
@@ -28,15 +30,19 @@ func compressRequest(ctx context.Context, spec RunSpec, rc planner.RunContext, i
 
 func compressTrajectoryWith(ctx context.Context, spec RunSpec, rc planner.RunContext, compress func(context.Context, planner.RunContext, *planner.Trajectory) error) error {
 	tr := rc.Trajectory
-	if spec.TrajectoryMu == nil || tr == nil {
+	if tr == nil {
 		return compress(ctx, rc, tr)
 	}
 	mu := spec.TrajectoryMu
-	mu.RLock()
+	if mu != nil {
+		mu.RLock()
+	}
 	snapshot := *tr
 	snapshot.Steps = append([]planner.Step(nil), tr.Steps...)
 	original := tr.Summary
-	mu.RUnlock()
+	if mu != nil {
+		mu.RUnlock()
+	}
 
 	var pending []events.Event
 	copyRC := rc
@@ -44,7 +50,9 @@ func compressTrajectoryWith(ctx context.Context, spec RunSpec, rc planner.RunCon
 	copyRC.Emit = func(ev events.Event) { pending = append(pending, ev) }
 	err := compress(ctx, copyRC, &snapshot)
 	if err == nil && snapshot.Summary != original {
-		mu.Lock()
+		if mu != nil {
+			mu.Lock()
+		}
 		candidate := snapshot.Summary
 		digest, digestErr := tr.PrefixDigest(candidate.Coverage.ThroughStep)
 		if digestErr != nil || digest != candidate.Coverage.PrefixDigest || tr.Summary != original || ctx.Err() != nil {
@@ -54,8 +62,27 @@ func compressTrajectoryWith(ctx context.Context, spec RunSpec, rc planner.RunCon
 			}
 		} else {
 			tr.Summary = candidate
+			if checkErr := llm.CheckContextCandidate(ctx); checkErr != nil {
+				tr.Summary = original
+				err = checkErr
+				now := time.Now()
+				if rc.Clock != nil {
+					now = rc.Clock()
+				}
+				pending = append(pending, events.Event{
+					Type:     planner.EventTypeTrajectoryCompressionFailed,
+					Identity: rc.Quadruple, OccurredAt: now,
+					Payload: planner.TrajectoryCompressionFailedPayload{
+						Identity: rc.Quadruple, OccurredAt: now,
+						StepsObserved: len(tr.Steps), ErrorCode: "candidate_request_rejected",
+						ErrorMessage: "candidate request failed validation; prior checkpoint retained",
+					},
+				})
+			}
 		}
-		mu.Unlock()
+		if mu != nil {
+			mu.Unlock()
+		}
 	}
 	if rc.Emit != nil {
 		for _, ev := range pending {

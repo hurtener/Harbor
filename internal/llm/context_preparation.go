@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hurtener/Harbor/internal/identity"
 )
@@ -15,6 +16,22 @@ type ContextPreparation struct {
 }
 
 type contextPreparationKey struct{}
+type contextCandidateCheckKey struct{}
+
+// ErrCompactionNoProgress rejects a narrative that does not reduce the actual
+// request. A fitting original request may continue with its prior checkpoint.
+var ErrCompactionNoProgress = errors.New("llm: compaction did not reduce input")
+
+// CheckContextCandidate validates a temporarily selected checkpoint before the
+// runtime publishes it. The runtime restores the old checkpoint on failure.
+// It only rebuilds messages and estimates input; it performs no provider work.
+// Standalone trajectory compaction has no assembled-request check to invoke.
+func CheckContextCandidate(ctx context.Context) error {
+	if check, ok := ctx.Value(contextCandidateCheckKey{}).(func() error); ok {
+		return check()
+	}
+	return nil
+}
 
 // WithContextPreparation seats a run-local context preparation callback.
 // A nil callback or a non-positive target leaves ordinary requests unchanged.
@@ -74,16 +91,45 @@ func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteReq
 		target := min(preparation.InputTarget, capacity-1)
 		estimated := EstimateRequestTokens(bound, profile)
 		if estimated > target {
-			changed, err := preparation.Compact(withCompactionRequest(ctx, bound, c.cfg), estimated, target)
-			if err != nil {
+			var checkedMessages []ChatMessage
+			checked := false
+			check := func() error {
+				checked = true
+				messages, err := req.RebuildMessages()
+				if err != nil {
+					return err
+				}
+				candidate := bound
+				candidate.Messages = messages
+				if err := validateRequest(candidate); err != nil {
+					return err
+				}
+				after := EstimateRequestTokens(candidate, profile)
+				if after >= capacity {
+					return ErrContextWindowExceeded
+				}
+				if after >= estimated {
+					return ErrCompactionNoProgress
+				}
+				checkedMessages = messages
+				return nil
+			}
+			checkCtx := context.WithValue(withCompactionRequest(ctx, bound, c.cfg), contextCandidateCheckKey{}, check)
+			changed, err := preparation.Compact(checkCtx, estimated, target)
+			if err != nil && !(errors.Is(err, ErrCompactionNoProgress) && estimated < capacity && !changed) {
 				return CompleteResponse{}, err
 			}
 			if changed {
-				messages, err := req.RebuildMessages()
-				if err != nil {
-					return CompleteResponse{}, err
+				if !checked {
+					// Compatibility for custom callbacks that only rebuild after
+					// their own publication. The stock runtime checks before commit.
+					messages, err := req.RebuildMessages()
+					if err != nil {
+						return CompleteResponse{}, err
+					}
+					checkedMessages = messages
 				}
-				req.Messages = messages
+				req.Messages = checkedMessages
 			}
 		}
 	}

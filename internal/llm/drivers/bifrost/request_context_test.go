@@ -25,7 +25,7 @@ import (
 // Exercise the real run loop, portable compactor, composed client and pinned
 // Bifrost serializer. Only ordinary provider responses are scripted locally.
 func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
-	for _, outcome := range []string{"success", "bad summary", "protected overflow"} {
+	for _, outcome := range []string{"success", "bad summary", "protected overflow", "expanding summary", "expanding prior checkpoint", "expanding unlocked"} {
 		t.Run(outcome, func(t *testing.T) {
 			t.Setenv("HARBOR_REQUEST_CONTEXT_KEY", "synthetic-test-key")
 			var mu sync.Mutex
@@ -49,6 +49,9 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 				if len(body.ResponseFormat) > 0 && string(body.ResponseFormat) != "null" {
 					kind = "summary"
 					content = `{"goals":["edit document"],"facts":["older checks passed"],"pending":["apply the current source"],"last_output_digest":"older work retained","note":"portable"}`
+					if strings.HasPrefix(outcome, "expanding") {
+						content = `{"goals":["edit"],"facts":["` + strings.Repeat("expansion ", 1000) + `"],"pending":[],"last_output_digest":"older work","note":"too large"}`
+					}
 					if outcome == "bad summary" {
 						content = `{"note":"not a summary"}`
 					}
@@ -114,9 +117,21 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 			if err != nil || trajectoryEstimate >= workingTarget {
 				t.Fatalf("fixture must be below standalone trajectory target: %d %v", trajectoryEstimate, err)
 			}
+			if outcome == "expanding prior checkpoint" {
+				digest, digestErr := tr.PrefixDigest(1)
+				if digestErr != nil {
+					t.Fatal(digestErr)
+				}
+				tr.Summary = &planner.Summary{Facts: []string{"Keep approved navigation"}, Coverage: &planner.SummaryCoverage{Version: 1, Generation: 1, ThroughStep: 1, PrefixDigest: digest}}
+			}
+			original := tr.Summary
 			var trajectoryMu sync.RWMutex
+			inspectionMu := &trajectoryMu
+			if outcome == "expanding unlocked" {
+				inspectionMu = nil
+			}
 			fin, err := loop.Run(t.Context(), steering.RunSpec{
-				Planner: react.New(client, react.WithSystemPrompt(guidance)), Compression: runner, TrajectoryMu: &trajectoryMu,
+				Planner: react.New(client, react.WithSystemPrompt(guidance)), Compression: runner, TrajectoryMu: inspectionMu,
 				Base: planner.RunContext{Quadruple: q, Query: tr.Query, Trajectory: tr, Budget: planner.Budget{TokenBudget: workingTarget}, Emit: func(ev events.Event) { observed = append(observed, ev) }}, MaxSteps: 4,
 			})
 			mu.Lock()
@@ -128,13 +143,34 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 				return
 			}
 			if outcome == "protected overflow" {
-				if !errors.Is(err, llm.ErrContextWindowExceeded) || len(kinds) != 1 || kinds[0] != "summary" {
+				if !errors.Is(err, llm.ErrContextWindowExceeded) || tr.Summary != nil || len(kinds) != 1 || kinds[0] != "summary" {
 					t.Fatalf("protected overflow looped or reached provider: %v kinds=%v", err, kinds)
 				}
 				return
 			}
 			if err != nil || fin.Reason != planner.FinishGoal || len(kinds) != 2 || kinds[0] != "summary" || kinds[1] != "decision" {
 				t.Fatalf("request-level compaction failed: %v kinds=%v", err, kinds)
+			}
+			if strings.HasPrefix(outcome, "expanding") {
+				if tr.Summary != original {
+					t.Fatal("non-shrinking candidate replaced the original checkpoint")
+				}
+				failures := 0
+				for _, ev := range observed {
+					if ev.Type == planner.EventTypeTrajectoryCompressed {
+						t.Fatal("rejected candidate emitted success")
+					}
+					if ev.Type == planner.EventTypeTrajectoryCompressionFailed {
+						failures++
+					}
+				}
+				if failures != 1 || !strings.Contains(payloads[1], "9007199254740993") {
+					t.Fatal("rejection lost diagnostics or fresh evidence")
+				}
+				if original != nil && !strings.Contains(payloads[1], "Keep approved navigation") {
+					t.Fatal("previous checkpoint lost on failed replacement")
+				}
+				return
 			}
 			if tr.Summary == nil || tr.Summary.Coverage.ThroughStep != 2 || strings.Contains(payloads[0], "9007199254740993") {
 				t.Fatal("fresh evidence entered historical compaction")
