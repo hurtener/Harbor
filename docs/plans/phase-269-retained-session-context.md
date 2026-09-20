@@ -79,7 +79,10 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       resolved against current schemas/scopes/exclusions, and never auto-executed.
 - [x] Authorized dispatcher-offloaded result recovery uses existing bounded
       artifact reads, scoped lookup and source expiry/deletion guards.
-- [ ] Attachment context and steering corrections survive retained continuation.
+- [x] Applied user-message, redirect and injected-context corrections survive
+      retained continuation and settled-journal reconciliation without replaying
+      control actions or changing the next run's goal/authority.
+- [ ] Attachment context survives retained continuation.
 - [ ] Postgres conformance, full coverage, preflight, and release gates pass.
 
 ## Files added or changed
@@ -313,3 +316,25 @@ and 128 shared read-only projections. No historical action is rerun.
 
 This completes the generic offloaded-result recovery path, not attachment or
 steering continuity, remaining persistence conformance or final RC acceptance.
+
+## Applied steering continuity increment
+
+D-473 records accepted USER_MESSAGE, REDIRECT and INJECT_CONTEXT content in the
+existing ordered journal before another model decision. The same non-executable
+observation is appended under the inspection lock after persistence succeeds.
+The write itself runs outside that lock. Control execution still uses the
+existing inbox, scope checks and per-step signals; no control is replayed from
+history and no additional inference or planner-tranche count is introduced.
+
+Context-only journal frames are explicitly tagged and fully settled. Recovery
+refuses a frame whose tag disagrees with the presence of an action. Redaction
+and the shared historical private-field validator apply before persistence.
+Failed required writes stop dependent work rather than silently dropping the
+correction. Existing action-only journals remain readable.
+
+The pre-fix embedded regression lost all three correction types on the next
+turn. Recording-provider request tests now preserve exact correction content and
+numeric data without promoting history to system policy. Tests also cover SQLite
+reopen/reconciliation, malformed or pending context, cancellation, immutable
+payload capture, failure before dependent inference, and N=128 sessions sharing
+one Stack without leaked inboxes or repeated historical tool calls.

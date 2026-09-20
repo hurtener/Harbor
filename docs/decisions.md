@@ -15708,3 +15708,31 @@ inference, and reference checks after inference fence dependent dispatch when
 source deletion occurred during a model call. Already in-flight requests cannot
 be retracted. Retained source expiration continues to use the existing admission
 checks; no independent artifact TTL is invented.
+
+## D-473 — Persist applied steering as non-executable execution context
+
+**Scope:** RFC 002, phase 269; incremental implementation, not released.
+
+Retained runs record accepted USER_MESSAGE, REDIRECT and INJECT_CONTEXT content
+through the same bounded run journal as dispatch intent and settlement. A
+context-only frame is tagged, settled, and contains no action. The existing
+DispatchCheckpoint seam adds RecordContext; no alternate storage or control
+subsystem is introduced. A required write precedes publication of the live
+observation and any subsequent inference. The inspector lock protects only the
+append, not persistence I/O. Context frames consume the bounded journal allowance
+but do not advance the model-step/tranche counter.
+
+The normal live control projection remains unchanged. Historical content is
+inert evidence, never an executable control, authority claim, or replacement for
+the new user's goal. Only relevant message/goal fields or injected context are
+captured; approval tokens, resume/cancel/priority actions, caller scopes, and
+unrelated payload fields are not copied. Persistence redacts content and applies
+the same private-field validation as other retained evidence. Malformed or failed
+context writes stop the run; they do not authorize a tool retry.
+
+Settled-journal reconciliation restores tagged context frames without invoking
+models, tools, or controls. An action/tag mismatch is unavailable rather than
+guessed. Old action-only frames remain readable; old readers that do not know
+the context-frame field reject it instead of dropping it. Cross-turn retention,
+source expiry, erasure, summary coverage and current-catalog rules remain those
+of the existing retained window. No configuration/default change is introduced.

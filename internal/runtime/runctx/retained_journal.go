@@ -35,6 +35,7 @@ type retainedFrame struct {
 	Admission retainedAdmission `json:"admission"`
 	Index     int               `json:"index"`
 	Settled   bool              `json:"settled"`
+	Context   bool              `json:"context,omitempty"`
 	Step      json.RawMessage   `json:"step"`
 	ExpiresAt time.Time         `json:"expires_at"`
 }
@@ -131,7 +132,7 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	intentAction, intentErr := json.Marshal(intentStep.Action)
 	settledAction, settledErr := json.Marshal(settledStep.Action)
 	if intentErr != nil || settledErr != nil || before.Version != retainedJournalVersion ||
-		before.Admission != r.admission || before.Index != index || before.Settled ||
+		before.Admission != r.admission || before.Index != index || before.Settled || before.Context ||
 		!bytes.Equal(intentAction, settledAction) {
 		return ErrRetainedContextUnavailable
 	}
@@ -139,6 +140,32 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	head.Pending = false
 	head.Bytes += len(frame) - len(old.Bytes)
 	return r.commitJournal(ctx, head, frame, old.ID)
+}
+
+// RecordContext commits one applied, non-executable context update. It shares
+// the ordered bounded journal with dispatches; a failed write cannot be repaired
+// by continuing with forgotten instructions. The caller appends the same step
+// to the live trajectory only after this write succeeds.
+func (r *RetainedRun) RecordContext(ctx context.Context, rc planner.RunContext, step planner.Step) (err error) {
+	defer func() { r.rememberJournalFailure(err) }()
+	if err := r.checkJournal(rc); err != nil {
+		return err
+	}
+	if r.journal.Pending || step.Action != nil || step.LLMObservation == nil || step.Historical != nil ||
+		step.Observation != nil || step.ReasoningTrace != "" || step.AssistantPreamble != "" || step.Streams != nil || step.Failure != nil || step.Error != "" {
+		return ErrRetainedContextUnavailable
+	}
+	if r.journal.Count >= maxRetainedContextSteps {
+		return ErrRetainedContextCapacity
+	}
+	frame, err := r.makeFrame(ctx, r.journal.Count, true, step)
+	if err != nil {
+		return err
+	}
+	head := r.journal
+	head.Count++
+	head.Bytes += len(frame)
+	return r.commitJournal(ctx, head, frame, "")
 }
 
 func (r *RetainedRun) checkJournal(rc planner.RunContext) error {
@@ -159,16 +186,18 @@ func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, st
 	if err != nil {
 		return nil, err
 	}
-	var checked planner.Step
-	if err := decodeRetained(evidence, &checked); err != nil {
-		return nil, err
+	checked, err := planner.ReadHistoricalStep(planner.Step{Historical: &planner.HistoricalStep{
+		Version: 1, SourceRun: r.q.RunID, Index: index, Kind: "context", Body: evidence,
+	}})
+	if err != nil {
+		return nil, ErrRetainedContextUnavailable
 	}
-	if checked.Action == nil {
+	if (checked.Action == nil) != (step.Action == nil) || (checked.Action == nil && (!settled || checked.LLMObservation == nil)) {
 		return nil, ErrRetainedContextUnavailable
 	}
 	return json.Marshal(retainedFrame{
 		Version: retainedJournalVersion, Admission: r.admission, Index: index,
-		Settled: settled, Step: evidence, ExpiresAt: r.journal.ExpiresAt,
+		Settled: settled, Context: checked.Action == nil, Step: evidence, ExpiresAt: r.journal.ExpiresAt,
 	})
 }
 

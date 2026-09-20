@@ -108,7 +108,7 @@ func ReconcileRetainedRun(ctx context.Context, store state.StateStore, redactor 
 		// tool calls. The shared historical validator rejects private fields
 		// and ambiguous host envelopes; exact permitted evidence stays inert.
 		step, err := planner.ReadHistoricalStep(planner.Step{Historical: &planner.HistoricalStep{Version: 1, SourceRun: q.RunID, Index: index, Kind: "context", Body: frame.Step}})
-		if err != nil || step.Action == nil {
+		if err != nil || (step.Action == nil) != frame.Context || (frame.Context && step.LLMObservation == nil) {
 			return ErrRetainedContextUnavailable
 		}
 		tr.Steps = append(tr.Steps, step)

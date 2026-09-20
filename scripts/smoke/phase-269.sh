@@ -47,4 +47,10 @@ if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble ./in
 else
     fail "retained result reference recovery failed"
 fi
+if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/steering ./internal/runtime/assemble \
+    -run 'TestRetainedUpdates_|TestRunLoop_ContextCheckpoint_|TestRunOnce_RetainedSteering_' -count=1; then
+    ok "applied steering context survives retention and recovery without control replay"
+else
+    fail "retained steering context regression failed"
+fi
 smoke_summary

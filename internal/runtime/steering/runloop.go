@@ -725,6 +725,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		for _, ev := range drained {
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlReceived, "")
 			applyErr := rl.applier.applyEvent(runCtx, sc, ev, outstandingToken)
+			if applyErr == nil && spec.DispatchCheckpoint != nil {
+				applyErr = checkpointSteeringContext(runCtx, spec, ev)
+			}
 			rl.history.record(q.SessionID, AppliedControl{
 				Type:      ev.Type,
 				RunID:     q.RunID,

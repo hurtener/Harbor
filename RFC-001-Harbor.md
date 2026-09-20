@@ -1375,6 +1375,13 @@ external effects, and returns only a content-free reconciliation acknowledgement
 The typed Go Protocol client exposes the operation. Retention must already be
 enabled; no new configuration, cold-run resume or automatic action retry is added.
 
+**Applied steering continuity (D-473).** In retained mode, accepted user-message,
+redirect and injected-context content is committed as explicitly non-executable
+journal evidence before subsequent inference. Required persistence failures stop
+dependent work. Recovery and later turns preserve the observations but never
+replay control actions or confer old authority. Current control application and
+model-step/tranche accounting remain unchanged.
+
 **Retained result retrieval (D-472).** The retained guard resolves structured
 model-facing dispatcher offload envelopes independently of narrative coverage.
 Its bounded metadata projection survives compaction; the existing `artifact_fetch`

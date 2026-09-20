@@ -28,6 +28,10 @@ type checkpointRecorder struct {
 	last   planner.Step
 }
 
+func (c *checkpointRecorder) RecordContext(ctx context.Context, _ planner.RunContext, _ planner.Step) error {
+	return ctx.Err()
+}
+
 func (c *checkpointRecorder) BeforeDispatch(ctx context.Context, rc planner.RunContext, step planner.Step) error {
 	c.before++
 	if q, ok := identity.QuadrupleFrom(ctx); !ok || q != rc.Quadruple || step.Action == nil {
