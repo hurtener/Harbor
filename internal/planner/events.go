@@ -348,9 +348,9 @@ type TrajectoryCompressedPayload struct {
 //     violation), `estimator_error` (the TokenEstimator returned an
 //     error, typically an ErrUnserializable surfaced through
 //     DefaultTokenEstimator's Serialize call).
-//   - `ErrorMessage` is the truncated original error message (capped
-//     at 256 chars to keep audit payloads bounded). Never carries raw
-//     trajectory content.
+//   - `ErrorMessage` is a bounded, fixed description. The original error
+//     remains on the returned error chain, not in this safe payload: an
+//     extension/provider error may contain raw trajectory content or secrets.
 //
 // Harbor ships the payload + the emit; the bus subscribers observe
 // the failure end-to-end. The emit is the load-bearing fail-loudly

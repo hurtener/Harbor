@@ -23,6 +23,7 @@ replay of interrupted external actions is introduced. Default retention is zero.
 - [x] Authorized dispatcher-offload recovery using existing artifact reads (`cb5ce55`).
 - [x] Applied steering continuity, journal recovery and nonduplicated completion hooks.
 - [x] Input attachment continuity and source-lifetime checks after compaction.
+- [x] Compaction failure diagnostics use fixed content-free messages.
 - [ ] Complete bounded context diagnostics and cache-stability acceptance.
 
 The published steering increment includes actual later and next-turn request

@@ -29,4 +29,9 @@ if go test -race ./internal/llm ./internal/llm/grant -run '^TestCompaction' -cou
 else
     fail "model-sized or granted maintenance regression failed"
 fi
+if go test -race -p 1 ./internal/planner -run 'TestCompressionDiagnostics_|TestCompressionErrorMessage_ContentFreeBounded' -count=1; then
+    ok "compaction failure diagnostics preserve scope without source content"
+else
+    fail "compaction failure diagnostics regression failed"
+fi
 smoke_summary

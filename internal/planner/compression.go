@@ -173,7 +173,7 @@ func (r *CompressionRunner) maybeCompress(ctx context.Context, rc RunContext, tr
 		estimate, err = r.estimator(tr)
 	}
 	if err != nil {
-		emitCompressionFailed(ctx, rc, tr, 0, "estimator_error", err)
+		emitCompressionFailed(ctx, rc, tr, 0, "estimator_error")
 		return fmt.Errorf("planner compression: estimator: %w", err)
 	}
 	if estimate <= rc.Budget.TokenBudget || len(tr.Steps)-start < 2 {
@@ -235,11 +235,11 @@ func (r *CompressionRunner) maybeCompress(ctx context.Context, rc RunContext, tr
 	summaryRC.Trajectory = input
 	result, err := r.summariser.Summarise(ctx, summaryRC, input)
 	if err != nil {
-		emitCompressionFailed(ctx, rc, tr, estimate, "summariser_error", err)
+		emitCompressionFailed(ctx, rc, tr, estimate, "summariser_error")
 		return fmt.Errorf("planner compression: summariser: %w", err)
 	}
 	if !result.HasContent() {
-		emitCompressionFailed(ctx, rc, tr, estimate, "empty_summary", ErrEmptySummary)
+		emitCompressionFailed(ctx, rc, tr, estimate, "empty_summary")
 		return ErrEmptySummary
 	}
 	if err := ctx.Err(); err != nil {
@@ -332,7 +332,7 @@ func emitCompressionSucceeded(
 
 // emitCompressionFailed publishes trajectory.compression_failed onto
 // the run's emit closure. Mirrors emitCompressionSucceeded; carries
-// the error code + truncated message + the trajectory's step count
+// the error code + fixed content-free message + the trajectory's step count
 // at the moment of failure.
 func emitCompressionFailed(
 	ctx context.Context,
@@ -340,7 +340,6 @@ func emitCompressionFailed(
 	tr *Trajectory,
 	tokenEstimate int,
 	code string,
-	cause error,
 ) {
 	if rc.Emit == nil {
 		return
@@ -350,10 +349,9 @@ func emitCompressionFailed(
 		stepsObserved = len(tr.Steps)
 	}
 	now := nowFromRC(rc)
-	msg := ""
-	if cause != nil {
-		msg = truncateErrorMessage(cause.Error(), compressionErrorMessageCap)
-	}
+	// Extension/provider errors can contain prompt fragments or credentials.
+	// A byte cap is not redaction. Preserve the cause only on the returned
+	// error chain; safe event payloads carry a fixed description and category.
 	rc.Emit(events.Event{
 		Type:       EventTypeTrajectoryCompressionFailed,
 		Identity:   rc.Quadruple,
@@ -363,28 +361,11 @@ func emitCompressionFailed(
 			StepsObserved: stepsObserved,
 			TokenEstimate: tokenEstimate,
 			ErrorCode:     code,
-			ErrorMessage:  msg,
+			ErrorMessage:  "trajectory compaction failed; previous checkpoint retained",
 			OccurredAt:    now,
 		},
 	})
 	_ = ctx
-}
-
-// compressionErrorMessageCap is the byte cap on
-// [TrajectoryCompressionFailedPayload.ErrorMessage] — keeps audit
-// payloads bounded against runaway summariser error messages.
-const compressionErrorMessageCap = 256
-
-// truncateErrorMessage truncates s to at most n bytes, appending an
-// ellipsis marker when truncation happens.
-func truncateErrorMessage(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n < 4 {
-		return s[:n]
-	}
-	return s[:n-3] + "..."
 }
 
 // nowFromRC reads [RunContext.Clock] when present, else falls back to

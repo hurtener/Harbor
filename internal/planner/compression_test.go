@@ -330,8 +330,8 @@ func TestMaybeCompress_FailLoudOnSummariserError(t *testing.T) {
 	if payload.ErrorCode != "summariser_error" {
 		t.Errorf("payload.ErrorCode = %q, want summariser_error", payload.ErrorCode)
 	}
-	if !strings.Contains(payload.ErrorMessage, "downstream LLM 500") {
-		t.Errorf("payload.ErrorMessage = %q, want substring downstream LLM 500", payload.ErrorMessage)
+	if payload.ErrorMessage != "trajectory compaction failed; previous checkpoint retained" {
+		t.Errorf("payload.ErrorMessage = %q, want content-free failure description", payload.ErrorMessage)
 	}
 }
 
@@ -547,13 +547,11 @@ func TestMaybeCompress_NilEmit_DoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestTruncateErrorMessage_Boundary asserts the truncation helper
-// short-circuits on short messages and adds ellipsis on long. Tested
-// through the runner's failure-emit path — the message-cap is
-// internal but the visible effect is the payload.ErrorMessage shape.
-func TestTruncateErrorMessage_Boundary(t *testing.T) {
+// TestCompressionErrorMessage_ContentFreeBounded verifies that even an arbitrarily
+// long extension error cannot copy source fragments into safe observability.
+func TestCompressionErrorMessage_ContentFreeBounded(t *testing.T) {
 	t.Parallel()
-	// Use a very long error to exercise the truncation.
+	// A byte cap alone would still leak the beginning of this error.
 	longMsg := strings.Repeat("a", 1024)
 	summ := &errSummariser{err: errors.New(longMsg)}
 	rec := &recordingEmit{}
@@ -571,7 +569,7 @@ func TestTruncateErrorMessage_Boundary(t *testing.T) {
 	if len(payload.ErrorMessage) > 256 {
 		t.Errorf("payload.ErrorMessage length = %d, want ≤ 256", len(payload.ErrorMessage))
 	}
-	if !strings.HasSuffix(payload.ErrorMessage, "...") {
-		t.Errorf("payload.ErrorMessage does not end with ellipsis after truncation")
+	if strings.Contains(payload.ErrorMessage, longMsg[:8]) || payload.ErrorMessage == "" {
+		t.Error("failure description is empty or contains original error content")
 	}
 }
