@@ -59,4 +59,14 @@ if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble ./in
 else
     fail "retained attachment continuity regression failed"
 fi
+if [[ -n "${HARBOR_PG_DSN:-}" ]]; then
+    if go test -v -race -p 1 ./internal/state/drivers/postgres \
+        -run '^TestPostgres_RetainedContext_' -count=1; then
+        ok "Postgres exact recovery, source lifetime and two-pool generation fences pass"
+    else
+        fail "Postgres retained-context conformance failed"
+    fi
+else
+    skip "Postgres retained-context conformance requires HARBOR_PG_DSN (CI supplies it)"
+fi
 smoke_summary

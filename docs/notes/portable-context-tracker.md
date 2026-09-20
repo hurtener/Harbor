@@ -35,7 +35,7 @@ The existing retained-window format remains version 3.
 
 ## Release gates
 
-- [ ] New retained-context behavior passes Postgres conformance as well as SQLite/in-memory.
+- [x] Retained-context Postgres tests cover independent pools, exact recovery, pending refusal, checkpoint expiry and 128 dispatch/reconciliation races; existing CI runs them.
 - [ ] Final-tree full Go lint, vet, race, coverage and build gates pass.
 - [ ] Final-tree full drift/preflight and previous phase smoke gates pass.
 - [ ] Final-tree Protocol generation/lockstep and applicable frontend gates pass.
@@ -47,3 +47,18 @@ The existing retained-window format remains version 3.
 Real-model evaluation requires separate approval and provider credentials. The
 scripted tests establish runtime/request behavior, not model proficiency, physical
 external effects, paid cost savings or a comparative cache-performance ranking.
+
+## PostgreSQL conformance checkpoint
+
+The existing `state/postgres` CI job runs the new `TestPostgres_RetainedContext_`
+scenarios against its PostgreSQL 16 service. No new workflow or production
+backend is introduced. Local validation used a disposable PostgreSQL 16.15
+cluster with two independent StateStore pools and a fresh schema per scenario.
+The tests preserve exact numeric receipts, attachment identities and steering
+updates; pending operations remain unknown, expired summaries are invalidated,
+and another pool's erasure fences terminal publication. The concurrency scenario
+runs 128 sessions with competing dispatch/reconciliation through separate pools.
+
+The phase 269 smoke runs the same scenarios when `HARBOR_PG_DSN` is provided and
+reports an explicit skip otherwise. These tests do not replace the full final-tree
+regression, coverage and preflight gates above.
