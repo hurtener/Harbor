@@ -15768,3 +15768,19 @@ allowing dependent work, and an omitted missing input reaching inference. Tests
 cover actual embedded/served requests, exact artifact retrieval, in-memory/SQLite
 reconciliation, atomic start failure, no binary persistence and 128 scoped reads.
 Full provider-quality, Postgres and release acceptance remain separate gates.
+
+## D-475 — Keep usage availability distinct from zero and estimates
+
+**Scope:** RFC 002 diagnostics; incremental implementation, not released.
+
+Normalized usage/cost objects expose additive presence flags, and Harbor's optional
+backfill exposes an estimate flag. Legacy records without flags have unknown
+provenance. Present zero reports must not be replaced by estimated token/cost
+values. Existing cost events carry this metadata without a new accounting path,
+receipt format, dependency, or default configuration change.
+
+The pinned SDK discards individual cache-field presence. Prompt-detail container
+presence is not proof that a zero cache count was measured; it can represent other
+modalities only. Preserve this uncertainty rather than synthesizing cache hits,
+misses, cost savings, or a provider invoice. Sparse streaming updates retain
+previously received categories and do not sum cumulative token snapshots.

@@ -2299,3 +2299,9 @@ turn, committed as a context-only journal frame without copying uploaded bytes.
 Scoped current metadata survives summary coverage and existing artifact tools
 supply authorized content. A reference is not proof of inspection or a new
 execution permission. D-474.
+
+**Usage report presence** — additive normalized usage/cost metadata indicating
+that the driver received the corresponding SDK object, distinct from Harbor's
+estimated backfill and from missing/legacy unknown values. Prompt-detail object
+presence does not establish individual cache-field presence when the SDK has
+collapsed absent fields into zeros. RFC 002, D-475.

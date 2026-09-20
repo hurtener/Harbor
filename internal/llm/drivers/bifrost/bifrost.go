@@ -445,18 +445,7 @@ func processStreamChunk(
 			})
 		}
 	}
-	// Backfill usage / cost when bifrost reports it (typically on
-	// the terminal chunk).
-	if resp.Usage != nil {
-		if u, c := extractUsageAndCost(resp); u.TotalTokens > 0 || c.TotalCost > 0 || u.PromptTokens > 0 {
-			*usage = u
-			// Preserve a non-zero cost across earlier chunks (some
-			// providers send usage on chunk N-1 and cost on chunk N).
-			if c.TotalCost > 0 {
-				*cost = c
-			}
-		}
-	}
+	mergeStreamAccounting(resp, usage, cost)
 }
 
 // Close releases the underlying bifrost instance. Bifrost owns its

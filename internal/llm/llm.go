@@ -535,6 +535,12 @@ const (
 // intermediate retry / downgrade attempt via the per-call attempt-cost
 // tap — synchronously), not a subscriber of that event.
 type Cost struct {
+	// ReportPresent means the driver received a normalized cost object, including
+	// an explicitly zero object. False on legacy records means unknown, not free.
+	// An SDK-calculated cost is not proof of a provider's final invoice.
+	ReportPresent bool `json:",omitempty"`
+	// Estimated identifies Harbor's configured price-table backfill.
+	Estimated           bool `json:",omitempty"`
 	InputTokensCost     float64
 	OutputTokensCost    float64
 	ReasoningTokensCost float64
@@ -542,13 +548,26 @@ type Cost struct {
 	Currency            string // "USD" canonical; reserved for future multi-currency
 }
 
-// Usage is the provider-reported token usage.
+// Usage carries normalized driver token counts and optional availability flags.
+// Older drivers/records without flags have unknown provenance. Estimates never
+// become provider reports merely because their counts are nonzero.
 type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	ReasoningTokens  int
-	TotalTokens      int
-	LatencyMS        int64
+	// ReportPresent means the driver received a normalized usage object. It does
+	// not assert that every optional per-token-category field was supplied.
+	ReportPresent bool `json:",omitempty"`
+	// Estimated marks Harbor's usage backfill rather than a driver report.
+	Estimated bool `json:",omitempty"`
+	// PromptDetailsPresent and CompletionDetailsPresent record normalized detail
+	// object presence. The pinned SDK erases individual cache-field presence:
+	// a zero cache count still does not prove a measured miss, even when the
+	// prompt-details object exists (it may contain only audio/text counts).
+	PromptDetailsPresent     bool `json:",omitempty"`
+	CompletionDetailsPresent bool `json:",omitempty"`
+	PromptTokens             int
+	CompletionTokens         int
+	ReasoningTokens          int
+	TotalTokens              int
+	LatencyMS                int64
 	// CacheReadTokens is the count of PromptTokens served from the
 	// provider's prompt cache — a subset of PromptTokens, not additional
 	// tokens. Zero when the provider/response reports no cache data.

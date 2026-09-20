@@ -39,4 +39,10 @@ if go test -race -p 1 ./internal/llm/drivers/bifrost -run '^TestContextCache_' -
 else
     fail "Bifrost cache-prefix regression failed"
 fi
+if go test -race -p 1 ./internal/llm ./internal/llm/corrections ./internal/llm/drivers/bifrost \
+    -run 'TestUsagePresence_|TestEmitCostRecorded_CacheTokensRoundTrip' -count=1; then
+    ok "usage availability and sparse streaming accounting remain explicit"
+else
+    fail "usage availability regression failed"
+fi
 smoke_summary

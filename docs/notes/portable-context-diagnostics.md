@@ -45,3 +45,28 @@ first-turn attachment materialization or trailing retrieval/outcome notices may
 change the corresponding request section. A new user turn is reconstructed from
 its retained window; it is not claimed to be a byte-for-byte append of the prior
 turn. Correct authority and source lifetime take precedence over cache reuse.
+
+## Usage availability and sparse streaming reports
+
+Normalized `Usage` and `Cost` carry additive, omitted-when-false `ReportPresent`
+flags. `Usage` also records `PromptDetailsPresent` and `CompletionDetailsPresent`.
+These indicate the normalized SDK objects that actually arrived, not the presence
+of every raw provider field. Missing/legacy flags mean unknown availability, never
+proof of a free request or a measured cache miss. A present all-zero usage object
+is not replaced by the optional corrections-layer backfill. That backfill marks
+its token/price-table values with `Estimated`; it never changes them into driver
+reports. Existing cost events forward these flags with the numeric values, and
+older readers may continue ignoring the additive metadata.
+
+The pinned Bifrost SDK collapses absent individual cache fields and explicit zero
+cache fields into the same integer. A prompt-details object may contain only
+audio/text counts. Accordingly `PromptDetailsPresent` is not a per-cache-category
+presence claim, and a zero read/write cache count remains inconclusive. No provider
+SDK replacement or raw-response capture is added to recover that lost distinction.
+SDK-calculated costs are also not proof of an actual billed invoice.
+
+Streaming counts are cumulative, not summed across chunks. Cost-only or empty
+updates preserve earlier totals; missing detail objects preserve cache/reasoning
+counts. Present detail/cost objects update their own category, including zeros.
+All state is per completion. Regression tests exercise actual SDK decoding,
+sparse updates, estimate labeling, cost-event forwarding and 128 isolated calls.

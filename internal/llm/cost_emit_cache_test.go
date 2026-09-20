@@ -52,11 +52,13 @@ func TestEmitCostRecorded_CacheTokensRoundTrip(t *testing.T) {
 	defer sub.Cancel()
 
 	usage := Usage{
-		PromptTokens:     1000,
-		CompletionTokens: 200,
-		TotalTokens:      1200,
-		CacheReadTokens:  800,
-		CacheWriteTokens: 150,
+		ReportPresent:        true,
+		PromptDetailsPresent: true,
+		PromptTokens:         1000,
+		CompletionTokens:     200,
+		TotalTokens:          1200,
+		CacheReadTokens:      800,
+		CacheWriteTokens:     150,
 	}
 	emitCostRecorded(ctx, bus, quad, "m", Cost{TotalCost: 0.01}, usage, 4096)
 
@@ -65,6 +67,9 @@ func TestEmitCostRecorded_CacheTokensRoundTrip(t *testing.T) {
 		p, ok := ev.Payload.(CostRecordedPayload)
 		if !ok {
 			t.Fatalf("payload type = %T, want CostRecordedPayload", ev.Payload)
+		}
+		if !p.Usage.ReportPresent || !p.Usage.PromptDetailsPresent || p.Usage.Estimated {
+			t.Fatal("usage provenance lost in event projection")
 		}
 		if p.Usage.CacheReadTokens != 800 {
 			t.Errorf("Usage.CacheReadTokens = %d want 800", p.Usage.CacheReadTokens)

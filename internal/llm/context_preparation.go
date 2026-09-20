@@ -116,7 +116,7 @@ func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteReq
 			}
 			checkCtx := context.WithValue(withCompactionRequest(ctx, bound, c.cfg), contextCandidateCheckKey{}, check)
 			changed, err := preparation.Compact(checkCtx, estimated, target)
-			if err != nil && !(errors.Is(err, ErrCompactionNoProgress) && estimated < capacity && !changed) {
+			if err != nil && (!errors.Is(err, ErrCompactionNoProgress) || estimated >= capacity || changed) {
 				return CompleteResponse{}, err
 			}
 			if changed {

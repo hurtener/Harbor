@@ -656,22 +656,25 @@ func extractContent(resp *bfschemas.BifrostChatResponse) string {
 
 // extractUsageAndCost decodes bifrost's usage shape (which carries
 // `*BifrostCost` as a sub-field) into Harbor's `Usage` + `Cost`. A
-// nil-usage response yields zero values; the accumulator
-// treats zero cost as "no charge for this call" (a deliberate
-// no-op).
+// nil-usage response leaves availability unknown and numeric fields at zero.
+// Presence flags describe the normalized SDK objects, not individual raw wire
+// fields. Numeric zero with no report must not be presented as measured usage.
 func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Cost) {
 	var usage llm.Usage
 	var cost llm.Cost
 	if resp == nil || resp.Usage == nil {
 		return usage, cost
 	}
+	usage.ReportPresent = true
 	usage.PromptTokens = resp.Usage.PromptTokens
 	usage.CompletionTokens = resp.Usage.CompletionTokens
 	usage.TotalTokens = resp.Usage.TotalTokens
 	if resp.Usage.CompletionTokensDetails != nil {
+		usage.CompletionDetailsPresent = true
 		usage.ReasoningTokens = resp.Usage.CompletionTokensDetails.ReasoningTokens
 	}
 	if resp.Usage.PromptTokensDetails != nil {
+		usage.PromptDetailsPresent = true
 		// Cache read/write counts are a subset of PromptTokens (prompt
 		// tokens served from / newly written to the provider's prompt
 		// cache), not additional tokens. A nil PromptTokensDetails leaves
@@ -681,6 +684,7 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 	}
 	usage.LatencyMS = resp.ExtraFields.Latency
 	if resp.Usage.Cost != nil {
+		cost.ReportPresent = true
 		cost.InputTokensCost = resp.Usage.Cost.InputTokensCost
 		cost.OutputTokensCost = resp.Usage.Cost.OutputTokensCost
 		cost.ReasoningTokensCost = resp.Usage.Cost.ReasoningTokensCost
