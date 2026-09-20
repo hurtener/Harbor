@@ -15,13 +15,46 @@ jobs:
   source:
     if: github.event.pull_request.number == 779 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'docs/portable-session-context-plan'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Prepare disposable Postgres validation tools
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/postgres ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends postgresql-16
+          fi
+      - name: Archive Postgres software only
+        shell: python
+        run: |
+          import os, pathlib, subprocess, tarfile
+          root = pathlib.Path('/usr/lib/postgresql/16')
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'context-source'
+          out.mkdir(exist_ok=True)
+          binaries = [root / 'bin' / n for n in ('postgres', 'initdb', 'pg_ctl', 'psql')]
+          libraries = set()
+          for binary in binaries + list((root / 'lib').glob('*.so')):
+              result = subprocess.run(['ldd', str(binary)], capture_output=True, text=True, check=True)
+              for line in result.stdout.splitlines():
+                  parts = line.split()
+                  if len(parts) >= 3 and parts[1] == '=>' and parts[2].startswith('/'):
+                      path = pathlib.Path(parts[2])
+                      if path.name.startswith(('libc.so', 'libm.so', 'libpthread.so', 'libdl.so', 'librt.so')):
+                          continue
+                      libraries.add(path)
+          with tarfile.open(out / 'postgres-tools.tgz', 'w:gz', dereference=True) as archive:
+              for binary in binaries:
+                  archive.add(binary, arcname='postgres/bin/' + binary.name)
+              archive.add(root / 'lib', arcname='postgres/lib')
+              archive.add('/usr/share/postgresql/16', arcname='postgres/share')
+              for library in sorted(libraries):
+                  archive.add(library, arcname='postgres/runtime-libs/' + library.name)
+          version = subprocess.check_output([str(root / 'bin/postgres'), '--version'], text=True)
+          (out / 'postgres-version.txt').write_text(version)
       - name: Archive tracked source
         run: |
           mkdir -p "$RUNNER_TEMP/context-source"
@@ -29,7 +62,7 @@ jobs:
           git rev-parse HEAD > "$RUNNER_TEMP/context-source/commit.txt"
           git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/context-source/tree.txt"
           cd "$RUNNER_TEMP/context-source"
-          sha256sum source.tgz > SHA256SUMS
+          sha256sum source.tgz postgres-tools.tgz > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: context-source-${{ github.run_id }}
