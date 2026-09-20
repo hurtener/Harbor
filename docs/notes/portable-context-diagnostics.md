@@ -19,6 +19,29 @@ is introduced. Shared-component tests cover 128 concurrent isolated failures.
 
 Request-section estimates, checkpoint-range inspection and explicit usage
 availability still need full acceptance under the existing telemetry/Protocol
-ownership. Cache-prefix tests must distinguish an append-only live tail from
-intentional rewrites at compaction, model/policy change and retained-turn setup.
+ownership. The cache-prefix boundary tests below cover the portable live-request path;
+retained-turn setup is intentionally a separately constructed context generation.
 No cache-hit ratio, paid cost saving or model-proficiency claim is made here.
+
+## Cache-prefix boundaries
+
+`TestContextCache_LivePrefixesAndExplicitRewriteBoundaries` captures HTTP requests
+from the pinned OpenAI and Anthropic Bifrost adapters. With stable instructions,
+tool definitions and text-based live history, appending a complete native
+exchange leaves preceding message bytes and tool declarations unchanged.
+Rebuilding unchanged evidence produces the same full request. These properties
+hold again after portable compaction starts a new checkpoint generation.
+
+Compaction deliberately changes the covered history while retaining the latest
+exchange. Tool exclusion changes the declared tools even when that breaks cache
+reuse, and switching models changes the outbound model. The fixtures use ordinary
+completion endpoints with no native compaction or required cache hints. They run
+no historical tools. Provider output is scripted; this proves request behavior,
+not a cache hit, cache retention, provider billing or a performance ranking.
+
+The guarantee is conditional on unchanged prompt inputs. Changing caller memory,
+skills, date-sensitive default instructions, repair guidance, tool discovery,
+first-turn attachment materialization or trailing retrieval/outcome notices may
+change the corresponding request section. A new user turn is reconstructed from
+its retained window; it is not claimed to be a byte-for-byte append of the prior
+turn. Correct authority and source lifetime take precedence over cache reuse.

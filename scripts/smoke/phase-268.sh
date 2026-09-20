@@ -34,4 +34,9 @@ if go test -race -p 1 ./internal/planner -run 'TestCompressionDiagnostics_|TestC
 else
     fail "compaction failure diagnostics regression failed"
 fi
+if go test -race -p 1 ./internal/llm/drivers/bifrost -run '^TestContextCache_' -count=1; then
+    ok "Bifrost live prefixes stay stable; compaction and authority changes remain explicit"
+else
+    fail "Bifrost cache-prefix regression failed"
+fi
 smoke_summary
