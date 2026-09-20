@@ -1,7 +1,7 @@
 name: context development increment
 
 # Temporary same-repository PR transport while local Git DNS is unavailable.
-# Only a plain patch with its tested tree and checksum is accepted. Remove
+# A bounded patch with its tested tree and checksum is accepted. Remove
 # before RC. No workflow edits, credentials, force pushes or releases are allowed.
 on:
   pull_request:
@@ -26,11 +26,25 @@ jobs:
       - name: Publish exact tested tree
         shell: python
         run: |
-          import hashlib, json, os, pathlib, subprocess
+          import base64, hashlib, json, os, pathlib, subprocess, zlib
           def git(*args):
               return subprocess.check_output(['git', *args], text=True).strip()
           manifest = pathlib.Path('.github/context-increment.json')
           change = json.loads(manifest.read_text())
+          if 'parts' in change:
+              count = change.pop('parts')
+              if type(count) is not int or not 1 <= count <= 16:
+                  raise SystemExit('Invalid patch part count')
+              parts = pathlib.Path('.github/context-parts')
+              packed_text = b''.join((parts / f'{i:03d}').read_bytes() for i in range(count))
+              if len(packed_text) > 2 * 1024 * 1024:
+                  raise SystemExit('Patch encoding is oversized')
+              decoder = zlib.decompressobj()
+              packed = base64.b64decode(packed_text, validate=True)
+              decoded = decoder.decompress(packed, 2 * 1024 * 1024 + 1)
+              if len(decoded) > 2 * 1024 * 1024 or not decoder.eof or decoder.unused_data:
+                  raise SystemExit('Compressed patch is oversized or incomplete')
+              change['patch'] = decoded.decode('utf-8')
           # Recovery reuses the existing patch bytes, but supplies newly tested
           # base/checksum/tree metadata. The same strict validations follow.
           recovery = pathlib.Path('.github/context-recovery.json')
@@ -60,6 +74,8 @@ jobs:
           subprocess.run(['git', 'rm', '--', str(manifest)], check=True)
           if recovery.exists():
               subprocess.run(['git', 'rm', '--', str(recovery)], check=True)
+          if 'parts' in locals():
+              subprocess.run(['git', 'rm', '-r', '--', str(parts)], check=True)
           subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
           if git('write-tree') != change['tree']:
               raise SystemExit('Result differs from the locally validated tree')
