@@ -257,7 +257,7 @@ func TestE2E_ReactCompression_SummariserFailure_SurfacesOnBus(t *testing.T) {
 		LLMContext: map[string]any{"bulk": strings.Repeat("y", 8192)},
 		Steps:      []planner.Step{{LLMObservation: strings.Repeat("o", 1000)}, {LLMObservation: "fresh"}},
 	}
-	wantErr := errors.New("summariser LLM unreachable")
+	wantErr := errors.New("summariser LLM unreachable: PRIVATE-SYNTHETIC-SOURCE")
 	summ := &errSummariserIT{err: wantErr}
 	runner := planner.NewCompressionRunner(summ)
 
@@ -294,8 +294,15 @@ func TestE2E_ReactCompression_SummariserFailure_SurfacesOnBus(t *testing.T) {
 	if payload.ErrorCode != "summariser_error" {
 		t.Errorf("payload.ErrorCode = %q, want summariser_error", payload.ErrorCode)
 	}
-	if !strings.Contains(payload.ErrorMessage, "summariser LLM unreachable") {
-		t.Errorf("payload.ErrorMessage missing original error text: %q", payload.ErrorMessage)
+	if payload.ErrorMessage != "trajectory compaction failed; previous checkpoint retained" {
+		t.Errorf("payload.ErrorMessage is not the fixed diagnostic: %q", payload.ErrorMessage)
+	}
+	encoded, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "PRIVATE-SYNTHETIC-SOURCE") || strings.Contains(string(encoded), "LLM unreachable") {
+		t.Fatal("provider error content leaked through the event bus")
 	}
 }
 
