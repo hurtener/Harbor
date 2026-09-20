@@ -81,6 +81,7 @@ type RetainedRun struct {
 	appliedSummary   *planner.Summary
 	hadActivePrefix  bool
 	hadPartialPrefix bool
+	initialContext   *planner.Step
 	prefixLen        int
 	prefixExpiresAt  time.Time
 	finished         bool
@@ -158,6 +159,10 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 	if base == nil || base.Quadruple != r.q || base.Trajectory == nil || len(base.Trajectory.Steps) != 0 {
 		return ErrRetainedContextUnavailable
 	}
+	inputContext, err := retainedInputContext(base.InputArtifacts)
+	if err != nil {
+		return err
+	}
 	base.Trajectory.Steps = append([]planner.Step(nil), r.prefix...)
 	if len(r.prefix) > 0 {
 		// Place the actual current request after historical data as well as in
@@ -171,6 +176,10 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 		return err
 	}
 	r.prefixLen = len(base.Trajectory.Steps)
+	r.initialContext = inputContext
+	if inputContext != nil {
+		base.Trajectory.Steps = append(base.Trajectory.Steps, *inputContext)
+	}
 	if base.Budget.TokenBudget > 0 {
 		seen := r.prefixLen
 		base.Trajectory.UnseenFrom = &seen

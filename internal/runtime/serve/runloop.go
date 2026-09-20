@@ -2024,7 +2024,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	if hasSkillSnapshot {
 		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)
 	}
-	fin, err := d.runWithRetainedContext(runCtx, spec, task.ParentTaskID == nil)
+	fin, err := d.runWithRetainedContext(runCtx, spec, task.ParentTaskID == nil, task.InputArtifactIDs)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
 		// The FSM has no auto-cancelled status (Cancel is the external-

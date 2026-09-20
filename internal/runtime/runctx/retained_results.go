@@ -17,7 +17,7 @@ const (
 	maxRetainedResultMetadataBytes = 16 * 1024
 )
 
-// Recover only the existing dispatcher envelope, never identifiers generated
+// Recover existing dispatcher envelopes and admitted attachment frames, never identifiers generated
 // by a summary or inferred from prose. This is an ephemeral projection of the
 // bounded window, not a new persistent index or domain-specific registry.
 func retainedResultReferences(ctx context.Context, rc planner.RunContext, store artifacts.ArtifactStore) ([]planner.ArtifactManifestEntry, error) {
@@ -28,6 +28,7 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 		return nil, ErrRetainedContextUnavailable
 	}
 	ids := make(map[string]struct{})
+	inputs := make(map[string]bool)
 	remaining := 2 * maxRetainedContextBytes // retained window plus current run
 	var walk func(any, int) error
 	walk = func(v any, depth int) error {
@@ -98,6 +99,26 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 		if err := decoder.Decode(&value); err != nil {
 			return nil, ErrRetainedContextUnavailable
 		}
+		// Attachment identity belongs only to a context-only host entry. Do
+		// not interpret nested tool output or injected text as admitted input.
+		if body, ok := value.(map[string]any); ok && step.Action == nil {
+			if raw, exists := body[retainedInputRefsKey]; exists {
+				refs, valid := raw.([]any)
+				if !valid || len(refs) == 0 || len(refs) > maxRetainedResultRefs {
+					return nil, ErrRetainedContextUnavailable
+				}
+				for _, rawID := range refs {
+					id, valid := rawID.(string)
+					if !valid || !validRetainedInputID(id) {
+						return nil, ErrRetainedContextUnavailable
+					}
+					ids[id], inputs[id] = struct{}{}, true
+				}
+				if len(ids) > maxRetainedResultRefs {
+					return nil, ErrRetainedContextCapacity
+				}
+			}
+		}
 		if err := walk(value, 0); err != nil {
 			return nil, err
 		}
@@ -126,7 +147,11 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 			}
 			return nil, ErrRetainedContextUnavailable
 		}
-		refs = append(refs, planner.ArtifactManifestEntry{Ref: id, Filename: ref.Filename, MIME: ref.MimeType, SizeBytes: ref.SizeBytes, Provenance: "retained tool result"})
+		provenance := "retained tool result"
+		if inputs[id] {
+			provenance = "retained input attachment"
+		}
+		refs = append(refs, planner.ArtifactManifestEntry{Ref: id, Filename: ref.Filename, MIME: ref.MimeType, SizeBytes: ref.SizeBytes, Provenance: provenance})
 	}
 	encoded, err := json.Marshal(refs)
 	if err != nil || len(encoded) > maxRetainedResultMetadataBytes {

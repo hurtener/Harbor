@@ -1390,6 +1390,14 @@ reference validation runs before inference and before dependent dispatch. Missin
 or erased sources are unavailable, not retained as apparently valid evidence.
 No persistent registry, new tool, or artifact-lifetime policy is introduced.
 
+**Retained attachments (D-474):** supplied attachment IDs are associated with
+their user turn in the same context-capable journal, atomically with the admitted
+query. Retained callers reject omitted input references. Current scoped metadata
+remains available after compaction and is revalidated before inference and
+dependent dispatch. Bytes stay in the ArtifactStore; a reference does not claim
+image inspection or extend source lifetime. Existing artifact tools perform
+authorized retrieval; default non-retained input disposition is unchanged.
+
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 
 ```go

@@ -2,10 +2,12 @@
 
 **Status:** Accepted for incremental implementation in PR #779; not released.
 
-Phase 268 implements portable compaction and request budgeting. Phase 269 is in
-progress: its first embedded consumer retains exact terminal execution evidence
-under explicit opt-in. Serve integration, per-action durability and remaining
-acceptance are not yet complete. Neither phase is declared RC-ready.
+Phase 268 implements portable compaction and request budgeting. Phase 269 adds
+opt-in served/embedded retention, dispatch journaling, checkpoint reuse, explicit
+reconciliation, result recovery, applied steering and attachment continuity.
+Final diagnostics, conformance and release gates remain in progress. Neither phase
+is declared RC-ready. The [implementation tracker](docs/notes/portable-context-tracker.md)
+separates implemented behavior from pending release acceptance.
 
 **Date:** 2026-09-18.
 

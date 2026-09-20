@@ -15,9 +15,12 @@ import (
 // and required dispatch checkpoints.
 // Admission occurs after agent/route/catalog resolution, before the first model
 // or tool action. Child tasks never import or publish a root conversation turn.
-func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steering.RunSpec, root bool) (planner.Finish, error) {
+func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steering.RunSpec, root bool, inputIDs []string) (planner.Finish, error) {
 	if d.retainedContextTurns == 0 || !root {
 		return d.runLoop.Run(ctx, spec)
+	}
+	if err := runctx.ValidateRetainedInputs(inputIDs, spec.Base.InputArtifacts); err != nil {
+		return planner.Finish{}, err
 	}
 	retained, err := runctx.BeginRetainedRun(ctx, d.stateStore, d.redactor, spec.Base.Quadruple, d.retainedContextTurns, d.retainedContextTTL, nil)
 	if err != nil {

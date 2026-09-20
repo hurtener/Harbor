@@ -363,6 +363,9 @@ func (s *Stack) RunOnce(
 
 	retainedTrajectory = base.Trajectory
 	if retained != nil {
+		if err := runctx.ValidateRetainedInputs(cfg.inputArtifactIDs, base.InputArtifacts); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
 		if err := retained.Apply(&base); err != nil {
 			return planner.AnswerEnvelope{}, err
 		}

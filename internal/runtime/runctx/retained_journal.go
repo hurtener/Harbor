@@ -64,7 +64,18 @@ func (r *RetainedRun) Start(ctx context.Context, base planner.RunContext) (err e
 		Version: retainedJournalVersion, Admission: r.admission,
 		Query: safeQuery, Bytes: len(query), ExpiresAt: r.now().Add(r.ttl),
 	}
-	return r.commitJournal(ctx, head, nil, "")
+	var frame []byte
+	if r.initialContext != nil {
+		frame, err = r.makeFrame(ctx, 0, true, *r.initialContext, head.ExpiresAt)
+		if err != nil {
+			return err
+		}
+		head.Count = 1
+		head.Bytes += len(frame)
+	}
+	// Query and initial references commit atomically. Recovery cannot observe
+	// a query-only head after supplied attachments were already admitted.
+	return r.commitJournal(ctx, head, frame, "")
 }
 
 // BeforeDispatch commits intent before any external invocation. A frame without
@@ -81,7 +92,7 @@ func (r *RetainedRun) BeforeDispatch(ctx context.Context, rc planner.RunContext,
 	if r.journal.Count >= maxRetainedContextSteps {
 		return ErrRetainedContextCapacity
 	}
-	frame, err := r.makeFrame(ctx, r.journal.Count, false, step)
+	frame, err := r.makeFrame(ctx, r.journal.Count, false, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
 	}
@@ -111,7 +122,7 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) {
 		return ErrRetainedContextUnavailable
 	}
-	frame, err := r.makeFrame(ctx, index, true, step)
+	frame, err := r.makeFrame(ctx, index, true, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
 	}
@@ -158,7 +169,7 @@ func (r *RetainedRun) RecordContext(ctx context.Context, rc planner.RunContext, 
 	if r.journal.Count >= maxRetainedContextSteps {
 		return ErrRetainedContextCapacity
 	}
-	frame, err := r.makeFrame(ctx, r.journal.Count, true, step)
+	frame, err := r.makeFrame(ctx, r.journal.Count, true, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
 	}
@@ -181,7 +192,7 @@ func (r *RetainedRun) rememberJournalFailure(err error) {
 	}
 }
 
-func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, step planner.Step) ([]byte, error) {
+func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, step planner.Step, expiresAt time.Time) ([]byte, error) {
 	evidence, err := r.redactJournalValue(ctx, trajectory.ModelStep(step))
 	if err != nil {
 		return nil, err
@@ -197,7 +208,7 @@ func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, st
 	}
 	return json.Marshal(retainedFrame{
 		Version: retainedJournalVersion, Admission: r.admission, Index: index,
-		Settled: settled, Context: checked.Action == nil, Step: evidence, ExpiresAt: r.journal.ExpiresAt,
+		Settled: settled, Context: checked.Action == nil, Step: evidence, ExpiresAt: expiresAt,
 	})
 }
 

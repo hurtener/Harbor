@@ -53,4 +53,10 @@ if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/steering ./in
 else
     fail "retained steering context regression failed"
 fi
+if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble ./internal/runtime/serve \
+    -run 'TestRetainedInputs_|TestRetainedJournal_Input|TestRunOnce_RetainedInputs|TestRetainedServer_Input' -count=1; then
+    ok "retained attachments survive compaction, recovery and source deletion checks"
+else
+    fail "retained attachment continuity regression failed"
+fi
 smoke_summary

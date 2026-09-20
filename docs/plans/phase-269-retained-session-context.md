@@ -82,7 +82,8 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
 - [x] Applied user-message, redirect and injected-context corrections survive
       retained continuation and settled-journal reconciliation without replaying
       control actions or changing the next run's goal/authority.
-- [ ] Attachment context survives retained continuation.
+- [x] Supplied attachment references survive retained continuation and summary
+      coverage; missing-input admission and scoped deletion guards apply.
 - [ ] Postgres conformance, full coverage, preflight, and release gates pass.
 
 ## Files added or changed
@@ -338,3 +339,19 @@ numeric data without promoting history to system policy. Tests also cover SQLite
 reopen/reconciliation, malformed or pending context, cancellation, immutable
 payload capture, failure before dependent inference, and N=128 sessions sharing
 one Stack without leaked inboxes or repeated historical tool calls.
+
+## Attachment continuity increment
+
+D-474 records supplied input IDs as one context frame, atomically with the
+admitted query. It preserves association with the original user turn without
+copying bytes. Both retained consumers reject inputs omitted by materialization;
+non-retained callers keep their existing behavior. Existing result projection
+validates attachment scope/lifetime independently of summary coverage and uses
+ordinary authorized artifact reads. No image-understanding claim is synthesized.
+
+Three request-level regressions failed before implementation. Tests now cover
+compacted input recovery and exact fetched content, deletion during inference,
+missing input admission, actual served continuation, SQLite close/reopen and
+explicit reconciliation, atomic start failure, malformed/nested input markers,
+no uploaded-byte persistence, and 128 concurrent identity-scoped projections.
+Postgres conformance and complete release acceptance remain pending.

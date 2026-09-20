@@ -2293,3 +2293,9 @@ existing dispatcher-offloaded results. It is independent of lossy summary prose,
 uses the current session's ArtifactStore scope, and is read through the existing
 `artifact_fetch` tool. It is not a new registry or an external-resource version
 authority. RFC §6.9, D-472.
+
+**Retained input reference** — an attachment ID associated with its admitted user
+turn, committed as a context-only journal frame without copying uploaded bytes.
+Scoped current metadata survives summary coverage and existing artifact tools
+supply authorized content. A reference is not proof of inspection or a new
+execution permission. D-474.

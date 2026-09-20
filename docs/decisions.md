@@ -15736,3 +15736,35 @@ guessed. Old action-only frames remain readable; old readers that do not know
 the context-frame field reject it instead of dropping it. Cross-turn retention,
 source expiry, erasure, summary coverage and current-catalog rules remain those
 of the existing retained window. No configuration/default change is introduced.
+
+## D-474 — Retain attachment identity without copying input bytes
+
+**Date:** 2026-09-19. **Status:** Accepted for the RFC 002 implementation.
+
+Retained runs associate supplied input references with their user turn using one
+context-only frame in the existing journal. Query and initial attachment frame
+commit atomically before inference. The frame carries bounded IDs, never input
+bytes, provider payloads, or a claim that an image was inspected. It uses the
+explicit context-frame tag from D-473; journal version 1 and retained-window
+version 3 stay unchanged.
+
+Both retained consumers require every requested input to appear in the resolved
+view rather than silently accepting the legacy materializer's omissions. The
+non-retained best-effort policy is unchanged. Existing scoped ArtifactStore reads
+supply current metadata before inference and dependent dispatch, including for
+input entries whose bodies are covered by a checkpoint. Missing/deleted inputs,
+foreign driver metadata, malformed IDs and bounded-reference overflow are errors.
+Nested tool output and injected content are not promoted to host attachment IDs.
+
+The existing artifact tools recover permitted source bytes when needed; references
+do not prove visual understanding, freshness of an external resource, or that a
+particular model supports a MIME type. First-turn inline disposition remains with
+the existing materializer. Retention neither duplicates binary uploads nor extends
+their lifetime. Input references share the current result-reference and metadata
+bounds, session expiry, erasure handling, and exact journal cleanup.
+
+Regressions reproduced a missing attachment after compaction, a deleted input
+allowing dependent work, and an omitted missing input reaching inference. Tests
+cover actual embedded/served requests, exact artifact retrieval, in-memory/SQLite
+reconciliation, atomic start failure, no binary persistence and 128 scoped reads.
+Full provider-quality, Postgres and release acceptance remain separate gates.

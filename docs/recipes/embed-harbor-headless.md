@@ -541,3 +541,17 @@ or deleted source invalidates dependent continuation, while normal source-turn
 retention still applies. The source service remains authoritative for current
 external versions. Oversized reference projections fail explicitly; no separate
 retention toggle, artifact TTL, or long-term-memory integration is added.
+
+### Retained attachment and steering context
+
+With retained context enabled, applied user messages, redirects and injected
+context are recorded before dependent work. Supplied attachment IDs are committed
+with the admitted query, without copying binary contents. Their current scoped
+references remain available after compaction; configure the appropriate artifact
+tools (such as `artifact_fetch` for bounded text) for content recovery.
+
+Retained runs reject missing inputs rather than silently dropping them. Deleting
+a referenced source blocks subsequent inference or dependent dispatch. A retained
+reference does not mean that a model inspected an image or can process its MIME
+type. Normal first-turn input disposition and non-retained behavior are unchanged.
+Neither continuity mechanism repeats historical tools or completion ingestion.

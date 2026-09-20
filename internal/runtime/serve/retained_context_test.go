@@ -122,7 +122,7 @@ func retainedServerHarness(t *testing.T, change func(*RunLoopDriverOptions)) (fa
 
 // Await the real terminal event, not a timing delay. Subscription precedes Spawn
 // so a fast completion cannot race test registration.
-func retainedServerTurn(t *testing.T, env failDriverEnv, id identity.Identity, query string, parent *tasks.TaskID) *tasks.Task {
+func retainedServerTurn(t *testing.T, env failDriverEnv, id identity.Identity, query string, parent *tasks.TaskID, inputIDs ...string) *tasks.Task {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -139,7 +139,7 @@ func retainedServerTurn(t *testing.T, env failDriverEnv, id identity.Identity, q
 	if parent != nil {
 		kind = tasks.KindBackground
 	}
-	h, err := env.reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: kind, Query: query, ParentTaskID: parent})
+	h, err := env.reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: kind, Query: query, ParentTaskID: parent, InputArtifactIDs: inputIDs})
 	if err != nil {
 		t.Fatal(err)
 	}
