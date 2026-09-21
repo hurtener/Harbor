@@ -104,6 +104,9 @@ straight into your Go type. The complete worked path is the
 snippet in it is executed by an integration test, so it cannot drift from
 the real API.
 
+Try the [portable session-context editing sample](examples/portable-context/README.md)
+for version-checked edits across compaction and separate process invocations.
+
 ## Five minutes to a working agent
 
 ```bash

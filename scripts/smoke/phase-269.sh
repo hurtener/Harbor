@@ -69,4 +69,9 @@ if [[ -n "${HARBOR_PG_DSN:-}" ]]; then
 else
     skip "Postgres retained-context conformance requires HARBOR_PG_DSN (CI supplies it)"
 fi
+if go test -race -p 1 ./examples/portable-context -count=1; then
+    ok "public SDK sample preserves exact edits across compacted sessions and competing writers"
+else
+    fail "public SDK context sample regression failed"
+fi
 smoke_summary

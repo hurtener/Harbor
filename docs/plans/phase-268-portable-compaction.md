@@ -124,7 +124,8 @@ The incremental race suite is not a claim that coverage/preflight already pass.
 A valid JSON summary is not proof of semantic completeness. Legacy history can
 be incomplete; no guessed cursor is allowed. Large protected results can exceed
 physical capacity and must fail or remain behind authorized references, never
-silently disappear. Full request budgets and maintenance grant identity remain pending.
+silently disappear. Request budgeting and maintenance grant identity are now
+implemented; full final-tree acceptance remains a separate gate.
 Raw JSON trajectory deserialization yields action maps, not executable Decision
 values; cold native-call replay needs an explicit representation in the durable
 context slice. The model-switch test here uses the retained live trajectory and
@@ -204,8 +205,9 @@ while the trajectory alone remains below target. It asserts exact fresh result
 replay, matching call identity, a single compression event and failure isolation.
 Unit tests cover declaration/argument/schema accounting, output-default capacity,
 invalid input, cancellation, failures, bypasses and 128 concurrent scoped calls.
-Strict maintenance-grant identity/accounting and model-aware summary chunk sizing
-remain outstanding; this increment does not declare phase or RC completion.
+Subsequent increments implement strict maintenance-grant identity/accounting and
+model-aware summary chunk sizing. The original checkpoint did not claim them;
+full phase and RC acceptance still require the final release gates.
 
 ## Disabled-compaction compatibility correction
 

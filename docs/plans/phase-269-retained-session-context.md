@@ -3,9 +3,10 @@
 ## Summary
 
 Implement RFC 002's second slice using the existing StateStore, artifact
-machinery, and run-context projection. The current increment wires bounded terminal
-retention into serving and embedded `RunOnce`; the phase remains in progress,
-not RC-ready.
+machinery, and run-context projection. Served and embedded runs now retain
+bounded execution journals and terminal context, with explicit recovery, native
+historical projection, checkpoint reuse and source-lifetime checks. Implementation
+acceptance is tracked below; final release gates remain in progress.
 
 ## RFC anchor
 
@@ -28,9 +29,9 @@ not RC-ready.
 
 ## Findings I'm departing from (if any)
 
-None in the target contract. This incremental implementation is deliberately not
-reported as the completed durability contract: terminal persistence alone does
-not close the side-effect-before-receipt crash window. D-464 records this boundary.
+None in the target contract. D-464 records the original terminal-only boundary.
+Later increments below add intent/settlement journaling and explicit reconciliation;
+an intent without a returned receipt remains unknown, never automatically replayed.
 
 ## Goals
 
@@ -84,7 +85,8 @@ not close the side-effect-before-receipt crash window. D-464 records this bounda
       control actions or changing the next run's goal/authority.
 - [x] Supplied attachment references survive retained continuation and summary
       coverage; missing-input admission and scoped deletion guards apply.
-- [ ] Postgres conformance, full coverage, preflight, and release gates pass.
+- [x] PostgreSQL conformance exercises the production driver with independent pools.
+- [ ] Full final-tree coverage, preflight, and release gates pass.
 
 ## Files added or changed
 
@@ -115,15 +117,16 @@ tasks never publish private transcripts into the root conversation window.
 - **Integration:** real RunOnce/RunLoop/ReAct/catalog dispatch and actual outgoing
   request construction; completion-hook isolation and failed store seams.
 - **Conformance:** shared in-memory/SQLite scenarios, close/reopen SQLite,
-  conditional conflicts and erasure; Postgres remains required before completion.
+  conditional conflicts and erasure; independent PostgreSQL pools exercise the
+  same new behavior. Final-tree reruns remain required before completion.
 - **Concurrency / leak:** 128 simultaneous scoped invocations against one Stack
   and shared stores under `-race`; no new worker or cleanup goroutine is introduced.
 
 ## Smoke script additions
 
 Run the retained-context and embedded request tests under `go test -race` with
-real production stores. Assert the plan/decision and SDK consumer exist. No test
-or placeholder claims the pending per-action durability surfaces shipped.
+real production stores. Assert the plan/decision and SDK consumer exist. The scripted tests do not claim paid model proficiency, provider cache hits or
+exactly-once external actions.
 
 ## Coverage target
 
@@ -140,20 +143,24 @@ that full branch coverage or repository preflight is already green.
 
 ## Risks / open questions
 
-The terminal-only increment stores a maximum of 32 recent turns, 256 own steps
-per turn and 512 KiB per session slot; up to 32 active admissions are tracked.
+The bounded session window retains up to 32 recent turns, 256 own steps per turn
+and 512 KiB per session slot; up to 32 active admissions are tracked. Per-action
+frames use the same existing StateStore, with explicit size and generation bounds.
 A run's TTL uses the configured session idle TTL (24 hours when unspecified).
-Exceeding an indivisible turn's bound fails explicitly rather than clipping it.
-An abandoned admission remains visible as unsettled and consumes the bounded
-active allowance; it is not auto-released as proof that its actions failed.
-No automatic admission recovery is claimed before the execution-fence acceptance.
+An indivisible entry exceeding its bound fails rather than being clipped.
 
-History in this increment is inert lower-trust evidence in the existing
-trajectory, not reconstructed executable Decisions. It is selected once on
-admission; siblings' in-flight results are excluded. Only the current run's own
-steps are written at termination. Rehydrating historical native tool calls,
-checkpoint reuse, and preserving additional attachment/steering context remain
-explicit pending acceptance, not assumptions about generic JSON restoration.
+Historical native envelopes remain context, not executable Decisions. Source
+selection is frozen on admission; siblings' in-flight results are excluded.
+Only the current run's own steps enter its terminal record. Source-bound
+checkpoints can be reused only while their exact evidence remains valid;
+expiry, eviction, mutation or changed redaction invalidates derived summaries.
+Attachment and offload references are revalidated without duplicating binaries.
+
+An abandoned admission remains unsettled until explicit reconciliation succeeds.
+A fully settled journal can be sealed while fencing the old admission; a pending
+external operation remains unknown and is refused. No automatic clearance,
+cold-run relaunch, provider-call cancellation or external exactly-once promise
+is made. Later sections describe the individual historical delivery increments.
 
 Required terminal persistence can fail after external effects succeeded. The
 caller receives an error and must reconcile, not repeat the whole run blindly.
@@ -355,3 +362,16 @@ missing input admission, actual served continuation, SQLite close/reopen and
 explicit reconciliation, atomic start failure, malformed/nested input markers,
 no uploaded-byte persistence, and 128 concurrent identity-scoped projections.
 Postgres conformance and complete release acceptance remain pending.
+
+## Public SDK acceptance sample
+
+The [portable-context sample](../../examples/portable-context/README.md) exercises
+read/edit/inspect across independent stack lifecycles, using the real Bifrost
+adapter and persistent SQLite. Its tests use synthetic local provider responses;
+live calls require an explicit provider, model, capacity and test credential.
+The phase smoke runs those tests. The SDK aliases the existing ordinary-slot
+`SlotExpectation` and `ErrConditionFailed` so application tools can use
+StateStore generation preconditions without internal imports. No new state
+behavior or backend is added. Release and migration checks are in
+[the RC procedure](../notes/portable-context-rc.md); the phase remains subject to
+its full release gates, not merely sample success.

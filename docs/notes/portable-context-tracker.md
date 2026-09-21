@@ -43,7 +43,7 @@ The existing retained-window format remains version 3.
 - [ ] Final-tree Protocol generation/lockstep and applicable frontend gates pass.
 - [ ] Final adversarial review has no unresolved critical/high-severity findings.
 - [ ] Temporary publication/source-recovery workflows and payloads are removed.
-- [ ] Sample-agent setup, migration and RC end-to-end test instructions are complete.
+- [x] Sample-agent setup, migration and RC end-to-end test instructions are complete; publication of an RC remains a separate gate.
 - [ ] RC is published after validation; no merge or release is implied by this tracker.
 
 Real-model evaluation requires separate approval and provider credentials. The
@@ -75,3 +75,10 @@ for `llm.context.prepared` and `sessions.reconcile_context`. Both are now explic
 the exact event-name and single-source method checks remain strict. The complete
 Protocol documentation-generator and single-source checker race suites pass.
 This correction does not replace final-tree preflight or the other release gates.
+
+## Candidate test procedure
+
+The [RC acceptance procedure](portable-context-rc.md) links the public-SDK
+editing sample and separates deterministic proof from live model evaluation.
+The sample checks actual persisted edits across separate invocations and exposes
+inspection without inference; live calls are never performed by its test suite.
