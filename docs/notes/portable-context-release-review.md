@@ -67,3 +67,41 @@ Expanded phase 269 smoke includes these decoder regressions and passes
 14 checks with zero skips or failures on the corrected tree, with PostgreSQL
 enabled. Scoped pinned lint reports zero issues; changed Markdown and whitespace
 checks pass. No persisted format, dependency or default retention changes.
+
+## Stream fixture registration and retained decoder work
+
+The TUI fixture flushes SSE response headers before registering its synthetic
+stream. Tests that emit immediately after attach/switch/token replacement can
+race that registration. Commit `13ef778` waits on the existing per-session
+registration signal at each of those boundaries; it changes no runtime behavior,
+assertion, sleep, or timeout. The full conversation race suite passed 100
+consecutive runs on Go 1.26.4. A 20-run local baseline did not reproduce the
+earlier hosted failure, so the local result is not presented as a reproduction.
+
+Hosted run `35654750952` exposed retained-context deadline failures in the Linux
+embedded N=128 test and the macOS served N=128 test. Profiling the embedded path
+found the strict host-shape validator repeatedly decoding and copying nested
+opaque payloads at each enclosing object and array. It now traverses typed host
+containers with one decoder. Opaque leaves remain raw JSON; exact numbers,
+canonical/unique host fields, semantic validation, source digests, and all
+persistence deadlines remain unchanged. No cache or schema registry is added.
+
+`BenchmarkRetainedDecode_Window` uses one exact 14,660-byte receipt per turn.
+Median results from three runs per size on the same Linux host and Go 1.26.4,
+with `-benchtime=300ms` and no race instrumentation:
+
+| Turns | Before ns/op | After ns/op | Before bytes/op | After bytes/op |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 575,791 | 223,902 | 179,384 | 97,584 |
+| 16 | 8,835,661 | 3,277,804 | 2,880,043 | 1,108,242 |
+| 32 | 17,613,796 | 6,749,948 | 5,762,854 | 2,186,646 |
+
+These measurements establish reduced decoder work, not task latency, model
+quality, cache hits, or proof that every hosted deadline failure is resolved.
+The complete runctx/assembly/SDK assembly race suites pass after the change
+(86.0%, 83.7%, 100% measured statement coverage). Both embedded and served
+128-session concurrency cases pass three repeated race runs without changing
+the workload or timeouts. Additional host-field regressions after large opaque
+values and between sibling objects preserve rejection and exact payload bytes.
+The scoped pinned lint gate reports zero issues. Whole-final-tree coverage and
+release acceptance still require their independent gates.

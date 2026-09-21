@@ -102,3 +102,18 @@ Full frontend and repository release gates remain separate acceptance above.
 This review correction is not completion of the whole adversarial or release
 gate. Current validation runs as an unprivileged user; whole-repository checks
 remain separate and no permission test or coverage floor is relaxed.
+
+## Concurrency validation corrections
+
+- [x] TUI synthetic event delivery waits for the actual stream registration
+      (`13ef778`), not just the flushed HTTP headers; 100 full race runs pass.
+- [x] Typed retained host metadata is checked with one streaming decoder, avoiding
+      repeated nested payload scans without weakening duplicate/alias checks.
+- [x] Full runctx/assembly/SDK assembly race suites and three repeated N=128
+      embedded/served tests pass with unchanged production persistence deadlines.
+- [ ] Hosted full-suite rerun confirms the remaining deadline failures resolved.
+- [ ] MinIO fixture pull is repaired and actual S3 conformance executes.
+
+Decoder benchmark measurements and their limitations are recorded in
+[the release review](portable-context-release-review.md). These scoped results
+are not a substitute for any unchecked final-tree gate above.
