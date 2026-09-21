@@ -200,6 +200,7 @@ func TestController_AttachStartEventSwitchRenameDeleteAndClose(t *testing.T) {
 	if err = controller.Attach(ctx); err != nil {
 		t.Fatal(err)
 	}
+	f.awaitStreamRegistration(ctx, one.Session, 1)
 	if controller.Identity().Session != "one" {
 		t.Fatal("wrong identity")
 	}
@@ -223,9 +224,11 @@ func TestController_AttachStartEventSwitchRenameDeleteAndClose(t *testing.T) {
 	if err = controller.Switch(ctx, two); err != nil {
 		t.Fatal(err)
 	}
+	f.awaitStreamRegistration(ctx, two.Session, 1)
 	if err = controller.ReplaceToken(ctx, testToken(t, two, now.Add(2*time.Hour))); err != nil {
 		t.Fatalf("replace token: %v", err)
 	}
+	f.awaitStreamRegistration(ctx, two.Session, 2)
 	f.emit("one", types.StateEvent{Type: "task.started", Sequence: 2, OccurredAt: now, Tenant: "t", User: "u", Session: "one", Payload: map[string]any{"TaskID": "leak"}})
 	f.emit("two", types.StateEvent{Type: "task.started", Sequence: 3, OccurredAt: now, Tenant: "t", User: "u", Session: "two", Payload: map[string]any{"TaskID": "target"}})
 	awaitBlock(t, ctx, updates, "target")
@@ -494,6 +497,7 @@ func TestController_FailedSwitchKeepsOldSessionLive(t *testing.T) {
 	if err = controller.Attach(ctx); err != nil {
 		t.Fatal(err)
 	}
+	f.awaitStreamRegistration(ctx, oldID.Session, 1)
 	f.emit(oldID.Session, types.StateEvent{Type: "task.started", Sequence: 1, OccurredAt: now, Tenant: "t", User: "u", Session: oldID.Session, Payload: map[string]any{"TaskID": "retained"}})
 	awaitBlock(t, ctx, updates, "retained")
 	target := oldID
