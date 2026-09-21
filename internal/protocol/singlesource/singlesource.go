@@ -231,12 +231,12 @@ var CanonicalMethods = map[string]struct{}{
 	// Console-Tasks-page cluster — two methods.
 	"tasks.list": {},
 	"tasks.get":  {},
-	// Console-Sessions-page cluster — four methods (two reads + the
-	// data-lifecycle erasure verb + the rename verb).
-	"sessions.list":      {},
-	"sessions.inspect":   {},
-	"sessions.delete":    {},
-	"sessions.set_title": {},
+	// Session methods: two reads, erasure, reconciliation and rename.
+	"sessions.list":              {},
+	"sessions.inspect":           {},
+	"sessions.delete":            {},
+	"sessions.reconcile_context": {},
+	"sessions.set_title":         {},
 	// Session-turns read pair — the turn-projection surface (routes are
 	// pinned explicitly; never derived generically).
 	"sessions.turns.list": {},

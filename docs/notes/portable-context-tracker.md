@@ -64,3 +64,14 @@ runs 128 sessions with competing dispatch/reconciliation through separate pools.
 The phase 269 smoke runs the same scenarios when `HARBOR_PG_DSN` is provided and
 reports an explicit skip otherwise. These tests do not replace the full final-tree
 regression, coverage and preflight gates above.
+
+## Request diagnostics publication
+
+The bounded diagnostics implementation is published at `1f2a184`. Phase 268
+smoke passed 10 checks with no skips or failures, and the affected core race
+suites, scoped Go lint, full Markdown and canonical generators passed.
+Expanded Protocol tests exposed missing independent compatibility-list entries
+for `llm.context.prepared` and `sessions.reconcile_context`. Both are now explicit;
+the exact event-name and single-source method checks remain strict. The complete
+Protocol documentation-generator and single-source checker race suites pass.
+This correction does not replace final-tree preflight or the other release gates.
