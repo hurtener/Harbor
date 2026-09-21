@@ -17,6 +17,9 @@ import (
 // content payloads (artifact refs, MIME types, byte counts, model
 // names) are operator-visible by design.
 const (
+	// EventTypeContextPrepared reports a leaf request's bounded input estimate
+	// and capacity, before provider execution. It is not an accounting receipt.
+	EventTypeContextPrepared events.EventType = "llm.context.prepared"
 	// EventTypeImageMaterialized — emitted when the safety-pass's
 	// auto-materialize step rewrites an inline DataURL ≥ heavy-output
 	// threshold to an ArtifactRef. Carries the source
@@ -92,6 +95,7 @@ func init() {
 		EventTypeImageMaterialized,
 		EventTypeContextLeak,
 		EventTypeContextWindowExceeded,
+		EventTypeContextPrepared,
 		EventTypeCostRecorded,
 		EventTypeModeDowngraded,
 		EventTypeRetryWithFeedback,

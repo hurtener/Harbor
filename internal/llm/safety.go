@@ -115,7 +115,8 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	}
 
 	// Step 3: token-budget guard.
-	estimated := EstimateRequestTokens(materialized, profile)
+	sections := EstimateRequestTokenSections(materialized, profile)
+	estimated := sections.Total()
 	windowCap := profile.ContextWindowTokens
 	// Output capacity is a reservation, not already-consumed input. This
 	// check runs after model selection and correction on every leaf attempt,
@@ -124,6 +125,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	if err != nil {
 		return CompleteResponse{}, err
 	}
+	emitContextPrepared(ctx, c.deps.Bus, id, materialized, profile, sections, effectiveCap, outputReserve)
 	if estimated >= effectiveCap {
 		emitContextWindowExceeded(ctx, c.deps.Bus, id, req.Model, estimated, windowCap, c.cfg.ContextWindowReserve)
 		return CompleteResponse{}, fmt.Errorf("%w: estimated=%d cap=%d reserve=%g output_reserved=%d (effective_input_cap=%d)",

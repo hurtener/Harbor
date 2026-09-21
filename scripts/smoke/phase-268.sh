@@ -45,4 +45,10 @@ if go test -race -p 1 ./internal/llm ./internal/llm/corrections ./internal/llm/d
 else
     fail "usage availability regression failed"
 fi
+if go test -race -p 1 ./internal/llm ./internal/runtime/steering ./internal/llm/drivers/bifrost \
+    -run 'TestContextDiagnostics_|TestRequestContext_RealBifrostRunLoop' -count=1; then
+    ok "bounded request diagnostics preserve exact estimates, installed coverage and maintenance isolation"
+else
+    fail "request context diagnostics regression failed"
+fi
 smoke_summary

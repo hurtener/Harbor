@@ -15784,3 +15784,33 @@ presence is not proof that a zero cache count was measured; it can represent oth
 modalities only. Preserve this uncertainty rather than synthesizing cache hits,
 misses, cost savings, or a provider invoice. Sparse streaming updates retain
 previously received categories and do not sum cumulative token snapshots.
+
+## D-476 — Observe prepared request capacity without retaining prompt content
+
+**Scope:** RFC 002 diagnostics and RFC §6.5; incremental implementation, not released.
+
+The mandatory LLM leaf capacity check publishes `llm.context.prepared` through
+Harbor's existing bounded event pipeline. It reports the canonical input estimate
+partitioned into fixed structural categories, the resolved physical input/output
+bounds, message/tool counts, numeric attempt coordinates, and an optional detached
+runtime checkpoint/replay snapshot. Output reservations are not consumed input.
+The estimator is shared with admission; diagnostics do not retokenize independently
+or invent semantic section boundaries in custom prompts.
+
+The event is emitted for capacity-admissible and capacity-rejected requests after
+identity, authorization, structure, materialization and heavy-content checks.
+It is not a provider-success receipt, a billed-usage fact, or proof that any input
+was inspected. Earlier failures have no prepared event. Installed coverage is
+sampled after compaction publication; rejected candidates never become reported
+checkpoint state. Maintenance describes its own request and does not inherit the
+parent's working target or replay range.
+
+Apart from the existing scoped event identity and timestamp, payload fields are
+fixed-size counts, flags and coordinates. They include no prompt/response bytes,
+tool names/arguments/results, model/provider strings, source digests, arbitrary
+errors/extras, grants, credentials, call IDs or nonces. Existing routing and cost
+projections remain separate authorities. Best-effort diagnostics do not become
+execution persistence or a new public transcript. Provider caching remains an
+optional optimization; these estimates and structural checks claim neither cache
+hits nor billing savings. The generated Protocol event catalog exposes the same
+owned payload, with SDK aliases rather than another implementation.

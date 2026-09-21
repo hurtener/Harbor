@@ -993,18 +993,21 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// assembled and its route/profile is resolved. Non-LLM planners keep
 		// the standalone compaction contract at the step boundary.
 		plannerCtx := llm.WithAttemptStep(runCtx, step)
+		preparation := llm.ContextPreparation{
+			InputTarget: rc.Budget.TokenBudget,
+			History:     func() *llm.ContextHistory { return contextHistory(spec, rc) },
+		}
 		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
 			if _, requestAware := spec.Planner.(planner.RequestContextPlanner); requestAware {
-				plannerCtx = llm.WithContextPreparation(plannerCtx, llm.ContextPreparation{
-					InputTarget: rc.Budget.TokenBudget,
-					Compact: func(ctx context.Context, inputTokens, target int) (bool, error) {
-						return compressRequest(ctx, spec, rc, inputTokens, target)
-					},
-				})
+				preparation.Compact = func(ctx context.Context, inputTokens, target int) (bool, error) {
+					return compressRequest(ctx, spec, rc, inputTokens, target)
+				}
 			} else if cerr := compressTrajectory(plannerCtx, spec, rc); cerr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 			}
 		}
+
+		plannerCtx = llm.WithContextPreparation(plannerCtx, preparation)
 
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		// A pending-call drain does not ask for another decision. Its results

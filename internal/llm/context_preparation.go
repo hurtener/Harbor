@@ -13,6 +13,9 @@ import (
 type ContextPreparation struct {
 	InputTarget int
 	Compact     func(context.Context, int, int) (bool, error)
+	// History returns a detached runtime snapshot after any checkpoint publication.
+	// Optional: maintenance calls and callers without runtime history omit it.
+	History func() *ContextHistory
 }
 
 type contextPreparationKey struct{}

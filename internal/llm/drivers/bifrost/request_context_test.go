@@ -73,6 +73,11 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 			defer server.Close()
 			deps, cleanup := makeCustomProviderTestDeps(t)
 			defer cleanup()
+			diagnostics, subscribeErr := deps.Bus.Subscribe(t.Context(), events.Filter{Admin: true, Types: []events.EventType{llm.EventTypeContextPrepared}})
+			if subscribeErr != nil {
+				t.Fatal(subscribeErr)
+			}
+			defer diagnostics.Cancel()
 			cfg := llm.ConfigSnapshot{
 				Driver: "bifrost", Provider: "request-context-fixture", Model: "m", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
 				DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true,
@@ -134,8 +139,46 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 				Planner: react.New(client, react.WithSystemPrompt(guidance)), Compression: runner, TrajectoryMu: inspectionMu,
 				Base: planner.RunContext{Quadruple: q, Query: tr.Query, Trajectory: tr, Budget: planner.Budget{TokenBudget: workingTarget}, Emit: func(ev events.Event) { observed = append(observed, ev) }}, MaxSteps: 4,
 			})
+			if flushErr := events.Flush(t.Context(), deps.Bus); flushErr != nil {
+				t.Fatal(flushErr)
+			}
 			mu.Lock()
 			defer mu.Unlock()
+			for i, kind := range kinds {
+				select {
+				case ev := <-diagnostics.Events():
+					p, ok := ev.Payload.(llm.ContextPreparedPayload)
+					if !ok || ev.Identity != q || p.Sections.Total() != p.EstimatedTokens || p.CapacityExceeded {
+						t.Fatalf("invalid prepared event: %#v", ev)
+					}
+					if kind == "summary" {
+						if p.MaintenanceOrdinal != 1 || p.History != nil || p.ToolCount != 0 || p.WorkingInputTarget != 0 {
+							t.Fatalf("maintenance inherited parent context: %+v", p)
+						}
+					} else {
+						start := 0
+						if outcome == "success" {
+							start = 2
+						} else if original != nil {
+							start = 1
+						}
+						if p.History == nil || p.History.ReplayStart != start || p.History.ReplayEnd != 3 || p.MaintenanceOrdinal != 0 || p.WorkingInputTarget != workingTarget {
+							t.Fatalf("installed snapshot mismatch on request %d: %+v", i, p)
+						}
+					}
+					encoded, encodeErr := json.Marshal(p)
+					if encodeErr != nil || strings.Contains(string(encoded), "9007199254740993") || strings.Contains(string(encoded), "private") || strings.Contains(string(encoded), "older checks passed") {
+						t.Fatalf("content in preparation event: %s", encoded)
+					}
+				default:
+					t.Fatalf("missing diagnostic for provider request %d", i)
+				}
+			}
+			select {
+			case ev := <-diagnostics.Events():
+				t.Fatalf("candidate validation emitted a phantom request: %#v", ev)
+			default:
+			}
 			if outcome == "bad summary" {
 				if err == nil || tr.Summary != nil || len(kinds) != 1 || kinds[0] != "summary" {
 					t.Fatalf("failed candidate reached decision: %v kinds=%v", err, kinds)

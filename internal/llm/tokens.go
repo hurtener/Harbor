@@ -43,13 +43,32 @@ import (
 // estimate: provider tokenizers are authoritative, so settlement must record
 // the provider's actual usage even when it exceeds the pre-call estimate.
 func EstimateRequestTokens(req CompleteRequest, profile ModelProfile) int {
-	if profile.TokenEstimator == "" || profile.TokenEstimator == "chars_div_4" {
-		return chars4Estimator(req)
-	}
-	// Unknown estimator: conservative fallback to chars/4. Config
-	// validation should have caught this; if it didn't, we'd rather
-	// estimate than fail.
-	return chars4Estimator(req)
+	return EstimateRequestTokenSections(req, profile).Total()
+}
+
+// RequestTokenSections partitions the canonical input estimate by structural
+// category. It contains counts only, not content. Output reservations are not
+// input tokens. These categories do not infer semantic prompt-section boundaries.
+type RequestTokenSections struct {
+	Text    int
+	Tools   int
+	Calls   int
+	Schema  int
+	Media   int
+	Framing int
+	Other   int
+}
+
+// Total returns the exact sum used by request admission.
+func (s RequestTokenSections) Total() int {
+	return s.Text + s.Tools + s.Calls + s.Schema + s.Media + s.Framing + s.Other
+}
+
+// EstimateRequestTokenSections uses the same algorithm as EstimateRequestTokens.
+// Unknown estimator names retain the existing chars_div_4 fallback; no separate
+// diagnostic estimator or provider tokenizer is introduced.
+func EstimateRequestTokenSections(req CompleteRequest, profile ModelProfile) RequestTokenSections {
+	return chars4Sections(req)
 }
 
 const (
@@ -64,60 +83,57 @@ const (
 	multimodalPartOverhead = 256
 )
 
-func chars4Estimator(req CompleteRequest) int {
-	total := 0
+func chars4Sections(req CompleteRequest) RequestTokenSections {
+	var sections RequestTokenSections
 	for _, m := range req.Messages {
-		total += messageRoleOverhead
+		sections.Framing += messageRoleOverhead
 		switch {
 		case m.Content.Text != nil:
-			total += len(*m.Content.Text)/4 + 1
+			sections.Text += len(*m.Content.Text)/4 + 1
 		case m.Content.Parts != nil:
 			for _, p := range m.Content.Parts {
 				switch p.Type {
 				case PartText:
-					total += len(p.Text)/4 + 1
+					sections.Text += len(p.Text)/4 + 1
 				case PartImage, PartAudio, PartFile:
-					total += multimodalPartOverhead
+					sections.Media += multimodalPartOverhead
 				}
 			}
 		}
 		if m.Name != nil {
-			total += len(*m.Name)/4 + 1
+			sections.Framing += len(*m.Name)/4 + 1
 		}
 		if m.ToolCallID != nil {
-			total += len(*m.ToolCallID)/4 + 1
+			sections.Calls += len(*m.ToolCallID)/4 + 1
 		}
 		for _, call := range m.ToolCalls {
-			total += messageRoleOverhead
-			total += len(call.ID)/4 + 1
-			total += len(call.Name)/4 + 1
-			total += len(call.Args)/4 + 1
+			sections.Framing += messageRoleOverhead
+			sections.Calls += len(call.ID)/4 + 1
+			sections.Calls += len(call.Name)/4 + 1
+			sections.Calls += len(call.Args)/4 + 1
 		}
 	}
 	for _, tool := range req.Tools {
-		total += messageRoleOverhead
-		total += len(tool.Name)/4 + 1
-		total += len(tool.Description)/4 + 1
-		total += len(tool.Schema)/4 + 1
+		sections.Framing += messageRoleOverhead
+		sections.Tools += len(tool.Name)/4 + 1
+		sections.Tools += len(tool.Description)/4 + 1
+		sections.Tools += len(tool.Schema)/4 + 1
 	}
 	if req.ToolChoice != "" {
-		total += len(req.ToolChoice)/4 + 1
+		sections.Framing += len(req.ToolChoice)/4 + 1
 	}
-	// Response-format schema contribution.
 	if req.ResponseFormat != nil && len(req.ResponseFormat.JSONSchema) > 0 {
-		total += len(req.ResponseFormat.JSONSchema)/4 + 1
+		sections.Schema += len(req.ResponseFormat.JSONSchema)/4 + 1
 	}
-	// Stops list — operator-supplied stop sequences contribute.
 	for _, s := range req.Stops {
-		total += len(s)/4 + 1
+		sections.Other += len(s)/4 + 1
 	}
-	// Extra is opaque-passthrough; estimate by JSON-encoded size.
 	if len(req.Extra) > 0 {
 		if b, err := json.Marshal(req.Extra); err == nil {
-			total += len(b)/4 + 1
+			sections.Other += len(b)/4 + 1
 		}
 	}
-	return total
+	return sections
 }
 
 // requestInputLimit is the one capacity calculation used by request admission.

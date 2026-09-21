@@ -11,6 +11,7 @@ func TestEvents_PhaseTypesRegistered(t *testing.T) {
 	want := []events.EventType{
 		llm.EventTypeImageMaterialized,
 		llm.EventTypeContextLeak,
+		llm.EventTypeContextPrepared,
 		llm.EventTypeContextWindowExceeded,
 		llm.EventTypeCostRecorded,
 		llm.EventTypeModeDowngraded,
@@ -38,6 +39,7 @@ func TestEvents_PayloadsAreSafe(t *testing.T) {
 	var (
 		_ events.SafePayload = llm.ImageMaterializedPayload{}
 		_ events.SafePayload = llm.ContextLeakPayload{}
+		_ events.SafePayload = llm.ContextPreparedPayload{}
 		_ events.SafePayload = llm.ContextWindowExceededPayload{}
 		_ events.SafePayload = llm.CostRecordedPayload{}
 		_ events.SafePayload = llm.ModeDowngradedPayload{}

@@ -15,13 +15,51 @@ chain; callers must apply their own error-reporting policy. The previous
 checkpoint remains unchanged. No new event type, wire field, API or dependency
 is introduced. Shared-component tests cover 128 concurrent isolated failures.
 
-## Outstanding diagnostics acceptance
+## Bounded request preparation
 
-Request-section estimates, checkpoint-range inspection and explicit usage
-availability still need full acceptance under the existing telemetry/Protocol
-ownership. The cache-prefix boundary tests below cover the portable live-request path;
-retained-turn setup is intentionally a separately constructed context generation.
-No cache-hit ratio, paid cost saving or model-proficiency claim is made here.
+`llm.context.prepared` is emitted through the existing asynchronous event path
+at the mandatory leaf input-capacity check, after request transformations and
+before provider execution. A structurally valid but oversized request also
+emits with `CapacityExceeded=true`; identity, authorization, structure and
+heavy-content failures that occur before this boundary do not emit it.
+Candidate validation during compaction is not a provider attempt and emits no
+prepared event. A failed candidate never appears as installed coverage.
+
+`Sections` partitions the existing admission estimate into text, declarations,
+call arguments/correlation, output schema, media, framing and other input.
+`EstimatedTokens` equals their sum, not a second counting algorithm. Semantic
+sections such as skills versus instructions are deliberately not inferred from
+message text. Media remains the existing coarse estimate, not proof that a model
+can inspect that media. `InputLimitExclusive` and `OutputReserved` use the same
+resolved model profile as admission. `OutputLimitKnown=false` means unspecified,
+not an explicit zero-token allowance or an assumed provider default.
+
+The runtime supplies detached checkpoint version/generation, replay start/end
+(exclusive), and known/unavailable fresh-exposure coordinates. These are runtime
+selection coordinates, not a guarantee about a custom planner's renderer or
+provider receipt. Legacy/invalid coverage is not given invented coordinates.
+Maintenance uses its own counts and ordinal and omits parent history and target.
+Numeric attempt coordinates identify planner step, retry, downgrade and fallback;
+unknown attempts are explicit. No prompt, result, summary, source digest, call
+identifier/nonce, arbitrary model string, credential, provider extra or error
+excerpt enters this payload. The identity quadruple retains normal event access
+controls. Existing model/route events remain the routing authority.
+
+The payload is fixed-shape metadata, with no list proportional to history length,
+new store, debug endpoint or logging mode. Publication uses the existing bounded
+best-effort telemetry lane. It is neither admission authority nor a cost/usage
+receipt; consumers must not count it as a successful provider request. Actual
+usage/cost remains on the existing completion/receipt path, including its explicit
+availability flags. Preparation telemetry can be lost on bus pressure/cancellation;
+durable execution state, not observability, remains authoritative.
+
+Regression tests cover unchanged estimate arithmetic, capacity rejection, unknown
+output bounds, detached snapshots, maintenance isolation and 128 concurrent calls.
+The real run-loop/ReAct/summarizer/Bifrost fixture checks successful compaction,
+rejected expanding candidates, prior checkpoints, and absent inspection mutexes.
+Cache-prefix tests below cover the portable live-request path; retained-turn setup
+is a separately constructed generation. These are deterministic tests, not a
+claim of real cache hits, billing savings or model proficiency.
 
 ## Cache-prefix boundaries
 

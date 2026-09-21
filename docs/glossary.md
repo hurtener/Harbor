@@ -2305,3 +2305,10 @@ that the driver received the corresponding SDK object, distinct from Harbor's
 estimated backfill and from missing/legacy unknown values. Prompt-detail object
 presence does not establish individual cache-field presence when the SDK has
 collapsed absent fields into zeros. RFC 002, D-475.
+
+**Prepared request diagnostic** — the content-free `llm.context.prepared` event
+emitted at the mandatory leaf capacity check. Fixed structural input estimates
+sum to admission's estimate; output headroom is separate. Numeric attempt and
+optional installed runtime replay coordinates describe selected context, not
+provider delivery, source inspection or billed usage. Maintenance does not inherit
+parent history. Existing event/Protocol ownership applies. RFC §6.5, D-476.

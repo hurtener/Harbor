@@ -26,7 +26,7 @@ replay of interrupted external actions is introduced. Default retention is zero.
 - [x] Compaction failure diagnostics use fixed content-free messages.
 - [x] Pinned Bifrost request-prefix checks cover live appends, repeated builds and explicit compaction/model/authority boundaries.
 - [x] Usage/cost report availability and Harbor-estimate flags; sparse streaming accounting does not erase earlier reports.
-- [ ] Complete bounded per-request context diagnostics.
+- [x] Bounded per-request capacity/section/installed-checkpoint diagnostics, with maintenance isolation and content-free fixed-shape events.
 
 The published steering increment includes actual later and next-turn request
 regressions, plus 128-session isolation.

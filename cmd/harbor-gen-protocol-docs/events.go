@@ -118,6 +118,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 
 	// --- LLM edge.
 	llm.EventTypeImageMaterialized:         {Payloads: []reflect.Type{reflect.TypeOf(llm.ImageMaterializedPayload{})}},
+	llm.EventTypeContextPrepared:           {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextPreparedPayload{})}},
 	llm.EventTypeContextLeak:               {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextLeakPayload{})}},
 	llm.EventTypeContextWindowExceeded:     {Payloads: []reflect.Type{reflect.TypeOf(llm.ContextWindowExceededPayload{})}},
 	llm.EventTypeCostRecorded:              {Payloads: []reflect.Type{reflect.TypeOf(llm.CostRecordedPayload{})}},

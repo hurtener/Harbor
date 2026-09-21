@@ -215,3 +215,14 @@ legacy pause-checkpoint bytes unchanged; it does not silently add execution
 retention state. The no-runner and zero-budget regressions first failed with the
 unconditional tracking and now pass with the steering and pause/resume race
 suites. This is a compatibility correction, not durable cross-turn delivery.
+
+## Request preparation diagnostics increment
+
+The existing safety boundary emits `llm.context.prepared` with the shared token
+estimate's structural categories, effective input/output bounds, numeric attempt
+coordinates, and the installed runtime replay range. Maintenance does not inherit
+parent history, rejected candidates are not published as prepared requests, and
+arbitrary content is excluded. Details and limitations are in
+[the diagnostics note](../notes/portable-context-diagnostics.md).
+The existing event-stream consumer, generated event reference, SDK aliases and
+phase smoke cover this additive metadata. Final release gates remain separate.

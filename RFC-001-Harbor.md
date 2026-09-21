@@ -748,6 +748,16 @@ bounded message so the next prompt can re-read and retry.
 
 ### 6.5 LLM client layer
 
+**Prepared request diagnostics (D-476).** The mandatory leaf capacity check
+emits `llm.context.prepared` through the existing event pipeline: canonical input
+estimates by structural category, physical input/output bounds, fixed counts,
+numeric attempt coordinates and optional installed runtime replay coverage.
+No content, arbitrary identifiers or errors are copied. A capacity check is not
+provider success or billing; maintenance does not inherit parent history, and
+rejected checkpoint candidates are never reported as installed. SDK and Protocol
+expose the same owned projection. No storage, provider-native feature or new
+accounting path is introduced.
+
 ```go
 type LLMClient interface {
     // One method. Streaming is signalled via opts.Stream + callbacks.
