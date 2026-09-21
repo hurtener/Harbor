@@ -74,4 +74,9 @@ if go test -race -p 1 ./examples/portable-context -count=1; then
 else
     fail "public SDK context sample regression failed"
 fi
+if go test -race -p 1 ./internal/protocol/conformance ./examples/protocol-clients/conformance-fork -count=1; then
+    ok "canonical recovery method and refusal codes remain in both conformance consumers"
+else
+    fail "retained recovery drifted from Protocol conformance"
+fi
 smoke_summary

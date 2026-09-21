@@ -483,6 +483,8 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeRequestTooLarge:                     http.StatusRequestEntityTooLarge,
 	protoerrors.CodeSessionRunning:                      http.StatusConflict,
 	protoerrors.CodeSessionErased:                       http.StatusConflict,
+	protoerrors.CodeRetainedContextUnsettled:            http.StatusConflict,
+	protoerrors.CodeRetainedContextUnavailable:          http.StatusConflict,
 	protoerrors.CodeRevisionConflict:                    http.StatusConflict,
 	protoerrors.CodeAgentPackCopyConflict:               http.StatusConflict,
 	protoerrors.CodeAgentPackCopyIdempotencyConflict:    http.StatusConflict,
@@ -548,6 +550,11 @@ var errorCodeMatrix = []protoerrors.Code{
 	// the conformance-suite scenario lands when the Stack wires the
 	// reopen-capable SessionEnsurer (same posture as CodeSessionRunning).
 	protoerrors.CodeSessionErased,
+	// Explicit session-context reconciliation refuses pending external effects
+	// and missing/expired evidence. The served recovery suite exercises both
+	// end-to-end through the actual runtime port and HTTP authorization boundary.
+	protoerrors.CodeRetainedContextUnsettled,
+	protoerrors.CodeRetainedContextUnavailable,
 	// agent-config surface — `CodeRevisionConflict` (a durable config write
 	// declared an `expected_content_hash` and the agent's active revision no
 	// longer carries it). Exercised end-to-end by the agentcfg driver's
@@ -746,10 +753,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 152 methods; keep the explicit
+	// The canonical list currently contains 153 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 152 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 152 (including HA-68 skill publications and same-runtime Agent pack methods)", len(got))
+	if len(got) != 153 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 153 (including explicit session-context reconciliation)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -839,10 +846,11 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentsForceStop:   {},
 		methods.MethodAgentsDeregister:  {},
 
-		methods.MethodSessionsList:     {},
-		methods.MethodSessionsInspect:  {},
-		methods.MethodSessionsDelete:   {},
-		methods.MethodSessionsSetTitle: {},
+		methods.MethodSessionsList:             {},
+		methods.MethodSessionsInspect:          {},
+		methods.MethodSessionsDelete:           {},
+		methods.MethodSessionsSetTitle:         {},
+		methods.MethodSessionsReconcileContext: {},
 
 		methods.MethodRunsSetOverrides: {},
 

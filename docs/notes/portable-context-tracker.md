@@ -82,3 +82,12 @@ The [RC acceptance procedure](portable-context-rc.md) links the public-SDK
 editing sample and separates deterministic proof from live model evaluation.
 The sample checks actual persisted edits across separate invocations and exposes
 inspection without inference; live calls are never performed by its test suite.
+
+## Final-tree integration corrections
+
+The Console's hand-maintained reconciliation wire types are now explicit, with
+no untyped allowlist exception. The shared Protocol conformance inventory now
+includes the named recovery method and both HTTP 409 refusal codes; its exact
+counts and exhaustive membership checks remain independent. Phase 269 smoke
+also runs the public fork conformance consumer that caught the stale inventory.
+Full frontend and repository release gates remain separate acceptance above.
