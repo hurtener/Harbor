@@ -91,3 +91,14 @@ includes the named recovery method and both HTTP 409 refusal codes; its exact
 counts and exhaustive membership checks remain independent. Phase 269 smoke
 also runs the public fork conformance consumer that caught the stale inventory.
 Full frontend and repository release gates remain separate acceptance above.
+
+## Adversarial retained-state decoding
+
+- [x] Corrupted duplicate/case-aliased host fields are rejected before recovery
+      mutates retained state; canonical nested metadata remains strict.
+- [x] Opaque tool-result keys and exact numeric values remain data, not host fields.
+- [x] In-memory/SQLite regressions and independent-pool PostgreSQL checks pass.
+
+This review correction is not completion of the whole adversarial or release
+gate. Current validation runs as an unprivileged user; whole-repository checks
+remain separate and no permission test or coverage floor is relaxed.

@@ -32,3 +32,38 @@ the disposable PostgreSQL service, passes 14 checks with no skips or failures.
 The broad repository run remains a separate incomplete gate: it reproduced the
 old fork inventory failure and exhausted the local memory limit in the served
 package. No test, coverage target or production timeout was weakened.
+
+## Ambiguous retained host metadata
+
+The journal/window decoder accepted repeated host fields and case aliases through
+`encoding/json`'s last-value and case-insensitive matching. Reconciliation then
+accepted and mutated corrupted retained state. Fourteen regressions reproduced
+this on in-memory and SQLite stores before the correction; they cover pending
+status, admission identity, window version and frame settlement. The frame case
+keeps byte accounting consistent so it cannot pass only because of an unrelated
+size error.
+
+Typed persisted host envelopes now require canonical, unique field names,
+including nested admissions, checkpoints and summary metadata. The check stays
+private to retained-state decoding; untyped tool results, maps and raw payloads
+remain opaque and preserve exact numeric identifiers. Existing semantic,
+version, lifetime, scope and digest checks still follow. Rejection returns a
+fixed content-free error and does not publish or repair a corrupted window.
+
+The pending transport payload did not match its checksum and contained an
+incorrect hunk count. Its source changes were recovered and independently
+reviewed; the retained-state regressions reproduced the defect on the published
+base before this recovery was applied. Publication uses the reviewed file tree
+directly, not the failed encoded-patch workflow.
+
+Fresh Go 1.26.4 full race suites pass for runctx, assembly and SDK assembly;
+measured statement coverage is 86.2%, 83.7% and 100% respectively. Additional
+PostgreSQL regressions use independent production pools and reject duplicate or
+aliased pending/admission metadata without mutating the retained window. These
+are storage-corruption checks, not a claim that an unprivileged user can write
+internal StateStore records. Full final-tree release acceptance is still separate.
+
+Expanded phase 269 smoke includes these decoder regressions and passes
+14 checks with zero skips or failures on the corrected tree, with PostgreSQL
+enabled. Scoped pinned lint reports zero issues; changed Markdown and whitespace
+checks pass. No persisted format, dependency or default retention changes.

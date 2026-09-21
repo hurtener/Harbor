@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"time"
 	"unicode/utf8"
@@ -437,8 +438,11 @@ func (r *RetainedRun) save(ctx context.Context, previous state.EventID, window r
 }
 
 func decodeRetained(data []byte, value any) error {
-	if !utf8.Valid(data) {
+	if value == nil || !utf8.Valid(data) {
 		return ErrRetainedContextUnavailable
+	}
+	if err := validateRetainedShape(data, reflect.TypeOf(value)); err != nil {
+		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
