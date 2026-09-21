@@ -55,6 +55,7 @@ governance.posture_set
 governance.rate_limited
 governance.tenant_overrides_set
 llm.completion.chunk
+llm.context.prepared
 llm.context_leak
 llm.context_window_exceeded
 llm.cost.recorded
