@@ -15,6 +15,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/output"
 )
 
 type rotatingRouteResolver struct {
@@ -66,6 +67,91 @@ func TestAccount_ResolvedRouteKeysAreContextConfined(t *testing.T) {
 	wg.Wait()
 	if _, err := account.GetKeysForProvider(context.Background(), bfschemas.OpenAI); err == nil {
 		t.Fatal("route account accepted a call without resolved route context")
+	}
+}
+
+func TestTranslateErrorForContext_RoutedSchemaFailureKeepsDowngradeSignal(t *testing.T) {
+	ctx := llm.WithResolvedProviderRoute(context.Background(), llm.ResolvedProviderRoute{RouteID: "route"})
+	secret := "private-endpoint-and-credential"
+	badRequest, unauthorized, unavailable := 400, 401, 503
+	for _, tc := range []struct {
+		name       string
+		status     int
+		message    string
+		wantSchema bool
+	}{
+		{"schema rejection", badRequest, "unsupported response_format json_schema: " + secret, true},
+		{"auth rejection", unauthorized, "json_schema key unauthorized: " + secret, false},
+		{"provider outage", unavailable, "json_schema service unavailable: " + secret, false},
+		{"other rejection", badRequest, "invalid model: " + secret, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := translateErrorForContext(ctx, &bfschemas.BifrostError{
+				StatusCode: &tc.status,
+				Error:      &bfschemas.ErrorField{Message: tc.message},
+			}, "ChatCompletionRequest")
+			if !errors.Is(err, llm.ErrProviderRouteProviderFailed) {
+				t.Fatalf("routed failure lost its generic class: %v", err)
+			}
+			if got := llm.IsInvalidJSONSchemaError(err); got != tc.wantSchema {
+				t.Errorf("schema downgrade signal = %v, want %v", got, tc.wantSchema)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("routed error leaked provider material: %q", err)
+			}
+		})
+	}
+}
+
+func TestDriver_RoutedSchemaRejectionDowngradesWithoutLeaking(t *testing.T) {
+	const secret = "private-route-key-canary"
+	status := 400
+	provider := newStubClient()
+	provider.chatHandler = func(req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+		if provider.calls.Load() == 1 {
+			return nil, &bfschemas.BifrostError{StatusCode: &status, Error: &bfschemas.ErrorField{
+				Message: "unsupported json_schema " + secret,
+			}}
+		}
+		return defaultChatResponse(req), nil
+	}
+	now := time.Now()
+	route := llm.ProviderRoute{
+		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
+		ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "fast",
+	}
+	selected := llm.SelectedProviderRoute{
+		Provider: "openai", Model: "model", KeyName: "route key", RouteID: route.RouteID,
+		RouteGeneration: route.RouteGeneration, ProviderConnectionID: route.ProviderConnectionID,
+		ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    route.CredentialAssetGeneration,
+		ModelSelector:                route.ModelSelector, ExpiresAt: now.Add(time.Minute),
+	}
+	resolver := &rotatingRouteResolver{selected: selected}
+	driver := newDriverWithClient(newStubClient(), bfschemas.OpenAI, nil)
+	driver.routeClient = provider
+	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	client := output.Wrap(driver, llm.ConfigSnapshot{ModelProfiles: map[string]llm.ModelProfile{
+		"model": {OutputMode: llm.OutputModeNative},
+	}}, llm.Deps{})
+	ctx, err := identity.WithRun(t.Context(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
+		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun,
+	})
+	ctx = llm.WithSelectedProviderRoute(ctx, selected)
+	text := "summarize the bounded evidence"
+	_, err = client.Complete(ctx, llm.CompleteRequest{
+		Model: "model", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		ResponseFormat: &llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: []byte(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatalf("routed schema repair: %v", err)
+	}
+	if provider.calls.Load() != 2 || resolver.resolveCalls.Load() != 2 {
+		t.Fatalf("provider/credential attempts = %d/%d, want 2/2", provider.calls.Load(), resolver.resolveCalls.Load())
 	}
 }
 

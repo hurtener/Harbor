@@ -728,6 +728,17 @@ func translateErrorForContext(ctx context.Context, berr *bfschemas.BifrostError,
 		return nil
 	}
 	if _, routed := llm.ResolvedProviderRouteFrom(ctx); routed {
+		// Keep the narrow structured-output repair signal while discarding
+		// all provider text. Masking every routed error as the same sentinel
+		// prevents the ordinary json_schema -> json_object -> text downgrade
+		// chain from repairing a provider's schema-class 4xx rejection.
+		// Never infer this signal from a 5xx outage even when its message
+		// happens to mention response_format.
+		if berr.StatusCode == nil || *berr.StatusCode == 400 || *berr.StatusCode == 422 {
+			if llm.IsInvalidJSONSchemaError(translateError(berr, kind)) {
+				return fmt.Errorf("%w: %w", llm.ErrProviderRouteProviderFailed, llm.ErrInvalidJSONSchema)
+			}
+		}
 		return llm.ErrProviderRouteProviderFailed
 	}
 	return translateError(berr, kind)
