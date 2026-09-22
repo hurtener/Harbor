@@ -52,10 +52,12 @@ var runLoopDriverTestID = identity.Identity{
 
 func mkDriverTestBus(t *testing.T, red audit.Redactor) events.EventBus {
 	t.Helper()
+	// Match the production queue capacity: shared-driver tests issue 128
+	// accepted tasks before a consumer is guaranteed a scheduling turn.
 	cfg := config.EventsConfig{
 		Driver:                   "inmem",
 		MaxSubscribersPerSession: 16,
-		SubscriberBufferSize:     64,
+		SubscriberBufferSize:     config.Defaults().Events.SubscriberBufferSize,
 		IdleTimeout:              500 * time.Millisecond,
 		DropWindow:               50 * time.Millisecond,
 	}
@@ -1056,16 +1058,16 @@ func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
 		t.Fatalf("model not projected: %+v", ov)
 	}
 	if ov.ExtraInstructions == nil || *ov.ExtraInstructions != "be terse" {
-		t.Errorf("extra not projected: %+v", ov.ExtraInstructions)
+		t.Errorf("extra not projected: %+v", ov)
 	}
 	if ov.Temperature == nil || *ov.Temperature != 0.5 {
-		t.Errorf("temp not projected: %+v", ov.Temperature)
+		t.Errorf("temp not projected: %+v", ov)
 	}
 	if ov.MaxTokens == nil || *ov.MaxTokens != 2048 {
-		t.Errorf("max_tokens not projected: %+v", ov.MaxTokens)
+		t.Errorf("max_tokens not projected: %+v", ov)
 	}
 	if ov.ReasoningEffort == nil || *ov.ReasoningEffort != "high" {
-		t.Errorf("reasoning_effort not projected: %+v", ov.ReasoningEffort)
+		t.Errorf("reasoning_effort not projected: %+v", ov)
 	}
 }
 
