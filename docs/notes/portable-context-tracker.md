@@ -1,7 +1,9 @@
 # Portable session context implementation tracker
 
 RFC 002 / PR #779. Checked implementation items are published behavior, not
-stable-release or consumer acceptance. The current implementation head is
+stable-release or consumer acceptance. The published PR head before the
+unpublished retry-safety work is `e91791b8` (documentation); its current
+RC3 implementation target is
 `742ced8e3ec5d6197ed22edb448be89d45659753`. Annotated prerelease
 `v1.32.0-rc.3` peels to that exact commit and includes the provider-route
 attempt-boundary and expired-on-arrival repairs. Local, hosted and downstream
@@ -66,6 +68,29 @@ automatic external-action replay, or default retention change is introduced.
 - [x] Public-SDK editing sample, inspection, migration and RC procedure provided.
 - [x] Two independent adversarial reviews of `742a76e..95bd401` completed with
       P0: 0 and P1: 0 after narrow diff-only re-review.
+
+## Unpublished signed MCP retry-safety correction
+
+RC3 Workbench acceptance uncovered a separate capability-boundary P1: the
+closed signed dynamic MCP descriptor had no per-tool retry policy, so
+non-idempotent create/write/edit calls inherited four attempts. Local Harbor
+work based on `e91791b` adds a signer-bound, bounded server-local
+`tool_policies` retry ceiling through durable readback, replay fingerprints,
+restart reconciliation, and MCP attach. A transport-level fixture observed
+**four** outbound ambiguous mutations before correcting the policy shell's
+explicit-empty retry-list zero check. At the unpublished working tree,
+`GOFLAGS=-p=1 go test ./internal/tools ./internal/agentcfg
+./internal/protocol/types ./internal/runtime/agentcfg/protocol
+./internal/runtime/serve ./internal/tools/drivers/mcp -count=1` passed and
+the signed HTTPS MCP fixture observed **one** outbound mutation after a
+gateway timeout at `max_attempts:1`. A separate static-policy test pins the
+same one-attempt behavior; an unlisted read tool retains defaults. The
+matching named-root `go test -race` across five touched packages passed; the
+unknown-discovery-target regression checks deterministic candidate rejection
+and corrected new-JTI registration. Full revision-specific release gates
+remain pending. This work is not yet
+published, hosted-verified, deployed, or RC accepted; no older-head green run
+covers it.
 
 ## Final release gates
 

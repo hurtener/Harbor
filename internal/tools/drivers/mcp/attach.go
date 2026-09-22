@@ -125,6 +125,10 @@ type AttachDeps struct {
 	// discovered tool descriptors before catalog publication.
 	ToolAllowlist []string
 	ToolDenylist  []string
+	// RequireToolPolicyMatches makes a signed retry ceiling fail closed when
+	// any declared server-local tool is absent from the discovered and exposed
+	// catalog. Static operator policies retain their historical behavior.
+	RequireToolPolicyMatches bool
 	// ArtifactEgressMaxBytes bounds ONE substituted artifact value on one
 	// outbound call for connections this attach wires. Sourced by the boot
 	// loader (and the runtime attacher) from the deployment-level
@@ -473,6 +477,23 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		return nil, errors.Join(fmt.Errorf("provider.Discover: %w", discoverErr), observations.authRequired(), cleanupErr)
 	}
 	descriptors = filterDiscoveredTools(descriptors, ms.Name, deps.ToolAllowlist, deps.ToolDenylist)
+	if deps.RequireToolPolicyMatches {
+		for localName := range ms.ToolPolicies {
+			found := false
+			for _, descriptor := range descriptors {
+				if descriptor.Tool.Name == string(provider.source)+"_"+localName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				cleanupErr := provider.Close(cleanupCtx)
+				cancel()
+				return nil, errors.Join(fmt.Errorf("%w: %q", tools.ErrSignedToolPolicyTarget, localName), cleanupErr)
+			}
+		}
+	}
 	return &PreparedAttachment{
 		ms: ms, deps: deps, mode: mode, defaultPolicy: defaultPolicy,
 		provider: provider, closeFn: provider.Close, descriptors: descriptors, observations: observations,

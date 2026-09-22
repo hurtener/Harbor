@@ -405,9 +405,16 @@ type SignedOAuthMCPConnectionDescriptor struct {
 	ToolDenylist         []string                                     `json:"tool_denylist,omitempty"`
 	ConnectTimeoutMS     int                                          `json:"connect_timeout_ms,omitempty"`
 	RequestTimeoutMS     int                                          `json:"request_timeout_ms,omitempty"`
+	ToolPolicies         map[string]SignedMCPToolRetryPolicy          `json:"tool_policies,omitempty"`
 	Injection            *AgentConfigMCPCredentialInjectionDescriptor `json:"injection,omitempty"`
 	ArtifactByteEligible bool                                         `json:"artifact_byte_eligible,omitempty"`
 	ArtifactParams       map[string][]string                          `json:"artifact_params,omitempty"`
+}
+
+// SignedMCPToolRetryPolicy bounds total outbound attempts for one server-local
+// MCP tool. Unlike the generic operator policy it cannot widen retry defaults.
+type SignedMCPToolRetryPolicy struct {
+	MaxAttempts int `json:"max_attempts"`
 }
 
 // AgentConfigSignedOAuthMCPPair is the read-only projection of immutable

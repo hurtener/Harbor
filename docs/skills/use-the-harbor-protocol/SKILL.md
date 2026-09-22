@@ -212,6 +212,16 @@ scopes, one closed HTTP connection descriptor, and a boot-trusted asymmetric
 `artifact_byte_eligible` plus `artifact_params`; the applied revision echoed in
 the response preserves those exact canonical fields.
 
+For non-idempotent MCP tools, the same signed descriptor may include
+`tool_policies: {<server-local-tool-name>: {max_attempts: 1}}`. Only 1–4 total
+attempts are accepted, for at most 32 exact names of 128 bytes each; an omitted
+entry keeps the default. The signer must bind this map, and any change requires
+a fresh authorized registration. A one-attempt policy prevents Harbor from
+blindly retrying a timed-out external mutation; it does not establish whether
+that mutation committed. Reconcile via a read before deciding what to do next.
+A policy naming a tool absent from current discovery is rejected before the
+capability publishes, not silently ignored.
+
 Artifact mappings are canonicalized once (trimmed method/parameter names and
 sorted parameter sets) and fail loud above any exact ceiling: 32 methods, 8
 parameters per method, 128 UTF-8 bytes per method or parameter name, or 8 KiB

@@ -161,14 +161,16 @@ func (p ToolPolicy) resolved() ToolPolicy {
 	return out
 }
 
-// isZero reports whether p is the zero value across every field.
+// isZero reports whether p is the zero value across every field. An explicit
+// empty RetryOn is nonzero: it is the one-attempt/no-retry declaration used by
+// max_attempts:1 even when every other field is omitted.
 func (p ToolPolicy) isZero() bool {
 	return p.TimeoutMS == 0 &&
 		p.MaxRetries == 0 &&
 		p.BackoffBase == 0 &&
 		p.BackoffMult == 0 &&
 		p.BackoffMax == 0 &&
-		len(p.RetryOn) == 0 &&
+		p.RetryOn == nil &&
 		p.Validate == ""
 }
 

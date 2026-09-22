@@ -2952,15 +2952,15 @@ func (r *Registry) RecordReconnect(name, reason string) {
 }
 
 // isZeroPolicy reports whether a ToolPolicy is the zero value across the
-// fields the Registry projection cares about (TimeoutMS / MaxRetries /
-// backoff / Validate). A zero policy resolves to DefaultPolicy.
+// fields the Registry projection cares about. Explicit-empty RetryOn means
+// one attempt and must not be collapsed into the default retry policy.
 func isZeroPolicy(p tools.ToolPolicy) bool {
 	return p.TimeoutMS == 0 &&
 		p.MaxRetries == 0 &&
 		p.BackoffBase == 0 &&
 		p.BackoffMult == 0 &&
 		p.BackoffMax == 0 &&
-		len(p.RetryOn) == 0 &&
+		p.RetryOn == nil &&
 		p.Validate == tools.ValidateNone
 }
 

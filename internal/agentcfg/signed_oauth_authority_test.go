@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +92,66 @@ func TestSignedOAuthMCPPairFingerprint_ArtifactEgressIsImmutableBinding(t *testi
 	}
 	if SignedOAuthMCPPairFingerprint(eligible) == SignedOAuthMCPPairFingerprint(widened) {
 		t.Fatal("mapping widening did not change the replay fingerprint")
+	}
+}
+
+func TestSignedMCPToolRetryPolicy_BindsAuthorityAndReplayFingerprint(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	base := SignedOAuthMCPBinding{TenantID: "tenant", AgentID: "agent", Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1", Connection: SignedOAuthMCPConnectionDescriptor{Name: "workbench", URL: "https://example.test/mcp"}}
+	bound := base
+	bound.Connection.ToolPolicies = map[string]SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}}
+	claims := SignedOAuthMCPAuthorityClaims{TenantID: bound.TenantID, AgentID: bound.AgentID, Broker: bound.Broker, ProviderName: bound.ProviderName, CapabilityRevision: bound.CapabilityRevision, Connection: bound.Connection, RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: "jti", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))}}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "kid"
+	raw, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "kid", &key.PublicKey, now, bound, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "kid", &key.PublicKey, now, base, nil); !errors.Is(err, ErrSignedCapabilityBinding) {
+		t.Fatalf("stripped policy accepted: %v", err)
+	}
+	widened := bound
+	widened.Connection.ToolPolicies = map[string]SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 4}}
+	if _, err := VerifySignedOAuthMCPAuthority(raw, "issuer", "kid", &key.PublicKey, now, widened, nil); !errors.Is(err, ErrSignedCapabilityBinding) {
+		t.Fatalf("widened policy accepted: %v", err)
+	}
+	if SignedOAuthMCPPairFingerprint(base) == SignedOAuthMCPPairFingerprint(bound) || SignedOAuthMCPPairFingerprint(bound) == SignedOAuthMCPPairFingerprint(widened) {
+		t.Fatal("policy omitted from replay fingerprint")
+	}
+}
+
+func TestNormalizeSignedMCPToolPolicies_BoundsAndCopies(t *testing.T) {
+	good := map[string]SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}}
+	copy, err := NormalizeSignedMCPToolPolicies(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good["workbench_create"] = SignedMCPToolRetryPolicy{MaxAttempts: 4}
+	if copy["workbench_create"].MaxAttempts != 1 {
+		t.Fatal("policy map aliased caller")
+	}
+	for name, policies := range map[string]map[string]SignedMCPToolRetryPolicy{
+		"zero": {"create": {MaxAttempts: 0}}, "widen": {"create": {MaxAttempts: 5}},
+		"space": {" create": {MaxAttempts: 1}}, "empty": {"": {MaxAttempts: 1}},
+		"long": {strings.Repeat("x", MaxSignedMCPToolNameBytes+1): {MaxAttempts: 1}},
+	} {
+		if _, err := NormalizeSignedMCPToolPolicies(policies); err == nil {
+			t.Fatalf("%s policy accepted", name)
+		}
+	}
+	tooMany := make(map[string]SignedMCPToolRetryPolicy)
+	for i := range MaxSignedMCPToolPolicies + 1 {
+		tooMany[fmt.Sprintf("tool_%d", i)] = SignedMCPToolRetryPolicy{MaxAttempts: 1}
+	}
+	if _, err := NormalizeSignedMCPToolPolicies(tooMany); err == nil {
+		t.Fatal("oversized policy map accepted")
 	}
 }
 

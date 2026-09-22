@@ -52,6 +52,12 @@ type productionSignedCapabilityKeySet struct {
 	key crypto.PublicKey
 }
 
+func TestSignedMCPRetryCeilingMatchesExistingDefault(t *testing.T) {
+	if got := tools.DefaultPolicy().MaxRetries + 1; got != agentcfg.MaxSignedMCPToolAttempts {
+		t.Fatalf("signed retry ceiling %d drifted from existing default %d", agentcfg.MaxSignedMCPToolAttempts, got)
+	}
+}
+
 func (s productionSignedCapabilityKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 	if kid != "kid" {
 		return nil, "", agentcfg.ErrSignedCapabilityAuthority
@@ -75,6 +81,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 
 	catalog := tools.NewCatalog()
 	var mcpRequests atomic.Int64
+	var mutationRequests atomic.Int64
 	var catalogVisibleDuringPrepare atomic.Bool
 	var requestMu sync.Mutex
 	methods := make(map[string]int)
@@ -85,6 +92,11 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		Name: "echo", Description: "echo", InputSchema: map[string]any{"type": "object", "additionalProperties": false},
 	}, func(_ context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, any, error) {
 		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}}}, nil, nil
+	})
+	mcpsdk.AddTool(mcpServer, &mcpsdk.Tool{
+		Name: "mutate", Description: "non-idempotent fixture", InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, any, error) {
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "mutated"}}}, nil, nil
 	})
 	mcpServer.AddResource(&mcpsdk.Resource{URI: "mem://fixture", Name: "fixture", MIMEType: "text/plain"},
 		func(_ context.Context, req *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
@@ -120,6 +132,18 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		if req.Header.Get("Authorization") != "Bearer "+downstreamBearer {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if message.Method == "tools/call" {
+			var call struct {
+				Params struct {
+					Name string `json:"name"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(body, &call) == nil && call.Params.Name == "mutate" {
+				mutationRequests.Add(1) // remote operation happened; response is unknown
+				http.Error(w, "upstream timeout after mutation", http.StatusGatewayTimeout)
+				return
+			}
 		}
 		mcpHandler.ServeHTTP(w, req)
 	})
@@ -213,7 +237,8 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL}
+	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL,
+		ToolPolicies: map[string]agentcfg.SignedMCPToolRetryPolicy{"mutate": {MaxAttempts: 1}}}
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, AgentID: agentID,
 		Broker: "broker", ProviderName: providerName, CapabilityRevision: "capability-revision-7",
@@ -232,7 +257,8 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	req := prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
 		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		AgentID:  agentID, ProviderName: providerName, Broker: "broker", Audience: claims.Audience,
-		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL},
+		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL,
+			ToolPolicies: map[string]prototypes.SignedMCPToolRetryPolicy{"mutate": {MaxAttempts: 1}}},
 		AuthorityEnvelope: envelope,
 	}
 	authorities := map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
@@ -410,6 +436,9 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if !ok {
 		t.Fatal("runtime A tool is not published")
 	}
+	if runtimeATool.Tool.Policy.RetryOn != nil || runtimeATool.Tool.Policy.MaxRetries != 0 {
+		t.Fatalf("unlisted read tool acquired signed retry override: %+v", runtimeATool.Tool.Policy)
+	}
 	artifactStore, err := artifactsinmem.New(config.ArtifactsConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatal(err)
@@ -525,6 +554,19 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	// effective-agent capability and therefore prove the Protocol surface adds
 	// it only after reach + tenant resolution.
 	dispatchCtx = tools.WithEffectiveAgentConfig(dispatchCtx, agentID)
+	mutationTool, ok := catalog.Resolve(physicalName + "_mutate")
+	if !ok {
+		t.Fatal("signed mutation tool is not published")
+	}
+	if mutationTool.Tool.Policy.RetryOn == nil || len(mutationTool.Tool.Policy.RetryOn) != 0 {
+		t.Fatalf("signed retry policy did not reach catalog: %+v", mutationTool.Tool.Policy)
+	}
+	if _, err := mutationTool.Invoke(dispatchCtx, json.RawMessage(`{}`)); err == nil {
+		t.Fatal("ambiguous transport timeout returned success")
+	}
+	if got := mutationRequests.Load(); got != 1 {
+		t.Fatalf("signed max_attempts:1 dispatched %d outbound mutations, want exactly one", got)
+	}
 	operationKey := agentcfg.SignedOAuthMCPReplayKey{
 		TenantID: id.TenantID, TrustAnchorName: "broker", Issuer: claims.Issuer,
 		KeyID: "kid", JTI: claims.ID,

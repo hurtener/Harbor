@@ -35,6 +35,19 @@ candidate may remain in immutable revision history for diagnosis, but its
 operation is terminally compensated before publication and no rejected pair
 remains active or authoritative.
 
+## Signed per-tool retry-ceiling amendment
+
+The closed descriptor may carry `tool_policies` keyed by exact server-local
+MCP tool name, each with `max_attempts` from 1 through the existing default
+of 4. The map is bounded to 32 names of at most 128 bytes each; noncanonical
+names and widening fail before persistence. It is covered by signed authority,
+pair/replay and attachment fingerprints, readback, and restart reconciliation.
+After discovery, a signed policy naming no exposed tool fails preparation
+before catalog publication, so a spelling error cannot silently restore the
+four-attempt default for a mutation.
+Omission retains historical fingerprints and retry defaults. It never replays
+an ambiguous external operation.
+
 ## RFC anchor
 
 - RFC §4.

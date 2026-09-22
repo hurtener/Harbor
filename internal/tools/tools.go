@@ -562,6 +562,10 @@ var (
 	// a control-plane transaction can compensate without importing an MCP
 	// concrete.
 	ErrArtifactEgressSchema = errors.New("tools: artifact_params mapping does not match the discovered input schema")
+	// ErrSignedToolPolicyTarget marks a deterministic signed attach refusal:
+	// a restrictive retry policy names no exposed discovered tool. The control
+	// plane compensates the committed candidate instead of leaving it pending.
+	ErrSignedToolPolicyTarget = errors.New("tools: signed retry policy names no exposed discovered tool")
 )
 
 // wrap formats a sentinel error with %w plus contextual key=value

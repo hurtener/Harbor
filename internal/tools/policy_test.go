@@ -234,6 +234,18 @@ func TestRunWithPolicy_ZeroValuePolicy_UsesAllDefaults(t *testing.T) {
 	}
 }
 
+func TestRunWithPolicy_ExplicitEmptyRetryOnAloneMeansOneAttempt(t *testing.T) {
+	var calls atomic.Int64
+	_, err := tools.RunWithPolicy(context.Background(), json.RawMessage(`{}`),
+		func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			calls.Add(1)
+			return tools.ToolResult{}, fmt.Errorf("transient upstream timeout")
+		}, nil, nil, tools.ToolPolicy{RetryOn: []tools.ErrorClass{}})
+	if err == nil || calls.Load() != 1 {
+		t.Fatalf("explicit empty retry allowlist: calls=%d err=%v, want one failed attempt", calls.Load(), err)
+	}
+}
+
 func TestRunWithPolicy_Hooks_OnAttemptFires(t *testing.T) {
 	var attempts atomic.Int64
 	policy := tools.ToolPolicy{

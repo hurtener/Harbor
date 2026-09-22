@@ -267,9 +267,14 @@ export interface SignedOAuthMCPConnectionDescriptor {
 	tool_denylist?: string[];
 	connect_timeout_ms?: number;
 	request_timeout_ms?: number;
+	tool_policies?: Record<string, SignedMCPToolRetryPolicy>;
 	injection?: AgentConfigMCPCredentialInjectionDescriptor;
 	artifact_byte_eligible?: boolean;
 	artifact_params?: Record<string, string[]>;
+}
+
+export interface SignedMCPToolRetryPolicy {
+	max_attempts: number;
 }
 
 /** Read-only immutable signed OAuth MCP pair projected from a revision. The

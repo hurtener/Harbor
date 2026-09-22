@@ -274,6 +274,9 @@ type AttachRequest struct {
 	// becomes the default per-request tool policy for the live connection.
 	ConnectTimeoutMS int
 	RequestTimeoutMS int
+	// ToolPolicies is the signed capability's immutable, server-local retry
+	// ceiling. General add requests leave it empty.
+	ToolPolicies map[string]agentcfg.SignedMCPToolRetryPolicy
 	// DescriptorFingerprint, when set by a server-owned signed pair, commits the
 	// complete connection policy. Generic connections derive their fingerprint
 	// from the ordinary descriptor fields.

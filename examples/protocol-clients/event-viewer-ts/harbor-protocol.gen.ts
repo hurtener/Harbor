@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:9522d65c378eb2019467be3d546c5a9172209d86557693f6fd6a8dc11d97cc57";
+export const WIRE_SURFACE_DIGEST = "sha256:93414e27739c80ebeff6f1c39dbdd1e4a55a899c7623f8f90bdf13db25a533d4";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -3218,6 +3218,10 @@ export interface SessionsSetTitleResponse {
   title_source: string;
 }
 
+export interface SignedMCPToolRetryPolicy {
+  max_attempts: number;
+}
+
 export interface SignedOAuthMCPConnectionDescriptor {
   name: string;
   url: string;
@@ -3225,6 +3229,7 @@ export interface SignedOAuthMCPConnectionDescriptor {
   tool_denylist?: string[];
   connect_timeout_ms?: number;
   request_timeout_ms?: number;
+  tool_policies?: Record<string, SignedMCPToolRetryPolicy>;
   injection?: AgentConfigMCPCredentialInjectionDescriptor;
   artifact_byte_eligible?: boolean;
   artifact_params?: Record<string, string[]>;
