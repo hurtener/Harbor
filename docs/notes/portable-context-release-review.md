@@ -127,3 +127,45 @@ Removed both temporary PR-local publication/source-recovery workflows. No encode
 patch manifest remains tracked. Implementation publication now uses ordinary
 authorized repository writes; no test or approval gate is replaced by transport.
 The complete release checklist remains open until the final tree is validated.
+
+## Final hardening and coverage closure
+
+The September 22 hardening sweep published five additional commits:
+
+- `30bcf7b` validates the content-stripped identity of custom-redacted actions
+  before external dispatch. Tool target, call identity and control targets cannot
+  be rewritten while arguments, descriptions and result content remain redactable.
+  In-memory, SQLite and real `RunOnce` regressions assert zero external calls on
+  refusal.
+- `2d0f41c` adds served authority and failure-path tests through existing
+  production seams, moving statement coverage from 74.3% to 81.9%.
+- `2cfc99f` adds real PostgreSQL boot composition plus MCP rollback/ownership,
+  rendering, provider rotation/shutdown and run-loop authority tests. The
+  canonical PostgreSQL-backed race/coverage process measures
+  `internal/runtime/serve` at **85.1%**, meeting the binding 85% target. The same
+  service enablement on the unchanged preceding tree remained at 81.9%.
+- `ce684fc4` updates the scaffold fallback from v1.31.6 to the published v1.31.9
+  baseline and regenerates its goldens. The canonical drift audit then reports
+  1,592 OK / zero warnings / zero failures.
+- `cea93340` applies the same action-identity boundary when a custom redactor
+  transforms a terminal retained turn. Regressions cover tool/call identity,
+  parallel and batch shape, task-control targets and accepted content redaction
+  on both in-memory and SQLite stores.
+
+No production five-second deadline, N=128 workload, race instrumentation,
+coverage target, production-file inclusion or assertion was weakened. Focused
+runctx race/vet/lint and served PostgreSQL race/coverage checks pass. Runctx,
+runtime assembly and SDK assembly retain their measured 86.9%, 83.7% and 100%
+statement coverage.
+
+Two independent adversarial reviews reported no P0. Their P1 findings were the
+terminal-redactor identity gap fixed by `cea93340` and stale release evidence
+corrected by this documentation increment. Narrow diff-only re-review, the
+remaining exact-head repository gates and exact-head hosted CI are still pending.
+Run `35697496723` was in progress at the evidence check; running work is not
+counted as green.
+
+The owner explicitly waived local and hosted preflight for this RC effort. Those
+checks are skipped, not passed, and their absence remains visible in the tracker.
+The RC tag, sample-agent deployment and live head-to-head evaluation have not yet
+occurred.

@@ -86,7 +86,8 @@ an intent without a returned receipt remains unknown, never automatically replay
 - [x] Supplied attachment references survive retained continuation and summary
       coverage; missing-input admission and scoped deletion guards apply.
 - [x] PostgreSQL conformance exercises the production driver with independent pools.
-- [ ] Full final-tree coverage, preflight, and release gates pass.
+- [ ] Full final-tree non-preflight release gates pass. Local and hosted preflight
+      are owner-waived for the current RC effort and remain skipped, not green.
 
 ## Files added or changed
 
@@ -174,11 +175,11 @@ long-term memory, consumer turns, and authorization to repeat external actions.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes (owner-waived/skipped for the current RC effort)
 - [x] `make check-mirror` passes
-- [ ] All cross-references resolve through the full drift gate
-- [ ] Coverage meets touched-package targets
+- [x] All cross-references resolve through the full drift gate
+- [x] Coverage meets touched-package targets
 - [x] Cross-session and N>=128 shared-Stack race tests pass
 - [x] First production consumer and real-driver failure integration land together
 - [x] Vocabulary and incremental boundary are recorded in D-464
@@ -361,7 +362,9 @@ compacted input recovery and exact fetched content, deletion during inference,
 missing input admission, actual served continuation, SQLite close/reopen and
 explicit reconciliation, atomic start failure, malformed/nested input markers,
 no uploaded-byte persistence, and 128 concurrent identity-scoped projections.
-Postgres conformance and complete release acceptance remain pending.
+At that increment, PostgreSQL conformance and complete release acceptance remained
+pending. PostgreSQL conformance is now complete; final release acceptance remains
+separately tracked.
 
 ## Public SDK acceptance sample
 
@@ -375,3 +378,19 @@ StateStore generation preconditions without internal imports. No new state
 behavior or backend is added. Release and migration checks are in
 [the RC procedure](../notes/portable-context-rc.md); the phase remains subject to
 its full release gates, not merely sample success.
+
+## Current release evidence
+
+The implementation head covered here is `cea93340`. Independent-pool PostgreSQL conformance
+passes for the retained-context behavior. Canonical PostgreSQL-backed served
+race/coverage reaches **85.1%**, meeting the package's binding 85% target; runctx,
+runtime assembly and SDK assembly measure 86.9%, 83.7% and 100% respectively.
+
+`30bcf7b` refuses custom-redactor changes to external action identity before
+dispatch, and `cea93340` applies the same rule before terminal retained evidence
+is sealed. Their in-memory, SQLite and `RunOnce` regressions retain valid content
+redaction while refusing changed tools, call IDs, parallel/batch shapes and task
+targets. Two independent adversarial reviews found no P0; narrow diff-only review
+of the two fixed P1 findings and the remaining exact-head repository/hosted gates
+are pending. Preflight is explicitly waived/skipped, not passed. The RC deployment
+and live head-to-head evaluation have not occurred.

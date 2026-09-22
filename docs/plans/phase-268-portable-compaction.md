@@ -66,15 +66,17 @@ reasoning, tool handles, and duplicate raw observations are not summary input.
       byte-input/output/call limits; no silent step elision or metadata clipping.
 - [x] Production compaction measures the assembled request, including tools,
       arguments, instructions, output schema, context, and media estimates.
-- [ ] Effective model/route capacity, output headroom, and fallback attempts are
+- [x] Effective model/route capacity, output headroom, and fallback attempts are
       validated before sending; maintenance has a distinct governed call identity.
 - [x] Real Bifrost scripted-HTTP integration covers chunked success, known
       truncation failure, and compatible model switching with fresh native
       receipts intact; no native compaction endpoint or paid model is used.
-- [ ] Route/grant maintenance admission and differing provider wire formats
+- [x] Route/grant maintenance admission and differing provider wire formats
       have full integration coverage before completing this phase.
-- [ ] Full phase smoke, existing regressions, drift, coverage, and preflight
-      gates pass before declaring the phase finished.
+- [ ] Full phase smoke, existing regressions, drift, coverage, and non-preflight
+      release gates pass before declaring the phase finished. Local and hosted
+      preflight are owner-waived for the current RC effort and remain skipped,
+      not green.
 
 ## Files added or changed
 
@@ -137,13 +139,13 @@ Summary coverage; updated compression-budget and runner semantics.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references resolve
-- [ ] Coverage on touched packages meets the stated target
-- [ ] Cross-session isolation and shared-component race tests pass
-- [ ] Real-driver integration includes identity and failure paths
+- [x] `make drift-audit` passes
+- [ ] `make preflight` passes (owner-waived/skipped for the current RC effort)
+- [x] `make check-mirror` passes
+- [x] All cross-references resolve
+- [x] Coverage on touched packages meets the stated target
+- [x] Cross-session isolation and shared-component race tests pass
+- [x] Real-driver integration includes identity and failure paths
 - [x] New vocabulary is in the glossary
 - [x] Departures are recorded in D-462
 
@@ -228,3 +230,13 @@ arbitrary content is excluded. Details and limitations are in
 [the diagnostics note](../notes/portable-context-diagnostics.md).
 The existing event-stream consumer, generated event reference, SDK aliases and
 phase smoke cover this additive metadata. Final release gates remain separate.
+
+## Current release evidence
+
+The implementation head covered here is `cea93340`. Exact request construction, maintenance
+admission/accounting, OpenAI/Anthropic Bifrost transport shapes, provider switching,
+fresh-result preservation and shared-runner isolation are covered by the focused
+race and integration suites. Runctx, runtime assembly and SDK assembly measure
+86.9%, 83.7% and 100% statement coverage respectively. The final exact-head
+repository/hosted gates remain pending, and the explicit preflight waiver is not
+a passing result.

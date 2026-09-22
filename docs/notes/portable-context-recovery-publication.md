@@ -71,3 +71,20 @@ The sample and RC instructions exist but no RC has been published.
 
 [The tracker](portable-context-tracker.md) separates published implementation
 from these release gates. Long-term memory remains external to Harbor.
+
+## Current-tree superseding evidence
+
+The 74.3% served result above is intentionally preserved as the recovery
+checkpoint's historical measurement. It is no longer the current coverage result.
+Commit `2cfc99f` adds behavioral authority and failure-path tests and reaches
+**85.1%** in the canonical PostgreSQL-backed served race/coverage process, meeting
+the documented 85% floor. An unchanged-tree service comparison remained at
+81.9%, so PostgreSQL availability alone did not create the increase.
+
+Subsequent published commits `ce684fc4` and `cea93340` respectively repair the
+scaffold release-reference drift and validate custom-redacted terminal action
+identity. The implementation head covered by this evidence is
+`cea93340a298e0d1ba4eeda1849c89c457ff0b3d`. Exact-head hosted CI, the explicitly
+waived local/hosted preflight checks, RC publication and live sample-agent
+acceptance remain outside this historical recovery record; the tracker carries
+their current status.

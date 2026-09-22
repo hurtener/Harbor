@@ -6,12 +6,14 @@ has shipped. The live implementation/release tracker is
 
 ## Before selecting an RC tag
 
-Finish the tracked adversarial review and final-tree Go, Protocol, frontend,
-PostgreSQL, drift and live preflight gates. Remove temporary publication/source
-recovery workflows and payloads. Record the exact source commit, toolchain,
-checks and artifact checksums. Do not infer readiness from a successful patch
-transport, an old green run or a source ZIP. Do not merge or create a release
-merely because these instructions exist.
+Normally, finish the tracked adversarial review and final-tree Go, Protocol,
+frontend, PostgreSQL, drift and live preflight gates. For this PR's current RC
+effort, the owner explicitly waived both local and hosted preflight to move more
+quickly. Run every other applicable release gate, and record preflight as skipped,
+never green. Remove temporary publication/source recovery workflows and payloads.
+Record the exact source commit, toolchain, checks and artifact checksums. Do not
+infer readiness from a successful patch transport, an old green run or a source
+ZIP. Do not merge or create a release merely because these instructions exist.
 
 ## Minimal sample
 

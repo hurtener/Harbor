@@ -408,8 +408,8 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |265 | User-scoped signed OAuth MCP capability lifecycle (D-448): closed-envelope/descriptor sibling methods, verified `agent_config:user` plus signed reach, tenant/user/session derived from bearer, `ConfigScopeUser` desired pairs and loading choices, full physical owner and exact teardown, one shared effective-source authorizer across catalog/resource/App/dispatch surfaces, operator-then-user loading projection with logical-to-physical resolution, private initialize/discovery bearer, two-user isolation, and generated Protocol/TypeScript/docs/smoke surfaces | agent-config signed OAuth MCP + physical MCP registry/provider + projection + Protocol | §5.5, §6.4, §6.11, §6.16 | 130, 205, 206, 211, 246, D-397, D-398, D-401, D-407 | focused package/race + generators + two-user isolation + stale-source authority + loading-mode isolation + static smoke | Accepted for next Harbor patch release; downstream/runtime deployment and acceptance pending |
 |266 | Indexed fan-out and ordered observability event path (D-453/D-454/D-455): exact-triple plus admin-bucket fan-out, atomic `PublishBatch` retaining individual records/sequences/cursors, and one bounded per-bus FIFO for async cost/tool lifecycle with synchronous terminal barriers; explicit process-loss window; no second transcript or turns/resume/wire change | events + durable log + llm/tool observability | §4, §5.2, §6.4, §6.5, §6.13, §6.14 | 05, 06, 57, 147, 161, 246, D-293, D-425, D-452 | focused race/integration + 1K/10K comparative benchmark + static smoke | Shipped (v1.31.0; exact main CI and release workflow green; downstream deployment/acceptance pending) |
 |267 | Same-runtime agent-pack inspect/copy (D-456): admin-only `agent_config.agent_packs.inspect` with complete distinct boot/revision bodies plus effective hashes, and additive `agent_config.agent_packs.copy` with bounded `pack_ids`, expected source/target composition-hash CAS, one all-or-nothing target revision, server-stamped copy lineage, equal-content no-op, fail-closed independent collision, and boot read-only/target governance preservation | agent-config pack resolver + StateStore CAS + Protocol/SDK/reference surfaces | §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9 | 04, 05, 06, 07, 09, 11, 37, 40, 202, 205, 206, 232, 237, 240, 248, 250, 266, D-411, D-414, D-415, D-427, D-430 | focused wire/driver conformance + same-runtime admin/reach isolation + CAS/idempotency/collision/reconciliation race + static smoke | Shipped (v1.31.0; explicit-empty reconciliation corrected in v1.31.1; canonical empty-target CAS corrected in v1.31.2; copied operator-pack run resolution corrected in v1.31.3; release workflows green; downstream deployment/acceptance pending) |
-|268 | Portable compaction and request budgets | planner + steering + LLM | §6.2, §6.3, §6.5 | 43, 45, 46, 111e | request/race/adapter smoke; full gates pending | In progress — PR #779 |
-|269 | Retained session execution context | runctx + serve/assembly + StateStore/ArtifactStore | §6.2, §6.9, §6.11 | 15, 16, 17, 246, 268 | served/embedded requests + inmem/SQLite + 128-session race; full gates pending | In progress — continuity implemented; release gates pending |
+|268 | Portable compaction and request budgets | planner + steering + LLM | §6.2, §6.3, §6.5 | 43, 45, 46, 111e | request/race/adapter smoke + measured package coverage; final gates pending | In progress — PR #779 |
+|269 | Retained session execution context | runctx + serve/assembly + StateStore/ArtifactStore | §6.2, §6.9, §6.11 | 15, 16, 17, 246, 268 | served/embedded requests + inmem/SQLite/PostgreSQL + N=128 race + 85.1% served coverage; final gates pending | In progress — continuity implemented; release gates pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5934,18 +5934,20 @@ deployment, or downstream acceptance is claimed.
 
 ### Phase 268 — Portable compaction and request budgets
 
-- **Status:** In progress — PR #779, not released or RC-ready.
+- **Status:** In progress — PR #779, not released or RC-ready. The implementation
+  head covered by the current evidence is `cea93340`.
 - **Owner:** planner / steering / LLM edge; RFC §6.2, RFC §6.3, RFC §6.5.
 - **Scope:** exact checkpoint coverage, recent/fresh exchange replay, bounded
-  ordinary summarization, and assembled-request capacity. The first checkpoint
-  fixes replay; the remaining acceptance criteria stay unchecked in
-  `docs/plans/phase-268-portable-compaction.md`.
+  ordinary summarization, assembled-request capacity, and governed maintenance
+  admission/accounting are implemented. Focused race/integration coverage meets
+  the touched-package targets; final exact-head release gates remain pending.
 - **Boundary:** no long-term memory, native compaction, new public transcript,
   durable cross-turn implementation, or cold-run relaunch in this phase.
 
 ### Phase 269 — Retained session execution context
 
-- **Status:** In progress — PR #779, not released or RC-ready.
+- **Status:** In progress — PR #779, not released or RC-ready. The implementation
+  head covered by the current evidence is `cea93340`.
 - **Owner:** runtime/runctx + serve/assembly + StateStore/ArtifactStore;
   RFC §6.2, §6.9, §6.11.
 - **Implemented increment:** explicit `sessions.retained_context_turns` for serving
@@ -5958,8 +5960,13 @@ deployment, or downstream acceptance is claimed.
 - **Continuation increments:** fenced settled-journal reconciliation for embedded
   and authenticated served callers, authorized offloaded-result reads, applied
   steering continuity, and supplied attachment references (D-470 through D-474).
-- **Pending:** Postgres conformance and full diagnostics/coverage/release gates.
-  No automatic cold-run relaunch or external-action retry is authorized.
+- **Current evidence:** independent-pool PostgreSQL conformance passes and the
+  canonical PostgreSQL-backed served race/coverage process reaches 85.1% against
+  the binding 85% target. Custom-redactor action identity is now pinned before
+  dispatch and terminal sealing. Final exact-head hosted/repository gates and
+  narrow review of the fixed P1 findings remain pending. Local and hosted
+  preflight are owner-waived/skipped, not green. No automatic cold-run relaunch
+  or external-action retry is authorized.
 - **Plan:** `docs/plans/phase-269-retained-session-context.md`; D-464.
   The live implementation/release checklist is
   `docs/notes/portable-context-tracker.md`.
@@ -6004,4 +6011,5 @@ projection and artifact recovery; the phase still awaits full release gates.
 The own-session `sessions.reconcile_context` Protocol consumer and typed Go
 client now use D-470's settled-journal primitive (D-471). Subsequent increments
 add large-result retrieval and attachment/steering continuity. Final persistence
-conformance and release gates remain pending; the phase is not RC-ready.
+conformance is now complete. Final exact-head release gates remain pending; the
+phase is not RC-ready.
