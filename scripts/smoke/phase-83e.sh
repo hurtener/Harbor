@@ -33,11 +33,11 @@ done
 
 # 2. Decision_CallTool is narrowed — the struct no longer carries a
 #    `Reasoning string` field (D-147).
-assert_grep_absent 'Reasoning string' internal/planner/decision.go \
+assert_grep_absent '^[[:space:]]*Reasoning[[:space:]]+string([[:space:]]|$)' internal/planner/decision.go \
     "phase-83e: Decision_CallTool dropped the Reasoning field (D-147)"
 
 # 3. CompleteResponse gained the Reasoning carrier.
-assert_grep_present 'Reasoning string' internal/llm/llm.go \
+assert_grep_present '^[[:space:]]*Reasoning[[:space:]]+string([[:space:]]|$)' internal/llm/llm.go \
     "phase-83e: llm.CompleteResponse carries the Reasoning field"
 
 # 4. The bifrost reasoning helper + typed budget error ship.

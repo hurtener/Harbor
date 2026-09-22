@@ -112,7 +112,7 @@ remain separate and no permission test or coverage floor is relaxed.
 - [x] Full runctx/assembly/SDK assembly race suites and three repeated N=128
       embedded/served tests pass with unchanged production persistence deadlines.
 - [ ] Hosted full-suite rerun confirms the remaining deadline failures resolved.
-- [ ] MinIO fixture pull is repaired and actual S3 conformance executes.
+- [x] Hosted MinIO pull and real S3 conformance pass on `74d6171`.
 
 Decoder benchmark measurements and their limitations are recorded in
 [the release review](portable-context-release-review.md). These scoped results
@@ -122,5 +122,32 @@ are not a substitute for any unchecked final-tree gate above.
 
 The two temporary development workflows are removed, with no tracked payload
 manifest left behind. The S3 job uses the same MinIO release on its documented
-Quay registry and a loopback-only test port. Real S3 conformance is still pending
-hosted validation; no test command, timeout, or approval requirement is relaxed.
+Quay registry and a loopback-only test port. Hosted run `35670204554` pulled the image and passed the real S3 suite.
+No test command, timeout, or approval requirement is relaxed.
+
+## Final preflight corrections and remaining macOS gate
+
+The final Linux vet/test/build job is green at `74d6171`, along with hosted
+PostgreSQL, S3, frontend checks, lint, examples, isolation, chaos, leak and
+performance gates. macOS still fails `TestRetainedServer_ConcurrentReuse` and
+`TestRunLLMSettingsReachProviderWithoutConsumingPendingSlot`. The matrix failure
+skips hosted preflight and Playwright; their acceptance remains open.
+
+Local full lint/vet, static build and Phase 268 smoke pass. Drift completed
+1,590 checks, with no failures and one release-tag lookup warning in the
+reconstructed offline repository. The first full preflight was stopped after
+its static batch exposed three stale guards and a generated-agent module-fetch
+failure. It did not complete its unit/live batches; no full pass is claimed.
+
+- [x] Phase 111e checks the real guarded compactor call chain, not its old location.
+- [x] Phase 83e anchors field checks while accepting gofmt alignment whitespace.
+- [x] In-progress implementation is explicitly strict, not a planning/all-SKIP waiver.
+- [x] Regression fixtures cover in-progress/candidate status and unknown `In review`.
+- [ ] The complete final preflight and both platform test suites pass together.
+
+The classifier regression failed before its correction. Updated phases 111e,
+83e, 223 and 229, the full wave-v1.25 prompt-composition test, scoped integration
+lint, shell syntax and whitespace checks pass. Phase 184 still fails locally
+because its generated agent cannot resolve dependencies with the unavailable
+module proxy; that failure was not relabeled as success or bypassed. All
+production deadlines, N=128 concurrency workloads and release gates remain.

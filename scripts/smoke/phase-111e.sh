@@ -31,10 +31,17 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# 1. The §13 primitive-with-consumer closure: MaybeCompress has its
-#    production call site in the steering RunLoop (non-test file).
-assert_grep_present 'MaybeCompress' "internal/runtime/steering/runloop.go" \
-    "RunLoop step loop calls CompressionRunner.MaybeCompress (the audit's regression grep)"
+# 1. The §13 primitive-with-consumer closure now goes through the guarded
+#    publication helpers. Pin both call paths AND their runner invocation so
+#    moving the implementation cannot turn this guard into a comment match.
+assert_grep_present '^[[:space:]]*return compressRequest\(' "internal/runtime/steering/runloop.go" \
+    "RunLoop request preparation calls the guarded request compactor"
+assert_grep_present '^[[:space:]]*} else if cerr := compressTrajectory\(' "internal/runtime/steering/runloop.go" \
+    "RunLoop keeps the standalone planner compaction path"
+assert_grep_present '^[[:space:]]*return compressTrajectoryWith\(ctx, spec, rc, spec\.Compression\.MaybeCompress\)' "internal/runtime/steering/compression.go" \
+    "guarded standalone helper invokes CompressionRunner.MaybeCompress"
+assert_grep_present '^[[:space:]]*return spec\.Compression\.MaybeCompressRequest\(' "internal/runtime/steering/compression.go" \
+    "guarded request helper invokes CompressionRunner.MaybeCompressRequest"
 assert_grep_present 'Compression \*planner\.CompressionRunner' "internal/runtime/steering/runloop.go" \
     "RunSpec carries the Compression runner field"
 

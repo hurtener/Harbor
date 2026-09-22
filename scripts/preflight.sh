@@ -229,13 +229,14 @@ phase_row_status() {
 # Echoes `shipped`, `not-shipped`, or `unknown`. Statuses in the master plan
 # are `Shipped`, `Shipped* `, `Shipped (v1.23)`, `Pending (V1.5.x)`,
 # `Post-V1`, `Candidate for v1.31.0`, `Cut — RC redesigns Tasks`,
-# `Ready now (slim)`,
+# `In progress — release gates pending`, `Ready now (slim)`,
 # `Revisit after SDK-RC`, `Superseded by 107c (not shipped)`, `Reverted (#346
 # …)`, `Deprecated → superseded by …` — so the arms match on the LEADING word.
 #
 # Candidate means implementation exists and its smoke remains enforced while
 # hosted CI/tag/release evidence is pending. It is therefore explicitly in the
-# shipped arm. Planning vocabulary is not globally waived: an unrecognised new
+# shipped arm. In-progress implementation is likewise enforced, never an
+# all-SKIP waiver. Planning vocabulary is not globally waived: an unrecognised new
 # status stays strict-default shipped and is reported for an explicit decision.
 # The previous vocabulary named only Pending / Post-V1 / Deferred, so live
 # not-shipped words (Cut, Ready, Revisit, Superseded, Reverted, Deprecated)
@@ -250,6 +251,7 @@ phase_status_arm() {
     case "$1" in
         Shipped*|shipped*)                          printf 'shipped' ;;
         Candidate*|candidate*)                      printf 'shipped' ;;
+        In\ progress*|in\ progress*)                printf 'shipped' ;;
         Pending*|pending*)                          printf 'not-shipped' ;;
         Post-V1*|Post-v1*|post-v1*)                 printf 'not-shipped' ;;
         Deferred*|deferred*)                        printf 'not-shipped' ;;
