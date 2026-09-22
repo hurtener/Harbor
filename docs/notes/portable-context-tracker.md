@@ -1,12 +1,11 @@
 # Portable session context implementation tracker
 
 RFC 002 / PR #779. Checked implementation items are published behavior, not
-stable-release approval. The last fully covered implementation head is
-`95bd401257a02c991317b66c99ae0907c208f5c6`; the current candidate adds the
-provider-route attempt-boundary repair recorded below. The published
-`v1.32.0-rc.2` tag peels to `ad6a724639ddf282631ff7cb1de25dfb1ecb1727`
-and therefore does not contain that repair. RC evidence and current-candidate
-evidence are kept separate below.
+stable-release or consumer acceptance. The current implementation head is
+`742ced8e3ec5d6197ed22edb448be89d45659753`. Annotated prerelease
+`v1.32.0-rc.3` peels to that exact commit and includes the provider-route
+attempt-boundary and expired-on-arrival repairs. Local, hosted and downstream
+consumer evidence are kept separate below.
 
 ## Scope
 
@@ -24,7 +23,7 @@ automatic external-action replay, or default retention change is introduced.
 - [x] Assembled-request budgeting includes output headroom and full request input.
 - [x] Governed maintenance identity, admission and accounting; strict grant checks.
 - [x] Pinned OpenAI/Anthropic Bifrost HTTP integration without native compaction.
-- [ ] Complete final-tree regression and non-preflight release acceptance.
+- [x] Complete final-tree local regression and non-preflight hosted release checks.
 
 ## Slice 2 / Phase 269 — durable session continuity
 
@@ -44,7 +43,8 @@ automatic external-action replay, or default retention change is introduced.
 - [x] Strict custom-redactor host metadata validation before external dispatch.
 - [x] Settlement rejects mismatched intent expiry and oversized stored intent before parsing.
 - [x] Required custom redaction preserves action identity before dispatch and at terminal sealing.
-- [ ] Final hosted and canonical-process acceptance under unchanged production deadlines.
+- [x] Final non-preflight hosted and canonical-process checks under unchanged production deadlines.
+- [ ] Complete RC3 downstream deployment and live consumer acceptance.
 
 ## Slice 3 — diagnostics, integration and review
 
@@ -77,15 +77,19 @@ automatic external-action replay, or default retention change is introduced.
 - [x] Exact-head local `GOFLAGS=-p=1 make test` passes on Go 1.26.4; hosted
       lint and both platform test/build jobs also pass.
 - [x] Final-tree drift audit passes: 1,592 OK / zero warnings / zero failures.
-- [ ] Final-tree prior-phase smoke acceptance passes.
-- [ ] Local and hosted preflight are owner-waived for this RC effort. They are
-      intentionally skipped and are not recorded as green release evidence.
+- [x] Phase 268 and 269 local smoke acceptance: 10/0/0 and 14/0/0 respectively;
+      Phase 269 used PostgreSQL 17.11 with dedicated independent pools.
+- [ ] Local and hosted preflight are owner-waived for this RC effort. The
+      hosted job was still running at the last check and is not green evidence.
 - [x] Exact-head frontend check/lint/unit/build and Console Playwright pass in
       run `35742931975`.
 - [ ] The RC sample-agent evaluation completes after the downstream consumer fixes
       are published, deployed and live-retested.
 - [x] `v1.32.0-rc.2` is published as a prerelease at the reviewed `ad6a724`
       target. It is not the current PR head or a stable release.
+- [x] `v1.32.0-rc.3` is published as a prerelease at exact code head `742ced8`;
+      release run `35773295028` succeeded. This is not merge, deployment or
+      live consumer acceptance.
 
 ## September 22 recovery and publication
 
@@ -247,12 +251,52 @@ accepts the outer selection at its original clock instant, advances beyond its
 expiry without sleeping, and proves the leaf performs exactly one fresh
 resolution and one provider call. Restoring the old leaf check makes this test
 fail before resolution with the live sentinel. Focused Bifrost and core LLM race
-tests plus affected vet pass; broader exact-head gates remain required. Because
-published `v1.32.0-rc.2` does not contain this runtime fix, a new RC tag is
-required after review and release gates, before deployment or live retest. No
-tag, release, merge or deployment is performed by this change.
+tests plus affected vet pass; later exact-head gates are recorded below. Because
+published `v1.32.0-rc.2` does not contain this runtime fix, it could not
+validate the repaired attempt boundary. RC3 publication is recorded below;
+downstream deployment and live retest remain required.
 
 `TestProviderRouteClient_RejectsSelectionExpiredDuringResolverCall` advances a
 controllable clock inside the selection seam, proves the selection was valid at
 request time but expired on arrival, and verifies that neither the selection
 validator nor the inner chain runs.
+
+## RC3 publication and exact-head evidence (September 22)
+
+The preceding RC2 sections preserve their point-in-time history. The repair is
+now published: annotated tag object `0ff41ccdb03bd9f0b0f48e0b2c8f137475c80539`
+for [`v1.32.0-rc.3`](https://github.com/hurtener/Harbor/releases/tag/v1.32.0-rc.3)
+peels to `742ced8e3ec5d6197ed22edb448be89d45659753`. GitHub published the
+prerelease at 2026-09-22T19:24:31Z. [Release run 35773295028](https://github.com/hurtener/Harbor/actions/runs/35773295028)
+succeeded with six platform binaries, checksum sidecars, aggregate checksums and
+provenance. RC3 is a prerelease of the unmerged draft PR, not a stable release.
+
+At exact `742ced8`, local Go 1.26.4 `GOFLAGS=-p=1 make test`, `make vet`,
+`make lint`, `make build` and `make release-dryrun` passed. Protocol docs,
+TypeScript and generation checks, Markdown, mirror and drift checks passed
+(1,592 OK / zero warnings / zero failures). Phase 268 passed 10/0/0 and Phase
+269 passed 14/0/0 using PostgreSQL 17.11 dedicated independent pools. The
+canonical PostgreSQL-backed race coverage measured runctx 87.1%, runtime
+assembly 83.7%, SDK assembly 100% and served 85.1%, meeting the served 85%
+target. Local Console Playwright recorded 177 pass, 10 intentional skips and
+zero failures; the page-coverage gate passed. The local PostgreSQL cluster was
+stopped after testing. Two independent adversarial reviews and the narrow fix
+re-review report P0: 0, P1: 0 for the runtime repair.
+
+[Exact-head CI run 35768783311](https://github.com/hurtener/Harbor/actions/runs/35768783311)
+passed all non-preflight jobs, including Linux/macOS Go race, vet and build,
+Console Playwright, lint, PostgreSQL and S3 conformance. [Docs run 35768783408](https://github.com/hurtener/Harbor/actions/runs/35768783408)
+succeeded. Preflight is owner-waived for this RC and was still running at the
+last check; it is not a passing gate.
+
+Downstream acceptance remains open. Fleet draft PR #107 has newer `fd6eaa1d`
+with local PostgreSQL 17 five-store apply/verify evidence, but its hosted CI
+failed before executing steps because of billing. The deployed Render fleet
+still runs RC2 code `f7a2fc7`; the separate RC3 fleet candidate is not yet
+deployed. Pengui draft PR #358 remains at `89a61c`, with zero-step hosted jobs
+and no deployment. The Terra RC2/RC1 continuity observations above remain
+historical live evidence; they are not an RC3 consumer test. RC3 still needs
+deployment, authorized live editing and Stop/panel recovery checks, and an
+explicit MiMo outcome. The sample 12,000-token planner input target remains
+separate from provider completion limits. A future typed run-limit Continue
+flow remains separate from runtime JWT lifetime and idempotent Stop retry.
