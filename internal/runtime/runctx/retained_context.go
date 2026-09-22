@@ -253,6 +253,11 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 	if safe.Admission != turn.Admission || !safe.ExpiresAt.Equal(turn.ExpiresAt) || safe.Status != status || len(safe.Steps) != len(turn.Steps) {
 		return ErrRetainedContextUnavailable
 	}
+	for index := range turn.Steps {
+		if !sameRetainedStepIdentity(turn.Steps[index], safe.Steps[index]) {
+			return ErrRetainedContextUnavailable
+		}
+	}
 	for range retainedContextAttempts {
 		window, recordID, err := r.load(ctx)
 		if err != nil {
@@ -317,6 +322,32 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 		return r.cleanupJournal(ctx)
 	}
 	return ErrRetainedContextUnavailable
+}
+
+// sameRetainedStepIdentity applies the dispatch journal's content-stripped
+// action identity rule to a terminal historical exchange. A redactor may
+// rewrite content-bearing arguments and observations, but it cannot change the
+// inert envelope coordinates or the operation those coordinates describe.
+func sameRetainedStepIdentity(original, redacted json.RawMessage) bool {
+	var originalOuter, redactedOuter planner.Step
+	if decodeRetained(original, &originalOuter) != nil || decodeRetained(redacted, &redactedOuter) != nil ||
+		originalOuter.Historical == nil || redactedOuter.Historical == nil {
+		return false
+	}
+	wantEnvelope, gotEnvelope := originalOuter.Historical, redactedOuter.Historical
+	if wantEnvelope.Version != gotEnvelope.Version || wantEnvelope.SourceRun != gotEnvelope.SourceRun ||
+		wantEnvelope.Index != gotEnvelope.Index || wantEnvelope.Kind != gotEnvelope.Kind {
+		return false
+	}
+	want, err := planner.ReadHistoricalStep(originalOuter)
+	if err != nil {
+		return false
+	}
+	got, err := planner.ReadHistoricalStep(redactedOuter)
+	if err != nil || (want.Action == nil) != (got.Action == nil) {
+		return false
+	}
+	return want.Action == nil || sameRetainedActionIdentity(want.Action, got.Action)
 }
 
 func validRetainedStatus(s string) bool {
