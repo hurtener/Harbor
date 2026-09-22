@@ -47,6 +47,16 @@ func (r terminalShapeRedactor) Redact(_ context.Context, value any) (any, error)
 		action["Tool"] = "different"
 	case "call id":
 		action["CallID"] = "different-call"
+	case "envelope source":
+		historical["source_run"] = "different-run"
+	case "envelope kind":
+		historical["kind"] = "context"
+	case "missing historical":
+		delete(outer, "historical")
+	case "missing action":
+		delete(body, "action")
+	case "invalid body":
+		body["reasoning_trace"] = "PRIVATE-TRACE"
 	case "parallel branches":
 		branches, _ := action["Branches"].([]any)
 		action["Branches"] = branches[:1]
@@ -90,6 +100,11 @@ func TestRetainedContext_TerminalRedactorCannotChangeActionIdentity(t *testing.T
 	}{
 		{name: "tool", shape: "tool", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
 		{name: "call-id", shape: "call id", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
+		{name: "envelope-source", shape: "envelope source", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
+		{name: "envelope-kind", shape: "envelope kind", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
+		{name: "missing-historical", shape: "missing historical", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
+		{name: "missing-action", shape: "missing action", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
+		{name: "invalid-body", shape: "invalid body", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
 		{name: "parallel-branches", shape: "parallel branches", action: parallel},
 		{name: "batch-branches", shape: "batch branches", action: batch},
 		{name: "control-authority", shape: "control authority", action: planner.CancelTask{TaskID: "owned-task", Reason: "no longer needed"}},

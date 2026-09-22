@@ -69,7 +69,8 @@ automatic external-action replay, or default retention change is introduced.
 
 - [ ] Canonical final-head Linux and macOS vet/test/build jobs pass.
 - [x] Canonical PostgreSQL-backed served coverage reaches 85.1%, above its 85% target.
-- [ ] Reconfirm every touched-package coverage result on the exact final documentation head.
+- [x] Reconfirmed on the release-candidate documentation tree: runctx 87.0%,
+      runtime assembly 83.7%, SDK assembly 100%, and served runtime 85.1%.
 - [ ] Final-tree full Go lint, race and build acceptance passes.
 - [x] Final-tree drift audit passes: 1,592 OK / zero warnings / zero failures.
 - [ ] Final-tree prior-phase smoke acceptance passes.

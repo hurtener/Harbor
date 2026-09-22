@@ -62,12 +62,15 @@ Aggregate served statement coverage was 74.3%, below the documented 85% floor.
 Neither grouped execution nor existing earlier-head CI success replaces full
 canonical final-head acceptance. The coverage target remains open.
 
-## Outstanding acceptance
+## Outstanding acceptance at the recovery checkpoint
 
-Canonical platform tests, coverage remediation, full preflight, Protocol and
-applicable frontend/E2E checks, and complete adversarial review remain required.
-Previously observed generated-agent module-fetch failures were not waived.
-The sample and RC instructions exist but no RC has been published.
+At that checkpoint, canonical platform tests, coverage remediation, full
+preflight, Protocol and applicable frontend/E2E checks, and complete adversarial
+review remained required. The previously observed generated-agent module-fetch
+failures had not been waived. The sample and RC instructions existed, but no RC
+had been published. This paragraph records the recovery checkpoint's requirements;
+the current-tree evidence and explicit preflight waiver are recorded below and in
+the live tracker.
 
 [The tracker](portable-context-tracker.md) separates published implementation
 from these release gates. Long-term memory remains external to Harbor.

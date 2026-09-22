@@ -154,9 +154,11 @@ The September 22 hardening sweep published five additional commits:
 
 No production five-second deadline, N=128 workload, race instrumentation,
 coverage target, production-file inclusion or assertion was weakened. Focused
-runctx race/vet/lint and served PostgreSQL race/coverage checks pass. Runctx,
-runtime assembly and SDK assembly retain their measured 86.9%, 83.7% and 100%
-statement coverage.
+runctx race/vet/lint and served PostgreSQL race/coverage checks pass. On the
+release-candidate documentation tree, terminal-redactor envelope/body refusal
+regressions bring the PostgreSQL-backed runctx race profile to 87.0%; runtime
+assembly and SDK assembly retain their measured 83.7% and 100% statement
+coverage, and served remains at 85.1%.
 
 Two independent adversarial reviews reported no P0. Their P1 findings were the
 terminal-redactor identity gap fixed by `cea93340` and stale release evidence
