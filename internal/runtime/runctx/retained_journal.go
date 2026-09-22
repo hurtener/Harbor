@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -66,7 +67,7 @@ func (r *RetainedRun) Start(ctx context.Context, base planner.RunContext) (err e
 	}
 	var frame []byte
 	if r.initialContext != nil {
-		frame, err = r.makeFrame(ctx, 0, true, *r.initialContext, head.ExpiresAt)
+		frame, _, err = r.makeFrame(ctx, 0, true, *r.initialContext, head.ExpiresAt)
 		if err != nil {
 			return err
 		}
@@ -92,7 +93,7 @@ func (r *RetainedRun) BeforeDispatch(ctx context.Context, rc planner.RunContext,
 	if r.journal.Count >= maxRetainedContextSteps {
 		return ErrRetainedContextCapacity
 	}
-	frame, err := r.makeFrame(ctx, r.journal.Count, false, step, r.journal.ExpiresAt)
+	frame, _, err := r.makeFrame(ctx, r.journal.Count, false, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
 	}
@@ -122,27 +123,20 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) {
 		return ErrRetainedContextUnavailable
 	}
-	frame, err := r.makeFrame(ctx, index, true, step, r.journal.ExpiresAt)
+	frame, settledAction, err := r.makeFrame(ctx, index, true, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
 	}
-	var before, after retainedFrame
+	var before retainedFrame
 	if err := decodeRetained(old.Bytes, &before); err != nil {
 		return err
 	}
-	if err := decodeRetained(frame, &after); err != nil {
-		return err
-	}
-	var intentStep, settledStep planner.Step
+	var intentStep planner.Step
 	if err := decodeRetained(before.Step, &intentStep); err != nil {
 		return err
 	}
-	if err := decodeRetained(after.Step, &settledStep); err != nil {
-		return err
-	}
 	intentAction, intentErr := json.Marshal(intentStep.Action)
-	settledAction, settledErr := json.Marshal(settledStep.Action)
-	if intentErr != nil || settledErr != nil || before.Version != retainedJournalVersion ||
+	if intentErr != nil || before.Version != retainedJournalVersion ||
 		before.Admission != r.admission || before.Index != index || before.Settled || before.Context ||
 		!bytes.Equal(intentAction, settledAction) {
 		return ErrRetainedContextUnavailable
@@ -169,7 +163,7 @@ func (r *RetainedRun) RecordContext(ctx context.Context, rc planner.RunContext, 
 	if r.journal.Count >= maxRetainedContextSteps {
 		return ErrRetainedContextCapacity
 	}
-	frame, err := r.makeFrame(ctx, r.journal.Count, true, step, r.journal.ExpiresAt)
+	frame, _, err := r.makeFrame(ctx, r.journal.Count, true, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
 	}
@@ -192,24 +186,39 @@ func (r *RetainedRun) rememberJournalFailure(err error) {
 	}
 }
 
-func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, step planner.Step, expiresAt time.Time) ([]byte, error) {
+// makeFrame validates the redactor's result before constructing host metadata.
+// Return the checked action bytes as well: settlement compares them with the
+// stored intent without decoding the just-built frame and its receipt again.
+// This is a call-local value, not cached authority or a skipped storage check.
+func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, step planner.Step, expiresAt time.Time) ([]byte, []byte, error) {
 	evidence, err := r.redactJournalValue(ctx, trajectory.ModelStep(step))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	// ReadHistoricalStep validates permitted top-level fields and semantics;
+	// also retain strict nested typed host checks before accepting custom
+	// redactor JSON. Opaque tool-result fields remain data.
+	if err := validateRetainedShape(evidence, reflect.TypeFor[planner.Step]()); err != nil {
+		return nil, nil, err
 	}
 	checked, err := planner.ReadHistoricalStep(planner.Step{Historical: &planner.HistoricalStep{
 		Version: 1, SourceRun: r.q.RunID, Index: index, Kind: "context", Body: evidence,
 	}})
 	if err != nil {
-		return nil, ErrRetainedContextUnavailable
+		return nil, nil, ErrRetainedContextUnavailable
 	}
 	if (checked.Action == nil) != (step.Action == nil) || (checked.Action == nil && (!settled || checked.LLMObservation == nil)) {
-		return nil, ErrRetainedContextUnavailable
+		return nil, nil, ErrRetainedContextUnavailable
 	}
-	return json.Marshal(retainedFrame{
+	action, err := json.Marshal(checked.Action)
+	if err != nil {
+		return nil, nil, ErrRetainedContextUnavailable
+	}
+	frame, err := json.Marshal(retainedFrame{
 		Version: retainedJournalVersion, Admission: r.admission, Index: index,
 		Settled: settled, Context: checked.Action == nil, Step: evidence, ExpiresAt: expiresAt,
 	})
+	return frame, action, err
 }
 
 func (r *RetainedRun) redactJournalValue(ctx context.Context, value any) ([]byte, error) {

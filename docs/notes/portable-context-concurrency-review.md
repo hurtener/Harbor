@@ -52,3 +52,43 @@ latency improvement or resolution of hosted persistence deadlines is claimed.
 
 No dependency, persisted format, authority cache, persistence timeout or workload
 limit changed. Full hosted platform tests remain a separate release requirement.
+
+## Validate prepared intent and reuse settled action
+
+The settlement path decoded its own newly constructed frame and then decoded the
+same receipt again only to compare actions. Frame preparation now returns the
+validated, detached action encoding alongside the serialized frame. Settlement
+still loads the stored intent, verifies its exact generation and typed host
+metadata, compares the redacted actions, and performs the same conditional
+multi-record commit. No authority is cached between calls.
+
+Review of that reuse exposed a pre-existing earlier-boundary gap: a custom
+redactor could return ambiguous nested failure metadata that passed intent
+preparation and was rejected only after tool execution. The new in-memory and
+SQLite intent regressions fail against the exact published `2d430ac` source.
+The real embedded RunOnce regression likewise executes the tool once before
+rejection on that source; after the correction it executes no tool. Strict nested
+host validation now runs during preparation, before dispatch. Invalid settlement
+metadata and changed actions leave both committed head and intent unchanged;
+opaque result keys, full source strings and exact large numeric IDs stay data.
+
+Full affected core race suites and the targeted embedded regression pass on
+Go 1.26.4. Phase 269 with the disposable PostgreSQL service passes 14 checks,
+zero skips and zero failures. The existing journal smoke group includes the
+new tests. Local lint uses the pinned binary with vendor mode because the module
+proxy is unavailable; repository dependencies and CI lint configuration are not
+changed. Final hosted platform and preflight acceptance remain open.
+
+The settlement benchmark includes the real in-memory driver and default redactor,
+with an exact 14,660-byte receipt. Three 100-iteration samples measured median
+allocated bytes of 509,044 before and 379,422 after the change. These scoped
+allocation measurements are not a claim that hosted deadline failures are fixed;
+wall-clock samples were variable. The production five-second deadlines, all
+128-session workloads, erasure predicates and persisted formats remain unchanged.
+
+The broader coverage run also exposed an existing measurement race in
+`TestFetchMemoryBlocks_ConcurrentReuse`: it sampled process-wide goroutine counts
+while running in parallel with other tests. Its observed baseline of 112 rose to
+184 as sibling tests started workers. That test now runs outside the inter-test
+parallel group while preserving its own 100 concurrent calls and unchanged leak
+threshold. No runtime concurrency or assertion is reduced.

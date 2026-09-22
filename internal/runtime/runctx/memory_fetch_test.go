@@ -492,7 +492,8 @@ func TestFetchMemoryBlocks_ConversationUnchangedWithRecall(t *testing.T) {
 // leaks. Uses StrategyNone so the recent window is empty and all recalled
 // turns pass the dedup step, keeping the test deterministic.
 func TestFetchMemoryBlocks_ConcurrentReuse(t *testing.T) {
-	t.Parallel()
+	// The leak assertion measures the whole process. Keep sibling tests out
+	// of that baseline; the N=100 invocations below still run concurrently.
 	bus := newFetchTestBus(t)
 	mem := newFetchTestStore(t, bus, memory.StrategyNone, memory.RetrievalSemantic)
 	ctx := context.Background()
