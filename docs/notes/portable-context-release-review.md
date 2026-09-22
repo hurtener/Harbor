@@ -171,3 +171,35 @@ The owner explicitly waived local and hosted preflight for this RC effort. Those
 checks are skipped, not passed, and their absence remains visible in the tracker.
 The RC tag, sample-agent deployment and live head-to-head evaluation have not yet
 occurred.
+
+## RC publication, live evaluation and current-head correction
+
+The statement above is retained as the `742a76e` review checkpoint. The annotated
+`v1.32.0-rc.1` prerelease was subsequently published at that exact commit. The PR
+then advanced to `95bd401`, so the RC tag and current code head are intentionally
+not described as the same tree.
+
+The live head-to-head found no retained-context corruption. The baseline failed;
+the RC-backed Terra agent preserved exact project state through complex revisions,
+a refusal, session switching, unrelated-session activity, restart, another edit
+and audit. MiMo exposed a long-running processing UX, an expired coordinator runtime
+JWT on Stop, and a missing durable `no_path` finish reason. Commit `95bd401`
+closes the Harbor projection defect by preserving canonical non-goal failed
+finish reasons across SQLite restart and the `sessions.turns.get` boundary while
+keeping failure status and error class independent.
+
+Two independent adversarial reviews of `742a76e..95bd401` report P0: 0 and P1: 0.
+Exact-head local `GOFLAGS=-p=1 make test` passes on Go 1.26.4. Hosted CI run
+`35742931975` is exact-head: both platform jobs, frontend check/lint/unit/build,
+Console Playwright, conformance, lint, examples, performance, isolation, chaos,
+leak and mirror jobs passed at the evidence check. Preflight was still running
+and is not counted as green. Preflight remains owner-waived for this RC effort.
+
+The restart panel failure was a transient capability-convergence race: the first
+reload received 404 from `mcp.servers.read_resource` and `tools.describe`, while
+a later reload recovered all five old panels using their existing references.
+Downstream consumer repairs for bounded read-only retry/manual Retry, one-time token
+remint for idempotent Stop, and configurable per-runtime token lifetime are
+committed locally but remain unpublished, undeployed and not live-accepted.
+Workbench show-only PR #26 merged at `a4c9a37`. These consumer blockers keep the
+PR draft and prevent stable-release approval.

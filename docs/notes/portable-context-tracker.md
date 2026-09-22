@@ -1,9 +1,11 @@
 # Portable session context implementation tracker
 
-RFC 002 / PR #779. Checked implementation items are published behavior, not RC
-approval. The implementation head covered by this evidence is
-`cea93340a298e0d1ba4eeda1849c89c457ff0b3d`; this documentation reconciliation
-adds no runtime change. The current release blockers are listed separately below.
+RFC 002 / PR #779. Checked implementation items are published behavior, not
+stable-release approval. The current code head covered by this evidence is
+`95bd401257a02c991317b66c99ae0907c208f5c6`. The published `v1.32.0-rc.1`
+tag instead peels to the older `742a76e123dca5dbc94939206cb89360ccba6e63`;
+RC evidence and current-head evidence are kept separate below. This
+documentation reconciliation adds no runtime change.
 
 ## Scope
 
@@ -61,24 +63,28 @@ automatic external-action replay, or default retention change is introduced.
 - [x] MinIO registry corrected and actual hosted S3 conformance observed.
 - [x] Stale source guards repaired; in-progress phase smoke remains strictly enforced.
 - [x] Public-SDK editing sample, inspection, migration and RC procedure provided.
-- [ ] Final adversarial review completed with no unresolved critical/high-severity findings.
-      Two independent final-tree reviews found no P0; their two P1 findings are
-      fixed at the current head, with narrow diff-only re-review still pending.
+- [x] Two independent adversarial reviews of `742a76e..95bd401` completed with
+      P0: 0 and P1: 0 after narrow diff-only re-review.
 
 ## Final release gates
 
-- [ ] Canonical final-head Linux and macOS vet/test/build jobs pass.
+- [x] Exact-head Linux and macOS vet/test/build jobs pass in hosted CI run
+      `35742931975`.
 - [x] Canonical PostgreSQL-backed served coverage reaches 85.1%, above its 85% target.
 - [x] Reconfirmed on the release-candidate documentation tree: runctx 87.0%,
       runtime assembly 83.7%, SDK assembly 100%, and served runtime 85.1%.
-- [ ] Final-tree full Go lint, race and build acceptance passes.
+- [x] Exact-head local `GOFLAGS=-p=1 make test` passes on Go 1.26.4; hosted
+      lint and both platform test/build jobs also pass.
 - [x] Final-tree drift audit passes: 1,592 OK / zero warnings / zero failures.
 - [ ] Final-tree prior-phase smoke acceptance passes.
 - [ ] Local and hosted preflight are owner-waived for this RC effort. They are
       intentionally skipped and are not recorded as green release evidence.
-- [ ] Final-tree Protocol generation/lockstep and applicable frontend/E2E gates pass.
-- [ ] Sample-agent RC procedure is executed against an approved release candidate.
-- [ ] RC is published only after implementation and release gates pass.
+- [x] Exact-head frontend check/lint/unit/build and Console Playwright pass in
+      run `35742931975`.
+- [ ] The RC sample-agent evaluation completes after the downstream consumer fixes
+      are published, deployed and live-retested.
+- [x] `v1.32.0-rc.1` is published as a prerelease at the reviewed `742a76e`
+      target. It is not the current PR head or a stable release.
 
 ## September 22 recovery and publication
 
@@ -97,6 +103,8 @@ commit IDs are not the new publication IDs; no remote history was rewritten.
 | `2cfc99f` | PostgreSQL-backed served coverage and failure tests, reaching 85.1% |
 | `ce684fc4` | Refresh the scaffold fallback module version and restore a clean drift audit |
 | `cea93340` | Reject terminal custom-redactor action-identity changes before persistence |
+| `742a76e` | Add terminal custom-redactor refusal regressions; `v1.32.0-rc.1` target |
+| `95bd401` | Persist canonical failed finish reasons, including `no_path`, across restart and Protocol projection |
 
 The accompanying tracker checkpoint publishes the saved served-concurrency
 failure diagnostics. They report synthetic scope/status/error details without
@@ -139,19 +147,66 @@ suites and passed the identical workloads with package concurrency one. The
 production five-second persistence bounds and each test's 128 sessions remain
 unchanged. This supports the CI scheduling change, not a claim of macOS success.
 
-Exact-head CI run `35697496723` on `cea93340` is still in progress. At the latest
-check, Markdown, S3, skills/PostgreSQL and leak jobs had passed while the platform,
-frontend and remaining conformance jobs were still running. No running job is
-counted as green. Older Linux/S3/PostgreSQL/frontend successes do not establish
-acceptance of this head. Local and hosted preflight are explicitly owner-waived
-for this RC effort; that waiver is recorded as a skip, not a pass.
+The current implementation head adds the durable failure projection found by the
+live RC exercise. `95bd401` maps only canonical non-goal planner failure codes
+from `task.failed` into the closed turn finish-reason set. Its regressions pin a
+failed `no_path` turn through SQLite restart and byte-identical
+`sessions.turns.get` projection while retaining an independent error class. This
+repairs an outcome-reporting defect; it does not change retained context or turn a
+failed run into success.
+
+On Go 1.26.4, exact-head local `GOFLAGS=-p=1 make test` passed. Hosted CI run
+[`35742931975`](https://github.com/hurtener/Harbor/actions/runs/35742931975)
+targets `95bd401`. At the latest evidence check, Linux and macOS vet/test/build,
+lint, Markdown, frontend check/lint/unit/build, examples, PostgreSQL, S3,
+performance, isolation, chaos, leak, mirror and Console Playwright jobs had
+succeeded. Hosted preflight was still running and is not counted as green.
+The docs build in run `35742932499` passed; its Pages deployment was skipped and
+is not called green. Local and hosted preflight remain explicitly owner-waived
+for this RC effort; the fact that the hosted job started does not convert the
+waiver or an in-progress result into a pass.
 
 See [recovery evidence](portable-context-recovery-publication.md),
 [concurrency review](portable-context-concurrency-review.md),
 [release review](portable-context-release-review.md), and
 [RC procedure](portable-context-rc.md).
 
+## RC publication and live acceptance
+
+The annotated `v1.32.0-rc.1` tag object
+`43fc9a1b6bd1b25e540948d2ac5e16d5bdf5cad9` peels to `742a76e`, not the newer
+`95bd401` code head. The GitHub prerelease was published on September 22, 2026.
+No stable release or merge is claimed.
+
+The disposable baseline failed its complex editing sequence. Against the RC,
+Terra preserved the exact project state through complex revisions, a refused
+operation, switching away from and back to the session, work in an unrelated
+session, a runtime restart, a subsequent edit and an audit of the stored result.
+That is strong live evidence that retained Harbor context materially improved
+the target workflow and is a credible main-version candidate after the remaining
+consumer acceptance gates.
+
+The MiMo run did not establish context corruption. It exposed a long-running UI
+that remained in a processing state without useful reasoning progress, an expired
+coordinator-minted runtime token when Stop was attempted, and the durable `no_path`
+projection gap fixed by `95bd401`. Those are terminal-outcome and consumer token/
+UX defects and must not be reported as failed context restoration.
+
+The first page reload roughly 25 seconds after the runtime restart also returned
+transient 404s from `mcp.servers.read_resource` and `tools.describe`, so five
+persisted Workbench panels failed to mount. A later full reload after capability
+reattachment recovered all five, proving that the static resource URI and
+persisted project/revision references were valid. The smallest consumer repair is
+bounded read-only re-resolution/retry plus a visible Retry action; it must never
+replay a historical tool call or presentation credential. The consumer repair also
+adds one-time remint/retry for idempotent Stop and configurable per-runtime token
+lifetime. It is committed locally but remains unpublished, undeployed and not
+live-accepted. Workbench show-only PR
+[#26](https://github.com/pengui-ai/prototype_workbench/pull/26) merged as
+`a4c9a37e8c7687ed1ed60959eabbbd58c04f7d42`.
+
 Deterministic tests establish runtime/request behavior, not real-model editing
-proficiency, prompt-cache savings or physical external effects. The live RC
-sample-agent deployment and head-to-head model evaluation remain pending. No
-paid call, merge, tag, deployment or RC publication is claimed by this tracker.
+proficiency, prompt-cache savings or physical external effects. Remaining
+release acceptance is downstream publication/deployment, a live replay of the
+post-restart panel and Stop paths, and a completed MiMo comparison with explicit
+terminal UX. The PR stays draft.

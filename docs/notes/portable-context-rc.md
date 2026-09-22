@@ -1,7 +1,10 @@
 # Portable context RC acceptance
 
-RFC 002 / PR #779. This is the test procedure, not an announcement that an RC
-has shipped. The live implementation/release tracker is
+RFC 002 / PR #779. `v1.32.0-rc.1` is published as a prerelease at
+`742a76e123dca5dbc94939206cb89360ccba6e63`; the current code head is the newer
+`95bd401257a02c991317b66c99ae0907c208f5c6`. This procedure does not announce a
+stable release or claim that the older RC contains the newer durable `no_path`
+projection fix. The live implementation/release tracker is
 [portable-context-tracker.md](portable-context-tracker.md).
 
 ## Before selecting an RC tag
@@ -42,7 +45,12 @@ planner:
 
 Keep the deployment's existing provider, model, JWT, store and tool authority
 configuration. Set the model profile's actual context and output limits as well.
-The input target is not the physical limit or a price cap. Use a durable configured
+The sample's `planner.token_budget: 12000` is a disposable working-input target
+for planner reasoning and compaction during this RC exercise. It is not a Harbor
+framework ceiling, a provider completion/output ceiling, or a price cap. Configure
+the selected model's real input and output limits independently. Keep the sample's
+useful deterministic planner-step and `-max-output` bounds; do not remove them to
+work around a provider profile or admission error. Use a durable configured
 StateStore and ArtifactStore to test restarts. Stowage remains an independent
 integration; do not expose the trusted completion ingestion hook to the planner.
 
@@ -111,3 +119,35 @@ artifact differences, checkpoint events, restart boundary and human corrections.
 Keep real-model outcomes separate from deterministic test results. Include all
 maintenance/retry usage in cost analysis; request-prefix stability is not evidence
 of provider cache hits, lower bills or superior task success.
+
+## Current live findings and remaining consumer acceptance
+
+The baseline failed the complex editing sequence. The RC-backed Terra run kept
+the exact project state through multiple complex revisions, a refused operation,
+switching away and back, unrelated-session work, runtime restart, another edit
+and a stored-state audit. The MiMo run instead remained visibly processing
+without useful reasoning progress; its Stop attempt reached Harbor with an
+expired coordinator-minted runtime JWT, and its failed turn exposed the durable
+`no_path` reporting defect corrected by `95bd401`. None of those observations is
+evidence that retained context was corrupted.
+
+Immediately after restart, the first consumer reload saw transient 404 responses
+from `mcp.servers.read_resource` and `tools.describe`; five old Workbench panels
+failed. Once runtime capabilities converged, another reload recovered every
+panel. Therefore the durable static resource URI and project/revision references
+were valid. Acceptance still requires the consumer's bounded read-only retry/manual
+Retry repair and idempotent Stop token-remint behavior to be published, deployed
+and retested. Historical tool actions and old presentation credentials must not
+be replayed. Workbench PR #26's show-only correction is merged at `a4c9a37`.
+
+## Follow-up: explicit run-limit continuation
+
+A future Protocol/runtime increment should expose typed terminal outcomes for
+run limits instead of leaving a consumer to infer them from an indefinitely
+active presentation. The consumer may then offer **Continue**. Continue starts a
+new admitted run in the same session; it is not an extension of the exhausted
+run and not a token refresh. Admission must recheck current identity, authority,
+catalog, model capacity and configuration. The new run may use the session's
+retained context and settled tool evidence, but it must never re-execute a
+historical action or treat an unsettled external intent as safe to retry. This is
+separate from the runtime JWT lifetime and its idempotent Stop remint policy.
