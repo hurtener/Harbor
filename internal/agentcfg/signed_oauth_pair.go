@@ -18,6 +18,7 @@ func cloneSignedOAuthMCPPair(in *SignedOAuthMCPPair) *SignedOAuthMCPPair {
 	out.Connection.ToolDenylist = sortDedup(in.Connection.ToolDenylist)
 	out.Connection.Injection = in.Connection.Injection.Clone()
 	out.Connection.ArtifactParams = cloneSignedOAuthArtifactParams(in.Connection.ArtifactParams)
+	out.Connection.ToolPolicies = cloneSignedOAuthToolPolicies(in.Connection.ToolPolicies)
 	return &out
 }
 
@@ -39,6 +40,17 @@ func cloneSignedOAuthArtifactParams(in map[string][]string) map[string][]string 
 	out := make(map[string][]string, len(in))
 	for tool, params := range in {
 		out[tool] = sortDedup(params)
+	}
+	return out
+}
+
+func cloneSignedOAuthToolPolicies(in map[string]SignedMCPToolRetryPolicy) map[string]SignedMCPToolRetryPolicy {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]SignedMCPToolRetryPolicy, len(in))
+	for name, policy := range in {
+		out[name] = policy
 	}
 	return out
 }

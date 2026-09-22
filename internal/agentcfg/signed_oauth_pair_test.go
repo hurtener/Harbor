@@ -26,6 +26,38 @@ func TestSignedOAuthMCPPairView_DeepClonesInjection(t *testing.T) {
 	}
 }
 
+func TestSignedOAuthMCPPairViews_DeepCloneToolPolicies(t *testing.T) {
+	original := &SignedOAuthMCPPair{
+		ProviderName: "workbench",
+		Connection: SignedOAuthMCPConnectionDescriptor{ToolPolicies: map[string]SignedMCPToolRetryPolicy{
+			"workbench_create": {MaxAttempts: 1},
+		}},
+	}
+	pairs := SignedOAuthMCPPairs{"workbench": *original}
+	payload := ConfigPayload{SignedOAuthMCPPair: original, SignedOAuthMCPPairs: &pairs}
+	legacy, ok := payload.SignedOAuthMCPPairView()
+	if !ok {
+		t.Fatal("legacy pair view absent")
+	}
+	collection := payload.SignedOAuthMCPPairsView()
+	if collection == nil {
+		t.Fatal("collection pair view absent")
+	}
+	legacy.Connection.ToolPolicies["workbench_create"] = SignedMCPToolRetryPolicy{MaxAttempts: 4}
+	collectionPair := (*collection)["workbench"]
+	collectionPair.Connection.ToolPolicies["workbench_create"] = SignedMCPToolRetryPolicy{MaxAttempts: 4}
+	if got := original.Connection.ToolPolicies["workbench_create"].MaxAttempts; got != 1 {
+		t.Fatalf("legacy view mutated source policy to %d", got)
+	}
+	if got := pairs["workbench"].Connection.ToolPolicies["workbench_create"].MaxAttempts; got != 1 {
+		t.Fatalf("collection view mutated source policy to %d", got)
+	}
+	original.Connection.ToolPolicies["workbench_create"] = SignedMCPToolRetryPolicy{MaxAttempts: 2}
+	if got := legacy.Connection.ToolPolicies["workbench_create"].MaxAttempts; got != 4 {
+		t.Fatalf("source mutation changed prior legacy view to %d", got)
+	}
+}
+
 func TestEffectiveSignedOAuthMCPPairs_StrictLegacyMapUnion(t *testing.T) {
 	legacy := &SignedOAuthMCPPair{ProviderName: "legacy", Connection: SignedOAuthMCPConnectionDescriptor{Name: "legacy-connection"}}
 	pairs := SignedOAuthMCPPairs{"modern": {ProviderName: "modern", Connection: SignedOAuthMCPConnectionDescriptor{Name: "modern-connection"}}}

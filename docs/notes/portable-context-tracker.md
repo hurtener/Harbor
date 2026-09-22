@@ -87,7 +87,15 @@ gateway timeout at `max_attempts:1`. A separate static-policy test pins the
 same one-attempt behavior; an unlisted read tool retains defaults. The
 matching named-root `go test -race` across five touched packages passed; the
 unknown-discovery-target regression checks deterministic candidate rejection
-and corrected new-JTI registration. Full revision-specific release gates
+and corrected new-JTI registration. Independent review then found a restart
+crash window: reconciliation had not routed that new typed target refusal
+through the existing preparation-rejection compensation. A narrow unpublished
+follow-up now exercises a physically active RevisionCommitted candidate,
+restart discovery refusal, aborted fence, removed active authority, and
+corrected new-JTI registration. It also defensively clones the signed policy
+map in legacy and collection pair views. The focused normal and race tests for
+these paths pass locally; pre-fix full-suite runs remain historical only.
+Full revision-specific release gates
 remain pending. This work is not yet
 published, hosted-verified, deployed, or RC accepted; no older-head green run
 covers it.

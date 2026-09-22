@@ -2848,6 +2848,68 @@ func TestSignedOAuthMCPReconciler_RestartCompletesArtifactSchemaRejectionAdmissi
 	}
 }
 
+func TestSignedOAuthMCPReconciler_RestartRejectsUnknownSignedToolPolicyTarget(t *testing.T) {
+	now := time.Now().UTC()
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	preparer.failPrepare = errors.New("interrupted before tool discovery")
+	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-policy-restart", "aud", prototypes.SignedOAuthMCPConnectionDescriptor{
+		Name: "workbench", URL: canonical,
+		ToolPolicies: map[string]prototypes.SignedMCPToolRetryPolicy{"unknown_create": {MaxAttempts: 1}},
+	}, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); err == nil {
+		t.Fatal("interrupted registration unexpectedly succeeded")
+	}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	active, set, err := reg.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	}).PhysicalActive(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil {
+		t.Fatalf("pre-restart physical candidate = (%+v, %t, %v)", active, set, err)
+	}
+	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := operations.LoadForPair(context.Background(), q.TenantID, active.Payload.SignedOAuthMCPPair)
+	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
+		t.Fatalf("pre-restart operation phase=%q err=%v", op.Phase, err)
+	}
+	preparer.failPrepare = tools.ErrSignedToolPolicyTarget
+	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
+		t.Fatalf("restart policy-target rejection: %v", err)
+	}
+	latest, err := operations.Load(context.Background(), op.ReplayKey)
+	if err != nil || latest.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected {
+		t.Fatalf("post-restart operation phase=%q err=%v", latest.Phase, err)
+	}
+	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
+		t.Fatalf("restart left rejected candidate active: set=%t err=%v", set, err)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := fences.Load(context.Background(), q.TenantID, testAgentID)
+	if err != nil || fence.Phase != agentcfg.SignedOAuthMCPFenceAborted || fence.CandidateRevisionID != active.RevisionID {
+		t.Fatalf("post-restart fence phase=%q candidate=%q err=%v", fence.Phase, fence.CandidateRevisionID, err)
+	}
+	preparer.failPrepare = nil
+	corrected := req.Connection
+	corrected.ToolPolicies = map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}}
+	newReq := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-policy-restart-corrected", "aud", corrected, sink)
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), newReq); err != nil {
+		t.Fatalf("corrected new-JTI registration blocked after restart compensation: %v", err)
+	}
+}
+
 func TestRegisterOAuthMCPCapability_DurableReplayResumesPublishedOperation(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	svc, key, _, preparer := signedCapabilityService(t, now)

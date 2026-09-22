@@ -318,7 +318,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 			}
 		}
 		if err := r.publish(ctx, q, agentID, pair, op, revision); err != nil {
-			if !errors.Is(err, tools.ErrArtifactEgressSchema) {
+			if !errors.Is(err, tools.ErrArtifactEgressSchema) && !errors.Is(err, tools.ErrSignedToolPolicyTarget) {
 				return err
 			}
 			if rejectErr := r.rejectPreparation(ctx, q, agentID, op, revision); rejectErr != nil {
