@@ -13,6 +13,12 @@ import (
 // results, maps, RawMessages and custom scalar decoders remain opaque; this is
 // not a tool-payload schema or a replacement for the existing semantic checks.
 func validateRetainedShape(data []byte, shape reflect.Type) error {
+	// An opaque root has no host fields to constrain. The typed decoder in
+	// decodeRetained still checks syntax, trailing data, value types and exact
+	// numbers. Do not scan and copy the entire tool result a second time here.
+	if !retainedHostContainer(shape) {
+		return nil
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := validateRetainedValue(decoder, shape); err != nil {
 		return err
@@ -111,8 +117,34 @@ func validateRetainedValue(decoder *json.Decoder, shape reflect.Type) error {
 	return nil
 }
 
+// retainedHostContainer mirrors the validator's existing opaque boundaries.
+// In particular, maps/interfaces are data even if they contain host-like keys.
+func retainedHostContainer(shape reflect.Type) bool {
+	for shape.Kind() == reflect.Pointer {
+		shape = shape.Elem()
+	}
+	if reflect.PointerTo(shape).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		return false
+	}
+	switch shape.Kind() {
+	case reflect.Struct:
+		return true
+	case reflect.Slice, reflect.Array:
+		return retainedHostContainer(shape.Elem())
+	default:
+		return false
+	}
+}
+
+// Decoder has already validated the JSON value before calling UnmarshalJSON.
+// This first pass needs no retained bytes; the final typed decode owns them.
+// Using RawMessage for this discard would copy every large opaque leaf.
+type retainedDiscard struct{}
+
+func (*retainedDiscard) UnmarshalJSON([]byte) error { return nil }
+
 func consumeRetainedValue(decoder *json.Decoder) error {
-	var opaque json.RawMessage
+	var opaque retainedDiscard
 	if err := decoder.Decode(&opaque); err != nil {
 		return ErrRetainedContextUnavailable
 	}

@@ -151,3 +151,24 @@ lint, shell syntax and whitespace checks pass. Phase 184 still fails locally
 because its generated agent cannot resolve dependencies with the unavailable
 module proxy; that failure was not relabeled as success or bypassed. All
 production deadlines, N=128 concurrency workloads and release gates remain.
+
+## Active concurrency follow-up
+
+- [x] The served-driver fixture preserves the complete 128-task accepted burst
+      with the production default queue capacity (`8f7231b`); zero-drop and
+      identity/order regressions reproduce the old fixture's lost events.
+- [x] Retained validation avoids discarded opaque-value copies and redundant
+      opaque-root scans while preserving strict typed metadata and final decoding.
+- [ ] Hosted full-suite validation confirms the task-delivery fixture correction.
+- [ ] Hosted retained-context persistence/cleanup deadlines pass under the unchanged
+      five-second production limit and 128-session workloads.
+- [ ] Preserve typed retirement refusal when it becomes visible during override
+      resolution; deterministic regression and production correction are under review.
+
+CI `35672893508` on `324343b` passed Linux and S3 but still failed macOS. That
+run also exposed embedded retention/steering persistence deadlines and a typed
+retirement error reported as `runloop_error`. The task burst fixture correction
+is not a claimed fix for those independent failures. Local validation and bounded
+allocation measurements are recorded in
+[the concurrency review](portable-context-concurrency-review.md). Final-tree
+release gates above remain unchecked until their actual completed results exist.
