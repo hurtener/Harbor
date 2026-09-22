@@ -265,6 +265,108 @@ func TestRunOne_PersistedExternalAuthoritiesFailClosedBeforePlanner(t *testing.T
 	})
 }
 
+func TestRunOne_VerifiedExternalAuthoritiesStillRequireRuntimeAndLifecycle(t *testing.T) {
+	newAuthority := func(t *testing.T) *tasks.AgentReachAdmissionAuthority {
+		t.Helper()
+		sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+		if err != nil {
+			t.Fatal(err)
+		}
+		authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return authority
+	}
+	admittedContext := func(t *testing.T, authority *tasks.AgentReachAdmissionAuthority, agentID string) context.Context {
+		t.Helper()
+		ctx, err := identity.With(context.Background(), runLoopDriverTestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, err = authority.Admit(ctx, runLoopDriverTestID, agentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	await := func(t *testing.T, reg tasks.TaskRegistry, ctx context.Context, req tasks.SpawnRequest, code string) {
+		t.Helper()
+		req.Identity = identity.Quadruple{Identity: runLoopDriverTestID}
+		req.Kind = tasks.KindForeground
+		h, err := reg.Spawn(ctx, req)
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		if got := waitForTaskStatus(t, reg, h.ID, tasks.StatusFailed, 5*time.Second); got != tasks.StatusFailed {
+			t.Fatalf("status = %q", got)
+		}
+		stored, err := reg.Get(ctx, h.ID)
+		if err != nil || stored.Error == nil || stored.Error.Code != code {
+			t.Fatalf("stored task=%+v err=%v, want code %q", stored, err, code)
+		}
+	}
+
+	t.Run("provider route needs configured runtime binding", func(t *testing.T) {
+		env := newFailDriverEnv(t)
+		authority := newAuthority(t)
+		startFailDriver(t, env, func(o *RunLoopDriverOptions) {
+			o.AgentConfigID = "agent-a"
+			o.AgentReachAdmissions = authority
+		})
+		await(t, env.reg, admittedContext(t, authority, "agent-a"), tasks.SpawnRequest{
+			AgentID: "agent-a", Query: "route",
+			ProviderRoute: &llm.ProviderRoute{RouteID: "route-a", RouteGeneration: 1,
+				ProviderConnectionID: "provider-a", ProviderConnectionGeneration: 1,
+				CredentialAssetGeneration: 1, ModelSelector: "model-a"},
+		}, "provider_route_unavailable")
+	})
+
+	for _, withRegistry := range []bool{false, true} {
+		name := "without agent config registry"
+		if withRegistry {
+			name = "without active parent lifecycle"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := newFailDriverEnv(t)
+			authority := newAuthority(t)
+			ctx := admittedContext(t, authority, "agent-a")
+			parent, err := env.reg.Spawn(ctx, tasks.SpawnRequest{
+				Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground,
+				Query: "parent", AgentID: "agent-a",
+			})
+			if err != nil {
+				t.Fatalf("spawn parent: %v", err)
+			}
+			if err := env.reg.MarkRunning(ctx, parent.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.reg.MarkComplete(ctx, parent.ID, tasks.TaskResult{}); err != nil {
+				t.Fatal(err)
+			}
+			startFailDriver(t, env, func(o *RunLoopDriverOptions) {
+				o.AgentConfigID = "agent-a"
+				o.AgentReachAdmissions = authority
+				if withRegistry {
+					o.AgentConfig = &countingFailRegistry{}
+				}
+			})
+			profile := virtualagent.Profile{Key: "reviewer", Parent: "agent-a"}
+			frozen, err := virtualagent.NewFrozenMap(virtualagent.Map{Owner: "agent-a", Profiles: []virtualagent.Profile{profile}},
+				"revision-a", strings.Repeat("a", 64), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, err := frozen.Bind(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			await(t, env.reg, ctx, tasks.SpawnRequest{AgentID: "agent-a", ParentTaskID: &parent.ID, VirtualAgent: &binding},
+				"virtual_profile_unavailable")
+		})
+	}
+}
+
 // TestRunOne_OutputSchemaCompileError_MarksOutputInvalid — a task carrying a
 // malformed output schema fails LOUD with the output_invalid terminal code;
 // the planner is never called.
