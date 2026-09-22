@@ -233,6 +233,15 @@ ceiling, and exact-matches provider, model, key label, endpoint, route and all
 generations, model selector and model profile to the admitted selection before
 one provider call.
 
+Independent review of `44d09759` found one P1 at the preceding receipt
+boundary: the outer `providerRouteClient` sampled its clock before the networked
+selection call, so a selection could expire during resolver latency and still
+reach validation and the inner policy chain. The follow-up samples the clock
+again immediately after the resolver returns and rejects an expired-on-arrival
+selection before either consumer. The original pre-call validation continues to
+enforce the unchanged five-minute maximum lifetime; the Bifrost leaf continues
+to refresh exact-bound credentials at the actual attempt boundary.
+
 `TestDriver_ExpiredSelectionStillRequiresFreshExactResolution` deterministically
 accepts the outer selection at its original clock instant, advances beyond its
 expiry without sleeping, and proves the leaf performs exactly one fresh
@@ -242,3 +251,8 @@ tests plus affected vet pass; broader exact-head gates remain required. Because
 published `v1.32.0-rc.2` does not contain this runtime fix, a new RC tag is
 required after review and release gates, before deployment or live retest. No
 tag, release, merge or deployment is performed by this change.
+
+`TestProviderRouteClient_RejectsSelectionExpiredDuringResolverCall` advances a
+controllable clock inside the selection seam, proves the selection was valid at
+request time but expired on arrival, and verifies that neither the selection
+validator nor the inner chain runs.
