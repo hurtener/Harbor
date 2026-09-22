@@ -254,7 +254,9 @@ func TestRetainedServer_ConcurrentReuse(t *testing.T) {
 			second := retainedServerTurn(t, env, id, "second root", nil)
 			body := client.body(second.ID)
 			if first.Status != tasks.StatusComplete || second.Status != tasks.StatusComplete || !strings.Contains(body, "doc-a") || !strings.Contains(body, id.SessionID) {
-				t.Error("retained scope failed")
+				t.Errorf("scope %d: first=%s (%+v), second=%s (%+v), source=%t, identity=%t",
+					i, first.Status, first.Error, second.Status, second.Error,
+					strings.Contains(body, "doc-a"), strings.Contains(body, id.SessionID))
 			}
 			for other := range 128 {
 				if other != i && strings.Contains(body, fmt.Sprintf("session-%03d", other)) {

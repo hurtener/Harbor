@@ -1,174 +1,120 @@
 # Portable session context implementation tracker
 
-RFC 002 / PR #779. Implementation milestones and release acceptance are separate.
-A checked implementation item does not mean the full PR is ready for an RC.
+RFC 002 / PR #779. Checked implementation items are published behavior, not RC
+approval. The current release blockers are listed separately below.
 
 ## Scope
 
-Long-term memory remains external. Compaction uses the governed Bifrost-backed
-client; no native compaction, new provider SDK, public transcript, or automatic
-replay of interrupted external actions is introduced. Default retention is zero.
+Stowage owns long-term memory. Harbor retains bounded execution context using
+its existing StateStore and governed Bifrost-backed client. No provider-native
+compaction requirement, additional provider SDK, second public transcript,
+automatic external-action replay, or default retention change is introduced.
 
-## Implementation
+## Slice 1 / Phase 268 — portable compaction
 
-- [x] Runtime-owned coverage, recent/fresh exchange preservation and repeat compaction.
-- [x] Assembled-request budgeting, output headroom and governed maintenance calls.
-- [x] Bounded chronological summaries and exact numeric restoration.
-- [x] Explicit served-root and embedded retention; no legacy-memory duplication.
-- [x] Required dispatch intent and settlement journaling; ambiguous effects stay unknown.
-- [x] Historical native exchanges and current-catalog discovery revalidation.
-- [x] Source-bound cross-turn checkpoint reuse (`aeda3c0`).
-- [x] Explicit embedded settled-journal reconciliation (`f207d61`).
-- [x] Authenticated own-session served reconciliation and typed Protocol client.
-- [x] Authorized dispatcher-offload recovery using existing artifact reads (`cb5ce55`).
-- [x] Applied steering continuity, journal recovery and nonduplicated completion hooks.
-- [x] Input attachment continuity and source-lifetime checks after compaction.
-- [x] Compaction failure diagnostics use fixed content-free messages.
-- [x] Pinned Bifrost request-prefix checks cover live appends, repeated builds and explicit compaction/model/authority boundaries.
-- [x] Usage/cost report availability and Harbor-estimate flags; sparse streaming accounting does not erase earlier reports.
-- [x] Bounded per-request capacity/section/installed-checkpoint diagnostics, with maintenance isolation and content-free fixed-shape events.
+- [x] Runtime-owned coverage, recent/fresh exchanges and repeated compaction.
+- [x] Bounded chronological summaries with strict shape/completion validation.
+- [x] Failed, empty, truncated and non-shrinking candidates retain prior context.
+- [x] Exact numeric restoration and source-bound checkpoint validation.
+- [x] Assembled-request budgeting includes output headroom and full request input.
+- [x] Governed maintenance identity, admission and accounting; strict grant checks.
+- [x] Pinned OpenAI/Anthropic Bifrost HTTP integration without native compaction.
+- [ ] Complete final-tree regression, coverage and preflight acceptance.
 
-The published steering increment includes actual later and next-turn request
-regressions, plus 128-session isolation.
-Attachment IDs now share that context-frame path and commit atomically with
-the admitted query; original binary contents are never copied to the journal.
-The published journal format remains version 1 with explicit context-frame tags.
-The existing retained-window format remains version 3.
+## Slice 2 / Phase 269 — durable session continuity
 
-## Release gates
+- [x] Explicit served-root and embedded retention; override/disable stays explicit.
+- [x] Legacy pair-only memory and trusted completion hooks are not duplicated.
+- [x] Required admitted query, pre-dispatch intent and post-dispatch settlement.
+- [x] Atomic generation-fenced terminal sealing and exact-generation cleanup.
+- [x] Known receipts survive approval-bridge failure; pending effects stay unknown.
+- [x] Native historical exchanges, exact evidence and current catalog/scope checks.
+- [x] Source-bound cross-turn checkpoint reuse, with expiry/eviction invalidation.
+- [x] Explicit embedded reconciliation and fencing of the original admission.
+- [x] Authenticated own-session served reconciliation and typed Protocol clients.
+- [x] Authorized result-reference recovery through existing artifact reads.
+- [x] Applied steering continuity across requests, turns and SQLite recovery.
+- [x] Attachment references commit atomically with the query; source lifetime is checked.
+- [x] Independent-pool PostgreSQL conformance alongside in-memory and SQLite.
+- [x] Strict custom-redactor host metadata validation before external dispatch.
+- [x] Settlement rejects mismatched intent expiry and oversized stored intent before parsing.
+- [ ] Final hosted and canonical-process acceptance under unchanged production deadlines.
 
-- [x] Retained-context Postgres tests cover independent pools, exact recovery, pending refusal, checkpoint expiry and 128 dispatch/reconciliation races; existing CI runs them.
-- [ ] Final-tree full Go lint, vet, race, coverage and build gates pass.
-- [ ] Final-tree full drift/preflight and previous phase smoke gates pass.
-- [ ] Final-tree Protocol generation/lockstep and applicable frontend gates pass.
-- [ ] Final adversarial review has no unresolved critical/high-severity findings.
-- [x] Temporary publication/source-recovery workflows and payloads are removed.
-- [x] Sample-agent setup, migration and RC end-to-end test instructions are complete; publication of an RC remains a separate gate.
-- [ ] RC is published after validation; no merge or release is implied by this tracker.
+## Slice 3 — diagnostics, integration and review
 
-Real-model evaluation requires separate approval and provider credentials. The
-scripted tests establish runtime/request behavior, not model proficiency, physical
-external effects, paid cost savings or a comparative cache-performance ranking.
+- [x] Fixed content-free failure messages and bounded prepared-request diagnostics.
+- [x] Maintenance isolation and installed-checkpoint-only replay coordinates.
+- [x] Request-prefix checks for append/rebuild, compaction, revocation and model changes.
+- [x] Usage/cost availability, estimate flags and sparse streaming accounting.
+- [x] Console wire-type parity and independent Protocol inventory.
+- [x] Ambiguous typed metadata rejected; opaque tool fields remain data.
+- [x] TUI fixture waits for actual SSE registration before synthetic delivery.
+- [x] Served-driver fixture preserves the complete accepted 128-task burst.
+- [x] Retained validation avoids redundant scans/copies without weakening checks.
+- [x] Process-wide leak-count fixture excludes sibling tests, retaining its own concurrency.
+- [x] Typed retirement refusal survives run-start configuration-read failures.
+- [x] CI schedules independent stress packages sequentially, retaining every test and race check.
+- [x] Temporary publication/source-recovery workflows and payloads removed.
+- [x] MinIO registry corrected and actual hosted S3 conformance observed.
+- [x] Stale source guards repaired; in-progress phase smoke remains strictly enforced.
+- [x] Public-SDK editing sample, inspection, migration and RC procedure provided.
+- [ ] Final adversarial review completed with no unresolved critical/high-severity findings.
 
-## PostgreSQL conformance checkpoint
+## Final release gates
 
-The existing `state/postgres` CI job runs the new `TestPostgres_RetainedContext_`
-scenarios against its PostgreSQL 16 service. No new workflow or production
-backend is introduced. Local validation used a disposable PostgreSQL 16.15
-cluster with two independent StateStore pools and a fresh schema per scenario.
-The tests preserve exact numeric receipts, attachment identities and steering
-updates; pending operations remain unknown, expired summaries are invalidated,
-and another pool's erasure fences terminal publication. The concurrency scenario
-runs 128 sessions with competing dispatch/reconciliation through separate pools.
+- [ ] Canonical final-head Linux and macOS vet/test/build jobs pass.
+- [ ] Required statement coverage passes, including the served-package 85% target.
+- [ ] Final-tree full Go lint, race and build acceptance passes.
+- [ ] Full drift/preflight and prior phase smoke acceptance passes.
+- [ ] Final-tree Protocol generation/lockstep and applicable frontend/E2E gates pass.
+- [ ] Sample-agent RC procedure is executed against an approved release candidate.
+- [ ] RC is published only after implementation and release gates pass.
 
-The phase 269 smoke runs the same scenarios when `HARBOR_PG_DSN` is provided and
-reports an explicit skip otherwise. These tests do not replace the full final-tree
-regression, coverage and preflight gates above.
+## September 22 recovery and publication
 
-## Request diagnostics publication
+The checksummed `d42423a` checkpoint was based on published `ac48de6`. Its runtime,
+CI and test files were recovered rather than redesigned. The original local
+commit IDs are not the new publication IDs; no remote history was rewritten.
 
-The bounded diagnostics implementation is published at `1f2a184`. Phase 268
-smoke passed 10 checks with no skips or failures, and the affected core race
-suites, scoped Go lint, full Markdown and canonical generators passed.
-Expanded Protocol tests exposed missing independent compatibility-list entries
-for `llm.context.prepared` and `sessions.reconcile_context`. Both are now explicit;
-the exact event-name and single-source method checks remain strict. The complete
-Protocol documentation-generator and single-source checker race suites pass.
-This correction does not replace final-tree preflight or the other release gates.
+| Published commit | Recovered change |
+| --- | --- |
+| `4f7d302` | Intent expiry/size guards and in-memory/SQLite settlement regressions |
+| `b6ceb97` | Existing matrix test step uses `GOFLAGS=-p=1` |
+| `c50ba57` | Typed retirement refusal and deterministic configuration-read tests |
 
-## Candidate test procedure
+The accompanying tracker checkpoint publishes the saved served-concurrency
+failure diagnostics. They report synthetic scope/status/error details without
+changing assertions, workload or deadlines. The tracker is consolidated here;
+older detailed validation history remains in Git and the linked review notes.
 
-The [RC acceptance procedure](portable-context-rc.md) links the public-SDK
-editing sample and separates deterministic proof from live model evaluation.
-The sample checks actual persisted edits across separate invocations and exposes
-inspection without inference; live calls are never performed by its test suite.
+## Evidence and limitations
 
-## Final-tree integration corrections
+Preserved combined-tree validation on Go 1.26.4 recorded complete runctx,
+assembly and SDK assembly race passes, phase 269 with PostgreSQL at 14 OK / zero
+skips / zero failures, full lint/vet/static build, 598 Markdown files without
+errors, and 1,590 drift checks with one offline release-reference warning.
+These are recovered results, not newly executed final-head checks.
 
-The Console's hand-maintained reconciliation wire types are now explicit, with
-no untyped allowlist exception. The shared Protocol conformance inventory now
-includes the named recovery method and both HTTP 409 refusal codes; its exact
-counts and exhaustive membership checks remain independent. Phase 269 smoke
-also runs the public fork conformance consumer that caught the stale inventory.
-Full frontend and repository release gates remain separate acceptance above.
+All 280 named served test roots passed in 19 fixed process groups after the
+canonical local process exceeded the 4 GiB container limit. Their aggregate
+statement coverage was **74.3%, below 85%**. Partitioned execution does not
+replace the canonical hosted gate and does not satisfy the coverage target.
 
-## Adversarial retained-state decoding
+A controlled two-CPU experiment failed cleanup with overlapping package stress
+suites and passed the identical workloads with package concurrency one. The
+production five-second persistence bounds and each test's 128 sessions remain
+unchanged. This supports the CI scheduling change, not a claim of macOS success.
 
-- [x] Corrupted duplicate/case-aliased host fields are rejected before recovery
-      mutates retained state; canonical nested metadata remains strict.
-- [x] Opaque tool-result keys and exact numeric values remain data, not host fields.
-- [x] In-memory/SQLite regressions and independent-pool PostgreSQL checks pass.
+CI `35686533964` on `b6ceb97` was still running at the publication check; its
+separate docs job passed. Older Linux/S3/PostgreSQL/frontend successes do not
+establish acceptance of a newer head. Hosted preflight and Playwright were
+previously skipped because the platform matrix failed.
 
-This review correction is not completion of the whole adversarial or release
-gate. Current validation runs as an unprivileged user; whole-repository checks
-remain separate and no permission test or coverage floor is relaxed.
+See [recovery evidence](portable-context-recovery-publication.md),
+[concurrency review](portable-context-concurrency-review.md),
+[release review](portable-context-release-review.md), and
+[RC procedure](portable-context-rc.md).
 
-## Concurrency validation corrections
-
-- [x] TUI synthetic event delivery waits for the actual stream registration
-      (`13ef778`), not just the flushed HTTP headers; 100 full race runs pass.
-- [x] Typed retained host metadata is checked with one streaming decoder, avoiding
-      repeated nested payload scans without weakening duplicate/alias checks.
-- [x] Full runctx/assembly/SDK assembly race suites and three repeated N=128
-      embedded/served tests pass with unchanged production persistence deadlines.
-- [ ] Hosted full-suite rerun confirms the remaining deadline failures resolved.
-- [x] Hosted MinIO pull and real S3 conformance pass on `74d6171`.
-
-Decoder benchmark measurements and their limitations are recorded in
-[the release review](portable-context-release-review.md). These scoped results
-are not a substitute for any unchecked final-tree gate above.
-
-## CI fixture cleanup
-
-The two temporary development workflows are removed, with no tracked payload
-manifest left behind. The S3 job uses the same MinIO release on its documented
-Quay registry and a loopback-only test port. Hosted run `35670204554` pulled the image and passed the real S3 suite.
-No test command, timeout, or approval requirement is relaxed.
-
-## Final preflight corrections and remaining macOS gate
-
-The final Linux vet/test/build job is green at `74d6171`, along with hosted
-PostgreSQL, S3, frontend checks, lint, examples, isolation, chaos, leak and
-performance gates. macOS still fails `TestRetainedServer_ConcurrentReuse` and
-`TestRunLLMSettingsReachProviderWithoutConsumingPendingSlot`. The matrix failure
-skips hosted preflight and Playwright; their acceptance remains open.
-
-Local full lint/vet, static build and Phase 268 smoke pass. Drift completed
-1,590 checks, with no failures and one release-tag lookup warning in the
-reconstructed offline repository. The first full preflight was stopped after
-its static batch exposed three stale guards and a generated-agent module-fetch
-failure. It did not complete its unit/live batches; no full pass is claimed.
-
-- [x] Phase 111e checks the real guarded compactor call chain, not its old location.
-- [x] Phase 83e anchors field checks while accepting gofmt alignment whitespace.
-- [x] In-progress implementation is explicitly strict, not a planning/all-SKIP waiver.
-- [x] Regression fixtures cover in-progress/candidate status and unknown `In review`.
-- [ ] The complete final preflight and both platform test suites pass together.
-
-The classifier regression failed before its correction. Updated phases 111e,
-83e, 223 and 229, the full wave-v1.25 prompt-composition test, scoped integration
-lint, shell syntax and whitespace checks pass. Phase 184 still fails locally
-because its generated agent cannot resolve dependencies with the unavailable
-module proxy; that failure was not relabeled as success or bypassed. All
-production deadlines, N=128 concurrency workloads and release gates remain.
-
-## Active concurrency follow-up
-
-- [x] The served-driver fixture preserves the complete 128-task accepted burst
-      with the production default queue capacity (`8f7231b`); zero-drop and
-      identity/order regressions reproduce the old fixture's lost events.
-- [x] Retained validation avoids discarded opaque-value copies and redundant
-      opaque-root scans while preserving strict typed metadata and final decoding.
-- [ ] Hosted full-suite validation confirms the task-delivery fixture correction.
-- [ ] Hosted retained-context persistence/cleanup deadlines pass under the unchanged
-      five-second production limit and 128-session workloads.
-- [ ] Preserve typed retirement refusal when it becomes visible during override
-      resolution; deterministic regression and production correction are under review.
-
-CI `35672893508` on `324343b` passed Linux and S3 but still failed macOS. That
-run also exposed embedded retention/steering persistence deadlines and a typed
-retirement error reported as `runloop_error`. The task burst fixture correction
-is not a claimed fix for those independent failures. Local validation and bounded
-allocation measurements are recorded in
-[the concurrency review](portable-context-concurrency-review.md). Final-tree
-release gates above remain unchecked until their actual completed results exist.
+Deterministic tests establish runtime/request behavior, not real-model editing
+proficiency, prompt-cache savings or physical external effects. No paid calls,
+merge, tag, deployment or RC publication are claimed by this tracker.
