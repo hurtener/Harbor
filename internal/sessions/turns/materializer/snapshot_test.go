@@ -541,7 +541,7 @@ func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 		h := newHarness(t, "")
 		defer h.closeStore()
 		reader := newFakeTaskReader().set("task-cn", TaskSnapshot{
-			FailurePresent: true, ErrorCode: "timeout", ErrorMessage: "record-safe message",
+			FailurePresent: true, ErrorCode: "no_path", ErrorMessage: "record-safe message",
 		})
 		m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
 
@@ -553,8 +553,8 @@ func TestMaterialize_TaskSnapshot_TerminalFailureAgreement(t *testing.T) {
 			t.Fatalf("materialize: %v", err)
 		}
 		row := mustGetRow(t, h, "task-cn")
-		if row.ErrorClass != turns.ErrorClassTimeout || row.ErrorMessage != "record-safe message" {
-			t.Errorf("failure = class %q message %q, want the record's canonical code and message", row.ErrorClass, row.ErrorMessage)
+		if row.FinishReason != turns.FinishNoPath || row.ErrorClass != turns.ErrorClassUnclassified || row.ErrorMessage != "record-safe message" {
+			t.Errorf("failure = finish %q class %q message %q, want the record's canonical no_path code and message", row.FinishReason, row.ErrorClass, row.ErrorMessage)
 		}
 	})
 }

@@ -506,7 +506,7 @@ func TestRunOne_FinishNoPath_MarksFailed(t *testing.T) {
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
 		o.Planner = &noPathPlanner{}
 	})
-	spawnAndAwaitFailure(t, env.reg, nil, "", "")
+	spawnAndAwaitFailure(t, env.reg, nil, string(planner.FinishNoPath), "RunLoop finished without satisfying goal: no_path")
 }
 
 // noPathPlanner immediately finishes with FinishNoPath.

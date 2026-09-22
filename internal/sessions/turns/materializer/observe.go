@@ -653,6 +653,7 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusFailed,
+		FinishReason: mapTaskFinishReason(code),
 		ErrorClass:   mapTaskErrorClass(code),
 		ErrorMessage: message,
 		EventSeq:     ev.Sequence,
@@ -724,6 +725,27 @@ func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionStat
 	ts.sealed = true
 	m.clearPending(sess, ts)
 	return true, nil
+}
+
+// mapTaskFinishReason maps only canonical non-goal planner finish codes
+// carried by task.failed onto the turn's CLOSED finish-reason set. Goal is
+// intentionally excluded: a goal is represented by task.completed, and
+// accepting it from a failure event would create a contradictory terminal
+// projection. Arbitrary task error codes remain absent rather than becoming
+// unbounded finish reasons.
+func mapTaskFinishReason(code string) turns.FinishReason {
+	switch code {
+	case string(turns.FinishNoPath):
+		return turns.FinishNoPath
+	case string(turns.FinishCancelled):
+		return turns.FinishCancelled
+	case string(turns.FinishDeadlineExceeded):
+		return turns.FinishDeadlineExceeded
+	case string(turns.FinishConstraintsConflict):
+		return turns.FinishConstraintsConflict
+	default:
+		return ""
+	}
 }
 
 // mapTaskErrorClass maps the task error code onto the closed

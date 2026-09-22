@@ -187,7 +187,8 @@ func TestSessionTurnsHandler_List_ForeignSessionIsNotFound(t *testing.T) {
 func TestSessionTurnsHandler_Get_ConsumerLane(t *testing.T) {
 	row := turns.TurnRow{
 		TurnID: turns.TurnID("task-1"), TaskID: "task-1", SessionID: "s-tr",
-		Sequence: 2, TieBreaker: "task-1", Status: turns.StatusComplete, Sealed: true, Version: 3,
+		Sequence: 2, TieBreaker: "task-1", Status: turns.StatusFailed, Sealed: true, Version: 3,
+		FinishReason: turns.FinishNoPath, ErrorClass: turns.ErrorClassUnclassified,
 	}
 	h := newTurnsHandler(t, &turnsFakeProjector{rows: []turns.TurnRow{row}})
 	code, body := doTurnsRequest(t, h, "get", `{"session_id":"s-tr","task_id":"task-1"}`, nil)
@@ -203,6 +204,10 @@ func TestSessionTurnsHandler_Get_ConsumerLane(t *testing.T) {
 	}
 	if out.Turn == nil || (*out.Turn)["turn_id"] != "task-1" {
 		t.Errorf("consumer turn projection wrong: %+v", out.Turn)
+	}
+	if (*out.Turn)["status"] != "failed" || (*out.Turn)["finish_reason"] != "no_path" ||
+		(*out.Turn)["error_class"] != "unclassified" {
+		t.Errorf("consumer terminal projection wrong: %+v", out.Turn)
 	}
 	if out.OpsTurn != nil {
 		t.Error("consumer lane must not populate ops_turn")
