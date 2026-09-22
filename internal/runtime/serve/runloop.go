@@ -1199,6 +1199,16 @@ func runSnapshotAdmissionTaskError(err error) tasks.TaskError {
 	return tasks.TaskError{Code: "runtime_fetch_error", Message: "run snapshot admission: " + err.Error()}
 }
 
+// Retirement can become visible on any configuration read after admission.
+// Preserve its existing public refusal code instead of reporting an unhealthy
+// runtime. Every unrelated failure retains that projection's original mapping.
+func runConfigTaskError(err error, fallback tasks.TaskError) tasks.TaskError {
+	if errors.Is(err, agentcfg.ErrAgentRetired) {
+		return tasks.TaskError{Code: string(protoerrors.CodeAgentRetired), Message: "agent is retired"}
+	}
+	return fallback
+}
+
 func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -1417,7 +1427,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: boot agent lifecycle unavailable; failing run",
 				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID),
 				slog.String("agent_id", effectiveAgentID), slog.String("err", err.Error()))
-			if markErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "boot agent lifecycle: " + err.Error()}); markErr != nil {
+			if markErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(err, tasks.TaskError{Code: "runtime_fetch_error", Message: "boot agent lifecycle: " + err.Error()})); markErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("task_id", string(taskID)), slog.String("err", markErr.Error()))
 			}
 			return
@@ -1437,10 +1447,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("run_id", q.RunID),
 			slog.String("agent_id", effectiveAgentID),
 			slog.String("err", snapshotErr.Error()))
-		if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(snapshotErr, tasks.TaskError{
 			Code:    "runtime_fetch_error",
 			Message: "skills snapshot: " + snapshotErr.Error(),
-		}); fErr != nil {
+		})); fErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", fErr.Error()))
@@ -1584,7 +1594,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		views, sErr = d.projectAgentConfigSkills(taskCtx, effectiveAgentID, q, views)
 		if sErr != nil {
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "agent-config skills projection: " + sErr.Error()}); fErr != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(sErr, tasks.TaskError{Code: "runtime_fetch_error", Message: "agent-config skills projection: " + sErr.Error()})); fErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
 			}
 			return
@@ -1642,10 +1652,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", vErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(vErr, tasks.TaskError{
 				Code:    "runtime_fetch_error",
 				Message: "agent-config tool-exposure projection: " + vErr.Error(),
-			}); fErr != nil {
+			})); fErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
@@ -1833,10 +1843,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", ovErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(ovErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "tenant-override resolution failed: " + ovErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after override-resolution error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1856,10 +1866,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", plErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(plErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "prompt-layer projection failed: " + plErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after prompt-layer-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1898,10 +1908,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", chErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(chErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "run-completion-hook projection failed: " + chErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after run-completion-hook-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1919,10 +1929,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", nmErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(nmErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "naming-policy projection failed: " + nmErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after naming-policy-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
