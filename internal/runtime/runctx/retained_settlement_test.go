@@ -34,6 +34,12 @@ func (r settlementShapeRedactor) Redact(_ context.Context, value any) (any, erro
 	if r.shape == "changed action" {
 		object["action"] = map[string]any{"Tool": "different", "CallID": "changed", "Args": map[string]any{}}
 	}
+	if r.shape == "changed args" {
+		action, ok := object["action"].(map[string]any)
+		if ok {
+			action["Args"] = map[string]any{"redacted": true}
+		}
+	}
 	encoded, err := json.Marshal(object)
 	if err != nil {
 		return nil, err
@@ -144,30 +150,63 @@ func BenchmarkRetainedJournal_Settlement(b *testing.B) {
 
 func TestRetainedJournal_RejectsAmbiguousIntentBeforeDispatch(t *testing.T) {
 	for _, driver := range []string{"inmem", "sqlite"} {
+		for _, shape := range []string{"duplicate nested host", "changed action"} {
+			t.Run(driver+"/"+shape, func(t *testing.T) {
+				store, _, _ := retainedStore(t, driver)
+				base := retainedBase("source", "ambiguous-intent")
+				run, err := runctx.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: shape, intent: true}, base.Quadruple, 2, time.Hour, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := run.Apply(&base); err != nil {
+					t.Fatal(err)
+				}
+				if err := run.Start(t.Context(), base); err != nil {
+					t.Fatal(err)
+				}
+				head := loadHostRecord(t, store, base.Quadruple, journalHeadKind)
+				step := planner.Step{Action: planner.CallTool{Tool: "write", CallID: "write", Args: json.RawMessage(`{}`)}}
+				if err := run.BeforeDispatch(t.Context(), base, step); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+					t.Fatalf("ambiguous intent admitted an external action: %v", err)
+				}
+				after := loadHostRecord(t, store, base.Quadruple, journalHeadKind)
+				if after.ID != head.ID || !bytes.Equal(after.Bytes, head.Bytes) {
+					t.Fatal("rejection changed journal admission")
+				}
+				if _, err := store.Load(t.Context(), base.Quadruple, journalHeadKind+"/action/000"); !errors.Is(err, state.ErrNotFound) {
+					t.Fatalf("rejection wrote an intent frame: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRetainedJournal_AllowsIntentContentRedaction(t *testing.T) {
+	for _, driver := range []string{"inmem", "sqlite"} {
 		t.Run(driver, func(t *testing.T) {
 			store, _, _ := retainedStore(t, driver)
-			base := retainedBase("source", "ambiguous-intent")
-			run, err := runctx.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: "duplicate nested host", intent: true}, base.Quadruple, 2, time.Hour, nil)
+			base := retainedBase("source", "redacted-intent")
+			run, err := runctx.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: "changed args", intent: true}, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := run.Apply(&base); err != nil {
+			if err = run.Apply(&base); err != nil {
 				t.Fatal(err)
 			}
-			if err := run.Start(t.Context(), base); err != nil {
+			if err = run.Start(t.Context(), base); err != nil {
 				t.Fatal(err)
 			}
-			head := loadHostRecord(t, store, base.Quadruple, journalHeadKind)
-			step := planner.Step{Action: planner.CallTool{Tool: "write", CallID: "write", Args: json.RawMessage(`{}`)}}
-			if err := run.BeforeDispatch(t.Context(), base, step); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
-				t.Fatalf("ambiguous intent admitted an external action: %v", err)
+			step := planner.Step{Action: planner.CallTool{Tool: "write", CallID: "write", Args: json.RawMessage(`{"secret":"value"}`)}}
+			if err = run.BeforeDispatch(t.Context(), base, step); err != nil {
+				t.Fatalf("argument redaction rejected before dispatch: %v", err)
 			}
-			after := loadHostRecord(t, store, base.Quadruple, journalHeadKind)
-			if after.ID != head.ID || !bytes.Equal(after.Bytes, head.Bytes) {
-				t.Fatal("rejection changed journal admission")
+			step.LLMObservation = "done"
+			if err = run.AfterDispatch(t.Context(), base, step); err != nil {
+				t.Fatalf("argument redaction rejected at settlement: %v", err)
 			}
-			if _, err := store.Load(t.Context(), base.Quadruple, journalHeadKind+"/action/000"); !errors.Is(err, state.ErrNotFound) {
-				t.Fatalf("rejection wrote an intent frame: %v", err)
+			frame := loadHostRecord(t, store, base.Quadruple, journalHeadKind+"/action/000")
+			if bytes.Contains(frame.Bytes, []byte("value")) || !bytes.Contains(frame.Bytes, []byte(`"redacted":true`)) {
+				t.Fatal("journal did not preserve the redacted arguments")
 			}
 		})
 	}

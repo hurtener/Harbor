@@ -208,7 +208,9 @@ func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, st
 	if err != nil {
 		return nil, nil, ErrRetainedContextUnavailable
 	}
-	if (checked.Action == nil) != (step.Action == nil) || (checked.Action == nil && (!settled || checked.LLMObservation == nil)) {
+	if (checked.Action == nil) != (step.Action == nil) ||
+		(checked.Action != nil && !sameRetainedActionIdentity(step.Action, checked.Action)) ||
+		(checked.Action == nil && (!settled || checked.LLMObservation == nil)) {
 		return nil, nil, ErrRetainedContextUnavailable
 	}
 	action, err := json.Marshal(checked.Action)
@@ -220,6 +222,51 @@ func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, st
 		Settled: settled, Context: checked.Action == nil, Step: evidence, ExpiresAt: expiresAt,
 	})
 	return frame, action, err
+}
+
+// sameRetainedActionIdentity permits a custom redactor to rewrite content-bearing
+// arguments and descriptions, but never the operation shape, target, call ID or
+// authority-bearing controls. The executor receives the original action; allowing
+// those coordinates to change in the journal would persist evidence for a
+// different operation than the one about to run.
+func sameRetainedActionIdentity(original, redacted any) bool {
+	want, err := retainedActionIdentity(original)
+	if err != nil {
+		return false
+	}
+	got, err := retainedActionIdentity(redacted)
+	return err == nil && reflect.DeepEqual(want, got)
+}
+
+func retainedActionIdentity(action any) (any, error) {
+	encoded, err := json.Marshal(action)
+	if err != nil {
+		return nil, err
+	}
+	var identity any
+	if err := decodeRetained(encoded, &identity); err != nil {
+		return nil, err
+	}
+	stripRetainedActionContent(identity)
+	return identity, nil
+}
+
+func stripRetainedActionContent(value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			switch key {
+			case "Args", "Description", "Query", "Reason", "Directive", "Payload", "Metadata", "Phase", "Message", "Tags":
+				delete(value, key)
+			default:
+				stripRetainedActionContent(child)
+			}
+		}
+	case []any:
+		for _, child := range value {
+			stripRetainedActionContent(child)
+		}
+	}
 }
 
 func (r *RetainedRun) redactJournalValue(ctx context.Context, value any) ([]byte, error) {
