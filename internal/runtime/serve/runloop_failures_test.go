@@ -39,6 +39,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 var errInjected = errors.New("runloop failure-injection sentinel")
@@ -190,6 +191,78 @@ func spawnAndAwaitFailure(t *testing.T, reg tasks.TaskRegistry, schema json.RawM
 	if wantMsg != "" && !strings.Contains(got.Error.Message, wantMsg) {
 		t.Errorf("TaskError.Message = %q, want it to contain %q", got.Error.Message, wantMsg)
 	}
+}
+
+func spawnRequestAndAwaitFailure(t *testing.T, reg tasks.TaskRegistry, req tasks.SpawnRequest, wantCode, wantMsg string) {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), runLoopDriverTestID)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	req.Identity = identity.Quadruple{Identity: runLoopDriverTestID}
+	req.Kind = tasks.KindForeground
+	if req.Query == "" {
+		req.Query = "authority-boundary goal"
+	}
+	h, err := reg.Spawn(ctx, req)
+	if err != nil {
+		t.Fatalf("reg.Spawn: %v", err)
+	}
+	if status := waitForTaskStatus(t, reg, h.ID, tasks.StatusFailed, 5*time.Second); status != tasks.StatusFailed {
+		t.Fatalf("task status = %q, want %q", status, tasks.StatusFailed)
+	}
+	got, err := reg.Get(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("reg.Get: %v", err)
+	}
+	if got.Error == nil || got.Error.Code != wantCode || !strings.Contains(got.Error.Message, wantMsg) {
+		t.Fatalf("TaskError = %+v, want code %q containing %q", got.Error, wantCode, wantMsg)
+	}
+}
+
+func TestRunOne_PersistedExternalAuthoritiesFailClosedBeforePlanner(t *testing.T) {
+	t.Run("provider route without verified agent reach", func(t *testing.T) {
+		env := newFailDriverEnv(t)
+		startFailDriver(t, env, nil)
+		spawnRequestAndAwaitFailure(t, env.reg, tasks.SpawnRequest{ProviderRoute: &llm.ProviderRoute{
+			RouteID: "route-a", RouteGeneration: 1, ProviderConnectionID: "provider-a",
+			ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "model-a",
+		}}, "provider_route_unauthorized", "verified Agent reach")
+	})
+
+	t.Run("virtual profile without verified agent reach", func(t *testing.T) {
+		env := newFailDriverEnv(t)
+		ctx, err := identity.With(context.Background(), runLoopDriverTestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent, err := env.reg.Spawn(ctx, tasks.SpawnRequest{
+			Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground, Query: "parent",
+		})
+		if err != nil {
+			t.Fatalf("spawn parent: %v", err)
+		}
+		if err := env.reg.MarkRunning(ctx, parent.ID); err != nil {
+			t.Fatalf("mark parent running: %v", err)
+		}
+		if err := env.reg.MarkComplete(ctx, parent.ID, tasks.TaskResult{}); err != nil {
+			t.Fatalf("mark parent complete: %v", err)
+		}
+		startFailDriver(t, env, nil)
+		profile := virtualagent.Profile{Key: "reviewer", Parent: "agent-a"}
+		frozen, err := virtualagent.NewFrozenMap(virtualagent.Map{Owner: "agent-a", Profiles: []virtualagent.Profile{profile}},
+			"revision-a", strings.Repeat("a", 64), nil)
+		if err != nil {
+			t.Fatalf("NewFrozenMap: %v", err)
+		}
+		binding, err := frozen.Bind(profile)
+		if err != nil {
+			t.Fatalf("Bind: %v", err)
+		}
+		spawnRequestAndAwaitFailure(t, env.reg, tasks.SpawnRequest{
+			AgentID: "agent-a", ParentTaskID: &parent.ID, VirtualAgent: &binding,
+		}, "virtual_profile_unavailable", "verified agent reach")
+	})
 }
 
 // TestRunOne_OutputSchemaCompileError_MarksOutputInvalid — a task carrying a
