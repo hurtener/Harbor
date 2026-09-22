@@ -1,11 +1,12 @@
 # Portable session context implementation tracker
 
 RFC 002 / PR #779. Checked implementation items are published behavior, not
-stable-release approval. The current code head covered by this evidence is
-`95bd401257a02c991317b66c99ae0907c208f5c6`. The published `v1.32.0-rc.1`
-tag instead peels to the older `742a76e123dca5dbc94939206cb89360ccba6e63`;
-RC evidence and current-head evidence are kept separate below. This
-documentation reconciliation adds no runtime change.
+stable-release approval. The last fully covered implementation head is
+`95bd401257a02c991317b66c99ae0907c208f5c6`; the current candidate adds the
+provider-route attempt-boundary repair recorded below. The published
+`v1.32.0-rc.2` tag peels to `ad6a724639ddf282631ff7cb1de25dfb1ecb1727`
+and therefore does not contain that repair. RC evidence and current-candidate
+evidence are kept separate below.
 
 ## Scope
 
@@ -83,7 +84,7 @@ automatic external-action replay, or default retention change is introduced.
       run `35742931975`.
 - [ ] The RC sample-agent evaluation completes after the downstream consumer fixes
       are published, deployed and live-retested.
-- [x] `v1.32.0-rc.1` is published as a prerelease at the reviewed `742a76e`
+- [x] `v1.32.0-rc.2` is published as a prerelease at the reviewed `ad6a724`
       target. It is not the current PR head or a stable release.
 
 ## September 22 recovery and publication
@@ -173,10 +174,11 @@ See [recovery evidence](portable-context-recovery-publication.md),
 
 ## RC publication and live acceptance
 
-The annotated `v1.32.0-rc.1` tag object
-`43fc9a1b6bd1b25e540948d2ac5e16d5bdf5cad9` peels to `742a76e`, not the newer
-`95bd401` code head. The GitHub prerelease was published on September 22, 2026.
-No stable release or merge is claimed.
+The annotated `v1.32.0-rc.2` tag object
+`818595d34ae494148cc1b265e1419faa64cd1cfd` peels to `ad6a724`, including the
+`95bd401` durable outcome repair but not the provider-route attempt-boundary
+repair below. The GitHub prerelease was published on September 22, 2026. No
+stable release or merge is claimed.
 
 The disposable baseline failed its complex editing sequence. Against the RC,
 Terra preserved the exact project state through complex revisions, a refused
@@ -210,3 +212,33 @@ proficiency, prompt-cache savings or physical external effects. Remaining
 release acceptance is downstream publication/deployment, a live replay of the
 post-restart panel and Stop paths, and a completed MiMo comparison with explicit
 terminal UX. The PR stays draft.
+
+## Provider-route attempt-boundary repair candidate
+
+The first post-Workbench-deploy live retry failed on RC1 task/run
+`01M35375KPP6JSAJSQ2J848FVE` at planner step 3 with
+`llm: external provider route is invalid`. The run lasted beyond the bounded
+credential-free selection lifetime. Pengui's resolver remained fail-closed and
+its `/v1/provider-route` calls returned current exact-bound responses; increasing
+that resolver lifetime would only defer the same boundary failure.
+
+The Bifrost leaf had treated the already-admitted credential-free selection's
+expiry as attempt authority. That is incorrect after an upstream governance,
+compaction or correction wrapper legitimately outlives the selection: the leaf
+already performs a fresh resolver call for every actual provider attempt. The
+candidate therefore removes only the redundant leaf rejection of the old
+selection expiry. It still requires the trusted runtime/Agent/task/run purpose,
+validates the fresh resolved credential against Harbor's unchanged five-minute
+ceiling, and exact-matches provider, model, key label, endpoint, route and all
+generations, model selector and model profile to the admitted selection before
+one provider call.
+
+`TestDriver_ExpiredSelectionStillRequiresFreshExactResolution` deterministically
+accepts the outer selection at its original clock instant, advances beyond its
+expiry without sleeping, and proves the leaf performs exactly one fresh
+resolution and one provider call. Restoring the old leaf check makes this test
+fail before resolution with the live sentinel. Focused Bifrost and core LLM race
+tests plus affected vet pass; broader exact-head gates remain required. Because
+published `v1.32.0-rc.2` does not contain this runtime fix, a new RC tag is
+required after review and release gates, before deployment or live retest. No
+tag, release, merge or deployment is performed by this change.

@@ -37,7 +37,8 @@ func (r *rotatingRouteResolver) ResolveProviderRoute(_ context.Context, req llm.
 		RouteID: req.RouteID, RouteGeneration: req.RouteGeneration,
 		ProviderConnectionID: req.ProviderConnectionID, ProviderConnectionGeneration: req.ProviderConnectionGeneration,
 		CredentialAssetGeneration: req.CredentialAssetGeneration, ModelSelector: req.ModelSelector,
-		Credential: "attempt-key", ExpiresAt: time.Now().Add(time.Minute),
+		Endpoint: r.selected.Endpoint, Credential: "attempt-key", ExpiresAt: time.Now().Add(time.Minute),
+		ModelProfile: r.selected.ModelProfile,
 	}, nil
 }
 
@@ -158,6 +159,76 @@ func TestDriver_RoutedAttemptsResolveEveryTimeAndRevocationFailsClosed(t *testin
 	}
 	if got := provider.calls.Load(); got != 1 {
 		t.Fatalf("provider attempts = %d, want revoked second attempt blocked before provider", got)
+	}
+}
+
+func TestDriver_ExpiredSelectionStillRequiresFreshExactResolution(t *testing.T) {
+	selectedAt := time.Now().UTC().Add(-2 * time.Minute)
+	route := llm.ProviderRoute{
+		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
+		ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "fast",
+	}
+	profile := &llm.ProviderModelProfile{
+		ContextWindowTokens: 8192,
+		MaxOutputTokens:     1024,
+		ReasoningEffortLevels: []llm.ReasoningEffort{
+			llm.ReasoningLow,
+			llm.ReasoningHigh,
+		},
+	}
+	resolver := &rotatingRouteResolver{selected: llm.SelectedProviderRoute{
+		Provider: "openai", Model: "model", KeyName: "route key", RouteID: route.RouteID,
+		RouteGeneration: route.RouteGeneration, ProviderConnectionID: route.ProviderConnectionID,
+		ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    route.CredentialAssetGeneration,
+		ModelSelector:                route.ModelSelector,
+		ExpiresAt:                    selectedAt.Add(time.Minute),
+		ModelProfile:                 profile,
+	}}
+	cfg := llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	request := llm.ProviderRouteRequest{
+		TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run",
+		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
+		RouteID: route.RouteID, RouteGeneration: route.RouteGeneration,
+		ProviderConnectionID:         route.ProviderConnectionID,
+		ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    route.CredentialAssetGeneration,
+		ModelSelector:                route.ModelSelector,
+		ModelProfileSupported:        true,
+		Purpose:                      llm.ProviderRoutePurposeRun,
+	}
+	selected, err := llm.SelectProviderRoute(context.Background(), cfg, request, selectedAt)
+	if err != nil {
+		t.Fatalf("outer selection at receipt time: %v", err)
+	}
+	if selected.ExpiresAt.After(time.Now()) {
+		t.Fatalf("test selection has not expired before leaf: %s", selected.ExpiresAt)
+	}
+
+	provider := newStubClient()
+	driver := newDriverWithClient(newStubClient(), bfschemas.OpenAI, nil)
+	driver.routeClient = provider
+	driver.providerRoute = cfg
+	ctx, err := identity.WithRun(context.Background(), identity.Identity{
+		TenantID: "tenant", UserID: "user", SessionID: "session",
+	}, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
+		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task",
+		Purpose: llm.ProviderRoutePurposeRun,
+	})
+	ctx = llm.WithSelectedProviderRoute(ctx, selected)
+
+	if _, err := driver.Complete(ctx, llm.CompleteRequest{Model: selected.Model}); err != nil {
+		t.Fatalf("fresh attempt resolution after selection expiry: %v", err)
+	}
+	if got := resolver.resolveCalls.Load(); got != 1 {
+		t.Fatalf("fresh resolver calls = %d, want 1", got)
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1 after fresh exact resolution", got)
 	}
 }
 

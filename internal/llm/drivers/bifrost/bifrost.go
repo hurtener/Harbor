@@ -183,7 +183,14 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		if d.providerRoute.Resolver == nil {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteResolverUnavailable
 		}
-		if !selectedOK || !selected.ExpiresAt.After(time.Now()) || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
+		// Selection expiry is validated by the outer route wrapper when it
+		// receives the credential-free decision. An upstream wrapper may then
+		// spend longer than that selection lifetime before reaching this leaf.
+		// The leaf must not treat the old receipt as credential authority: it
+		// resolves a fresh attempt-bound credential below, validates its current
+		// expiry/generations, and exact-matches every non-expiry field back to the
+		// admitted selection.
+		if !selectedOK || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
 		}
 		var scope *llm.AttemptScope
