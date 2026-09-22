@@ -593,7 +593,7 @@ jobs:
     # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
     # against in CI. We launch it via `docker run` rather than a
     # GitHub Actions service container because the official
-    # `minio/minio` image needs `server /data` as the entrypoint args
+    # `quay.io/minio/minio` image needs `server /data` as the entrypoint args
     # (services blocks can't pass command args cleanly), and Bitnami's
     # alternative dropped its `latest` tag. Credentials are documented
     # dummy values per AGENTS.md §7 #2 — no real secrets cross this
@@ -612,10 +612,10 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name harbor-minio \
-            -p 9000:9000 \
+            -p 127.0.0.1:9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2024-12-18T13-15-44Z \
+            quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z \
             server /data
           # Poll for liveness; create the bucket once MinIO answers.
           for i in $(seq 1 30); do

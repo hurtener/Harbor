@@ -105,3 +105,25 @@ the workload or timeouts. Additional host-field regressions after large opaque
 values and between sibling objects preserve rejection and exact payload bytes.
 The scoped pinned lint gate reports zero issues. Whole-final-tree coverage and
 release acceptance still require their independent gates.
+
+## CI fixture and temporary transport cleanup
+
+The S3 conformance job failed before testing because Docker Hub denied the pull
+of `minio/minio:RELEASE.2024-12-18T13-15-44Z`. The fixture now uses the same
+release tag from `quay.io/minio/minio`, the registry documented in
+[that release's official README](https://github.com/minio/minio/blob/RELEASE.2024-12-18T13-15-44Z/README.md#stable).
+Its test port is bound to loopback. The real S3 driver suite, credentials, bucket
+checks, teardown, timeouts and every other CI job remain unchanged. This is a
+disposable test fixture, not a production deployment recommendation or a claim
+that the two registry manifests were independently compared.
+
+Local validation parses the workflow, checks the setup shell syntax, and compares
+all other jobs and S3 steps structurally with the preceding tree. A Docker daemon
+is unavailable locally; the real image pull and S3 suite still require hosted
+validation. Neither a skipped test nor a successful transport job closes this
+acceptance gate.
+
+Removed both temporary PR-local publication/source-recovery workflows. No encoded
+patch manifest remains tracked. Implementation publication now uses ordinary
+authorized repository writes; no test or approval gate is replaced by transport.
+The complete release checklist remains open until the final tree is validated.

@@ -42,7 +42,7 @@ The existing retained-window format remains version 3.
 - [ ] Final-tree full drift/preflight and previous phase smoke gates pass.
 - [ ] Final-tree Protocol generation/lockstep and applicable frontend gates pass.
 - [ ] Final adversarial review has no unresolved critical/high-severity findings.
-- [ ] Temporary publication/source-recovery workflows and payloads are removed.
+- [x] Temporary publication/source-recovery workflows and payloads are removed.
 - [x] Sample-agent setup, migration and RC end-to-end test instructions are complete; publication of an RC remains a separate gate.
 - [ ] RC is published after validation; no merge or release is implied by this tracker.
 
@@ -117,3 +117,10 @@ remain separate and no permission test or coverage floor is relaxed.
 Decoder benchmark measurements and their limitations are recorded in
 [the release review](portable-context-release-review.md). These scoped results
 are not a substitute for any unchecked final-tree gate above.
+
+## CI fixture cleanup
+
+The two temporary development workflows are removed, with no tracked payload
+manifest left behind. The S3 job uses the same MinIO release on its documented
+Quay registry and a loopback-only test port. Real S3 conformance is still pending
+hosted validation; no test command, timeout, or approval requirement is relaxed.
