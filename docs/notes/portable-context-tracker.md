@@ -2,12 +2,19 @@
 
 RFC 002 / PR #779. Checked implementation items are published behavior, not
 stable-release or consumer acceptance. The published PR head before the
-unpublished retry-safety work is `e91791b8` (documentation); its current
-RC3 implementation target is
+retry-safety work was `e91791b8` (documentation); the reviewed PR head is
+`7434b645`, including `80165fd5` and the restart-compensation follow-up.
+Its RC3 implementation target was
 `742ced8e3ec5d6197ed22edb448be89d45659753`. Annotated prerelease
 `v1.32.0-rc.3` peels to that exact commit and includes the provider-route
 attempt-boundary and expired-on-arrival repairs. Local, hosted and downstream
 consumer evidence are kept separate below.
+
+Annotated exploratory prerelease `v1.32.0-rc.4` (`d359e728`) peels to
+`7434b645`; its six binaries/checksums were published as a prerelease. This
+permits bounded consumer comparison, not main/stable release acceptance. The
+coverage floors, hosted validation, and final consumer acceptance remain
+independent blockers for a main release.
 
 ## Scope
 
@@ -69,7 +76,7 @@ automatic external-action replay, or default retention change is introduced.
 - [x] Two independent adversarial reviews of `742a76e..95bd401` completed with
       P0: 0 and P1: 0 after narrow diff-only re-review.
 
-## Unpublished signed MCP retry-safety correction
+## Signed MCP retry-safety correction: published for exploratory RC4
 
 RC3 Workbench acceptance uncovered a separate capability-boundary P1: the
 closed signed dynamic MCP descriptor had no per-tool retry policy, so
@@ -78,7 +85,7 @@ work based on `e91791b` adds a signer-bound, bounded server-local
 `tool_policies` retry ceiling through durable readback, replay fingerprints,
 restart reconciliation, and MCP attach. A transport-level fixture observed
 **four** outbound ambiguous mutations before correcting the policy shell's
-explicit-empty retry-list zero check. At the unpublished working tree,
+explicit-empty retry-list zero check. Before PR publication,
 `GOFLAGS=-p=1 go test ./internal/tools ./internal/agentcfg
 ./internal/protocol/types ./internal/runtime/agentcfg/protocol
 ./internal/runtime/serve ./internal/tools/drivers/mcp -count=1` passed and
@@ -89,16 +96,38 @@ matching named-root `go test -race` across five touched packages passed; the
 unknown-discovery-target regression checks deterministic candidate rejection
 and corrected new-JTI registration. Independent review then found a restart
 crash window: reconciliation had not routed that new typed target refusal
-through the existing preparation-rejection compensation. A narrow unpublished
-follow-up now exercises a physically active RevisionCommitted candidate,
+through the existing preparation-rejection compensation. The narrow published
+follow-up exercises a physically active RevisionCommitted candidate,
 restart discovery refusal, aborted fence, removed active authority, and
 corrected new-JTI registration. It also defensively clones the signed policy
 map in legacy and collection pair views. The focused normal and race tests for
 these paths pass locally; pre-fix full-suite runs remain historical only.
-Full revision-specific release gates
-remain pending. This work is not yet
-published, hosted-verified, deployed, or RC accepted; no older-head green run
-covers it.
+Full revision-specific release gates and scored consumer comparison remain
+pending. The implementation is published on PR #779 and included in exploratory
+RC4, but is not yet hosted-verified, deployed, consumer-accepted, or main-ready;
+no older-head green run covers it. On the published `7434b645` tree, service-backed
+PostgreSQL 17.11 statement coverage measured served runtime at **85.1%** (its
+85% floor), while Phase 233b/26b package floors remain unmet: agentcfg/protocol
+79.0%, MCP driver 81.5%, tools/auth 79.1%, Protocol types 64.2%, Protocol
+transport stream 68.9%, config 82.9%, and agentcfg StateStore driver 75.7%.
+These are measured gaps, not waived targets. The first Phase 269 smoke under
+concurrent host load was **13 OK / 0 SKIP / 1 FAIL** due to the known
+five-second retained steering cleanup deadline. With the same N=128 workload,
+production deadline, assertions and race detector, the isolated rerun against
+a fresh PostgreSQL 17.11 database passed **14 OK / 0 SKIP / 0 FAIL**, including
+two independent PostgreSQL pools. The concurrent failure is retained as
+resource-contention evidence, not erased by the isolated pass.
+
+On published `7434b645` with Go 1.26.4, `GOFLAGS=-p=1 make test`
+(`go test -race ./...`),
+`make vet`, `make lint`, `make build` (full Console), Protocol docs/TS/type
+generation checks, `make markdownlint` (599 files, zero errors),
+`make check-mirror`, and `make drift-audit` (1,592 OK / zero warnings / zero failures)
+passed locally. Phase 268 smoke passed **10 OK / 0 SKIP / 0 FAIL**. The clean
+dedicated-database Phase 233b two-runtime PostgreSQL reconciliation test also
+passed under race. Local and web preflight were owner-waived, not green;
+hosted CI and RC4 consumer comparison are distinct pending evidence. The
+package coverage floors above keep the branch short of main/stable acceptance.
 
 ## Final release gates
 
