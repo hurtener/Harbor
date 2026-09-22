@@ -120,7 +120,7 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	if err != nil {
 		return fmt.Errorf("%w: load dispatch intent: %w", ErrRetainedContextUnavailable, err)
 	}
-	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) {
+	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) || len(old.Bytes) > maxRetainedContextBytes {
 		return ErrRetainedContextUnavailable
 	}
 	frame, settledAction, err := r.makeFrame(ctx, index, true, step, r.journal.ExpiresAt)
@@ -138,6 +138,7 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	intentAction, intentErr := json.Marshal(intentStep.Action)
 	if intentErr != nil || before.Version != retainedJournalVersion ||
 		before.Admission != r.admission || before.Index != index || before.Settled || before.Context ||
+		!before.ExpiresAt.Equal(r.journal.ExpiresAt) ||
 		!bytes.Equal(intentAction, settledAction) {
 		return ErrRetainedContextUnavailable
 	}
