@@ -54,6 +54,11 @@ jobs:
       - name: Vet
         run: make vet
       - name: Test
+        # Each package already exercises 128-way runtime concurrency. Avoid
+        # multiplying independent stress suites on the same shared runner;
+        # retain every test, the race detector, and production deadlines.
+        env:
+          GOFLAGS: '-p=1'
         run: make test
       - name: Build
         env:
