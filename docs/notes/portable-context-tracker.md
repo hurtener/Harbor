@@ -31,7 +31,25 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
-### Provider cancellation transport repair — current local increment
+### LLM-free HTTP manifest fixture repair
+
+On published `5a2f9d774cb02c7b79a1e1cc751c2553c0d495d5`, reproduce all five
+Phase 149 failures with `GOFLAGS=-p=1 go test -race ./test/integration -run
+'^TestE2E_Phase149_HTTPManifestBoot_' -count=1`: **FAIL 1.023s**. Its fixture
+deliberately has no LLM and directly invokes HTTP tools, so explicitly set
+`memory.strategy=none` there. No production code/default, workload, timeout,
+assertion or retry changes; N=128 catalog concurrency is preserved.
+
+On source tree `d5e23350a40cebd10ac1587676dcab9d5942dc3c`, Go 1.27.1 darwin-arm64,
+the same race command now **PASS 3.648s**. Targeted assembly
+tests for partial-stack failures, rolling memory without an LLM and automatic
+compactor construction pass **2.225s**; full integration-package lint reports
+zero issues. Production still fails loud for rolling memory without an LLM.
+This closes that fixture regression only, not the macOS cleanup deadline or
+final hosted/full-suite/service-backed acceptance. Parent `5a2f9d77` CI
+`35848388762` and docs `35848388577` were running before this publication.
+
+### Provider cancellation transport repair — published increment
 
 Built on published `63f07c05cf008b32bb71d86c2ef946f058e5dc58`, same draft PR.
 Adopt official Bifrost core **1.9.0**, the first inspected release containing
