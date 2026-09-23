@@ -17,7 +17,7 @@ const memoryValueArtifactNamespace = "memory_value"
 
 // GetDeps carries the dependencies Get composes over.
 type GetDeps struct {
-	// Store is the memory subsystem the snapshot is projected from.
+	// Store supplies the committed execution-memory projection.
 	Store memory.MemoryStore
 	// Artifacts is the ArtifactStore heavy values (≥ HeavyThreshold)
 	// are routed through. Mandatory — a nil fails loud.
@@ -44,7 +44,8 @@ type GetDeps struct {
 // enforced: a record value at or above HeavyThreshold is routed
 // through the ArtifactStore and the detail ships `ValueArtifact`; the
 // inline `Value` is left empty. EXACTLY ONE of Value / ValueArtifact is
-// populated. A value that somehow reached the inline path while being
+// populated on success. Expiring heavy values fail closed until their artifact
+// retrieval can preserve source expiry/deletion. A value that reached the inline path while being
 // heavy is a leak — Get fails loudly with `ErrContextLeak` rather than
 // inlining it (mirrors the LLM-edge enforcement in
 // `internal/llm/safety.go`).
@@ -71,9 +72,9 @@ func Get(ctx context.Context, deps GetDeps, req prototypes.MemoryGetRequest, id 
 		return prototypes.MemoryGetResponse{}, err
 	}
 
-	snap, err := deps.Store.Snapshot(ctx, id)
+	snap, err := deps.Store.Inspect(ctx, id)
 	if err != nil {
-		return prototypes.MemoryGetResponse{}, fmt.Errorf("memory/protocol: Get: snapshot: %w", err)
+		return prototypes.MemoryGetResponse{}, fmt.Errorf("memory/protocol: Get: inspect: %w", err)
 	}
 	rows, err := snapshotTurns(snap, id, deps.DriverName, deps.HeavyThreshold)
 	if err != nil {
@@ -123,6 +124,11 @@ func buildDetail(ctx context.Context, deps GetDeps, row projectedTurn, id identi
 	}
 
 	if item.HeavyContent {
+		if !item.ExpiresAt.IsZero() {
+			// ArtifactStore has no source-expiry binding. Do not turn a bounded
+			// memory read into an independently retained copy of private context.
+			return prototypes.MemoryItemDetail{}, fmt.Errorf("%w: expiring memory requires source-bound reference retrieval", ErrContextLeak)
+		}
 		// Heavy value — route through the ArtifactStore by reference.
 		ref, err := routeHeavyValue(ctx, deps.Artifacts, row.value, id, item.Key)
 		if err != nil {

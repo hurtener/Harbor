@@ -690,6 +690,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		var openErr error
 		if memCfg.Driver == "postgres" {
 			ms, openErr = postgresRuntime.Memory(memCfg, memory.Deps{
+				Redactor: stack.Redactor, RetentionTTL: cfg.Sessions.IdleTTL,
 				State:      stateStore,
 				Bus:        bus,
 				Summarizer: summarizer,
@@ -697,6 +698,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			})
 		} else {
 			ms, openErr = memory.Open(ctx, memCfg, memory.Deps{
+				Redactor: stack.Redactor, RetentionTTL: cfg.Sessions.IdleTTL,
 				State:      stateStore,
 				Bus:        bus,
 				Summarizer: summarizer,

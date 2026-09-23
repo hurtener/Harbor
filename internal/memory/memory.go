@@ -1,7 +1,7 @@
 // Package memory owns Harbor's declared-policy, identity-scoped,
 // pluggable memory subsystem.
 //
-// lands the leaf surface:
+// The package provides:
 //
 //   - The single mandatory `MemoryStore` interface every backend
 //     (inmem here, sqlite + postgres) implements.
@@ -11,11 +11,11 @@
 //   - The §4.4 extensibility-seam plumbing (registry + factory).
 //   - Ctx helpers (`WithStore` / `MustFrom` / `From`).
 //
-// The interface owns the typed shape; drivers persist
-// opaque bytes through `state.StateStore` via the typed wrapper
-// pattern. Memory records key on `(identity.Quadruple, Kind=
-// "memory.state")` — sessions own the wrapper layer of session
-// records, memory owns its own.
+// The interface owns the typed shape; drivers persist through StateStore.
+// Cumulative execution and Inspect/Put/Delete share internal/memory/session's
+// identity-scoped state. The older pair-oriented methods still use memory.state
+// during the cumulative-memory migration; they are not a compatibility reader for cumulative
+// memory and remain to be retired.
 //
 // Identity is mandatory at every method. The triple
 // `(tenant, user, session)` MUST be fully populated; empty `RunID`
@@ -26,20 +26,8 @@
 // so the rejection is observable — never silent (per
 // AGENTS.md §5 "Fail loudly").
 //
-// Harbor ships `Strategy = StrategyNone` only:
-//
-//   - `AddTurn` is a no-op.
-//   - `GetLLMContext` returns an empty patch.
-//   - `EstimateTokens` returns 0.
-//   - `Flush` is a no-op.
-//   - `Health` returns `HealthHealthy`.
-//   - `Snapshot` returns an empty snapshot.
-//   - `Restore` accepts only an empty snapshot; non-empty is
-//     `ErrInvalidSnapshot`.
-//
-// A later phase will activate `StrategyTruncation` and
-// `StrategyRollingSummary`; A later phase will add the SQLite + Postgres
-// drivers under the same conformance suite.
+// In-memory, SQLite and PostgreSQL drivers implement none, truncation and
+// rolling_summary. This is short-term session memory, not long-term memory.
 package memory
 
 import (
@@ -52,11 +40,6 @@ import (
 )
 
 // Strategy declares the memory shape the store applies.
-//
-// Harbor ships `StrategyNone` operational. `StrategyTruncation`
-// and `StrategyRollingSummary` are declared so operators can stage
-// their config today; the registry's `Open` rejects them with
-// `ErrStrategyNotImplemented` until a later phase lands.
 type Strategy string
 
 // Strategy values.
@@ -66,10 +49,10 @@ const (
 	// "memory disabled" mode.
 	StrategyNone Strategy = "none"
 	// StrategyTruncation keeps a recent-turn window with budget
-	// enforcement. Reserved for a later phase.
+	// enforcement.
 	StrategyTruncation Strategy = "truncation"
-	// StrategyRollingSummary keeps a recent-turn window plus a
-	// background-summarised long-term context. Reserved for a later phase.
+	// StrategyRollingSummary keeps a bounded recent tail plus cumulative
+	// short-term session context through the governed runtime compactor.
 	StrategyRollingSummary Strategy = "rolling_summary"
 )
 
@@ -223,6 +206,14 @@ func (s Snapshot) IsEmpty() bool {
 //     call state lives in `ctx` and the supplied `Quadruple`,
 //     never on the driver.
 type MemoryStore interface {
+	// Inspect reads the authoritative committed memory projection. It exposes
+	// neither active journals nor a second persisted transcript.
+	Inspect(ctx context.Context, id identity.Quadruple) (Inspection, error)
+	// Put appends an operator note and returns its actual committed key.
+	Put(ctx context.Context, id identity.Quadruple, turn ConversationTurn) (string, error)
+	// Delete atomically removes the named item and fences derived context.
+	Delete(ctx context.Context, id identity.Quadruple, key string) (int, error)
+
 	// AddTurn appends a conversation turn to the memory tracked
 	// for `id`. Strategy=none is a no-op (returns nil); other
 	// strategies will apply their shape logic.

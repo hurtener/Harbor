@@ -286,6 +286,18 @@ type phase84eFailSearchStore struct {
 	err   error
 }
 
+func (s *phase84eFailSearchStore) Inspect(ctx context.Context, id identity.Quadruple) (memory.Inspection, error) {
+	return s.inner.Inspect(ctx, id)
+}
+
+func (s *phase84eFailSearchStore) Put(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) (string, error) {
+	return s.inner.Put(ctx, id, turn)
+}
+
+func (s *phase84eFailSearchStore) Delete(ctx context.Context, id identity.Quadruple, key string) (int, error) {
+	return s.inner.Delete(ctx, id, key)
+}
+
 func (s *phase84eFailSearchStore) AddTurn(ctx context.Context, id identity.Quadruple, t memory.ConversationTurn) error {
 	return s.inner.AddTurn(ctx, id, t)
 }

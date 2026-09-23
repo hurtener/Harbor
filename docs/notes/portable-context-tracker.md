@@ -31,7 +31,91 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
-### Cumulative owner relocation — implementation increment
+### Cumulative inspection and mutation — implementation increment
+
+Rolling-memory List/Get/Health/StrategyTrace now read the execution owner's
+committed checkpoint, bounded evidence and recent tail. They do not read the
+obsolete pair record or expose unsettled journals. Stable source keys survive
+raw-turn rollover; viewing from another run does not change them. Source expiry
+is reported without renewal. Serving reports the actual StateStore driver for
+the cumulative projection. The existing Protocol shape and admin/identity gates
+are preserved; the SDK exports the new mandatory inspection vocabulary.
+
+Administrative Put redacts a conversation note before attaching host metadata,
+returns its committed source key, and refuses capacity instead of evicting
+unsummarized history. Delete conditionally removes the source, invalidates any
+affected checkpoint and fences active admissions in the same session. CAS
+conflicts reload current state so a newer sibling's tail is preserved. Required
+persistence failures preserve committed state; no external action is replayed.
+
+**Not complete:** expiring heavy `memory.get` values now explicitly refuse the
+artifact-export path because it cannot yet bind the copy to source deletion and
+expiry. This prevents a new unbounded private copy but is a release blocker,
+not a successful detail read. Source-bound large-value retrieval, retirement of
+the old pair-store/loop and remaining non-cumulative consumers, default rolling
+activation, compact references, coverage and live acceptance remain pending.
+No compatibility reader for old rolling records was added. Non-cumulative
+strategies retain their existing behavior during this incomplete migration.
+
+Focused tests exercise actual outgoing requests after note insertion/deletion,
+checkpoint invalidation before/during inference, late-settlement refusal,
+source-key stability, failure/capacity/expiry preservation, strict redactor
+shapes, cancellation, 128 concurrent identities, independent PostgreSQL pools,
+driver round trips and HTTP handler admin/cross-identity boundaries. Phase 269
+includes these new inspection tests. The Protocol playbook describes the same
+semantics and the outstanding heavy-value refusal. Unfinished hard-Stop changes
+remain separate; no tag or deployment is part of this increment.
+
+Local validation uses isolated source tree
+`278730b0b64780e4d533bc2b0ebb437c168a67c9`, Go 1.26.4, darwin-arm64,
+`GOFLAGS=-p=1`, `-race -count=1`, excluding all unfinished hard-Stop edits:
+
+- Full `./internal/memory/...` passes with dedicated PostgreSQL 17.11 enabled.
+  Statement coverage: parent memory **89.8%**, in-memory driver **96.3%**,
+  PostgreSQL driver **82.1%**, SQLite driver **73.6%**, Protocol **87.6%**,
+  session owner **84.4%**, legacy strategy **82.6%**. Session memory (92% floor),
+  SQLite (85%) and strategy (85%) remain below target. The helper conformance
+  package measures 66.8% and has no independent floor. No target or denominator
+  was reduced; no fresh whole-served-package coverage is claimed.
+- `HARBOR_PG_DSN=<dedicated test database> GOFLAGS=-p=1 bash
+  scripts/smoke/phase-269.sh` passes **15 OK / 0 SKIP / 0 FAIL**. This includes
+  1,200 deterministic turns, the same N=128 workloads, independent PostgreSQL
+  pools, exact 14,660-byte receipts, large versions, `more:false`, source lifetime,
+  restart, recovery, steering/attachment continuity and the new inspection tests.
+  Embedded retained/cumulative selection: **96.724s**; served: **16.281s**.
+- Full planner and Protocol stream race suites pass (**1.418s / 20.385s**).
+  The production mux inspection test and Phase 83f/84e integration selections
+  pass (**2.150s / 2.093s**); the SDK memory facade compiles. Affected-package
+  vet and repository-wide lint pass, with a dedicated lint cache and **0 issues**.
+  Earlier lint attempts found two unextended integration-test wrappers and two
+  source/style issues; all were repaired, not suppressed.
+- `CGO_ENABLED=0 GOFLAGS=-p=1 go build -o <temporary>/context-lab
+  ./examples/portable-context` and the binary's `-h` pass. This is a sample
+  build, **not** a full Console/release build or real-model acceptance.
+- Markdown (599 files, zero errors), mirror and Phase 269 shell syntax pass.
+  The dedicated PostgreSQL instance was stopped after testing. Publication adds
+  only this tracker receipt and a godoc-hygiene wording correction to the tested
+  source tree; runtime code is unchanged. The initial working-tree drift audit
+  reported **1,591 OK / 0 WARN / 1 FAIL** for a decision number in that godoc
+  comment; it was corrected without changing the checker. The corrected audit
+  passes **1,592 OK / 0 WARN / 0 FAIL** (unfinished Stop edits were present only
+  for this working-tree coherence check). Isolated lint also passes again on
+  tree `bf94a00b5ed91f8760a7e7ead6da03a00f92ea25`, which adds only that comment
+  correction to the tested tree.
+
+The previous published head `39b7179e464b9e6d9668d61ee3a33dde77946238`
+finished hosted run `35834720307` with failures: both platforms found the stale
+`PlannerConfig.TokenBudget` reflection-exclusion entry; macOS also reproduced
+`TestRetainedServer_ConcurrentReuse`'s five-second journal-cleanup deadline
+failure (13 scopes). This increment removes only the obsolete exclusion entry;
+the full planner suite now passes locally. **The cleanup failure remains open**;
+local Phase 269 success does not establish its repair. Deadlines, workload,
+assertions and race detection are unchanged. Both builds and downstream
+Playwright/preflight skipped; other completed jobs and docs run `35834720387`
+passed. These are previous-head results, not new-head acceptance. Owner-waived
+preflight is not green. No run was cancelled or restarted.
+
+### Previously published cumulative owner relocation
 
 The execution-memory implementation and all 58 named retained-context tests now
 live in `internal/memory/session`, below runtime composition. Serving, embedding

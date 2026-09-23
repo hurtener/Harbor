@@ -490,6 +490,18 @@ func Run(t *testing.T, factory Factory) {
 
 	t.Run("Identity_Mandatory_AllMethods", func(t *testing.T) {
 		methods := map[string]func(memory.MemoryStore, identity.Quadruple) error{
+			"Inspect": func(s memory.MemoryStore, q identity.Quadruple) error {
+				_, err := s.Inspect(context.Background(), q)
+				return err
+			},
+			"Put": func(s memory.MemoryStore, q identity.Quadruple) error {
+				_, err := s.Put(context.Background(), q, sampleTurn())
+				return err
+			},
+			"Delete": func(s memory.MemoryStore, q identity.Quadruple) error {
+				_, err := s.Delete(context.Background(), q, "absent")
+				return err
+			},
 			"AddTurn": func(s memory.MemoryStore, q identity.Quadruple) error {
 				return s.AddTurn(context.Background(), q, sampleTurn())
 			},
@@ -688,6 +700,15 @@ func Run(t *testing.T, factory Factory) {
 		ctx := context.Background()
 		if err := h.Store.Close(ctx); err != nil {
 			t.Fatalf("Close: %v", err)
+		}
+		if _, err := h.Store.Inspect(ctx, tripleA()); !errors.Is(err, memory.ErrStoreClosed) {
+			t.Errorf("Inspect after Close: err=%v, want ErrStoreClosed", err)
+		}
+		if _, err := h.Store.Put(ctx, tripleA(), sampleTurn()); !errors.Is(err, memory.ErrStoreClosed) {
+			t.Errorf("Put after Close: err=%v, want ErrStoreClosed", err)
+		}
+		if _, err := h.Store.Delete(ctx, tripleA(), "absent"); !errors.Is(err, memory.ErrStoreClosed) {
+			t.Errorf("Delete after Close: err=%v, want ErrStoreClosed", err)
 		}
 		err := h.Store.AddTurn(ctx, tripleA(), sampleTurn())
 		if !errors.Is(err, memory.ErrStoreClosed) {

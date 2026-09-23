@@ -3,6 +3,7 @@ package stream_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -54,6 +55,17 @@ type memHandlerFixture struct {
 
 func newMemHandlerFixture(t *testing.T) memHandlerFixture {
 	t.Helper()
+	return newMemHandlerStrategyFixture(t, memory.StrategyTruncation)
+}
+
+type forbiddenPairSummarizer struct{}
+
+func (forbiddenPairSummarizer) Summarize(context.Context, identity.Quadruple, memory.SummarizeRequest) (memory.SummarizeResponse, error) {
+	return memory.SummarizeResponse{}, errors.New("inspection must not call the obsolete pair summarizer")
+}
+
+func newMemHandlerStrategyFixture(t *testing.T, strategy memory.Strategy) memHandlerFixture {
+	t.Helper()
 	red, err := audit.Open(context.Background(), config.AuditConfig{})
 	if err != nil {
 		t.Fatalf("audit.Open: %v", err)
@@ -79,9 +91,9 @@ func newMemHandlerFixture(t *testing.T) memHandlerFixture {
 
 	store, err := memoryinmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
+		Strategy:     strategy,
 		BudgetTokens: 1_000_000,
-	}, memory.Deps{State: stateStore, Bus: bus}, memoryinmem.Options{})
+	}, memory.Deps{State: stateStore, Bus: bus, Redactor: red, RetentionTTL: time.Hour}, memoryinmem.Options{Summarizer: forbiddenPairSummarizer{}})
 	if err != nil {
 		t.Fatalf("memoryinmem.New: %v", err)
 	}
@@ -105,6 +117,63 @@ func newMemHandlerFixture(t *testing.T) memHandlerFixture {
 		t.Fatalf("NewMemoryHandler: %v", err)
 	}
 	return memHandlerFixture{handler: h, store: store}
+}
+
+func TestMemoryHandler_CumulativeMutationAuthority(t *testing.T) {
+	f := newMemHandlerStrategyFixture(t, memory.StrategyRollingSummary)
+	body := `{"turn":{"user_text":"remember this constraint","assistant_text":"noted"}}`
+	status, data := doMemReq(t, f.handler.PutHandler(), memPutPath, body, &memHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("unprivileged put: %d %s", status, data)
+	}
+	status, data = doMemReq(t, f.handler.PutHandler(), memPutPath, body, &memHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("admin put: %d %s", status, data)
+	}
+	var put prototypes.MemoryPutResponse
+	if err := json.Unmarshal(data, &put); err != nil {
+		t.Fatal(err)
+	}
+	if put.Key == "" {
+		t.Fatal("no committed key")
+	}
+	body = `{"key":"` + put.Key + `"}`
+	status, data = doMemReq(t, f.handler.GetHandler(), memGetPath, body, &memHandlerID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get: %d %s", status, data)
+	}
+	var got prototypes.MemoryGetResponse
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got.Detail.Value), "remember this constraint") {
+		t.Fatal("stored note omitted from detail")
+	}
+	if got.Detail.Item.ExpiresAt.IsZero() {
+		t.Fatal("source expiry omitted")
+	}
+	for _, foreign := range []identity.Identity{
+		{TenantID: "other", UserID: memHandlerID.UserID, SessionID: memHandlerID.SessionID},
+		{TenantID: memHandlerID.TenantID, UserID: "other", SessionID: memHandlerID.SessionID},
+		{TenantID: memHandlerID.TenantID, UserID: memHandlerID.UserID, SessionID: "other"},
+	} {
+		status, data = doMemReq(t, f.handler.DeleteHandler(), memDeletePath, body, &foreign, []auth.Scope{auth.ScopeAdmin})
+		if status != http.StatusNotFound {
+			t.Fatalf("foreign delete: %d %s", status, data)
+		}
+	}
+	status, data = doMemReq(t, f.handler.DeleteHandler(), memDeletePath, body, &memHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("unprivileged delete: %d %s", status, data)
+	}
+	status, data = doMemReq(t, f.handler.DeleteHandler(), memDeletePath, body, &memHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("admin delete: %d %s", status, data)
+	}
+	status, data = doMemReq(t, f.handler.GetHandler(), memGetPath, body, &memHandlerID, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("deleted source readable: %d %s", status, data)
+	}
 }
 
 // seedTurn appends one conversation turn to the fixture's memory store.

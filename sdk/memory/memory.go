@@ -14,6 +14,10 @@ import (
 type (
 	// MemoryStore is the identity-mandatory memory store interface.
 	MemoryStore = internal.MemoryStore
+	// Inspection is the bounded administrative view of execution memory.
+	Inspection = internal.Inspection
+	// Item is one source-keyed committed memory projection.
+	Item = internal.Item
 	// ConfigSnapshot is the resolved memory configuration.
 	ConfigSnapshot = internal.ConfigSnapshot
 	// Deps carries shared dependencies (bus, summarizer, logger).

@@ -24,7 +24,7 @@ const aggregateBucket = time.Hour
 // validated at the call site (the stream handler) — a nil Store fails
 // loud rather than nil-panicking mid-projection.
 type ListDeps struct {
-	// Store is the memory subsystem the snapshot is projected from.
+	// Store supplies the committed execution-memory projection.
 	Store memory.MemoryStore
 	// Aggregator is the events Aggregator the 24-hour counters derive
 	// from. Optional — when nil, the IdentityRejected24h /
@@ -48,7 +48,7 @@ type ListDeps struct {
 }
 
 // List answers the `memory.list` Protocol method: it projects the
-// caller's per-identity memory snapshot into the Console-page row
+// caller's per-identity memory inspection into the Console-page row
 // shape, applies the request's facet filters, paginates, and attaches
 // the aggregate counters.
 //
@@ -96,15 +96,15 @@ func List(ctx context.Context, deps ListDeps, req prototypes.MemoryListRequest, 
 				"(memory records carry no agent binding in V1) — this facet cannot be honoured", ErrInvalidFilter)
 	}
 
-	// Project the caller's per-identity snapshot into rows. The
-	// MemoryStore surface is per-identity; the snapshot is the
+	// Project the caller's per-identity inspection into rows. The
+	// MemoryStore surface is per-identity; the inspection is the
 	// caller's own session memory (CLAUDE.md §6 rule 4). Admin-scoped
 	// cross-identity listing is a fan-out the caller arranges by
 	// invoking List per identity; V1's surface lists the caller's
 	// quadruple.
-	snap, err := deps.Store.Snapshot(ctx, id)
+	snap, err := deps.Store.Inspect(ctx, id)
 	if err != nil {
-		return prototypes.MemoryListResponse{}, fmt.Errorf("memory/protocol: List: snapshot: %w", err)
+		return prototypes.MemoryListResponse{}, fmt.Errorf("memory/protocol: List: inspect: %w", err)
 	}
 	rows, err := snapshotTurns(snap, id, deps.DriverName, deps.HeavyThreshold)
 	if err != nil {
@@ -212,7 +212,7 @@ func applyFilter(rows []projectedTurn, f prototypes.MemoryFilter) []projectedTur
 		}
 		// filter.agent_ids is loud-rejected before projection (List) — it is
 		// never a post-projection facet here. filter.has_ttl_expiring was
-		// removed (V1 memory has no TTL — a structurally-dead facet).
+		// removed from the wire; source ExpiresAt remains item metadata.
 		if f.ContentSearch != "" && !containsFold(string(r.value), f.ContentSearch) {
 			continue
 		}
@@ -253,7 +253,8 @@ func paginate(rows []projectedTurn, page, pageSize int) []projectedTurn {
 // computeAggregates builds the page-level counters. Total derives from the
 // in-hand filtered rows; the 24-hour event counters derive from the events
 // Aggregator (when wired). The structurally-dead `expiring_in_1h` counter
-// was removed — V1 memory has no TTL, so it was always 0 (the projection-completeness gate).
+// was removed when memory had no TTL. Source expiry is now item metadata;
+// this change does not reintroduce a removed wire aggregate.
 func computeAggregates(ctx context.Context, agg *events.Aggregator, rows []projectedTurn, id identity.Quadruple) prototypes.MemoryAggregates {
 	rejected, dropped := eventCounters(ctx, agg, id)
 	return prototypes.MemoryAggregates{

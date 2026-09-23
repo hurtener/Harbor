@@ -6,7 +6,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/state"
@@ -44,6 +46,10 @@ type Deps struct {
 	Bus        events.EventBus
 	Summarizer Summarizer
 	Embedder   Embedder
+	// Redactor and RetentionTTL are the same execution-memory dependencies
+	// supplied by runtime composition. Put refuses a missing redactor.
+	Redactor     audit.Redactor
+	RetentionTTL time.Duration
 }
 
 // ConfigSnapshot is the strict subset of `config.MemoryConfig` the

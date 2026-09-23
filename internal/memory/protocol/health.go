@@ -12,8 +12,7 @@ import (
 
 // HealthDeps carries the dependencies Health composes over.
 type HealthDeps struct {
-	// Store is the memory subsystem the snapshot + health are read
-	// from.
+	// Store supplies the current execution-memory inspection.
 	Store memory.MemoryStore
 	// Aggregator is the events Aggregator the 24-hour counters derive
 	// from. Optional — see ListDeps.Aggregator.
@@ -30,13 +29,13 @@ type HealthDeps struct {
 }
 
 // Health answers the `memory.health` Protocol method: it returns the
-// aggregate memory-health counters (total records / expiring-in-1h /
+// aggregate memory-health counters (total records /
 // identity-rejected-24h / recovery-dropped-24h) plus the per-scope
 // driver mapping.
 //
 // Identity is mandatory: an incomplete triple on id fails
 // loudly with `memory.ErrIdentityRequired`. The record counters derive
-// from the caller's per-identity snapshot; the 24-hour event counters
+// from the caller's per-identity inspection; the 24-hour event counters
 // derive from the events Aggregator (when wired); the driver mapping
 // derives from the configured per-scope driver split.
 func Health(ctx context.Context, deps HealthDeps, id identity.Quadruple) (prototypes.MemoryHealthResponse, error) {
@@ -50,16 +49,9 @@ func Health(ctx context.Context, deps HealthDeps, id identity.Quadruple) (protot
 		return prototypes.MemoryHealthResponse{}, err
 	}
 
-	// Touch Health so a driver-side failure (closed store, etc.)
-	// surfaces loudly rather than being masked by an all-zero counter
-	// roll-up.
-	if _, err := deps.Store.Health(ctx, id); err != nil {
-		return prototypes.MemoryHealthResponse{}, fmt.Errorf("memory/protocol: Health: store health: %w", err)
-	}
-
-	snap, err := deps.Store.Snapshot(ctx, id)
+	snap, err := deps.Store.Inspect(ctx, id)
 	if err != nil {
-		return prototypes.MemoryHealthResponse{}, fmt.Errorf("memory/protocol: Health: snapshot: %w", err)
+		return prototypes.MemoryHealthResponse{}, fmt.Errorf("memory/protocol: Health: inspect: %w", err)
 	}
 	// Health's record-count roll-up does not depend on the heavy-
 	// content flag; pass 0 (no per-row heavy classification needed).

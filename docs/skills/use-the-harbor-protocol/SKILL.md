@@ -555,7 +555,7 @@ The verb **always** writes `title_source: "manual"` — `auto` provenance is not
 
 - **`tasks.list`** — `has_pending_approval` is populated from the pause/approval registry, so `filter.has_pending_approval=true` narrows to tasks actually blocked on a HITL gate (not an empty page). `background_acknowledged` is `omitempty` (elided when false — never a fabricated known-false).
 - **`flows.list` / `flows.get`** — `budget_consumption.tokens_used` is summed per run (symmetric with `cost_usd_used`), truthful wherever a run is recorded.
-- **`memory.list` / `memory.health`** — the always-empty `has_ttl_expiring` facet and the two `expiring_in_1h` aggregate fields are **removed** from the wire (V1 memory has no TTL); `filter.agent_ids` loud-rejects with `invalid_request`/400 (a V1 record carries no producer identity), never a false-empty page.
+- **`memory.list` / `memory.health`** — `has_ttl_expiring` and the two `expiring_in_1h` aggregate fields remain **removed** from the wire; `filter.agent_ids` loud-rejects with `invalid_request`/400 (memory records carry no producer identity), never a false-empty page. Cumulative `rolling_summary` items now report their original source `expires_at`; inspection does not renew retention or expose unsettled journals.
 - **`tools.list` / `tools.metrics` / `tools.content_stats`** — a runtime that advertises the `tool_annotations` capability (negotiate via `Accepts(tool_annotations)`) serves REAL per-tool annotations: `filter.oauth_statuses` / `filter.approval_policies` narrow to real rows, the annotator-backed aggregates (`active` / `pending_approval` / `awaiting_oauth`) carry real counts (no `aggregates_partial`), `tools.metrics` returns real error-rate gauges + invocation/failure counts over the window, and `tools.content_stats` returns a real result-size histogram (D-314). The admin `tools.set_approval_policy` / `tools.revoke_oauth` methods persist through `tools/approval` / `tools/auth` with audit (they no longer return `admin_unsupported`). A runtime that does NOT advertise `tool_annotations` (a headless catalog stack) loud-rejects `filter.oauth_statuses` / `filter.approval_policies` with `invalid_request` and returns `aggregates_partial: true` with those counters zeroed — render them "unavailable," never a real-looking 0; only `aggregates.total` is authoritative in that state.
 
 The `owner` field in a `tools.*` catalog row is the logical configured MCP
@@ -565,6 +565,31 @@ not a client-side naming contract and is never reconstructed from a suffix or
 hash. The row's `id` and `name` remain the physical catalog keys needed for
 the exact `tools.get` / `tools.describe` request, while a runtime without a
 logical-source projection may honestly return the raw source identifier.
+
+### Cumulative memory inspection and administration (D-477)
+
+For `rolling_summary`, `memory.list`, `memory.get` and `memory.strategy_trace`
+read the same checkpoint, bounded recent tail and retained evidence as execution.
+Keys identify immutable sources, not row positions or the viewer's run. A source
+key survives raw-turn rollover while its evidence remains retained. Inspecting
+an expired source returns absence, not an extended lifetime. Token counts in the
+strategy trace are estimates of projected memory, not provider usage.
+
+The existing `memory.put` and `memory.delete` admin gates remain mandatory.
+Put records a redacted conversation note, never tool-result or action authority;
+if the detailed tail is full it reports capacity instead of evicting context.
+Delete removes that source conditionally, invalidates an affected checkpoint,
+and fences active admissions in that session so a late decision or settlement
+cannot restore erased material. It does not cancel an external action already
+in progress or erase an independently owned transcript. Other sessions remain
+unaffected.
+
+**Current migration limitation:** large expiring values cannot yet be exported
+through `memory.get`'s artifact arm: that path refuses the read rather than
+creating a private copy without source-bound expiry/deletion. This is not a
+successful detail read or completed release acceptance. Small values, metadata
+listing and source-key deletion remain available. Existing execution result-ref
+retrieval is a separate path with its own current-source checks.
 
 ## 4d. Reopening a chat — durable turns and the two-read open (v1.28)
 

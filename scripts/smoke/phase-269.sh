@@ -7,6 +7,12 @@ cd "$ROOT"
 source scripts/smoke/common.sh
 assert_file docs/plans/phase-269-retained-session-context.md "retained context plan exists"
 assert_grep_present '^## D-464 ' docs/decisions.md "retained window decision exists"
+if go test -race -p 1 ./internal/memory/session ./internal/runtime/assemble ./internal/protocol/transports/stream \
+    -run 'TestSessionInspection_|TestRunOnce_MemoryInspectionUsesExecutionOwner|TestMemoryHandler_CumulativeMutationAuthority' -count=1; then
+    ok "memory inspection, mutation authority and stale-publication fences pass"
+else
+    fail "memory inspection or conditional mutation regression failed"
+fi
 if go test -race -p 1 ./internal/memory/session ./internal/runtime/runctx ./internal/runtime/assemble ./sdk/assemble ./internal/runtime/serve ./internal/config \
     -run 'TestRetainedCumulative_|TestRunOnce_CumulativeMemory_|TestRetainedDecode_|TestRetainedRecovery_|TestRunOnce_RetainedRecovery|TestRetainedCheckpoint_|TestRunOnce_RetainedCheckpoint|TestRetainedContext_|TestRunOnce_RetainedContext|TestRunOnce_RetainedNative|TestRunOnce_RetainedDiscovery|TestRetainedServer_|TestMemoryRecentTurns_|TestLoad_SessionMemoryHasOneActivation' -count=1; then
     ok "retained evidence, restore, erasure and served/embedded request regressions pass"

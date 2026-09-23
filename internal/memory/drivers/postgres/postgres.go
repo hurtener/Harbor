@@ -170,6 +170,7 @@ func newWithDB(cfg memory.ConfigSnapshot, deps memory.Deps, db *sql.DB, ownsDB b
 	}
 
 	return &driver{
+		access:   memory.NewAccess(cfg, deps),
 		strategy: strategyName,
 		db:       db,
 		ownsDB:   ownsDB,
@@ -187,6 +188,7 @@ func init() {
 // Fields are immutable after construction except for the atomic
 // `closed` flag and the internally-synchronised executor.
 type driver struct {
+	access   *memory.Access
 	strategy memory.Strategy
 	db       *sql.DB
 	ownsDB   bool
@@ -195,6 +197,39 @@ type driver struct {
 
 	mu     sync.Mutex
 	closed atomic.Bool
+}
+
+// Inspect implements memory.MemoryStore using the execution-memory owner.
+func (d *driver) Inspect(ctx context.Context, id identity.Quadruple) (memory.Inspection, error) {
+	if d.closed.Load() {
+		return memory.Inspection{}, memory.ErrStoreClosed
+	}
+	if memory.ValidateIdentity(id) != nil {
+		return memory.Inspection{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Inspect")
+	}
+	return d.access.Inspect(ctx, id, d)
+}
+
+// Put implements memory.MemoryStore and returns a committed item identity.
+func (d *driver) Put(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) (string, error) {
+	if d.closed.Load() {
+		return "", memory.ErrStoreClosed
+	}
+	if memory.ValidateIdentity(id) != nil {
+		return "", memory.EmitIdentityRejected(ctx, d.bus, id, "Put")
+	}
+	return d.access.Put(ctx, id, turn, d)
+}
+
+// Delete implements memory.MemoryStore through its conditional owner mutation.
+func (d *driver) Delete(ctx context.Context, id identity.Quadruple, key string) (int, error) {
+	if d.closed.Load() {
+		return 0, memory.ErrStoreClosed
+	}
+	if memory.ValidateIdentity(id) != nil {
+		return 0, memory.EmitIdentityRejected(ctx, d.bus, id, "Delete")
+	}
+	return d.access.Delete(ctx, id, key, d)
 }
 
 // Compile-time assertion that *driver satisfies memory.MemoryStore.

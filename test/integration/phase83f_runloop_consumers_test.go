@@ -417,6 +417,18 @@ type failingMemoryStore struct {
 
 var errPhase83fForcedMemFail = errors.New("phase 83f test: forced memory store failure")
 
+func (f *failingMemoryStore) Inspect(ctx context.Context, q identity.Quadruple) (memory.Inspection, error) {
+	return f.inner.Inspect(ctx, q)
+}
+
+func (f *failingMemoryStore) Put(ctx context.Context, q identity.Quadruple, turn memory.ConversationTurn) (string, error) {
+	return f.inner.Put(ctx, q, turn)
+}
+
+func (f *failingMemoryStore) Delete(ctx context.Context, q identity.Quadruple, key string) (int, error) {
+	return f.inner.Delete(ctx, q, key)
+}
+
 func (f *failingMemoryStore) GetLLMContext(_ context.Context, _ identity.Quadruple) (memory.LLMContextPatch, error) {
 	return memory.LLMContextPatch{}, errPhase83fForcedMemFail
 }

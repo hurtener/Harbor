@@ -475,7 +475,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			in.Coordinator, in.Artifacts, config.DefaultConsoleInlinePayloadBytes))
 	}
 	if in.Memory != nil {
-		muxOpts = append(muxOpts, transports.WithMemory(in.Memory, cfg.Memory.Driver))
+		driver := cfg.Memory.Driver
+		if cfg.Memory.Strategy == "rolling_summary" {
+			driver = cfg.State.Driver
+		}
+		muxOpts = append(muxOpts, transports.WithMemory(in.Memory, driver))
 	}
 	if in.Artifacts != nil {
 		muxOpts = append(muxOpts, transports.WithStateHistory(bus, in.Artifacts))
