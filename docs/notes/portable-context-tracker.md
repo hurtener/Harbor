@@ -1,5 +1,31 @@
 # Portable session context implementation tracker
 
+## RC11 deployment and fresh-session acceptance boundary — 2026-09-23
+
+Release workflow `35933587714` completed successfully for implementation
+`548d25c0786a58849f5107fbe08ef6d62f3323fb` / `v1.32.0-rc.11`.
+The native release checksum, GitHub provenance attestation and version stamp
+verify. The isolated sample deployed its exact RC11 pin at 23:35:16 UTC;
+health and readiness both returned HTTP 200. Startup confirms real PostgreSQL,
+durable events, rolling-summary memory and the Bifrost driver, with no mock.
+Implementation CI `35933443466` remains running on Linux/macOS; thirteen other
+jobs and separate docs run `35933443429` passed. This is not final CI acceptance.
+
+An unchanged no-tool recall in the original pre-RC11 session still failed:
+task `01M38A69QSM8Z92DAC8YW9F5AF` ended at 23:39:56 UTC with retained-context
+terminal capacity refusal. No summary error was logged. Older abandoned
+admissions can prevent checkpoint advancement, but that exact cause has not
+been established for this session. No database cleanup or journal reconciliation
+was performed, and no earlier external action was replayed.
+
+The owner explicitly removed backward repair of old sessions from acceptance:
+use a fresh session and establish that the failure does not recur. Preserve the
+old session as evidence, rather than treating its repair as a release blocker.
+Fresh iterative acceptance must cross the configured detail window and actual
+compaction, include reload/session switching, and verify terminal persistence
+and original constraints. That new live check is started, not yet passed.
+Existing coverage, hosted reliability and matched-comparison gaps remain.
+
 ## Remove independent retention ceilings — 2026-09-23
 
 Published implementation `548d25c0786a58849f5107fbe08ef6d62f3323fb` follows
