@@ -1040,6 +1040,21 @@ The stub format is uniform across producers (tool result, memory turn, multimoda
 
 Memory is declared-policy, identity-scoped, and pluggable across persistence backends.
 
+**Cumulative session memory (D-477; RFC 002 amendment, implementation pending).**
+`memory` becomes the single short-term session-memory owner. The standard
+`rolling_summary` strategy carries one cumulative checkpoint plus a bounded
+recent execution tail; `recent_turns: 20` bounds detail, not the age of remembered
+constraints. Each compaction receives the preceding checkpoint and newly eligible
+evidence. `memory.budget_tokens` controls assembled-request compaction, with zero
+deriving the safe target from the effective model; output limits remain separate.
+`memory.strategy: none` explicitly disables session memory. Replace the pair-only
+summary pipeline, separate `sessions.retained_context_turns`/`WithRetainedContext`
+activation and `planner.token_budget`; no compatibility layer or second memory
+engine. Update the memory interfaces and every served/embedded consumer together.
+The older pair-oriented API sketch below describes the interface being replaced,
+not a requirement to preserve that implementation. External long-term memory and
+the consumer transcript remain distinct.
+
 ```go
 package memory
 
@@ -1075,7 +1090,7 @@ type Store interface {
 
 **Settled:**
 
-- Three strategies: `none` (no-op), `truncation` (recent-window + budget enforcement), `rolling_summary` (background summarization, health states `healthy → retry → degraded → recovering → healthy`).
+- Three strategy names: `none` (stateless), `truncation` (explicit recent-window behavior), `rolling_summary` (standard cumulative checkpoint plus recent execution evidence under D-477). The former pair-summary background loop and drop-oldest recovery backlog are replaced, not run alongside cumulative memory.
 - Identity is **mandatory**. The predecessor's `require_explicit_key=False` knob is removed from Harbor. Missing identity = empty result + audit event. (Settled.)
 - Three drivers ship at V1: in-memory, SQLite, Postgres. One conformance suite passes against all three.
 - `llm_context` vs `tool_context` separation is preserved: identifiers live in `tool_context` (LLM-invisible); conversation state lives in `llm_context`. The Go analogue is "identity flows via `context.Context`, never through prompt-visible state."
@@ -1349,26 +1364,28 @@ type TaskRegistry interface {
 
 ### 6.9 Sessions and SessionManager
 
-**Retained execution context (D-464/D-465; RFC 002).** Explicitly opted-in root
-runs retain a bounded private terminal execution window through the existing
-StateStore. `sessions.retained_context_turns` enables the same projection for
-serve and embedded runs; `WithRetainedContext` overrides it for one embedded
-invocation, including zero to disable. This replaces legacy pair-only projection
-in the selected mode, not consumer turn rows or external long-term memory.
+**Cumulative execution context (D-477; RFC 002).** Root runs use the single
+`memory` policy in serving and embedding through the existing StateStore,
+ArtifactStore and dispatch journal. Remove the separate retained-context switch
+and pair-only projection, not consumer turn rows or external long-term memory.
 Child tasks use explicit task context and never publish their private transcripts
-into the root window. Restored history is inert and must satisfy current erasure
-and source-expiry checks. Omitted configuration does not authorize new retention.
-Required terminal persistence precedes served task completion; per-action
-crash durability remains required before phase 269 is complete. See [RFC 002](https://github.com/hurtener/Harbor/blob/553ff4365b6d7a7b4a67604226b661572d0b7019/RFC-002-Session-Context.md) and the
+into the root memory. Restored history is inert and must satisfy current erasure
+and source-expiry checks. Required terminal persistence precedes served task
+completion. Session deletion and lifetime remain controlled by `sessions`.
+See [RFC 002](RFC-002-Session-Context.md) and the
 [phase 269 plan](docs/plans/phase-269-retained-session-context.md).
 
-**Retained checkpoints (D-469; RFC 002).** Version-3 retained windows may carry
-one portable summary bound to exact source-turn membership and content. Restore
-it only against a matching retained prefix, rebind runtime coverage to the new
-query, and replay every uncovered exchange. Source expiry, eviction, erasure or
-redaction must not leave a derived summary extending the source's lifetime.
-Versions 1 and 2 without checkpoints remain readable; older readers reject the
-new format. This adds no model call, backend, or provider-owned state.
+**Cumulative checkpoints (D-477 supersedes D-469).** One versioned checkpoint
+has committed generation and coverage valid after covered raw detail is removed.
+Generate outside locks/persistence deadlines, then conditionally publish against
+the unchanged source prefix, generation and erasure state; preserve newer tails
+and unsettled admissions. Only successful publication authorizes raw-detail
+cleanup. Do not skip late-settling siblings or store an unbounded list of source
+IDs/checkpoints. Failure preserves committed state or stops with explicit capacity
+failure. Deletion/expiry, unlike compaction, remove information: rebuild from
+remaining authorized evidence or invalidate an affected opaque checkpoint.
+Compaction/restart never extend retention. Old private formats may be rejected
+explicitly; no compatibility layer is required. No new backend/provider state.
 
 **Explicit settled-journal reconciliation (D-470; RFC 002).** An embedded caller
 with configured retained context may seal a fully settled journal as interrupted

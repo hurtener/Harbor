@@ -2,6 +2,45 @@
 
 ## Current recovery direction — 2026-09-23
 
+The owner-approved D-477 amendment makes cumulative session memory the required
+outcome for PR #779. Use one `memory` configuration/owner/projector/compactor;
+replace separate retained-context activation and the old pair-summary pipeline.
+`recent_turns` limits detail, not the cumulative checkpoint's historical reach.
+No backward-compatibility layer is required. Long-term memory remains external.
+
+### Current cumulative-memory increments
+
+- [x] Diagnose count eviction invalidating the checkpoint before replacement.
+- [x] Reproduce loss in actual outgoing requests: with a 20-turn window, the
+      turn-1-only constraint disappears on turn 22 in both in-memory and SQLite,
+      despite 22 maintenance calls. Go 1.26.4, `GOFLAGS=-p=1 go test -race
+      ./internal/runtime/assemble -run
+      '^TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover$'
+      -count=1`; both cases fail as expected on `fdb45861` plus local tests and
+      in-progress hard-Stop changes. No cumulative implementation change was
+      present. This is red evidence, not a passing gate.
+- [x] Amend both RFCs, config docs, decisions and phases; add the real-request
+      regression as an intentionally failing acceptance test. This first
+      increment contains no cumulative-memory runtime fix or RC publication.
+- [ ] Implement cumulative generation/coverage and atomic rollover, with both
+      served and embedded consumers in the same increment. Preserve failure,
+      expiry/erasure, concurrent-sibling and unknown-outcome fences.
+- [ ] Consolidate configuration, remove legacy paths, finish exact references,
+      attachments, steering, recovery, SDK/examples and bounded diagnostics.
+- [ ] Pass 100 turns / at least five generations across multiple full windows,
+      all three stores, failure/restart/isolation cases and actual requests.
+- [ ] Repeat matched real UI iteration across compaction boundaries.
+
+Hard Stop, in-flight Steer and single-owner consumer Queue remain in scope.
+Current unpublished hard-Stop tests pass through the authenticated control
+endpoint for blocked model/tool work and reject late successful output; this is
+not deployed or complete. A real pinned Bifrost 1.7.4 streaming HTTP cancellation
+test closes the upstream connection but exposes a fasthttp close/read data race.
+That transport boundary remains a blocker, not a waived test. No new dependency,
+provider client or capability has been introduced to work around it.
+
+### RC increment disposition
+
 The RC4 signed per-tool retry-policy extension (`80165fd5`) and its dependent
 restart compensation (`7434b645`) are withdrawn from this candidate. They were
 not required for portable context or the requested interaction fixes. This is
@@ -58,7 +97,9 @@ independent blockers for a main release.
 Stowage owns long-term memory. Harbor retains bounded execution context using
 its existing StateStore and governed Bifrost-backed client. No provider-native
 compaction requirement, additional provider SDK, second public transcript,
-automatic external-action replay, or default retention change is introduced.
+automatic external-action replay is introduced. D-477 explicitly authorizes the
+single cumulative-memory default/configuration migration; earlier no-default-change
+statements below describe their historical revisions, not the current target.
 
 ## Slice 1 / Phase 268 — portable compaction
 

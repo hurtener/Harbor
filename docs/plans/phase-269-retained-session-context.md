@@ -6,30 +6,42 @@ Implement RFC 002's second slice using the existing StateStore, artifact
 machinery, and run-context projection. Served and embedded runs now retain
 bounded execution journals and terminal context, with explicit recovery, native
 historical projection, checkpoint reuse and source-lifetime checks. Implementation
-acceptance is tracked below; final release gates remain in progress.
+acceptance is tracked below; final release gates remain in progress. D-477
+supersedes the separate opt-in window with cumulative session memory through
+`memory`. The prior three-turn/checkpoint tests did not cover the count boundary:
+the current actual-request regression loses a turn-1 constraint on turn 22 with
+a 20-turn window in both in-memory and SQLite. This is an implementation gap,
+not model proficiency. The amendment below is pending, not shipped.
 
 ## RFC anchor
 
 - RFC §6.2
+- RFC §6.6
 - RFC §6.9
 - RFC §6.11
 
 ## Briefs informing this phase
 
 - brief 02
+- brief 04
 - brief 05
 - brief 08
 
 ## Brief findings incorporated
 
 - brief 02 §1: runtime mechanisms stay separate from planner reasoning policy.
+- brief 04 §1: short-term memory is declared-policy and identity-scoped; keep
+  one owner instead of a parallel retained-context implementation.
 - brief 05 §1: identity-scoped StateStore and ArtifactStore own persistence;
   a new service or competing backend is unnecessary.
 - brief 08: model inference continues through the existing Bifrost-backed client.
 
 ## Findings I'm departing from (if any)
 
-None in the target contract. D-464 records the original terminal-only boundary.
+Brief 04's pair-only rolling-summary/recovery-loop sketch is replaced by the
+existing execution-context compactor, not maintained as a parallel engine.
+D-477 supersedes D-464/D-465 activation and D-469 raw-source membership.
+D-464 records the original terminal-only boundary.
 Later increments below add intent/settlement journaling and explicit reconciliation;
 an intent without a returned receipt remains unknown, never automatically replayed.
 
@@ -49,6 +61,32 @@ an intent without a returned receipt remains unknown, never automatically replay
 - No domain-specific resource schema or generic history-search service.
 
 ## Acceptance criteria
+
+- [ ] `memory.strategy: rolling_summary` is the standard cumulative session
+      memory path; `recent_turns` bounds detail, not checkpoint history.
+      `none` is explicitly stateless. Remove separate config/SDK activation.
+- [ ] One versioned checkpoint with committed generation/coverage, bounded recent
+      evidence/references and active admissions; no growing source-ID chain.
+- [ ] Freeze settled eligible evidence, infer outside locks/persistence deadlines,
+      validate and conditionally publish before any covered-detail cleanup.
+      Failures preserve state; no unsummarized count/byte eviction.
+- [ ] Serving and embedding use one owner/projector/compactor. Remove pair-only
+      summary loops and assembly branches; migrate callers, SDK and examples.
+- [ ] Late siblings cannot overwrite new checkpoints or disappear behind coverage;
+      deletion during inference fences publication, with no retention renewal.
+- [ ] Deletion/expiry rebuilds from remaining authorized evidence or explicitly
+      invalidates an affected checkpoint; compaction cleanup is not erasure.
+- [ ] 100-turn, five-generation actual-request acceptance across several windows,
+      corrections, restart, write/summary failures, siblings, deletion, expired
+      references and model changes on in-memory, SQLite and PostgreSQL.
+- [ ] Bounded storage/request sizes and content-free generation/coverage/size,
+      reason, maintenance-cost and invalidation diagnostics are verified.
+- [ ] Preserve exact receipt, large-version, pair-validity, current-authority,
+      N=128 race/isolation, fresh-result and unknown-outcome/no-replay regressions.
+- [ ] Matched real UI comparison crosses several boundaries through edits,
+      session switching/return and restart; record distortion/omission honestly.
+
+### Historical bounded-window criteria (not cumulative acceptance)
 
 - [x] Positive `sessions.retained_context_turns` or `WithRetainedContext(1..32)`
       explicitly opts in; configuration defaults to zero and the per-call option
@@ -99,6 +137,14 @@ an intent without a returned receipt remains unknown, never automatically replay
 
 ## Public API surface
 
+The target entry point is `memory` in YAML and its corresponding SDK config.
+`WithRetainedContext` and `sessions.retained_context_turns` below describe the
+historical API being removed, not a compatibility promise. Removed settings
+fail clearly; old private formats need not be supported. The own-session
+reconciliation Protocol and exact settlement/erasure authority remain unchanged.
+
+Historical activation:
+
 ```go
 func WithRetainedContext(turns int) RunOption
 ```
@@ -143,6 +189,11 @@ that full branch coverage or repository preflight is already green.
 - 246 — preserve the consumer-turn projection's distinct authority.
 
 ## Risks / open questions
+
+Under D-477, count/byte cleanup is permitted only after cumulative checkpoint
+commit. The source-dependent cache and count-eviction rules below describe the
+old implementation and must not remain in the replacement. TTL/erasure still
+remove information, including derived summaries; incompatible data fails closed.
 
 The bounded session window retains up to 32 recent turns, 256 own steps per turn
 and 512 KiB per session slot; up to 32 active admissions are tracked. Per-action
@@ -380,6 +431,9 @@ behavior or backend is added. Release and migration checks are in
 its full release gates, not merely sample success.
 
 ## Current release evidence
+
+The September 23 cumulative-memory amendment is not implemented or release-ready.
+The following measurements apply to the named historical revisions only.
 
 The implementation head covered here is `cea93340`. Independent-pool PostgreSQL conformance
 passes for the retained-context behavior. Canonical PostgreSQL-backed served

@@ -3,8 +3,11 @@
 **Status:** Accepted for incremental implementation in PR #779; not released.
 
 Phase 268 implements portable compaction and request budgeting. Phase 269 adds
-opt-in served/embedded retention, dispatch journaling, checkpoint reuse, explicit
+cumulative session memory, dispatch journaling, checkpoint reuse, explicit
 reconciliation, result recovery, applied steering and attachment continuity.
+The September 23 amendment below replaces the separate opt-in retained window;
+its implementation and multi-window acceptance are pending, not implied by the
+earlier within-window results.
 Final diagnostics, conformance and release gates remain in progress. Neither phase
 is declared RC-ready. The [implementation tracker](docs/notes/portable-context-tracker.md)
 separates implemented behavior from pending release acceptance.
@@ -16,7 +19,10 @@ separates implemented behavior from pending release acceptance.
 ## Goal and scope
 
 An agent must be able to read a resource, act on that evidence, finish a turn,
-and continue the same retained session without losing its recent tool results.
+and continue the same session without losing its useful earlier context when
+the detailed turn window rolls over. A constraint supplied only in turn 1 must
+still govern an edit after several complete windows, without restatement or
+external long-term-memory retrieval.
 Compaction must keep working during long runs. A compatible model reached through
 the pinned Bifrost SDK must be able to continue without restoring provider-owned
 conversation state.
@@ -38,9 +44,11 @@ cache. Prompt caching is an optional transport optimization, never a requirement
 This is an accepted scoped amendment to [RFC 001](RFC-001-Harbor.md), not a
 replacement for Harbor's architecture. It specifies changes to RFC §6.2
 (trajectory projection), RFC §6.5 (request budgets), and RFC §6.9 / RFC §6.11
-(session continuation and persistence). RFC §6.6's existing memory APIs are not
-removed by this work; new session continuity must not add another
-long-term-memory implementation or a second summary of the same active history.
+(session continuation and persistence), and RFC §6.6 (one session-memory owner).
+The old pair-only rolling-summary pipeline and separate retained-context
+activation path are replaced together. No backward-compatibility layer for
+those APIs or storage formats is required; no second summary or long-term-memory
+implementation may remain beside the replacement.
 
 Preserve RFC §4 isolation, RFC §6.3 pause authority, RFC §6.4 runtime-owned
 dispatch, RFC §6.10 artifact routing, and RFC §7 Console-as-Protocol-client.
@@ -53,6 +61,9 @@ Informing briefs and inherited findings:
 
 - [Brief 02 §1](docs/research/02-planner-and-control.md): runtime mechanisms
   must remain separate from the swappable planner's reasoning policy.
+- [Brief 04 §1](docs/research/04-memory-and-skills.md): session memory is
+  declared-policy and identity-scoped; its old pair-summary loop is replaced by
+  the execution-context compactor under D-477, not retained as another engine.
 - [Brief 05 §1](docs/research/05-state-tasks-artifacts-sessions.md): reuse
   identity-scoped StateStore and ArtifactStore with backend conformance.
 - [Brief 08, LLMClient mapping](docs/research/08-llm-client-validation.md):
@@ -83,6 +94,72 @@ These source findings are not a reproduced production incident or a performance
 claim. The implementation must start with recording-provider regressions.
 
 ## Design
+
+### 0. One session-memory configuration and implementation
+
+`memory` is the sole public configuration entry point. The standard session
+strategy is cumulative `rolling_summary`, with 20 recent detailed turns:
+
+```yaml
+memory:
+  strategy: rolling_summary
+  recent_turns: 20
+```
+
+`recent_turns` bounds recent detail, not the age of meaning in the checkpoint.
+`memory.strategy: none` explicitly selects stateless execution. Consolidate
+working-input compaction budgeting under `memory.budget_tokens`; zero selects
+the effective model's safe assembled-request target, not unbounded storage or
+disabled compaction. Model output limits, cumulative spend and run step limits
+remain independent. `sessions` owns lifetime, deletion and retention policy,
+not a second memory activation switch. Remove `sessions.retained_context_turns`,
+`WithRetainedContext` and `planner.token_budget`, with their old assembly branches,
+pair-summary loop and obsolete documentation. Removed keys fail validation with
+actionable migration guidance instead of silently selecting a different mode.
+
+Serving and embedding use the same memory owner, history projection and
+compactor through the existing StateStore, ArtifactStore, dispatch journal and
+governed Bifrost client. Update memory interfaces and their consumers together.
+No new storage service, provider SDK, compatibility engine or public transcript.
+
+### 0.1 Cumulative committed coverage, not a cache of retained raw turns
+
+The private session record holds one current checkpoint, a bounded recent tail,
+validated exact evidence/attachment references, generation/coverage/retention
+metadata, and bounded active admissions with existing recovery fences. It does
+not accumulate a chain of old checkpoints or every historical source ID.
+
+Each rollover consumes the previous checkpoint and newly eligible evidence:
+`C1 = compact(batch1)`, `C2 = compact(C1 + batch2)`, and so on. Runtime-owned
+committed generation and coverage establish which detail was represented even
+after that raw detail is discarded. The current implementation's requirement
+that every checkpoint source turn remain stored is superseded by D-477.
+
+Freeze a fully settled eligible prefix, infer and validate outside storage locks
+and the five-second persistence budget, then conditionally commit against the
+unchanged generation, source prefix and erasure state. Preserve newer evidence;
+discard covered detail only after a successful commit. A stale sibling cannot
+overwrite a newer checkpoint or hide an earlier admitted turn that settles late.
+Do not advance contiguous coverage across an unsettled admission. A run's admitted
+view remains frozen; running evidence stays private until terminal publication
+or explicit fenced recovery.
+
+Trigger compaction from the complete assembled request budget or before the
+detailed-history storage bound would be exceeded. Short conversations and one
+large tool exchange must both work within bounds. Use the same compactor during
+long runs and between turns, with the same authorization, accounting and
+publication rules. A failed summary or write preserves committed state. When
+safe progress cannot fit, return explicit capacity failure rather than evicting
+unsummarized work. Fresh receipts/errors must reach the next decision request.
+
+Compaction cleanup changes representation; deletion and retention expiry remove
+information. Compaction/restart never renew source retention. Where removed or
+expired information contributed to a checkpoint, rebuild from remaining
+authorized evidence when possible; otherwise invalidate that checkpoint
+explicitly. An opaque summary cannot certify selective forgetting. Exact
+receipts, large versions, completeness flags and references remain runtime-owned
+bounded evidence, not facts trusted solely to generated prose. Revalidate their
+current lifetime and authority; unknown external effects remain unknown.
 
 ### 1. A checkpoint replaces a known prefix, never the future
 
@@ -195,8 +272,8 @@ records and checkpoints need explicit byte/count/retention bounds on all drivers
 
 The next user turn restores checkpoint plus recent execution context through the
 same projection used within a run. Do not also inject a second pair-only or
-rolling summary of that same history. Legacy memory interfaces may continue to
-serve existing callers; mode selection must prevent double projection.
+rolling summary of that same history. Replace the legacy memory interfaces and
+callers in the same increment; no legacy-mode branch or duplicate projection.
 
 Cold restart restores committed session context for an authorized subsequent
 continuation. It does not relaunch a lost run or recreate process-local handles.
@@ -253,20 +330,20 @@ off and with no provider-native compaction or remote conversation state.
 
 ## Delivery plan: three implementation slices
 
-These are delivery slices, not newly allocated phase numbers. After design
-acceptance, map each slice to the current phase index using the existing template,
-required briefs, smoke coverage, and decision-log/glossary updates. Do not mark a
-slice shipped from this document or create empty runtime primitives in advance.
+The following three reviewable increments amend the existing phases, without new
+phase numbers or a new architecture. Earlier implementation checkpoints below
+remain historical evidence, not completion of this cumulative contract.
 
 | Slice | End-to-end outcome | Main existing areas |
 |---|---|---|
-| 1. Correct bounded compaction | Recording-provider regressions, coverage cursor, retained tail, repeat compaction, shared request budget, bounded governed summarization | `internal/planner/compression.go`, `internal/planner/trajectory/`, `internal/planner/react/`, `internal/llm/tokens.go`, `internal/llm/summarizer/`, `internal/runtime/steering/` |
-| 2. Continue retained sessions | Boundary persistence, cross-turn projection, exact result recovery, discovered-tool restoration, restart/migration/deletion tests; serve and RunOnce both consume it | `internal/runtime/serve/`, `internal/runtime/assemble/runonce.go`, `internal/runtime/runctx/`, existing state/session/artifact code, `internal/tools/builtin/` |
-| 3. Validate provider portability and efficiency | Adapter request goldens, cache-stable construction, safe diagnostics, controlled real-model evaluation and rollout | `internal/llm/drivers/bifrost/`, existing events/telemetry/Protocol projections, `harbortest/`, `test/integration/` |
+| 1. Pin the cumulative contract | Amend both RFCs, decisions, plans and configuration docs; reproduce a turn-1 constraint disappearing from an actual request after window rollover | RFCs, `docs/`, recording-provider assembly regression |
+| 2. Commit cumulative memory | Versioned checkpoint/coverage and atomic rollover; one compactor; wire served and embedded consumers together | `internal/memory/`, `internal/runtime/runctx/`, serve/assembly, planner, existing state/artifact seams |
+| 3. Finish integration and acceptance | References, attachments, steering, recovery and content-free diagnostics; remove legacy paths; update SDK/examples; deterministic multi-window and real UI comparison | config, SDK, examples, Protocol/telemetry consumers and integration tests |
 
-Instrumentation starts in slice 1. Each slice includes its production consumer,
-meaningful tests, adversarial review, and relevant documentation. Slice 1 is an
-independent correctness fix; it must not wait for persistence or cache work.
+Slice 1 is contract and red regression only, not a runtime correctness claim.
+Each implementation slice includes its production consumers, meaningful tests,
+adversarial review and relevant documentation. Reuse existing diagnostics and
+maintenance accounting rather than waiting for new observability infrastructure.
 No new Console page or full prompt-logging facility is required for this delivery.
 
 ## Acceptance and validation
@@ -287,6 +364,8 @@ the effective request and Bifrost serialization; it does not prove model skill.
 | Tool refresh | Current names/schemas/permissions win; no revoked or guessed tool is invoked. |
 | Provider/model switch, cache off | An authorized compatible Bifrost route continues from the portable checkpoint; changed limits/modalities are revalidated, including fallback attempts. |
 | Long retained history | Instrumented storage work is bounded by the configured window, not total historical event count. |
+| At least 100 turns and five checkpoint generations | A constraint introduced only in turn 1 remains in actual later decision requests; later corrections survive. Every maintenance request receives the previous checkpoint plus new eligible evidence. No Stowage, repeated instruction or canned summary may manufacture a missing constraint. |
+| Multiple complete windows with failures and restarts | Repeat with failed writes/summarization, concurrent siblings, deletion during inference, expired references and model changes on in-memory, SQLite and PostgreSQL. Prove bounded stored bytes and request size, not just successful summary creation. |
 
 Run the shared persistence conformance suite across in-memory, SQLite, and
 Postgres where those configured drivers participate. Reusable components require
@@ -306,14 +385,17 @@ tools, and checks. Verify diffs, prior-change preservation, render/interaction
 behavior, human intervention, repeated reads, and total cost/latency. Report cold,
 warm, post-compaction, and restored sessions separately; no cache-ranking or
 percentage-improvement promise. Deterministic gates must pass without paid calls.
+The UI comparison must cross multiple compaction boundaries while building and
+editing, switching sessions, returning and restarting. Measure preserved,
+distorted and omitted facts: recursive summaries are lossy even when schema-valid.
 
 ## Migration and completion
 
-Keep current configuration semantics until explicit migration. Positive existing
-compaction budgets receive the correctness fix, but richer cross-turn persistence
-requires explicit opt-in; `memory.strategy: none` never authorizes new retention.
-Pin each active run's policy. Prefer the smallest documented configuration surface
-and single-source defaults; no selector between competing compaction engines.
+The September 23 owner-authorized migration makes cumulative `rolling_summary`
+the standard session-memory path; explicit `memory.strategy: none` remains
+stateless. Replace removed configuration/SDK surfaces, not an adapter layer around
+them. Pin each active run's policy. Use fresh isolated sessions for the first new
+format deployment; do not reinterpret old stored windows as cumulative coverage.
 
 Old summaries without proven coverage must not be treated as covering all stored
 steps. Rebuild/recompact from complete authorized source records when available;
@@ -321,10 +403,11 @@ otherwise surface partial/unavailable historical context without inventing it.
 Existing final answers cannot recreate missing tool transcripts. Never deduplicate
 unrelated turns solely because their user text matches.
 
-Version persisted records, use additive migrations, and test old-data/new-reader
-and rollback behavior. An old reader must reject unsupported continuation rather
-than reinterpret it. New retention and reference lifetimes follow session deletion
-and operator policy; changing storage mode is not a silent data migration.
+Version persisted records and clearly reject incompatible data; supporting the
+old private format is not required. Database migrations remain additive. Verify
+that incompatible readers fail closed rather than guessing coverage. Retention
+and reference lifetimes follow session deletion and operator policy; changing
+storage mode is not a silent data migration. Old RC tags remain immutable.
 
 Before runtime changes, carry the accepted scoped amendments into the canonical
 RFC/decisions and allocate actual phase entries. Implementation PRs must pass the

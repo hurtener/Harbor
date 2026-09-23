@@ -825,6 +825,32 @@ section, so an omitted `reasoning_mode` there resolves to the default `off`.
 
 ## Memory
 
+### Pending cumulative-memory migration — PR #779
+
+The accepted D-477 / RFC 002 target replaces the separate retained execution
+window and pair-only summary pipeline. It is **not implemented by the historical
+RC1–RC4 tags**. The sections below describe the existing configuration until
+the implementation increment replaces them together.
+
+The target standard configuration is:
+
+```yaml
+memory:
+  strategy: rolling_summary
+  recent_turns: 20
+```
+
+The checkpoint carries context across windows; `recent_turns` bounds detailed
+history only. Set `memory.strategy: none` for stateless operation. Compaction
+uses `memory.budget_tokens` for the complete assembled request (zero derives a
+safe target from the effective model), independently of model output limits.
+`sessions` continues to own lifetime and deletion. Remove
+`sessions.retained_context_turns`, the SDK `WithRetainedContext` switch and
+`planner.token_budget`; removed keys must fail with migration guidance. No
+compatibility engine or silent old-record reinterpretation is planned. Test the
+new version with fresh isolated sessions before deployment; do not rewrite old
+RC tags or delete uncertain-operation evidence to make a session start.
+
 ### memory.driver
 
 `MemoryStore` driver. Default: `inmem`. Validation: `inmem` /

@@ -2253,7 +2253,17 @@ turn rows, and authorization to repeat external actions. Explicit serving or
 embedded configuration stores own terminal root evidence and imports prior
 retained turns as inert history; children keep their explicit task context. Whole-turn expiry/eviction is explicit; source lifetime and session
 erasure still constrain an admitted view. Per-action crash durability is separate
-pending acceptance, not implied by terminal retention. RFC §6.9, RFC 002, D-464.
+pending acceptance, not implied by terminal retention. Historical D-464 shape;
+D-477 replaces its separate activation and count-eviction semantics with
+cumulative session memory. RFC §6.9, RFC 002.
+
+**Cumulative session memory** — the D-477 replacement for pair-only summaries and
+separately activated retained windows. One `memory` owner retains a current
+checkpoint, bounded recent execution evidence and validated references. The next
+checkpoint consumes the previous one plus newly eligible evidence. A committed
+generation/coverage boundary survives successful covered-detail cleanup; expiry
+and erasure still invalidate affected derived context. No checkpoint/source-ID
+chain, external long-term recall or historical-action replay. RFC §6.6, RFC 002.
 
 **Dispatch checkpoint** — required persistence in retained-context mode before
 runtime dispatch and before another model decision consumes its outcome.
@@ -2273,7 +2283,8 @@ receiving guessed action types. RFC 002, D-467, D-469.
 an existing retained execution window, bound to exact source-turn admissions and
 content. Restoration rebinds the verified prefix to the current query without
 inference. Source expiry/eviction invalidates the summary; it never extends
-retention or authorizes replay. RFC 002, D-469.
+retention or authorizes replay. This source-cache shape is superseded by D-477's
+cumulative committed coverage. RFC 002, D-469.
 
 **Settled-journal reconciliation** — an explicit identity-scoped operation that
 seals committed, fully settled execution evidence as interrupted session context

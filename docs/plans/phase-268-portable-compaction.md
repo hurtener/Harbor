@@ -5,7 +5,10 @@
 Implement RFC 002's first slice by evolving the trajectory, compression runner,
 ReAct builder, and existing governed LLM client. Preserve fresh results after
 compaction and bound both ordinary requests and maintenance calls. This phase
-is in progress; no release, durable cross-turn continuity, or RC is claimed.
+is in progress. D-477 adds the cumulative-memory amendment: the same compactor
+must serve within-run and between-turn rollover through `memory`, with no
+separate `planner.token_budget` activation. Prior within-run checks do not prove
+multi-window continuity or current release readiness.
 
 ## RFC anchor
 
@@ -48,6 +51,16 @@ reasoning, tool handles, and duplicate raw observations are not summary input.
   later slices; they are not claimed by this increment.
 
 ## Acceptance criteria
+
+- [ ] One compactor consumes the previous checkpoint plus newly eligible evidence
+      within runs and between turns, using `memory` budgets and current model
+      capacity; remove the separate planner compaction knob.
+- [ ] Count/byte pressure triggers compaction before detailed-history eviction;
+      failed maintenance preserves committed state or returns capacity failure.
+- [ ] Actual requests over 100 turns and five or more generations preserve a
+      turn-1-only constraint and later corrections across complete windows.
+
+### Historical within-run implementation criteria
 
 - [x] Runtime stamps version, generation, exact boundary, and source digest;
       model-generated coverage is ignored.

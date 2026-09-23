@@ -15475,6 +15475,9 @@ capacity and authorized maintenance grant identities remain unfinished phase
 
 ## D-464 — Bounded retained execution context is an explicit opt-in
 
+**Status:** Activation and count-eviction semantics superseded by D-477;
+identity, journal and execution-safety invariants remain binding.
+
 **Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
 
 Embedded `RunOnce` calls may explicitly select `WithRetainedContext(1..32)`.
@@ -15509,6 +15512,8 @@ Consumer turn rows and best-effort observability retain their separate authority
 No new backend, public transcript, native compaction, or cold-run relaunch.
 
 ## D-465 — One explicit retained-context setting for serving and embedding
+
+**Status:** Superseded by D-477. The separate configuration/SDK activation is removed.
 
 **Date:** 2026-09-19. **Scope:** RFC 002, phase 269; terminal-retention increment.
 
@@ -15604,6 +15609,9 @@ hooks, provider requirements or default retention behavior. Cross-turn checkpoin
 reuse, interrupted-prefix reconciliation and large-result recovery remain pending.
 
 ## D-469 — Reuse only source-bound retained checkpoints
+
+**Status:** Superseded by D-477. Committed cumulative coverage replaces the
+requirement to retain every covered source turn; erasure/expiry remain binding.
 
 **Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
 
@@ -15814,3 +15822,46 @@ execution persistence or a new public transcript. Provider caching remains an
 optional optimization; these estimates and structural checks claim neither cache
 hits nor billing savings. The generated Protocol event catalog exposes the same
 owned payload, with SDK aliases rather than another implementation.
+
+## D-477 — Cumulative session memory replaces bounded-window forgetting
+
+**Date:** 2026-09-23. **Scope:** RFC 002 / PR #779; accepted, implementation pending.
+**Supersedes:** D-464 activation/count-eviction semantics, D-465, D-469.
+
+The single public entry point is `memory`. Standard `rolling_summary` uses one
+cumulative checkpoint and a bounded recent execution tail (`recent_turns: 20`).
+The window limits detail, not the age of context carried by a checkpoint.
+`memory.strategy: none` explicitly disables it. Consolidate compaction under
+`memory.budget_tokens`, deriving an effective model-aware target when zero;
+output limits remain independent. Remove `sessions.retained_context_turns`,
+`WithRetainedContext`, `planner.token_budget` and the old pair-summary pipeline.
+Serving and embedding share the existing compactor, StateStore, ArtifactStore
+and dispatch journal. No compatibility layer, second memory engine or service.
+
+Freeze settled evidence, generate outside storage locks and the five-second
+persistence budget, validate, then conditionally commit against the unchanged
+generation/source/erasure state. Only that commit permits covered raw-detail
+cleanup. Committed generation/coverage replaces an ever-growing source-ID list.
+Preserve newer tails and frozen sibling admissions; no contiguous coverage may
+skip an unsettled earlier admission. Failed summarization/persistence preserves
+state; insufficient capacity fails explicitly instead of losing unsummarized work.
+Use the same compactor within runs and between turns, including grants/accounting.
+
+Session deletion, authorized erasure and retention expiry remain information
+removal. They fence active work and rebuild affected checkpoints from remaining
+authorized evidence, or explicitly invalidate them. Compaction/restart cannot
+renew retention; opaque prose cannot prove selective forgetting. Keep exact
+receipts/references in bounded runtime-owned metadata, revalidate current scope
+and lifetime, retain fresh results/errors, and never replay historical actions.
+Unknown external outcomes and required persistence failures keep their existing
+fail-closed recovery semantics. Old incompatible records are rejected, not guessed.
+
+Delivery: (1) contract plus failing real-request rollover regression; (2) atomic
+cumulative persistence and both runtime consumers; (3) complete refs/attachments,
+steering/recovery/diagnostics, legacy removal, SDK/examples and acceptance.
+The deterministic floor is 100 turns and at least five checkpoint generations,
+with a turn-1-only constraint still present after several complete windows,
+later corrections, failures, restart, concurrent siblings, erasure, expiry and
+model switches. Verify bounded storage/requests on all three StateStore drivers.
+Then test matched real UI agents across multiple windows; report summary loss
+honestly. No Stowage recall or repeated prompt may manufacture continuity.
