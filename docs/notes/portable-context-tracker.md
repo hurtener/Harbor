@@ -33,6 +33,38 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Consolidated memory owner — release acceptance pending
 
+#### Exact-head CI and tool-dispatch boundary check
+
+Hosted CI `35888583397` on `6157c938` is terminal: Linux Go, performance,
+frontend, lint, service conformance, isolation, chaos and leak jobs pass.
+macOS fails `TestRetainedServer_ConcurrentReuse`: 18 scopes report
+`cleanup dispatch head: context deadline exceeded` during first-turn terminal
+persistence. Both platform vet steps pass; macOS build and downstream
+Playwright are not passing evidence. The five-second persistence deadline,
+128 concurrent scopes and race detector remain unchanged. A two-CPU local
+profile passes the unchanged test in **7.350s** but records substantial shared
+task/state mutex wait and JSON/redaction work. That is diagnostic evidence,
+not a reproduction of the hosted failure or release approval.
+
+The real-model UI trial still has a Show/Create mismatch: narration promises
+to display an existing artifact but recorded tool actions create artifacts.
+Provider metadata confirms streamed Terra completions with `tool_calls`;
+provider I/O logging was disabled, so the raw returned function names cannot
+be established from those historical logs. No content logging was enabled.
+
+A new local HTTP/SSE boundary test exercises the real ReAct declarations,
+pinned OpenRouter decoder and planner response projection together. Six
+successive Create/Show/Edit/Show/Create/Show responses retain distinct long
+source-prefixed names, matching schemas, call IDs and fragmented arguments
+(including integer `9007199254740993`). Identical stream index zero on later
+requests does not reuse an earlier name. Deliberately contradictory narration
+does not override the structured tool choice. This is deterministic boundary
+evidence, not a reproduction or repair of the live model failure.
+Go 1.27.1, `GOFLAGS=-p=1 go test -race` over complete Bifrost, ReAct and tools
+packages passes (**5.596s / 1.782s / 2.734s**); pinned golangci-lint 2.13.2
+reports **0 issues** for Bifrost. No production code, guidance or live
+configuration changes accompany this test.
+
 #### Request-rebuild allocation follow-on
 
 The test-only head `52c7c3b3` still fails hosted performance: run
