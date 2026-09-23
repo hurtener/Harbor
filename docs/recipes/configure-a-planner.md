@@ -29,33 +29,31 @@ by the `planner` config block (D-103).
    provider/API-key wiring. A missing provider fails loudly at boot
    (CLAUDE.md §13 — no silent stub fallback).
 
-## Budget + trajectory compression (`token_budget`)
+## Working-input budget + trajectory compression
 
 Long-running agents accumulate trajectory — every step's action and
-observation rides into the next prompt. `planner.token_budget`
-(Phase 111e, D-202) caps that growth: when the trajectory's estimated
-token count exceeds the budget, the runtime invokes the LLM-backed
-trajectory summariser once and the compacted five-field summary
-replaces the raw per-step history in subsequent prompt builds (the
-prompt shrinks; the summary preserves the load-bearing facts).
+observation contributes to context. `memory.budget_tokens` sets the soft
+working-input target for the complete assembled request. The runtime can
+repeatedly summarize eligible older exchanges while preserving the prior
+checkpoint and recent results. Model output limits are separate.
 
 ```yaml
-planner:
-  driver: react
-  # 0 (the default) = trajectory compression OFF. When > 0, the
-  # runtime builds the trajectory summariser over the configured llm
-  # block — a budget without an llm block fails loudly at boot.
-  token_budget: 8000
+memory:
+  strategy: rolling_summary
+  budget_tokens: 8000
 ```
 
 The contract:
 
-- **Zero means off.** `token_budget: 0` (or omitting the key) is
-  byte-identical to the no-compression behaviour — no estimate, no
-  summariser call, no events.
-- **One compression per run** at V1.1.x — no auto-cascade. A
-  trajectory that re-exceeds the budget post-compression grows until
-  the context-window safety net backstops it.
+- With `rolling_summary`, **zero derives the target from the effective model**,
+  including its input capacity and output reservation. A positive target also
+  enables within-run compaction for stateless agents.
+- Compaction repeats as needed, never treating old tool evidence as new actions.
+  Fresh results stay available to the next decision; an impossible final request
+  fails admission rather than silently losing evidence.
+- `planner.token_budget` was removed. The loader rejects it with migration
+  guidance; there is no alias. The remaining cumulative-memory owner/activation
+  migration is tracked in [PR #779's tracker](../notes/portable-context-tracker.md).
 - Compression is observable: `trajectory.compressed` /
   `trajectory.compression_failed` ride the canonical event stream
   under the run's identity quadruple; a summariser failure fails the
@@ -80,7 +78,7 @@ spec := steering.RunSpec{
         Quadruple:  q,
         Goal:       goal,
         Trajectory: traj,
-        Budget:     planner.Budget{TokenBudget: 8000}, // 0 = off
+        Budget:     planner.Budget{TokenBudget: 8000}, // input target, NOT output tokens
     },
 }
 fin, err := runLoop.Run(ctx, spec)
@@ -90,6 +88,9 @@ fin, err := runLoop.Run(ctx, spec)
 planner state — the same `CompressionRunner` + `TrajectorySummariser`
 pair is a shared compiled artifact safe across N concurrent runs
 (D-025).
+
+Zero uses model capacity for request-aware planners. A standalone planner with
+no assembled-request preparation must supply a positive trajectory target.
 
 ## Adding a new planner driver
 

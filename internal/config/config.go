@@ -722,9 +722,12 @@ type RuntimeNamingConfig struct {
 // `memory.Open` rejects strategies the configured driver does not
 // implement with `ErrStrategyNotImplemented`.
 //
-// `BudgetTokens` is the truncation / rolling-summary budget cap
-// (token estimate). Zero means "no budget" — appending is
-// unbounded.
+// `BudgetTokens` is the working-input compaction target. A positive value
+// builds the within-run compactor even for stateless execution. With
+// rolling_summary, zero derives a safe target from each effective model's
+// input capacity and output reservation; it does not disable compaction.
+// Model completion/output limits remain independent. The legacy pair-store
+// strategies also consume this budget until the cumulative-owner migration.
 //
 // `RecoveryBacklogMax` is the bounded queue size for the
 // `rolling_summary` strategy's recovery loop. Default 16
@@ -2447,19 +2450,6 @@ const (
 // `Budget`) remain reachable via a custom planner Option, not via
 // `harbor.yaml`. The block is omitted entirely when empty.
 //
-// `TokenBudget` is the trajectory-compression threshold.
-// When > 0 the per-task run loop projects it onto
-// `RunSpec.Base.Budget.TokenBudget` and the runtime assembly
-// constructs the trajectory compression runner (the LLM-backed
-// `TrajectorySummariser` over the configured LLM client); the
-// steering RunLoop then invokes `MaybeCompress` at each step
-// boundary, compacting an over-budget trajectory into
-// `Trajectory.Summary` (one compression per run at V1.1.x). Zero (the
-// default) disables compression entirely — today's behaviour. The
-// validator rejects negative values loudly pre-boot. Requires a
-// configured `llm` block when non-zero (the summariser needs a real
-// client; fail-loud at assembly).
-//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -2478,7 +2468,6 @@ type PlannerConfig struct {
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
 	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
 	MaxBatchSpawns         int                     `yaml:"max_batch_spawns,omitempty"`
-	TokenBudget            int                     `yaml:"token_budget,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
 }

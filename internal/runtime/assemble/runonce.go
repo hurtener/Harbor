@@ -354,7 +354,7 @@ func (s *Stack) RunOnce(
 		Bus:             s.Bus,
 		Logger:          logger,
 		GrantedScopes:   s.Cfg.Tools.GrantedScopes,
-		Budget:          planner.Budget{TokenBudget: s.Cfg.Planner.TokenBudget},
+		Budget:          planner.Budget{TokenBudget: s.Cfg.Memory.BudgetTokens},
 		OutputSchema:    cfg.outputSchema,
 	}, q, goal, runctx.WithInputArtifacts(cfg.inputArtifactIDs...))
 	if err != nil {

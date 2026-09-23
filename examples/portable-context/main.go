@@ -89,7 +89,7 @@ func command(ctx context.Context, args []string, out, diagnostic io.Writer) (ret
 	cfg.Artifacts.Driver, cfg.Artifacts.FSRoot = "fs", filepath.Join(*dataDir, "artifacts")
 	cfg.Memory.Strategy = "none"
 	cfg.Sessions.RetainedContextTurns = *turns
-	cfg.Planner.TokenBudget, cfg.Planner.MaxSteps = *target, 12
+	cfg.Memory.BudgetTokens, cfg.Planner.MaxSteps = *target, 12
 	cfg.LLM.Driver, cfg.LLM.Provider, cfg.LLM.Model = "bifrost", *provider, *model
 	cfg.LLM.APIKey, cfg.LLM.BaseURL = "env.PORTABLE_CONTEXT_API_KEY", *baseURL
 	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{

@@ -528,12 +528,10 @@ memory:
   #                         Summarizer (LLM-backed at Phase 32+; not
   #                         registry-reachable today).
   strategy: none
-  # Per-key token cap for truncation and rolling_summary; zero
-  # disables budget enforcement (turns accumulate unbounded). When
-  # set, rolling_summary keeps the recent-turn set verbatim and
-  # recursively compacts older turns into the rolling summary (folding
-  # into — never discarding — prior summary content) until the
-  # assembled context fits this budget.
+  # Working-input target, independent of model output limits. A positive
+  # value enables within-run compaction; with rolling_summary, zero derives
+  # the target from the effective model's input capacity/output reservation.
+  # Replaces the removed planner.token_budget (no compatibility alias).
   budget_tokens: 0
   # Number of most-recent conversation turns rolling_summary keeps
   # verbatim before older turns spill into the rolling summary.
@@ -652,12 +650,6 @@ planner:
   # parallel_tool_calls: true       # default true; false → serialise N>1 tool-calls (107c fallback)
   # max_tool_examples_per_tool: 3   # 0/unset → 3
   # skills_context_max: 5            # 0/unset → 5; cap on SkillStore.Search results per run
-  # token_budget: 0                  # 0/unset → trajectory compression OFF (Phase 111e / D-202).
-  #                                  # When > 0: once the trajectory's token estimate exceeds this
-  #                                  # budget, the runtime invokes the LLM-backed trajectory
-  #                                  # summariser and the compacted five-field summary replaces the
-  #                                  # raw step history in subsequent prompts (one compression per
-  #                                  # run, no auto-cascade; requires the llm block).
   # planning_hints:
   #   constraints: |
   #     Never call external download tools without confirming the URL

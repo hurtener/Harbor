@@ -9,7 +9,7 @@
 // Wave C knob on simultaneously:
 //
 //   - governance.identity_tiers (111a) — a one-shot rate bucket,
-//   - planner.token_budget (111e) — trajectory compression,
+//   - memory.budget_tokens (111e) — trajectory compression,
 //   - pauseresume.max_park_duration + sweep_interval (111c) — durable
 //     pauses + the max-park sweeper,
 //   - skills.directory (111d) — the Directory-fed `<skills_context>`,
@@ -139,6 +139,7 @@ distributed:
 memory:
   driver: inmem
   strategy: none
+  budget_tokens: 800
 skills:
   driver: localdb
   dsn: ":memory:"
@@ -153,7 +154,6 @@ tools:
 planner:
   driver: react
   max_steps: 4
-  token_budget: 800
 `, model, serverURL, envKey, model, model, waveCSkillName)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "harbor.yaml")

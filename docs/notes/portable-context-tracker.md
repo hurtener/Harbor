@@ -109,6 +109,64 @@ test closes the upstream connection but exposes a fasthttp close/read data race.
 That transport boundary remains a blocker, not a waived test. No new dependency,
 provider client or capability has been introduced to work around it.
 
+### Working-input budget consolidation
+
+The next bounded increment removes `PlannerConfig.TokenBudget` and its YAML/env
+activation. Served runtime, embedded `RunOnce`, devstack and the SDK sample now
+read `memory.budget_tokens`; removed YAML/environment settings fail loudly with
+migration guidance. No output-token setting is changed, and existing narrower
+virtual-agent input targets still apply.
+
+Rolling-summary assembly constructs the existing governed compactor with a zero
+explicit budget. Request preparation then derives its target from the actual
+model's input capacity and output reservation. A regression found that restored
+history was incorrectly treated as fresh when the explicit budget was zero,
+preventing storage-pressure rollover at turn 21. Its settled/fresh boundary is
+now independent of that knob; new results and attachments remain protected.
+
+This is **not** the complete memory-owner migration: defaults, the separate
+retention switch, pair-store interfaces/Protocol consumers and obsolete summary
+loop still require consolidation. There is no new compactor, provider SDK,
+storage service, deployment or RC tag in this increment.
+
+Verification on isolated tree `dd916e2714d19d398e0f5684368ea5d3f326894c`, without
+unfinished Stop changes, Go 1.26.4 / darwin-arm64 / `GOFLAGS=-p=1`:
+
+- Full config, LLM and runctx race suites pass. Statement coverage: **82.9%**,
+  **74.9%**, **86.1%** respectively. These measurements do not satisfy all
+  package targets; config's 85% floor and LLM coverage remain release work.
+  A fresh full-race baseline on published `4bba36f6` measures config **82.9%**
+  and LLM **73.9%**: unchanged config coverage and a one-point LLM improvement,
+  not a claim that the outstanding package floors are met.
+- The same production tree passed **800 deterministic turns**: embedded
+  in-memory/SQLite targets 0, 1 and 100000, plus both served 100-turn cases.
+  Zero derives capacity from the actual model and compacts before the detailed
+  20-turn window fills. First-only constraints, later corrections, previous
+  summaries and restart checks remain asserted. PostgreSQL was **not configured
+  for this increment**; its skipped cases are not a current three-store pass.
+- Direct-compactor fixtures now explicitly mark the earlier observed prefix,
+  leaving the newest result fresh. The complete runctx suite and focused
+  embedded attachment/result-reference tests pass, including the assertion that
+  unobserved execution evidence cannot be compacted. Production code is unchanged
+  from the tree that ran the 800-turn matrix; later changes are fixture/smoke
+  corrections only. Served/steering and Phase111e/WaveC integration selections
+  pass. SDK/sample packages compile in that selection, but selected no tests.
+- A subsequent broader embedded selection reproduced
+  `TestRunOnce_RetainedContextConcurrentReuse` failing with `cleanup dispatch
+  head: context deadline exceeded`. Preserve that failure. Single-run profiling
+  controls on published `4bba36f6` and this candidate both passed at N=128
+  (11.924s / 11.772s), with similar JSON/race-detector work. They do **not**
+  resolve the intermittent deadline or replace the failed selection. No timeout,
+  concurrency, assertion or retry policy was changed to obtain a pass.
+- Repository lint reports **0 issues**; affected-package vet passes. The updated
+  compaction smoke passes **28 OK / 0 SKIP / 0 FAIL**. Markdown (599 files),
+  mirror and VitePress build pass; full local/web preflight remains owner-waived.
+
+Hosted **previous-head** evidence: both platform Go jobs, frontend, lint,
+service conformance and Console Playwright passed on `4bba36f6`. Its preflight
+was still running at the last inspection. None of those results is final-head
+approval of this next increment or the overall release.
+
 ### RC increment disposition
 
 The RC4 signed per-tool retry-policy extension (`80165fd5`) and its dependent

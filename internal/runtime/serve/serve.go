@@ -1190,7 +1190,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		TrancheSteps:             steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 		ArtifactStore:            artStore,
-		TokenBudget:              cfg.Planner.TokenBudget,
+		TokenBudget:              cfg.Memory.BudgetTokens,
 		Compression:              stack.Compression,
 		DispositionPolicy:        dispositionPolicy,
 		TenantOverrides:          tenantOverridePolicy,

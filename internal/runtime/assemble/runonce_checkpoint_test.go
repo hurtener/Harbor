@@ -51,7 +51,7 @@ func (*retainedCheckpointDriver) Close(context.Context) error { return nil }
 
 func TestRunOnce_RetainedCheckpoint_ReachesNextEffectiveRequest(t *testing.T) {
 	cfg := minimalCfg(t)
-	cfg.Planner.TokenBudget = 1 // Force repeated compaction while retaining the newest exchange.
+	cfg.Memory.BudgetTokens = 1 // Force repeated compaction while retaining the newest exchange.
 	driver := &retainedCheckpointDriver{decisions: map[string]int{}, summaries: map[string]int{}, requests: map[string]llm.CompleteRequest{}}
 	name := "retained-checkpoint-" + string(state.NewEventID())
 	llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
@@ -80,7 +80,7 @@ func TestRunOnce_RetainedCheckpoint_ReachesNextEffectiveRequest(t *testing.T) {
 	}
 	// Raising the soft target proves the next turn restores an existing summary
 	// rather than generating a replacement that merely happens to look similar.
-	cfg.Planner.TokenBudget = 100000
+	cfg.Memory.BudgetTokens = 100000
 	if _, err := stack.RunOnce(t.Context(), "Now edit the footer", id, assemble.WithRunID("second"), assemble.WithRetainedContext(4)); err != nil {
 		t.Fatal(err)
 	}

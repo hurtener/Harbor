@@ -43,6 +43,10 @@ func TestRunOnce_RetainedInputsSurviveCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: "older check"}, planner.Step{LLMObservation: "recent check"})
+	// This fixture bypasses the run loop; model the earlier decision having
+	// consumed the attachment and old result while the latest stays fresh.
+	seen := len(base.Trajectory.Steps) - 1
+	base.Trajectory.UnseenFrom = &seen
 	base.Budget.TokenBudget = 1
 	if err = planner.NewCompressionRunner(resultSummary{}).MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
 		t.Fatal(err)

@@ -347,9 +347,10 @@ type Stack struct {
 	// Compression is the trajectory-compression runner:
 	// planner.NewCompressionRunner over the LLM-backed
 	// summarizer.NewTrajectorySummariser. Non-nil only when
-	// cfg.Planner.TokenBudget > 0 (and the steering band ran) — the
+	// rolling_summary or a working-input budget is configured — the
 	// per-task run-loop drivers project it onto RunSpec.Compression
-	// alongside Base.Budget.TokenBudget. Nil = compression off.
+	// alongside Base.Budget.TokenBudget. Zero budget uses the effective
+	// model's safe input target. Nil = compression off.
 	Compression *planner.CompressionRunner
 
 	closeOnce sync.Once
@@ -1191,14 +1192,12 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		stack.Planner = plnr
 	}
 
-	// the trajectory-compression runner — built
-	// when the operator set a non-zero `planner.token_budget`. The
-	// summariser needs a real LLM client; a budget without an LLM is a
-	// misconfiguration surfaced loudly at boot (CLAUDE.md §13 — no
-	// silent "compression configured but inert" path).
-	if cfg.Planner.TokenBudget > 0 {
+	// One working-input budget also serves within-run compaction. A rolling
+	// summary with a zero explicit budget derives its target from the actual
+	// model request; zero must not silently disable that compactor.
+	if cfg.Memory.Strategy == string(memory.StrategyRollingSummary) || cfg.Memory.BudgetTokens > 0 {
 		if stack.LLM == nil {
-			return fmt.Errorf("planner: token_budget=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Planner.TokenBudget)
+			return fmt.Errorf("memory: budget_tokens=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Memory.BudgetTokens)
 		}
 		// The operator's heavy-output threshold is threaded so the
 		// summariser's aggregate payload budget tracks the SAME limit

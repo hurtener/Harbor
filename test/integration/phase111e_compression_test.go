@@ -5,7 +5,7 @@
 // OpenAI-compatible httptest server — the summariser's Complete is a
 // REAL wire round-trip, react planner, steering RunLoop, inprocess
 // tasks, inmem state/events/artifacts), driven through the devstack's
-// production-parity assembly with `planner.token_budget` set.
+// production-parity assembly with `memory.budget_tokens` set.
 //
 // Happy path: one tool inflates history, then a second decision observes that
 // result and returns a small fresh outcome. Compaction may summarize the now
@@ -62,7 +62,7 @@ func phase111eSummaryJSON() string {
 
 // phase111eConfig mirrors phase83lConfig (production posture: bifrost
 // driver, real state/events/tasks, no mock anywhere) plus the Phase
-// 111e knob under test: `planner.token_budget`.
+// 111e knob under test: `memory.budget_tokens`.
 func phase111eConfig(t *testing.T, serverURL string, tokenBudget int) *config.Config {
 	t.Helper()
 	const envKey = "HARBOR_TEST_111E_FAKE_KEY"
@@ -128,13 +128,13 @@ distributed:
 memory:
   driver: inmem
   strategy: none
+  budget_tokens: %d
 tools:
   built_in:
     - text.echo
 planner:
   driver: react
   max_steps: 4
-  token_budget: %d
 `, model, serverURL, envKey, model, model, tokenBudget)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "harbor.yaml")

@@ -18,6 +18,14 @@ import (
 
 type retainedSummaryRecorder struct{ inputs []*planner.Trajectory }
 
+// These direct compactor fixtures do not run a planner. Explicitly model the
+// earlier decision having consumed the old exchanges, leaving the newest result
+// fresh, instead of relying on an unset freshness marker to make all work old.
+func presentEarlierCheckpointFixtureSteps(tr *planner.Trajectory) {
+	seen := len(tr.Steps) - 1
+	tr.UnseenFrom = &seen
+}
+
 func (s *retainedSummaryRecorder) Summarise(_ context.Context, _ planner.RunContext, tr *planner.Trajectory) (*planner.TrajectorySummary, error) {
 	s.inputs = append(s.inputs, tr)
 	return &planner.TrajectorySummary{Facts: []string{"Keep the approved navigation"}, Pending: []string{"verify remaining edit"}}, nil
@@ -41,6 +49,13 @@ func TestRetainedCheckpoint_ReusesCoverageAcrossTurns(t *testing.T) {
 			recorder := &retainedSummaryRecorder{}
 			compactor := planner.NewCompressionRunner(recorder)
 			base.Budget.TokenBudget = 1
+			if err := compactor.MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
+				t.Fatal(err)
+			}
+			if base.Trajectory.Summary != nil || len(recorder.inputs) != 0 {
+				t.Fatal("new execution evidence was summarized before a decision consumed it")
+			}
+			presentEarlierCheckpointFixtureSteps(base.Trajectory)
 			if err := compactor.MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
 				t.Fatal(err)
 			}
@@ -85,6 +100,7 @@ func TestRetainedCheckpoint_ReusesCoverageAcrossTurns(t *testing.T) {
 			}
 			next.Trajectory.Steps = append(next.Trajectory.Steps, planner.Step{LLMObservation: "second older"}, planner.Step{LLMObservation: "second latest"})
 			next.Budget.TokenBudget = 1
+			presentEarlierCheckpointFixtureSteps(next.Trajectory)
 			if err := compactor.MaybeCompress(t.Context(), next, next.Trajectory); err != nil {
 				t.Fatal(err)
 			}
@@ -132,6 +148,7 @@ func TestRetainedCheckpoint_InvalidationAndCorruption(t *testing.T) {
 			}
 			base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: "older"}, planner.Step{LLMObservation: "latest"})
 			base.Budget.TokenBudget = 1
+			presentEarlierCheckpointFixtureSteps(base.Trajectory)
 			if err := planner.NewCompressionRunner(&retainedSummaryRecorder{}).MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
 				t.Fatal(err)
 			}
@@ -220,6 +237,7 @@ func TestRetainedCheckpoint_ConcurrentSiblingCannotInventCoverage(t *testing.T) 
 	for _, base := range []*planner.RunContext{&a, &b} {
 		base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: "older-" + base.Quadruple.RunID}, planner.Step{LLMObservation: "latest-" + base.Quadruple.RunID})
 		base.Budget.TokenBudget = 1
+		presentEarlierCheckpointFixtureSteps(base.Trajectory)
 		if err := planner.NewCompressionRunner(&retainedSummaryRecorder{}).MaybeCompress(t.Context(), *base, base.Trajectory); err != nil {
 			t.Fatal(err)
 		}
@@ -270,6 +288,7 @@ func TestRetainedCheckpoint_SharedStoreReuse(t *testing.T) {
 			}
 			base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: session}, planner.Step{LLMObservation: "fresh-" + session})
 			base.Budget.TokenBudget = 1
+			presentEarlierCheckpointFixtureSteps(base.Trajectory)
 			if err := planner.NewCompressionRunner(&retainedSummaryRecorder{}).MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
 				t.Error(err)
 				return
@@ -351,6 +370,7 @@ func TestRetainedCheckpoint_RedactionAndChangedSource(t *testing.T) {
 			}
 			base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: old}, planner.Step{LLMObservation: "fresh"})
 			base.Budget.TokenBudget = 1
+			presentEarlierCheckpointFixtureSteps(base.Trajectory)
 			if err := planner.NewCompressionRunner(privateCheckpointSummary{}).MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
 				t.Fatal(err)
 			}

@@ -49,11 +49,22 @@ memory:
   driver: sqlite
   dsn: /tmp/harbor-validation/my-agent-memory.sqlite   # outside the project dir (WAL trap)
   strategy: rolling_summary
-  budget_tokens: 8000          # max tokens the planner replays per turn (0 = unbounded)
+  budget_tokens: 8000          # working-input compaction target, not output tokens
   recovery_backlog_max: 16     # bounded queue for the summariser's recovery loop (default 16)
 ```
 
-`budget_tokens` is the hard cap — once a conversation exceeds it, older turns are summarised together into one assistant-role message while recent turns stay verbatim. The planner sees: `[summary of turns 1-12] [turn 13] [turn 14] ... [turn 18]`. `recovery_backlog_max` bounds the `rolling_summary` recovery loop's queue; on overflow it drops the oldest and emits `memory.recovery_dropped`. Both knobs are ignored by the `none` and `truncation` strategies.
+`budget_tokens` is the soft working-input target for the complete assembled
+request. With `rolling_summary`, zero derives that target from the effective
+model's input capacity and output reservation. It is independent of completion
+limits; fresh tool results cannot be silently truncated to satisfy it. A positive
+value also enables within-run compaction for stateless agents. The removed
+`planner.token_budget` is rejected with migration guidance.
+
+The cumulative-memory owner migration is still in progress in PR #779; until it
+lands, the pair-store strategy also consumes this budget and
+`recovery_backlog_max` still bounds its legacy recovery queue. Do not treat the
+budget consolidation alone as completion of that migration. See the
+[implementation tracker](../../notes/portable-context-tracker.md).
 
 ### Opt-in semantic retrieval
 

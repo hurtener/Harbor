@@ -95,8 +95,11 @@ func retainedLargeResult(t *testing.T) (*assemble.Stack, identity.Identity, stri
 	if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Ref == "" {
 		t.Fatalf("real result not offloaded: %s %v", encoded, err)
 	}
-	// Two later bounded observations make the old read an eligible prefix.
+	// The fixture bypasses the run loop: model the earlier decision having
+	// consumed the old read and verification, with the latest result still fresh.
 	base.Trajectory.Steps = append(base.Trajectory.Steps, step, planner.Step{LLMObservation: "later verification"}, planner.Step{LLMObservation: "latest verification"})
+	seen := len(base.Trajectory.Steps) - 1
+	base.Trajectory.UnseenFrom = &seen
 	base.Budget.TokenBudget = 1
 	if err := planner.NewCompressionRunner(resultSummary{}).MaybeCompress(ctx, base, base.Trajectory); err != nil {
 		t.Fatal(err)

@@ -95,6 +95,41 @@ func TestLoadFromBytes_ValidMinimal(t *testing.T) {
 	}
 }
 
+func TestLoad_MemoryBudgetRejectsRemovedPlannerSetting(t *testing.T) {
+	fixture, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "12000"} {
+		t.Run(value, func(t *testing.T) {
+			old := append([]byte(string(fixture)), []byte("\nplanner:\n  token_budget: "+value+"\n")...)
+			if _, err := config.LoadFromBytes(t.Context(), old); !errors.Is(err, config.ErrConfigInvalid) || !strings.Contains(err.Error(), "memory.budget_tokens") {
+				t.Fatalf("removed planner setting must fail with migration guidance: %v", err)
+			}
+			current := append([]byte(string(fixture)), []byte("\nmemory:\n  budget_tokens: "+value+"\n")...)
+			cfg, err := config.LoadFromBytes(t.Context(), current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(cfg.Memory.BudgetTokens) != value {
+				t.Fatalf("memory budget not preserved: %d", cfg.Memory.BudgetTokens)
+			}
+		})
+	}
+}
+
+func TestLoad_MemoryBudgetEnvironmentHasOneOwner(t *testing.T) {
+	t.Setenv("HARBOR_MEMORY_BUDGET_TOKENS", "12000")
+	cfg, err := config.Load(t.Context(), validMinimalFixture)
+	if err != nil || cfg.Memory.BudgetTokens != 12000 {
+		t.Fatalf("memory budget override: cfg=%v err=%v", cfg != nil, err)
+	}
+	t.Setenv("HARBOR_PLANNER_TOKEN_BUDGET", "1")
+	if _, err := config.Load(t.Context(), validMinimalFixture); !errors.Is(err, config.ErrConfigInvalid) {
+		t.Fatalf("removed environment override silently accepted: %v", err)
+	}
+}
+
 func TestLoad_AppliesDefaults(t *testing.T) {
 	// The minimal fixture omits telemetry.service_name's default; our
 	// loader should still produce a valid config because the fixture

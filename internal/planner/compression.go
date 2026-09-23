@@ -44,9 +44,9 @@ type TrajectorySummary = trajectory.Summary
 // mode with the existing downgrade ladder), and parses the response
 // into the five [TrajectorySummary] fields. The production call site
 // is the steering RunLoop's step loop, which calls
-// [CompressionRunner.MaybeCompress] at each step boundary when
-// [Budget.TokenBudget] > 0 — wired from the `planner.token_budget`
-// config knob by the runtime assembly.
+// [CompressionRunner.MaybeCompress] with a positive working target,
+// either configured in memory.budget_tokens or resolved from the
+// effective model by assembled-request preparation.
 type Summariser interface {
 	Summarise(ctx context.Context, rc RunContext, tr *Trajectory) (*TrajectorySummary, error)
 }

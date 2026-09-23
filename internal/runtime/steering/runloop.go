@@ -413,7 +413,8 @@ type RunSpec struct {
 	DispatchCheckpoint DispatchCheckpoint
 
 	// Compression maintains a summary of older exchanges plus a recent tail.
-	// A positive TokenBudget enables the step-boundary gate. Checkpoint
+	// Request-aware planners derive a zero TokenBudget from model capacity;
+	// standalone planners use a positive step-boundary target. Checkpoint
 	// publication shares TrajectoryMu with inspection, but generation does not
 	// hold that mutex. Compression errors stop the run explicitly.
 	Compression *planner.CompressionRunner
@@ -549,7 +550,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if maxConsecutiveInvalid <= 0 {
 		maxConsecutiveInvalid = DefaultMaxConsecutiveInvalidDecisions
 	}
-	if spec.Compression != nil && spec.Base.Budget.TokenBudget > 0 && spec.Base.Trajectory != nil {
+	_, requestAware := spec.Planner.(planner.RequestContextPlanner)
+	compactionEnabled := spec.Compression != nil && (spec.Base.Budget.TokenBudget > 0 || requestAware || spec.CompactBeforeFirstDecision)
+	if compactionEnabled && spec.Base.Trajectory != nil {
 		if spec.TrajectoryMu != nil {
 			spec.TrajectoryMu.Lock()
 		}
@@ -1010,8 +1013,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 			preparation.InputTarget = 1
 		}
-		if spec.Compression != nil && (rc.Budget.TokenBudget > 0 || storagePressure) {
-			if _, requestAware := spec.Planner.(planner.RequestContextPlanner); requestAware {
+		if compactionEnabled {
+			if requestAware {
 				preparation.Compact = func(ctx context.Context, inputTokens, target int) (bool, error) {
 					return compressRequest(ctx, spec, rc, inputTokens, target)
 				}
@@ -1029,7 +1032,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		// A pending-call drain does not ask for another decision. Its results
 		// remain protected until the complete pending group has been presented.
-		if spec.Compression != nil && rc.Budget.TokenBudget > 0 && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
+		if compactionEnabled && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
 			if spec.TrajectoryMu != nil {
 				spec.TrajectoryMu.Lock()
 			}

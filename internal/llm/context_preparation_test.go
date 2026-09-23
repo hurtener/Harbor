@@ -115,7 +115,7 @@ func TestContextPreparation_FailureAndBypass(t *testing.T) {
 			case "under target":
 				text = "small"
 			case "disabled":
-				prep.InputTarget = 0
+				prep.Compact = nil
 			case "maintenance":
 				req.RebuildMessages = nil
 			case "cancelled":
@@ -157,6 +157,63 @@ func TestContextPreparation_FailureAndBypass(t *testing.T) {
 			}
 			if scenario == "no eligible prefix" && rebuilds != 0 {
 				t.Fatal("unchanged checkpoint rebuilt")
+			}
+		})
+	}
+}
+
+func TestContextPreparation_ZeroTargetTracksModelAndPreservesOutput(t *testing.T) {
+	t.Parallel()
+	output := 128000
+	cfg := ConfigSnapshot{
+		Model: "large", ContextWindowReserve: .05,
+		ModelProfiles: map[string]ModelProfile{
+			"large":   {ContextWindowTokens: 200000},
+			"smaller": {ContextWindowTokens: 160000},
+		},
+	}
+	// Capacity follows each request's model, never a cached global or the
+	// historical sample's 12k input target.
+	for _, model := range []string{"large", "smaller"} {
+		t.Run(model, func(t *testing.T) {
+			before := strings.Repeat("historical evidence ", 20000)
+			after := "bounded checkpoint and fresh tool result"
+			calls, sends := 0, 0
+			req := CompleteRequest{
+				Model: model, MaxTokens: &output,
+				Messages: []ChatMessage{{Role: RoleUser, Content: Content{Text: &before}}},
+				RebuildMessages: func() ([]ChatMessage, error) {
+					return []ChatMessage{{Role: RoleUser, Content: Content{Text: &after}}}, nil
+				},
+			}
+			capacity, _, err := requestInputLimit(req, cfg.ModelProfiles[model], cfg.ContextWindowReserve)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithContextPreparation(preparationIdentity(t, model), ContextPreparation{
+				Compact: func(ctx context.Context, input, target int) (bool, error) {
+					calls++
+					if target != capacity-1 || target <= 12000 || input <= target {
+						t.Fatalf("automatic target/input = %d/%d, capacity=%d", target, input, capacity)
+					}
+					if err := CheckContextCandidate(ctx); err != nil {
+						return false, err
+					}
+					return true, nil
+				},
+			})
+			client := &contextPreparationClient{cfg: cfg, inner: preparationClientFunc(func(_ context.Context, got CompleteRequest) (CompleteResponse, error) {
+				sends++
+				if got.Model != model || got.MaxTokens != req.MaxTokens || *got.MaxTokens != 128000 || *got.Messages[0].Content.Text != after {
+					t.Fatal("input compaction changed model/output allowance or failed to install checkpoint")
+				}
+				return CompleteResponse{}, nil
+			})}
+			if _, err := client.Complete(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || sends != 1 {
+				t.Fatalf("compactions/sends=%d/%d", calls, sends)
 			}
 		})
 	}

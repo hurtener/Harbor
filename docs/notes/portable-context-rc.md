@@ -41,13 +41,12 @@ sessions:
   retained_context_turns: 8
 memory:
   strategy: none
-planner:
-  token_budget: 12000
+  budget_tokens: 12000
 ```
 
 Keep the deployment's existing provider, model, JWT, store and tool authority
 configuration. Set the model profile's actual context and output limits as well.
-The sample's `planner.token_budget: 12000` is a disposable working-input target
+The sample's `memory.budget_tokens: 12000` is a disposable working-input target
 for planner reasoning and compaction during this RC exercise. It is not a Harbor
 framework ceiling, a provider completion/output ceiling, or a price cap. Configure
 the selected model's real input and output limits independently. Keep the sample's

@@ -8,7 +8,7 @@
 # production TrajectorySummariser exists and satisfies
 # planner.Summariser; Budget.TokenBudget has its production writers
 # (cmd + devstack run-loop drivers); the assembly constructs the
-# runner from `planner.token_budget`; the knob is documented in
+# runner from `memory.budget_tokens`; the knob is documented in
 # examples/harbor.yaml + docs/CONFIG.md. Then the focused unit slice
 # + the Phase111e integration E2E pass under -race.
 #
@@ -36,8 +36,10 @@ source "scripts/smoke/common.sh"
 #    moving the implementation cannot turn this guard into a comment match.
 assert_grep_present '^[[:space:]]*return compressRequest\(' "internal/runtime/steering/runloop.go" \
     "RunLoop request preparation calls the guarded request compactor"
-assert_grep_present '^[[:space:]]*} else if cerr := compressTrajectory\(' "internal/runtime/steering/runloop.go" \
+assert_grep_present '^[[:space:]]*if cerr := compressTrajectory\(' "internal/runtime/steering/runloop.go" \
     "RunLoop keeps the standalone planner compaction path"
+assert_grep_present 'compactionRC.Budget.TokenBudget = preparation.InputTarget' "internal/runtime/steering/runloop.go" \
+    "standalone compaction receives the prepared working-input target"
 assert_grep_present '^[[:space:]]*return compressTrajectoryWith\(ctx, spec, rc, spec\.Compression\.MaybeCompress\)' "internal/runtime/steering/compression.go" \
     "guarded standalone helper invokes CompressionRunner.MaybeCompress"
 assert_grep_present '^[[:space:]]*return spec\.Compression\.MaybeCompressRequest\(' "internal/runtime/steering/compression.go" \
@@ -59,13 +61,17 @@ assert_grep_present 'Two interfaces' "internal/llm/summarizer/summarizer.go" \
 # 3. Budget.TokenBudget gains its production writers: both run-loop
 #    driver shells project the budget + the runner (D-094 both-sides).
 #    The projection now flows through a helper: the driver reads
-#    planner.token_budget into a per-run local, clamps it through the
+#    memory.budget_tokens into a per-run local, clamps it through the
 #    virtual-profile overlay (OverlayClampTokenBudget), and projects it
 #    onto RunSpec.Base.Budget. Pin source, helper, AND projection — a
 #    refactor that stops the configured budget from reaching the spec
 #    breaks one of the three.
 assert_grep_present 'tokenBudget := d\.tokenBudget' "internal/runtime/serve/runloop.go" \
-    "cmd run-loop driver reads planner.token_budget into the per-run budget"
+    "cmd run-loop driver reads memory.budget_tokens into the per-run budget"
+assert_grep_present 'TokenBudget:[[:space:]]+cfg.Memory.BudgetTokens' "internal/runtime/serve/serve.go" \
+    "served assembly reads the canonical memory budget"
+assert_grep_present 'Budget:.*s.Cfg.Memory.BudgetTokens' "internal/runtime/assemble/runonce.go" \
+    "embedded assembly reads the same canonical memory budget"
 assert_grep_present 'virtualagent\.OverlayClampTokenBudget' "internal/runtime/serve/runloop.go" \
     "cmd run-loop driver provides the budget through the virtual-profile overlay helper"
 assert_grep_present 'Budget: planner\.Budget\{TokenBudget: tokenBudget\}' "internal/runtime/serve/runloop.go" \
@@ -87,12 +93,12 @@ assert_grep_present 'planner\.NewCompressionRunner' "internal/runtime/assemble/a
     "assembly constructs the CompressionRunner"
 
 # 5. The config knob is documented everywhere §4.2 item 7 requires.
-assert_grep_present 'token_budget' "examples/harbor.yaml" \
-    "examples/harbor.yaml documents planner.token_budget"
-assert_grep_present '### planner.token_budget' "docs/CONFIG.md" \
-    "docs/CONFIG.md carries the planner.token_budget reference entry"
-assert_grep_present 'TokenBudget' "internal/config/validate.go" \
-    "planner.token_budget is validated"
+assert_grep_present 'budget_tokens' "examples/harbor.yaml" \
+    "examples/harbor.yaml documents memory.budget_tokens"
+assert_grep_present '### memory.budget_tokens' "docs/CONFIG.md" \
+    "docs/CONFIG.md carries the memory.budget_tokens reference entry"
+assert_grep_present 'c.Memory.BudgetTokens < 0' "internal/config/validate.go" \
+    "memory.budget_tokens is validated"
 
 # 6. The godoc-honesty reverts: the dormant-seam markers are gone.
 assert_grep_absent 'CURRENTLY INERT' "internal/planner/planner.go" \

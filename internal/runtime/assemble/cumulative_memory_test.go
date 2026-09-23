@@ -64,7 +64,7 @@ func (*cumulativeMemoryDriver) Close(context.Context) error { return nil }
 
 func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testing.T) {
 	for _, backend := range []string{"inmem", "sqlite", "postgres"} {
-		for _, budget := range []int{1, 100000} {
+		for _, budget := range []int{0, 1, 100000} {
 			t.Run(fmt.Sprintf("%s/budget-%d", backend, budget), func(t *testing.T) {
 				cfg := minimalCfg(t)
 				cfg.State.Driver = backend
@@ -77,10 +77,10 @@ func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testi
 						t.Skip("HARBOR_PG_DSN not set; cumulative PostgreSQL acceptance requires a real service")
 					}
 				}
-				// Exercise the current machinery before removing these activation
-				// fields. The configuration migration will move both under memory.
+				// The separate retention switch is removed in the owner migration.
 				cfg.Sessions.RetainedContextTurns = 20
-				cfg.Planner.TokenBudget = budget
+				cfg.Memory.Strategy = "rolling_summary"
+				cfg.Memory.BudgetTokens = budget
 				driver := &cumulativeMemoryDriver{requests: map[string]string{}}
 				name := "cumulative-memory-" + string(state.NewEventID())
 				llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
@@ -88,6 +88,11 @@ func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testi
 					Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
 					ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
 					DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true,
+				}
+				if budget == 0 {
+					// Force model-capacity compaction before the 20-turn storage
+					// window fills, proving zero is automatic rather than disabled.
+					snapshot.ModelProfiles["fixture"] = llm.ModelProfile{ContextWindowTokens: 10000}
 				}
 				stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
 				if err != nil {
@@ -114,6 +119,9 @@ func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testi
 					driver.mu.Unlock()
 					if !strings.Contains(body, cumulativeConstraint) {
 						t.Fatalf("turn %d lost the turn-1 constraint from the actual decision request after %d maintenance calls (recent window 20)", turn, calls)
+					}
+					if budget == 0 && turn == 20 && calls == 0 {
+						t.Fatal("zero budget did not compact at the model limit before storage pressure")
 					}
 					record, err := stack.State.Load(t.Context(), identity.Quadruple{Identity: id}, state.InternalKindPrefix+"session-execution-context")
 					if err != nil {

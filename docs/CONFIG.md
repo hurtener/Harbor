@@ -829,8 +829,8 @@ section, so an omitted `reasoning_mode` there resolves to the default `off`.
 
 The accepted D-477 / RFC 002 target replaces the separate retained execution
 window and pair-only summary pipeline. It is **not implemented by the historical
-RC1–RC4 tags**. The sections below describe the existing configuration until
-the implementation increment replaces them together.
+RC1–RC4 tags**. The sections below distinguish landed configuration changes
+from the remaining owner/activation migration.
 
 The target standard configuration is:
 
@@ -850,6 +850,13 @@ safe target from the effective model), independently of model output limits.
 compatibility engine or silent old-record reinterpretation is planned. Test the
 new version with fresh isolated sessions before deployment; do not rewrite old
 RC tags or delete uncertain-operation evidence to make a session start.
+
+**Landed budget consolidation:** `planner.token_budget` and
+`HARBOR_PLANNER_TOKEN_BUDGET` are removed and fail with migration guidance.
+Use `memory.budget_tokens` / `HARBOR_MEMORY_BUDGET_TOKENS`. Rolling-summary
+execution builds the compactor even with a zero explicit target. Consolidating
+the memory owner, default strategy and separate retention switches is still
+pending; this budget change is not the full D-477 implementation.
 
 ### memory.driver
 
@@ -896,8 +903,15 @@ boot — there is no stub fallback (CLAUDE.md §13).
 
 ### memory.budget_tokens
 
-Truncation / rolling-summary budget cap (token estimate). Default:
-`0` (unbounded append). Validation: >= 0.
+Working-input compaction target, in estimated tokens. Validation: >= 0.
+With `rolling_summary`, zero derives the target from the effective model's input
+capacity, context reserve and requested output reservation. A positive value
+also builds the within-run compactor for stateless execution. It is a soft
+target: preserve fresh tool results; the final model admission guard remains
+mandatory. It never sets or lowers a model's output-token allowance.
+
+During the remaining owner migration, the legacy pair-store strategy also
+consumes this value. There is no second planner budget or compatibility alias.
 
 ### memory.recovery_backlog_max
 
@@ -2424,20 +2438,6 @@ the first N — when its spawn count exceeds this cap. Distinct from
 `absolute_max_spawn_depth`, which bounds spawn-chain DEPTH, not the
 breadth of one response's spawns. Default: `0` → dev-runtime default of
 5 (conservative, operator-revisable). Validation: >= 0.
-
-### planner.token_budget
-
-Trajectory-compression threshold in estimated tokens (Phase 111e /
-D-202). When > 0, the runtime builds the LLM-backed trajectory
-summariser and the steering run loop invokes it at each step boundary:
-a trajectory whose token estimate exceeds the budget is compacted into
-the five-field `Trajectory.Summary`, which replaces the raw per-step
-history in subsequent prompt builds (the prompt shrinks). One
-compression per run at V1.1.x — no auto-cascade. Emits
-`trajectory.compressed` / `trajectory.compression_failed` on the
-canonical event stream. Requires a configured `llm` block when
-non-zero (fail-loud at boot otherwise). Default: `0` → compression
-disabled. Validation: >= 0.
 
 ### planner.skills_context_max
 

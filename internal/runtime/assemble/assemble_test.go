@@ -524,12 +524,12 @@ func TestAssemble_ExternalGrantRuntimeDefaultReachesBifrostCustomProvider(t *tes
 func stringPtr(value string) *string { return &value }
 
 // TestAssemble_TokenBudget_BuildsCompressionRunner — Phase 111e
-// (D-202): a non-zero `planner.token_budget` makes the assembly
+// (D-202): a non-zero `memory.budget_tokens` makes the assembly
 // construct the trajectory-compression runner (TrajectorySummariser
-// over the configured LLM); zero leaves it nil (compression off).
+// over the configured LLM); zero with stateless memory leaves it nil.
 func TestAssemble_TokenBudget_BuildsCompressionRunner(t *testing.T) {
 	cfg := minimalCfg(t)
-	cfg.Planner.TokenBudget = 2048
+	cfg.Memory.BudgetTokens = 2048
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("cfg.Validate(token_budget): %v", err)
 	}
@@ -543,10 +543,10 @@ func TestAssemble_TokenBudget_BuildsCompressionRunner(t *testing.T) {
 		}
 	}()
 	if stack.Compression == nil {
-		t.Error("Stack.Compression is nil with planner.token_budget=2048 — the runner was not built")
+		t.Error("Stack.Compression is nil with memory.budget_tokens=2048 — the runner was not built")
 	}
 
-	// Zero budget: compression stays off.
+	// Zero budget with stateless memory: compression stays off.
 	cfg2 := minimalCfg(t)
 	stack2, err := assemble.Assemble(context.Background(), cfg2, assemble.Options{})
 	if err != nil {
@@ -558,7 +558,7 @@ func TestAssemble_TokenBudget_BuildsCompressionRunner(t *testing.T) {
 		}
 	}()
 	if stack2.Compression != nil {
-		t.Error("Stack.Compression non-nil with planner.token_budget=0 — compression must default off")
+		t.Error("Stack.Compression non-nil with memory.budget_tokens=0 — compression must default off")
 	}
 }
 
@@ -617,13 +617,27 @@ func TestAssemble_TokenBudget_WithoutLLM_FailsLoud(t *testing.T) {
 	cfg := minimalCfg(t)
 	cfg.LLM = config.LLMConfig{}
 	cfg.Memory.Strategy = "none"
-	cfg.Planner.TokenBudget = 2048
+	cfg.Memory.BudgetTokens = 2048
 	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
 	if stack != nil {
 		defer func() { _ = stack.Close(context.Background()) }() // partial-stack drain on the failure path
 	}
-	if err == nil || !strings.Contains(err.Error(), "token_budget") {
-		t.Fatalf("expected loud token_budget-requires-LLM error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "budget_tokens") {
+		t.Fatalf("expected loud memory.budget_tokens-requires-LLM error, got %v", err)
+	}
+}
+
+func TestAssemble_RollingMemory_ZeroBudgetBuildsAdaptiveCompactor(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.Memory.Strategy = "rolling_summary"
+	cfg.Memory.BudgetTokens = 0
+	stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stack.Close(context.Background()) })
+	if stack.Compression == nil {
+		t.Fatal("rolling memory disabled its compactor instead of resolving the model input capacity")
 	}
 }
 

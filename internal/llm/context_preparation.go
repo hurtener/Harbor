@@ -37,7 +37,8 @@ func CheckContextCandidate(ctx context.Context) error {
 }
 
 // WithContextPreparation seats a run-local context preparation callback.
-// A nil callback or a non-positive target leaves ordinary requests unchanged.
+// A nil callback leaves ordinary requests unchanged. A zero target derives
+// the working-input ceiling from the resolved model and output reservation.
 func WithContextPreparation(ctx context.Context, preparation ContextPreparation) context.Context {
 	return context.WithValue(ctx, contextPreparationKey{}, preparation)
 }
@@ -52,7 +53,7 @@ type contextPreparationClient struct {
 // remeasures the final transformed request on every actual attempt.
 func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteRequest) (CompleteResponse, error) {
 	preparation, ok := ctx.Value(contextPreparationKey{}).(ContextPreparation)
-	if !ok || preparation.InputTarget <= 0 || preparation.Compact == nil || req.RebuildMessages == nil {
+	if !ok || preparation.InputTarget < 0 || preparation.Compact == nil || req.RebuildMessages == nil {
 		return c.inner.Complete(ctx, req)
 	}
 	if err := ctx.Err(); err != nil {
@@ -91,7 +92,10 @@ func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteReq
 	// Input capacity is exclusive. Even an empty history cannot repair an
 	// exhausted output reservation; the normal safety pass reports that error.
 	if capacity > 1 {
-		target := min(preparation.InputTarget, capacity-1)
+		target := capacity - 1
+		if preparation.InputTarget > 0 {
+			target = min(preparation.InputTarget, target)
+		}
 		estimated := EstimateRequestTokens(bound, profile)
 		if estimated > target {
 			var checkedMessages []ChatMessage

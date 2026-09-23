@@ -231,10 +231,11 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 	if inputContext != nil {
 		base.Trajectory.Steps = append(base.Trajectory.Steps, *inputContext)
 	}
-	if base.Budget.TokenBudget > 0 {
-		seen := r.prefixLen
-		base.Trajectory.UnseenFrom = &seen
-	}
+	// Historical exchanges are settled, not fresh output of this execution.
+	// This boundary is independent of an explicit token target: automatic
+	// model-capacity and storage-pressure compaction use it as well.
+	seen := r.prefixLen
+	base.Trajectory.UnseenFrom = &seen
 	return nil
 }
 
