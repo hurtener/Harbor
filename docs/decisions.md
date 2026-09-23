@@ -15993,3 +15993,28 @@ callers keep the existing YAML/configuration-object path.
 
 This supersedes only D-480's interim restart-required budget limitation.
 Independent authorized maintenance-model routing remains separate and pending.
+
+## D-482 — Independently authorized compaction model route
+
+**Date:** 2026-09-23. **Scope:** PR #779; operator configuration.
+**Extends:** D-480 and D-481 with independent maintenance routing.
+
+The optional boot YAML `memory.summarizer.provider_route` pins the existing six
+opaque selector fields, mutually exclusive with the static `summarizer.model`.
+For externally routed runs it substitutes only that selector in the trusted run
+context. Runtime, effective agent, task and verified tenant/user/session/run
+identity remain unchanged. The existing external resolver must authorize the
+new model and return a current profile. No new resolver protocol, provider SDK,
+credential store, persistence layer or consumer-specific model name is added.
+
+Preparation selects credential-free model metadata to pack each chronological
+chunk. The same governed client rechecks selection at the actual call; its
+Bifrost leaf resolves fresh credentials per attempt. Maintenance keeps its
+separate accounting invocation and cancellation. It uses the independent model's
+capacity and a clamped summary output allowance, without inheriting the driving
+model's reasoning effort or output reservation. Missing admission, missing
+profile, stale or revoked selectors and supplied signed grants fail closed.
+Static-model runs retain the existing model-profile configuration path.
+
+This extends only the earlier independent-route limitation. The route itself
+remains restart-required; the admin memory section edits only the input budget.

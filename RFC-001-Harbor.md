@@ -1089,6 +1089,11 @@ Served agents can override this same target through the admin versioned
 `memory.budget_tokens` section (D-481). Omission inherits YAML; explicit zero
 selects automatic sizing. Advertise `agent_config_memory_v1` only when the
 compactor and configuration service are wired. Runs freeze the value at start.
+An operator may select a separately authorized compaction route through
+`memory.summarizer.provider_route` (D-482). It uses the existing resolver and
+governed Bifrost client under the same admitted runtime/agent/task and verified
+user/session identity. The compactor uses that model's current profile; it never
+repurposes a signed grant or silently falls back to another credential.
 There is no fixed 512 KiB execution-evidence storage ceiling (D-480). Exact
 retained evidence may exceed the working-input size; token compaction does not
 promise bounded storage bytes. Lifetime, identity and generation fences remain.

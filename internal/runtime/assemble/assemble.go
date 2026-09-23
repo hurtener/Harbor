@@ -1177,10 +1177,19 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		// — a compaction payload must never trip ErrContextLeak on
 		// the run it exists to save). Zero falls back to the canonical
 		// default inside the option.
-		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM,
+		summaryOptions := []llmsummarizer.TrajectoryOption{
 			llmsummarizer.WithTrajectoryModel(cfg.Memory.Summarizer.Model),
 			llmsummarizer.WithTrajectoryPromptExtension(cfg.Memory.Summarizer.Prompt),
-			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes))
+			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
+		}
+		if route := cfg.Memory.Summarizer.ProviderRoute; route != nil {
+			summaryOptions = append(summaryOptions, llmsummarizer.WithTrajectoryProviderRoute(llm.ProviderRoute{
+				RouteID: route.RouteID, RouteGeneration: route.RouteGeneration,
+				ProviderConnectionID: route.ProviderConnectionID, ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+				CredentialAssetGeneration: route.CredentialAssetGeneration, ModelSelector: route.ModelSelector,
+			}, opts.ProviderRoute, cfg.LLM.ContextWindowReserve))
+		}
+		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM, summaryOptions...)
 		if err != nil {
 			return fmt.Errorf("trajectory summariser: %w", err)
 		}

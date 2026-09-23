@@ -1302,6 +1302,16 @@ func (c *Config) validateMemory() error {
 	if c.Memory.BudgetTokens < 0 {
 		return fieldError("memory.budget_tokens", "must be >= 0")
 	}
+	if route := c.Memory.Summarizer.ProviderRoute; route != nil {
+		if strings.TrimSpace(route.RouteID) == "" || strings.TrimSpace(route.ProviderConnectionID) == "" ||
+			strings.TrimSpace(route.ModelSelector) == "" || route.RouteGeneration == 0 ||
+			route.ProviderConnectionGeneration == 0 || route.CredentialAssetGeneration == 0 {
+			return fieldError("memory.summarizer.provider_route", "requires opaque route/connection IDs, positive generations and a model selector")
+		}
+		if c.Memory.Summarizer.Model != "" {
+			return fieldError("memory.summarizer.model", "must be omitted when provider_route selects the compaction model")
+		}
+	}
 	if c.Memory.RecentTurns < 0 || c.Memory.RecentTurns > MaxMemoryRecentTurns {
 		return fieldError("memory.recent_turns", fmt.Sprintf("must be between 0 and %d (zero selects 20)", MaxMemoryRecentTurns))
 	}

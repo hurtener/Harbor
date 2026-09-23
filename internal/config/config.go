@@ -741,22 +741,21 @@ type MemoryConfig struct {
 	// RecentTurns bounds recent execution detail; zero selects twenty turns.
 	RecentTurns int `yaml:"recent_turns,omitempty"`
 
-	// Summarizer tunes the `rolling_summary` compaction LLM: a
-	// switchable model and an append-only prompt extension. Ignored by
-	// the `none` and `truncation` strategies (which run no summariser).
+	// Summarizer tunes cumulative and within-run compaction. It is used
+	// when rolling_summary or a positive working-input budget is enabled.
 	Summarizer MemorySummarizerConfig `yaml:"summarizer,omitempty"`
 }
 
-// MemorySummarizerConfig tunes the `rolling_summary` strategy's
-// compaction LLM. Both fields are optional and apply only when
-// `memory.strategy: rolling_summary`.
+// MemorySummarizerConfig tunes the compaction LLM. All fields are optional.
 //
 // `Model`, when set, pins the model the compaction summariser requests
 // (routed through the summariser's model override) so operators can run
 // compaction on a cheaper/faster model independent of the planner's
-// model. Empty selects the main LLM's default model — today's behavior.
+// model for locally configured inference. Empty inherits the run's model.
 // A model with no matching `model_profiles` entry fails at runtime the
 // same way any unsupported model does; it is not rejected at load time.
+// Externally routed inference instead needs ProviderRoute to authorize a
+// different model; it is mutually exclusive with Model.
 //
 // `Prompt`, when set, is APPENDED to the baseline summariser system
 // prompt behind an explicit "extend, do not override" separator — it
@@ -766,6 +765,21 @@ type MemoryConfig struct {
 type MemorySummarizerConfig struct {
 	Model  string `yaml:"model,omitempty"`  // "" → main LLM default model
 	Prompt string `yaml:"prompt,omitempty"` // "" → baseline only; else appended to the baseline summariser prompt
+	// ProviderRoute selects a separately authorized route for compaction on
+	// externally routed runs. It uses the existing llm.provider_route resolver,
+	// never embeds credentials, and cannot choose the run's identity.
+	ProviderRoute *MemorySummarizerProviderRoute `yaml:"provider_route,omitempty"`
+}
+
+// MemorySummarizerProviderRoute is an operator-pinned opaque route selector.
+// Its generations must remain current at the existing external resolver.
+type MemorySummarizerProviderRoute struct {
+	RouteID                      string `yaml:"route_id"`
+	RouteGeneration              uint64 `yaml:"route_generation"`
+	ProviderConnectionID         string `yaml:"provider_connection_id"`
+	ProviderConnectionGeneration uint64 `yaml:"provider_connection_generation"`
+	CredentialAssetGeneration    uint64 `yaml:"credential_asset_generation"`
+	ModelSelector                string `yaml:"model_selector"`
 }
 
 // SkillsConfig is owned by the skills subsystem phases.

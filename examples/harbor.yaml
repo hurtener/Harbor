@@ -545,6 +545,10 @@ memory:
   # summarizer:
   #   model: anthropic/claude-haiku
   #   prompt: "Always preserve numeric thresholds and dollar amounts verbatim."
+  # For externally routed runs, a different compaction model needs its own
+  # authorized summarizer.provider_route selector instead of `model`.
+  # Reuse llm.provider_route's resolver; see docs/CONFIG.md for the six
+  # opaque selector fields and generation checks. Never put credentials here.
   # Native semantic-memory indexing is removed. External long-term memory
   # arrives through caller memory or connected capability tools.
 

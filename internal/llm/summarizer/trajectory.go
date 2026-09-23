@@ -72,6 +72,18 @@ type TrajectorySummariser struct {
 	systemPrompt     string
 	maxSummaryTokens int
 	payloadBudget    int
+	providerRoute    *llm.ProviderRoute
+	routeConfig      llm.ProviderRouteConfig
+	routeReserve     float64
+}
+
+// WithTrajectoryProviderRoute selects independent, resolver-authorized
+// compaction for externally routed runs. The selector is copied at construction.
+func WithTrajectoryProviderRoute(route llm.ProviderRoute, cfg llm.ProviderRouteConfig, reserve float64) TrajectoryOption {
+	return func(s *TrajectorySummariser) {
+		copy := route
+		s.providerRoute, s.routeConfig, s.routeReserve = &copy, cfg, reserve
+	}
 }
 
 // TrajectoryOption configures a TrajectorySummariser at construction.
@@ -146,6 +158,20 @@ func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*T
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.providerRoute != nil {
+		if s.model != "" {
+			return nil, fmt.Errorf("summarizer: model and provider_route are mutually exclusive")
+		}
+		if err := llm.ValidateProviderRoute(*s.providerRoute); err != nil {
+			return nil, err
+		}
+		if s.providerRoute.RouteID == "" || s.routeConfig.Resolver == nil {
+			return nil, llm.ErrProviderRouteResolverUnavailable
+		}
+		if err := llm.ValidateProviderRouteConfig(s.routeConfig); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -222,7 +248,18 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 			},
 			ResponseFormat: &llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: append(json.RawMessage(nil), trajectorySummarySchemaV1...)},
 		}
-		req, capacity, err := llm.PrepareCompactionRequest(ctx, req)
+		// Each chunk is one maintenance invocation, including its route
+		// selection. Retry wrappers retain this invocation's logical scope.
+		callCtx, err := llm.CompactionAttemptContext(ctx, calls+1)
+		if err != nil {
+			return nil, err
+		}
+		var capacity llm.CompactionBudget
+		if s.providerRoute != nil {
+			callCtx, req, capacity, err = llm.PrepareRoutedCompactionRequest(callCtx, req, *s.providerRoute, s.routeConfig, s.routeReserve)
+		} else {
+			req, capacity, err = llm.PrepareCompactionRequest(ctx, req)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -254,12 +291,6 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		}
 		if position == start && position < len(tr.Steps) {
 			return nil, fmt.Errorf("%w: exchange %d requires a bounded result reference", ErrTrajectorySummaryCapacity, position+1)
-		}
-		// Each actual completion is a separate maintenance invocation. Existing
-		// retry wrappers keep that invocation's scope stable across its attempts.
-		callCtx, err := llm.CompactionAttemptContext(ctx, calls+1)
-		if err != nil {
-			return nil, err
 		}
 		resp, err := s.client.Complete(callCtx, req)
 		if err != nil {

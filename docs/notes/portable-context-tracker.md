@@ -1,5 +1,41 @@
 # Portable session context implementation tracker
 
+## Independent compaction route — 2026-09-23
+
+On base `b8353ec3458e5cf89fd01952424be8ffc257d7a2`, the source now adds the
+optional YAML `memory.summarizer.provider_route` selector (D-482). The existing
+external resolver separately authorizes the compaction model under the same
+admitted runtime/agent/task and verified tenant/user/session/run. The existing
+governed Bifrost client owns dispatch and accounting; no new provider client,
+resolver endpoint or credential store is introduced. An explicit route requires
+a current model profile. Missing admission, stale/revoked selectors and signed
+grants fail closed, without a fallback credential. The static model guard remains.
+
+Compaction chunks use their own model capacity and summary output reservation,
+not the driving model's large output limit or reasoning effort. The operator's
+working-input target remains YAML data, with the published versioned admin
+budget override. The independent route is restart-required and YAML-only.
+
+Focused Go 1.27.1 race checks cover exact YAML generation values, invalid and
+ambiguous configuration, independent-model chunk packing, N=128 concurrent
+identity isolation, grant/refusal boundaries, and revocation before dispatch.
+The assembled-runtime regression goes through the real composed Bifrost client
+to a local HTTP provider fixture: it observes the separate model, a 2048-token
+summary reservation, the resolved route credential, and no fallback call after
+revocation. This is deterministic harness evidence, not real-model proficiency.
+
+Canonical local package execution also passes on this source increment:
+`GOFLAGS=-p=1 go test -race ./internal/config ./internal/llm/...
+./internal/runtime/assemble -count=1` (assembly: 185.476s). PostgreSQL was not
+configured for this invocation; its env-gated branches remain skipped, not
+service-backed acceptance. Coverage targets and final hosted validation remain open.
+
+Scoped `go vet`, golangci-lint 2.13.2 (zero issues), and changed-document
+markdownlint-cli2 0.22.1 pass. No live route or deployment was changed for this
+increment. Deploying the new budget editor, selecting the approved live
+compaction route, and verifying that route during an actual multi-turn session
+remain pending, alongside the existing full-release gates and consumer UI issues.
+
 ## Versioned working-input budget — 2026-09-23
 
 The owner requires the deployment's 64000-token target to remain YAML data.

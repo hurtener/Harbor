@@ -32,7 +32,15 @@ Memory has two axes you tune independently:
 | `none`            | Explicit stateless opt-out. Each run starts cold.                           |
 | `rolling_summary` (default) | Cumulative short-term session context with 20 recent detailed turns. |
 
-`rolling_summary` is the sweet spot for chatbots — it preserves the conversation arc without blowing the context window. The summariser is the same LLM as the planner (Bifrost reuses the configured provider).
+`rolling_summary` preserves the conversation arc while compacting model input.
+By default the summariser uses the run's model through the governed Bifrost
+client. For local inference, `memory.summarizer.model` selects a separately
+profiled model. For externally routed runs, use the independently authorized
+`memory.summarizer.provider_route` selector described in
+[the configuration reference](../../CONFIG.md#memorysummarizerprovider_route).
+It reuses the same resolver and verified run identity; it cannot repurpose a
+signed grant or silently fall back after revocation. Model routing remains
+restart-required even when the working-input budget is edited through Protocol.
 
 The removed `truncation` strategy is rejected rather than silently dropping
 unsummarized context when a window fills.

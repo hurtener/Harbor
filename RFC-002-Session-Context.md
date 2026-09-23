@@ -290,6 +290,14 @@ size. `memory.budget_tokens` and the effective model capacity govern model-facin
 compaction; neither claims to cap stored bytes. Keep checkpoint-schema and
 transport bounds distinct from session-evidence storage (D-480).
 
+An independently configured compaction model uses the same governed Bifrost
+client. For externally routed runs, the operator may pin an opaque maintenance
+selector in `memory.summarizer.provider_route` (D-482). The existing resolver
+authorizes it under the admitted run's identity and supplies the model profile
+used to pack maintenance input. Recheck selection before dispatch and credentials
+on each provider attempt. Never reuse a signed grant for another route, inherit
+the driving model's output reservation, or silently switch credentials on refusal.
+
 The next user turn restores checkpoint plus recent execution context through the
 same projection used within a run. Do not also inject a second pair-only or
 rolling summary of that same history. Replace the legacy memory interfaces and

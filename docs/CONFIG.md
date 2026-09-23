@@ -951,6 +951,41 @@ summarizer model is rejected on that path, not silently authorized or replaced
 with the runtime's local key. Separately authorized maintenance routing is not
 implemented by this YAML field. This setting is restart-required.
 
+### memory.summarizer.provider_route
+
+Optional, restart-required opaque selector for a separately authorized compaction
+model on externally routed runs (D-482). Mutually exclusive with `model`. Uses the
+existing `llm.provider_route` resolver and the same governed Bifrost client; it
+does not contain a credential, endpoint, or identity override. Supply all fields:
+
+```yaml
+memory:
+  budget_tokens: 64000 # example deployment target, not a framework default
+  summarizer:
+    provider_route:
+      route_id: your-maintenance-route
+      route_generation: 1
+      provider_connection_id: your-provider-connection
+      provider_connection_generation: 1
+      credential_asset_generation: 1
+      model_selector: your-compaction-alias
+```
+
+Obtain current selectors/generations from the configured resolver's control
+plane; the example identifiers are placeholders. The resolver must authorize
+that model for the actual runtime, agent and user and return its model profile.
+Missing admission, revocation, stale generations, missing profiles and signed
+execution grants fail closed. There is no fallback to a local key or the driving
+model. Plain static-model runs continue to use `summarizer.model` instead.
+
+Each chunk is packed against the selected compaction model's own input capacity,
+output allowance and configured context reserve. It does not inherit the driving
+model's reasoning effort or large output reservation. The existing summary
+output allowance is clamped to the selected model's maximum; reasoning controls
+are omitted. Selection is rechecked by the normal client, and credentials are
+resolved afresh by the Bifrost leaf for each actual attempt. This route selection
+remains YAML-only; `agent_config_memory_v1` edits only the working-input budget.
+
 ### memory.summarizer.prompt
 
 Operator guidance APPENDED to the baseline `rolling_summary`
