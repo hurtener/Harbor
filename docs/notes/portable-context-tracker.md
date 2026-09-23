@@ -58,8 +58,13 @@ passes; main CI `35909435862` remains in progress at this publication.
 
 The isolated owner sample has been deployed to RC6, with runtime-reported
 version and commit independently verified through Protocol. Its existing
-conversation is being resumed for a short post-restart edit; live capacity
-regression acceptance is not yet claimed.
+conversation resumed for a short post-restart edit. Task
+`01M37WT20J4GHQKNR4C0GAEMA6` completed at 19:46:58 UTC after saving revision
+14 of the same project, without the earlier terminal-capacity error. This
+proves live persistence for this resumed turn, not a matched baseline benchmark.
+Consumer activity after redeploy needed a browser reload, and replay showed
+duplicate tool rows plus an empty app viewer. These remain separate consumer
+acceptance issues; the successful runtime terminal state does not mark them green.
 The owner-selected sample budget is 64,000 tokens in its deployment YAML.
 Memory fields are currently restart-required and absent from the admin
 agent-config Protocol. A separate static summarizer model is supported without
