@@ -48,7 +48,7 @@ func TestRetainedRecovery_AmbiguousHostEncoding(t *testing.T) {
 				case "duplicate window version", "aliased window version":
 					window := loadHostRecord(t, store, session, retainedKind)
 					if scenario == "duplicate window version" {
-						window.Bytes = bytes.Replace(window.Bytes, []byte(`"version":3`), []byte(`"version":999,"version":3`), 1)
+						window.Bytes = bytes.Replace(window.Bytes, []byte(`"version":`), []byte(`"version":999,"version":`), 1)
 					} else {
 						window.Bytes = bytes.Replace(window.Bytes, []byte(`"version":`), []byte(`"VERSION":`), 1)
 					}

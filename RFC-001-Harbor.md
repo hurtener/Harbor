@@ -1372,7 +1372,7 @@ Child tasks use explicit task context and never publish their private transcript
 into the root memory. Restored history is inert and must satisfy current erasure
 and source-expiry checks. Required terminal persistence precedes served task
 completion. Session deletion and lifetime remain controlled by `sessions`.
-See [RFC 002](RFC-002-Session-Context.md) and the
+See [RFC 002](https://github.com/hurtener/Harbor/blob/126e5a917edab479a5fdaf74eedaf572c659535b/RFC-002-Session-Context.md) and the
 [phase 269 plan](docs/plans/phase-269-retained-session-context.md).
 
 **Cumulative checkpoints (D-477 supersedes D-469).** One versioned checkpoint

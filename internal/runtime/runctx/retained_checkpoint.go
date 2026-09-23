@@ -5,21 +5,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/trajectory"
 )
 
-// A retained checkpoint is an optimization of a known, still-retained terminal
-// prefix. It never replaces its evidence or extends any source's lifetime.
-// One checkpoint lives in the existing bounded session slot; no second log.
+// A checkpoint represents a committed prefix, including detail already removed
+// by compaction. Remaining source detail is digest-bound until it too is covered.
+// CompactedThrough lives on the window so invalidation cannot erase the frontier.
 type retainedCheckpoint struct {
-	Version      int                 `json:"version"`
-	Generation   uint64              `json:"generation"`
-	Sources      []retainedAdmission `json:"sources"`
-	SourceDigest string              `json:"source_digest"`
-	ThroughStep  int                 `json:"through_step"`
-	Narrative    *planner.Summary    `json:"narrative"`
+	Version       int               `json:"version"`
+	Generation    uint64            `json:"generation"`
+	SourceThrough retainedAdmission `json:"source_through"`
+	SourceDigest  string            `json:"source_digest"`
+	ThroughStep   int               `json:"through_step"`
+	ExpiresAt     time.Time         `json:"expires_at"`
+	Narrative     *planner.Summary  `json:"narrative"`
 }
 
 const maxRetainedNarrativeBytes = 16 * 1024
@@ -42,16 +44,20 @@ func retainedDigest(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func retainedCheckpointMatches(checkpoint *retainedCheckpoint, turns []retainedTurn) bool {
-	if checkpoint == nil || len(checkpoint.Sources) == 0 || len(checkpoint.Sources) > len(turns) {
-		return false
+func checkpointSources(window retainedWindow) ([]retainedTurn, error) {
+	c := window.Checkpoint
+	if c == nil || c.SourceThrough.ID == "" || c.SourceThrough.RunID == "" {
+		return nil, ErrRetainedContextUnavailable
 	}
-	for i, source := range checkpoint.Sources {
-		if source != turns[i].Admission {
-			return false
+	if c.SourceThrough == window.CompactedThrough {
+		return []retainedTurn{}, nil
+	}
+	for i, turn := range window.Turns {
+		if turn.Admission == c.SourceThrough {
+			return window.Turns[:i+1], nil
 		}
 	}
-	return true
+	return nil, ErrRetainedContextUnavailable
 }
 
 func validateRetainedCheckpoint(window retainedWindow) error {
@@ -59,21 +65,29 @@ func validateRetainedCheckpoint(window retainedWindow) error {
 	if c == nil {
 		return nil
 	}
-	if c.Version != 1 || c.Generation == 0 || c.ThroughStep < 1 || c.Narrative == nil || c.Narrative.Coverage != nil || !c.Narrative.HasContent() || !retainedCheckpointMatches(c, window.Turns) {
+	if c.Version != 2 || c.Generation == 0 || c.Generation != window.Generation || c.ThroughStep < 1 || c.ExpiresAt.IsZero() || c.Narrative == nil || c.Narrative.Coverage != nil || !c.Narrative.HasContent() {
 		return ErrRetainedContextUnavailable
 	}
 	narrative, err := json.Marshal(c.Narrative)
 	if err != nil || len(narrative) > maxRetainedNarrativeBytes {
 		return ErrRetainedContextUnavailable
 	}
-	sources := window.Turns[:len(c.Sources)]
+	sources, err := checkpointSources(window)
+	if err != nil {
+		return err
+	}
+	for _, source := range sources {
+		if c.ExpiresAt.After(source.ExpiresAt) {
+			return ErrRetainedContextUnavailable
+		}
+	}
 	digest, err := retainedDigest(sources)
 	if err != nil || digest != c.SourceDigest {
 		return ErrRetainedContextUnavailable
 	}
 	// Whole turn queries/outcomes frame the exact exchanges. Only validated
 	// envelopes are eligible, including entries currently hidden by the summary.
-	prefix, err := projectRetainedWindow(retainedWindow{Turns: sources})
+	prefix, err := projectRetainedWindow(retainedWindow{Turns: sources, CompactedThrough: window.CompactedThrough})
 	if err != nil || c.ThroughStep > len(prefix) {
 		return ErrRetainedContextUnavailable
 	}
@@ -113,14 +127,44 @@ func (r *RetainedRun) retainCheckpoint(ctx context.Context, tr *planner.Trajecto
 	if r.hadActivePrefix || tr.Query != turn.Query {
 		return nil, nil
 	}
-	sources := append(append([]retainedTurn(nil), r.sourceTurns...), turn)
-	ids := make([]retainedAdmission, len(sources))
-	for i, source := range sources {
-		ids[i] = source.Admission
-	}
-	c := &retainedCheckpoint{Version: 1, Generation: tr.Summary.Coverage.Generation, Sources: ids}
-	if !retainedCheckpointMatches(c, window.Turns) {
+	// A checkpoint generated from a frozen admission cannot overwrite another
+	// sibling's checkpoint or an invalidation. CAS on the window then protects
+	// this comparison through the terminal publication transaction.
+	if window.Generation != r.generation || window.CompactedThrough != r.compactedThrough {
 		return nil, nil
+	}
+	beforeCheckpoint, err := retainedDigest(r.checkpoint)
+	if err != nil {
+		return nil, err
+	}
+	currentCheckpoint, err := retainedDigest(window.Checkpoint)
+	if err != nil {
+		return nil, err
+	}
+	if beforeCheckpoint != currentCheckpoint {
+		return nil, nil
+	}
+	sources := append(append([]retainedTurn(nil), r.sourceTurns...), turn)
+	if len(sources) > len(window.Turns) {
+		return nil, nil
+	}
+	for i, source := range sources {
+		if source.Admission != window.Turns[i].Admission {
+			return nil, nil
+		}
+	}
+	generation := max(window.Generation+1, tr.Summary.Coverage.Generation)
+	if window.Generation+1 == 0 {
+		return nil, ErrRetainedContextCapacity
+	}
+	c := &retainedCheckpoint{Version: 2, Generation: generation, SourceThrough: turn.Admission, ExpiresAt: turn.ExpiresAt}
+	for _, source := range sources {
+		if source.ExpiresAt.Before(c.ExpiresAt) {
+			c.ExpiresAt = source.ExpiresAt
+		}
+	}
+	if r.checkpoint != nil && r.checkpoint.ExpiresAt.Before(c.ExpiresAt) {
+		c.ExpiresAt = r.checkpoint.ExpiresAt
 	}
 	want, err := retainedDigest(sources)
 	if err != nil {
@@ -138,7 +182,7 @@ func (r *RetainedRun) retainCheckpoint(ctx context.Context, tr *planner.Trajecto
 		return nil, ErrRetainedContextUnavailable
 	}
 	if len(r.prefix) > 0 {
-		expected, err := projectRetainedWindow(retainedWindow{Turns: r.sourceTurns, Partial: r.hadPartialPrefix})
+		expected, err := projectRetainedWindow(retainedWindow{Turns: r.sourceTurns, Partial: r.hadPartialPrefix, CompactedThrough: r.compactedThrough})
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +198,7 @@ func (r *RetainedRun) retainCheckpoint(ctx context.Context, tr *planner.Trajecto
 			return nil, nil
 		}
 	}
-	stablePrefix, err := projectRetainedWindow(retainedWindow{Turns: r.sourceTurns})
+	stablePrefix, err := projectRetainedWindow(retainedWindow{Turns: r.sourceTurns, CompactedThrough: r.compactedThrough})
 	if err != nil {
 		return nil, err
 	}
@@ -211,18 +255,64 @@ func (r *RetainedRun) retainCheckpoint(ctx context.Context, tr *planner.Trajecto
 	c.SourceDigest = actual
 	candidate := window
 	candidate.Checkpoint = c
+	candidate.Generation = c.Generation
 	if err := validateRetainedCheckpoint(candidate); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-// Ensure any change to the source turns invalidates rather than resurrects the
-// checkpoint. This runs on expected expiry/count/byte eviction, not corruption.
+// Expiry removes information, unlike successful compaction. Losing any remaining
+// source invalidates the derived checkpoint rather than certifying selective loss.
 func pruneRetainedCheckpoint(window *retainedWindow) {
-	if window.Checkpoint != nil && !retainedCheckpointMatches(window.Checkpoint, window.Turns) {
-		window.Checkpoint = nil
+	if window.Checkpoint != nil {
+		if _, err := checkpointSources(*window); err != nil {
+			window.Checkpoint = nil
+		}
 	}
+}
+
+// discardCoveredTurn changes representation only after a checkpoint represents
+// the complete oldest turn. The caller publishes this and the checkpoint in one
+// conditional write; no storage deletion happens before that transaction.
+func discardCoveredTurn(window *retainedWindow) error {
+	if len(window.Turns) == 0 || window.Checkpoint == nil {
+		return ErrRetainedContextCapacity
+	}
+	oldest := window.Turns[0]
+	for _, active := range window.Active {
+		if active.Sequence <= oldest.Admission.Sequence {
+			return ErrRetainedContextCapacity // never advance past a late sibling
+		}
+	}
+	anchor := 0
+	if window.CompactedThrough.ID != "" {
+		anchor = 1
+	}
+	covered := len(oldest.Steps) + 2 // admitted query, whole exchanges, outcome
+	if window.Checkpoint.ThroughStep < anchor+covered {
+		return ErrRetainedContextCapacity
+	}
+	// Preserve exact execution evidence separately from the lossy narrative.
+	// It remains bounded by the same session byte/step limits; pressure fails
+	// closed until authorized reference offload can represent it, never drops it.
+	if len(oldest.Steps) > 0 {
+		if len(window.Evidence) >= maxRetainedContextSteps {
+			return ErrRetainedContextCapacity
+		}
+		window.Evidence = append(window.Evidence, retainedEvidence{Admission: oldest.Admission, ExpiresAt: oldest.ExpiresAt, Steps: oldest.Steps})
+	}
+	c := *window.Checkpoint
+	c.ThroughStep = c.ThroughStep - covered + 1 - anchor
+	window.CompactedThrough = oldest.Admission
+	window.Turns = window.Turns[1:]
+	window.Checkpoint = &c
+	sources, err := checkpointSources(*window)
+	if err != nil {
+		return err
+	}
+	c.SourceDigest, err = retainedDigest(sources)
+	return err
 }
 
 // The redactor operates on a detached tree, which may reorder JSON. Compare

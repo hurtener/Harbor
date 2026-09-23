@@ -8,7 +8,7 @@ source scripts/smoke/common.sh
 assert_file docs/plans/phase-269-retained-session-context.md "retained context plan exists"
 assert_grep_present '^## D-464 ' docs/decisions.md "retained window decision exists"
 if go test -race -p 1 ./internal/runtime/runctx ./internal/runtime/assemble ./sdk/assemble ./internal/runtime/serve ./internal/config \
-    -run 'TestRetainedDecode_|TestRetainedRecovery_|TestRunOnce_RetainedRecovery|TestRetainedCheckpoint_|TestRunOnce_RetainedCheckpoint|TestRetainedContext_|TestRunOnce_RetainedContext|TestRunOnce_RetainedNative|TestRunOnce_RetainedDiscovery|TestRetainedServer_|TestSessionsRetainedContext_' -count=1; then
+    -run 'TestRetainedCumulative_|TestRunOnce_CumulativeMemory_|TestRetainedDecode_|TestRetainedRecovery_|TestRunOnce_RetainedRecovery|TestRetainedCheckpoint_|TestRunOnce_RetainedCheckpoint|TestRetainedContext_|TestRunOnce_RetainedContext|TestRunOnce_RetainedNative|TestRunOnce_RetainedDiscovery|TestRetainedServer_|TestSessionsRetainedContext_' -count=1; then
     ok "retained evidence, restore, erasure and served/embedded request regressions pass"
 else
     fail "retained execution context regression failed"

@@ -160,8 +160,10 @@ func TestRetainedContext_WindowExpiryAndConcurrentSiblings(t *testing.T) {
 	if !strings.Contains(text, "FIRST-SAVE") || !strings.Contains(text, "SECOND-OUTCOME") || !strings.Contains(text, `"unrecorded_outcomes_possible":true`) {
 		t.Fatal("lost committed outcomes or invented complete execution")
 	}
-	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); err != nil {
-		t.Fatal(err)
+	// Reaching the detail bound is not permission to discard either sibling.
+	// Without a new checkpoint the terminal write must preserve both outcomes.
+	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); !errors.Is(err, runctx.ErrRetainedContextCapacity) {
+		t.Fatalf("unsummarized history silently evicted: %v", err)
 	}
 	now = now.Add(2 * time.Minute)
 	d := retainedBase("d", "s")
@@ -386,7 +388,7 @@ func TestRetainedContext_CancelledAdmissionAndOversizedTerminal(t *testing.T) {
 	}
 }
 
-func TestRetainedContext_LegacyWindowUpgradeIsExplicit(t *testing.T) {
+func TestRetainedContext_LegacyWindowIsRejectedWithoutMutation(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("new", "legacy-migration")
 	q := identity.Quadruple{Identity: base.Quadruple.Identity}
@@ -409,29 +411,15 @@ func TestRetainedContext_LegacyWindowUpgradeIsExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = run.Apply(&base); err != nil {
-		t.Fatal(err)
-	}
-	for _, step := range base.Trajectory.Steps {
-		if step.Historical != nil || step.Action != nil {
-			t.Fatal("legacy action acquired an invented native kind")
-		}
-	}
-	if body := encodeRetained(t, base); !strings.Contains(body, "legacy-doc") || !strings.Contains(body, "9007199254740993") {
-		t.Fatal("migration lost legacy evidence")
+	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || run != nil {
+		t.Fatalf("incompatible private representation admitted: %v", err)
 	}
 	record, err := store.Load(t.Context(), q, retainedKind)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var window struct {
-		Version int `json:"version"`
-	}
-	if err = json.Unmarshal(record.Bytes, &window); err != nil || window.Version != 3 {
-		t.Fatal("new representation is not fenced from old v1 readers")
+	if string(record.Bytes) != string(data) {
+		t.Fatal("rejection mutated incompatible history")
 	}
 }
 

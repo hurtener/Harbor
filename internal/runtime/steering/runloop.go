@@ -418,6 +418,12 @@ type RunSpec struct {
 	// hold that mutex. Compression errors stop the run explicitly.
 	Compression *planner.CompressionRunner
 
+	// CompactBeforeFirstDecision applies the same compactor to an admitted
+	// session whose detailed-history storage window is full, even when its
+	// assembled request is below the ordinary token target. It does not alter
+	// the model's output allowance or any subsequent decision's input target.
+	CompactBeforeFirstDecision bool
+
 	// OnToolDispatched is the optional per-run hook the runloop invokes
 	// after the ToolExecutor returns WITHOUT ERROR. The dev binary
 	// wires it to loop `count` calls of
@@ -997,13 +1003,24 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			InputTarget: rc.Budget.TokenBudget,
 			History:     func() *llm.ContextHistory { return contextHistory(spec, rc) },
 		}
-		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
+		storagePressure := spec.CompactBeforeFirstDecision && step == 1
+		if storagePressure {
+			if spec.Compression == nil {
+				return planner.Finish{}, fmt.Errorf("steering: session history capacity requires a compactor")
+			}
+			preparation.InputTarget = 1
+		}
+		if spec.Compression != nil && (rc.Budget.TokenBudget > 0 || storagePressure) {
 			if _, requestAware := spec.Planner.(planner.RequestContextPlanner); requestAware {
 				preparation.Compact = func(ctx context.Context, inputTokens, target int) (bool, error) {
 					return compressRequest(ctx, spec, rc, inputTokens, target)
 				}
-			} else if cerr := compressTrajectory(plannerCtx, spec, rc); cerr != nil {
-				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
+			} else {
+				compactionRC := rc
+				compactionRC.Budget.TokenBudget = preparation.InputTarget
+				if cerr := compressTrajectory(plannerCtx, spec, compactionRC); cerr != nil {
+					return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
+				}
 			}
 		}
 

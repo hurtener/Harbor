@@ -117,7 +117,7 @@ func TestRetainedCheckpoint_ReusesCoverageAcrossTurns(t *testing.T) {
 }
 
 func TestRetainedCheckpoint_InvalidationAndCorruption(t *testing.T) {
-	for _, scenario := range []string{"expiry", "eviction", "changed source", "bad generation", "unversioned injection"} {
+	for _, scenario := range []string{"expiry", "changed source", "bad generation", "unversioned injection"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
@@ -153,18 +153,6 @@ func TestRetainedCheckpoint_InvalidationAndCorruption(t *testing.T) {
 			switch scenario {
 			case "expiry":
 				now = now.Add(2 * time.Hour)
-			case "eviction":
-				secondBase := retainedBase("second", scenario)
-				second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, secondBase.Quadruple, 1, time.Hour, clock)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := second.Apply(&secondBase); err != nil {
-					t.Fatal(err)
-				}
-				if err := second.Finish(t.Context(), secondBase.Trajectory, secondBase.Query, "newest", "complete"); err != nil {
-					t.Fatal(err)
-				}
 			default:
 				var cp map[string]any
 				if err := json.Unmarshal(object["checkpoint"], &cp); err != nil {

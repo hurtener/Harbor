@@ -22,7 +22,7 @@ No backward-compatibility layer is required. Long-term memory remains external.
 - [x] Amend both RFCs, config docs, decisions and phases; add the real-request
       regression as an intentionally failing acceptance test. This first
       increment contains no cumulative-memory runtime fix or RC publication.
-- [ ] Implement cumulative generation/coverage and atomic rollover, with both
+- [x] Implement cumulative generation/coverage and atomic rollover, with both
       served and embedded consumers in the same increment. Preserve failure,
       expiry/erasure, concurrent-sibling and unknown-outcome fences.
 - [ ] Consolidate configuration, remove legacy paths, finish exact references,
@@ -30,6 +30,76 @@ No backward-compatibility layer is required. Long-term memory remains external.
 - [ ] Pass 100 turns / at least five generations across multiple full windows,
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
+
+### Cumulative rollover core — implementation increment, not release acceptance
+
+The second increment replaces count eviction with conditional cumulative
+publication in the existing StateStore slot. A checkpoint records one generation,
+committed boundary and original source expiry; a bounded recent tail can roll
+without invalidating that checkpoint. Both serving and embedding request the
+existing compactor at history pressure, outside persistence deadlines. Missing
+summaries or failed writes preserve the old state and report capacity/failure.
+Admission order is now a session-local CAS-allocated sequence, not ULID sort
+order: random entropy in one clock tick previously reordered sequential turns.
+
+Local Go 1.26.4 / darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1` evidence on the
+implementation over `126e5a91` (with separate unfinished hard-Stop work present):
+
+- 100-turn actual-request tests pass for both serving and embedding on in-memory,
+  SQLite and PostgreSQL 17.11. Embedded tests cover token targets 1 and 100000;
+  served tests cover storage-pressure compaction at target 100000. Every case
+  checks at least five generations, the turn-1-only constraint, previous-summary
+  inputs and storage/request bounds. SQLite/PostgreSQL embedded cases close and
+  reopen the full stack after turns 25, 50 and 75. Served cases preserve a
+  correction introduced on turn 31. These are deterministic transport tests,
+  not evidence of real-model proficiency or an RC deployment.
+- Real in-memory/SQLite seam tests pass for failed atomic publication, refusal
+  to drop unsummarized history, non-ordered event IDs, expiry after rollover and
+  restart, and a late publisher preserving a newer sibling's exact tail.
+- An existing artifact receipt remains retrievable byte-for-byte after raw-turn
+  rollover and SQLite restart: 14,660 bytes, version 9007199254740993, `more:false`.
+  Deletion before/during inference still refuses the dependent decision.
+- PostgreSQL's four retained-context roots pass, including independent-pool
+  dispatch/reconciliation racing and strict host-envelope decoding. A dedicated
+  native test instance was used; Docker's unrelated storage I/O failure was not
+  treated as a service-backed pass or repaired by deleting its data.
+- The earlier broader retained/compaction regression selection passes in
+  runctx, assembly, served runtime and steering. Final full-package coverage,
+  whole-tree release gates and new-head hosted validation remain separate.
+
+The isolated staged tree `2fd903ed077b32d7fb9b5f9d476dc9debcb873d7`, excluding
+all unfinished hard-Stop changes, subsequently passed repository-wide
+`GOFLAGS=-p=1 golangci-lint run`; full `go test -race
+./internal/runtime/runctx -count=1 -coverprofile=…` (**86.1%** statements);
+and `go vet` on runctx, assembly, served runtime and steering. Its PostgreSQL-backed
+`go test -race` selection `Retained|Cumulative|Compression|Compress|ContextPreparation`
+also passed in assembly, served runtime, steering and state/postgres. This repeats
+the 900-turn matrix without relying on unrelated working-tree changes. The only
+subsequent change to this increment is this documentation receipt.
+
+Reproduction: set `HARBOR_PG_DSN` to an isolated test database and run
+`GOFLAGS=-p=1 go test -race ./internal/runtime/runctx
+./internal/runtime/assemble ./internal/runtime/serve
+./internal/state/drivers/postgres -run 'Cumulative|TestPostgres_Retained'
+-count=1 -v`. Without that variable the PostgreSQL cumulative cases explicitly
+skip; such a run is not three-store acceptance. Phase 269 now selects these
+cumulative roots too.
+
+**Still pending, not hidden by the passing no-tool conversation test:** the
+single public `memory` configuration and removal of the pair-only pipeline;
+compact reference representation for covered inline tool evidence (currently
+preserved under the existing strict private byte bound, with capacity failure
+rather than loss); archived-tool discovery, further attachment/recovery and
+diagnostic integration; adversarial and real multi-window UI acceptance.
+No old storage-format compatibility is provided. No RC tag or deployment has
+been changed by this increment.
+
+Hosted results for the previous published `126e5a91`: run `35823332227` failed
+Linux/macOS only at the intentionally red turn-22 constraint test; the other
+completed jobs passed and downstream Playwright/preflight skipped. Docs run
+`35823332228` found an RFC 002 relative link broken by the VitePress include.
+The source link is corrected to the published contract revision, without
+disabling link validation; local `DOCS_BASE=/Harbor/ make docs` now passes.
 
 Hard Stop, in-flight Steer and single-owner consumer Queue remain in scope.
 Current unpublished hard-Stop tests pass through the authenticated control

@@ -437,6 +437,7 @@ func (s *Stack) RunOnce(
 	}
 	if retained != nil {
 		spec.DispatchCheckpoint = retained
+		spec.CompactBeforeFirstDecision = retained.CompactionRequired()
 	}
 	if cfg.stream != nil {
 		// One StreamToolDispatched event PER dispatched tool: a

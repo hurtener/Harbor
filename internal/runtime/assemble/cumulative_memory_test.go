@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,9 +21,11 @@ const cumulativeConstraint = "Keep the emergency exit labelled NORTH-STAR-47."
 // The fixture preserves the constraint only if it is present in the actual
 // maintenance request. It must not fabricate the fact after runtime eviction.
 type cumulativeMemoryDriver struct {
-	mu        sync.Mutex
-	requests  map[string]string
-	summaries int
+	mu               sync.Mutex
+	requests         map[string]string
+	summaries        int
+	summaryInputs    []string
+	maxRequestTokens int
 }
 
 func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -41,6 +44,7 @@ func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteR
 	defer d.mu.Unlock()
 	if strings.Contains(body, "You summarize historical agent execution") {
 		d.summaries++
+		d.summaryInputs = append(d.summaryInputs, body)
 		facts := []string{"The layout has been inspected."}
 		if strings.Contains(body, cumulativeConstraint) {
 			facts = append(facts, cumulativeConstraint)
@@ -52,58 +56,116 @@ func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteR
 		return llm.CompleteResponse{Content: string(encoded), FinishReason: "stop"}, err
 	}
 	d.requests[q.RunID] = body
+	d.maxRequestTokens = max(d.maxRequestTokens, llm.EstimateRequestTokens(req, llm.ModelProfile{}))
 	return llm.CompleteResponse{Content: "Inspection complete.", FinishReason: "stop"}, nil
 }
 
 func (*cumulativeMemoryDriver) Close(context.Context) error { return nil }
 
 func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testing.T) {
-	for _, backend := range []string{"inmem", "sqlite"} {
-		t.Run(backend, func(t *testing.T) {
-			cfg := minimalCfg(t)
-			cfg.State.Driver = backend
-			if backend == "sqlite" {
-				cfg.State.DSN = filepath.Join(t.TempDir(), "cumulative.db")
-			}
-			// Exercise the current machinery before removing these activation
-			// fields. The configuration migration will move both under memory.
-			cfg.Sessions.RetainedContextTurns = 20
-			cfg.Planner.TokenBudget = 1
-			driver := &cumulativeMemoryDriver{requests: map[string]string{}}
-			name := "cumulative-memory-" + string(state.NewEventID())
-			llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
-			snapshot := llm.ConfigSnapshot{
-				Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
-				ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
-				DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true,
-			}
-			stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = stack.Close(context.Background()) })
-			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "cumulative"}
-			for turn := 1; turn <= 100; turn++ {
-				run := fmt.Sprintf("turn-%03d", turn)
-				query := fmt.Sprintf("Inspect layout revision %d. %s", turn, strings.Repeat("Synthetic layout detail. ", 80))
-				if turn == 1 {
-					query = cumulativeConstraint + " " + query
+	for _, backend := range []string{"inmem", "sqlite", "postgres"} {
+		for _, budget := range []int{1, 100000} {
+			t.Run(fmt.Sprintf("%s/budget-%d", backend, budget), func(t *testing.T) {
+				cfg := minimalCfg(t)
+				cfg.State.Driver = backend
+				if backend == "sqlite" {
+					cfg.State.DSN = filepath.Join(t.TempDir(), "cumulative.db")
 				}
-				if _, err := stack.RunOnce(t.Context(), query, id, assemble.WithRunID(run)); err != nil {
-					t.Fatalf("turn %d: %v", turn, err)
+				if backend == "postgres" {
+					cfg.State.DSN = os.Getenv("HARBOR_PG_DSN")
+					if cfg.State.DSN == "" {
+						t.Skip("HARBOR_PG_DSN not set; cumulative PostgreSQL acceptance requires a real service")
+					}
+				}
+				// Exercise the current machinery before removing these activation
+				// fields. The configuration migration will move both under memory.
+				cfg.Sessions.RetainedContextTurns = 20
+				cfg.Planner.TokenBudget = budget
+				driver := &cumulativeMemoryDriver{requests: map[string]string{}}
+				name := "cumulative-memory-" + string(state.NewEventID())
+				llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
+				snapshot := llm.ConfigSnapshot{
+					Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
+					ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
+					DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true,
+				}
+				stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = stack.Close(context.Background()) })
+				id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "cumulative-" + string(state.NewEventID())}
+				t.Cleanup(func() {
+					if _, err := stack.State.DeleteScope(context.Background(), id); err != nil {
+						t.Errorf("delete test session: %v", err)
+					}
+				})
+				for turn := 1; turn <= 100; turn++ {
+					run := fmt.Sprintf("turn-%03d", turn)
+					query := fmt.Sprintf("Inspect layout revision %d. %s", turn, strings.Repeat("Synthetic layout detail. ", 80))
+					if turn == 1 {
+						query = cumulativeConstraint + " " + query
+					}
+					if _, err := stack.RunOnce(t.Context(), query, id, assemble.WithRunID(run)); err != nil {
+						t.Fatalf("turn %d: %v", turn, err)
+					}
+					driver.mu.Lock()
+					body, calls := driver.requests[run], driver.summaries
+					driver.mu.Unlock()
+					if !strings.Contains(body, cumulativeConstraint) {
+						t.Fatalf("turn %d lost the turn-1 constraint from the actual decision request after %d maintenance calls (recent window 20)", turn, calls)
+					}
+					record, err := stack.State.Load(t.Context(), identity.Quadruple{Identity: id}, state.InternalKindPrefix+"session-execution-context")
+					if err != nil {
+						t.Fatal(err)
+					}
+					var stored struct {
+						Generation uint64            `json:"generation"`
+						Turns      []json.RawMessage `json:"turns"`
+					}
+					if err := json.Unmarshal(record.Bytes, &stored); err != nil {
+						t.Fatal(err)
+					}
+					if len(stored.Turns) > 20 || len(record.Bytes) > 128*1024 {
+						t.Fatalf("unbounded session storage at turn %d: turns=%d bytes=%d", turn, len(stored.Turns), len(record.Bytes))
+					}
+					if turn == 100 && stored.Generation < 5 {
+						t.Fatalf("only %d committed generations", stored.Generation)
+					}
+					if backend != "inmem" && turn%25 == 0 && turn < 100 {
+						if err := stack.Close(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+						stack, err = assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
+						if err != nil {
+							t.Fatalf("restart after turn %d: %v", turn, err)
+						}
+					}
 				}
 				driver.mu.Lock()
-				body, calls := driver.requests[run], driver.summaries
-				driver.mu.Unlock()
-				if !strings.Contains(body, cumulativeConstraint) {
-					t.Fatalf("turn %d lost the turn-1 constraint from the actual decision request after %d maintenance calls (recent window 20)", turn, calls)
+				defer driver.mu.Unlock()
+				if driver.summaries < 5 {
+					t.Fatalf("fixture did not exercise five compactions: %d", driver.summaries)
 				}
-			}
-			driver.mu.Lock()
-			defer driver.mu.Unlock()
-			if driver.summaries < 5 {
-				t.Fatalf("fixture did not exercise five compactions: %d", driver.summaries)
-			}
-		})
+				if driver.maxRequestTokens > 25000 {
+					t.Fatalf("request growth exceeded the fixture bound: %d tokens", driver.maxRequestTokens)
+				}
+				for i, input := range driver.summaryInputs {
+					if !strings.Contains(input, cumulativeConstraint) {
+						t.Fatalf("maintenance request %d lost the first constraint", i+1)
+					}
+					if i > 0 {
+						_, previous, ok := strings.Cut(input, "[Previous summary]\n")
+						if !ok {
+							t.Fatal("maintenance request omitted previous checkpoint")
+						}
+						previous, _, _ = strings.Cut(previous, "\n\n[")
+						if !strings.Contains(previous, cumulativeConstraint) {
+							t.Fatalf("maintenance request %d did not carry the prior checkpoint", i+1)
+						}
+					}
+				}
+			})
+		}
 	}
 }

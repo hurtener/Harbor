@@ -23,7 +23,7 @@ import (
 
 const (
 	retainedContextKind      = state.InternalKindPrefix + "session-execution-context"
-	retainedContextVersion   = 3
+	retainedContextVersion   = 4
 	maxRetainedContextBytes  = 512 * 1024
 	maxRetainedContextTurns  = config.MaxRetainedContextTurns
 	maxRetainedContextActive = 32
@@ -41,8 +41,9 @@ var (
 )
 
 type retainedAdmission struct {
-	ID    state.EventID `json:"id"`
-	RunID string        `json:"run_id"`
+	ID       state.EventID `json:"id"`
+	RunID    string        `json:"run_id"`
+	Sequence uint64        `json:"sequence"`
 }
 
 type retainedTurn struct {
@@ -54,12 +55,24 @@ type retainedTurn struct {
 	Steps     []json.RawMessage `json:"steps,omitempty"`
 }
 
+// Exact execution evidence is retained separately from the recent conversational
+// tail. It is not replayed as new conversation or accepted as dispatch authority.
+type retainedEvidence struct {
+	Admission retainedAdmission `json:"admission"`
+	ExpiresAt time.Time         `json:"expires_at"`
+	Steps     []json.RawMessage `json:"steps"`
+}
+
 type retainedWindow struct {
-	Version    int                 `json:"version"`
-	Active     []retainedAdmission `json:"active,omitempty"`
-	Turns      []retainedTurn      `json:"turns,omitempty"`
-	Partial    bool                `json:"partial,omitempty"`
-	Checkpoint *retainedCheckpoint `json:"checkpoint,omitempty"`
+	Version          int                 `json:"version"`
+	Generation       uint64              `json:"generation,omitempty"`
+	LastAdmission    uint64              `json:"last_admission,omitempty"`
+	CompactedThrough retainedAdmission   `json:"compacted_through,omitempty"`
+	Evidence         []retainedEvidence  `json:"evidence,omitempty"`
+	Active           []retainedAdmission `json:"active,omitempty"`
+	Turns            []retainedTurn      `json:"turns,omitempty"`
+	Partial          bool                `json:"partial,omitempty"`
+	Checkpoint       *retainedCheckpoint `json:"checkpoint,omitempty"`
 }
 
 // RetainedRun is a run-local handle on a bounded, identity-scoped execution
@@ -79,6 +92,9 @@ type RetainedRun struct {
 	prefix           []planner.Step
 	sourceTurns      []retainedTurn
 	checkpoint       *retainedCheckpoint
+	generation       uint64
+	compactedThrough retainedAdmission
+	evidence         []retainedEvidence
 	appliedSummary   *planner.Summary
 	hadActivePrefix  bool
 	hadPartialPrefix bool
@@ -90,6 +106,17 @@ type RetainedRun struct {
 	journalID        state.EventID
 	frameIDs         []state.EventID
 	journalFailure   error
+}
+
+// CompactionRequired reports admission-time pressure on the detailed history.
+// It does not compact or renew retention. The run loop uses its ordinary
+// compactor before the first decision, outside persistence deadlines and locks.
+func (r *RetainedRun) CompactionRequired() bool {
+	if len(r.sourceTurns) >= r.turns {
+		return true
+	}
+	encoded, err := json.Marshal(r.sourceTurns)
+	return err != nil || len(encoded) >= maxRetainedContextBytes*3/4
 }
 
 // BeginRetainedRun explicitly opts one run into retained execution-context
@@ -123,6 +150,11 @@ func BeginRetainedRun(ctx context.Context, store state.StateStore, redactor audi
 				return nil, ErrRetainedContextUnavailable
 			}
 		}
+		for _, previous := range window.Evidence {
+			if previous.Admission.RunID == q.RunID {
+				return nil, ErrRetainedContextUnavailable
+			}
+		}
 		if len(window.Active) >= maxRetainedContextActive {
 			return nil, ErrRetainedContextCapacity
 		}
@@ -133,6 +165,13 @@ func BeginRetainedRun(ctx context.Context, store state.StateStore, redactor audi
 		}
 		r.hadActivePrefix = len(window.Active) > 0
 		r.hadPartialPrefix = window.Partial
+		// Event IDs are unique, not ordered within one clock tick or across
+		// hosts. Allocate order in the same CAS that publishes admission.
+		if window.LastAdmission == ^uint64(0) {
+			return nil, ErrRetainedContextCapacity
+		}
+		window.LastAdmission++
+		r.admission.Sequence = window.LastAdmission
 		window.Active = append(window.Active, r.admission)
 		if err = r.save(ctx, recordID, window); errors.Is(err, state.ErrConditionFailed) {
 			continue
@@ -142,9 +181,20 @@ func BeginRetainedRun(ctx context.Context, store state.StateStore, redactor audi
 		r.prefix = prefix
 		r.sourceTurns = append([]retainedTurn(nil), window.Turns...)
 		r.checkpoint = window.Checkpoint
+		r.generation = window.Generation
+		r.compactedThrough = window.CompactedThrough
+		r.evidence = window.Evidence
+		if r.checkpoint != nil {
+			r.prefixExpiresAt = r.checkpoint.ExpiresAt
+		}
 		for _, turn := range window.Turns {
 			if r.prefixExpiresAt.IsZero() || turn.ExpiresAt.Before(r.prefixExpiresAt) {
 				r.prefixExpiresAt = turn.ExpiresAt
+			}
+		}
+		for _, evidence := range window.Evidence {
+			if r.prefixExpiresAt.IsZero() || evidence.ExpiresAt.Before(r.prefixExpiresAt) {
+				r.prefixExpiresAt = evidence.ExpiresAt
 			}
 		}
 		return r, nil
@@ -284,6 +334,12 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 			}
 			if checkpoint != nil {
 				window.Checkpoint = checkpoint
+				window.Generation = checkpoint.Generation
+			}
+		}
+		for len(window.Turns) > r.turns {
+			if err := discardCoveredTurn(&window); err != nil {
+				return err
 			}
 		}
 		for {
@@ -297,9 +353,9 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 			if len(window.Turns) <= 1 {
 				return ErrRetainedContextCapacity
 			}
-			window.Turns = window.Turns[1:]
-			window.Partial = true
-			pruneRetainedCheckpoint(&window)
+			if err := discardCoveredTurn(&window); err != nil {
+				return err
+			}
 		}
 		if !expiresAt.After(r.now()) {
 			return ErrRetainedContextUnavailable
@@ -356,6 +412,10 @@ func validRetainedStatus(s string) bool {
 
 func (r *RetainedRun) trim(window *retainedWindow) {
 	now := r.now()
+	if window.Checkpoint != nil && !window.Checkpoint.ExpiresAt.After(now) {
+		window.Checkpoint = nil
+		window.Partial = true
+	}
 	kept := window.Turns[:0]
 	for _, turn := range window.Turns {
 		if turn.ExpiresAt.After(now) {
@@ -365,12 +425,15 @@ func (r *RetainedRun) trim(window *retainedWindow) {
 		}
 	}
 	window.Turns = kept
-	sort.Slice(window.Turns, func(i, j int) bool { return window.Turns[i].Admission.ID < window.Turns[j].Admission.ID })
-	if len(window.Turns) > r.turns {
-		window.Turns = window.Turns[len(window.Turns)-r.turns:]
-		window.Partial = true
-	}
+	sort.Slice(window.Turns, func(i, j int) bool { return window.Turns[i].Admission.Sequence < window.Turns[j].Admission.Sequence })
 	pruneRetainedCheckpoint(window)
+	keptEvidence := window.Evidence[:0]
+	for _, turn := range window.Evidence {
+		if turn.ExpiresAt.After(now) {
+			keptEvidence = append(keptEvidence, turn)
+		}
+	}
+	window.Evidence = keptEvidence
 }
 
 func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, error) {
@@ -392,36 +455,49 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 	if err := decodeRetained(record.Bytes, &window); err != nil {
 		return retainedWindow{}, "", err
 	}
-	if (window.Version != 1 && window.Version != 2 && window.Version != retainedContextVersion) || len(window.Turns) > maxRetainedContextTurns || len(window.Active) > maxRetainedContextActive {
+	if window.Version != retainedContextVersion || len(window.Turns) > maxRetainedContextTurns || len(window.Active) > maxRetainedContextActive || len(window.Evidence) > maxRetainedContextSteps {
+		return retainedWindow{}, "", ErrRetainedContextUnavailable
+	}
+	if (window.CompactedThrough.ID == "") != (window.CompactedThrough.RunID == "") ||
+		(window.CompactedThrough.ID == "") != (window.CompactedThrough.Sequence == 0) ||
+		window.CompactedThrough.Sequence > window.LastAdmission || (window.CompactedThrough.ID != "" && window.Generation == 0) {
 		return retainedWindow{}, "", ErrRetainedContextUnavailable
 	}
 	ids, runs := map[state.EventID]bool{}, map[string]bool{}
+	sequences := map[uint64]bool{}
 	check := func(a retainedAdmission) bool {
-		if a.ID == "" || a.RunID == "" || ids[a.ID] || runs[a.RunID] {
+		if a.ID == "" || a.RunID == "" || ids[a.ID] || runs[a.RunID] || a.Sequence == 0 || a.Sequence > window.LastAdmission || sequences[a.Sequence] {
 			return false
 		}
 		ids[a.ID], runs[a.RunID] = true, true
+		sequences[a.Sequence] = true
 		return true
 	}
 	for _, a := range window.Active {
-		if !check(a) {
+		if !check(a) || a.Sequence <= window.CompactedThrough.Sequence {
 			return retainedWindow{}, "", ErrRetainedContextUnavailable
 		}
 	}
 	for _, turn := range window.Turns {
-		if !check(turn.Admission) || turn.ExpiresAt.IsZero() || !validRetainedStatus(turn.Status) || len(turn.Steps) > maxRetainedContextSteps {
+		if !check(turn.Admission) || turn.Admission.Sequence <= window.CompactedThrough.Sequence || turn.ExpiresAt.IsZero() || !validRetainedStatus(turn.Status) || len(turn.Steps) > maxRetainedContextSteps {
 			return retainedWindow{}, "", ErrRetainedContextUnavailable
 		}
+		if _, err := projectRetainedSteps(turn.Admission, turn.Steps); err != nil {
+			return retainedWindow{}, "", err
+		}
 	}
-	if window.Version < retainedContextVersion && window.Checkpoint != nil {
-		return retainedWindow{}, "", ErrRetainedContextUnavailable
+	for _, turn := range window.Evidence {
+		if !check(turn.Admission) || turn.Admission.Sequence > window.CompactedThrough.Sequence || turn.ExpiresAt.IsZero() || len(turn.Steps) == 0 || len(turn.Steps) > maxRetainedContextSteps {
+			return retainedWindow{}, "", ErrRetainedContextUnavailable
+		}
+		if _, err := projectRetainedSteps(turn.Admission, turn.Steps); err != nil {
+			return retainedWindow{}, "", err
+		}
 	}
 	if err := validateRetainedCheckpoint(window); err != nil {
 		return retainedWindow{}, "", err
 	}
-	// Earlier windows without checkpoints remain readable; writes upgrade the
-	// format. Older readers reject v3 rather than guessing summary coverage.
-	window.Version = retainedContextVersion
+	// The cumulative format deliberately rejects earlier private windows.
 	return window, record.ID, nil
 }
 
@@ -490,37 +566,19 @@ func decodeRetained(data []byte, value any) error {
 
 func projectRetainedWindow(window retainedWindow) ([]planner.Step, error) {
 	var steps []planner.Step
+	if window.CompactedThrough.ID != "" {
+		steps = append(steps, planner.Step{LLMObservation: map[string]any{
+			"committed_context_boundary": string(window.CompactedThrough.ID),
+			"context_only":               true,
+		}})
+	}
 	for _, turn := range window.Turns {
 		steps = append(steps, planner.Step{LLMObservation: map[string]any{"historical_user_request": turn.Query, "source_run": turn.Admission.RunID}})
-		for index, entry := range turn.Steps {
-			var retained planner.Step
-			if err := decodeRetained(entry, &retained); err != nil {
-				return nil, err
-			}
-			if historical := retained.Historical; historical != nil {
-				if historical.SourceRun != turn.Admission.RunID || historical.Index != index {
-					return nil, ErrRetainedContextUnavailable
-				}
-				if _, err := planner.ReadHistoricalStep(retained); err != nil {
-					return nil, ErrRetainedContextUnavailable
-				}
-				steps = append(steps, retained)
-				continue
-			}
-			// Legacy entries stay inert, but must satisfy the same private-field
-			// boundary as tagged history before they can enter any model input.
-			legacy := planner.Step{Historical: &planner.HistoricalStep{
-				Version: 1, SourceRun: turn.Admission.RunID, Index: index, Kind: "context", Body: entry,
-			}}
-			if _, err := planner.ReadHistoricalStep(legacy); err != nil {
-				return nil, ErrRetainedContextUnavailable
-			}
-			var evidence any
-			if err := decodeRetained(entry, &evidence); err != nil {
-				return nil, err
-			}
-			steps = append(steps, planner.Step{LLMObservation: map[string]any{"historical_execution": evidence, "source_run": turn.Admission.RunID, "context_only": true}})
+		retained, err := projectRetainedSteps(turn.Admission, turn.Steps)
+		if err != nil {
+			return nil, err
 		}
+		steps = append(steps, retained...)
 		steps = append(steps, planner.Step{LLMObservation: map[string]any{"historical_run_outcome": turn.Status, "assistant_answer": turn.Answer, "source_run": turn.Admission.RunID, "unrecorded_outcomes_possible": turn.Status != "complete"}})
 	}
 	if len(window.Active) > 0 {
@@ -530,9 +588,48 @@ func projectRetainedWindow(window retainedWindow) ([]planner.Step, error) {
 		}})
 	}
 	if window.Partial {
-		steps = append(steps, planner.Step{LLMObservation: map[string]any{"historical_context_partial": true, "reason": "Earlier retained turns expired or exceeded the configured window; do not invent missing results."}})
+		steps = append(steps, planner.Step{LLMObservation: map[string]any{"historical_context_partial": true, "reason": "Earlier retained evidence expired or was invalidated; do not invent missing results."}})
 	}
 	return steps, nil
+}
+
+func projectRetainedSteps(admission retainedAdmission, entries []json.RawMessage) ([]planner.Step, error) {
+	steps := make([]planner.Step, 0, len(entries))
+	for index, entry := range entries {
+		var retained planner.Step
+		if err := decodeRetained(entry, &retained); err != nil {
+			return nil, err
+		}
+		h := retained.Historical
+		if h == nil || h.SourceRun != admission.RunID || h.Index != index {
+			return nil, ErrRetainedContextUnavailable
+		}
+		if _, err := planner.ReadHistoricalStep(retained); err != nil {
+			return nil, ErrRetainedContextUnavailable
+		}
+		steps = append(steps, retained)
+	}
+	return steps, nil
+}
+
+// Recover references from covered exact evidence without putting its raw bytes
+// back into the decision request or the compactor's already-covered input.
+func (r *RetainedRun) resultReferences(ctx context.Context, rc planner.RunContext, store artifacts.ArtifactStore) ([]planner.ArtifactManifestEntry, error) {
+	if rc.Trajectory == nil {
+		return nil, ErrRetainedContextUnavailable
+	}
+	view := *rc.Trajectory
+	view.Steps = nil
+	for _, evidence := range r.evidence {
+		steps, err := projectRetainedSteps(evidence.Admission, evidence.Steps)
+		if err != nil {
+			return nil, err
+		}
+		view.Steps = append(view.Steps, steps...)
+	}
+	view.Steps = append(view.Steps, rc.Trajectory.Steps...)
+	rc.Trajectory = &view
+	return retainedResultReferences(ctx, rc, store)
 }
 
 // GuardPlanner keeps retained evidence behind its current admission and erasure
@@ -559,7 +656,7 @@ func (p retainedPlanner) Next(ctx context.Context, rc planner.RunContext) (plann
 	if err := p.run.validateAdmission(ctx); err != nil {
 		return nil, err
 	}
-	refs, err := retainedResultReferences(ctx, rc, p.artifacts)
+	refs, err := p.run.resultReferences(ctx, rc, p.artifacts)
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +670,7 @@ func (p retainedPlanner) Next(ctx context.Context, rc planner.RunContext) (plann
 	}
 	// A deletion while inference was in flight must not permit the resulting
 	// dependent action to dispatch using now-erased evidence.
-	if _, err := retainedResultReferences(ctx, rc, p.artifacts); err != nil {
+	if _, err := p.run.resultReferences(ctx, rc, p.artifacts); err != nil {
 		return nil, err
 	}
 	return decision, nil
