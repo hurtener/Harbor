@@ -31,6 +31,29 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Text-only steering rejects unsupported inputs before interruption
+
+Parent `5e5b18e3ba04b103ad85f8b0ef1ca50d5f37e76c` fails the new admission
+regression (**0.432s**): unsupported attachment/extra fields were accepted and
+interrupted planning, while missing/empty/non-string messages were silently
+queued. Admission now accepts only a nonempty `message` string, preserving its
+exact bytes. Invalid input returns existing `422 payload_invalid` before queue,
+planning-cancellation or invocation-fence mutation. No new control or wire type.
+
+Tested source tree `f19fd6170c769a05684161ce986a78981b49590b`, Go 1.27.1
+darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1`: complete steering, Protocol and
+control-transport packages pass **1.831s / 3.678s / 1.464s**, coverage
+**87.6% / 76.6% / 75.9%**. These are measurements, not full coverage acceptance.
+Authenticated HTTP/JWT/JWKS control tests pass **2.167s**, including invalid
+payload rejection followed by valid in-flight correction. The first HTTP test
+incorrectly expected 400; corrected to the existing 422 contract, with no
+production transport change. Targeted vet passes; pinned lint reports zero issues.
+
+Published-parent CI `35856245211` was still running at inspection. No tag,
+deployment, real-model call or service-backed acceptance in this increment.
+Consumer Stop/Steer/Queue, legacy memory retirement, coverage, final-tree gates
+and matched live multi-window acceptance remain open. Preflight is owner-waived.
+
 ### Steering fences queued invocations and approval waits
 
 Parent `a6d9433d9213d45e07ce0fd9679cc1fd335cc254` fails two new race
@@ -73,7 +96,7 @@ Parent exact-head CI `35854017827` passes lint, frontend, PostgreSQL, S3 and
 auxiliary jobs; Linux/macOS suites were still running at inspection. No active
 job was cancelled/restarted. Final new-head hosted verification remains pending.
 
-Still open: explicit unsupported steering attachments, consumer Stop/Steer/Queue UX,
+At this historical checkpoint still open: unsupported steering attachments, consumer Stop/Steer/Queue UX,
 legacy memory retirement, coverage deficits, exact-head hosted/final-tree gates
 and matched live multi-window acceptance. Preflight is owner-waived, not green.
 

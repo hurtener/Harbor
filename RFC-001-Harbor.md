@@ -603,7 +603,9 @@ policy retries without cancelling active sibling calls. Superseded approval
 requests are withdrawn through the existing Coordinator as rejections, never
 approvals; required withdrawal failures terminate after settlement. Short-circuit
 parallel joins wait for cancelled siblings so a success cannot hide failed
-required cleanup. Attachment refusal and live consumer acceptance remain open.
+required cleanup. The control payload contains only a nonempty `message` string;
+attachments, extra fields and invalid messages are rejected before interrupting
+execution (`422 payload_invalid`). Live consumer acceptance remains open.
 
 **Hard Stop (D-478).** A verified `CANCEL` with `payload.hard: true` cancels
 the identity-scoped execution context immediately at inbox admission, not at

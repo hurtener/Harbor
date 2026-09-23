@@ -142,11 +142,13 @@ replacement request as user input. It does not stop the run. Old serial pending
 calls and superseded decisions are discarded; already-started external actions
 cannot be undone. Required write failures remain failures, not automatic retries.
 First-attempt input attachments survive an interrupted attempt, but this control
-itself is text-only: new attachments belong on `start`. Queued parallel calls
+itself accepts only a nonempty `message` string: new attachments belong on `start`.
+Attachments, extra fields and invalid messages return `422 payload_invalid`
+without interrupting the active attempt or changing its queued calls. Queued parallel calls
 and policy retries are refused after correction. Obsolete approval requests are
 withdrawn as rejections, not approvals; failed required cleanup terminates the
 run. Already-started sibling calls retain their outcomes. Consumer pending/applied
-UX and explicit unsupported-attachment refusal remain release-acceptance work.
+UX remains release-acceptance work.
 
 ## Preconditions: controls target LIVE runs
 
@@ -158,7 +160,7 @@ matter:
   this deliberately by cancelling a finished run.
 - **`403 scope_mismatch`** — your steering claim is below the method's
   minimum.
-- **`422 payload_invalid`** — the payload broke a bound.
+- **`422 payload_invalid`** — the payload broke a bound or the control's shape.
 
 ## The acknowledgement is not the effect
 

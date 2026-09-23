@@ -15933,3 +15933,10 @@ again before invocation. Required withdrawal failures remain terminal after
 settlement, including inside parallel/batch decisions. First-success/N joins
 join cancelled siblings before returning and cannot hide required cleanup
 behind a successful branch. No new queue, store, provider or retry policy.
+
+**Text-only admission follow-through:** USER_MESSAGE accepts exactly one field,
+`message`, containing a nonempty string. Unsupported attachment/extra fields or
+invalid messages return the existing `payload_invalid` classification (HTTP 422)
+before queuing, cancelling a planning attempt or invalidating queued invocations.
+Valid source text is preserved exactly, including whitespace and numeric strings.
+New attachments belong on a new turn; they are never silently dropped.

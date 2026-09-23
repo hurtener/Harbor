@@ -143,6 +143,12 @@ func (in *Inbox) validateEvent(ev ControlEvent) error {
 	if err := ValidatePayload(ev.Payload); err != nil {
 		return err
 	}
+	if ev.Type == ControlUserMessage {
+		message, ok := stringFromPayload(ev.Payload, "message")
+		if !ok || message == "" || len(ev.Payload) != 1 {
+			return fmt.Errorf("%w: USER_MESSAGE requires only a nonempty message string; send attachments with a new turn", ErrPayloadInvalid)
+		}
+	}
 	return nil
 }
 

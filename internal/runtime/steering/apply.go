@@ -95,10 +95,8 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 
 	case ControlUserMessage:
 		// USER_MESSAGE carries a user-authored message string under the
-		// "message" key. A missing / non-string "message" is tolerated as
-		// an empty append rather than an error — the ValidatePayload
-		// already bounded the payload; the shape is a Protocol-edge
-		// convention, not a hard contract re-enforces.
+		// "message" key. Inbox admission validates its closed text-only
+		// shape before interrupting execution; preserve its exact source.
 		if msg, ok := stringFromPayload(ev.Payload, "message"); ok {
 			sc.signals.UserMessages = append(sc.signals.UserMessages, msg)
 		}

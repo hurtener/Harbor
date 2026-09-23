@@ -45,12 +45,14 @@ failure stops execution rather than silently retrying.
 
 The HTTP acknowledgement confirms admission. Observe `control.applied` and the
 following run events to distinguish pending steering from an applied correction.
-This control is text-only; new artifact attachments belong on `start`.
+This control accepts only a nonempty `message` string; new artifact attachments
+belong on `start`. Extra fields, attachments and invalid messages return
+`422 payload_invalid` before interrupting the active attempt.
 Queued parallel invocations and policy retries are refused after correction;
 obsolete approval requests are withdrawn as rejections. Already-started calls
 retain their outcomes, and failed required cleanup terminates the run.
-Unsupported-attachment refusal and live client acceptance remain
-explicit release gates; see the [tracker](../notes/portable-context-tracker.md).
+Live client acceptance remains an explicit release gate; see the
+[tracker](../notes/portable-context-tracker.md).
 
 ## Trigger 1 — HITL approval
 

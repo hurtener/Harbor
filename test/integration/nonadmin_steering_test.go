@@ -351,6 +351,12 @@ func TestE2E_NonAdminToken_SteeringContract(t *testing.T) {
 			t.Fatal("model did not start")
 		}
 		body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":{"message":%q}}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID, correction)
+		for _, payload := range []string{`{"message":"edit","input_artifact_ids":["ref"]}`, `{"message":"edit","attachments":[]}`, `{"message":42}`, `{"message":""}`, `{}`} {
+			invalid := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":%s}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID, payload)
+			if status, code := call("user_message", nonAdmin, invalid); status != http.StatusUnprocessableEntity || code != "payload_invalid" {
+				t.Fatalf("unsupported steer accepted: status=%d code=%s", status, code)
+			}
+		}
 		foreign := owner
 		foreign.UserID = "different-user"
 		if status, _ := call("user_message", sign(foreign, nil), body); status != http.StatusUnauthorized {
