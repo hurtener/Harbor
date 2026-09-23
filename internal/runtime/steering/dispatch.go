@@ -75,6 +75,10 @@ func (rl *RunLoop) dispatchDecision(
 	// the execution (a bridge error, a retired inbox).
 	stepCtx, cancelStep := context.WithCancel(ctx)
 	defer cancelStep()
+	stepCtx, fenceErr := inbox.fenceInvocation(stepCtx, generation)
+	if fenceErr != nil {
+		return execOutcome{err: fenceErr}, nil, nil
+	}
 
 	// done is 1-buffered so the executor goroutine's send never blocks
 	// — the goroutine always runs to completion and every return path

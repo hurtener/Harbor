@@ -446,6 +446,9 @@ func WrapWithApproval(d tools.ToolDescriptor, gate *approval.ApprovalGate, opts 
 			// via errors.As.
 			return tools.ToolResult{}, err
 		}
+		if err := tools.CheckInvocationFence(ctx); err != nil {
+			return tools.ToolResult{}, err
+		}
 		return innerInvoke(ctx, approvedArgs)
 	}
 	return out

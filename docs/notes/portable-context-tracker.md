@@ -31,6 +31,52 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Steering fences queued invocations and approval waits
+
+Parent `a6d9433d9213d45e07ce0fd9679cc1fd335cc254` fails two new race
+regressions (**3.654s**): a queued parallel invocation still executes after
+correction, and a pending approval never yields to steering. The existing
+instruction generation now supplies a context-carried invalidation signal to
+dispatch, the tool-policy shell and approval wrappers. No new execution engine,
+queue, store or provider. Already-started actions retain their outcomes; future
+invocations and retries are refused. A prior uncertain attempt retains its error,
+partial receipt and attempt count, never a false whole-action not-executed claim.
+
+The approval gate withdraws an obsolete request through the existing Coordinator
+as a rejection with a five-second independent cleanup context. Recheck immediately
+after approval returns. Failed required withdrawal terminates after settlement;
+parallel/batch result projection keeps successful sibling receipts alongside the
+failure. First-success/N joins now join cancelled siblings, so early success
+cannot silently discard later cleanup failure. Their normal selected-result
+contract is unchanged; a required-cleanup error returns settled evidence too.
+
+Source tree `ba555ccbb63dc09c0dee8f5d03a957720c9de23d`, Go 1.27.1
+darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1`. Complete tools, approval,
+catalog, parallel, dispatch and steering suites pass. The final approval-only
+test addition is validated separately; timings are **4.131s / 1.694s / 1.508s /
+1.418s / 1.591s / 1.718s**; coverage **82.9% / 91.6% / 88.1% / 91.3% /
+79.9% / 87.5%**. Tools and dispatch remain below their 85% floors. Approval
+meets the binding Phase 111f 90% floor, including deterministic withdrawal,
+already-resolved and early-refusal regressions. No targets or denominators changed.
+
+Real authenticated HTTP/JWT/JWKS control tests pass **2.124s**, now including
+pending-approval withdrawal without invocation. N=128 independent invocation
+fences and the existing N=128 controls/retention regressions remain intact.
+Targeted lint and vet pass; the final approval-test-only addition also passes
+its targeted lint. The initial lint findings (checked type assertion and slice
+assignment clarity) were fixed without exclusions. No live-model/service opt-in,
+tag or deployment in this increment.
+
+Full final embedded/served consumer race suites pass **90.297s / 50.040s** on
+the same source tree. Markdown (599 files), mirror and whitespace checks pass.
+Parent exact-head CI `35854017827` passes lint, frontend, PostgreSQL, S3 and
+auxiliary jobs; Linux/macOS suites were still running at inspection. No active
+job was cancelled/restarted. Final new-head hosted verification remains pending.
+
+Still open: explicit unsupported steering attachments, consumer Stop/Steer/Queue UX,
+legacy memory retirement, coverage deficits, exact-head hosted/final-tree gates
+and matched live multi-window acceptance. Preflight is owner-waived, not green.
+
 ### In-flight steering — bounded implementation increment
 
 On parent `0f2431c3c16085916a39214b5569e2880f02e374`, the new blocked-model

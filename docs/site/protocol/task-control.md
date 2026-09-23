@@ -142,8 +142,11 @@ replacement request as user input. It does not stop the run. Old serial pending
 calls and superseded decisions are discarded; already-started external actions
 cannot be undone. Required write failures remain failures, not automatic retries.
 First-attempt input attachments survive an interrupted attempt, but this control
-itself is text-only: new attachments belong on `start`. Queued parallel/approval
-invocation fencing and consumer pending/applied UX remain release-acceptance work.
+itself is text-only: new attachments belong on `start`. Queued parallel calls
+and policy retries are refused after correction. Obsolete approval requests are
+withdrawn as rejections, not approvals; failed required cleanup terminates the
+run. Already-started sibling calls retain their outcomes. Consumer pending/applied
+UX and explicit unsupported-attachment refusal remain release-acceptance work.
 
 ## Preconditions: controls target LIVE runs
 

@@ -46,7 +46,10 @@ failure stops execution rather than silently retrying.
 The HTTP acknowledgement confirms admission. Observe `control.applied` and the
 following run events to distinguish pending steering from an applied correction.
 This control is text-only; new artifact attachments belong on `start`.
-Queued parallel/approval invocation fencing and live client acceptance remain
+Queued parallel invocations and policy retries are refused after correction;
+obsolete approval requests are withdrawn as rejections. Already-started calls
+retain their outcomes, and failed required cleanup terminates the run.
+Unsupported-attachment refusal and live client acceptance remain
 explicit release gates; see the [tracker](../notes/portable-context-tracker.md).
 
 ## Trigger 1 — HITL approval

@@ -15923,3 +15923,13 @@ The first implementation fences whole-decision admission and serial pending
 calls. Complete per-invocation fencing for queued parallel branches and approval
 waits before declaring full steering acceptance. Text-only control validation
 and consumer pending/applied UX remain tracked with the live acceptance gates.
+
+**Implementation follow-through — 2026-09-23:** the existing invocation and
+tool-policy seams now carry the run generation's invalidation signal. Refuse
+queued calls and further retries, preserve earlier attempts' errors/receipts,
+and leave already-started calls running. The approval gate withdraws obsolete
+requests with a bounded independent Coordinator rejection; its wrapper checks
+again before invocation. Required withdrawal failures remain terminal after
+settlement, including inside parallel/batch decisions. First-success/N joins
+join cancelled siblings before returning and cannot hide required cleanup
+behind a successful branch. No new queue, store, provider or retry policy.

@@ -1379,6 +1379,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			if dispatchBridgeErr != nil {
 				return planner.Finish{}, dispatchBridgeErr
 			}
+			if errors.Is(execErr, tools.ErrInvocationCleanupFailed) {
+				return planner.Finish{}, execErr
+			}
 			if spec.ToolExecutor != nil && execErr == nil && spec.OnToolDispatched != nil {
 				if n := planner.DecisionInvocationCount(decision); n > 0 {
 					if hookErr := spec.OnToolDispatched(runCtx, n); hookErr != nil {

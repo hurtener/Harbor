@@ -19,6 +19,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -31,6 +32,9 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/approval"
+	"github.com/hurtener/Harbor/internal/tools/catalog"
 
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -357,6 +361,63 @@ func TestE2E_NonAdminToken_SteeringContract(t *testing.T) {
 		}
 		if err := <-done; err != nil || requests != 2 {
 			t.Fatalf("requests=%d outcome=%v", requests, err)
+		}
+	})
+
+	t.Run("user_message_withdraws_obsolete_approval_without_invocation", func(t *testing.T) {
+		runCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		q := identity.Quadruple{Identity: owner, RunID: "steer-approval"}
+		coord := pauseresume.New()
+		gate, err := approval.NewApprovalGate(approval.GateDeps{Policy: approval.AlwaysDenyPolicy{}, Coordinator: coord, Bus: bus, Redactor: red, Authorizer: approval.NewIdentityAuthorizer()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = gate.Close(context.Background()) }()
+		sub, err := bus.Subscribe(runCtx, events.Filter{Tenant: owner.TenantID, User: owner.UserID, Session: owner.SessionID, Types: []events.EventType{approval.EventTypeToolApprovalRequested}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Cancel()
+		loop, err := steering.NewRunLoop(steerReg, coord)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempts, invocations := 0, 0
+		desc := catalog.WrapWithApproval(tools.ToolDescriptor{Tool: tools.Tool{Name: "guarded"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			invocations++
+			return tools.ToolResult{}, nil
+		}}, gate, catalog.ApprovalWrapperOptions{})
+		p := controlInterruptPlanner(func(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
+			attempts++
+			if attempts == 1 {
+				return planner.CallTool{Tool: "guarded"}, nil
+			}
+			if len(rc.Control.UserMessages) != 1 || rc.Control.UserMessages[0] != "Change the plan" {
+				return nil, errors.New("correction absent after approval withdrawal")
+			}
+			return planner.Finish{Reason: planner.FinishGoal}, nil
+		})
+		exec := controlInterruptExecutor(func(ctx context.Context, _ planner.RunContext, _ planner.Decision) (any, any, error) {
+			result, err := desc.Invoke(ctx, json.RawMessage(`{}`))
+			return result.Value, result.Value, err
+		})
+		done := make(chan error, 1)
+		go func() {
+			_, err := loop.Run(runCtx, steering.RunSpec{Planner: p, ToolExecutor: exec, Base: planner.RunContext{Quadruple: q}})
+			done <- err
+		}()
+		select {
+		case <-sub.Events():
+		case <-runCtx.Done():
+			t.Fatal("approval request did not arrive")
+		}
+		body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":{"message":"Change the plan"}}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID)
+		if status, code := call("user_message", nonAdmin, body); status != http.StatusOK {
+			t.Fatalf("steer=%d %s", status, code)
+		}
+		if err := <-done; err != nil || attempts != 2 || invocations != 0 {
+			t.Fatalf("attempts=%d invocations=%d err=%v", attempts, invocations, err)
 		}
 	})
 

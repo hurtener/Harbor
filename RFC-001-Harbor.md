@@ -598,8 +598,12 @@ already-applied controls into the replacement request. A saved intent that loses
 admission is settled explicitly as not executed under the existing bounded
 cleanup context. Required persistence/accounting failures are terminal, never
 masked as cancellation retries. Preserve already-started invocation outcomes.
-Per-invocation fencing inside queued parallel/approval execution, attachment
-refusal and live consumer acceptance remain open in the PR #779 tracker.
+An instruction-generation fence also refuses queued parallel invocations and
+policy retries without cancelling active sibling calls. Superseded approval
+requests are withdrawn through the existing Coordinator as rejections, never
+approvals; required withdrawal failures terminate after settlement. Short-circuit
+parallel joins wait for cancelled siblings so a success cannot hide failed
+required cleanup. Attachment refusal and live consumer acceptance remain open.
 
 **Hard Stop (D-478).** A verified `CANCEL` with `payload.hard: true` cancels
 the identity-scoped execution context immediately at inbox admission, not at

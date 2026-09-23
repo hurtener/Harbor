@@ -470,7 +470,7 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	if desc.Invoke == nil {
 		return nil, nil, fmt.Errorf("tool %q is registered without an Invoke function", d.Tool)
 	}
-	if err := ctx.Err(); err != nil {
+	if err := tools.CheckInvocationFence(ctx); err != nil {
 		return nil, nil, err
 	}
 	result, err := desc.Invoke(ctx, d.Args)
@@ -609,7 +609,7 @@ func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
 // planner re-plans.
 func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
 	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(e.resolverForRun(ctx, rc)))
-	if err != nil {
+	if err != nil && !errors.Is(err, tools.ErrInvocationCleanupFailed) {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
 	rawBranches, llmBranches, materializeErr := e.branchObservations(ctx, rc, d.Branches, results)
@@ -617,7 +617,17 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 		return nil, nil, fmt.Errorf("parallel result materialization: %w", materializeErr)
 	}
 	return planner.ParallelObservation{Branches: rawBranches},
-		planner.ParallelObservation{Branches: llmBranches}, nil
+		planner.ParallelObservation{Branches: llmBranches}, errors.Join(err, invocationCleanupError(results))
+}
+
+func invocationCleanupError(results []parallel.Result) error {
+	var required error
+	for _, result := range results {
+		if errors.Is(result.Err, tools.ErrInvocationCleanupFailed) {
+			required = errors.Join(required, result.Err)
+		}
+	}
+	return required
 }
 
 // branchObservations assembles the raw + LLM-projected per-branch
@@ -1080,7 +1090,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 			planner.CallParallel{Branches: d.Tools, Join: d.Join},
 			parallel.WithNonAtomicSetup(),
 			parallel.WithResolver(e.resolverForRun(ctx, rc)))
-		if err != nil {
+		if err != nil && !errors.Is(err, tools.ErrInvocationCleanupFailed) {
 			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}
 		var materializeErr error
@@ -1088,6 +1098,12 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		if materializeErr != nil {
 			return nil, nil, fmt.Errorf("batch tool result materialization: %w", materializeErr)
 		}
+		if requiredErr := errors.Join(err, invocationCleanupError(results)); requiredErr != nil {
+			return raw, llm, requiredErr
+		}
+	}
+	if err := tools.CheckInvocationFence(ctx); err != nil {
+		return raw, llm, err
 	}
 
 	// Persist progress only after every structural validation has passed and

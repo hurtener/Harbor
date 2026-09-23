@@ -199,6 +199,9 @@ interrupts the planning attempt and re-plans with that text as user input.
 It does not cancel the run or undo completed actions. Its acknowledgement is
 admission, not proof that the correction has reached the model: follow
 `control.applied` and subsequent run events. New attachments belong on `start`.
+Pending approval requests from the obsolete plan are withdrawn, not approved;
+queued tool calls and further retries are refused. Already-started calls retain
+their outcomes. A required withdrawal failure stops the run explicitly.
 See the [task-control choreography](../../site/protocol/task-control.md) for
 the current execution boundaries and remaining release-acceptance work.
 

@@ -209,6 +209,8 @@ type Result struct {
 // branch met the threshold). Per-branch failures land on
 // Result.Err — the caller (planner step adapter) decides how to
 // surface mixed-success-and-failure observations.
+// A required invocation-cleanup failure is terminal even if a short-circuit
+// join reaches its threshold; return settled results alongside that error.
 func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts ...ExecuteOption) ([]Result, error) {
 	var eo executeOptions
 	for _, opt := range opts {
@@ -436,16 +438,17 @@ func (e *Executor) dispatchFirstSuccess(
 	failures := make([]Result, 0, len(branches))
 	for s := range sigCh {
 		if s.res.Err == nil {
-			// First success — cancel the rest, drain the channel
-			// asynchronously (the goroutine above closes sigCh once
-			// every branch settles), and return.
+			// Join cancelled siblings before returning: their required cleanup
+			// cannot be abandoned or hidden by an earlier successful branch.
 			cancel()
-			// Drain remaining without blocking on them (the goroutine
-			// above will close sigCh when all wg.Done() fire).
-			go func() {
-				for range sigCh {
-				}
-			}()
+			settled := failures
+			settled = append(settled, s.res)
+			for sibling := range sigCh {
+				settled = append(settled, sibling.res)
+			}
+			if err := requiredCleanupError(settled); err != nil {
+				return settled, err
+			}
 			return []Result{s.res}, nil
 		}
 		failures = append(failures, s.res)
@@ -458,6 +461,9 @@ func (e *Executor) dispatchFirstSuccess(
 		if f.Err != nil {
 			errs = append(errs, fmt.Errorf("branch[%d] tool=%q: %w", f.Index, f.Tool, f.Err))
 		}
+	}
+	if requiredCleanupError(failures) != nil {
+		return failures, errors.Join(errs...)
 	}
 	return nil, errors.Join(errs...)
 }
@@ -503,11 +509,14 @@ func (e *Executor) dispatchN(
 			successes = append(successes, s.res)
 			if len(successes) >= n {
 				cancel()
-				// Drain the rest async.
-				go func() {
-					for range sigCh {
-					}
-				}()
+				settled := failures
+				settled = append(settled, successes...)
+				for sibling := range sigCh {
+					settled = append(settled, sibling.res)
+				}
+				if err := requiredCleanupError(settled); err != nil {
+					return settled, err
+				}
 				return successes, nil
 			}
 		} else {
@@ -523,10 +532,24 @@ func (e *Executor) dispatchN(
 		}
 	}
 	joined := errors.Join(errs...)
+	if requiredCleanupError(failures) != nil {
+		successes = append(successes, failures...)
+		return successes, joined
+	}
 	return successes, fmt.Errorf(
 		"%w: JoinN N=%d reached %d successes only: %w",
 		planner.ErrParallelThresholdUnmet, n, len(successes), joined,
 	)
+}
+
+func requiredCleanupError(results []Result) error {
+	var required error
+	for _, result := range results {
+		if errors.Is(result.Err, tools.ErrInvocationCleanupFailed) {
+			required = errors.Join(required, result.Err)
+		}
+	}
+	return required
 }
 
 // invokeBranch dispatches one branch. Catches ctx.Err() before the
@@ -538,7 +561,7 @@ func invokeBranch(
 	branch planner.CallTool,
 	desc tools.ToolDescriptor,
 ) Result {
-	if err := ctx.Err(); err != nil {
+	if err := tools.CheckInvocationFence(ctx); err != nil {
 		return Result{Index: idx, Tool: branch.Tool, Err: err}
 	}
 	if desc.Invoke == nil {

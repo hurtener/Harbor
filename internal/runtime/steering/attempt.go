@@ -5,9 +5,22 @@ import (
 	"errors"
 
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 var errDecisionSuperseded = errors.New("superseded before dispatch; action was not executed")
+
+func (in *Inbox) fenceInvocation(ctx context.Context, generation uint64) (context.Context, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if !in.generationCurrentLocked(generation) {
+		return ctx, errDecisionSuperseded
+	}
+	if in.invocationInvalidated == nil {
+		in.invocationInvalidated = make(chan struct{})
+	}
+	return tools.WithInvocationFence(ctx, in.invocationInvalidated), nil
+}
 
 // A concurrent correction cannot mask a persistence/accounting failure joined
 // with cancellation. Only a pure cancellation chain is safe to re-plan.

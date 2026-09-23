@@ -59,13 +59,14 @@ type ControlEvent struct {
 type Inbox struct {
 	// Execution state is guarded by mu. The identity-scoped cancellation
 	// handle is installed before registry publication, never a stored context.
-	cancelExecution   context.CancelFunc
-	cancelAttempt     context.CancelFunc
-	steerGeneration   uint64
-	hardCancellation  *ControlEvent
-	executionFinished bool
-	identity          identity.Quadruple
-	clock             Clock
+	cancelExecution       context.CancelFunc
+	cancelAttempt         context.CancelFunc
+	steerGeneration       uint64
+	invocationInvalidated chan struct{}
+	hardCancellation      *ControlEvent
+	executionFinished     bool
+	identity              identity.Quadruple
+	clock                 Clock
 
 	mu     sync.Mutex
 	queue  []ControlEvent
@@ -159,6 +160,10 @@ func (in *Inbox) enqueueLocked(ev ControlEvent) error {
 	if ev.Type == ControlUserMessage {
 		if message, ok := stringFromPayload(ev.Payload, "message"); ok && message != "" {
 			in.steerGeneration++
+			if in.invocationInvalidated != nil {
+				close(in.invocationInvalidated)
+				in.invocationInvalidated = nil
+			}
 			if in.cancelAttempt != nil {
 				in.cancelAttempt()
 			}
