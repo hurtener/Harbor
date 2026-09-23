@@ -35,6 +35,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
@@ -556,14 +557,24 @@ func translateResponseFormat(rf *llm.ResponseFormat) (*interface{}, error) {
 		if len(schema) == 0 {
 			return nil, fmt.Errorf("ResponseFormat.JSONSchema is empty for kind %q", rf.Kind)
 		}
-		// Wrap the raw schema bytes inside the `{"type":"json_schema",
-		// "json_schema": {...}}` envelope. Many providers expect the
-		// envelope (`name`, `strict`, `schema` keys); the
-		// SchemaSanitizer normalizes the shape per provider — this driver
-		// passes the operator-supplied schema bytes verbatim.
+		// Harbor's callers supply a JSON Schema, while the wire protocol
+		// requires a named envelope around it. Preserve legacy callers that
+		// already supply that envelope. Do not impose strict mode or round
+		// numeric schema constants through float64.
 		var schemaObj any
-		if err := json.Unmarshal(schema, &schemaObj); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(string(schema)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&schemaObj); err != nil {
 			return nil, fmt.Errorf("decode JSONSchema: %w", err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return nil, fmt.Errorf("decode JSONSchema: trailing content")
+		}
+		envelope, isObject := schemaObj.(map[string]any)
+		_, hasSchema := envelope["schema"]
+		_, hasName := envelope["name"]
+		if !isObject || !hasSchema || !hasName {
+			schemaObj = map[string]any{"name": "harbor_response", "schema": schemaObj}
 		}
 		var v interface{} = map[string]any{
 			"type":        "json_schema",

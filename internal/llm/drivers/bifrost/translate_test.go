@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -466,6 +467,54 @@ func TestTranslateRequest_ResponseFormat(t *testing.T) {
 				t.Errorf("ResponseFormat set: got %v want %v", got, tc.wantParam)
 			}
 		})
+	}
+}
+
+func TestTranslateResponseFormat_SchemaEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"bare", `{"type":"object","properties":{"version":{"const":9007199254740993127}}}`, `{"type":"json_schema","json_schema":{"name":"harbor_response","schema":{"type":"object","properties":{"version":{"const":9007199254740993127}}}}}`},
+		{"legacy envelope", `{"name":"reply","strict":false,"schema":{"type":"object"}}`, `{"type":"json_schema","json_schema":{"name":"reply","strict":false,"schema":{"type":"object"}}}`},
+		{"boolean schema", `false`, `{"type":"json_schema","json_schema":{"name":"harbor_response","schema":false}}`},
+		{"schema extension", `{"type":"object","schema":{"custom":true}}`, `{"type":"json_schema","json_schema":{"name":"harbor_response","schema":{"type":"object","schema":{"custom":true}}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := json.RawMessage(tc.input)
+			got, err := translateResponseFormat(&llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The assertion must not round the large numeric schema constant.
+			var actual, want any
+			gd, wd := json.NewDecoder(strings.NewReader(string(encoded))), json.NewDecoder(strings.NewReader(tc.want))
+			gd.UseNumber()
+			wd.UseNumber()
+			if err := gd.Decode(&actual); err != nil {
+				t.Fatal(err)
+			}
+			if err := wd.Decode(&want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(actual, want) {
+				t.Fatalf("response envelope = %s, want %s", encoded, tc.want)
+			}
+			if string(raw) != tc.input {
+				t.Fatal("caller schema mutated")
+			}
+		})
+	}
+}
+
+func TestTranslateResponseFormat_InvalidSchema(t *testing.T) {
+	for _, raw := range []string{"", "{", `{} {}`, `{} trailing`} {
+		if _, err := translateResponseFormat(&llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: json.RawMessage(raw)}); err == nil {
+			t.Errorf("accepted invalid schema %q", raw)
+		}
 	}
 }
 

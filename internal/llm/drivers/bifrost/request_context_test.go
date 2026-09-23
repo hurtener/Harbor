@@ -48,6 +48,23 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 				kind, content := "decision", "The edit is ready."
 				if len(body.ResponseFormat) > 0 && string(body.ResponseFormat) != "null" {
 					kind = "summary"
+					// The live provider requires the OpenAI-compatible named
+					// schema envelope; merely detecting response_format missed it.
+					var format struct {
+						Type       string `json:"type"`
+						JSONSchema struct {
+							Name   string                     `json:"name"`
+							Schema map[string]json.RawMessage `json:"schema"`
+						} `json:"json_schema"`
+					}
+					if err := json.Unmarshal(body.ResponseFormat, &format); err != nil {
+						t.Error(err)
+						http.Error(w, "invalid response format", http.StatusBadRequest)
+						return
+					}
+					if format.Type != "json_schema" || format.JSONSchema.Name == "" || string(format.JSONSchema.Schema["type"]) != `"object"` {
+						t.Errorf("invalid maintenance schema envelope: %s", body.ResponseFormat)
+					}
 					content = `{"goals":["edit document"],"facts":["older checks passed"],"pending":["apply the current source"],"last_output_digest":"older work retained","note":"portable"}`
 					if strings.HasPrefix(outcome, "expanding") {
 						content = `{"goals":["edit"],"facts":["` + strings.Repeat("expansion ", 1000) + `"],"pending":[],"last_output_digest":"older work","note":"too large"}`

@@ -1,5 +1,42 @@
 # Portable session context implementation tracker
 
+## Live independent-model schema repair — 2026-09-23
+
+RC8 (`be1a794b554b4f716d4e2f739744a3a0b3109edd`) is published and the isolated
+sample reports that exact version/commit through Protocol. Release workflow
+`35920363015` succeeded with six platform builds and thirteen assets. The Darwin
+ARM64 checksum, provenance attestation and binary version stamp were verified.
+The working-input editor's override/save/reload/reset-to-YAML cycle also passed
+against this runtime. This is not final release acceptance.
+
+The first continued conversation failed before tools with `runloop_error`:
+the first trajectory-compaction completion returned the content-free external
+provider failure. Upstream telemetry recorded HTTP 200, but that status did not
+mean inference succeeded. A small independent probe reproduced an error body
+with code 502: the provider rejected the bare schema because its named
+`response_format.json_schema` envelope was missing. The same probe with the
+named envelope and the existing 2048-token maintenance allowance returned valid
+JSON and `finish_reason: stop`. No user action was replayed by these probes.
+
+The repair is generic Bifrost wire translation: wrap bare schemas with a name
+and `schema`, preserve already-enveloped legacy input and its strictness setting,
+and preserve large numeric schema constants. No provider-specific branch,
+credential fallback, policy bypass, prompt change or output-limit increase is
+introduced. Regression checks inspect actual run-loop and independently routed
+maintenance requests, not merely the presence of `response_format`.
+
+Go 1.27.1 verification on this repair tree passes: canonical
+`GOFLAGS=-p=1 go test -race ./internal/llm/... -count=1`, the focused assembled
+independent-route HTTP regression, scoped `go vet`, and golangci-lint 2.13.2
+(zero issues). Canonical Bifrost race/coverage execution measures **82.3%**,
+above its Phase 33 **80%** floor. Changed Markdown and diff checks pass.
+The new schema-envelope regression fails on RC8 before the repair.
+
+A new deployed continuation is still pending. RC8's Linux/macOS full CI jobs
+remain running at this observation; its other completed jobs have passed.
+Existing memory/served coverage and full-release blockers remain. The owner
+authorizes a quick exploratory RC cycle, not a stable release or merge.
+
 ## Compaction route deployment override — 2026-09-23
 
 Integration of published RC7 (`bbcfa275`) exposed that the existing environment

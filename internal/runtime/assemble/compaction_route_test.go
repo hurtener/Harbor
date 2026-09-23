@@ -65,6 +65,12 @@ func TestAssemble_IndependentCompactionRouteReachesGovernedBifrost(t *testing.T)
 		if output != float64(2048) {
 			t.Errorf("wrong outgoing maintenance allowance: %v", output)
 		}
+		format, _ := request["response_format"].(map[string]any)
+		envelope, _ := format["json_schema"].(map[string]any)
+		schema, _ := envelope["schema"].(map[string]any)
+		if format["type"] != "json_schema" || envelope["name"] != "harbor_response" || schema["type"] != "object" {
+			t.Errorf("maintenance request lacks the provider's named schema envelope: %v", format)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"summary","object":"chat.completion","created":1,"model":"compact-model","choices":[{"index":0,"message":{"role":"assistant","content":"{\"goals\":[\"edit layout\"],\"facts\":[\"keep the original project\"],\"pending\":[],\"last_output_digest\":\"inspected\",\"note\":\"\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`))
 	}))
