@@ -666,7 +666,10 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	if buildErr != nil {
 		return nil, buildErr
 	}
-	req.RebuildMessages = p.rebuildMessages(rc, projectedTools)
+	req.RebuildMessages = nil
+	if _, prepare := llm.ContextPreparationFrom(ctx); prepare {
+		req.RebuildMessages = p.rebuildMessages(rc, projectedTools)
+	}
 
 	// Apply the run-start-resolved per-run LLM-parameter overrides
 	// (model / temperature / max-tokens / reasoning-effort). The bundle is

@@ -33,6 +33,38 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Consolidated memory owner — release acceptance pending
 
+#### Request-rebuild allocation follow-on
+
+The test-only head `52c7c3b3` still fails hosted performance: run
+`35887269383` reports declared-tool **+37.28%** and tool-free **+43.37%**.
+The earlier docs-only head's declared-tool result was **+19.10%** with the
+same runtime source; timing varies, so repeated green runs are not a repair.
+
+Inspection found that ReAct always allocated its captured RunContext and
+message-rebuild closure, even without a usable runtime compactor. The narrow
+follow-on uses the request-preparation wrapper's same active/disabled predicate
+before allocating the rebuilder. An automatic zero target remains enabled;
+there is no new configuration, benchmark change or weakened budget/gate.
+Actual-request regressions cover absent, nil, negative, automatic and explicit
+preparation, identical rebuilt messages and no duplicate planner events.
+The first three cases fail on `52c7c3b3` before the production correction.
+
+Go 1.27.1, `GOFLAGS=-p=1`: complete ReAct, LLM and steering race suites pass
+(**1.940s / 24.449s / 1.675s**). The nine real-store 100-turn combinations
+(in-memory/SQLite/PostgreSQL 17.11 times automatic/1/100000 budgets) pass with
+no skips (**124.086s**), retaining the first-turn constraint through five or
+more generations and persistent-store reopen every 25 turns. This confirms
+that eliminating unused closures does not disable cumulative compaction.
+Pinned golangci-lint 2.13.2 across LLM/ReAct packages reports **0 issues**;
+the same package-tree vet, tracker Markdown and whitespace checks pass.
+
+Unchanged canonical-style local benchmarks (six 100ms samples) reduce each
+path by exactly **752 B/op and two allocations**: declared-tool 14776/37 to
+14024/35, tool-free 12312/24 to 11560/22. Those match the hosted stable-base
+allocation counts. Before timing samples were noisy; no wall-clock speedup or
+hosted gate pass is inferred from the local timing. Exact-head CI remains
+required; the published RC5 runtime is not yet changed by this follow-on.
+
 RC5 hosted CI `35881558751` finished with failures in both platform Go jobs
 and the benchmark gate. Both Go jobs name the same two devstack provenance
 fixtures: they construct a standard-memory driver without its required

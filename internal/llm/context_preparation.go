@@ -43,6 +43,14 @@ func WithContextPreparation(ctx context.Context, preparation ContextPreparation)
 	return context.WithValue(ctx, contextPreparationKey{}, preparation)
 }
 
+// ContextPreparationFrom returns the active run-local preparation, if any.
+// Planners need no request-rebuild closure when there is no usable compactor.
+// Zero remains an active, automatically resolved input target.
+func ContextPreparationFrom(ctx context.Context) (ContextPreparation, bool) {
+	preparation, ok := ctx.Value(contextPreparationKey{}).(ContextPreparation)
+	return preparation, ok && preparation.InputTarget >= 0 && preparation.Compact != nil
+}
+
 type contextPreparationClient struct {
 	inner LLMClient
 	cfg   ConfigSnapshot
@@ -52,8 +60,8 @@ type contextPreparationClient struct {
 // grants, retries, and provider work. The mandatory inner safety pass still
 // remeasures the final transformed request on every actual attempt.
 func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteRequest) (CompleteResponse, error) {
-	preparation, ok := ctx.Value(contextPreparationKey{}).(ContextPreparation)
-	if !ok || preparation.InputTarget < 0 || preparation.Compact == nil || req.RebuildMessages == nil {
+	preparation, ok := ContextPreparationFrom(ctx)
+	if !ok || req.RebuildMessages == nil {
 		return c.inner.Complete(ctx, req)
 	}
 	if err := ctx.Err(); err != nil {
