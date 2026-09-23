@@ -33,6 +33,38 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Consolidated memory owner — release acceptance pending
 
+#### Service-backed coverage and adapter lifecycle acceptance
+
+At `4d2267c4`, Go 1.27.1 with PostgreSQL 17.11 available through
+`HARBOR_PG_DSN`, `GOMAXPROCS=2 GOFLAGS=-p=1 go test -race
+./internal/runtime/serve -count=1 -coverprofile=served.out` passes the complete
+served package in **61.548s**, with **86.3%** statement coverage against its
+85% floor. This is one canonical package process, not merged grouped coverage.
+It does not resolve the earlier hosted macOS cleanup timeout.
+
+The following test-only increment covers memory adapter construction and pool
+ownership through existing public constructors and real database drivers:
+
+- PostgreSQL apply/verify initialization, failure before a usable adapter is
+  returned, missing dependencies/removed strategies, closed-pool rejection,
+  borrowed-pool usability after failed initialization and repeated close,
+  reopening over that same pool, and owned-pool cleanup on migration failure.
+- SQLite supported file/memory DSNs, explicit transaction mode, missing
+  dependencies/removed strategies, invalid URI/unavailable parent rejection,
+  and read-only initialization refusing migration without modifying the schema.
+
+Complete `GOFLAGS=-p=1 go test -race` package runs with the same Go/PostgreSQL
+versions and `GOMAXPROCS=2` pass: memory PostgreSQL **96.9% / 3.353s** and
+memory SQLite **95.1% / 9.203s**, both above their 85% floors. These measurements
+include all production files; no target, denominator, runtime deadline,
+concurrency assertion, prompt or deployed configuration changes. The initial
+test drafts needed fixture corrections (pgx parses a malformed DSN at Ping;
+an opaque SQLite URI is not a malformed path), not production repairs.
+
+The relocated `memory/session` 92% floor and final-head hosted/live acceptance
+remain pending. Previous 100-turn evidence does not replace the matched
+real-model test across multiple detailed-history windows and session returns.
+
 #### Exact-head CI and tool-dispatch boundary check
 
 Hosted CI `35888583397` on `6157c938` is terminal: Linux Go, performance,
