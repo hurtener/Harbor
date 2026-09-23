@@ -2816,7 +2816,7 @@ Declared in `internal/protocol/types`.
 | `render_admission` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` | optional (`omitempty`) |
 | `tool` | `string` |  |
-| `arguments` | `json.RawMessage` | optional (`omitempty`) |
+| `arguments` | `jsontext.Value` | optional (`omitempty`) |
 
 ## MCPAppCallToolResponse
 
@@ -2825,7 +2825,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `tool` | `string` |  |
-| `content` | `json.RawMessage` | optional (`omitempty`) |
+| `content` | `jsontext.Value` | optional (`omitempty`) |
 | `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
 | `is_error` | `bool` |  |
 | `app` | `*types.MCPAppRef` — see [`MCPAppRef`](./types.md#mcpappref) | optional (`omitempty`) |
@@ -4660,7 +4660,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `external_grant` | `json.RawMessage` | optional (`omitempty`) |
+| `external_grant` | `jsontext.Value` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
 | `llm_settings` | `*types.RunLLMSettings` — see [`RunLLMSettings`](./types.md#runllmsettings) | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
@@ -4669,9 +4669,9 @@ Declared in `internal/protocol/types`.
 | `idempotency_key` | `string` | optional (`omitempty`) |
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
-| `output_schema` | `json.RawMessage` | optional (`omitempty`) |
+| `output_schema` | `jsontext.Value` | optional (`omitempty`) |
 | `agent_id` | `string` | optional (`omitempty`) |
-| `caller_memory` | `json.RawMessage` | optional (`omitempty`) |
+| `caller_memory` | `jsontext.Value` | optional (`omitempty`) |
 
 ## StartResponse
 
@@ -5054,7 +5054,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `content` | `json.RawMessage` | optional (`omitempty`) |
+| `content` | `jsontext.Value` | optional (`omitempty`) |
 | `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
 
 ## ToolContextRequest

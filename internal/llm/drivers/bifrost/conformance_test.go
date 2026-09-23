@@ -317,8 +317,9 @@ var _ = json.Marshal
 // fields while Bifrost's streaming scanner still read them. The fasthttp
 // v1.74.0 pin joins active reads before releasing pooled resources;
 // TestDriver_CancellationClosesUpstreamStream covers actual socket teardown
-// under -race without API credits. This does not establish live provider
-// acceptance or fix the separate pre-response-header cancellation blocker.
+// under -race without API credits. Bifrost's context-aware transport additionally
+// passes TestDriver_CancellationBeforeHeadersClosesUpstream. Neither local
+// fixture establishes live-provider acceptance.
 func TestE2E_Bifrost_LiveProviderNativeMultimodal(t *testing.T) {
 	if os.Getenv("HARBOR_LIVE_LLM") != "1" {
 		t.Skip("set HARBOR_LIVE_LLM=1 to run the live provider-native multimodal table (this test burns API credits)")

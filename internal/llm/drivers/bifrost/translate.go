@@ -24,11 +24,11 @@
 // by bifrost. The `closed` flag is `atomic.Bool` for the idempotent
 // Close path. Safe for N concurrent goroutines after construction.
 //
-// Cancellation semantics: a streaming Complete cancelled mid-flight
-// returns `ctx.Err()` immediately; the driver abandons the bifrost
-// chunk reader. Bifrost drains its
-// upstream HTTP connection on its own goroutine; Harbor never blocks
-// waiting for it. The goroutine-leak test pins this.
+// Cancellation semantics: Complete propagates cancellation to Bifrost's
+// context-aware transport, which interrupts the upstream socket even before
+// response headers arrive. Harbor returns ctx.Err() without waiting for another
+// provider delta and rejects queued late chunks. Real HTTP cancellation tests
+// pin socket teardown; abandoning Harbor's chunk reader alone is insufficient.
 package bifrost
 
 import (
@@ -685,9 +685,18 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 	usage.LatencyMS = resp.ExtraFields.Latency
 	if resp.Usage.Cost != nil {
 		cost.ReportPresent = true
-		cost.InputTokensCost = resp.Usage.Cost.InputTokensCost
-		cost.OutputTokensCost = resp.Usage.Cost.OutputTokensCost
-		cost.ReasoningTokensCost = resp.Usage.Cost.ReasoningTokensCost
+		cost.InputTokensCost = resp.Usage.Cost.InputCost
+		cost.OutputTokensCost = resp.Usage.Cost.OutputCost
+		// Preserve Harbor's token-only breakdown. Bifrost's totals now
+		// include request surcharges and output-side non-token charges;
+		// those remain accounted for in TotalCost, not token categories.
+		if details := resp.Usage.Cost.InputCostDetails; details != nil {
+			cost.InputTokensCost = details.TextCost + details.AudioCost + details.ImageCost + details.CachedReadCost + details.CachedWriteCost
+		}
+		if details := resp.Usage.Cost.OutputCostDetails; details != nil {
+			cost.OutputTokensCost = details.TextCost + details.AudioCost + details.ImageCost
+			cost.ReasoningTokensCost = details.ReasoningCost
+		}
 		cost.TotalCost = resp.Usage.Cost.TotalCost
 		cost.Currency = "USD"
 	}

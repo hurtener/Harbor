@@ -15,7 +15,7 @@
 # files must agree on the rule arguments.
 version: "2"
 run:
-  go: "1.26"
+  go: "1.27"
   modules-download-mode: readonly
 linters:
   default: none

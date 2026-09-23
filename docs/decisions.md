@@ -15886,8 +15886,12 @@ must await the authoritative task outcome and surface cancellation failures.
 An external side effect already completed cannot be undone; an independent job
 requires its own cancellation API.
 
-Bifrost 1.7.4 with fasthttp 1.74.0 closes established provider streams without
-the reproduced pooled-reader race. Its pre-response-header socket cancellation
-remains unimplemented in that pinned version and fails the local probe. This is
-an explicit release blocker, not a passing provider-termination gate. In-flight
-steering and consumer queue lifecycle remain separate pending implementation.
+Bifrost 1.7.4 with fasthttp 1.74.0 closed established provider streams without
+the reproduced pooled-reader race, but failed the pre-response-header socket
+probe. The follow-up adopts official core 1.9.0's context-aware transport and
+Go 1.27.1: the same socket probe passes for streaming and unary requests, as does
+established-stream cancellation under the race detector. No local SDK fork,
+proxy, provider allowlist expansion or new plugin is introduced. Preserve
+Harbor's token-cost breakdown when adapting Bifrost's nested cost schema; all
+reported non-token charges remain in the authoritative total. In-flight steering,
+consumer queue lifecycle and live-provider acceptance remain pending.

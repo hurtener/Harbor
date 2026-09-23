@@ -31,7 +31,61 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
-### Hard Stop — partial implementation increment
+### Provider cancellation transport repair — current local increment
+
+Built on published `63f07c05cf008b32bb71d86c2ef946f058e5dc58`, same draft PR.
+Adopt official Bifrost core **1.9.0**, the first inspected release containing
+upstream [PR #7104](https://github.com/maximhq/bifrost/pull/7104)'s context-aware
+RoundTripper. It closes the socket before response headers, not merely Harbor's
+reader. No fork, proxy, provider SDK, new provider-route entry or plugin enabled.
+The module requires Go 1.27; pin **Go 1.27.1** across module, CI, release and
+scaffold. Rebuild the unchanged pinned golangci-lint **2.12.2** with that toolchain.
+
+Review the intervening upstream changes at Harbor's consumer boundary: request
+shaping/reasoning controls, provider switching, stream/usage normalization and
+nested cost reports. Adapt the cost schema without relabeling request surcharges,
+search or sidecar charges as token costs; retain the reported authoritative total.
+Regression fixtures cover nested, legacy, total-only and explicit-zero reports.
+The actual OpenRouter wire request preserves **128000** completion tokens and
+**high** reasoning. This proves translation, not provider acceptance of that limit.
+
+Local evidence, Go 1.27.1 darwin-arm64, `GOFLAGS=-p=1`, race tests `-count=1`;
+tested source tree `2a263fa98e21748244505fa1afa85ae73d035655` (publication adds
+this receipt):
+
+- Full `go test -race ./internal/llm/...` passes, including governed receipts,
+  broker credentials, corrections, retries, reasoning and native-provider wire
+  fixtures. The final full Bifrost/steering/dispatch/parallel/scaffold race pass
+  is **5.708s / 1.597s / 1.697s / 1.391s / 1.483s**. No live-model opt-in tests run.
+- The previously failing pre-header socket probe now passes for both OpenAI and
+  OpenRouter, streaming and unary. Established-stream cancellation also passes;
+  deadlines and observation windows are unchanged. The full Bifrost coverage
+  measurement before the final wire-only test addition is **81.9%**, still below
+  Phase 233c's 90% target; not a coverage acceptance claim.
+- Real HTTP/JWT/JWKS `TestE2E_NonAdminToken_SteeringContract` passes **2.098s**,
+  including scoped hard Stop and N=128 identity isolation.
+- Repository-wide `make lint` (zero issues), `make vet`, and **full `make build`**
+  pass, including the freshly built Console and `CGO_ENABLED=0` binary. Final
+  added Bifrost tests also pass targeted lint/vet. Scaffold golden regenerated
+  through `TestScaffold_Golden_MatchesAcmeAgent -update`, passing **2.241s**.
+- Module verification, Markdown (599 files), mirrors and drift audit pass:
+  **1,592 OK / 0 WARN / 0 FAIL**. All three Protocol generation checks pass.
+  Go 1.27 reflects `json.RawMessage` as its `jsontext.Value` alias; canonical
+  generated Go-reference rows changed accordingly. No wire or TypeScript shape
+  changed, and no generated file was hand-edited.
+
+This resolves the local pre-header transport blocker below, **not release
+acceptance**. The exact published parent `63f07c05` hosted performance gate now
+passes; its Linux/macOS jobs were still running and docs passed. Older
+`9524fef1` CI `35843299832` completed failed: both platforms exposed Phase 149's
+LLM-free manifest fixture inheriting the new rolling default; macOS additionally
+hit retained journal cleanup deadlines. Those fixes, coverage targets, final
+service-backed/full-suite gates, in-flight Steer, consumer Stop/Queue lifecycle,
+cumulative legacy retirement and matched live UI acceptance remain pending.
+No RC tag, deployment, Workbench change, model call or service deletion here.
+Harbor preflight remains explicitly owner-waived, not passed.
+
+### Earlier hard Stop increment — historical evidence
 
 Follow-up on published `6bc266ea`: hosted CI `35845869347` failed its performance
 gate because `SteeringApply_EnqueueDrain` grew from 256 to 416 B/op (+62.5%).

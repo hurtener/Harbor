@@ -626,9 +626,9 @@ func TestTranslateResponse_TextContent(t *testing.T) {
 			CompletionTokens: 20,
 			TotalTokens:      30,
 			Cost: &bfschemas.BifrostCost{
-				InputTokensCost:  0.001,
-				OutputTokensCost: 0.002,
-				TotalCost:        0.003,
+				InputCost:  0.001,
+				OutputCost: 0.002,
+				TotalCost:  0.003,
 			},
 		},
 	}
@@ -644,6 +644,34 @@ func TestTranslateResponse_TextContent(t *testing.T) {
 	}
 	if out.Cost.Currency != "USD" {
 		t.Errorf("Currency = %q want USD", out.Cost.Currency)
+	}
+}
+
+// Bifrost accepts both legacy provider reports and its nested cost schema.
+// Non-token charges must remain in the authoritative total without being
+// relabeled as token or reasoning costs by Harbor's adapter.
+func TestTranslateResponse_CostSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name, wire                      string
+		input, output, reasoning, total float64
+	}{
+		{"nested", `{"input_cost":63,"input_cost_details":{"text_cost":1,"audio_cost":2,"image_cost":4,"cached_read_cost":8,"cached_write_cost":16,"request_cost":32},"output_cost":63,"output_cost_details":{"text_cost":1,"audio_cost":2,"image_cost":4,"reasoning_cost":8,"citation_cost":16,"search_queries_cost":32},"additional_cost":64,"total_cost":190}`, 31, 7, 8, 190},
+		{"legacy", `{"input_tokens_cost":24,"cache_read_tokens_cost":8,"output_tokens_cost":7,"reasoning_tokens_cost":8,"request_cost":32,"citation_tokens_cost":16,"search_queries_cost":32,"total_cost":119}`, 24, 7, 8, 119},
+		{"totals_without_details", `{"input_cost":3,"output_cost":7,"total_cost":10}`, 3, 7, 0, 10},
+		{"total_only", `12`, 0, 0, 0, 12},
+		{"reported_zero", `{}`, 0, 0, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reported bfschemas.BifrostCost
+			if err := json.Unmarshal([]byte(tc.wire), &reported); err != nil {
+				t.Fatal(err)
+			}
+			out := translateResponse(&bfschemas.BifrostChatResponse{Usage: &bfschemas.BifrostLLMUsage{Cost: &reported}})
+			want := llm.Cost{ReportPresent: true, InputTokensCost: tc.input, OutputTokensCost: tc.output, ReasoningTokensCost: tc.reasoning, TotalCost: tc.total, Currency: "USD"}
+			if out.Cost != want {
+				t.Errorf("cost = %+v, want %+v", out.Cost, want)
+			}
+		})
 	}
 }
 

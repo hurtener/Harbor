@@ -814,7 +814,7 @@ type CompleteResponse struct {
 
 **Single architecture, no toggle.** A `use_native_llm=True/False` mode would ship two parallel implementations of the same conceptual feature. Harbor picks one architecture and bakes the per-provider correction layer in as a `SchemaSanitizer` plus message-shape normalization stack — both runtime utilities called *before* the client request, not flags on the client. (Settled — `AGENTS.md` §13.)
 
-**Default driver: `bifrost` (`github.com/maximhq/bifrost/core`) — Settled — see brief 08.** A pure-Go LLM gateway library with first-class drivers for 23 providers (OpenAI, Anthropic, Google, Vertex, Bedrock, Azure, OpenRouter, XAI, Mistral, Ollama, Groq, Cohere, Cerebras, Fireworks, Perplexity, Replicate, ElevenLabs, HuggingFace, Nebius, Parasail, SGL, vLLM, Runway). Empirically validated on 2026-05-08 against six OpenRouter-routed models: 23 of 24 gating items pass (six models × four checks: basic chat, `json_object` response_format, streaming with content callback, ctx cancellation; plus token usage and cost reporting on every model). The one cancellation FAIL is a measurement artifact for long streams, not a functional defect — Harbor's runtime can abandon the channel reader on `ctx.Done()` without consequence. Adopting bifrost requires Go 1.26+ (matching its `go.mod`); Harbor's `go.mod` is bumped accordingly. The original CGo-required candidate is rejected.
+**Default driver: `bifrost` (`github.com/maximhq/bifrost/core`) — Settled — see brief 08.** A pure-Go LLM gateway library. The original 2026-05-08 six-model OpenRouter study passed 23 of 24 gates, but its assumption that abandoning the chunk reader was sufficient cancellation is superseded by D-478: hard Stop must interrupt the provider connection. Harbor pins Bifrost core 1.9.0 for its context-aware transport, with Go 1.27.1; deterministic real-socket tests cover cancellation before headers and during streaming. This is not new live-model acceptance. Harbor's existing finite provider-route allowlist remains unchanged; new upstream providers, MCP execution, routing plugins and SDK capabilities are not enabled by the dependency update. The original CGo-required candidate remains rejected.
 
 Bifrost's `Tools` / `ToolChoice` parameters were initially not used at all; since D-167 the driver maps Harbor's `Tools` / `ToolChoice` / `ParallelToolCalls` onto them (`translate.go`) for the React planner's native tool-calling path, and omits the block entirely when `Tools` is nil. Harbor's runtime still owns tool DISPATCH (see §6.4 "Code-level tool dispatch") — bifrost carries the declaration to the provider and returns the structured call; it never decides what runs. Bifrost is the LLM-call substrate; Harbor is the orchestration layer above it.
 
@@ -881,7 +881,7 @@ logical run, effective Agent, runtime, task, and logical-call context.
 The two-stage exact-bound response chooses a provider/model, non-secret key
 display name, immutable generations, expiry, and an optional typed endpoint,
 then returns one expiring credential only for the actual attempt. Harbor boots
-a finite Bifrost v1.7.4 chat-capable route set and excludes non-chat and
+a finite chat-capable route set (unchanged from the Bifrost v1.7.4 integration) and excludes non-chat and
 advanced cloud-credential shapes. Azure, vLLM, Ollama, SGLang, and
 OpenAI-compatible endpoints use explicit typed mappings; generic endpoint or
 credential bundles are not representable. OpenAI-compatible egress uses a
@@ -2692,7 +2692,7 @@ All three pass the same conformance suite. Designing the interface against three
 
 | Area | Decision | Status |
 |---|---|---|
-| Language | Go 1.26+ | Settled |
+| Language | Go 1.27.1+ | Settled; Bifrost context-aware transport requires Go 1.27 |
 | Module path | `github.com/hurtener/Harbor` | Settled |
 | License | **Apache-2.0** (MIT acceptable; see License subsection) | Settled |
 | Build | `CGO_ENABLED=0`, static binary, `-ldflags='-s -w'` | Settled |

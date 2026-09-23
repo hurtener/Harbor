@@ -1,6 +1,6 @@
 module github.com/example/acme-agent
 
-go 1.26
+go 1.27.1
 
 require github.com/hurtener/Harbor v1.31.9
 

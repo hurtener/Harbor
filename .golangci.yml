@@ -5,7 +5,7 @@
 # `make lint` — see .github/workflows/ci.yml.
 version: "2"
 run:
-  go: "1.26"
+  go: "1.27"
   modules-download-mode: readonly
 # Surface every finding (no per-linter / same-issue display caps). The
 # CI gate fails on ANY issue, so hiding duplicates behind the v2

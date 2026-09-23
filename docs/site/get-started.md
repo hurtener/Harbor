@@ -23,7 +23,7 @@ The `scaffold` → `dev-loop` → `playground` chain is designed to land in **un
 
 | You need | Why | Reference |
 | --- | --- | --- |
-| Go 1.26+ | Harbor builds CGo-free as a single static binary on Go 1.26 or newer. | [RFC-001](/reference/rfc) |
+| Go 1.27.1+ | Harbor builds CGo-free as a single static binary on Go 1.27.1 or newer. | [RFC-001](/reference/rfc) |
 | The `harbor` binary | The one CLI that drives scaffold, dev, validate, and console. | [scaffold-a-harbor-agent](/skills/scaffold-a-harbor-agent/SKILL) |
 | One LLM provider key | Harbor fails loudly at boot if no real provider is configured — there is no silent stub fallback. | [Configuration reference](/reference/config) |
 

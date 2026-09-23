@@ -282,13 +282,10 @@ func (d *Driver) unaryComplete(
 // route to `req.OnContent`; reasoning deltas route to `req.OnReasoning`;
 // the assembled content is concatenated into `CompleteResponse.Content`.
 //
-// Once response headers arrive, cancellation propagates through BifrostContext
-// to Bifrost's transport, which closes the upstream stream. Pinned fasthttp
-// interrupts the socket and joins active reads before releasing pooled
-// resources. Harbor also stops consuming queued chunks on cancellation;
+// Cancellation propagates through BifrostContext to Bifrost's context-aware
+// transport, which interrupts the upstream socket before headers or during
+// streaming. Harbor also stops consuming queued chunks on cancellation;
 // it does not wait for another provider delta to return ctx.Err().
-// Before headers, Bifrost still leaves its network call pending: see the
-// explicit release blocker in docs/notes/portable-context-tracker.md.
 func (d *Driver) streamComplete(
 	client bifrostClient,
 	ctx context.Context,
