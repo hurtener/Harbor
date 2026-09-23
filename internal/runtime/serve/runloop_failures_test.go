@@ -27,7 +27,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
@@ -63,15 +62,14 @@ func TestRunSnapshotAdmissionTaskError_OnlyClosedGateMeansRetired(t *testing.T) 
 	}
 }
 
-// failingMemoryStore wraps a real MemoryStore and errors on GetLLMContext
-// (the run-start memory fetch) — every other method delegates to the real
-// driver.
-type failingMemoryStore struct {
-	memory.MemoryStore
-}
+// failingMemoryState fails reads of the cumulative execution record only.
+type failingMemoryState struct{ state.StateStore }
 
-func (failingMemoryStore) GetLLMContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
-	return memory.LLMContextPatch{}, errInjected
+func (s failingMemoryState) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
+	if kind == serverRetainedKind {
+		return state.StateRecord{}, errInjected
+	}
+	return s.StateStore.Load(ctx, id, kind)
 }
 
 // countingFailRegistry is an agentcfg.Registry whose Active errors on the
@@ -138,11 +136,12 @@ func newFailDriverEnv(t *testing.T) failDriverEnv {
 func startFailDriver(t *testing.T, env failDriverEnv, mutate func(*RunLoopDriverOptions)) *RunLoopDriver {
 	t.Helper()
 	opts := RunLoopDriverOptions{
-		Bus:     env.bus,
-		RunLoop: env.rl,
-		Planner: &driverTestPlanner{finishGoalImmediately: true},
-		Tasks:   env.reg,
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SessionMemory: config.MemoryConfig{Strategy: "none"},
+		Bus:           env.bus,
+		RunLoop:       env.rl,
+		Planner:       &driverTestPlanner{finishGoalImmediately: true},
+		Tasks:         env.reg,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -378,24 +377,16 @@ func TestRunOne_OutputSchemaCompileError_MarksOutputInvalid(t *testing.T) {
 		planner.TaskErrorCodeOutputInvalid, "output-schema compile failed")
 }
 
-// TestRunOne_MemoryFetchError_MarksRuntimeFetchError — a memory store whose
-// GetLLMContext errors fails the run LOUD (runtime_fetch_error), never a
-// silent no-memory degradation.
+// A required cumulative-memory read must fail before inference, not degrade
+// to a run without its history.
 func TestRunOne_MemoryFetchError_MarksRuntimeFetchError(t *testing.T) {
-	env := newFailDriverEnv(t)
-	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	realMem, err := memoryOpen(t, env.bus, st)
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
-	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.Memory = failingMemoryStore{MemoryStore: realMem}
+	env, client, calls := retainedServerHarness(t, func(o *RunLoopDriverOptions) {
+		o.StateStore = failingMemoryState{StateStore: o.StateStore}
 	})
-	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "FetchMemoryBlocks")
+	task := retainedServerTurn(t, env, runLoopDriverTestID, "first root", nil)
+	if task.Status != tasks.StatusFailed || client.body(task.ID) != "" || calls.Load() != 0 {
+		t.Fatalf("failed memory read reached inference or tools: %+v", task)
+	}
 }
 
 // TestRunOne_SkillsProjectionError_FailsRun — an agent-config registry that
@@ -529,7 +520,7 @@ func TestRunOne_MarkRunningFails_SkipsRun(t *testing.T) {
 // TestRunLoopDriver_Close_BeforeStart_NoOp — Close on a never-started driver
 // is a clean no-op.
 func TestRunLoopDriver_Close_BeforeStart_NoOp(t *testing.T) {
-	d, err := NewRunLoopDriver(RunLoopDriverOptions{
+	d, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     mkDriverTestBus(t, auditpatterns.New()),
 		RunLoop: newTestRunLoop(t, steering.NewRegistry(), mkDriverTestBus(t, auditpatterns.New())),
 		Planner: &driverTestPlanner{},
@@ -555,7 +546,7 @@ func (failSubscribeBus) Subscribe(context.Context, events.Filter) (events.Subscr
 // errors fails Start loud (and cancels the sub ctx).
 func TestRunLoopDriver_Start_SubscribeError_FailsLoud(t *testing.T) {
 	env := newFailDriverEnv(t)
-	d, err := NewRunLoopDriver(RunLoopDriverOptions{
+	d, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     failSubscribeBus{EventBus: env.bus},
 		RunLoop: env.rl,
 		Planner: &driverTestPlanner{},
@@ -700,33 +691,16 @@ func TestRunOne_TerminalSchemaValidationFails_MarksOutputInvalid(t *testing.T) {
 		planner.TaskErrorCodeOutputInvalid, "terminal output failed schema validation")
 }
 
-// failingAddTurnStore wraps a real MemoryStore and errors on AddTurn only —
-// the best-effort memory-writeback warn (the run still completes).
-type failingAddTurnStore struct{ memory.MemoryStore }
-
-func (failingAddTurnStore) AddTurn(context.Context, identity.Quadruple, memory.ConversationTurn) error {
-	return errInjected
-}
-
-// TestRunOne_MemoryWritebackError_RunStillCompletes — an AddTurn failure is
-// best-effort: logged loud, run still Complete.
-func TestRunOne_MemoryWritebackError_RunStillCompletes(t *testing.T) {
-	env := newFailDriverEnv(t)
-	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	realMem, err := memoryOpen(t, env.bus, st)
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
-	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.Memory = failingAddTurnStore{MemoryStore: realMem}
+// Required cumulative-memory commit failure cannot report a successful run.
+func TestRunOne_MemoryWritebackError_FailsRun(t *testing.T) {
+	env, client, calls := retainedServerHarness(t, func(o *RunLoopDriverOptions) {
+		s := &retainedServerFailStore{StateStore: o.StateStore}
+		s.remaining.Store(2) // admission succeeds; terminal commit fails
+		o.StateStore = s
 	})
-	id := spawnOn(t, env.reg, nil)
-	if status := waitForTaskStatus(t, env.reg, id, tasks.StatusComplete, 5*time.Second); status != tasks.StatusComplete {
-		t.Fatalf("AddTurn failure must not downgrade the run, got %q", status)
+	task := retainedServerTurn(t, env, runLoopDriverTestID, "finish without tools", nil)
+	if task.Status != tasks.StatusFailed || client.body(task.ID) == "" || calls.Load() != 0 {
+		t.Fatalf("required commit failure was not terminal: %+v", task)
 	}
 }
 

@@ -113,8 +113,8 @@ var devSeedArtifacts = []struct {
 // the seeder writes into the memory store. Three turns exercise the
 // Console Memory-page DataTable (`memory.list` projects one row per
 // turn). Seeding is a no-op when the configured memory strategy is
-// `none` (its `AddTurn` discards every turn); the embedded
-// `harbor console` config uses `truncation` so the turns persist.
+// `none`; the embedded `harbor console` config uses `rolling_summary`
+// so the notes share the cumulative execution-memory owner.
 var devSeedMemoryTurns = []memory.ConversationTurn{
 	{UserMessage: "What were the Q2 metrics?", AssistantResponse: "Q2 revenue grew 12%."},
 	{UserMessage: "Summarise the archived threads.", AssistantResponse: "Three threads on the index rebuild."},
@@ -353,16 +353,14 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 	//    turn). The store is scoped by the `(tenant, user, session)`
 	//    quadruple; turns are written under the dev-token triple. When
 	//    no memory driver is configured (`deps.memory` nil) OR the
-	//    configured strategy is `none` (its `AddTurn` discards turns),
+	//    configured strategy is `none` (its `Put` is a no-op),
 	//    this step is a documented no-op — the Memory page then renders
 	//    its Empty state, which is the correct shape for an unconfigured
 	//    memory subsystem.
 	memoryTurns := 0
 	if deps.memory != nil {
 		for i, turn := range devSeedMemoryTurns {
-			t := turn
-			t.Timestamp = time.Now()
-			if err := deps.memory.AddTurn(devCtx, devQuad, t); err != nil {
+			if _, err := deps.memory.Put(devCtx, devQuad, turn); err != nil {
 				return fmt.Errorf("devseed: add memory turn %d: %w", i, err)
 			}
 		}

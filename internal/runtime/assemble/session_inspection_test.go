@@ -1,6 +1,7 @@
 package assemble_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/memory"
 	memprotocol "github.com/hurtener/Harbor/internal/memory/protocol"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -40,14 +42,21 @@ func TestRunOnce_MemoryInspectionUsesExecutionOwner(t *testing.T) {
 	}
 	key := list.Items[0].Key
 	q.RunID = "different-viewer"
-	get, err := memprotocol.Get(t.Context(), memprotocol.GetDeps{Store: stack.Memory, Artifacts: stack.Artifacts, DriverName: cfg.State.Driver, HeavyThreshold: 1 << 20}, prototypes.MemoryGetRequest{Key: key}, q)
+	get, err := memprotocol.Get(t.Context(), memprotocol.GetDeps{Store: stack.Memory, DriverName: cfg.State.Driver, HeavyThreshold: 1 << 20}, prototypes.MemoryGetRequest{Key: key}, q)
 	if err != nil || !strings.Contains(string(get.Detail.Value), constraint) || get.Detail.Item.ExpiresAt.IsZero() {
 		t.Fatalf("get=%+v err=%v", get, err)
 	}
-	// A memory read must not create an independently retained copy of an
-	// expiring private source. Source-bound heavy retrieval remains required.
-	if _, err := memprotocol.Get(t.Context(), memprotocol.GetDeps{Store: stack.Memory, Artifacts: stack.Artifacts, DriverName: cfg.State.Driver, HeavyThreshold: 1}, prototypes.MemoryGetRequest{Key: key}, q); !errors.Is(err, memprotocol.ErrContextLeak) {
-		t.Fatalf("heavy expiry boundary=%v", err)
+	// A heavy read names the current source without copying its private bytes.
+	heavy, err := memprotocol.Get(t.Context(), memprotocol.GetDeps{Store: stack.Memory, DriverName: cfg.State.Driver, HeavyThreshold: 1}, prototypes.MemoryGetRequest{Key: key}, q)
+	if err != nil || heavy.Detail.ValueArtifact == nil || len(heavy.Detail.Value) != 0 {
+		t.Fatalf("heavy reference: %v", err)
+	}
+	sourceRef, content, err := memory.ResolveSourceReference(t.Context(), stack.Memory, q, heavy.Detail.ValueArtifact.ID)
+	if err != nil || !bytes.Equal(content, get.Detail.Value) {
+		t.Fatalf("heavy source read: %v", err)
+	}
+	if _, found, err := stack.Artifacts.Get(t.Context(), sourceRef.Scope, sourceRef.ID); err != nil || found {
+		t.Fatalf("independent source copy found=%v err=%v", found, err)
 	}
 	put, err := memprotocol.Put(t.Context(), memprotocol.PutDeps{Store: stack.Memory, Bus: stack.Bus}, prototypes.MemoryPutRequest{Turn: prototypes.MemoryTurnInput{UserMessage: "SECOND-NOTE-ONLY", AssistantResponse: "operator note"}}, q)
 	if err != nil || put.Key == "" {
@@ -63,6 +72,9 @@ func TestRunOnce_MemoryInspectionUsesExecutionOwner(t *testing.T) {
 	if _, err := memprotocol.Delete(t.Context(), memprotocol.DeleteDeps{Store: stack.Memory, Bus: stack.Bus}, prototypes.MemoryDeleteRequest{Key: key}, q); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := memory.ResolveSourceReference(t.Context(), stack.Memory, q, sourceRef.ID); !errors.Is(err, memory.ErrNotFound) {
+		t.Fatalf("source reference survived deletion: %v", err)
+	}
 	if _, err := stack.RunOnce(t.Context(), "continue again", id, assemble.WithRunID("agent-after-delete")); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +82,7 @@ func TestRunOnce_MemoryInspectionUsesExecutionOwner(t *testing.T) {
 	if strings.Contains(request, constraint) || !strings.Contains(request, "SECOND-NOTE-ONLY") {
 		t.Fatal("deletion lost an unrelated source or retained the deleted one")
 	}
-	if _, err := memprotocol.Get(t.Context(), memprotocol.GetDeps{Store: stack.Memory, Artifacts: stack.Artifacts, DriverName: cfg.State.Driver, HeavyThreshold: 1 << 20}, prototypes.MemoryGetRequest{Key: put.Key}, q); err != nil {
+	if _, err := memprotocol.Get(t.Context(), memprotocol.GetDeps{Store: stack.Memory, DriverName: cfg.State.Driver, HeavyThreshold: 1 << 20}, prototypes.MemoryGetRequest{Key: put.Key}, q); err != nil {
 		t.Fatalf("unrelated key moved after deletion: %v", err)
 	}
 }

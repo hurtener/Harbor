@@ -70,6 +70,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -199,8 +200,8 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 		t.Fatalf("durable.New: %v", err)
 	}
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: store, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -238,7 +239,7 @@ func assembleWaveV17(t *testing.T) *waveV17Assembly {
 		t.Fatalf("sessions.New: %v", err)
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: legacySkillStore, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Artifacts: arts, Skills: legacySkillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -433,10 +434,10 @@ func (a *waveV17Assembly) seedSession(t *testing.T, id identity.Identity) {
 	if _, err := a.reg.Open(ictx, id.SessionID, id); err != nil {
 		t.Fatalf("reg.Open %s: %v", id.SessionID, err)
 	}
-	if err := a.mem.AddTurn(ictx, q, memory.ConversationTurn{
+	if _, err := a.mem.Put(ictx, q, memory.ConversationTurn{
 		UserMessage: "secret question", AssistantResponse: "secret answer",
 	}); err != nil {
-		t.Fatalf("AddTurn %s: %v", id.SessionID, err)
+		t.Fatalf("Put %s: %v", id.SessionID, err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	if _, err := a.arts.PutBytes(ctx, scope, []byte("private blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
@@ -636,12 +637,11 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 			t.Errorf("artifacts survived erasure: %d", n)
 		}
 		// memory clean.
-		patch, err := a.mem.GetLLMContext(ctx, identity.Quadruple{Identity: idErase})
-		if err != nil {
-			t.Fatalf("GetLLMContext: %v", err)
+		if _, err := a.mem.Inspect(ctx, identity.Quadruple{Identity: idErase}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+			t.Fatalf("erased memory not fenced: %v", err)
 		}
-		if len(patch.RecentTurns) != 0 {
-			t.Errorf("memory survived erasure: %d turns", len(patch.RecentTurns))
+		if _, err := a.store.Load(ctx, identity.Quadruple{Identity: idErase}, state.InternalKindPrefix+"session-execution-context"); !errors.Is(err, state.ErrNotFound) {
+			t.Fatalf("cumulative memory survived erasure: %v", err)
 		}
 		// state.history empty: the erased triple's durable event stream + the
 		// session.lifecycle record are gone.
@@ -657,12 +657,12 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 		if n := a.artifactCount(t, idBystander); n != 1 {
 			t.Errorf("cross-tenant isolation broken: tenant-B artifacts = %d, want 1", n)
 		}
-		bpatch, err := a.mem.GetLLMContext(ctx, identity.Quadruple{Identity: idBystander})
+		bpatch, err := a.mem.Inspect(ctx, identity.Quadruple{Identity: idBystander})
 		if err != nil {
-			t.Fatalf("GetLLMContext bystander: %v", err)
+			t.Fatalf("Inspect bystander: %v", err)
 		}
-		if len(bpatch.RecentTurns) != 1 {
-			t.Errorf("cross-tenant isolation broken: tenant-B turns = %d, want 1", len(bpatch.RecentTurns))
+		if len(bpatch.Items) != 1 {
+			t.Errorf("cross-tenant isolation broken: tenant-B turns = %d, want 1", len(bpatch.Items))
 		}
 		if _, err := a.store.Load(ctx, identity.Quadruple{Identity: idBystander}, "session.lifecycle"); err != nil {
 			t.Errorf("cross-tenant isolation broken: tenant-B session.lifecycle erased: %v", err)

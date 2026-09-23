@@ -87,13 +87,13 @@ type forbiddenRetainedMemory struct {
 	calls atomic.Int64
 }
 
-func (m *forbiddenRetainedMemory) GetLLMContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
+func (m *forbiddenRetainedMemory) Inspect(context.Context, identity.Quadruple) (memory.Inspection, error) {
 	m.calls.Add(1)
-	return memory.LLMContextPatch{}, errors.New("legacy memory must not be projected twice")
+	return memory.Inspection{}, errors.New("administrative memory must not be projected twice")
 }
-func (m *forbiddenRetainedMemory) AddTurn(context.Context, identity.Quadruple, memory.ConversationTurn) error {
+func (m *forbiddenRetainedMemory) Put(context.Context, identity.Quadruple, memory.ConversationTurn) (string, error) {
 	m.calls.Add(1)
-	return errors.New("legacy memory write must not run")
+	return "", errors.New("execution must not write through the administrative note API")
 }
 
 func TestRunOnce_RetainedContextActualRequestAndHook(t *testing.T) {

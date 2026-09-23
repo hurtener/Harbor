@@ -81,13 +81,15 @@ for the trust tiers, replacement behavior, and validation limits.
 
 ### `memory`
 
-Multi-turn context. Default strategy is `none` (no memory across runs in a session); flip to `rolling_summary` for chatbot agents that need it.
+Multi-turn execution context. The default is cumulative `rolling_summary`;
+choose `none` explicitly for stateless agents. All adapters share the execution
+owner, and the `state` configuration below determines durability.
 
 ```yaml
 memory:
-  driver: sqlite                               # or `inmem` (dev default) / `postgres`
-  dsn: ./my-agent-memory.sqlite                # MOVE outside the project dir to avoid the WAL trap
-  strategy: rolling_summary                    # or `truncation` / `none`
+  driver: inmem                                # administrative adapter; persistence uses state
+  strategy: rolling_summary                    # or explicit `none`
+  recent_turns: 20                              # detailed tail, not checkpoint history
   budget_tokens: 8000                          # working-input target, NOT an output limit
 ```
 
@@ -102,7 +104,9 @@ On the PR #779 cumulative-memory branch, `rolling_summary` also enables the
 shared served/embedded execution-context path. `recent_turns: 20` (or zero)
 bounds detailed history, not checkpoint age. The separate
 `sessions.retained_context_turns` and SDK activation option are removed.
-The omitted-strategy default and old memory-store retirement remain in progress.
+Omitted settings and newly scaffolded agents select this behavior. The old
+pair-summary engine is removed; `truncation` and `memory.recovery_backlog_max`
+are rejected rather than enabling a second pipeline.
 
 The WAL trap: `dsn: ./...` inside the project directory triggers `harbor dev`'s fsnotify watcher and reboots the runtime in a loop. Default-drop the DSN at `/tmp/harbor-validation/my-agent-memory.sqlite` or `~/.harbor/my-agent-memory.sqlite`. See [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) §3.
 
@@ -258,7 +262,7 @@ Failure modes the validator catches:
 
 - **Required field missing** — `llm.driver`, `llm.provider`, `llm.model`, `identity.issuer`, etc.
 - **Type mismatches** — `memory.budget_tokens: "8000"` (string instead of int).
-- **Enum violations** — `memory.strategy: "summary"` (not one of `none` / `truncation` / `rolling_summary`).
+- **Enum violations** — `memory.strategy: "summary"` (not one of `none` / `rolling_summary`).
 - **Bound violations** — `governance.identity_tiers.free.budget_ceiling_usd: -1` (negative).
 - **Cross-field constraints** — `memory.driver: sqlite` without `memory.dsn`.
 

@@ -112,7 +112,6 @@ func TestCascadeEraser_ProjectionSeams_TurnsFencedThenDeletedRollupsFenced(t *te
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry:          f.reg,
 		State:             f.store,
-		Memory:            f.mem,
 		Artifacts:         f.arts,
 		Skills:            f.skills,
 		Bus:               busOf(t, f),
@@ -174,7 +173,6 @@ func TestCascadeEraser_ProjectionFencerFailure_FailsLoudRetrySafe(t *testing.T) 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry:          f.reg,
 		State:             f.store,
-		Memory:            f.mem,
 		Artifacts:         f.arts,
 		Skills:            f.skills,
 		Bus:               busOf(t, f),
@@ -235,7 +233,7 @@ func TestCascadeEraser_TurnsProjectionDeleteFailure_FailsLoud_FenceSurvivesRetry
 
 	turnsSeam := &turnsEraserRecorder{deleteFail: errors.New("turns delete backend unavailable")}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Registry: f.reg, State: f.store, Artifacts: f.arts,
 		Skills: f.skills, Bus: busOf(t, f),
 		TurnsProjection: turnsSeam,
 	})
@@ -320,7 +318,7 @@ func TestCascadeEraser_TurnsProjection_PersistedRowsGone_FenceSurvives(t *testin
 	}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Registry: f.reg, State: f.store, Artifacts: f.arts,
 		Skills: f.skills, Bus: busOf(t, f),
 		TurnsProjection: turnsStore,
 	})
@@ -380,7 +378,7 @@ func TestCascadeEraser_UnwiredProjectionSeams_Noop(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts,
+		Registry: f.reg, State: f.store, Artifacts: f.arts,
 		Skills: f.skills, Bus: busOf(t, f),
 	})
 	if err != nil {

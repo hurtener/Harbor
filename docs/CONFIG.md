@@ -824,12 +824,13 @@ section, so an omitted `reasoning_mode` there resolves to the default `off`.
 
 ## Memory
 
-### Pending cumulative-memory migration — PR #779
+### Cumulative session-memory migration — PR #779
 
 The accepted D-477 / RFC 002 target replaces the separate retained execution
 window and pair-only summary pipeline. It is **not implemented by the historical
-RC1–RC4 tags**. The sections below distinguish landed configuration changes
-from the remaining owner/activation migration.
+RC1–RC4 tags**. The current implementation uses one execution-memory owner;
+release acceptance remains tracked separately in
+[the implementation tracker](notes/portable-context-tracker.md).
 
 The target standard configuration is:
 
@@ -859,8 +860,16 @@ session/SDK activation switches are also removed: choose
 embedding. Omitted YAML memory settings and `config.Defaults()` now select
 `rolling_summary` with `recent_turns: 20`. This retains short-term session
 context and may make governed compaction calls. Set `memory.strategy: none`
-explicitly for stateless execution. Legacy memory-store retirement remains
-pending; these increments are not the full D-477 implementation.
+explicitly for stateless execution. The legacy pair-summary engine and its
+background recovery loop are removed. Administrative `Inspect`/`Put`/`Delete`
+use the same cumulative owner as runtime execution. `Put` accepts a conversational
+note, not caller-asserted tool receipts or execution metadata.
+
+Large `memory.get` values return source-bound references. Read them through
+bounded `artifacts.get`, which checks the current memory source on every read.
+They are not separate stored artifacts and cannot be presigned. Deletion,
+expiry or a changed source invalidates the old reference; re-read `memory.list`
+to inspect the current representation. Use `memory.delete` to delete the source.
 
 ### memory.driver
 
@@ -873,8 +882,8 @@ Persistent-driver connection string. Default: empty. Validation:
 required when `driver != "inmem"`. Secret: redacted.
 
 Note (D-174): conversation memory durability rides on the configured
-**`state.driver`**, not `memory.dsn`. Under the executor-delegation model
-all memory drivers persist strategy state through the StateStore, so a SQL
+**`state.driver`**, not `memory.dsn`. All memory drivers share the cumulative
+owner backed by the StateStore, so a SQL
 memory driver with a SQL `memory.dsn` but an `inmem` `state.driver` is
 NOT durable across a restart. To make memory durable, set a SQL
 `state.driver`; `inmem` memory + a SQL StateStore is already durable.
@@ -895,15 +904,13 @@ completed. Restart-required.
 
 ### memory.strategy
 
-Memory shape. Default: `rolling_summary`. Validation: `none` / `truncation` /
-`rolling_summary`. All three strategies run on every memory driver
-(`inmem` / `sqlite` / `postgres`) — they delegate to a shared strategy
-executor that persists through the configured StateStore, so a SQL
-`state.driver` makes `truncation` and `rolling_summary` durable across a
-runtime restart (D-174). `rolling_summary` requires an LLM: `harbor dev`
-builds the Summarizer from the configured `llm` automatically (no separate
-summariser model). Configuring `rolling_summary` with no LLM fails loud at
-boot — there is no stub fallback (CLAUDE.md §13).
+Memory shape. Default: `rolling_summary`. Validation: `none` / `rolling_summary`.
+The removed `truncation` strategy is rejected: cumulative memory never discards
+unsummarized history to fit the recent window. Every memory driver uses the same
+StateStore-backed execution owner. A SQL `state.driver` makes this history durable
+across restart. `rolling_summary` requires the governed LLM client; the runtime
+constructs its trajectory compactor through that client. Missing dependencies
+fail at boot rather than selecting a stub or a second summary pipeline.
 
 ### memory.budget_tokens
 
@@ -914,13 +921,10 @@ also builds the within-run compactor for stateless execution. It is a soft
 target: preserve fresh tool results; the final model admission guard remains
 mandatory. It never sets or lowers a model's output-token allowance.
 
-During the remaining owner migration, the legacy pair-store strategy also
-consumes this value. There is no second planner budget or compatibility alias.
-
-### memory.recovery_backlog_max
-
-Bounded queue size for the `rolling_summary` strategy's recovery
-loop (D-035). Default: `16`. Validation: >= 0.
+There is no second planner budget or pair-only summary engine.
+The former `memory.recovery_backlog_max` setting and its environment override
+are removed and rejected. Cumulative memory fails explicitly when unsummarized
+evidence cannot fit; it never drops a recovery backlog to create space.
 
 ### memory.recent_turns
 
@@ -928,8 +932,7 @@ Number of recent root executions the cumulative `rolling_summary` strategy
 keeps in detail. Default: `20`; explicit `0` also selects twenty turns.
 Validation: `0..32`.
 The checkpoint carries earlier meaning after covered detail leaves the window;
-this number is not a checkpoint-history limit. Ignored by the
-`none` and `truncation` strategies.
+this number is not a checkpoint-history limit. Ignored by `none`.
 
 ### memory.summarizer.model
 
@@ -938,8 +941,8 @@ independent of the planner's model — set it to a cheaper/faster model
 to keep compaction cheap (D-243). Default: empty → the main LLM's
 default model (today's behavior). A model with no matching
 `model_profiles` entry fails at runtime like any unsupported model; it
-is not rejected at load time. Ignored by the `none` and `truncation`
-strategies.
+is not rejected at load time. It selects the maintenance model whenever a
+within-run or cross-turn compactor is configured.
 
 ### memory.summarizer.prompt
 
@@ -947,8 +950,7 @@ Operator guidance APPENDED to the baseline `rolling_summary`
 summariser system prompt behind an explicit "extend, do not override"
 separator (D-243) — it never replaces the baseline role framing or
 conciseness/preserve-goals guarantees. Default: empty → baseline
-prompt only (no behavior change). Ignored by the `none` and
-`truncation` strategies.
+prompt only. It applies whenever a within-run or cross-turn compactor is configured.
 
 ### Removed semantic-memory settings
 

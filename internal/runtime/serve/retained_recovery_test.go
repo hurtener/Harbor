@@ -70,7 +70,7 @@ func TestE2E_ServedContextRecovery_SealsAndContinues(t *testing.T) {
 	if err := old.BeforeDispatch(t.Context(), base, step); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("old dispatch not fenced: %v", err)
 	}
-	env, client, calls, memory := retainedServerHarness(t, func(o *RunLoopDriverOptions) { o.StateStore, o.Redactor = d.in.State, d.in.Redactor })
+	env, client, calls := retainedServerHarness(t, func(o *RunLoopDriverOptions) { o.StateStore, o.Redactor = d.in.State, d.in.Redactor })
 	next := retainedServerTurn(t, env, base.Quadruple.Identity, "continue the recovered document", nil)
 	if next.Status != tasks.StatusComplete {
 		t.Fatalf("next turn failed: %+v", next.Error)
@@ -81,8 +81,8 @@ func TestE2E_ServedContextRecovery_SealsAndContinues(t *testing.T) {
 			t.Fatalf("actual next served request missing %.60s", want)
 		}
 	}
-	if calls.Load() != 0 || memory.calls.Load() != 0 {
-		t.Fatal("recovery reran tools or consulted legacy memory")
+	if calls.Load() != 0 {
+		t.Fatal("recovery reran tools")
 	}
 }
 

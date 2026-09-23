@@ -12,7 +12,7 @@ import (
 )
 
 func TestList_ProjectsTurnsForCallerIdentity(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 5)
 
@@ -70,7 +70,7 @@ func TestList_FailsLoudlyOnIncompleteIdentity(t *testing.T) {
 }
 
 func TestList_ScopeFacet(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 3)
 
@@ -103,7 +103,7 @@ func TestList_ScopeFacet(t *testing.T) {
 }
 
 func TestList_DriverFacet(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 4)
 
@@ -133,23 +133,11 @@ func TestList_DriverFacet(t *testing.T) {
 }
 
 func TestList_StrategyFacet(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 2)
 
 	resp, err := memprotocol.List(context.Background(),
-		memprotocol.ListDeps{Store: h.store, DriverName: "inmem"},
-		prototypes.MemoryListRequest{Filter: prototypes.MemoryFilter{
-			Strategies: []string{string(prototypes.MemoryStrategyTruncation)},
-		}}, id)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(resp.Items) != 2 {
-		t.Errorf("truncation-strategy filter returned %d, want 2", len(resp.Items))
-	}
-
-	resp, err = memprotocol.List(context.Background(),
 		memprotocol.ListDeps{Store: h.store, DriverName: "inmem"},
 		prototypes.MemoryListRequest{Filter: prototypes.MemoryFilter{
 			Strategies: []string{string(prototypes.MemoryStrategyRollingSummary)},
@@ -157,13 +145,25 @@ func TestList_StrategyFacet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
+	if len(resp.Items) != 2 {
+		t.Errorf("rolling_summary-strategy filter returned %d, want 2", len(resp.Items))
+	}
+
+	resp, err = memprotocol.List(context.Background(),
+		memprotocol.ListDeps{Store: h.store, DriverName: "inmem"},
+		prototypes.MemoryListRequest{Filter: prototypes.MemoryFilter{
+			Strategies: []string{string(prototypes.MemoryStrategyTruncation)},
+		}}, id)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
 	if len(resp.Items) != 0 {
-		t.Errorf("rolling_summary-strategy filter returned %d, want 0", len(resp.Items))
+		t.Errorf("removed truncation-strategy filter returned %d, want 0", len(resp.Items))
 	}
 }
 
 func TestList_ContentSearchFacet(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 4)
 
@@ -194,7 +194,7 @@ func TestList_ContentSearchFacet(t *testing.T) {
 }
 
 func TestList_AllFacetsCombined(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 6)
 
@@ -206,7 +206,7 @@ func TestList_AllFacetsCombined(t *testing.T) {
 			SessionIDs:    []string{id.SessionID},
 			Scopes:        []string{string(prototypes.MemoryScopeSession)},
 			Drivers:       []string{string(prototypes.MemoryDriverInmem)},
-			Strategies:    []string{string(prototypes.MemoryStrategyTruncation)},
+			Strategies:    []string{string(prototypes.MemoryStrategyRollingSummary)},
 			ContentSearch: "answer",
 		}}, id)
 	if err != nil {
@@ -218,7 +218,7 @@ func TestList_AllFacetsCombined(t *testing.T) {
 }
 
 func TestList_PaginationBoundaries(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 10)
 
@@ -331,7 +331,7 @@ func TestList_AggregatesIdentityRejectedCount(t *testing.T) {
 	// an incomplete triple — the driver fails closed AND emits the
 	// event on the bus (D-033).
 	for range 3 {
-		_ = h.store.AddTurn(context.Background(),
+		_, _ = h.store.Put(context.Background(),
 			identity.Quadruple{Identity: identity.Identity{TenantID: id.TenantID, UserID: id.UserID}},
 			memory.ConversationTurn{})
 	}

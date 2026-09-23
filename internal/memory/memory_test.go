@@ -129,46 +129,8 @@ func TestOpen_DefaultsToInMemDriver(t *testing.T) {
 	}
 	defer mem.Close(context.Background())
 	// Confirm the resolved driver actually works against a valid identity.
-	if _, err := mem.Health(context.Background(), validQuadruple()); err != nil {
-		t.Errorf("Health on defaulted driver: %v", err)
-	}
-}
-
-// TestOpen_Truncation_OperationalAtPhase24 asserts the Phase 24
-// migration: the registry path now accepts `truncation` (no
-// summariser needed). Replaces the Phase 23
-// TestOpen_StrategyNotImplemented_Truncation test which expected
-// the strategy to error out.
-func TestOpen_Truncation_OperationalAtPhase24(t *testing.T) {
-	deps := newTestDeps(t)
-	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
-		Driver:   "inmem",
-		Strategy: memory.StrategyTruncation,
-	}, deps)
-	if err != nil {
-		t.Fatalf("Open truncation: %v", err)
-	}
-	defer mem.Close(context.Background())
-	// Confirm the resolved driver works against a valid identity.
-	if _, err := mem.Health(context.Background(), validQuadruple()); err != nil {
-		t.Errorf("Health on truncation driver: %v", err)
-	}
-}
-
-// TestOpen_RollingSummary_RequiresInjectableSummarizer asserts that
-// the registry path rejects `rolling_summary` because no
-// Summarizer is injectable through the registry today; operators
-// staging the strategy MUST call the driver's New() directly with
-// inmem.Options{Summarizer: ...}. Phase 32+ will land an LLM-backed
-// default summariser the registry resolves automatically.
-func TestOpen_RollingSummary_RequiresInjectableSummarizer(t *testing.T) {
-	deps := newTestDeps(t)
-	_, err := memory.Open(context.Background(), memory.ConfigSnapshot{
-		Driver:   "inmem",
-		Strategy: memory.StrategyRollingSummary,
-	}, deps)
-	if err == nil {
-		t.Fatal("err=nil, want non-nil for rolling_summary without summariser")
+	if _, err := mem.Inspect(context.Background(), validQuadruple()); err != nil {
+		t.Errorf("Inspect on defaulted driver: %v", err)
 	}
 }
 
@@ -261,25 +223,6 @@ func TestMustFrom_PanicsWhenAbsent(t *testing.T) {
 		}
 	}()
 	_ = memory.MustFrom(context.Background())
-}
-
-func TestSnapshot_IsEmpty(t *testing.T) {
-	cases := map[string]struct {
-		snap memory.Snapshot
-		want bool
-	}{
-		"zero value":         {memory.Snapshot{}, true},
-		"strategy only":      {memory.Snapshot{Strategy: memory.StrategyNone}, false},
-		"bytes only":         {memory.Snapshot{Bytes: []byte("x")}, false},
-		"strategy and bytes": {memory.Snapshot{Strategy: memory.StrategyTruncation, Bytes: []byte("x")}, false},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			if got := tc.snap.IsEmpty(); got != tc.want {
-				t.Errorf("IsEmpty=%v, want %v", got, tc.want)
-			}
-		})
-	}
 }
 
 func TestOpenDriver_RoutesByName(t *testing.T) {

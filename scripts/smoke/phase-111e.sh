@@ -48,15 +48,14 @@ assert_grep_present 'Compression \*planner\.CompressionRunner' "internal/runtime
     "RunSpec carries the Compression runner field"
 
 # 2. The production summariser exists, satisfies planner.Summariser,
-#    and is distinct from the memory Summarizer (the non-conflation
-#    rule).
+#    and is the sole production compactor for execution and session memory.
 assert_file "internal/llm/summarizer/trajectory.go" "TrajectorySummariser file exists"
 assert_grep_present 'func NewTrajectorySummariser' "internal/llm/summarizer/trajectory.go" \
     "NewTrajectorySummariser constructor exported"
 assert_grep_present 'planner\.Summariser = \(\*TrajectorySummariser\)\(nil\)' "internal/llm/summarizer/trajectory.go" \
     "compile-time planner.Summariser assertion present"
-assert_grep_present 'Two interfaces' "internal/llm/summarizer/summarizer.go" \
-    "package godoc disambiguates the two summarizer interfaces"
+assert_grep_present 'same compactor serves in-run' "internal/llm/summarizer/doc.go" \
+    "package godoc names the shared execution/session compactor"
 
 # 3. Budget.TokenBudget gains its production writers: both run-loop
 #    driver shells project the budget + the runner (D-094 both-sides).

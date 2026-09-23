@@ -18,7 +18,7 @@ func TestRetainedServer_ResultReferencesAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close(context.Background()) }()
-	env, client, calls, _ := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
+	env, client, calls := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
 		opts.ArtifactStore = store
 		opts.Executor = dispatch.NewToolExecutor(opts.Catalog, store, nil, dispatch.WithHeavyThreshold(4096))
 	})

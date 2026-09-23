@@ -2,44 +2,12 @@ package protocol
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"strings"
 	"testing"
 
-	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 )
-
-// stubArtifactStore is a minimal ArtifactStore that records nothing —
-// the leak test never reaches the artifact-routing branch (the leak
-// fires first). It exists only so BuildDetailLeakProbe has a non-nil
-// store argument; it is NOT a production-path stub (CLAUDE.md §13 — it
-// lives in an _test.go file and is never wired into a registry).
-type stubArtifactStore struct{}
-
-func (stubArtifactStore) PutBytes(context.Context, artifacts.ArtifactScope, []byte, artifacts.PutOpts) (artifacts.ArtifactRef, error) {
-	return artifacts.ArtifactRef{}, nil
-}
-func (stubArtifactStore) PutText(context.Context, artifacts.ArtifactScope, string, artifacts.PutOpts) (artifacts.ArtifactRef, error) {
-	return artifacts.ArtifactRef{}, nil
-}
-func (stubArtifactStore) Get(context.Context, artifacts.ArtifactScope, string) ([]byte, bool, error) {
-	return nil, false, nil
-}
-func (stubArtifactStore) GetRef(context.Context, artifacts.ArtifactScope, string) (*artifacts.ArtifactRef, bool, error) {
-	return nil, false, nil
-}
-func (stubArtifactStore) Exists(context.Context, artifacts.ArtifactScope, string) (bool, error) {
-	return false, nil
-}
-func (stubArtifactStore) Delete(context.Context, artifacts.ArtifactScope, string) (bool, error) {
-	return false, nil
-}
-func (stubArtifactStore) List(context.Context, artifacts.ArtifactScope) ([]artifacts.ArtifactRef, error) {
-	return nil, nil
-}
-func (stubArtifactStore) Close(context.Context) error { return nil }
 
 // TestBuildDetail_FailsLoudlyOnHeavyBytesReachingInlinePath is the
 // D-026 negative test the phase plan mandates: a row that was NOT
@@ -55,7 +23,7 @@ func TestBuildDetail_FailsLoudlyOnHeavyBytesReachingInlinePath(t *testing.T) {
 		TenantID: "t", UserID: "u", SessionID: "s",
 	}}
 
-	err := BuildDetailLeakProbe(context.Background(), stubArtifactStore{}, threshold, heavy, id)
+	err := BuildDetailLeakProbe(threshold, heavy, id)
 	if !errors.Is(err, ErrContextLeak) {
 		t.Fatalf("BuildDetailLeakProbe with heavy bytes on the inline path: err = %v, want ErrContextLeak (D-026)", err)
 	}
@@ -69,7 +37,7 @@ func TestBuildDetail_LightBytesInlineCleanly(t *testing.T) {
 	id := identity.Quadruple{Identity: identity.Identity{
 		TenantID: "t", UserID: "u", SessionID: "s",
 	}}
-	err := BuildDetailLeakProbe(context.Background(), stubArtifactStore{}, threshold, light, id)
+	err := BuildDetailLeakProbe(threshold, light, id)
 	if err != nil {
 		t.Fatalf("BuildDetailLeakProbe with light bytes: err = %v, want nil", err)
 	}

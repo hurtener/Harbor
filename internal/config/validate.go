@@ -1208,7 +1208,6 @@ var memoryDriversRequiringDSN = map[string]struct{}{
 // validation rather than later at memory.Open — fail fast.
 var allowedMemoryStrategies = map[string]struct{}{
 	"none":            {},
-	"truncation":      {},
 	"rolling_summary": {},
 }
 
@@ -1302,9 +1301,6 @@ func (c *Config) validateMemory() error {
 	}
 	if c.Memory.BudgetTokens < 0 {
 		return fieldError("memory.budget_tokens", "must be >= 0")
-	}
-	if c.Memory.RecoveryBacklogMax < 0 {
-		return fieldError("memory.recovery_backlog_max", "must be >= 0")
 	}
 	if c.Memory.RecentTurns < 0 || c.Memory.RecentTurns > MaxMemoryRecentTurns {
 		return fieldError("memory.recent_turns", fmt.Sprintf("must be between 0 and %d (zero selects 20)", MaxMemoryRecentTurns))

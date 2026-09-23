@@ -110,9 +110,8 @@ func minimalCfg(t *testing.T) *config.Config {
 			RemoteDriver: "loopback",
 		},
 		Memory: config.MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "none",
-			RecoveryBacklogMax: 8,
+			Driver:   "inmem",
+			Strategy: "none",
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -888,7 +887,7 @@ func TestAssemble_ForcedFailures_PartialStackClosesClean(t *testing.T) {
 				cfg.LLM = config.LLMConfig{}
 				cfg.Memory.Strategy = "rolling_summary"
 			},
-			wantErr: "rolling_summary requires an LLM",
+			wantErr: "trajectory summariser can be built",
 		},
 		{
 			name:    "skills stage",

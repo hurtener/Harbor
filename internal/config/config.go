@@ -715,8 +715,8 @@ type RuntimeNamingConfig struct {
 // string for Postgres). `secret:"true"` redacts the value in
 // audit-redacted logs.
 //
-// `Strategy` selects the memory shape: `"none"`, or
-// `"truncation"` / `"rolling_summary"`. Default `rolling_summary`.
+// `Strategy` selects disabled (`"none"`) or cumulative (`"rolling_summary"`)
+// session memory. Empty selects the default `rolling_summary`.
 // `memory.Open` rejects strategies the configured driver does not
 // implement with `ErrStrategyNotImplemented`.
 //
@@ -724,29 +724,20 @@ type RuntimeNamingConfig struct {
 // builds the within-run compactor even for stateless execution. With
 // rolling_summary, zero derives a safe target from each effective model's
 // input capacity and output reservation; it does not disable compaction.
-// Model completion/output limits remain independent. The legacy pair-store
-// strategies also consume this budget until the cumulative-owner migration.
-//
-// `RecoveryBacklogMax` is the bounded queue size for the
-// `rolling_summary` strategy's recovery loop. Default 16
-// (applied by the loader when the section is omitted). Overflow
-// drops oldest and emits `memory.recovery_dropped` on the bus.
-// Ignored by the `none` and `truncation` strategies.
+// Model completion/output limits remain independent.
 //
 // `RecentTurns` bounds the detailed execution window for cumulative
 // `rolling_summary` memory. Zero selects twenty turns; the maximum is 32.
 // It does not bound the age of meaning in the checkpoint. Ignored by the `none`
-// strategy; the `truncation` strategy keeps every turn that fits the
-// budget so it does not consult this knob.
+// strategy.
 //
 // Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
-	Driver             string          `yaml:"driver"`
-	DSN                string          `yaml:"dsn,omitempty" secret:"true"`
-	MigrationMode      sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
-	Strategy           string          `yaml:"strategy,omitempty"`
-	BudgetTokens       int             `yaml:"budget_tokens,omitempty"`
-	RecoveryBacklogMax int             `yaml:"recovery_backlog_max,omitempty"`
+	Driver        string          `yaml:"driver"`
+	DSN           string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
+	Strategy      string          `yaml:"strategy,omitempty"`
+	BudgetTokens  int             `yaml:"budget_tokens,omitempty"`
 	// RecentTurns bounds recent execution detail; zero selects twenty turns.
 	RecentTurns int `yaml:"recent_turns,omitempty"`
 
@@ -996,7 +987,7 @@ const MaxMemoryRecentTurns = 32
 // RecentTurnsResolved returns the cumulative memory window. Zero recent_turns
 // selects twenty detailed turns. Other strategies do not use this projection.
 func (c MemoryConfig) RecentTurnsResolved() int {
-	if c.Strategy != "rolling_summary" {
+	if c.Strategy == "none" {
 		return 0
 	}
 	if c.RecentTurns == 0 {

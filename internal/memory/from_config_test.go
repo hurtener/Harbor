@@ -12,22 +12,20 @@ import (
 func TestSnapshotFromConfig_Golden(t *testing.T) {
 	t.Parallel()
 	snap := SnapshotFromConfig(config.MemoryConfig{
-		Driver:             "sqlite",
-		DSN:                "file:mem.db",
-		MigrationMode:      sqlmigrate.ModeVerify,
-		Strategy:           "rolling_summary",
-		BudgetTokens:       2048,
-		RecoveryBacklogMax: 32,
-		RecentTurns:        8,
+		Driver:        "sqlite",
+		DSN:           "file:mem.db",
+		MigrationMode: sqlmigrate.ModeVerify,
+		Strategy:      "rolling_summary",
+		BudgetTokens:  2048,
+		RecentTurns:   8,
 	})
 	want := ConfigSnapshot{
-		Driver:             "sqlite",
-		DSN:                "file:mem.db",
-		MigrationMode:      sqlmigrate.ModeVerify,
-		Strategy:           StrategyRollingSummary,
-		BudgetTokens:       2048,
-		RecoveryBacklogMax: 32,
-		RecentTurns:        8,
+		Driver:        "sqlite",
+		DSN:           "file:mem.db",
+		MigrationMode: sqlmigrate.ModeVerify,
+		Strategy:      StrategyRollingSummary,
+		BudgetTokens:  2048,
+		RecentTurns:   8,
 	}
 	if snap != want {
 		t.Errorf("SnapshotFromConfig = %+v, want %+v", snap, want)
@@ -41,13 +39,12 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 func TestSnapshotFromConfig_FieldParity_MemoryConfig(t *testing.T) {
 	t.Parallel()
 	projected := map[string]bool{
-		"Driver":             true,
-		"DSN":                true,
-		"MigrationMode":      true,
-		"Strategy":           true,
-		"BudgetTokens":       true,
-		"RecoveryBacklogMax": true,
-		"RecentTurns":        true,
+		"Driver":        true,
+		"DSN":           true,
+		"MigrationMode": true,
+		"Strategy":      true,
+		"BudgetTokens":  true,
+		"RecentTurns":   true,
 	}
 	excluded := map[string]string{
 

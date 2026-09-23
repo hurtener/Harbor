@@ -16,6 +16,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
@@ -59,24 +60,8 @@ func ledgerScopeForTest(id identity.Identity) identity.Quadruple {
 // fails this test loudly rather than silently reading the wrong scope.
 const erasureAuditObservabilitySession = "<erasure-audit>"
 
-// flakyMemory wraps a real MemoryStore and fails Flush while its toggle
-// is set, forcing a mid-cascade interruption immediately AFTER the
-// artifacts step has already durably checkpointed its count — the #410
-// fault-injection seam.
-type flakyMemory struct {
-	memory.MemoryStore
-	fail *atomic.Bool
-}
-
-func (m *flakyMemory) Flush(ctx context.Context, id identity.Quadruple) error {
-	if m.fail.Load() {
-		return errors.New("flaky memory store: forced flush failure")
-	}
-	return m.MemoryStore.Flush(ctx, id)
-}
-
 // TestCascadeEraser_LedgerCumulative_InterruptedAfterArtifacts_ReinvokeSumsCounts
-// pins #410: a cascade interrupted AFTER the artifacts step (memory.Flush
+// pins #410: a cascade interrupted AFTER the artifacts step (state.DeleteScope
 // fails) durably checkpoints the artifacts count before failing; a
 // re-invoke that converges reports the TRUE cumulative total (the first
 // attempt's artifacts contribution + the second attempt's memory/state
@@ -91,10 +76,10 @@ func TestCascadeEraser_LedgerCumulative_InterruptedAfterArtifacts_ReinvokeSumsCo
 	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := f.mem.Put(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	const wantArtifacts = 3
@@ -111,15 +96,15 @@ func TestCascadeEraser_LedgerCumulative_InterruptedAfterArtifacts_ReinvokeSumsCo
 
 	var fail atomic.Bool
 	fail.Store(true)
-	flakyMem := &flakyMemory{MemoryStore: f.mem, fail: &fail}
+	flakyState := &flakyLedgerStore{StateStore: f.store, deleteScopeFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: flakyMem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flakyState, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
 	}
 
-	// First attempt: fails at the memory step, AFTER the artifacts step
+	// First attempt: fails at the state deletion step, AFTER the artifacts step
 	// already ran (and durably checkpointed its count).
 	if _, derr := eraser.Erase(ctx, id); derr == nil {
 		t.Fatal("interrupted cascade did not surface loudly")
@@ -334,7 +319,7 @@ func TestCascadeEraser_OldLedgerAbsentSession_SweepFailureRetries(t *testing.T) 
 	fail.Store(true)
 	flakySkills := &flakySessionSkillSweepStore{SkillStore: f.skills, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: flakySkills, Bus: f.bus,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: flakySkills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -375,7 +360,7 @@ func TestCascadeEraser_OldLedgerAbsentSession_CheckpointFailureRetries(t *testin
 	fail.Store(true)
 	flakyState := &flakyLedgerStore{StateStore: f.store, saveFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flakyState, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flakyState, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -450,10 +435,10 @@ func TestCascadeEraser_FinalEmitPublishFailure_FailsLoud_ReinvokeConverges(t *te
 	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := f.mem.Put(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	if _, err := f.arts.PutBytes(ctx, scope, []byte("blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
@@ -469,7 +454,7 @@ func TestCascadeEraser_FinalEmitPublishFailure_FailsLoud_ReinvokeConverges(t *te
 	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -568,7 +553,7 @@ func TestCascadeEraser_RedactorRefusal_FailsLoud_ReinvokeConverges(t *testing.T)
 	fail.Store(true)
 	flaky := &flakyRedactor{inner: passthroughRedactor{}, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus, Redactor: flaky,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills, Bus: f.bus, Redactor: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -693,7 +678,7 @@ func TestCascadeEraser_StaleLedger_EmitsOldLifecycleBeforeDeletingCheckpoint(t *
 		<-release
 	}}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -742,7 +727,7 @@ func TestCascadeEraser_StaleLedger_DeleteFailureRetryDoesNotDuplicateOldRecord(t
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -794,7 +779,7 @@ func TestCascadeEraser_StaleLedger_EmitFailureRetainsCheckpointAndLiveSession(t 
 	fail.Store(true)
 	bus := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: bus,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills, Bus: bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -846,7 +831,7 @@ func TestCascadeEraser_FailedErase_ReopenBlocked_ReinvokeConverges(t *testing.T)
 	fail.Store(true)
 	flaky := &flakyPublishBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 	failEraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -981,7 +966,7 @@ func TestCascadeEraser_LedgerLoadFailure_FailsLoud_TouchesNothing(t *testing.T) 
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, loadFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1050,7 +1035,7 @@ func TestCascadeEraser_LedgerSaveFailure_LoudAndRetrySafe(t *testing.T) {
 	skip.Store(1)
 	flaky := &flakyLedgerStore{StateStore: f.store, saveFail: &fail, saveSkip: &skip}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1120,8 +1105,8 @@ func TestCascadeEraser_CorruptLedger_FailsLoud(t *testing.T) {
 }
 
 // TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe pins a failure at
-// the irreversible-clear step itself: artifacts + memory already
-// completed (and checkpointed), state.DeleteScope errors, Erase fails
+// the irreversible-clear step itself: artifacts are already deleted and
+// checkpointed, state.DeleteScope errors, Erase fails
 // loud, and a retry converges with the cumulative counts intact.
 func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	f := newErasureFixture(t, nil)
@@ -1131,10 +1116,10 @@ func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := f.mem.Put(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	if _, err := f.arts.PutBytes(ctx, scope, []byte("blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
@@ -1145,7 +1130,7 @@ func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteScopeFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1154,7 +1139,30 @@ func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	if _, derr := eraser.Erase(ctx, id); derr == nil {
 		t.Fatal("forced DeleteScope failure did not surface loudly")
 	}
-	// Artifacts + memory already gone; the session record survives
+	checkpoint, err := f.store.Load(ctx, ledgerScopeForTest(id), erasureLedgerTestKindPrefix+id.SessionID)
+	if err != nil {
+		t.Fatalf("pending ledger: %v", err)
+	}
+	var ledger struct {
+		MemoryPurged bool `json:"memory_purged"`
+	}
+	if err := json.Unmarshal(checkpoint.Bytes, &ledger); err != nil {
+		t.Fatalf("decode ledger: %v", err)
+	}
+	if ledger.MemoryPurged {
+		t.Fatal("failed state deletion incorrectly checkpointed memory as purged")
+	}
+	q := identity.Quadruple{Identity: id}
+	if _, err := f.store.Load(ctx, q, state.InternalKindPrefix+"session-execution-context"); err != nil {
+		t.Fatalf("failed state deletion lost cumulative memory: %v", err)
+	}
+	if _, err := f.mem.Inspect(ctx, q); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("pending erasure exposed cumulative memory: %v", err)
+	}
+	if _, err := f.mem.Put(ctx, q, memory.ConversationTurn{UserMessage: "late write"}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("pending erasure accepted a late memory write: %v", err)
+	}
+	// Artifacts are gone; cumulative memory and the session record survive
 	// (DeleteScope itself failed, so it never removed session.lifecycle).
 	if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); lerr != nil {
 		t.Errorf("DeleteScope failure removed the session record before DeleteScope itself succeeded: %v", lerr)
@@ -1170,6 +1178,61 @@ func TestCascadeEraser_DeleteScopeFailure_LoudAndRetrySafe(t *testing.T) {
 	}
 	if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(lerr, state.ErrNotFound) {
 		t.Errorf("session.lifecycle survived the retry: err=%v", lerr)
+	}
+}
+
+// A crash after scope deletion but before its checkpoint must not leave the
+// converging retry reporting memory as unpurged or permitting its resurrection.
+func TestCascadeEraser_StateCheckpointFailure_RechecksMemoryDeletion(t *testing.T) {
+	f := newErasureFixture(t, nil)
+	ctx := context.Background()
+	id := ident("t-statecheckpoint", "u-statecheckpoint", "s-statecheckpoint")
+	q := identity.Quadruple{Identity: id}
+	if _, err := f.reg.Open(ctxFor(id), id.SessionID, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.mem.Put(ctx, q, memory.ConversationTurn{UserMessage: "remember this"}); err != nil {
+		t.Fatal(err)
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	var skip atomic.Int32
+	skip.Store(3) // intent, artifacts and session skills precede the state checkpoint
+	var retryDeleteFail atomic.Bool
+	flaky := &flakyLedgerStore{StateStore: f.store, saveFail: &fail, saveSkip: &skip, deleteScopeFail: &retryDeleteFail}
+	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eraser.Erase(ctx, id); err == nil || !strings.Contains(err.Error(), "checkpoint (state)") {
+		t.Fatalf("expected state-checkpoint failure, got %v", err)
+	}
+	if _, err := f.store.Load(ctx, q, "session.lifecycle"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("state deletion did not land: %v", err)
+	}
+	if _, err := f.mem.Put(ctx, q, memory.ConversationTurn{UserMessage: "late write"}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("incomplete erasure accepted a late write: %v", err)
+	}
+	fail.Store(false)
+	retryDeleteFail.Store(true)
+	if _, err := eraser.Erase(ctx, id); err == nil {
+		t.Fatal("convergence ignored failed scope deletion")
+	}
+	if _, err := f.mem.Put(ctx, q, memory.ConversationTurn{UserMessage: "during retry"}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("failed convergence lifted the memory fence: %v", err)
+	}
+	retryDeleteFail.Store(false)
+	resp, err := eraser.Erase(ctx, id)
+	if err != nil || !resp.Deleted || !resp.MemoryPurged {
+		t.Fatalf("converging retry = %+v, %v; want deleted and memory purged", resp, err)
+	}
+	if _, err := f.store.Load(ctx, q, state.InternalKindPrefix+"session-execution-context"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("memory survived retry: %v", err)
+	}
+	if _, err := f.mem.Put(ctx, q, memory.ConversationTurn{UserMessage: "after erasure"}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("completed erasure accepted a late write: %v", err)
 	}
 }
 
@@ -1196,7 +1259,7 @@ func TestCascadeEraser_LedgerCleanupFailure_SucceedsWithWarn(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1244,7 +1307,7 @@ func TestCascadeEraser_ReinvokeAfterCleanupFailure_ExactlyOneEmit(t *testing.T) 
 	fail.Store(true)
 	flaky := &flakyLedgerStore{StateStore: f.store, deleteFail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: flaky, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
+		Registry: f.reg, State: flaky, Artifacts: f.arts, Skills: f.skills, Bus: f.bus,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -1334,7 +1397,7 @@ func TestCascadeEraser_ReemitGuardScanFailure_EmitsAnyway(t *testing.T) {
 		t.Fatalf("fixture bus must implement events.HistoryReplayer")
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills,
 		Bus: &windowErrBus{EventBus: f.bus, fencer: fencer, hr: hr},
 	})
 	if err != nil {

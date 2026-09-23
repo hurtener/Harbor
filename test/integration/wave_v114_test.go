@@ -116,8 +116,8 @@ func newWaveV114Stack(t *testing.T) *waveV114Stack {
 	t.Cleanup(func() { _ = bus.Close(ctx) })
 
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 4000,
-	}, memory.Deps{State: store, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 4000,
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -152,7 +152,7 @@ func newWaveV114Stack(t *testing.T) *waveV114Stack {
 	t.Cleanup(func() { _ = reg.CloseRegistry(ctx) })
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

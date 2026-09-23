@@ -245,8 +245,8 @@ func TestRegistry_Interleave_EraseVsOpen_NoResurrection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = bus.Close(ctx) })
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: gate, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: gate, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestRegistry_Interleave_EraseVsOpen_NoResurrection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reg.CloseRegistry(ctx) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: gate, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
+		Registry: reg, State: gate, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

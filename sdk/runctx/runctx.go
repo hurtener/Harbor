@@ -40,10 +40,6 @@ var WithDispositionPolicy = internal.WithDispositionPolicy
 // terminal Finish.
 var ExtractAssistantAnswer = internal.ExtractAssistantAnswer
 
-// ProjectMemoryBlocks projects a memory LLMContextPatch into the
-// planner's MemoryBlocks view.
-var ProjectMemoryBlocks = internal.ProjectMemoryBlocks
-
 // ProjectSkillsContext projects ranked skills into the planner's
 // skills-context entries.
 var ProjectSkillsContext = internal.ProjectSkillsContext

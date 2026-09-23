@@ -336,9 +336,10 @@ The incremental context branch uses `memory.strategy: rolling_summary` and
 `memory.recent_turns` for cumulative execution context in serving and embedded
 root conversations. It uses the existing StateStore and leaves long-term memory
 external. Ordinary YAML and `config.Defaults()` select rolling memory with
-20 detailed turns; `memory.strategy: none` explicitly opts out. Legacy
-memory-store retirement remains unfinished. See the
+20 detailed turns; `memory.strategy: none` explicitly opts out. The old
+pair-summary engine is removed; inspection and runtime execution share one
+owner. See the
 [configuration contract](docs/CONFIG.md#session-execution-memory),
 [serving example](examples/serve.yaml), and
 [implementation status](docs/plans/phase-269-retained-session-context.md).
-Final memory-owner consolidation and RC acceptance remain unfinished.
+Final coverage, release gates and matched live RC acceptance remain unfinished.

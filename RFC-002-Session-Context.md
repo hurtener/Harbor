@@ -6,8 +6,9 @@ Phase 268 implements portable compaction and request budgeting. Phase 269 adds
 cumulative session memory, dispatch journaling, checkpoint reuse, explicit
 reconciliation, result recovery, applied steering and attachment continuity.
 The September 23 amendment below replaces the separate opt-in retained window;
-its implementation and multi-window acceptance are pending, not implied by the
-earlier within-window results.
+its owner consolidation and multi-window acceptance are tracked independently
+of the earlier within-window results. The runtime now uses the cumulative
+owner; final-tree and live acceptance remain pending.
 Final diagnostics, conformance and release gates remain in progress. Neither phase
 is declared RC-ready. The [implementation tracker](docs/notes/portable-context-tracker.md)
 separates implemented behavior from pending release acceptance.

@@ -272,11 +272,6 @@ func TestValidate_TableDriven(t *testing.T) {
 			"memory.dsn",
 		},
 		{
-			"negative memory recovery backlog max",
-			func(c *config.Config) { c.Memory.RecoveryBacklogMax = -1 },
-			"memory.recovery_backlog_max",
-		},
-		{
 			"negative memory recent turns",
 			func(c *config.Config) { c.Memory.RecentTurns = -1 },
 			"memory.recent_turns",

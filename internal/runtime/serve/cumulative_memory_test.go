@@ -92,7 +92,7 @@ func TestRetainedServer_CumulativeMemoryAcrossFiveWindows(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = blobs.Close(context.Background()) })
-			env, _, tools, legacy := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
+			env, _, tools := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
 				composed, err := llm.Open(t.Context(), llm.ConfigSnapshot{
 					Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
 					ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
@@ -178,8 +178,8 @@ func TestRetainedServer_CumulativeMemoryAcrossFiveWindows(t *testing.T) {
 					}
 				}
 			}
-			if legacy.calls.Load() != 0 || tools.Load() != 0 {
-				t.Fatal("cumulative memory consulted a second owner or replayed an action")
+			if tools.Load() != 0 {
+				t.Fatal("cumulative memory replayed an action")
 			}
 		})
 	}

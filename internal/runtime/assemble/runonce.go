@@ -258,6 +258,9 @@ func (s *Stack) RunOnce(
 	var cfg runOnceConfig
 	var memoryTurns int
 	if s.Cfg != nil {
+		if err := memory.ValidateStrategy(memory.Strategy(s.Cfg.Memory.Strategy)); err != nil {
+			return planner.AnswerEnvelope{}, fmt.Errorf("assemble memory: %w", err)
+		}
 		memoryTurns = s.Cfg.Memory.RecentTurnsResolved()
 	}
 	for _, o := range opts {
@@ -301,7 +304,6 @@ func (s *Stack) RunOnce(
 		skillsDir = sd
 	}
 
-	memoryStore := s.Memory
 	var retained *sessionmemory.RetainedRun
 	if memoryTurns > 0 {
 		ttl := s.Cfg.Sessions.IdleTTL
@@ -312,7 +314,6 @@ func (s *Stack) RunOnce(
 		if err != nil {
 			return planner.AnswerEnvelope{}, err
 		}
-		memoryStore = nil
 	}
 	var retainedTrajectory *planner.Trajectory
 	retainedStatus, retainedAnswer := "interrupted", ""
@@ -333,7 +334,6 @@ func (s *Stack) RunOnce(
 	}()
 
 	base, err := runctx.NewRunContext(runCtx, runctx.Sources{
-		Memory:          memoryStore,
 		SkillsDirectory: skillsDir,
 		Catalog:         s.Catalog,
 		Artifacts:       s.Artifacts,
@@ -474,20 +474,6 @@ func (s *Stack) RunOnce(
 		// no-op for them; non-goal and failed/cancelled runs stay unchanged.
 		if flushErr := events.Flush(runCtx, s.Bus); flushErr != nil {
 			return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce event flush after successful run: %w", flushErr)
-		}
-	}
-
-	// Best-effort memory writeback on a goal-satisfying finish (mirrors
-	// the drivers): a writeback error does not downgrade the answer.
-	if retained == nil && s.Memory != nil && fin.Reason == planner.FinishGoal {
-		sessionQ := identity.Quadruple{Identity: id}
-		if wErr := s.Memory.AddTurn(runCtx, sessionQ, memory.ConversationTurn{
-			UserMessage:       goal,
-			AssistantResponse: env.Answer,
-			Timestamp:         time.Now(),
-		}); wErr != nil {
-			logger.Warn("assemble: RunOnce memory writeback failed; answer still returned",
-				"run_id", runID, "err", wErr.Error())
 		}
 	}
 

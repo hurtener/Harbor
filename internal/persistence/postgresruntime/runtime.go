@@ -30,10 +30,9 @@ import (
 // skills. The event bus and state store are supplied by the caller because
 // state must be opened before events and memory in the runtime graph.
 type Dependencies struct {
-	Bus        events.EventBus
-	State      state.StateStore
-	Summarizer memory.Summarizer
-	Embedder   embeddings.Embedder
+	Bus      events.EventBus
+	State    state.StateStore
+	Embedder embeddings.Embedder
 }
 
 // Runtime owns the aggregate pool manager and exposes injected constructors

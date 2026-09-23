@@ -55,11 +55,9 @@ func Put(ctx context.Context, deps PutDeps, req prototypes.MemoryPutRequest, id 
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryPutResponse{}, err
 	}
-	ts := time.Now()
 	turn := memory.ConversationTurn{
 		UserMessage:       req.Turn.UserMessage,
 		AssistantResponse: req.Turn.AssistantResponse,
-		Timestamp:         ts,
 	}
 	key, err := deps.Store.Put(ctx, id, turn)
 	if err != nil {

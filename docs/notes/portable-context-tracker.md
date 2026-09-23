@@ -31,7 +31,7 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
-### Unpublished pair-engine retirement in progress
+### Consolidated memory owner — release acceptance pending
 
 Retirement started on `444fc01c145d814c540f7430c58a5903f9646426`. The local
 increment removes the pair-summary/truncation executors, background recovery
@@ -40,8 +40,105 @@ runtime pair read/write branches. `Inspect`/`Put`/`Delete` share the cumulative
 owner; only explicit `none` disables memory. Removed strategy/backlog settings
 fail validation rather than selecting a compatibility path. Session erasure
 now marks memory purged after the authoritative StateStore scope deletion,
-not after flushing an unrelated pair store. This is not yet a published or
-fully validated increment.
+not after flushing an unrelated pair store. This implementation checkpoint
+does not claim complete final-tree validation or RC/main acceptance.
+
+Latest local follow-on based on published parent `18a11c7e`:
+
+- Heavy `memory.get` now returns a scope/content/key/expiry-bound reference.
+  The existing bounded `artifacts.get` resolves current memory on every read;
+  no second artifact copy, presigned URL, endpoint or store is introduced.
+  Reserved references never fall back to blob lookup. Runtime BuildMux wires
+  the same memory owner into the reader.
+- Remove the obsolete note input's timestamp, trajectory-digest and artifact
+  fields, with SDK and caller migration. Notes carry authored text only;
+  settled execution receipts remain runtime-owned. A regression checks that
+  receipt-shaped note text stays text rather than becoming tool authority.
+- Go 1.27.1, `GOFLAGS=-p=1 go test -race ./internal/memory/...
+  ./internal/protocol ./internal/protocol/transports/stream`: all packages pass.
+  Memory Protocol **1.831s**, source owner **5.222s**, SQLite **8.814s**,
+  Protocol **3.696s**, HTTP stream **20.944s**. PostgreSQL service was not set;
+  that driver package result is not service-backed evidence.
+- Subsequent `GOFLAGS=-p=1 go test -race ./internal/memory ./test/integration
+  -run 'TestSourceReference_|TestMemorySourceReference_' -count=1 -v`
+  tests passed (**1.583s / 2.183s**). The invocation also included legacy name
+  patterns that matched no tests; only the four new named roots and their
+  in-memory/SQLite subtests are claimed here. They prove exact-source binding,
+  SQLite close/reopen, controlled-clock expiry, cancellation, required-read
+  failure, actual HTTP bounded bytes, deletion, non-presignability, no stored
+  copy and N=128 HTTP identity isolation.
+- Broader `GOFLAGS=-p=1 go test -race ./test/integration
+  ./internal/runtime/assemble ./internal/runtime/serve ./internal/sessions
+  -count=1`: integration passes **276.698s**. Assembly compilation found three
+  stale `GetDeps.Artifacts` arguments and the old expected heavy-read refusal;
+  repaired to assert exact source resolution, no stored copy and invalidation
+  after deletion. Served passes **52.016s**, erasure passes **8.484s**;
+  the repaired full assembly rerun passes **91.091s**.
+- The earlier whole-tree compile-only process completed successfully before
+  these latest reference/API edits. It is not a final-tree full-test result.
+
+Release acceptance, remaining obsolete health/recovery vocabulary, canonical
+generated documentation, coverage floors and live comparison remain pending.
+The Docker daemon still reports an image-content I/O error. A fresh native
+PostgreSQL **17.11** test cluster now runs in a private temporary directory over
+a Unix socket only (no TCP listener), with its own disposable database. This
+does not alter any existing container or application database. Service-backed
+gates use that cluster, not the damaged Docker store.
+
+Fresh service-backed acceptance on the same unpublished tree, Go 1.27.1 /
+PostgreSQL 17.11: `HARBOR_PG_DSN=<isolated local socket DSN> GOFLAGS=-p=1
+go test -race ./internal/memory ./internal/runtime/assemble
+./internal/state/drivers/postgres -run
+'TestSourceReference_|TestRunOnce_CumulativeMemory_|TestPostgres_RetainedContext_'
+-count=1 -v` passes with **no skips** (**1.816s / 126.826s / 2.273s**).
+All nine 100-turn combinations (in-memory, SQLite, PostgreSQL × automatic,
+one-token and 100000-token targets) preserve the first-turn-only constraint in
+actual requests, reach at least five generations and reopen persistent stores
+every 25 turns. The independent-pool PostgreSQL dispatch-reconciliation race,
+settled/pending recovery, checkpoint/source expiry and ambiguous-host-encoding
+refusals also pass. This is deterministic functional evidence, not a paid-model
+or cache-efficiency claim and not the whole service-backed release gate.
+
+Canonical Protocol docs, Console wire manifest and external-client TypeScript
+generation completed successfully; they produced no additional generated diff.
+The agent scaffold now explicitly selects standard cumulative memory, matching
+configuration defaults; its golden was regenerated by
+`TestScaffold_Golden_MatchesAcmeAgent -update` (**1.980s**, race enabled), not by
+editing the expected YAML. Full `make lint` (golangci-lint **2.13.2**,
+`GOFLAGS=-p=1`) reports **0 issues** after removing four obsolete test helpers
+and one constant-only helper parameter. `make markdownlint` passes **599 files /
+0 errors**. The five initial lint findings were confined to test helpers left
+behind by the retired pair engine. `GOFLAGS=-p=1 make vet` passes. Final focused
+HTTP source-reference and CLI scaffold/init/template/golden checks pass
+(**2.261s / 2.563s**), including the strengthened reserved-ID fallback refusal.
+No skipped preflight is being counted as a pass.
+
+Full fresh driver/helper race tests with the real PostgreSQL service and a
+coverage profile pass: summarizer **1.453s / 86.6%**, PostgreSQL memory driver
+**2.953s / 74.6%**, SQLite memory driver **9.603s / 67.6%**. Both SQL memory
+drivers remain below their **85%** binding floors. Their production paths were
+removed because the separate pair engine was retired, not to adjust coverage;
+the remaining failure/lifecycle paths need behavioral coverage before main
+acceptance. These percentages are not replaced by grouped runs or omitted
+production files.
+
+Canonical `protocol-docs-gen-check`, `protocol-ts-gen-check`,
+`protocol-ts-types-gen-check`, `check-mirror` and `drift-audit` pass; drift reports
+**1592 OK / 0 WARN / 0 FAIL**. Final inspection found a concrete constructor
+leak: PostgreSQL `New` allocated a SQL opener before rejecting `truncation`.
+The N=128 `TestPostgres_RejectedStrategyDoesNotLeakPool` fails before the fix
+with leaked `database/sql.(*DB).connectionOpener` goroutines. Strategy validation
+now precedes allocation. This is a three-line validation fix, not a timeout,
+retry or workload change. Post-fix full driver race runs pass: PostgreSQL
+**3.172s / 75.4%**, SQLite **9.322s / 67.6%**. Coverage floors remain unmet;
+the new rejection regression closes the observed leak rather than changing
+what the percentage counts. Final full lint passes with **0 issues**.
+Post-fix full `make vet` and `make markdownlint` also pass (599 Markdown files,
+0 errors). This consolidation is the next publication increment after
+`18a11c7e`; its exact published revision will be recorded in the PR description.
+The parent CI has passed both platform Go jobs, frontend/Playwright and its
+service-backed jobs; its still-running, owner-waived preflight is not accepted
+as green, and no parent result validates this consolidation head.
 
 Go 1.27.1 local evidence: memory **1.507s**, cumulative owner **4.957s**,
 runctx **1.507s**, config **2.324s**, in-memory driver **1.590s**, shared
@@ -103,8 +200,21 @@ The canonical integration-package race run completed in **272.656s** and
 **failed**. Besides the known heavy-memory retrieval gap, it found obsolete
 backlog settings in the Console/scaffold YAML, two agent-selection/reattachment
 fixtures lacking an explicit memory mode, and the control-test mismatches below.
-The YAML and fixture corrections are local; their focused reruns and a new full
-package pass remain pending. No service-backed or release acceptance is implied.
+The YAML and fixture corrections are local. Their focused race rerun passes
+**11.851s** (`TestE2E_(AgentSelection|HarborConsole|Phase66_|
+WaveV124_(Named|Byte|Reconcile|Concurrent))`), including real Console boot,
+draft-save/preview, selection isolation and connection reattachment. The
+scaffold golden was regenerated by `TestScaffold_Golden_MatchesAcmeAgent -update`
+and passes **2.222s**. A new full package pass remains pending. No service-backed
+or release acceptance is implied.
+
+Legacy smoke consumers now target the cumulative owner rather than the deleted
+pair executor. PostgreSQL smoke without a DSN reports SKIP, not OK. Shell syntax
+and whitespace checks pass. Focused smoke 119 passes **11 OK / 0 SKIP / 0 FAIL**;
+smoke 111e passes **28 OK / 0 SKIP / 0 FAIL**, including its real compression
+race tests. This is not a full preflight pass. The final whole-repository
+compile-only race command (`GOFLAGS=-p=1 go test -race ./... -run '^$'`) is in
+progress; do not classify it as a test-suite pass even if compilation succeeds.
 
 ### Published-head CI regression repair
 

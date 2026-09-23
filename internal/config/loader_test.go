@@ -364,9 +364,6 @@ func TestMemoryConfig_DefaultsApplied(t *testing.T) {
 	if cfg.Memory.BudgetTokens != 0 {
 		t.Errorf("Memory.BudgetTokens=%d, want 0", cfg.Memory.BudgetTokens)
 	}
-	if cfg.Memory.RecoveryBacklogMax != 16 {
-		t.Errorf("Memory.RecoveryBacklogMax=%d, want 16", cfg.Memory.RecoveryBacklogMax)
-	}
 }
 
 // TestConfig_ConcurrentRead_ReuseContract is the D-025 concurrent-reuse

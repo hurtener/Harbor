@@ -324,7 +324,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	// the cascade deletes is present; the same condition gates the capability
 	// advertisement so it is honest about the route.
 	sessionLifecycleAvailable := in.Sessions != nil && in.State != nil &&
-		in.Memory != nil && in.Artifacts != nil
+		in.Artifacts != nil
 
 	// The per-tool annotator (OAuth / approval / metrics / content-stats /
 	// last-used) is wired when the catalog + its state-backed approval-policy
@@ -476,7 +476,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 	if in.Memory != nil {
 		driver := cfg.Memory.Driver
-		if cfg.Memory.Strategy == "rolling_summary" {
+		if cfg.Memory.RecentTurnsResolved() > 0 {
 			driver = cfg.State.Driver
 		}
 		muxOpts = append(muxOpts, transports.WithMemory(in.Memory, driver))
@@ -715,7 +715,6 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			eraser, eErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 				Registry:  in.Sessions,
 				State:     in.State,
-				Memory:    in.Memory,
 				Artifacts: in.Artifacts,
 				Skills:    in.Skills,
 				Bus:       bus,
@@ -753,6 +752,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		}
 		artifactsSurface, asErr := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
 			Store:        in.Artifacts,
+			Memory:       in.Memory,
 			Redactor:     red,
 			Bus:          bus,
 			Clock:        time.Now,

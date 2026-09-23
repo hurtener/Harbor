@@ -1078,7 +1078,7 @@ The stub format is uniform across producers (tool result, memory turn, multimoda
 
 Memory is declared-policy, identity-scoped, and pluggable across persistence backends.
 
-**Cumulative session memory (D-477; RFC 002 amendment, implementation pending).**
+**Cumulative session memory (D-477; RFC 002 amendment, release acceptance pending).**
 `memory` becomes the single short-term session-memory owner. The standard
 `rolling_summary` strategy carries one cumulative checkpoint plus a bounded
 recent execution tail; `recent_turns: 20` bounds detail, not the age of remembered
@@ -1089,9 +1089,9 @@ deriving the safe target from the effective model; output limits remain separate
 summary pipeline, separate `sessions.retained_context_turns`/`WithRetainedContext`
 activation and `planner.token_budget`; no compatibility layer or second memory
 engine. Update the memory interfaces and every served/embedded consumer together.
-The older pair-oriented API sketch below describes the interface being replaced,
-not a requirement to preserve that implementation. External long-term memory and
-the consumer transcript remain distinct.
+Administrative inspection and notes share the execution owner. They do not
+record runtime tool receipts or run an independent summary loop. External
+long-term memory and the consumer transcript remain distinct.
 
 ```go
 package memory
@@ -1099,43 +1099,29 @@ package memory
 type Strategy string
 const (
     StrategyNone           Strategy = "none"
-    StrategyTruncation     Strategy = "truncation"
     StrategyRollingSummary Strategy = "rolling_summary"
 )
 
-type Config struct {
-    Strategy           Strategy
-    Budget             Budget
-    Isolation          IsolationPolicy   // RequireExplicitKey: true (mandatory)
-    SummarizerModel    string
-    IncludeTrajectory  bool
-    RecoveryBacklogMax int
-    RetryAttempts      int
-    RetryBackoffBase   time.Duration
-    DegradedRetryEvery time.Duration
-}
-
-type Store interface {
-    AddTurn(ctx context.Context, id identity.Identity, turn ConversationTurn) error
-    GetLLMContext(ctx context.Context, id identity.Identity) (LLMContextPatch, error)
-    EstimateTokens(ctx context.Context, id identity.Identity) (int, error)
-    Flush(ctx context.Context, id identity.Identity) error
-    Health(ctx context.Context, id identity.Identity) (Health, error)
-    Snapshot(ctx context.Context, id identity.Identity) (Snapshot, error)
-    Restore(ctx context.Context, id identity.Identity, snap Snapshot) error
+type MemoryStore interface {
+    Inspect(ctx context.Context, id identity.Quadruple) (Inspection, error)
+    Put(ctx context.Context, id identity.Quadruple, note ConversationTurn) (string, error)
+    Delete(ctx context.Context, id identity.Quadruple, key string) (int, error)
+    Close(ctx context.Context) error
 }
 ```
 
 **Settled:**
 
-- Three strategy names: `none` (stateless), `truncation` (explicit recent-window behavior), `rolling_summary` (standard cumulative checkpoint plus recent execution evidence under D-477). The former pair-summary background loop and drop-oldest recovery backlog are replaced, not run alongside cumulative memory.
-- Identity is **mandatory**. The predecessor's `require_explicit_key=False` knob is removed from Harbor. Missing identity = empty result + audit event. (Settled.)
+- Two strategy names: `none` (stateless) and `rolling_summary` (standard cumulative checkpoint plus recent execution evidence under D-477). `truncation` is rejected. The former pair-summary background loop and drop-oldest recovery backlog are removed, not run alongside cumulative memory.
+- Identity is **mandatory**. Missing identity returns an explicit error and an audit event, never an apparently successful empty result.
 - Three drivers ship at V1: in-memory, SQLite, Postgres. One conformance suite passes against all three.
 - `llm_context` vs `tool_context` separation is preserved: identifiers live in `tool_context` (LLM-invisible); conversation state lives in `llm_context`. The Go analogue is "identity flows via `context.Context`, never through prompt-visible state."
-- The summarizer is an injectable callable; the LLM call lives in the LLM-client subsystem; memory consumes a `Summarizer` interface.
+- The same trajectory compactor handles within-run and cross-turn summarization through the governed LLM client. Inspection and note mutations do not make model calls.
+- Large administrative memory values use source-bound references through bounded `artifacts.get`. Reads revalidate the exact source and scope; deletion, expiry and source replacement invalidate old references. No second artifact copy or independently presigned URL can prolong retention.
 - **Native semantic session-memory retrieval is removed (D-477 supersedes the memory portion of D-191).** Cumulative checkpoints and recent execution evidence are the short-term memory representation. There is no second vector index, `SearchTurns`, retrieval-mode setting or semantic prompt-injection path. External long-term memory remains external; semantic skill retrieval and the embedding client are unchanged. Removed configuration fails explicitly rather than silently selecting another mode.
 
-**Memory budget at very long sessions — Tentative — see §11 Q-4.** `rolling_summary` covers hours; an *episodic memory* tier (durable summaries promoted from session to user scope) is post-V1 unless V1 user feedback demands it earlier.
+Long-term or cross-session memory remains an external integration responsibility;
+cumulative checkpoints do not promote session content into another retention tier.
 
 ### 6.7 Skills subsystem
 

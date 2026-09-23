@@ -24,7 +24,7 @@ func TestTrajectoryHistorical_RejectsInvalidEvidenceBeforeInference(t *testing.T
 		`null`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			client := newStubClient(goodSummaryJSON)
+			client := newStubClient()
 			s, err := summarizer.NewTrajectorySummariser(client)
 			if err != nil {
 				t.Fatal(err)

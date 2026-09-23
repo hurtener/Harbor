@@ -1,44 +1,10 @@
-// Phase 83f cross-subsystem integration test per CLAUDE.md §17.
-//
-// Phase 83f wires the dev binary's per-task RunLoop driver to populate
-// `RunContext.MemoryBlocks` / `SkillsContext` / `RepairCounters` /
-// `PlanningHints` and the user-facing `Query` + `Goal` — the consumer-
-// side closure of the Wave 15 §17.5 audit's W3/W4 finding (issue #208).
-//
-// What this test proves:
-//
-//  1. The dev stack opens MemoryStore + SkillStore + TaskRegistry; the
-//     driver fetches identity-scoped memory + skills + the task's
-//     Query and projects them onto RunContext before calling
-//     RunLoop.Run — without any test-side population.
-//  2. PlanningHints from `harbor.yaml` reach RunContext.PlanningHints
-//     (rendered into <planning_constraints> by 83c).
-//  3. A fresh per-run *RepairCounters lands on RunContext per run
-//     (D-145 — the planner reads + the runtime increments, scoped per
-//     RunContext, never on the shared planner artifact).
-//  4. The 83e reasoning trace round-trip works end-to-end in the dev
-//     run loop: a planner step whose LLM returned Reasoning produces
-//     a TrajectoryStep with ReasoningTrace set.
-//  5. Cross-tenant isolation at the fetch boundary — two runs with
-//     different identities each see only their own memory + skills in
-//     the rendered prompt.
-//  6. Fail-loud on store-side errors: a forced MemoryStore error
-//     fails the run with `MarkFailed(code=runtime_fetch_error)` and
-//     the LLM is NEVER called (no provider cost burned).
-//
-// Real drivers everywhere on the seam (§17.3): real audit redactor,
-// real EventBus, real StateStore, real inmem MemoryStore (truncation
-// strategy), real localdb SkillStore, real inprocess TaskRegistry,
-// real steering.RunLoop, real ReAct planner — all assembled through
-// `harbortest/devstack.Assemble`. The capturing LLM client is the only
-// stub — it records the exact CompleteRequest the planner built so
-// the test can assert on the composed prompt.
-
+// Served cumulative memory composes with real skills, planning hints and tasks.
+// Captured provider requests prove assembly; malformed durable memory must stop
+// admission before any model call.
 package integration_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -100,9 +66,8 @@ func (c *phase83fRecorderLLM) callCount() int {
 	return len(c.requests)
 }
 
-// phase83fStores bundles the real Memory + Skills stores the test
-// pre-populates BEFORE handing them to the devstack — proving the
-// driver's fetch path reaches into the real subsystems.
+// phase83fStores keeps the real skills fixture and the assembled runtime's
+// memory handle. Both are seeded before execution, never via planner context.
 type phase83fStores struct {
 	bus    events.EventBus
 	state  state.StateStore
@@ -131,14 +96,6 @@ func openPhase83fStores(t *testing.T) *phase83fStores {
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
-		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
-		BudgetTokens: 4096,
-	}, memory.Deps{State: st, Bus: bus})
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
 	// Per-test SQLite file so parallel tests don't race on the
 	// localdb migrator's process-wide schema lock (the modernc.org
 	// driver locks on schema-migration concurrency even between
@@ -153,24 +110,21 @@ func openPhase83fStores(t *testing.T) *phase83fStores {
 	}
 	t.Cleanup(func() {
 		_ = sk.Close(context.Background())
-		_ = mem.Close(context.Background())
 		_ = st.Close(context.Background())
 		_ = bus.Close(context.Background())
 	})
-	return &phase83fStores{bus: bus, state: st, memory: mem, skills: sk}
+	return &phase83fStores{bus: bus, state: st, skills: sk}
 }
 
-// seedPhase83fState writes one conversation turn into MemoryStore and
-// one skill into SkillStore for the run's identity. The runtime fetch
-// path lands these on RunContext when the driver runs.
+// seedPhase83fState commits an administrative note and a skill under the run's
+// identity. The runtime projects the note as historical execution evidence.
 func seedPhase83fState(t *testing.T, stores *phase83fStores, q identity.Quadruple, ctx context.Context, marker string) {
 	t.Helper()
-	if err := stores.memory.AddTurn(ctx, q, memory.ConversationTurn{
+	if _, err := stores.memory.Put(ctx, q, memory.ConversationTurn{
 		UserMessage:       "earlier question for " + marker,
 		AssistantResponse: "earlier answer for " + marker,
-		Timestamp:         time.Now(),
 	}); err != nil {
-		t.Fatalf("memory.AddTurn: %v", err)
+		t.Fatalf("memory.Put: %v", err)
 	}
 	now := time.Now()
 	if err := stores.skills.Upsert(ctx, q, skills.Skill{
@@ -189,14 +143,11 @@ func seedPhase83fState(t *testing.T, stores *phase83fStores, q identity.Quadrupl
 	}
 }
 
-// phase83fJoinSystems concatenates every system-role message text in
-// a captured request — the base 83a prompt + 83d's three injection
-// wrappers — so substring assertions can span the whole composed
-// system surface.
-func phase83fJoinSystems(req llm.CompleteRequest) string {
+// phase83fJoinRequest concatenates request text, including historical evidence.
+func phase83fJoinRequest(req llm.CompleteRequest) string {
 	var b strings.Builder
 	for _, m := range req.Messages {
-		if m.Role == llm.RoleSystem && m.Content.Text != nil {
+		if m.Content.Text != nil {
 			b.WriteString(*m.Content.Text)
 			b.WriteByte('\n')
 		}
@@ -226,7 +177,6 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 	// to. The MemoryStore + SkillStore are identity-scoped; the
 	// runtime fetch path will see these blobs only for this triple.
 	seedQ := identity.Quadruple{Identity: devID}
-	seedPhase83fState(t, stores, seedQ, idCtx, "compose")
 
 	// Build the capturing planner. The recorder LLM returns a
 	// reasoning trace + a finish so the run terminates in one step
@@ -252,7 +202,6 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 		// client reaches the planner directly. Without it, the registry
 		// would build its own bifrost-backed react planner.
 		PlannerOverride: plnr,
-		MemoryStore:     stores.memory,
 		SkillStore:      stores.skills,
 		PlanningHints: &planner.PlanningHints{
 			Constraints:    "no external network calls without consent",
@@ -261,6 +210,8 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 		SkillsContextMax: 3,
 	})
 	defer stack.Close()
+	stores.memory = stack.Memory
+	seedPhase83fState(t, stores, seedQ, idCtx, "compose")
 
 	if stack.Tasks == nil || stack.RunLoopDriver == nil {
 		t.Fatal("devstack: Tasks or RunLoopDriver is nil — wiring broken")
@@ -306,11 +257,11 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 	// Identity propagation: every fetch should have happened under
 	// the dev triple. The captured request's system messages contain
 	// the seeded marker payloads (which were keyed to that triple).
-	joined := phase83fJoinSystems(req)
+	joined := phase83fJoinRequest(req)
 
-	// 83d memory wrapper carries the seeded conversation turn.
-	if !strings.Contains(joined, "<read_only_conversation_memory>") {
-		t.Error("83f wiring: <read_only_conversation_memory> wrapper missing — driver did not populate MemoryBlocks")
+	// The cumulative trajectory carries the seeded conversational note.
+	if !strings.Contains(joined, "historical_user_request") {
+		t.Error("historical_user_request missing from the actual request")
 	}
 	if !strings.Contains(joined, "earlier answer for compose") {
 		t.Error("83f wiring: seeded memory turn did not reach the rendered prompt — fetch path broken")
@@ -338,8 +289,7 @@ func TestE2E_Phase83f_RunLoopPopulatesAllFourPrimitives(t *testing.T) {
 }
 
 // TestE2E_Phase83f_FailLoudOnMemoryFetchError pins the §17.3 failure-
-// mode contract: a MemoryStore.GetLLMContext error fails the run loud
-// with MarkFailed(code=runtime_fetch_error); the LLM is never called.
+// mode contract: malformed cumulative state fails the run before the LLM.
 func TestE2E_Phase83f_FailLoudOnMemoryFetchError(t *testing.T) {
 	t.Parallel()
 	stores := openPhase83fStores(t)
@@ -354,9 +304,6 @@ func TestE2E_Phase83f_FailLoudOnMemoryFetchError(t *testing.T) {
 		t.Fatalf("identity.With: %v", err)
 	}
 
-	// Wrap the real memory store to inject an error on GetLLMContext.
-	failingMem := &failingMemoryStore{inner: stores.memory}
-
 	rec := &phase83fRecorderLLM{
 		content: `{"tool":"_finish","args":{"answer":"should-never-render"}}`,
 	}
@@ -366,10 +313,16 @@ func TestE2E_Phase83f_FailLoudOnMemoryFetchError(t *testing.T) {
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		LLMConfigSnapshot: phase83fLLMSnapshot(cfg),
 		PlannerOverride:   plnr,
-		MemoryStore:       failingMem,
 		SkillStore:        stores.skills,
 	})
 	defer stack.Close()
+
+	// Corrupt the real durable source, not a retired parallel memory store.
+	if err := stack.State.Save(idCtx, state.NewInternalRecord(state.NewEventID(),
+		identity.Quadruple{Identity: devID}, state.InternalKindPrefix+"session-execution-context",
+		[]byte("malformed fixture memory"))); err != nil {
+		t.Fatal(err)
+	}
 
 	h, err := stack.Tasks.Spawn(idCtx, tasks.SpawnRequest{
 		Identity: identity.Quadruple{Identity: devID},
@@ -388,10 +341,10 @@ func TestE2E_Phase83f_FailLoudOnMemoryFetchError(t *testing.T) {
 		if gErr == nil {
 			observed = task.Status
 			if task.Status == tasks.StatusFailed {
-				if task.Error.Code != "runtime_fetch_error" {
-					t.Errorf("task failed with code %q, want runtime_fetch_error", task.Error.Code)
+				if task.Error.Code != planner.TaskErrorCodeRunLoopError {
+					t.Errorf("task failed with code %q, want %s", task.Error.Code, planner.TaskErrorCodeRunLoopError)
 				}
-				if !strings.Contains(task.Error.Message, "memory.GetLLMContext") {
+				if !strings.Contains(task.Error.Message, "retained context admission") {
 					t.Errorf("task failure message %q does not name the failing call site", task.Error.Message)
 				}
 				if calls := rec.callCount(); calls != 0 {
@@ -408,57 +361,6 @@ func TestE2E_Phase83f_FailLoudOnMemoryFetchError(t *testing.T) {
 	t.Fatalf("task did not reach StatusFailed within deadline; observed=%q", observed)
 }
 
-// failingMemoryStore wraps a real store and returns a sentinel error
-// from GetLLMContext to drive the fail-loud branch of the §17.3
-// failure-mode test. Every other method delegates to the inner store.
-type failingMemoryStore struct {
-	inner memory.MemoryStore
-}
-
-var errPhase83fForcedMemFail = errors.New("phase 83f test: forced memory store failure")
-
-func (f *failingMemoryStore) Inspect(ctx context.Context, q identity.Quadruple) (memory.Inspection, error) {
-	return f.inner.Inspect(ctx, q)
-}
-
-func (f *failingMemoryStore) Put(ctx context.Context, q identity.Quadruple, turn memory.ConversationTurn) (string, error) {
-	return f.inner.Put(ctx, q, turn)
-}
-
-func (f *failingMemoryStore) Delete(ctx context.Context, q identity.Quadruple, key string) (int, error) {
-	return f.inner.Delete(ctx, q, key)
-}
-
-func (f *failingMemoryStore) GetLLMContext(_ context.Context, _ identity.Quadruple) (memory.LLMContextPatch, error) {
-	return memory.LLMContextPatch{}, errPhase83fForcedMemFail
-}
-
-func (f *failingMemoryStore) AddTurn(ctx context.Context, q identity.Quadruple, turn memory.ConversationTurn) error {
-	return f.inner.AddTurn(ctx, q, turn)
-}
-
-func (f *failingMemoryStore) EstimateTokens(ctx context.Context, q identity.Quadruple) (int, error) {
-	return f.inner.EstimateTokens(ctx, q)
-}
-
-func (f *failingMemoryStore) Flush(ctx context.Context, q identity.Quadruple) error {
-	return f.inner.Flush(ctx, q)
-}
-
-func (f *failingMemoryStore) Health(ctx context.Context, q identity.Quadruple) (memory.Health, error) {
-	return f.inner.Health(ctx, q)
-}
-
-func (f *failingMemoryStore) Snapshot(ctx context.Context, q identity.Quadruple) (memory.Snapshot, error) {
-	return f.inner.Snapshot(ctx, q)
-}
-
-func (f *failingMemoryStore) Restore(ctx context.Context, q identity.Quadruple, snap memory.Snapshot) error {
-	return f.inner.Restore(ctx, q, snap)
-}
-
-func (f *failingMemoryStore) Close(ctx context.Context) error { return f.inner.Close(ctx) }
-
 // phase83fConfig loads the canonical dev YAML used across the dev-
 // stack integration tests (devSmokeYAML in phase64_harbor_dev_test.go).
 // Same defaults the production `harbor dev` boot uses, so the
@@ -471,6 +373,7 @@ func phase83fConfig(t *testing.T) *config.Config {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
+	cfg.Memory.Strategy = "rolling_summary"
 	return cfg
 }
 

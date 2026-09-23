@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -97,6 +98,7 @@ import (
 // not a log line.
 type ArtifactsSurface struct {
 	store        artifacts.ArtifactStore
+	memory       memory.MemoryStore
 	redactor     audit.Redactor
 	bus          events.EventBus
 	clock        func() time.Time
@@ -116,6 +118,9 @@ type ArtifactsDeps struct {
 	// Store is the runtime's content-addressed artifact store — the
 	// shipped ArtifactStore. Mandatory.
 	Store artifacts.ArtifactStore
+	// Memory resolves source-bound memory inspection references when that
+	// subsystem is installed. No blob copy or independent presign is created.
+	Memory memory.MemoryStore
 	// Redactor is the audit Redactor every artifacts.put body runs
 	// through before reaching the store (CLAUDE.md §7 rule 6).
 	// Mandatory.
@@ -151,9 +156,9 @@ type ArtifactsDeps struct {
 // building a surface that would nil-panic on the first Dispatch.
 var ErrArtifactsMisconfigured = stderrors.New("protocol: ArtifactsSurface missing a mandatory dependency")
 
-// NewArtifactsSurface builds the Protocol artifacts surface. Every
-// ArtifactsDeps seam is mandatory; a missing one fails loud with a
-// wrapped ErrArtifactsMisconfigured.
+// NewArtifactsSurface builds the Protocol artifacts surface. Missing mandatory
+// dependencies fail with ErrArtifactsMisconfigured. Memory is supplied when
+// the runtime installs the memory inspection surface.
 //
 // The returned ArtifactsSurface is immutable after construction
 // and safe for concurrent use by N goroutines.
@@ -188,6 +193,7 @@ func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 	}
 	return &ArtifactsSurface{
 		store:                deps.Store,
+		memory:               deps.Memory,
 		redactor:             deps.Redactor,
 		bus:                  deps.Bus,
 		clock:                deps.Clock,
@@ -514,6 +520,9 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 		return nil, protoerrors.Newf(protoerrors.CodeRequestTooLarge,
 			"method %q: upload body %d bytes exceeds the configured limit of %d bytes", m, len(req.Bytes), s.maxBodyBytes)
 	}
+	if memory.IsSourceReference(req.Opts.Namespace + "_") {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "memory source references cannot be uploaded")
+	}
 
 	// Resolve the Source — default to user_upload, reject an explicit
 	// unknown value loudly.
@@ -676,30 +685,9 @@ func (s *ArtifactsSurface) handleGet(ctx context.Context, req *types.ArtifactsGe
 		}
 	}
 
-	ref, found, err := s.store.GetRef(ctx, scope, req.ID)
+	ref, blob, err := s.readArtifact(ctx, scope, req.ID)
 	if err != nil {
-		return nil, mapArtifactsError(m, err)
-	}
-	if !found || ref == nil {
-		// A ref outside the caller's triple and a ref that never existed
-		// answer identically. The store does not distinguish them, and
-		// neither does this: a distinguishable refusal would confirm the
-		// existence of another identity's artifact to a caller that
-		// cannot read it.
-		return nil, protoerrors.Newf(protoerrors.CodeNotFound,
-			"method %q: artifact %q not found in scope", m, req.ID)
-	}
-
-	blob, found, err := s.store.Get(ctx, scope, req.ID)
-	if err != nil {
-		return nil, mapArtifactsError(m, err)
-	}
-	if !found {
-		// GetRef resolved and Get did not — a concurrent Delete, or a
-		// driver inconsistency. Same shape as the unknown-ref case: the
-		// caller cannot act on the difference.
-		return nil, protoerrors.Newf(protoerrors.CodeNotFound,
-			"method %q: artifact %q not found in scope", m, req.ID)
+		return nil, err
 	}
 
 	window, truncated := boundedWindow(blob, req.Offset, s.effectiveMaxBytes(req.MaxBytes))
@@ -712,6 +700,51 @@ func (s *ArtifactsSurface) handleGet(ctx context.Context, req *types.ArtifactsGe
 		Truncated:       truncated,
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// readArtifact resolves either ordinary stored bytes or an exact current
+// memory source. Reserved source IDs never fall through to blob storage.
+func (s *ArtifactsSurface) readArtifact(ctx context.Context, scope artifacts.ArtifactScope, id string) (*artifacts.ArtifactRef, []byte, error) {
+	m := string(methods.MethodArtifactsGet)
+	if memory.IsSourceReference(id) {
+		ref, blob, err := memory.ResolveSourceReference(ctx, s.memory, identity.Quadruple{Identity: identity.Identity{
+			TenantID: scope.TenantID, UserID: scope.UserID, SessionID: scope.SessionID,
+		}}, id)
+		if stderrors.Is(err, memory.ErrNotFound) {
+			return nil, nil, protoerrors.New(protoerrors.CodeNotFound, "memory source reference unavailable")
+		}
+		if err != nil {
+			return nil, nil, protoerrors.New(protoerrors.CodeRuntimeError, "memory source reference could not be resolved")
+		}
+		return &ref, blob, nil
+	}
+	ref, found, err := s.store.GetRef(ctx, scope, id)
+	if err != nil {
+		return nil, nil, mapArtifactsError(m, err)
+	}
+	if !found || ref == nil {
+		// A ref outside the caller's triple and a ref that never existed
+		// answer identically. The store does not distinguish them, and
+		// neither does this: a distinguishable refusal would confirm the
+		// existence of another identity's artifact to a caller that
+		// cannot read it.
+		return nil, nil, protoerrors.Newf(protoerrors.CodeNotFound,
+			"method %q: artifact %q not found in scope", m, id)
+	}
+
+	blob, found, err := s.store.Get(ctx, scope, id)
+	if err != nil {
+		return nil, nil, mapArtifactsError(m, err)
+	}
+	if !found {
+		// GetRef resolved and Get did not — a concurrent Delete, or a
+		// driver inconsistency. Same shape as the unknown-ref case: the
+		// caller cannot act on the difference.
+		return nil, nil, protoerrors.Newf(protoerrors.CodeNotFound,
+			"method %q: artifact %q not found in scope", m, id)
+	}
+
+	return ref, blob, nil
 }
 
 // effectiveMaxBytes resolves the window length one read may return:
@@ -823,6 +856,14 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 			m, expiry, types.PresignExpiryMin, types.PresignExpiryMax)
 	}
 
+	if memory.IsSourceReference(req.ID) {
+		if _, _, err := s.readArtifact(ctx, scope, req.ID); err != nil {
+			return nil, err
+		}
+		return nil, protoerrors.New(protoerrors.CodePresignUnsupported,
+			"source-bound memory references require artifacts.get to revalidate each read")
+	}
+
 	ref, found, err := s.store.GetRef(ctx, scope, req.ID)
 	if err != nil {
 		return nil, mapArtifactsError(m, err)
@@ -885,6 +926,10 @@ func (s *ArtifactsSurface) handleDelete(ctx context.Context, req *types.Artifact
 	if !auth.HasScope(ctx, auth.ScopeAdmin) {
 		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 			"method %q: artifact delete requires the verified `admin` scope claim", m)
+	}
+
+	if memory.IsSourceReference(req.ID) {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "delete the memory source with memory.delete")
 	}
 
 	deleted, err := s.store.Delete(ctx, scope, req.ID)

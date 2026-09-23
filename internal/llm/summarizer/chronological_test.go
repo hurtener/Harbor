@@ -16,7 +16,7 @@ import (
 
 func TestTrajectoryChronological_ReceiptAndPriorNarrativeRemainExact(t *testing.T) {
 	t.Parallel()
-	client := newStubClient(goodSummaryJSON)
+	client := newStubClient()
 	s, err := summarizer.NewTrajectorySummariser(client)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestTrajectoryChronological_CapacityNeverClips(t *testing.T) {
 	t.Parallel()
 	for _, threshold := range []int{1, 64, 4096, 16384} {
 		t.Run(fmt.Sprint(threshold), func(t *testing.T) {
-			c := newStubClient(goodSummaryJSON)
+			c := newStubClient()
 			s, err := summarizer.NewTrajectorySummariser(c, summarizer.WithTrajectoryHeavyOutputThreshold(threshold))
 			if err != nil {
 				t.Fatal(err)
@@ -101,7 +101,7 @@ func TestTrajectoryChronological_CapacityNeverClips(t *testing.T) {
 
 func TestTrajectoryChronological_CallBoundAndNoPartialCandidate(t *testing.T) {
 	t.Parallel()
-	c := newStubClient(goodSummaryJSON)
+	c := newStubClient()
 	s, err := summarizer.NewTrajectorySummariser(c, summarizer.WithTrajectoryHeavyOutputThreshold(8192))
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestTrajectoryChronological_LaterFailureKeepsInstalledCheckpoint(t *testing
 func TestTrajectoryChronological_EncodingFailureAndLateCancellation(t *testing.T) {
 	t.Parallel()
 	t.Run("non JSON result", func(t *testing.T) {
-		c := newStubClient(goodSummaryJSON)
+		c := newStubClient()
 		s, _ := summarizer.NewTrajectorySummariser(c)
 		tr := trajFixture()
 		tr.Steps[0].LLMObservation = make(chan int)

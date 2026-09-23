@@ -477,11 +477,8 @@ var errTestSentinel = errors.New("serve: coverage-test sentinel")
 
 func errorsIs(err, target error) bool { return errors.Is(err, target) }
 
-// TestPerTaskRunLoop_WithMemoryWired_DrivesCompletingRun exercises runOne's
-// optional-subsystem branches (the memory fetch + agent-config projections)
-// that the minimal-wiring driver tests skip. The devstack-backed integration
-// tests (phase83f / phase111e) additionally drive these branches with every
-// optional subsystem wired end-to-end.
+// An omitted strategy enables cumulative memory. The administrative read must
+// see the execution owner's committed turn, not a parallel pair-store copy.
 func TestPerTaskRunLoop_WithMemoryWired_DrivesCompletingRun(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
@@ -492,21 +489,20 @@ func TestPerTaskRunLoop_WithMemoryWired_DrivesCompletingRun(t *testing.T) {
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	mem, err := memoryOpen(t, bus, st)
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
 
 	steerReg := steeringNewRegistry()
 	rl := newTestRunLoop(t, steerReg, bus)
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "ok"}}
 
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
-		Bus:     bus,
-		RunLoop: rl,
-		Planner: p,
-		Tasks:   reg,
-		Memory:  mem,
+		Bus:                bus,
+		RunLoop:            rl,
+		Planner:            p,
+		Tasks:              reg,
+		StateStore:         st,
+		Redactor:           red,
+		SessionMemory:      config.MemoryConfig{},
+		RetainedContextTTL: time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)
@@ -520,15 +516,24 @@ func TestPerTaskRunLoop_WithMemoryWired_DrivesCompletingRun(t *testing.T) {
 	if status := waitForTaskStatus(t, reg, taskID, tasks.StatusComplete, 3*time.Second); status != tasks.StatusComplete {
 		t.Fatalf("task FSM stuck at %q with memory wired, want %q", status, tasks.StatusComplete)
 	}
+	mem, err := memoryOpen(t, bus, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mem.Close(context.Background()) })
+	view, err := mem.Inspect(t.Context(), identity.Quadruple{Identity: runLoopDriverTestID})
+	if err != nil || len(view.Items) != 1 || view.RecentTurns != 1 {
+		t.Fatalf("default cumulative execution did not reach its administrative view: %+v, %v", view, err)
+	}
 }
 
 func memoryOpen(t *testing.T, bus events.EventBus, st state.StateStore) (memory.MemoryStore, error) {
 	t.Helper()
 	return memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
+		Strategy:     memory.StrategyRollingSummary,
 		BudgetTokens: 4096,
-	}, memory.Deps{State: st, Bus: bus})
+	}, memory.Deps{State: st, Bus: bus, Redactor: auditpatterns.New()})
 }
 
 func steeringNewRegistry() *steering.Registry { return steering.NewRegistry() }
@@ -559,10 +564,6 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	mem, err := memoryOpen(t, bus, st)
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
 	artStore, err := artifacts.Open(context.Background(), config.ArtifactsConfig{Driver: "inmem"})
 	if err != nil {
 		t.Fatalf("artifacts.Open: %v", err)
@@ -609,7 +610,10 @@ func TestPerTaskRunLoop_FullyWired_DrivesCompletingRun(t *testing.T) {
 		Planner:               p,
 		Tasks:                 reg,
 		Logger:                slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Memory:                mem,
+		StateStore:            st,
+		Redactor:              red,
+		SessionMemory:         config.Defaults().Memory,
+		RetainedContextTTL:    time.Hour,
 		SkillsDirectory:       skillsDir,
 		SkillStore:            skillStore,
 		SessionPersonalSkills: skillAuthority.Personal,
@@ -815,8 +819,8 @@ func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
 	// Now erase the session and assert the adapter translates the terminal
 	// ErrReopenAfterErase onto the protocol sentinel.
 	mem, err := memory.Open(ctxBg, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: st, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: st, Bus: bus, Redactor: auditpatterns.New()})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -832,7 +836,7 @@ func TestSessionEnsurerAdapter_SentinelTranslation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = skillStore.Close(ctxBg) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: st, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
+		Registry: reg, State: st, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)

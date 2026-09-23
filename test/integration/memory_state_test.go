@@ -1,20 +1,12 @@
-// Phase 23 cross-subsystem integration test per AGENTS.md §17.
-// Wires real config + audit + events + state + memory drivers and
-// exercises the canonical paths end-to-end:
-//
-//   - Happy path: Open → Health → Snapshot → Restore → Snapshot
-//     round-trips identity through every layer.
-//   - Failure mode: a method call with a missing identity
-//     component returns wrapped `ErrIdentityRequired` AND emits one
-//     `memory.identity_rejected` event on the bus.
-//
-// No mocks at the seam (real audit redactor, real events bus, real
-// state store, real memory driver).
+// Administrative memory integration through the real audit, event, StateStore
+// and cumulative-memory drivers. Exercise committed notes, identity isolation,
+// deletion and observable identity rejection.
 package integration_test
 
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,17 +22,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
-// TestE2E_Phase23_MemoryStore_RoundTrip wires the MemoryStore over
-// the real in-memory StateStore + EventBus and exercises the canonical
-// lifecycle. Asserts:
-//
-//   - Open with `inmem` + `none` returns a working store.
-//   - Health under a valid identity is `healthy`.
-//   - Snapshot / Restore round-trip the empty-snapshot under the
-//     same identity.
-//   - Identity isolation holds at the StateStore layer (tenant B's
-//     snapshot is empty after tenant A writes through Restore).
-//   - All assertions hold under -race.
+// TestE2E_Phase23_MemoryStore_RoundTrip exercises the shared administrative owner.
 func TestE2E_Phase23_MemoryStore_RoundTrip(t *testing.T) {
 	cfg := phase23Config()
 	red, err := audit.Open(context.Background(), cfg.Audit)
@@ -63,7 +45,7 @@ func TestE2E_Phase23_MemoryStore_RoundTrip(t *testing.T) {
 		Driver:       cfg.Memory.Driver,
 		Strategy:     memory.Strategy(cfg.Memory.Strategy),
 		BudgetTokens: cfg.Memory.BudgetTokens,
-	}, memory.Deps{State: store, Bus: bus})
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -77,38 +59,35 @@ func TestE2E_Phase23_MemoryStore_RoundTrip(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Health under a valid identity round-trips through audit /
-	// events / state without surfacing any unexpected error.
-	got, err := mem.Health(ctx, idA)
-	if err != nil {
-		t.Fatalf("Health: %v", err)
+	// Enabled memory stores the note once in the cumulative owner.
+	key, err := mem.Put(ctx, idA, memory.ConversationTurn{UserMessage: "keep the north exit open", AssistantResponse: "noted"})
+	if err != nil || key == "" {
+		t.Fatalf("Put: key=%q err=%v", key, err)
 	}
-	if got != memory.HealthHealthy {
-		t.Errorf("Health=%q, want %q", got, memory.HealthHealthy)
+	view, err := mem.Inspect(ctx, idA)
+	if err != nil || view.Health != memory.HealthHealthy || len(view.Items) != 1 {
+		t.Fatalf("Inspect A: %+v, err=%v", view, err)
 	}
-
-	// Snapshot under both identities — neither should error.
-	snapA, err := mem.Snapshot(ctx, idA)
-	if err != nil {
-		t.Fatalf("Snapshot A: %v", err)
+	if view.Items[0].Key != key || !strings.Contains(string(view.Items[0].Value), "keep the north exit open") {
+		t.Fatalf("committed note missing: %+v", view.Items[0])
 	}
-	if _, err := mem.Snapshot(ctx, idB); err != nil {
-		t.Fatalf("Snapshot B: %v", err)
+	other, err := mem.Inspect(ctx, idB)
+	if err != nil || len(other.Items) != 0 {
+		t.Fatalf("Inspect B leaked note: %+v, err=%v", other, err)
 	}
-
-	// Restore A's snapshot under A. Memory state persists through
-	// the StateStore (D-027 typed wrapper).
-	if err := mem.Restore(ctx, idA, snapA); err != nil {
-		t.Fatalf("Restore A: %v", err)
+	if _, err := mem.Delete(ctx, idB, key); !errors.Is(err, memory.ErrNotFound) {
+		t.Fatalf("foreign Delete: %v", err)
 	}
-
-	// Tenant B's StateStore slot remains untouched — cross-tenant
-	// isolation through the StateStore key.
-	recB, err := store.Load(ctx, idB, "memory.state")
-	if err == nil {
-		t.Errorf("StateStore: tenant B leaked tenant A's write: %+v", recB)
-	} else if !errors.Is(err, state.ErrNotFound) {
-		t.Errorf("StateStore Load B: err=%v, want errors.Is ErrNotFound", err)
+	unchanged, err := mem.Inspect(ctx, idA)
+	if err != nil || len(unchanged.Items) != 1 || unchanged.Items[0].Key != key {
+		t.Fatalf("foreign Delete changed owner: %+v, err=%v", unchanged, err)
+	}
+	if remaining, err := mem.Delete(ctx, idA, key); err != nil || remaining != 0 {
+		t.Fatalf("owner Delete: remaining=%d err=%v", remaining, err)
+	}
+	deleted, err := mem.Inspect(ctx, idA)
+	if err != nil || len(deleted.Items) != 0 {
+		t.Fatalf("deleted note survived: %+v, err=%v", deleted, err)
 	}
 }
 
@@ -136,7 +115,7 @@ func TestE2E_Phase23_MemoryStore_FailsClosedOnMissingIdentity(t *testing.T) {
 	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:   cfg.Memory.Driver,
 		Strategy: memory.Strategy(cfg.Memory.Strategy),
-	}, memory.Deps{State: store, Bus: bus})
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -158,11 +137,11 @@ func TestE2E_Phase23_MemoryStore_FailsClosedOnMissingIdentity(t *testing.T) {
 	bogus := identity.Quadruple{
 		Identity: identity.Identity{TenantID: "T", UserID: "U"},
 	}
-	err = mem.AddTurn(context.Background(), bogus, memory.ConversationTurn{
+	_, err = mem.Put(context.Background(), bogus, memory.ConversationTurn{
 		UserMessage: "x",
 	})
 	if !errors.Is(err, memory.ErrIdentityRequired) {
-		t.Fatalf("AddTurn: err=%v, want errors.Is ErrIdentityRequired", err)
+		t.Fatalf("Put: err=%v, want errors.Is ErrIdentityRequired", err)
 	}
 
 	// One event observable on the bus within a short bounded deadline.
@@ -178,8 +157,8 @@ func TestE2E_Phase23_MemoryStore_FailsClosedOnMissingIdentity(t *testing.T) {
 		if !ok {
 			t.Fatalf("payload type=%T, want MemoryIdentityRejectedPayload", ev.Payload)
 		}
-		if payload.Operation != "AddTurn" {
-			t.Errorf("payload.Operation=%q, want %q", payload.Operation, "AddTurn")
+		if payload.Operation != "Put" {
+			t.Errorf("payload.Operation=%q, want %q", payload.Operation, "Put")
 		}
 		if payload.Reason == "" {
 			t.Error("payload.Reason empty")
@@ -225,7 +204,7 @@ func phase23Config() *config.Config {
 		},
 		Memory: config.MemoryConfig{
 			Driver:   "inmem",
-			Strategy: "none",
+			Strategy: "rolling_summary",
 		},
 	}
 }

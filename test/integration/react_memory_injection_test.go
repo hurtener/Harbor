@@ -1,31 +1,6 @@
-// Phase 83d cross-subsystem integration test per CLAUDE.md §17.
-//
-// Phase 83d injects identity-scoped memory + pre-retrieved skills into
-// the ReAct planner's system prompt with UNTRUSTED anti-prompt-
-// injection framing. The seam this test exercises end-to-end:
-//
-//	real MemoryStore (inmem/truncation, Phase 23) ─┐
-//	real SkillStore  (localdb,        Phase 37) ─┼─▶ RunContext
-//	                                             ▼
-//	                              ReAct planner (Phase 45/83a/83d)
-//	                                             ▼
-//	                       captured llm.CompleteRequest message slice
-//
-// Asserts (no mocks at the seam — real audit redactor, real events
-// bus, real state store, real memory driver, real skill driver):
-//
-//   - The runtime fetches memory keyed to the run's identity and
-//     hands the blob to the planner via RunContext.MemoryBlocks; the
-//     planner renders both `<read_only_*_memory>` wrappers with the
-//     verbatim five-line UNTRUSTED rule list (brief 13 §2.3).
-//   - A pre-retrieved skill body (real localdb Search) reaches the
-//     prompt inside the `<skills_context>` wrapper.
-//   - Cross-isolation: two concurrent runs with different identities
-//     each see only their own memory in the prompt — the planner
-//     never cross-contaminates at render.
-//   - Failure mode: a memory blob carrying a non-serialisable value
-//     fails the planner step loudly with ErrMemoryBlockUnserializable
-//     — never a silently dropped tier.
+// Planner framing of caller-provided read-only context and real resolved skills.
+// Runtime cumulative-history assembly is tested separately by Phase83f; these
+// tests cover untrusted framing, ordering, concurrent rendering and bad values.
 package integration_test
 
 import (
@@ -43,13 +18,11 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/memory"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/skills"
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
-	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
@@ -128,14 +101,10 @@ func phase83dConfig() *config.Config {
 // phase83dSurface bundles the real drivers the integration test wires.
 type phase83dSurface struct {
 	bus   events.EventBus
-	mem   memory.MemoryStore
 	skill skills.SkillStore
 }
 
-// openPhase83dSurface assembles the real audit + events + state +
-// memory + skills drivers. Memory uses the `truncation` strategy so
-// `GetLLMContext` returns a non-empty recent-turn window the runtime
-// can hand the planner as a memory blob.
+// openPhase83dSurface assembles real audit, events and skill drivers.
 func openPhase83dSurface(t *testing.T) *phase83dSurface {
 	t.Helper()
 	cfg := phase83dConfig()
@@ -148,18 +117,6 @@ func openPhase83dSurface(t *testing.T) *phase83dSurface {
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
 	}
-	st, err := state.Open(context.Background(), cfg.State)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
-		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
-		BudgetTokens: 4096,
-	}, memory.Deps{State: st, Bus: bus})
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
 	skill, err := skills.Open(context.Background(), skills.ConfigSnapshot{
 		Driver: "localdb",
 		DSN:    ":memory:",
@@ -170,38 +127,13 @@ func openPhase83dSurface(t *testing.T) *phase83dSurface {
 
 	t.Cleanup(func() {
 		_ = skill.Close(context.Background())
-		_ = mem.Close(context.Background())
-		_ = st.Close(context.Background())
 		_ = bus.Close(context.Background())
 	})
-	return &phase83dSurface{bus: bus, mem: mem, skill: skill}
-}
-
-// fetchMemoryBlob calls the real MemoryStore the way the runtime would
-// at planner-step start: GetLLMContext returns the identity-scoped
-// recent-turn window. The returned value is a plain JSON-friendly map
-// the runtime hands the planner via RunContext.MemoryBlocks.
-func fetchMemoryBlob(t *testing.T, mem memory.MemoryStore, ctx context.Context, q identity.Quadruple) map[string]any {
-	t.Helper()
-	patch, err := mem.GetLLMContext(ctx, q)
-	if err != nil {
-		t.Fatalf("GetLLMContext: %v", err)
-	}
-	recent := make([]map[string]any, 0, len(patch.RecentTurns))
-	for _, turn := range patch.RecentTurns {
-		recent = append(recent, map[string]any{
-			"user":      turn.UserMessage,
-			"assistant": turn.AssistantResponse,
-		})
-	}
-	return map[string]any{
-		"strategy":     string(patch.Strategy),
-		"recent_turns": recent,
-	}
+	return &phase83dSurface{bus: bus, skill: skill}
 }
 
 // TestE2E_Phase83d_MemoryAndSkills_InjectIntoPrompt is the positive
-// end-to-end: real memory + real skill bodies reach the ReAct prompt
+// end-to-end: caller-provided context + real skill bodies reach the ReAct prompt
 // inside the UNTRUSTED wrappers, in the documented order.
 func TestE2E_Phase83d_MemoryAndSkills_InjectIntoPrompt(t *testing.T) {
 	surface := openPhase83dSurface(t)
@@ -212,16 +144,6 @@ func TestE2E_Phase83d_MemoryAndSkills_InjectIntoPrompt(t *testing.T) {
 	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
-	}
-
-	// Runtime writes a conversation turn into the real MemoryStore,
-	// keyed to this run's identity.
-	if err := surface.mem.AddTurn(ctx, q, memory.ConversationTurn{
-		UserMessage:       "what is my refund window?",
-		AssistantResponse: "Refunds are accepted within 30 days.",
-		Timestamp:         time.Now(),
-	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
 	}
 
 	// Runtime upserts a skill, then resolves it via the real localdb
@@ -261,7 +183,7 @@ func TestE2E_Phase83d_MemoryAndSkills_InjectIntoPrompt(t *testing.T) {
 
 	// Runtime builds the RunContext: memory blob in MemoryBlocks,
 	// resolved skill bodies in SkillsContext.
-	memBlob := fetchMemoryBlob(t, surface.mem, ctx, q)
+	memBlob := map[string]any{"policy": "Refunds are accepted within 30 days."}
 	client := &capturingClient{}
 	p := react.New(client)
 	rc := planner.RunContext{
@@ -317,7 +239,7 @@ func TestE2E_Phase83d_MemoryAndSkills_InjectIntoPrompt(t *testing.T) {
 	}
 	// The real conversation turn reached the prompt inside the wrapper.
 	if !strings.Contains(sys[2], "Refunds are accepted within 30 days.") {
-		t.Error("conversation-memory wrapper does not carry the real AddTurn content")
+		t.Error("conversation-memory wrapper does not carry the caller-provided policy")
 	}
 	// The real skill body reached the prompt.
 	if !strings.Contains(sys[3], "refund-policy") {

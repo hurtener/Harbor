@@ -23,7 +23,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -59,60 +58,6 @@ func TestEmitterAndPublisher_MatchRunContextCallbackShapes(t *testing.T) {
 type captureBus struct{ events.EventBus }
 
 func (b *captureBus) Publish(context.Context, events.Event) error { return nil }
-func TestProjectMemoryBlocks_EmptyPatchReturnsNil(t *testing.T) {
-	if got := runctx.ProjectMemoryBlocks(memory.LLMContextPatch{}); got != nil {
-		t.Errorf("empty patch: got %v, want nil (wrapper omitted)", got)
-	}
-}
-
-// TestProjectMemoryBlocks_GoldenShape pins the conversation-tier map
-// shape byte-for-byte against what the pre-110b cmd helper produced.
-func TestProjectMemoryBlocks_GoldenShape(t *testing.T) {
-	patch := memory.LLMContextPatch{
-		Strategy: memory.StrategyTruncation,
-		Summary:  "rolling summary",
-		RecentTurns: []memory.ConversationTurn{
-			{UserMessage: "q1", AssistantResponse: "a1"},
-			{UserMessage: "q2", AssistantResponse: "a2"},
-		},
-	}
-	got := runctx.ProjectMemoryBlocks(patch)
-	if got == nil {
-		t.Fatal("non-empty patch projected to nil")
-	}
-	want := map[string]any{
-		"strategy": string(memory.StrategyTruncation),
-		"recent_turns": []map[string]any{
-			{"user": "q1", "assistant": "a1"},
-			{"user": "q2", "assistant": "a2"},
-		},
-		"summary": "rolling summary",
-	}
-	if !reflect.DeepEqual(got.Conversation, want) {
-		t.Errorf("conversation block = %#v, want %#v", got.Conversation, want)
-	}
-	if got.External != nil {
-		t.Errorf("External tier = %v, want nil (V1.1 ships Conversation only)", got.External)
-	}
-}
-
-// TestProjectMemoryBlocks_NoSummaryOmitsKey — the `summary` key is
-// only present when the patch carries one.
-func TestProjectMemoryBlocks_NoSummaryOmitsKey(t *testing.T) {
-	got := runctx.ProjectMemoryBlocks(memory.LLMContextPatch{
-		RecentTurns: []memory.ConversationTurn{{UserMessage: "q", AssistantResponse: "a"}},
-	})
-	if got == nil {
-		t.Fatal("patch with turns projected to nil")
-	}
-	conv, ok := got.Conversation.(map[string]any)
-	if !ok {
-		t.Fatalf("Conversation tier is %T, want map[string]any", got.Conversation)
-	}
-	if _, present := conv["summary"]; present {
-		t.Error("summary key present on a summary-less patch")
-	}
-}
 
 func TestProjectSkillsContext_EmptyReturnsNil(t *testing.T) {
 	if got := runctx.ProjectSkillsContext(nil); got != nil {

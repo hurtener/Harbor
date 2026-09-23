@@ -17,7 +17,7 @@ import (
 // and that the surviving populated facets (scope / driver / strategy) still
 // list real rows (D-313).
 func TestProdWiring_MemoryListRejectsAgentFacet(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 3)
 

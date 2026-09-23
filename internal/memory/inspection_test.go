@@ -19,7 +19,6 @@ import (
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/postgres"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/postgres"
@@ -28,7 +27,7 @@ import (
 
 func TestInspection_DriverMutationRoundTrip(t *testing.T) {
 	for _, driver := range []string{"inmem", "sqlite", "postgres"} {
-		for _, mode := range []memory.Strategy{memory.StrategyNone, memory.StrategyTruncation, memory.StrategyRollingSummary} {
+		for _, mode := range []memory.Strategy{memory.StrategyNone, memory.StrategyRollingSummary} {
 			t.Run(driver+"/"+string(mode), func(t *testing.T) {
 				dsn := ""
 				switch driver {
@@ -54,13 +53,13 @@ func TestInspection_DriverMutationRoundTrip(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = bus.Close(context.Background()) })
-				store, err := memory.Open(t.Context(), memory.ConfigSnapshot{Driver: driver, DSN: dsn, Strategy: mode, RecentTurns: 4, BudgetTokens: 100000}, memory.Deps{State: st, Bus: bus, Redactor: redactor, Summarizer: strategy.EchoSummarizer{}, RetentionTTL: time.Hour})
+				store, err := memory.Open(t.Context(), memory.ConfigSnapshot{Driver: driver, DSN: dsn, Strategy: mode, RecentTurns: 4, BudgetTokens: 100000}, memory.Deps{State: st, Bus: bus, Redactor: redactor, RetentionTTL: time.Hour})
 				if err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = store.Close(context.Background()) })
 				id := identity.Quadruple{Identity: identity.Identity{TenantID: "inspection-t", UserID: "inspection-u", SessionID: string(state.NewEventID())}}
-				turn := memory.ConversationTurn{UserMessage: "recorded note", AssistantResponse: "noted", Timestamp: time.Now(), TrajectoryDigest: &memory.TrajectoryDigest{ObservationsSummary: "note provenance"}, ArtifactsHiddenRefs: []string{"opaque-ref"}}
+				turn := memory.ConversationTurn{UserMessage: "recorded note", AssistantResponse: "noted"}
 				key, err := store.Put(t.Context(), id, turn)
 				if err != nil {
 					t.Fatal(err)

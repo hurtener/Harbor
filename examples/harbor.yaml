@@ -507,9 +507,8 @@ pauseresume:
   sweep_interval: 1m
 
 memory:
-  # MemoryStore driver — Phase 23 shipped `inmem`; Phase 25 adds
-  # `sqlite` and `postgres` (durable across restart). Default
-  # `inmem`.
+  # Administrative memory adapter. All drivers share the execution owner;
+  # actual memory durability comes from state.driver. Default: inmem.
   driver: inmem
   # DSN — required when driver is `sqlite` or `postgres`. SQLite
   # accepts a bare file path (or `:memory:` for the degenerate dev
@@ -520,8 +519,7 @@ memory:
   # dsn: /var/lib/harbor/memory.sqlite
   # migration_mode: apply # Postgres only; verify after a separate direct apply.
   # Memory shape strategy:
-  #   - `none`            — AddTurn is a no-op; GetLLMContext returns empty.
-  #   - `truncation`      — recent-turn window + budget enforcement (drop-oldest).
+  #   - `none`            — explicit stateless operation.
   #   - `rolling_summary` — default cumulative short-term session context,
   #                         compacted through the configured governed LLM.
   #                         Long-term memory remains external.
@@ -533,8 +531,7 @@ memory:
   budget_tokens: 0
   # Number of recent root executions kept in detail. Earlier meaning stays
   # in the cumulative checkpoint after successful compaction.
-  # 0 also selects 20; maximum 32. Ignored by
-  # the `none` and `truncation` strategies.
+  # 0 also selects 20; maximum 32. Ignored by `none`.
   recent_turns: 20
   # Operator-tunable compaction summariser (rolling_summary only).
   # `model` pins the model used for compaction LLM calls, independent
@@ -548,11 +545,6 @@ memory:
   # summarizer:
   #   model: anthropic/claude-haiku
   #   prompt: "Always preserve numeric thresholds and dollar amounts verbatim."
-  # Bounded queue size for the rolling_summary recovery loop
-  # (D-034). Overflow drops oldest and emits
-  # `memory.recovery_dropped` on the events bus. Default 16; must
-  # be >= 0.
-  recovery_backlog_max: 16
   # Native semantic-memory indexing is removed. External long-term memory
   # arrives through caller memory or connected capability tools.
 

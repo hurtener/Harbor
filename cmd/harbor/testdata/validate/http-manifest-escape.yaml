@@ -54,7 +54,6 @@ distributed:
 memory:
   driver: inmem
   strategy: none
-  recovery_backlog_max: 16
 
 tools:
   # Phase 149 (D-279): a relative entry that lexically escapes

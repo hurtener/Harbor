@@ -513,10 +513,9 @@ func Defaults() *Config {
 			RemoteDriver: "loopback",
 		},
 		Memory: MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "rolling_summary",
-			RecentTurns:        20,
-			RecoveryBacklogMax: 16,
+			Driver:      "inmem",
+			Strategy:    "rolling_summary",
+			RecentTurns: 20,
 		},
 		// closes issue #126. The V1 planner-driver default is
 		// "react" (the reference LLM-driven ReAct concrete — /).
@@ -558,6 +557,9 @@ func boolPtr(b bool) *bool { return &b }
 // Unset env vars are no-ops (zero or default value remains). Slice
 // fields accept comma-separated values.
 func applyEnvOverrides(cfg *Config) error {
+	if _, present := os.LookupEnv("HARBOR_MEMORY_RECOVERY_BACKLOG_MAX"); present {
+		return errors.New("HARBOR_MEMORY_RECOVERY_BACKLOG_MAX was removed; cumulative memory never drops unsummarized recovery work")
+	}
 	if _, present := os.LookupEnv("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS"); present {
 		return errors.New("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS was removed; use HARBOR_MEMORY_STRATEGY=rolling_summary and HARBOR_MEMORY_RECENT_TURNS")
 	}

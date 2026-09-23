@@ -12,7 +12,7 @@ import (
 
 func TestTrajectoryHistorical_ContextReachesOrdinarySummarization(t *testing.T) {
 	t.Parallel()
-	client := newStubClient(goodSummaryJSON)
+	client := newStubClient()
 	s, err := summarizer.NewTrajectorySummariser(client)
 	if err != nil {
 		t.Fatal(err)

@@ -22,21 +22,24 @@ Both subsystems share a key contract: **identity-scoped by (tenant, user, sessio
 Memory has two axes you tune independently:
 
 - **Strategy** (`memory.strategy`) — how the planner uses memory each turn.
-- **Driver** (`memory.driver`) — where memory is stored.
+- **Driver** (`memory.driver`) — the administrative memory adapter. Durability
+  comes from the shared `state.driver`, not from a separate memory transcript.
 
 ### Strategies
 
 | Strategy           | When to use                                                                 |
 |--------------------|------------------------------------------------------------------------------|
 | `none`            | Explicit stateless opt-out. Each run starts cold.                           |
-| `truncation`       | Chat agents with short windows. Keep last N messages; drop older verbatim.    |
 | `rolling_summary` (default) | Cumulative short-term session context with 20 recent detailed turns. |
 
 `rolling_summary` is the sweet spot for chatbots — it preserves the conversation arc without blowing the context window. The summariser is the same LLM as the planner (Bifrost reuses the configured provider).
 
-### Drivers
+The removed `truncation` strategy is rejected rather than silently dropping
+unsummarized context when a window fills.
 
-| Driver     | When to use                                                                |
+### Persistence
+
+| State driver | When to use                                                              |
 |------------|----------------------------------------------------------------------------|
 | `inmem`    | Dev. Memory dies on `harbor dev` restart.                                  |
 | `sqlite`   | Single-node production. Survives restarts. Default for self-hosted agents. |
@@ -46,11 +49,13 @@ Memory has two axes you tune independently:
 
 ```yaml
 memory:
-  driver: sqlite
-  dsn: /tmp/harbor-validation/my-agent-memory.sqlite   # outside the project dir (WAL trap)
+  driver: inmem              # shares the durable StateStore below
   strategy: rolling_summary
+  recent_turns: 20
   budget_tokens: 8000          # working-input compaction target, not output tokens
-  recovery_backlog_max: 16     # bounded queue for the summariser's recovery loop (default 16)
+state:
+  driver: sqlite
+  dsn: /tmp/harbor-validation/my-agent-state.sqlite   # outside the project dir (WAL trap)
 ```
 
 `budget_tokens` is the soft working-input target for the complete assembled
@@ -67,9 +72,16 @@ The separate `sessions.retained_context_turns` and SDK activation option are
 removed. Persistence uses the configured StateStore and session lifetime.
 Omitted YAML settings and `config.Defaults()` now enable that memory behavior;
 set `memory.strategy: none` explicitly to disable it. Compaction can incur
-governed model calls. Legacy memory-store interfaces/recovery-loop retirement
-remains unfinished; this is not the complete owner migration. See the
+governed model calls. The pair-summary engine and its recovery loop are removed;
+admin inspection and mutation use the same owner as execution. See the
 [implementation tracker](../../notes/portable-context-tracker.md).
+
+Administrative `Put` accepts conversational notes only; execution receipts and
+their provenance come from the runtime journal. Heavy `memory.get` values return
+references resolved through bounded `artifacts.get`, without storing a second
+copy. These references cannot be presigned and stop resolving when their source
+is deleted, expired or replaced. Refresh `memory.list` for the current projection;
+use `memory.delete`, not artifact deletion, to remove a memory source.
 
 ### Removed semantic-memory retrieval
 

@@ -12,7 +12,7 @@ import (
 )
 
 func TestHealth_TotalRecordCount(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 7)
 
@@ -80,7 +80,7 @@ func TestHealth_CounterArithmetic(t *testing.T) {
 	// event (D-033).
 	const n = 4
 	for range n {
-		_ = h.store.AddTurn(context.Background(),
+		_, _ = h.store.Put(context.Background(),
 			identity.Quadruple{Identity: identity.Identity{TenantID: id.TenantID, UserID: id.UserID}},
 			memory.ConversationTurn{})
 	}

@@ -3,7 +3,6 @@ package stream_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/artifacts"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/audit"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -55,13 +53,7 @@ type memHandlerFixture struct {
 
 func newMemHandlerFixture(t *testing.T) memHandlerFixture {
 	t.Helper()
-	return newMemHandlerStrategyFixture(t, memory.StrategyTruncation)
-}
-
-type forbiddenPairSummarizer struct{}
-
-func (forbiddenPairSummarizer) Summarize(context.Context, identity.Quadruple, memory.SummarizeRequest) (memory.SummarizeResponse, error) {
-	return memory.SummarizeResponse{}, errors.New("inspection must not call the obsolete pair summarizer")
+	return newMemHandlerStrategyFixture(t, memory.StrategyRollingSummary)
 }
 
 func newMemHandlerStrategyFixture(t *testing.T, strategy memory.Strategy) memHandlerFixture {
@@ -93,24 +85,18 @@ func newMemHandlerStrategyFixture(t *testing.T, strategy memory.Strategy) memHan
 		Driver:       "inmem",
 		Strategy:     strategy,
 		BudgetTokens: 1_000_000,
-	}, memory.Deps{State: stateStore, Bus: bus, Redactor: red, RetentionTTL: time.Hour}, memoryinmem.Options{Summarizer: forbiddenPairSummarizer{}})
+	}, memory.Deps{State: stateStore, Bus: bus, Redactor: red, RetentionTTL: time.Hour})
 	if err != nil {
 		t.Fatalf("memoryinmem.New: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
-
-	artStore, err := artifacts.Open(context.Background(), config.ArtifactsConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("artifacts.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = artStore.Close(context.Background()) })
 
 	agg, err := events.NewAggregator(bus)
 	if err != nil {
 		t.Fatalf("events.NewAggregator: %v", err)
 	}
 
-	h, err := stream.NewMemoryHandler(store, artStore, memHandlerThreshold,
+	h, err := stream.NewMemoryHandler(store, memHandlerThreshold,
 		stream.WithMemoryAggregator(agg),
 		stream.WithMemoryDriverName("inmem"))
 	if err != nil {
@@ -180,12 +166,11 @@ func TestMemoryHandler_CumulativeMutationAuthority(t *testing.T) {
 func (f memHandlerFixture) seedTurn(t *testing.T, id identity.Identity, user, assistant string) {
 	t.Helper()
 	q := identity.Quadruple{Identity: id}
-	if err := f.store.AddTurn(context.Background(), q, memory.ConversationTurn{
+	if _, err := f.store.Put(context.Background(), q, memory.ConversationTurn{
 		UserMessage:       user,
 		AssistantResponse: assistant,
-		Timestamp:         time.Now().UTC(),
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 }
 
@@ -209,21 +194,11 @@ func doMemReq(t *testing.T, h http.Handler, route, body string, id *identity.Ide
 }
 
 func TestMemoryHandler_NewRejectsNilDeps(t *testing.T) {
-	artStore, err := artifacts.Open(context.Background(), config.ArtifactsConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("artifacts.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = artStore.Close(context.Background()) })
-
-	if _, err := stream.NewMemoryHandler(nil, artStore, 1024); err == nil {
+	if _, err := stream.NewMemoryHandler(nil, 1024); err == nil {
 		t.Error("NewMemoryHandler(nil store): err = nil, want misconfigured")
 	}
-	// A nil ArtifactStore — build a real store first.
 	f := newMemHandlerFixture(t)
-	if _, err := stream.NewMemoryHandler(f.store, nil, 1024); err == nil {
-		t.Error("NewMemoryHandler(nil artifacts): err = nil, want misconfigured")
-	}
-	if _, err := stream.NewMemoryHandler(f.store, artStore, 0); err == nil {
+	if _, err := stream.NewMemoryHandler(f.store, 0); err == nil {
 		t.Error("NewMemoryHandler(zero threshold): err = nil, want misconfigured")
 	}
 }
@@ -505,7 +480,7 @@ func TestMemoryHandler_ListRejectsOversizedPageSize(t *testing.T) {
 func TestMemoryHandler_WithMemoryLoggerOption(t *testing.T) {
 	// Exercises the WithMemoryLogger option path.
 	f := newMemHandlerFixture(t)
-	h, err := stream.NewMemoryHandler(f.store, mustArtStore(t), memHandlerThreshold,
+	h, err := stream.NewMemoryHandler(f.store, memHandlerThreshold,
 		stream.WithMemoryLogger(nil), // nil logger → default
 		stream.WithMemoryLogger(slogDiscard()))
 	if err != nil {
@@ -514,17 +489,6 @@ func TestMemoryHandler_WithMemoryLoggerOption(t *testing.T) {
 	if h == nil {
 		t.Fatal("NewMemoryHandler returned nil")
 	}
-}
-
-// mustArtStore opens a fresh in-mem ArtifactStore for a handler test.
-func mustArtStore(t *testing.T) artifacts.ArtifactStore {
-	t.Helper()
-	s, err := artifacts.Open(context.Background(), config.ArtifactsConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("artifacts.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close(context.Background()) })
-	return s
 }
 
 // slogDiscard returns a logger that discards every record.
@@ -557,8 +521,8 @@ func TestMemoryHandler_StrategyTraceHappyPath(t *testing.T) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Trace.Strategy != string(prototypes.MemoryStrategyTruncation) {
-		t.Errorf("Strategy = %q, want truncation", resp.Trace.Strategy)
+	if resp.Trace.Strategy != string(prototypes.MemoryStrategyRollingSummary) {
+		t.Errorf("Strategy = %q, want rolling_summary", resp.Trace.Strategy)
 	}
 	if resp.Trace.RecentTurnCount != 1 {
 		t.Errorf("RecentTurnCount = %d, want 1", resp.Trace.RecentTurnCount)

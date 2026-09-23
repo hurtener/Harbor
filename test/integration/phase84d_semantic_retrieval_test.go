@@ -123,11 +123,15 @@ func TestE2E_Phase84d_FailureMode_SemanticWithoutEmbedder(t *testing.T) {
 }
 
 // TestE2E_Phase84d_ConcurrentSessions_NoCrossTalk is the §17.3
-// concurrency-stress leg: N concurrent sessions add + search against
+// concurrency-stress leg: N concurrent sessions put + inspect against
 // ONE shared memory store; each session retrieves only its own turn;
 // goroutine baseline restored after teardown.
 func TestE2E_Phase84d_ConcurrentSessions_NoCrossTalk(t *testing.T) {
 	bus := phase84dBus(t)
+	red, err := audit.Open(context.Background(), config.AuditConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	st, err := state.Open(context.Background(), config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "state.sqlite")})
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
@@ -135,8 +139,8 @@ func TestE2E_Phase84d_ConcurrentSessions_NoCrossTalk(t *testing.T) {
 	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:   "sqlite",
 		DSN:      filepath.Join(t.TempDir(), "memory.sqlite"),
-		Strategy: memory.StrategyTruncation,
-	}, memory.Deps{State: st, Bus: bus})
+		Strategy: memory.StrategyRollingSummary,
+	}, memory.Deps{State: st, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -152,18 +156,18 @@ func TestE2E_Phase84d_ConcurrentSessions_NoCrossTalk(t *testing.T) {
 			ctx := context.Background()
 			q := phase84dQuad("acme", "ana", fmt.Sprintf("sess-%d", i))
 			marker := fmt.Sprintf("topic-%d unique payload for session %d", i, i)
-			if err := mem.AddTurn(ctx, q, memory.ConversationTurn{
+			if _, err := mem.Put(ctx, q, memory.ConversationTurn{
 				UserMessage: marker, AssistantResponse: "noted",
 			}); err != nil {
-				errCh <- fmt.Errorf("session %d AddTurn: %w", i, err)
+				errCh <- fmt.Errorf("session %d Put: %w", i, err)
 				return
 			}
-			got, err := mem.GetLLMContext(ctx, q)
+			got, err := mem.Inspect(ctx, q)
 			if err != nil {
-				errCh <- fmt.Errorf("session %d GetLLMContext: %w", i, err)
+				errCh <- fmt.Errorf("session %d Inspect: %w", i, err)
 				return
 			}
-			if len(got.RecentTurns) != 1 || !strings.Contains(got.RecentTurns[0].UserMessage, fmt.Sprintf("session %d", i)) {
+			if len(got.Items) != 1 || !strings.Contains(string(got.Items[0].Value), fmt.Sprintf("session %d", i)) {
 				errCh <- fmt.Errorf("session %d cross-talk: %+v", i, got)
 			}
 		}()

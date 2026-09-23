@@ -70,6 +70,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -503,31 +504,31 @@ func (w *isolationWorker) stepArtifacts(ctx context.Context) {
 // --- MemoryStore ------------------------------------------------------
 
 func (w *isolationWorker) stepMemory(ctx context.Context) {
-	// Strategy=none: AddTurn / GetLLMContext are no-ops, but the
+	// Strategy=none: Put / Inspect are no-ops, but the
 	// identity gate still fires. The load-bearing assertion here is
 	// the fail-CLOSED behaviour — every method validates identity.
-	if err := w.stores.memory.AddTurn(ctx, w.quad(), memory.ConversationTurn{
+	if _, err := w.stores.memory.Put(ctx, w.quad(), memory.ConversationTurn{
 		UserMessage:       "isolation-probe:" + identityStamp(w.self),
 		AssistantResponse: "ack:" + identityStamp(w.self),
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		w.report.record("memory", w.self, "AddTurn: "+err.Error())
+		w.report.record("memory", w.self, "Put: "+err.Error())
 		return
 	}
-	if _, err := w.stores.memory.GetLLMContext(ctx, w.quad()); err != nil {
+	if _, err := w.stores.memory.Inspect(ctx, w.quad()); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		w.report.record("memory", w.self, "GetLLMContext: "+err.Error())
+		w.report.record("memory", w.self, "Inspect: "+err.Error())
 		return
 	}
-	if _, err := w.stores.memory.Health(ctx, w.quad()); err != nil {
+	if _, err := w.stores.memory.Delete(ctx, w.quad(), "absent"); !errors.Is(err, memory.ErrNotFound) {
 		if ctx.Err() != nil {
 			return
 		}
-		w.report.record("memory", w.self, "Health: "+err.Error())
+		w.report.record("memory", w.self, fmt.Sprintf("Delete: %v, want ErrNotFound", err))
 	}
 }
 
@@ -793,11 +794,11 @@ func TestE2E_Isolation_FailClosedOnMissingIdentity(t *testing.T) {
 	})
 
 	t.Run("MemoryStore", func(t *testing.T) {
-		err := stores.memory.AddTurn(ctx, badQuad, memory.ConversationTurn{
+		_, err := stores.memory.Put(ctx, badQuad, memory.ConversationTurn{
 			UserMessage: "x",
 		})
 		if err == nil {
-			t.Fatal("MemoryStore.AddTurn accepted an incomplete identity — fail-closed breach")
+			t.Fatal("MemoryStore.Put accepted an incomplete identity — fail-closed breach")
 		}
 	})
 

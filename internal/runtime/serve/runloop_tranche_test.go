@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
+
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -61,7 +63,7 @@ func TestRunLoopDriver_TrancheSteps_ParksAndResumesViaControl(t *testing.T) {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &trancheDriverPlanner{}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:             bus,
 		RunLoop:         rl,
 		Planner:         p,

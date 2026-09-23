@@ -657,41 +657,22 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		stack.closers = append(stack.closers, emb.Close)
 	}
 
-	// Memory: ONE memory.Open serves every driver ×
-	// strategy; the Summarizer threads through Deps. For
-	// rolling_summary the Summarizer defaults to the configured LLM —
-	// no separate summariser model, no stub fallback (CLAUDE.md §13);
-	// rolling_summary without an LLM fails loud.
+	// Administrative access shares the cumulative owner; the governed compactor is wired below.
 	if cfg.Memory.Driver != "" {
 		memCfg := memory.SnapshotFromConfig(cfg.Memory)
-		var summarizer memory.Summarizer
-		if memCfg.Strategy == memory.StrategyRollingSummary {
-			if stack.LLM == nil {
-				return stack, fmt.Errorf("memory: strategy=rolling_summary requires an LLM (configure llm) so the default Summarizer can be built")
-			}
-			s, sErr := llmsummarizer.New(stack.LLM,
-				llmsummarizer.WithModel(cfg.Memory.Summarizer.Model),
-				llmsummarizer.WithSystemPromptExtension(cfg.Memory.Summarizer.Prompt))
-			if sErr != nil {
-				return stack, fmt.Errorf("summarizer: %w", sErr)
-			}
-			summarizer = s
-		}
 		var ms memory.MemoryStore
 		var openErr error
 		if memCfg.Driver == "postgres" {
 			ms, openErr = postgresRuntime.Memory(memCfg, memory.Deps{
 				Redactor: stack.Redactor, RetentionTTL: cfg.Sessions.IdleTTL,
-				State:      stateStore,
-				Bus:        bus,
-				Summarizer: summarizer,
+				State: stateStore,
+				Bus:   bus,
 			})
 		} else {
 			ms, openErr = memory.Open(ctx, memCfg, memory.Deps{
 				Redactor: stack.Redactor, RetentionTTL: cfg.Sessions.IdleTTL,
-				State:      stateStore,
-				Bus:        bus,
-				Summarizer: summarizer,
+				State: stateStore,
+				Bus:   bus,
 			})
 		}
 		if openErr != nil {

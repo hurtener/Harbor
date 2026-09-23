@@ -21,7 +21,7 @@ import (
 // length meets or exceeds the heavy-content threshold but the value
 // reached the response path as raw inline bytes rather than an
 // ArtifactStub. Mirrors `llm.ErrContextLeak` (CLAUDE.md §13):
-// a heavy value MUST route through the ArtifactStore by reference; an
+// a heavy value MUST route through the bounded artifact read by reference; an
 // inline heavy value is a leak and is failed loudly, never truncated.
 var ErrContextLeak = errors.New("memory/protocol: heavy memory value reached the response path as raw inline bytes")
 
@@ -52,7 +52,7 @@ func snapshotTurns(snap memory.Inspection, id identity.Quadruple, driver string,
 	out := make([]projectedTurn, 0, len(snap.Items))
 	for _, entry := range snap.Items {
 		if entry.Key == "" || !json.Valid(entry.Value) {
-			return nil, fmt.Errorf("%w: invalid memory inspection item", memory.ErrInvalidSnapshot)
+			return nil, fmt.Errorf("%w: invalid memory inspection item", memory.ErrInvalidInspection)
 		}
 		val, ts := entry.Value, entry.CreatedAt
 		heavy := heavyThreshold > 0 && len(val) >= heavyThreshold

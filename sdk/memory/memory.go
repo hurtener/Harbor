@@ -1,6 +1,6 @@
 // Package memory is the public SDK facade over Harbor's
-// internal/memory package — the session-scoped memory store, its
-// strategies, and the LLM-context patch vocabulary (RFC §3.6,
+// internal/memory package — the cumulative session-memory administrative
+// surface and its committed source projections (RFC §3.6,
 // §6.6). Alias-based re-exports only: no behavior lives here. Driver
 // factories, event emission helpers, and Protocol wire projections
 // are deliberately private.
@@ -20,30 +20,14 @@ type (
 	Item = internal.Item
 	// ConfigSnapshot is the resolved memory configuration.
 	ConfigSnapshot = internal.ConfigSnapshot
-	// Deps carries shared dependencies (bus, summarizer, logger).
+	// Deps carries the shared StateStore, event bus and redactor.
 	Deps = internal.Deps
-	// Record is one stored memory record.
-	Record = internal.Record
-	// Snapshot is a strategy-shaped memory snapshot.
-	Snapshot = internal.Snapshot
-	// ConversationTurn is one conversational turn in a snapshot.
+	// ConversationTurn is an administrator-supplied conversational note.
 	ConversationTurn = internal.ConversationTurn
-	// LLMContextPatch is the planner-visible memory projection.
-	LLMContextPatch = internal.LLMContextPatch
-	// TrajectoryDigest is a compacted prior-trajectory digest.
-	TrajectoryDigest = internal.TrajectoryDigest
-	// Summarizer produces rolling summaries for the strategy.
-	Summarizer = internal.Summarizer
-	// SummarizeRequest is the summarizer input.
-	SummarizeRequest = internal.SummarizeRequest
-	// SummarizeResponse is the summarizer output.
-	SummarizeResponse = internal.SummarizeResponse
 	// Health is the store's degradation state.
 	Health = internal.Health
 	// Strategy names the memory compaction strategy.
 	Strategy = internal.Strategy
-	// OverflowPolicy names the bounded-buffer overflow behavior.
-	OverflowPolicy = internal.OverflowPolicy
 )
 
 // DefaultDriver is the driver name Open resolves when the config
@@ -64,19 +48,16 @@ const (
 
 // Strategy values.
 const (
-	// StrategyNone — no compaction.
+	// StrategyNone explicitly disables session memory.
 	StrategyNone = internal.StrategyNone
-	// StrategyTruncation — drop-oldest truncation.
-	StrategyTruncation = internal.StrategyTruncation
 	// StrategyRollingSummary — LLM-backed rolling summarisation.
 	StrategyRollingSummary = internal.StrategyRollingSummary
 )
 
-// OverflowDropOldest is the default bounded-buffer overflow policy.
-const OverflowDropOldest = internal.OverflowDropOldest
-
 // Re-exported sentinel errors callers compare via errors.Is.
 var (
+	// ErrInvalidInspection rejects malformed committed memory projections.
+	ErrInvalidInspection = internal.ErrInvalidInspection
 	// ErrNotFound — no record under that key.
 	ErrNotFound = internal.ErrNotFound
 	// ErrIdentityRequired — the identity triple is incomplete.
@@ -85,8 +66,6 @@ var (
 	ErrUnknownDriver = internal.ErrUnknownDriver
 	// ErrStoreClosed — the store has been closed.
 	ErrStoreClosed = internal.ErrStoreClosed
-	// ErrInvalidSnapshot — the snapshot does not fit the strategy.
-	ErrInvalidSnapshot = internal.ErrInvalidSnapshot
 )
 
 // Open resolves the configured memory driver and opens it.

@@ -164,8 +164,8 @@ func buildAdmissionGateFixture(t *testing.T) admissionGateFixture {
 	bus := mkDriverTestBus(t, red)
 	t.Cleanup(func() { _ = bus.Close(ctx) })
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: st, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: st, Bus: bus, Redactor: auditpatterns.New()})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -188,7 +188,7 @@ func buildAdmissionGateFixture(t *testing.T) admissionGateFixture {
 	}
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(ctx) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: sessReg, State: st, Memory: mem, Artifacts: arts, Skills: skStore,
+		Registry: sessReg, State: st, Artifacts: arts, Skills: skStore,
 		Bus: bus, Redactor: red,
 	})
 	if err != nil {

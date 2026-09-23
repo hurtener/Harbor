@@ -188,7 +188,7 @@ func TestRunLoop_V2GrantBindsExplicitAndDefaultReachAdmissionsAndRejectsForgedTa
 			if err != nil {
 				t.Fatal(err)
 			}
-			driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+			driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 				Bus: bus, RunLoop: runLoop, Planner: plannerProbe, Tasks: reg,
 				AgentConfigID: tc.effectiveAgent, AgentReachAdmissions: authority,
 			})

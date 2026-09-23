@@ -150,7 +150,6 @@ type RunLoopDriverOptions struct {
 	// pinned-then-recent, capability-filtered `<skills_context>`
 	// producer (the directory carries its own MaxEntries cap; the
 	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
-	Memory          memory.MemoryStore
 	SkillsDirectory *skills.Directory
 	PlanningHints   *planner.PlanningHints
 
@@ -385,7 +384,6 @@ type RunLoopDriver struct {
 
 	// per-run consumer wiring; the canonical-skills work
 	// — Directory as the skills surface. See driver opts godoc.
-	memory                memory.MemoryStore
 	skillsDirectory       *skills.Directory
 	planningHints         *planner.PlanningHints
 	skillStore            skills.SkillStore
@@ -498,6 +496,9 @@ var ErrRunLoopDriverMisconfigured = errors.New("dev: per-task RunLoop driver mis
 // NewRunLoopDriver validates the opts and returns a stopped
 // driver. Call Start before serving; call Close to drain.
 func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
+	if err := memory.ValidateStrategy(memory.Strategy(opts.SessionMemory.Strategy)); err != nil {
+		return nil, fmt.Errorf("run loop memory: %w", err)
+	}
 	memoryTurns := opts.SessionMemory.RecentTurnsResolved()
 	if memoryTurns < 0 || memoryTurns > config.MaxMemoryRecentTurns {
 		return nil, fmt.Errorf("%w: retained context turn limit is invalid", ErrRunLoopDriverMisconfigured)
@@ -553,7 +554,6 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		tasks:                 opts.Tasks,
 		taskKind:              opts.TaskKind,
 		driveBackground:       opts.DriveBackground,
-		memory:                opts.Memory,
 		skillsDirectory:       opts.SkillsDirectory,
 		planningHints:         opts.PlanningHints,
 		skillStore:            opts.SkillStore,
@@ -1536,25 +1536,6 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// slice. Directory wiring.
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
-	if d.memory != nil && d.retainedContextTurns == 0 {
-		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ)
-		if mErr != nil {
-			d.logger.Warn("RunLoopDriver: FetchMemoryBlocks failed; failing run",
-				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", mErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("FetchMemoryBlocks: %v", mErr),
-			}); fErr != nil {
-				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		memBlocks = mb
-	}
 
 	var skillsCtx []any
 	if d.catalog == nil && d.skillsDirectory != nil {
@@ -2140,30 +2121,6 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 					slog.String("err", mErr.Error()))
 			}
 			return
-		}
-
-		// Memory writeback. The 83d/83f read path
-		// is wired (run loop hands MemoryBlocks to the planner); the
-		// write path was the missing half. Without a writeback the
-		// session-scoped memory stays empty forever and the operator's
-		// multi-turn sessions cannot carry context. Best-effort: a
-		// memory.AddTurn error is logged Warn but does NOT downgrade
-		// the run's terminal status — the planner reached FinishGoal,
-		// the operator should see Complete. AssistantResponse is the
-		// envelope's Answer (the validated payload string on a schema
-		// run; the extracted answer text otherwise).
-		if d.memory != nil && d.retainedContextTurns == 0 {
-			turn := memory.ConversationTurn{
-				UserMessage:       task.Query,
-				AssistantResponse: envelope.Answer,
-				Timestamp:         time.Now(),
-			}
-			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil {
-				d.logger.Warn("RunLoopDriver: memory.AddTurn failed; run still marked complete",
-					slog.String("task_id", string(taskID)),
-					slog.String("run_id", q.RunID),
-					slog.String("err", mErr.Error()))
-			}
 		}
 
 		raw, err := json.Marshal(envelope)

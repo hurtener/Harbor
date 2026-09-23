@@ -1069,16 +1069,16 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 
 	// The three `memory.*` read handlers.
 	// Built only when WithMemory supplied a MemoryStore AND the
-	// ArtifactStore + inline-payload bound (shared with pause.list —
+	// inline-payload bound (shared with pause.list —
 	// the pinned Console bound, not the operator's LLM-context
 	// threshold) are set. When any is missing the three routes are left un-mounted
 	// — the smoke `skip_if_404` keeps preflight green on a partial
 	// build. The memory handler reuses the events Aggregator built
 	// above for the 24h identity-rejected / recovery-dropped counters.
 	var memoryHandler *stream.MemoryHandler
-	if cfg.memoryStore != nil && cfg.artifactStore != nil && cfg.heavyThreshold > 0 {
+	if cfg.memoryStore != nil && cfg.heavyThreshold > 0 {
 		mh, err := stream.NewMemoryHandler(
-			cfg.memoryStore, cfg.artifactStore, cfg.heavyThreshold,
+			cfg.memoryStore, cfg.heavyThreshold,
 			stream.WithMemoryLogger(cfg.logger),
 			stream.WithMemoryAggregator(aggregator),
 			stream.WithMemoryDriverName(cfg.memoryDriverName),

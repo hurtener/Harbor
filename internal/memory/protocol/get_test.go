@@ -1,14 +1,19 @@
 package protocol_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	memprotocol "github.com/hurtener/Harbor/internal/memory/protocol"
+	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
@@ -17,7 +22,7 @@ import (
 const heavyThreshold = 4096
 
 func TestGet_LightValueInlined(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 2)
 
@@ -30,7 +35,7 @@ func TestGet_LightValueInlined(t *testing.T) {
 	key := listResp.Items[0].Key
 
 	resp, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: key}, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -50,7 +55,7 @@ func TestGet_LightValueInlined(t *testing.T) {
 }
 
 func TestGet_HeavyValueRoutesToArtifact(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedHeavyTurn(t, h, id, heavyThreshold*2)
 
@@ -63,7 +68,7 @@ func TestGet_HeavyValueRoutesToArtifact(t *testing.T) {
 	key := listResp.Items[0].Key
 
 	resp, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: key}, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -81,25 +86,40 @@ func TestGet_HeavyValueRoutesToArtifact(t *testing.T) {
 		t.Error("Get(heavy value): ValueArtifact.ID is empty")
 	}
 
-	// The stub MUST resolve through the artifact store — round-trip
-	// the bytes.
+	// Resolve through the public read contract, not a separately stored copy.
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
-	got, found, err := h.artifacts.Get(context.Background(), scope, resp.Detail.ValueArtifact.ID)
+	surface, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
+		Store: h.artifacts, Memory: h.store, Redactor: patterns.New(), Bus: h.bus,
+		Clock: time.Now, DriverName: "inmem", MaxBodyBytes: 1 << 20,
+		FetchDefaultMaxBytes: 1 << 20, FetchHardMaxBytes: 1 << 20,
+	})
 	if err != nil {
-		t.Fatalf("artifacts.Get: %v", err)
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatal("artifacts.Get: ValueArtifact ref does not resolve in the artifact store")
+	result, err := surface.Dispatch(context.Background(), methods.MethodArtifactsGet, &prototypes.ArtifactsGetRequest{
+		Scope: prototypes.ArtifactScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}, ID: resp.Detail.ValueArtifact.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(got) < heavyThreshold {
-		t.Errorf("artifacts.Get: round-tripped %d bytes, want >= %d", len(got), heavyThreshold)
+	view, err := h.store.Inspect(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := result.(*prototypes.ArtifactsGetResponse)
+	if got.Truncated || len(view.Items) != 1 || !bytes.Equal(got.Content, view.Items[0].Value) {
+		t.Fatal("source-bound read did not return the exact committed bytes")
+	}
+	stored, err := h.artifacts.List(context.Background(), scope)
+	if err != nil || len(stored) != 0 {
+		t.Fatalf("memory inspection stored independent artifacts: %d, %v", len(stored), err)
 	}
 }
 
 func TestGet_FailsLoudlyOnIncompleteIdentity(t *testing.T) {
 	h := newMemHarness(t, memory.StrategyNone, 0)
 	_, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: "mem_whatever"},
 		identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}})
 	if !errors.Is(err, memory.ErrIdentityRequired) {
@@ -108,12 +128,12 @@ func TestGet_FailsLoudlyOnIncompleteIdentity(t *testing.T) {
 }
 
 func TestGet_UnknownKeyIsNotFound(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 1)
 
 	_, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: "mem_does_not_exist"}, id)
 	if !errors.Is(err, memory.ErrNotFound) {
 		t.Fatalf("Get with unknown key: err = %v, want ErrNotFound", err)
@@ -123,7 +143,7 @@ func TestGet_UnknownKeyIsNotFound(t *testing.T) {
 func TestGet_EmptyKeyIsInvalid(t *testing.T) {
 	h := newMemHarness(t, memory.StrategyNone, 0)
 	_, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: ""}, testIdentity())
 	if !errors.Is(err, memprotocol.ErrInvalidFilter) {
 		t.Fatalf("Get with empty key: err = %v, want ErrInvalidFilter", err)
@@ -133,7 +153,7 @@ func TestGet_EmptyKeyIsInvalid(t *testing.T) {
 func TestGet_NonPositiveThresholdFailsLoud(t *testing.T) {
 	h := newMemHarness(t, memory.StrategyNone, 0)
 	_, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: 0},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: 0},
 		prototypes.MemoryGetRequest{Key: "mem_x"}, testIdentity())
 	if err == nil {
 		t.Fatal("Get with zero HeavyThreshold: err = nil, want a misconfiguration error (a zero threshold would route every value)")

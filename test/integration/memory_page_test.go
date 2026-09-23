@@ -105,9 +105,9 @@ func newPhase73jDeps(t *testing.T) *phase73jDeps {
 	}
 	memStore, err := memoryinmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
+		Strategy:     memory.StrategyRollingSummary,
 		BudgetTokens: 1_000_000,
-	}, memory.Deps{State: stateStore, Bus: bus}, memoryinmem.Options{})
+	}, memory.Deps{State: stateStore, Bus: bus, Redactor: red})
 	if err != nil {
 		_ = stateStore.Close(context.Background())
 		_ = bus.Close(context.Background())
@@ -204,12 +204,11 @@ func phase73jClaims(id identity.Identity) jwt.MapClaims {
 // seedPhase73jTurn appends one conversation turn to the memory store.
 func seedPhase73jTurn(t *testing.T, store memory.MemoryStore, id identity.Identity, user, assistant string) {
 	t.Helper()
-	if err := store.AddTurn(context.Background(), identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := store.Put(context.Background(), identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage:       user,
 		AssistantResponse: assistant,
-		Timestamp:         fixedNowPhase73j,
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 }
 
@@ -365,7 +364,7 @@ func TestE2E_Phase73j_IdentityRequiredFailsLoudAndSurfacesOnBus(t *testing.T) {
 	// operator's subscription. The driver fails closed AND emits
 	// `memory.identity_rejected` (D-033) — this is the event the
 	// Console's Recent-identity-rejections card renders verbatim.
-	_ = deps.store.AddTurn(context.Background(),
+	_, _ = deps.store.Put(context.Background(),
 		identity.Quadruple{Identity: identity.Identity{TenantID: subID.TenantID, UserID: subID.UserID}},
 		memory.ConversationTurn{})
 

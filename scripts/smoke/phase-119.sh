@@ -4,7 +4,7 @@
 # Phase 119 smoke — runtime retention + ctx hardening.
 #
 # Static-only: this phase fixes internal correctness (map reaping,
-# identity-scoped governance keys, a cancellable recovery ctx, two
+# identity-scoped governance keys, cancellable memory operations, two
 # control-flow cleanups) with no new HTTP/Protocol surface. The
 # behavioural guarantees are gated by `go test -race` in the touched
 # packages; these assertions pin the load-bearing source facts so a
@@ -20,7 +20,7 @@ source "scripts/smoke/common.sh"
 
 ENG="internal/runtime/engine"
 GOV="internal/governance"
-MEM="internal/memory/strategy"
+MEM="internal/memory/session"
 
 # 1. Engine capacity reap: the sweeper exists and is launched in Run,
 #    mirroring the cancellation sweeper.
@@ -42,12 +42,14 @@ assert_grep_present 'identityScoped\(q\)' "${GOV}/cost.go" \
 assert_grep_present 'identityScoped\(q\)' "${GOV}/ratelimit.go" \
     "governance: rate limiter strips RunID from its key"
 
-# 3. Rolling-summary recovery loop uses a cancellable ctx, not
-#    context.Background(), and Close cancels it.
-assert_grep_present 'recoveryCancel' "${MEM}/rolling_summary.go" \
-    "rolling-summary: cancellable recovery ctx present"
-assert_grep_present 'ctx := e.recoveryCtx' "${MEM}/rolling_summary.go" \
-    "rolling-summary: recoverOne uses the cancellable recovery ctx"
+# 3. The pair recovery loop is retired; memory operations honor cancellation.
+assert_grep_present 'if err := ctx.Err\(\); err != nil' "${MEM}/inspect.go" \
+    "cumulative memory: administrative operations check caller cancellation"
+if [ -f internal/memory/strategy/rolling_summary.go ]; then
+    fail "retired pair-summary recovery engine is still present"
+else
+    ok "no parallel pair-summary recovery engine remains"
+fi
 
 # 4. Low cleanups: the MapConcurrent dead select is gone; readAny reuses
 #    one timer instead of allocating time.After per poll cycle.

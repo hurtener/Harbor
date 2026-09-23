@@ -17,7 +17,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/state"
@@ -67,21 +66,7 @@ func (c *retainedServerClient) body(id tasks.TaskID) string {
 	return c.bodies[string(id)]
 }
 
-type retainedServerMemory struct {
-	memory.MemoryStore
-	calls atomic.Int64
-}
-
-func (m *retainedServerMemory) GetLLMContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
-	m.calls.Add(1)
-	return memory.LLMContextPatch{}, errors.New("legacy memory was consulted")
-}
-func (m *retainedServerMemory) AddTurn(context.Context, identity.Quadruple, memory.ConversationTurn) error {
-	m.calls.Add(1)
-	return errors.New("legacy memory write occurred")
-}
-
-func retainedServerHarness(t *testing.T, change func(*RunLoopDriverOptions)) (failDriverEnv, *retainedServerClient, *atomic.Int64, *retainedServerMemory) {
+func retainedServerHarness(t *testing.T, change func(*RunLoopDriverOptions)) (failDriverEnv, *retainedServerClient, *atomic.Int64) {
 	t.Helper()
 	env := newFailDriverEnv(t)
 	store, err := state.Open(t.Context(), config.StateConfig{Driver: "inmem"})
@@ -106,19 +91,18 @@ func retainedServerHarness(t *testing.T, change func(*RunLoopDriverOptions)) (fa
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	mem := &retainedServerMemory{}
 	startFailDriver(t, env, func(opts *RunLoopDriverOptions) {
 		opts.StateStore, opts.Redactor = store, redactor
 		opts.SessionMemory = config.MemoryConfig{Strategy: "rolling_summary", RecentTurns: 4}
 		opts.RetainedContextTTL = time.Hour
-		opts.Memory, opts.Planner, opts.Catalog = mem, react.New(client), cat
+		opts.Planner, opts.Catalog = react.New(client), cat
 		opts.Executor = dispatch.NewToolExecutor(cat, nil, env.reg)
 		opts.DriveBackground = true
 		if change != nil {
 			change(opts)
 		}
 	})
-	return env, client, calls, mem
+	return env, client, calls
 }
 
 // Await the real terminal event, not a timing delay. Subscription precedes Spawn
@@ -174,7 +158,7 @@ func retainedServerTurn(t *testing.T, env failDriverEnv, id identity.Identity, q
 }
 
 func TestRetainedServer_ExactRootContextAndPrivateChild(t *testing.T) {
-	env, client, calls, mem := retainedServerHarness(t, nil)
+	env, client, calls := retainedServerHarness(t, nil)
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
 	first := retainedServerTurn(t, env, id, "first root", nil)
 	if first.Status != tasks.StatusComplete {
@@ -204,8 +188,8 @@ func TestRetainedServer_ExactRootContextAndPrivateChild(t *testing.T) {
 	if strings.Contains(client.body(third.ID), "private-child-query") {
 		t.Fatal("child transcript entered root history")
 	}
-	if calls.Load() != 1 || mem.calls.Load() != 0 {
-		t.Fatalf("replayed tools=%d legacy memory=%d", calls.Load(), mem.calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("replayed tools=%d", calls.Load())
 	}
 }
 
@@ -224,7 +208,7 @@ func (s *retainedServerFailStore) SaveIf(ctx context.Context, p []state.SlotExpe
 func TestRetainedServer_RequiredPersistenceBeforeSuccess(t *testing.T) {
 	for _, failAt := range []int64{1, 2} {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
-			env, client, calls, _ := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
+			env, client, calls := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
 				s := &retainedServerFailStore{StateStore: opts.StateStore}
 				s.remaining.Store(failAt)
 				opts.StateStore = s
@@ -244,7 +228,7 @@ func TestRetainedServer_RequiredPersistenceBeforeSuccess(t *testing.T) {
 }
 
 func TestRetainedServer_ConcurrentReuse(t *testing.T) {
-	env, client, calls, mem := retainedServerHarness(t, nil)
+	env, client, calls := retainedServerHarness(t, nil)
 	var wg sync.WaitGroup
 	for i := range 128 {
 		wg.Add(1)
@@ -267,8 +251,8 @@ func TestRetainedServer_ConcurrentReuse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if calls.Load() != 128 || mem.calls.Load() != 0 {
-		t.Fatalf("tools=%d memory=%d", calls.Load(), mem.calls.Load())
+	if calls.Load() != 128 {
+		t.Fatalf("tools=%d", calls.Load())
 	}
 }
 

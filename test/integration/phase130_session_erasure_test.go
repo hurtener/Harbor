@@ -41,6 +41,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -100,8 +101,8 @@ func newPhase130DepsWithRegistry(t *testing.T) (*phase130Deps, *sessions.Registr
 		t.Fatalf("durable.New: %v", err)
 	}
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: store, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -136,7 +137,7 @@ func newPhase130DepsWithRegistry(t *testing.T) (*phase130Deps, *sessions.Registr
 	}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -229,10 +230,10 @@ func TestE2E_Phase130_SessionErasure(t *testing.T) {
 	if _, err := reg.Open(ictx, idErase.SessionID, idErase); err != nil {
 		t.Fatalf("open s-erase: %v", err)
 	}
-	if err := deps.mem.AddTurn(ictx, identity.Quadruple{Identity: idErase}, memory.ConversationTurn{
+	if _, err := deps.mem.Put(ictx, identity.Quadruple{Identity: idErase}, memory.ConversationTurn{
 		UserMessage: "secret question", AssistantResponse: "secret answer",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: idErase.TenantID, UserID: idErase.UserID, SessionID: idErase.SessionID}
 	if _, err := deps.arts.PutBytes(ctx, scope, []byte("private blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
@@ -275,12 +276,11 @@ func TestE2E_Phase130_SessionErasure(t *testing.T) {
 		t.Errorf("artifacts survived erasure: %d", len(refs))
 	}
 	// memory clean.
-	patch, err := deps.mem.GetLLMContext(ctx, identity.Quadruple{Identity: idErase})
-	if err != nil {
-		t.Fatalf("GetLLMContext: %v", err)
+	if _, err := deps.mem.Inspect(ctx, identity.Quadruple{Identity: idErase}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("erased memory not fenced: %v", err)
 	}
-	if len(patch.RecentTurns) != 0 {
-		t.Errorf("memory survived erasure: %d turns", len(patch.RecentTurns))
+	if _, err := deps.store.Load(ctx, identity.Quadruple{Identity: idErase}, state.InternalKindPrefix+"session-execution-context"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("cumulative memory survived erasure: %v", err)
 	}
 	// state.history empty: the erased triple's durable event stream is gone.
 	if _, err := deps.store.Load(ctx, identity.Quadruple{Identity: idErase}, "events.durable.head"); !errors.Is(err, state.ErrNotFound) {

@@ -19,7 +19,6 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/memory/conformancetest"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
@@ -27,7 +26,6 @@ import (
 func TestInMem_Conformance(t *testing.T) {
 	strategies := []memory.Strategy{
 		memory.StrategyNone,
-		memory.StrategyTruncation,
 		memory.StrategyRollingSummary,
 	}
 	for _, s := range strategies {
@@ -54,15 +52,10 @@ func buildHarness(t *testing.T, s memory.Strategy) conformancetest.Harness {
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	opts := memoryinmem.Options{}
-	if s == memory.StrategyRollingSummary {
-		opts.Summarizer = strategy.EchoSummarizer{}
-	}
 	mem, err := memoryinmem.New(memory.ConfigSnapshot{
-		Driver:       "inmem",
-		Strategy:     s,
-		BudgetTokens: 64,
-	}, memory.Deps{State: store, Bus: bus}, opts)
+		Driver:   "inmem",
+		Strategy: s,
+	}, memory.Deps{State: store, Bus: bus, Redactor: cumulativeRedactor(t)})
 	if err != nil {
 		t.Fatalf("memoryinmem.New(%q): %v", s, err)
 	}
@@ -86,4 +79,13 @@ func conformanceEventsConfig() config.EventsConfig {
 		IdleTimeout:              60_000_000_000, // 60s
 		DropWindow:               1_000_000_000,  // 1s
 	}
+}
+
+func cumulativeRedactor(t *testing.T) audit.Redactor {
+	t.Helper()
+	red, err := audit.Open(t.Context(), config.AuditConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return red
 }

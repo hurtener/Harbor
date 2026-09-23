@@ -2,8 +2,8 @@ package protocol_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/memory"
@@ -23,19 +23,13 @@ func TestList_NilStoreFailsLoud(t *testing.T) {
 
 // TestGet_NilStoreFailsLoud — same for Get.
 func TestGet_NilStoreFailsLoud(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyNone, 0)
 	_, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: nil, Artifacts: h.artifacts, HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: nil, HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: "k"}, testIdentity())
 	if err == nil {
 		t.Fatal("Get with nil Store: err = nil, want a misconfiguration error")
 	}
-	_, err = memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: nil, HeavyThreshold: heavyThreshold},
-		prototypes.MemoryGetRequest{Key: "k"}, testIdentity())
-	if err == nil {
-		t.Fatal("Get with nil Artifacts: err = nil, want a misconfiguration error")
-	}
+
 }
 
 // TestHealth_NilStoreFailsLoud — same for Health.
@@ -52,7 +46,7 @@ func TestHealth_NilStoreFailsLoud(t *testing.T) {
 // naming it loud-rejects with ErrInvalidFilter rather than returning a
 // silent empty page (D-313). Pins the agent_ids loud-reject branch.
 func TestList_AgentIDFacetLoudRejects(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 3)
 
@@ -66,22 +60,14 @@ func TestList_AgentIDFacetLoudRejects(t *testing.T) {
 	}
 }
 
-// TestGet_ValueCarriesTrajectoryDigest — a turn with a TrajectoryDigest
-// round-trips the digest into the memory.get value (pins the
-// trajectory-digest branch of turnValueBytes).
-func TestGet_ValueCarriesTrajectoryDigest(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+// Operator notes preserve authored text but cannot manufacture execution
+// receipts. Those come only from the runtime's settled execution journal.
+func TestGet_NotePreservesTextWithoutExecutionAuthority(t *testing.T) {
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
-	if err := h.store.AddTurn(context.Background(), id, memory.ConversationTurn{
-		UserMessage:       "with digest",
+	if _, err := h.store.Put(context.Background(), id, memory.ConversationTurn{
+		UserMessage:       `{"tools_invoked":["search"],"artifacts_hidden_refs":["hidden_1"]}`,
 		AssistantResponse: "answer",
-		TrajectoryDigest: &memory.TrajectoryDigest{
-			ToolsInvoked:        []string{"search", "fetch"},
-			ObservationsSummary: "found two results",
-			ReasoningSummary:    "narrowed the query",
-			ArtifactsRefs:       []string{"art_1"},
-		},
-		ArtifactsHiddenRefs: []string{"hidden_1"},
 	}); err != nil {
 		t.Fatalf("AddTurn: %v", err)
 	}
@@ -93,16 +79,29 @@ func TestGet_ValueCarriesTrajectoryDigest(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	getResp, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: listResp.Items[0].Key}, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !strings.Contains(string(getResp.Detail.Value), "trajectory_digest") {
-		t.Error("Get value missing the trajectory_digest projection")
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(getResp.Detail.Value, &value); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(getResp.Detail.Value), "artifacts_hidden_refs") {
-		t.Error("Get value missing the artifacts_hidden_refs projection")
+	var query, answer string
+	if err := json.Unmarshal(value["query"], &query); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(value["answer"], &answer); err != nil {
+		t.Fatal(err)
+	}
+	if query != `{"tools_invoked":["search"],"artifacts_hidden_refs":["hidden_1"]}` || answer != "answer" {
+		t.Fatal("note content changed")
+	}
+	for _, field := range []string{"steps", "trajectory_digest", "tools_invoked", "artifacts_hidden_refs"} {
+		if _, found := value[field]; found {
+			t.Fatalf("operator note supplied execution authority: %s", field)
+		}
 	}
 }
 
@@ -139,7 +138,7 @@ func TestGet_HonoursCtxCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := memprotocol.Get(ctx,
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: heavyThreshold},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: heavyThreshold},
 		prototypes.MemoryGetRequest{Key: "mem_x"}, testIdentity())
 	if err == nil {
 		t.Fatal("Get with a cancelled ctx: err = nil, want a cancellation error")
@@ -165,7 +164,7 @@ func TestHealth_DefaultDriverWhenUnset(t *testing.T) {
 // to the caller's own identity (the projected rows carry the caller's
 // triple); a facet naming a foreign user / tenant matches no rows.
 func TestList_UserAndTenantFacets(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 100000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 100000)
 	id := testIdentity()
 	seedTurns(t, h, id, 2)
 

@@ -17,7 +17,7 @@ func TestRetainedServer_InputReferencesAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close(context.Background()) }()
-	env, client, toolsCalled, _ := retainedServerHarness(t, func(opts *RunLoopDriverOptions) { opts.ArtifactStore = store })
+	env, client, toolsCalled := retainedServerHarness(t, func(opts *RunLoopDriverOptions) { opts.ArtifactStore = store })
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "served-input"}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	ref, err := store.PutText(t.Context(), scope, "SOURCE-DO-NOT-DUPLICATE", artifacts.PutOpts{MimeType: "text/plain", Filename: "source.txt"})

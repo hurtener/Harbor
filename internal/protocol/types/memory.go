@@ -250,7 +250,8 @@ type MemoryListResponse struct {
 // `PauseArtifactRef` / `SearchArtifactRef` use, kept as a distinct type
 // so a future divergence in either surface does not whipsaw the other.
 type MemoryArtifactRef struct {
-	// ID is the content-addressed identifier (`{namespace}_{sha256[:12]}`).
+	// ID is an opaque source-bound identifier. Resolve it with artifacts.get;
+	// it is not an independently retained blob or a presignable URL.
 	ID string `json:"id"`
 	// MimeType is the IANA media type, when known.
 	MimeType string `json:"mime_type,omitempty"`
@@ -302,9 +303,10 @@ type MemoryItemDetail struct {
 	Value []byte `json:"value,omitempty"`
 	// ValueArtifact is populated when SizeBytes meets or exceeds the
 	// heavy-content threshold. A client fetches the bytes through
-	// `artifacts.get` against this stub — the driver-independent byte
-	// read every registered artifact driver serves. When ValueArtifact
-	// is set, Value is nil — and vice-versa.
+	// `artifacts.get` against this stub. Every read checks the current memory
+	// source; expiry, deletion or source replacement makes the old stub
+	// unavailable. No independently retained artifact copy is made.
+	// When ValueArtifact is set, Value is nil — and vice-versa.
 	ValueArtifact *MemoryArtifactRef `json:"value_artifact,omitempty"`
 	// Metadata carries the per-record metadata.
 	Metadata MemoryMetadata `json:"metadata"`
@@ -369,31 +371,25 @@ type MemoryStrategyTraceRequest struct {
 }
 
 // MemoryStrategyTrace is the wire projection of how the configured memory
-// strategy is compacting the caller's session memory RIGHT NOW (
-// ). It is the honest, read-only projection of the strategy's
-// live `GetLLMContext` + `Health` output — NOT a fabricated per-step
-// "selection with rejections" (the `rolling_summary` strategy summarises;
-// it does not select-and-reject candidates). Every field is real runtime
-// state; an empty session projects an empty trace, never a synthesised one
-// (CLAUDE.md §13).
+// strategy represents the caller's committed session memory. It reads the
+// same cumulative owner as execution, not a separate pair-summary engine.
+// An empty session projects an empty trace, never a fabricated selection.
 type MemoryStrategyTrace struct {
 	// Strategy is the configured memory strategy — one of the
 	// MemoryStrategyName values.
 	Strategy string `json:"strategy"`
 	// Summary is the rolling-summary text the strategy injects into the
-	// planner's LLM call — the compaction OUTPUT. Empty under `none` /
-	// `truncation` (which keep no rolling summary) or before any
-	// compaction has occurred.
+	// planner's LLM call — the compaction OUTPUT. Empty under `none` or
+	// before any compaction has occurred.
 	Summary string `json:"summary"`
 	// RecentTurnCount is the number of conversation turns the strategy
 	// currently keeps verbatim (NOT folded into the summary).
 	RecentTurnCount int `json:"recent_turn_count"`
-	// EstimatedTokens is the strategy's current estimate of the tokens
-	// `GetLLMContext` would inject — the planner compares this against its
-	// context-window budget.
+	// EstimatedTokens estimates the committed memory projection. Final model
+	// admission separately budgets the complete assembled request.
 	EstimatedTokens int `json:"estimated_tokens"`
-	// Health is the memory FSM health state for this identity —
-	// "healthy" | "degraded" | "recovering".
+	// Health reports the inspection's health. A failed required read is an
+	// error response, not a successful healthy projection with missing content.
 	Health string `json:"health"`
 }
 

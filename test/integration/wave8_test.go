@@ -153,9 +153,9 @@ func openWave8Surface(t *testing.T) (*wave8Surface, func()) {
 
 	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
+		Strategy:     memory.StrategyRollingSummary,
 		BudgetTokens: 1024,
-	}, memory.Deps{State: st, Bus: bus})
+	}, memory.Deps{State: st, Bus: bus, Redactor: red})
 	if err != nil {
 		_ = reg.Close(context.Background())
 		_ = artStor.Close(context.Background())
@@ -256,7 +256,7 @@ func wave8RegisterEchoTool(t *testing.T, cat tools.ToolCatalog) {
 //   - Phase 32 mock LLM driver with scripted multi-step responses.
 //   - Phase 45 ReAct planner emitting `_spawn_task` then `_finish`.
 //   - Phase 20/21 TaskRegistry spawning + WatchGroup resolving.
-//   - Phase 23 memory.AddTurn under identity.
+//   - Phase 23 memory.Put under identity.
 //   - Phase 37 skills store on the surface (consumed by the
 //     `wave8Surface` bundle; presence asserted).
 //   - Identity propagation: the tool reads ctx identity, the
@@ -415,22 +415,20 @@ func TestE2E_Wave8_ReactSpawnWakeRoundTrip_AssembledSurface(t *testing.T) {
 		t.Errorf("Finish.Reason = %q, want %q", fin.Reason, planner.FinishGoal)
 	}
 
-	// Memory layer: record the turn under the run's identity. The
-	// memory store applies its truncation strategy; subsequent
-	// GetLLMContext surfaces the turn.
-	if err := surface.mem.AddTurn(ctx, q, memory.ConversationTurn{
+	// Administrative notes share the cumulative owner and identity boundary.
+	// Execution recording itself is exercised by the assembled runtime tests.
+	if _, err := surface.mem.Put(ctx, q, memory.ConversationTurn{
 		UserMessage:       "wave-8 wake-mode round-trip",
 		AssistantResponse: "Finish{Goal}: " + fmt.Sprintf("%v", fin.Payload),
-		Timestamp:         time.Now(),
 	}); err != nil {
-		t.Fatalf("memory.AddTurn: %v", err)
+		t.Fatalf("memory.Put: %v", err)
 	}
-	patch, err := surface.mem.GetLLMContext(ctx, q)
+	patch, err := surface.mem.Inspect(ctx, q)
 	if err != nil {
-		t.Fatalf("memory.GetLLMContext: %v", err)
+		t.Fatalf("memory.Inspect: %v", err)
 	}
-	if len(patch.RecentTurns) == 0 {
-		t.Errorf("memory.GetLLMContext returned empty RecentTurns; expected the added turn to surface")
+	if len(patch.Items) == 0 {
+		t.Errorf("memory.Inspect returned empty Items; expected the added turn to surface")
 	}
 
 	// Skills layer presence assertion: the surface is wired and
@@ -503,10 +501,10 @@ func TestE2E_Wave8_MissingIdentity_FailsClosed(t *testing.T) {
 	// Memory + skill stores also reject missing identity — same
 	// fail-loudly contract. Spot-check one of each.
 	emptyQ := identity.Quadruple{}
-	if err := surface.mem.AddTurn(context.Background(), emptyQ, memory.ConversationTurn{
+	if _, err := surface.mem.Put(context.Background(), emptyQ, memory.ConversationTurn{
 		UserMessage: "missing-identity attempt",
 	}); err == nil {
-		t.Error("memory.AddTurn with empty quadruple: got nil err, want wrapped identity-rejection")
+		t.Error("memory.Put with empty quadruple: got nil err, want wrapped identity-rejection")
 	}
 	if _, err := surface.skill.Get(context.Background(), emptyQ, "anything"); err == nil {
 		t.Error("skill.Get with empty quadruple: got nil err, want wrapped ErrIdentityRequired")

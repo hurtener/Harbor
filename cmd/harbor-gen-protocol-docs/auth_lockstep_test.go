@@ -409,9 +409,8 @@ func probeConfig(t *testing.T) *config.Config {
 			RemoteDriver: "loopback",
 		},
 		Memory: config.MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "none",
-			RecoveryBacklogMax: 8,
+			Driver:   "inmem",
+			Strategy: "none",
 		},
 	}
 	if err := cfg.Validate(); err != nil {

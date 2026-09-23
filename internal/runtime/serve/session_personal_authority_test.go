@@ -127,7 +127,7 @@ func TestNewRunLoopDriver_SkillsDirectoryRequiresCompleteSnapshotAuthority(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewRunLoopDriver(RunLoopDriverOptions{
+	_, err = NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:             env.bus,
 		RunLoop:         env.rl,
 		Planner:         &driverTestPlanner{finishGoalImmediately: true},

@@ -283,16 +283,16 @@ func TestE2E_ProjectionCompleteness_MemoryAgentFacetLoudRejects(t *testing.T) {
 		t.Fatalf("state.Open: %v", err)
 	}
 	defer func() { _ = stateStore.Close(context.Background()) }()
-	store, err := memoryinmem.New(memory.ConfigSnapshot{Strategy: memory.StrategyTruncation},
-		memory.Deps{State: stateStore, Bus: bus}, memoryinmem.Options{})
+	store, err := memoryinmem.New(memory.ConfigSnapshot{Strategy: memory.StrategyRollingSummary},
+		memory.Deps{State: stateStore, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memoryinmem.New: %v", err)
 	}
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-	if err := store.AddTurn(context.Background(), id, memory.ConversationTurn{
+	if _, err := store.Put(context.Background(), id, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "hi",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 
 	// Failure mode: agent_ids over the unpopulated producer identity loud-rejects.

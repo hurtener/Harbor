@@ -1,40 +1,13 @@
-// Package memory owns Harbor's declared-policy, identity-scoped,
-// pluggable memory subsystem.
-//
-// The package provides:
-//
-//   - The single mandatory `MemoryStore` interface every backend
-//     (inmem here, sqlite + postgres) implements.
-//   - The shared types — `Strategy`, `Health`, `ConversationTurn`,
-//     `TrajectoryDigest`, `LLMContextPatch`, `Snapshot`.
-//   - Sentinel errors compared via `errors.Is`.
-//   - The §4.4 extensibility-seam plumbing (registry + factory).
-//   - Ctx helpers (`WithStore` / `MustFrom` / `From`).
-//
-// The interface owns the typed shape; drivers persist through StateStore.
-// Cumulative execution and Inspect/Put/Delete share internal/memory/session's
-// identity-scoped state. The older pair-oriented methods still use memory.state
-// during the cumulative-memory migration; they are not a compatibility reader for cumulative
-// memory and remain to be retired.
-//
-// Identity is mandatory at every method. The triple
-// `(tenant, user, session)` MUST be fully populated; empty `RunID`
-// is accepted (memory is session-scoped, not run-scoped, mirroring
-// the `state.StateStore` rule). Missing-triple operations
-// fail closed with `ErrIdentityRequired` AND emit a
-// `memory.identity_rejected` event on the configured `events.EventBus`
-// so the rejection is observable — never silent (per
-// AGENTS.md §5 "Fail loudly").
-//
-// In-memory, SQLite and PostgreSQL drivers implement none, truncation and
-// rolling_summary. This is short-term session memory, not long-term memory.
+// Package memory exposes the identity-scoped administrative surface of Harbor's
+// cumulative session memory. Runtime execution and these operations share the
+// same StateStore-backed owner in internal/memory/session. There is no pair-only
+// history store or background summary engine. Identity is mandatory.
 package memory
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 )
@@ -44,15 +17,9 @@ type Strategy string
 
 // Strategy values.
 const (
-	// StrategyNone is the no-op memory shape. AddTurn is a no-op;
-	// GetLLMContext returns an empty patch. Operationally the
-	// "memory disabled" mode.
+	// StrategyNone explicitly disables session memory.
 	StrategyNone Strategy = "none"
-	// StrategyTruncation keeps a recent-turn window with budget
-	// enforcement.
-	StrategyTruncation Strategy = "truncation"
-	// StrategyRollingSummary keeps a bounded recent tail plus cumulative
-	// short-term session context through the governed runtime compactor.
+	// StrategyRollingSummary retains cumulative context and recent execution detail.
 	StrategyRollingSummary Strategy = "rolling_summary"
 )
 
@@ -78,65 +45,11 @@ const (
 	HealthRecovering Health = "recovering"
 )
 
-// ConversationTurn is one turn of a memory-tracked conversation.
-// Producers (the planner runtime) hand turns to `AddTurn`.
-//
-// `ArtifactsShown` / `ArtifactsHiddenRefs` carry the model-visible /
-// model-hidden artifact references for this turn so memory's
-// downstream injection logic can prune or include them per the
-// configured strategy. Snapshot/Restore round-trips both fields
-// through the Snapshot bytes but applies no strategy logic.
+// ConversationTurn is an administrator-supplied conversational note.
+// Runtime turns are recorded through the cumulative execution owner, not Put.
 type ConversationTurn struct {
-	UserMessage         string
-	AssistantResponse   string
-	TrajectoryDigest    *TrajectoryDigest
-	ArtifactsShown      map[string]any
-	ArtifactsHiddenRefs []string
-	Timestamp           time.Time
-}
-
-// TrajectoryDigest is the compact planner-side trace snapshot the
-// memory subsystem MAY persist alongside the turn. Harbor does
-// not ingest it (Strategy=none); the type ships now so the strategy layer
-// and downstream planner phases share one definition.
-type TrajectoryDigest struct {
-	ToolsInvoked        []string
-	ObservationsSummary string
-	ReasoningSummary    string
-	ArtifactsRefs       []string
-}
-
-// LLMContextPatch is the output `GetLLMContext` returns: the patch
-// a planner runtime applies to its LLM call.
-//
-// Strategy=none returns an empty patch; later strategies return a
-// rolling summary text, ordered recent turns, and a token estimate
-// the planner can compare against its context-window budget.
-type LLMContextPatch struct {
-	Strategy    Strategy
-	Summary     string
-	RecentTurns []ConversationTurn
-	Tokens      int
-}
-
-// Snapshot is the export shape for `Snapshot` / `Restore`. The
-// Strategy field round-trips so a `Restore` against a driver
-// configured for a different Strategy fails loudly.
-//
-// `Bytes` is opaque to callers; only a driver of the same Strategy
-// can `Restore` them. Crossing driver boundaries (e.g. inmem
-// snapshot → sqlite restore) is safe because the bytes are
-// JSON-serialised internal records, not driver-private structures.
-type Snapshot struct {
-	Strategy Strategy
-	Bytes    []byte
-}
-
-// IsEmpty reports whether the snapshot is operationally empty (no
-// strategy + no bytes). Used by `Restore` to accept the
-// trivial-snapshot round-trip under Strategy=none.
-func (s Snapshot) IsEmpty() bool {
-	return s.Strategy == "" && len(s.Bytes) == 0
+	UserMessage       string
+	AssistantResponse string
 }
 
 // MemoryStore is Harbor's mandatory memory interface. A single
@@ -167,41 +80,6 @@ type MemoryStore interface {
 	// Delete atomically removes the named item and fences derived context.
 	Delete(ctx context.Context, id identity.Quadruple, key string) (int, error)
 
-	// AddTurn appends a conversation turn to the memory tracked
-	// for `id`. Strategy=none is a no-op (returns nil); other
-	// strategies will apply their shape logic.
-	AddTurn(ctx context.Context, id identity.Quadruple, turn ConversationTurn) error
-
-	// GetLLMContext returns the patch a planner runtime applies to
-	// its LLM call. Strategy=none returns the zero value of
-	// `LLMContextPatch`.
-	GetLLMContext(ctx context.Context, id identity.Quadruple) (LLMContextPatch, error)
-
-	// EstimateTokens returns the token-estimate for the memory
-	// payload `GetLLMContext` would inject right now. Strategy=
-	// none returns 0.
-	EstimateTokens(ctx context.Context, id identity.Quadruple) (int, error)
-
-	// Flush drops every in-flight turn and resets the memory for
-	// `id` to a clean state. Strategy=none is a no-op.
-	Flush(ctx context.Context, id identity.Quadruple) error
-
-	// Health reports the current health state for `id`'s memory.
-	// Strategy=none always reports `HealthHealthy`.
-	Health(ctx context.Context, id identity.Quadruple) (Health, error)
-
-	// Snapshot exports a portable snapshot of `id`'s memory state.
-	// Strategy=none returns an empty `Snapshot{Strategy: StrategyNone}`.
-	Snapshot(ctx context.Context, id identity.Quadruple) (Snapshot, error)
-
-	// Restore imports a previously-captured `Snapshot`. The
-	// Snapshot's Strategy MUST match the driver's configured
-	// Strategy; mismatched strategies (e.g. restoring a
-	// `truncation` snapshot into a `none` store) returns
-	// `ErrInvalidSnapshot`. Strategy=none accepts only empty
-	// snapshots; non-empty Bytes returns `ErrInvalidSnapshot`.
-	Restore(ctx context.Context, id identity.Quadruple, snap Snapshot) error
-
 	// Close releases driver resources. Idempotent. After Close,
 	// every method returns `ErrStoreClosed`.
 	Close(ctx context.Context) error
@@ -209,9 +87,9 @@ type MemoryStore interface {
 
 // Sentinel errors. Callers compare via `errors.Is`.
 var (
-	// ErrNotFound — a load-by-key style lookup found nothing.
-	// Harbor returns this when `Snapshot` is asked for a slot
-	// the StateStore wrapper layer has never written.
+	// ErrInvalidInspection rejects malformed items returned by a memory driver.
+	ErrInvalidInspection = errors.New("memory: invalid inspection")
+	// ErrNotFound means no current authorized item has the requested key.
 	ErrNotFound = errors.New("memory: record not found")
 
 	// ErrIdentityRequired — a method was called with a
@@ -227,19 +105,8 @@ var (
 	// ErrStoreClosed — a method was called after `Close`.
 	ErrStoreClosed = errors.New("memory: store is closed")
 
-	// ErrStrategyNotImplemented — `Open` (or a driver) was asked for
-	// an UNKNOWN strategy name. The three canonical strategies
-	// (`none` / `truncation` / `rolling_summary`) are implemented on
-	// every driver via the shared strategy executor;
-	// this sentinel now guards an unrecognised strategy string, not a
-	// phase gap. (The error text is preserved for callers that match it.)
-	ErrStrategyNotImplemented = errors.New("memory: strategy not implemented at this phase")
-
-	// ErrInvalidSnapshot — `Restore` was called with a snapshot
-	// whose Strategy mismatches the driver's, or with non-empty
-	// bytes against a `StrategyNone` driver. Fail loudly; never
-	// silently coerce.
-	ErrInvalidSnapshot = errors.New("memory: invalid snapshot for this strategy")
+	// ErrStrategyNotImplemented rejects a removed or unknown strategy.
+	ErrStrategyNotImplemented = errors.New("memory: unsupported strategy")
 
 	// ErrInvalidHealthTransition — a strategy executor attempted a
 	// `Health` transition outside the documented FSM
@@ -248,54 +115,6 @@ var (
 	// state.
 	ErrInvalidHealthTransition = errors.New("memory: invalid health transition")
 )
-
-// OverflowPolicy is the buffer-overflow action a `truncation`-style
-// strategy applies when the recent-window buffer's token total
-// exceeds the configured `BudgetTokens`. Harbor ships only
-// `OverflowDropOldest`. The original trio
-// `truncate_oldest | truncate_summary | error` was narrowed
-// to a single safe default; the `error` policy is a silent-
-// degradation footgun and `truncate_summary` conflates strategies).
-type OverflowPolicy string
-
-const (
-	// OverflowDropOldest evicts oldest turns until the buffer's
-	// token estimate fits within the budget. The only shipped
-	// policy.
-	OverflowDropOldest OverflowPolicy = "drop_oldest"
-)
-
-// Summarizer is the injectable callable the `rolling_summary`
-// strategy consumes. The LLM-backed implementation lands
-// +; Harbor ships only the interface and a test-grade stub
-// (`EchoSummarizer`, exported from `internal/memory/strategy`).
-//
-// The interface intentionally mirrors the "input
-// `{previous_summary, turns}`, output `{summary: string}`" with a
-// Go-idiomatic `(ctx, identity, req)` shape so the LLM-client
-// integration phase doesn't have to invent a fresh shape.
-//
-// Concurrent-reuse contract: one `Summarizer` instance is
-// safe to share across N concurrent goroutines. Implementers MUST
-// honour `ctx.Done()`; the executor cancels in-flight summaries on
-// `Close`.
-type Summarizer interface {
-	Summarize(ctx context.Context, id identity.Quadruple, req SummarizeRequest) (SummarizeResponse, error)
-}
-
-// SummarizeRequest carries the summariser inputs. `PreviousSummary`
-// is the prior rolling summary (empty on the first turn);
-// `Turns` is the batch of recently-evicted turns to fold into the
-// summary.
-type SummarizeRequest struct {
-	PreviousSummary string
-	Turns           []ConversationTurn
-}
-
-// SummarizeResponse carries the summariser output.
-type SummarizeResponse struct {
-	Summary string
-}
 
 // healthTransitions enumerates the legal `Health` FSM edges.
 //

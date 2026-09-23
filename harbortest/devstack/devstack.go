@@ -264,14 +264,11 @@ type AssembleOpts struct {
 	}
 
 	// Phase 83f (D-149) — mirror the production cmd_dev.go
-	// per-run consumer wiring. The four fields are optional
+	// per-run consumer wiring. The three fields are optional
 	// OVERRIDES: a set field wins; an unset field falls back to what
 	// the cfg implies, exactly like production (Phase 110c, D-196 —
 	// the fallbacks consume the same exported projections cmd does).
 	//
-	// `MemoryStore` is the store the per-task driver calls
-	// `GetLLMContext(ctx, q)` against. Nil falls back to the
-	// cfg-opened `DevStack.Memory` (nil when `memory.driver` unset).
 	// `SkillStore` is the store the kit's skills Directory browses
 	// (Phase 111d — D-201: the Directory is the `<skills_context>`
 	// producer, mirroring production). Nil falls back to the
@@ -284,7 +281,6 @@ type AssembleOpts struct {
 	// `PlanningHints`, when non-nil, projects directly onto
 	// `RunContext.PlanningHints` for every run the driver spawns;
 	// nil falls back to `planner.HintsFromConfig(cfg.Planner.PlanningHints)`.
-	MemoryStore      memory.MemoryStore
 	SkillStore       skills.SkillStore
 	SkillsContextMax int
 	PlanningHints    *planner.PlanningHints
@@ -975,7 +971,6 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				Tasks:                    taskReg,
 				Logger:                   opts.Logger,
 				SessionOverrides:         runsStore,
-				Memory:                   resolveMemoryStore(opts, stack),
 				SkillsDirectory:          skillsDir,
 				PlanningHints:            resolvePlanningHints(opts, cfg),
 				SkillStore:               stack.Skills,
@@ -1386,17 +1381,6 @@ func signDevToken(priv *ecdsa.PrivateKey, tenant, user, session string) (string,
 	})
 	tok.Header["kid"] = DefaultKID
 	return tok.SignedString(priv)
-}
-
-// resolveMemoryStore returns the per-task driver's MemoryStore: an
-// explicit AssembleOpts override wins; otherwise the cfg-opened store
-// (mirroring production, which threads its cfg-opened store — Phase
-// 110c, D-196).
-func resolveMemoryStore(opts AssembleOpts, stack *DevStack) memory.MemoryStore {
-	if opts.MemoryStore != nil {
-		return opts.MemoryStore
-	}
-	return stack.Memory
 }
 
 func devSessionPersonalStore(authority *serve.SessionPersonalSkillAuthority) *sessionoverlay.DurableStore {

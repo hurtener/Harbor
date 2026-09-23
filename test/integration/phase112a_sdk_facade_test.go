@@ -529,17 +529,11 @@ var (
 	_ sdkmemory.MemoryStore
 	_ sdkmemory.ConfigSnapshot
 	_ sdkmemory.Deps
-	_ sdkmemory.Record
-	_ sdkmemory.Snapshot
+	_ sdkmemory.Inspection
+	_ sdkmemory.Item
 	_ sdkmemory.ConversationTurn
-	_ sdkmemory.LLMContextPatch
-	_ sdkmemory.TrajectoryDigest
-	_ sdkmemory.Summarizer
-	_ sdkmemory.SummarizeRequest
-	_ sdkmemory.SummarizeResponse
 	_ sdkmemory.Health
 	_ sdkmemory.Strategy
-	_ sdkmemory.OverflowPolicy
 	_ sdkstate.StateStore
 	_ sdkstate.StateRecord
 	_ sdkstate.EventID
@@ -803,14 +797,12 @@ var _ = []any{
 	sdkmemory.HealthDegraded,
 	sdkmemory.HealthRecovering,
 	sdkmemory.StrategyNone,
-	sdkmemory.StrategyTruncation,
 	sdkmemory.StrategyRollingSummary,
-	sdkmemory.OverflowDropOldest,
 	sdkmemory.ErrNotFound,
 	sdkmemory.ErrIdentityRequired,
 	sdkmemory.ErrUnknownDriver,
 	sdkmemory.ErrStoreClosed,
-	sdkmemory.ErrInvalidSnapshot,
+	sdkmemory.ErrInvalidInspection,
 	sdkmemory.Open,
 	sdkmemory.OpenDriver,
 	sdkmemory.SnapshotFromConfig,
@@ -1001,7 +993,6 @@ var _ = []any{
 	sdkdispatch.WithLogger,
 	sdkdispatch.WithMaxSpawnDepth,
 	sdkrunctx.ExtractAssistantAnswer,
-	sdkrunctx.ProjectMemoryBlocks,
 	sdkrunctx.ProjectSkillsContext,
 	sdkrunctx.ProjectSkillsDirectory,
 	sdkrunctx.ResolveInputArtifacts,
