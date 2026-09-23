@@ -387,6 +387,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		ExternalGrant:                   in.ExternalGrantReadiness,
 		TopologyAvailable:               in.TopologyAvailable,
 		AgentConfigAvailable:            in.AgentConfig != nil,
+		MemoryBudgetAvailable:           in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
 		StateSnapshotsAvailable:         stateSnapshotsAvailable,
 		SessionLifecycleAvailable:       sessionLifecycleAvailable,
 		ToolAnnotationsAvailable:        toolAnnotationsAvailable,
@@ -856,6 +857,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 
 	if in.AgentConfig != nil {
 		agentConfigOpts := []agentcfgprotocol.Option{
+			agentcfgprotocol.WithMemoryBudget(in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil),
 			agentcfgprotocol.WithLogger(logger),
 			agentcfgprotocol.WithSkillStore(in.Skills),
 			agentcfgprotocol.WithBus(bus),

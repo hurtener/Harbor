@@ -1085,6 +1085,10 @@ recent execution tail; `recent_turns: 20` bounds detail, not the age of remember
 constraints. Each compaction receives the preceding checkpoint and newly eligible
 evidence. `memory.budget_tokens` controls assembled-request compaction, with zero
 deriving the safe target from the effective model; output limits remain separate.
+Served agents can override this same target through the admin versioned
+`memory.budget_tokens` section (D-481). Omission inherits YAML; explicit zero
+selects automatic sizing. Advertise `agent_config_memory_v1` only when the
+compactor and configuration service are wired. Runs freeze the value at start.
 There is no fixed 512 KiB execution-evidence storage ceiling (D-480). Exact
 retained evidence may exceed the working-input size; token compaction does not
 promise bounded storage bytes. Lifetime, identity and generation fences remain.

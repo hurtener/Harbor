@@ -154,6 +154,16 @@
       </div>
     </section>
   {/if}
+  {#if diff.memory?.budget_tokens_changed}
+    <section class="diff-section" data-testid="agentcfg-diff-memory">
+      <h4 class="diff-title">Working-input budget</h4>
+      <div class="llm-delta">
+        <code class="delta from">{diff.memory.budget_tokens_from || '(inherit)'}</code>
+        <span class="arrow" aria-hidden="true">→</span>
+        <code class="delta to">{diff.memory.budget_tokens_to || '(inherit)'}</code>
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>

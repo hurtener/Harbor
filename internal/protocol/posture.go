@@ -215,6 +215,8 @@ type PostureDeps struct {
 	// the agent-config transport is mounted, so the advertisement cannot
 	// claim a surface the Runtime does not serve.
 	AgentConfigAvailable bool
+	// MemoryBudgetAvailable means the served run driver has a compactor.
+	MemoryBudgetAvailable bool
 	// StateSnapshotsAvailable indicates the exact hydration join is mounted:
 	// state.history, tasks.list/get, sessions.inspect, and pause.list. Set it
 	// from the same conjunction that mounts those routes.
@@ -318,7 +320,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		displayName:            deps.DisplayName,
 		instanceID:             deps.InstanceID,
 		externalGrant:          deps.ExternalGrant,
-		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != "", deps.ToolsConfigurationViewAvailable),
+		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != "", deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable),
 	}, nil
 }
 
@@ -331,7 +333,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable, toolsConfigurationViewAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable, toolsConfigurationViewAvailable, memoryBudgetAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -349,6 +351,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 	}
 	if agentConfigAvailable {
 		caps = append(caps, types.CapAgentConfig, types.CapTenantScopedBrokerCredentials)
+		if memoryBudgetAvailable {
+			caps = append(caps, types.CapAgentConfigMemory)
+		}
 	}
 	if stateSnapshotsAvailable {
 		caps = append(caps, types.CapStateSnapshots)

@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 459 canonical Harbor Protocol wire types, generated from the single-source
+The 461 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -368,6 +368,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 | `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
+| `memory` | `types.AgentConfigMemoryDiff` — see [`AgentConfigMemoryDiff`](./types.md#agentconfigmemorydiff) |  |
 | `extra_system_blocks` | `types.AgentConfigExtraSystemBlocksDiff` — see [`AgentConfigExtraSystemBlocksDiff`](./types.md#agentconfigextrasystemblocksdiff) |  |
 
 ## AgentConfigDiffRequest
@@ -553,6 +554,24 @@ Declared in `internal/protocol/types`.
 | `basic_username` | `string` | optional (`omitempty`) |
 | `meta_key` | `string` | optional (`omitempty`) |
 
+## AgentConfigMemory
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `budget_tokens` | `int` |  |
+
+## AgentConfigMemoryDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `budget_tokens_changed` | `bool` |  |
+| `budget_tokens_from` | `string` |  |
+| `budget_tokens_to` | `string` |  |
+
 ## AgentConfigNamedBlock
 
 Declared in `internal/protocol/types`.
@@ -651,6 +670,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
+| `memory` | `*types.AgentConfigMemory` — see [`AgentConfigMemory`](./types.md#agentconfigmemory) | optional (`omitempty`) |
 | `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
 | `agent_packs` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
 

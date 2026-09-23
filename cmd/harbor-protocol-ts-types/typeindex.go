@@ -37,6 +37,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"AgentConfigHooks":                                  reflect.TypeOf(types.AgentConfigHooks{}),
 	"AgentConfigHooksDiff":                              reflect.TypeOf(types.AgentConfigHooksDiff{}),
 	"AgentConfigNaming":                                 reflect.TypeOf(types.AgentConfigNaming{}),
+	"AgentConfigMemory":                                 reflect.TypeOf(types.AgentConfigMemory{}),
+	"AgentConfigMemoryDiff":                             reflect.TypeOf(types.AgentConfigMemoryDiff{}),
 	"AgentConfigNamingDiff":                             reflect.TypeOf(types.AgentConfigNamingDiff{}),
 	"AgentConfigPayload":                                reflect.TypeOf(types.AgentConfigPayload{}),
 	"AgentConfigRevisionView":                           reflect.TypeOf(types.AgentConfigRevisionView{}),

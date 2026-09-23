@@ -1,5 +1,28 @@
 # Portable session context implementation tracker
 
+## Versioned working-input budget — 2026-09-23
+
+The owner requires the deployment's 64000-token target to remain YAML data.
+An optional admin agent-config `memory.budget_tokens` now projects the same
+budget at the next run: absent inherits YAML, zero selects automatic sizing,
+positive values override the working-input target. No output or storage ceiling
+is introduced. The `agent_config_memory_v1` capability is advertised only with
+both the configuration service and a served compactor. Invalid/unwired edits
+fail loudly. Section-scoped edits preserve it; revisions, diff, CAS and rollback
+remain the existing owner. This source increment is not yet deployed.
+
+Focused tests cover round-trip/reset, malformed/unwired refusal, conflict,
+diff/rollback, YAML precedence, failure injection, actual planner budget on
+consecutive runs, and concurrent N=128 tenant isolation. Full release acceptance,
+the independent compaction-model route and live editor verification remain open.
+
+Local Go 1.27.1 evidence for this implementation increment:
+`GOFLAGS=-p=1 go test -race ./internal/agentcfg/...
+./internal/runtime/agentcfg/... ./internal/protocol/... -count=1` passes
+(canonical package execution, not process-group coverage acceptance).
+The focused served projection/next-run tests and `go vet` also pass.
+No real-model calls or live configuration edits were made for this increment.
+
 ## Evidence-size correction — 2026-09-23
 
 Owner direction: remove the legacy 512 KiB retained-evidence capacity, not replace

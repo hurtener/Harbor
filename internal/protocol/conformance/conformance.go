@@ -1949,7 +1949,7 @@ func runVersionHandshake(t *testing.T) {
 	// caller memory + skill publications + provider catalog + provider route +
 	// tenant-scoped broker credentials + tools configuration view + provider
 	// route model profiles + atomic run LLM settings
-	// = 16 canonical capabilities at Protocol 0.1.0. (The capability
+	// + agent memory budget = 17 canonical capabilities at Protocol 0.1.0. (The capability
 	// constants live in
 	// internal/protocol/types/version.go; a new capability is a new
 	// constant + a new entry in canonicalCapabilities. A checkpoint fix
@@ -1961,8 +1961,8 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 16 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 16 (including atomic run LLM settings) at Protocol 0.1.0", len(caps))
+	if len(caps) != 17 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 17 (including agent memory budget) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:                   {},
@@ -1979,6 +1979,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapLLMProviderCatalog:            {},
 		types.CapLLMProviderRoute:              {},
 		types.CapRunLLMSettings:                {},
+		types.CapAgentConfigMemory:             {},
 		types.CapLLMProviderRouteModelProfile:  {},
 		types.CapTenantScopedBrokerCredentials: {},
 	}

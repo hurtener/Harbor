@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:9522d65c378eb2019467be3d546c5a9172209d86557693f6fd6a8dc11d97cc57";
+export const WIRE_SURFACE_DIGEST = "sha256:2c19281e5885298d23b29e047cda27ecbd587b58c3602e36ace16c349355e8d1";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -612,6 +612,7 @@ export interface AgentConfigDiff {
   llm_params: AgentConfigLLMParamsDiff;
   hooks: AgentConfigHooksDiff;
   naming: AgentConfigNamingDiff;
+  memory: AgentConfigMemoryDiff;
   extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 
@@ -734,6 +735,16 @@ export interface AgentConfigMCPCredentialInjectionDescriptor {
   meta_key?: string;
 }
 
+export interface AgentConfigMemory {
+  budget_tokens: number;
+}
+
+export interface AgentConfigMemoryDiff {
+  budget_tokens_changed: boolean;
+  budget_tokens_from: string;
+  budget_tokens_to: string;
+}
+
 export interface AgentConfigNamedBlock {
   name: string;
   body: string;
@@ -803,6 +814,7 @@ export interface AgentConfigPayload {
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
+  memory?: AgentConfigMemory;
   extra_system_blocks?: AgentConfigExtraSystemBlocks;
   agent_packs?: AgentConfigAgentPackItem[];
 }

@@ -141,6 +141,7 @@ export function previewSourceIsBootOnly(source: string | undefined): boolean {
 const SECTION_LABELS: { key: keyof AgentConfigPayload; label: string }[] = [
 	{ key: 'prompt_layers', label: 'Prompt' },
 	{ key: 'llm_params', label: 'Model & sampling' },
+	{ key: 'memory', label: 'Working-input budget' },
 	{ key: 'skills', label: 'Skills' },
 	{ key: 'tool_exposure', label: 'MCP policy' },
 	{ key: 'connections', label: 'Connections' }
@@ -938,7 +939,8 @@ export class AgentConfigPanelState {
 		const base = this.activePayload();
 		const payload: AgentConfigPayload = {
 			skills: base.skills,
-			connections: base.connections
+			connections: base.connections,
+			memory: base.memory
 		};
 		if (this.promptBase !== '' || this.promptUser !== '') {
 			payload.prompt_layers = {

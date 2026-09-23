@@ -396,6 +396,8 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigHooks":                                  "types",
 	"AgentConfigHooksDiff":                              "types",
 	"AgentConfigNaming":                                 "types",
+	"AgentConfigMemory":                                 "types",
+	"AgentConfigMemoryDiff":                             "types",
 	"AgentConfigNamingDiff":                             "types",
 	"AgentConfigPayload":                                "types",
 	"AgentConfigRevisionView":                           "types",

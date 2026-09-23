@@ -411,6 +411,14 @@ func TestClassifyAgentConfigError_InvalidNaming400(t *testing.T) {
 	}
 }
 
+func TestClassifyAgentConfigError_InvalidMemory400(t *testing.T) {
+	code, status, _ := classifyAgentConfigError(methods.MethodAgentConfigSetRevision,
+		fmt.Errorf("wrap: %w", agentcfgprotocol.ErrInvalidMemory))
+	if status != http.StatusBadRequest || code != protoerrors.CodeInvalidRequest {
+		t.Fatalf("invalid memory classification: %s %d", code, status)
+	}
+}
+
 // TestClassifyAgentConfigError_BootPackOwned400 pins the typed wire mapping
 // for the boot-owned pack refusal: the SAME 400/read-only family as the
 // boot-declared connection precedent (CodeInvalidRequest / 400) — a typed

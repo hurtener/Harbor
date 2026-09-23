@@ -205,13 +205,11 @@ type RunLoopDriverOptions struct {
 	// routes via the catalog.
 	ArtifactStore artifacts.ArtifactStore
 
-	// trajectory compression. `tokenBudget`
-	// projects onto RunSpec.Base.Budget.TokenBudget (the per-run
-	// runtime budget — a run option, never
-	// planner state); `compression` is the assembly-built
-	// planner.CompressionRunner the runloop invokes at each step
-	// boundary when the budget is non-zero. Both zero/nil (the
-	// default) = compression off, byte-identical behaviour.
+	// TokenBudget is the YAML working-input target, overridden by an active
+	// agent-config memory section at run start. Zero selects automatic sizing
+	// for assembled-request-aware planners. Compression is the assembly-built
+	// compactor; nil means no compaction. These are per-run inputs, not shared
+	// mutable planner state.
 	TokenBudget int
 	Compression *planner.CompressionRunner
 
@@ -1870,7 +1868,17 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// virtual-agent defaults. Prompt and governance authority is unchanged.
 	llmOverrides = applyTaskLLMSettings(llmOverrides, task.LLMSettings)
 	maxSteps := d.maxStepsRunLoop
-	tokenBudget := d.tokenBudget
+	tokenBudget, memoryErr := projection.ActiveMemoryBudget(taskCtx, d.agentConfig, effectiveAgentID, q, d.tokenBudget, d.compression != nil)
+	if memoryErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: memory-budget projection failed", slog.String("err", memoryErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(memoryErr, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "memory-budget projection failed: " + memoryErr.Error(),
+		})); mErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed after memory-budget projection failed", slog.String("err", mErr.Error()))
+		}
+		return
+	}
 	if virtualProfile != nil {
 		profile := *virtualProfile
 		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)

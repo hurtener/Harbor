@@ -1050,6 +1050,19 @@ For shared-runtime broker custody, require the runtime.info capability
 client credentials are unsupported. This describes the runtime pull implementation,
 not proof that a particular coordinator endpoint or grant is ready.
 
+### Configure the agent's working-input budget
+
+Negotiate `agent_config_memory_v1` on `runtime.info` before writing
+`agent_config.set_revision.payload.memory.budget_tokens`. This admin-only,
+nonnegative token target uses the existing revision/CAS/diff/rollback surface.
+An absent memory section inherits runtime YAML; explicit zero requests automatic
+model sizing. Preserve writable sibling sections and use the active revision's
+content hash as `expected_content_hash`. The next run freezes the new target;
+in-flight runs keep their original budget. It is not an output-token limit or
+a cap on stored exact evidence. An unwired compactor is a loud refusal, not an
+accepted but ineffective configuration. Embedded callers continue using YAML
+or the equivalent configuration object.
+
 ### Send model and thinking with Start
 
 For a run-specific selection, use `llm_settings` on `control.start` instead of

@@ -65,6 +65,15 @@ limits; fresh tool results cannot be silently truncated to satisfy it. A positiv
 value also enables within-run compaction for stateless agents. The removed
 `planner.token_budget` is rejected with migration guidance.
 
+On served runtimes advertising `agent_config_memory_v1`, an admin can override
+this same target per agent through the versioned `agent_config.set_revision`
+payload: `{"memory":{"budget_tokens":64000}}`. This is an example value, not a
+framework default. Read the current revision, preserve its writable sibling
+sections, and supply its `expected_content_hash` to avoid overwriting concurrent
+edits. Omit `memory` to inherit YAML again; present zero requests automatic
+sizing. Changes apply to the next run, never a running one. The runtime must
+already have its compactor configured; this edit cannot enable an unwired LLM.
+
 In PR #779, `rolling_summary` now selects the cumulative execution-context path
 for both served and embedded root runs. Set `recent_turns: 20` (zero also selects
 twenty); this bounds detail, not how far back checkpoint meaning reaches.

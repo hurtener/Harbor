@@ -822,6 +822,7 @@ type ConfigPayload struct {
 	LLMParams           *LLMParams           `json:"llm_params,omitempty"`
 	Hooks               *HooksSection        `json:"hooks,omitempty"`
 	Naming              *NamingSection       `json:"naming,omitempty"`
+	Memory              *MemorySection       `json:"memory,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -977,6 +978,8 @@ type Diff struct {
 	// Naming is the per-field delta of the session auto-naming policy
 	// section.
 	Naming NamingDiff
+	// Memory is the next-run working-input budget delta.
+	Memory MemoryDiff
 	// ExtraSystemBlocks is the structured delta of the ordered additive
 	// prompt blocks (added / removed / body-changed by name, plus the
 	// order-only reorder flag).
@@ -1137,6 +1140,10 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		if len(blocks) > 0 {
 			out.ExtraSystemBlocks = &ExtraSystemBlocks{Blocks: blocks}
 		}
+	}
+	if p.Memory != nil {
+		memory := *p.Memory
+		out.Memory = &memory
 	}
 	if p.Naming != nil {
 		// A non-nil naming section is ALWAYS preserved (model trimmed to the

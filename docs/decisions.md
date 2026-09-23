@@ -15973,3 +15973,23 @@ At this increment memory configuration is restart-required. Administrative
 Protocol memory configuration and separately authorized compaction model routing
 remain unimplemented; setting a different summarizer model on a bound external
 route must not bypass that route's authorization or silently use another key.
+
+## D-481 — Versioned next-run working-input budget
+
+**Date:** 2026-09-23. **Scope:** PR #779; operator configuration.
+**Extends:** D-480's YAML working-input budget with a served admin override.
+
+The optional agent-config `memory.budget_tokens` section projects the existing
+budget at run start. Absent inherits YAML, explicit zero selects automatic
+model sizing, positive values supply the working-input target. No fixed
+deployment token constant is added. The same revision, CAS, diff and rollback
+surface owns the value; there is no second memory engine or config store.
+
+Only runtimes with a served compactor and agent-config service advertise
+`agent_config_memory_v1`. Unsupported or negative edits fail before persistence;
+invalid stored configuration fails the next run loudly. Other section writers
+carry the budget forward. In-flight runs retain their copied budget. Embedded
+callers keep the existing YAML/configuration-object path.
+
+This supersedes only D-480's interim restart-required budget limitation.
+Independent authorized maintenance-model routing remains separate and pending.

@@ -449,20 +449,19 @@ func TestRunOne_PromptLayersProjectionError_FailsRun(t *testing.T) {
 }
 
 // TestRunOne_HookProjectionError_FailsRun — the run-completion-hook read (the
-// FIFTH Active read: LLM overrides, then the prompt-layer projection's agent
-// + user scopes, then the additive-prompt-blocks read that rides the same
-// seam, then the hook) fails the run LOUD.
+// seventh Active read on this fixture, after the working-input budget
+// projection) fails the run LOUD.
 func TestRunOne_HookProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 6}
+		o.AgentConfig = &countingFailRegistry{failAt: 7}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "run-completion-hook projection failed")
 }
 
 // TestRunOne_NamingProjectionError_FailsRun — the naming-policy read (the
-// SIXTH Active read, reached only when the naming deps are wired) fails the
+// eighth Active read, reached only when the naming deps are wired) fails the
 // run LOUD.
 func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
@@ -479,7 +478,7 @@ func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 7}
+		o.AgentConfig = &countingFailRegistry{failAt: 8}
 		o.AgentConfigID = "fail-agent"
 		o.SessionTitler = sessReg
 		o.NamingLLM = namingCompleterFunc(func(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {

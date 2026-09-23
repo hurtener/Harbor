@@ -118,6 +118,12 @@ not a second memory activation switch. Remove `sessions.retained_context_turns`,
 pair-summary loop and obsolete documentation. Removed keys fail validation with
 actionable migration guidance instead of silently selecting a different mode.
 
+For served agents, the optional versioned agent-config `memory.budget_tokens`
+overrides the YAML value at run start. Omission inherits YAML; explicit zero
+selects automatic sizing. This is the same budget, not another memory owner.
+Only an admin can write it, and only runtimes with a configured compactor
+advertise `agent_config_memory_v1`. In-flight runs keep their frozen value.
+
 Serving and embedding use the same memory owner, history projection and
 compactor through the existing StateStore, ArtifactStore, dispatch journal and
 governed Bifrost client. Update memory interfaces and their consumers together.
