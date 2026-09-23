@@ -61,8 +61,7 @@ type Config struct {
 	// Embeddings is the embedding-client block — the model/provider
 	// pair Harbor turns text into vectors with, configured separately
 	// from the chat `llm` block. Optional; REQUIRED (validated) when
-	// any semantic-retrieval mode is enabled (`memory.retrieval` /
-	// `skills.retrieval` = `semantic`).
+	// `skills.retrieval` = `semantic` is enabled.
 	Embeddings EmbeddingsConfig `yaml:"embeddings,omitempty"`
 
 	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by the pause/resume subsystem
@@ -202,8 +201,7 @@ type StateConfig struct {
 //
 // The whole block is optional. It becomes REQUIRED (enforced by
 // `validateEmbeddings`) the moment an embedding-consuming mode is
-// enabled — `memory.retrieval: semantic` or `skills.retrieval:
-// semantic` — so a semantic mode can never silently degrade to
+// enabled — `skills.retrieval: semantic` — so a semantic mode can never silently degrade to
 // non-semantic behaviour (AGENTS.md §13).
 //
 //   - `Driver` selects the registered embeddings driver. Empty
@@ -756,26 +754,6 @@ type MemoryConfig struct {
 	// switchable model and an append-only prompt extension. Ignored by
 	// the `none` and `truncation` strategies (which run no summariser).
 	Summarizer MemorySummarizerConfig `yaml:"summarizer,omitempty"`
-
-	// Retrieval is the opt-in retrieval mode. Empty (the default)
-	// keeps the strategy-shaped retrieval unchanged; `"semantic"`
-	// additionally embeds turns and serves similarity search
-	// (`MemoryStore.SearchTurns`), COMPOSING with the configured
-	// strategy — it never replaces `rolling_summary`. Requires the
-	// `embeddings` block (validated; no stub fallback).
-	Retrieval string `yaml:"retrieval,omitempty"`
-	// RetrievalTopK caps how many scored turns a semantic
-	// `SearchTurns` returns when the caller passes no limit. 0 uses
-	// the memory subsystem default (5). Ignored unless
-	// `retrieval: semantic`.
-	RetrievalTopK int `yaml:"retrieval_top_k,omitempty"`
-	// RetrievalMinScore is the cosine-similarity floor for semantic
-	// recall: a scored turn must meet or exceed this value to be
-	// injected into the prompt. Valid range [-1, 1]. Default 0.0
-	// (turns with negative similarity, i.e. anti-correlated with the
-	// query, are filtered out while marginally-similar turns are
-	// admitted). Ignored unless `retrieval: semantic`.
-	RetrievalMinScore float64 `yaml:"retrieval_min_score,omitempty"`
 }
 
 // MemorySummarizerConfig tunes the `rolling_summary` strategy's

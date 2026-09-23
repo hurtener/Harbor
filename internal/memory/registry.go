@@ -33,19 +33,10 @@ import (
 // fallback (AGENTS.md §13). Existing callers that construct
 // `Deps{State, Bus}` keep compiling: the zero value is nil, valid for
 // the non-summarising strategies.
-// The `Embedder` field is the injectable text→vector callable the
-// `semantic` retrieval mode consumes. It is OPTIONAL — required
-// only when `cfg.Retrieval == RetrievalSemantic`, ignored
-// otherwise. A semantic config without an Embedder fails loudly at
-// `Open` (mirroring the Summarizer rule) — never a stub fallback
-// (AGENTS.md §13). Existing callers that construct
-// `Deps{State, Bus}` keep compiling: the zero value is nil, valid
-// for the default retrieval mode.
 type Deps struct {
 	State      state.StateStore
 	Bus        events.EventBus
 	Summarizer Summarizer
-	Embedder   Embedder
 	// Redactor and RetentionTTL are the same execution-memory dependencies
 	// supplied by runtime composition. Put refuses a missing redactor.
 	Redactor     audit.Redactor
@@ -67,12 +58,6 @@ type Deps struct {
 // `RecoveryBacklogMax` is consumed by the `rolling_summary`
 // strategy executor only; other strategies ignore the field.
 // Default (zero) → strategy.DefaultRecoveryBacklogMax.
-// `Retrieval` opts in to a retrieval mode layered ON TOP of the
-// strategy (the default keeps strategy-shaped retrieval only;
-// `RetrievalSemantic` additionally serves `SearchTurns`).
-// `RetrievalTopK` caps semantic results when the caller passes no
-// limit; zero → `DefaultSemanticTopK`. Both are ignored by the
-// default mode.
 //
 // `RecentTurns` is the verbatim recent-window size for the
 // `rolling_summary` strategy. Zero selects the strategy default
@@ -86,8 +71,6 @@ type ConfigSnapshot struct {
 	BudgetTokens       int
 	RecoveryBacklogMax int
 	RecentTurns        int
-	Retrieval          RetrievalMode
-	RetrievalTopK      int
 }
 
 // Factory builds a `MemoryStore` from a `ConfigSnapshot` + `Deps`.
@@ -164,22 +147,6 @@ func validateDeps(cfg ConfigSnapshot, d Deps) error {
 	// opened — and never silently falls back to a stub (AGENTS.md §13).
 	if cfg.Strategy == StrategyRollingSummary && d.Summarizer == nil {
 		return fmt.Errorf("memory: Deps.Summarizer is required for strategy %q (no stub fallback)", StrategyRollingSummary)
-	}
-	// The same fail-loud rule for the semantic retrieval mode:
-	// catching the misconfiguration at the registry boundary
-	// surfaces it before any DB connection is opened — and never
-	// silently falls back to non-semantic retrieval (AGENTS.md §13).
-	switch cfg.Retrieval {
-	case RetrievalDefault:
-	case RetrievalSemantic:
-		if d.Embedder == nil {
-			return fmt.Errorf("memory: Deps.Embedder is required for retrieval mode %q (no stub fallback)", RetrievalSemantic)
-		}
-	default:
-		return fmt.Errorf("memory: unknown retrieval mode %q (expected \"\" or %q)", cfg.Retrieval, RetrievalSemantic)
-	}
-	if cfg.RetrievalTopK < 0 {
-		return fmt.Errorf("memory: ConfigSnapshot.RetrievalTopK must be >= 0, got %d", cfg.RetrievalTopK)
 	}
 	return nil
 }

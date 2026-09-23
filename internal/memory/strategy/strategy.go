@@ -66,7 +66,6 @@ type StrategyExecutor interface {
 	Flush(ctx context.Context, id identity.Quadruple) error
 	Health(ctx context.Context, id identity.Quadruple) (memory.Health, error)
 	Snapshot(ctx context.Context, id identity.Quadruple) (memory.Snapshot, error)
-	SearchTurns(ctx context.Context, id identity.Quadruple, query string, limit int) ([]memory.ScoredTurn, error)
 	Restore(ctx context.Context, id identity.Quadruple, snap memory.Snapshot) error
 	Close(ctx context.Context) error
 }
@@ -103,12 +102,6 @@ type StrategyExecutor interface {
 // strategy keeps before older turns spill into the summary. Zero
 // selects the `FullZoneTurns` default; positive values override it.
 // Ignored by the other strategies.
-// `Embedder` / `Retrieval` / `RetrievalTopK` configure the opt-in
-// semantic retrieval mode layered on top of the strategy executor.
-// `Embedder` is mandatory when `Retrieval == RetrievalSemantic` and
-// ignored otherwise; `RetrievalTopK` caps `SearchTurns` results
-// when the caller passes no limit (zero →
-// `memory.DefaultSemanticTopK`).
 type Deps struct {
 	State              state.StateStore
 	Bus                events.EventBus
@@ -116,9 +109,6 @@ type Deps struct {
 	BudgetTokens       int
 	RecoveryBacklogMax int
 	RecentTurns        int
-	Embedder           memory.Embedder
-	Retrieval          memory.RetrievalMode
-	RetrievalTopK      int
 }
 
 // DefaultRecoveryBacklogMax is the default recovery-backlog cap for
@@ -157,9 +147,6 @@ func New(s memory.Strategy, deps Deps) (StrategyExecutor, error) {
 	if deps.RecoveryBacklogMax < 0 {
 		return nil, fmt.Errorf("memory/strategy: Deps.RecoveryBacklogMax must be >= 0, got %d", deps.RecoveryBacklogMax)
 	}
-	if deps.RetrievalTopK < 0 {
-		return nil, fmt.Errorf("memory/strategy: Deps.RetrievalTopK must be >= 0, got %d", deps.RetrievalTopK)
-	}
 	var inner StrategyExecutor
 	switch s {
 	case memory.StrategyNone, "":
@@ -174,34 +161,10 @@ func New(s memory.Strategy, deps Deps) (StrategyExecutor, error) {
 	default:
 		return nil, fmt.Errorf("%w: %q", memory.ErrStrategyNotImplemented, s)
 	}
-	// The retrieval mode composes AROUND the strategy executor: the
-	// strategy keeps its summary / recent-window semantics unchanged
-	// and the semantic wrapper adds vector indexing + similarity
-	// search. A semantic mode without an Embedder fails loudly —
-	// never a stub fallback (AGENTS.md §13).
-	switch deps.Retrieval {
-	case memory.RetrievalDefault:
-		return inner, nil
-	case memory.RetrievalSemantic:
-		if deps.Embedder == nil {
-			return nil, fmt.Errorf("memory/strategy: Deps.Embedder is required for retrieval mode %q (no stub fallback)", memory.RetrievalSemantic)
-		}
-		return newSemanticExec(inner, deps), nil
-	default:
-		return nil, fmt.Errorf("memory/strategy: unknown retrieval mode %q (expected \"\" or %q)", deps.Retrieval, memory.RetrievalSemantic)
-	}
+	return inner, nil
 }
 
 // kindMemoryState is the StateStore Kind constant for memory-state
 // records. Centralised so every executor references one symbol;
 // matches the original inmem driver's constant verbatim.
 const kindMemoryState = "memory.state"
-
-// kindMemoryVectors is the StateStore Kind constant for the
-// semantic retrieval mode's vector records. Vectors persist through
-// the SAME StateStore floor as the memory-state records — one
-// identity-scoped record per `(tenant, user, session, run)` — so
-// every memory driver (in-mem / SQLite / Postgres) inherits vector
-// persistence with conformance parity (AGENTS.md §9) and the
-// identity filter rides the StateStore's own scoping.
-const kindMemoryVectors = "memory.vectors"

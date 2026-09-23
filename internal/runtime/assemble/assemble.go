@@ -643,10 +643,10 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 
 	// Embeddings: opened when the operator configured the block (or
-	// the caller injected one). The semantic retrieval modes consume
+	// the caller injected one). Semantic skill retrieval consumes
 	// it below; misconfiguration (semantic mode + zero block) is
-	// already rejected by the config validator, and the memory /
-	// skills registries fail loudly again if an embedder is missing.
+	// already rejected by the config validator, and the skills
+	// registry fails loudly again if an embedder is missing.
 	stack.Embedder = opts.Embedder
 	if stack.Embedder == nil && !cfg.Embeddings.IsZero() {
 		emb, embErr := embeddings.Open(ctx, embeddings.SnapshotFromConfig(cfg.Embeddings), embeddings.Deps{})
@@ -685,7 +685,6 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 				State:      stateStore,
 				Bus:        bus,
 				Summarizer: summarizer,
-				Embedder:   stack.Embedder,
 			})
 		} else {
 			ms, openErr = memory.Open(ctx, memCfg, memory.Deps{
@@ -693,7 +692,6 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 				State:      stateStore,
 				Bus:        bus,
 				Summarizer: summarizer,
-				Embedder:   stack.Embedder,
 			})
 		}
 		if openErr != nil {

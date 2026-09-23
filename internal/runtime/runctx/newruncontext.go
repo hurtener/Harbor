@@ -49,10 +49,8 @@ import (
 type Sources struct {
 	// Memory is the session-scoped memory store. When non-nil, the
 	// session's rolling-summary + recent turns are projected into
-	// RunContext.MemoryBlocks; semantic recall fires when MemoryRecall
-	// is enabled.
-	Memory       memory.MemoryStore
-	MemoryRecall memory.RecallSettings
+	// RunContext.MemoryBlocks.
+	Memory memory.MemoryStore
 
 	// SkillsDirectory is the bounded, capability-filtered browse window
 	// projected into RunContext.SkillsContext. When non-nil its View is
@@ -238,7 +236,7 @@ func NewRunContext(
 	// Memory projection — the SAME helper the drivers call.
 	var memBlocks *planner.MemoryBlocks
 	if src.Memory != nil {
-		mb, err := FetchMemoryBlocks(projCtx, src.Memory, sessionQ, goal, src.MemoryRecall, logger)
+		mb, err := FetchMemoryBlocks(projCtx, src.Memory, sessionQ)
 		if err != nil {
 			return planner.RunContext{}, fmt.Errorf("runctx: memory projection: %w", err)
 		}

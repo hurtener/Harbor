@@ -122,6 +122,14 @@ compactor through the existing StateStore, ArtifactStore, dispatch journal and
 governed Bifrost client. Update memory interfaces and their consumers together.
 No new storage service, provider SDK, compatibility engine or public transcript.
 
+Native session-memory semantic indexing and its `SearchTurns` SDK surface are
+removed, not adapted into another session-history projection. Remove
+`memory.retrieval`, `memory.retrieval_top_k`, `memory.retrieval_min_score` and
+their environment overrides; explicitly reject their presence, including zero
+values. Standalone embeddings, semantic skill retrieval and caller-supplied
+external memory remain separate. Existing vector rows are not migrated or read;
+authorized session erasure remains responsible for session data removal.
+
 ### 0.1 Cumulative committed coverage, not a cache of retained raw turns
 
 The private session record holds one current checkpoint, a bounded recent tail,

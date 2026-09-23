@@ -15,6 +15,13 @@ that constraint through the deterministic multi-window tests on all three
 stores. Ordinary config defaults select rolling memory with 20 detailed turns.
 Legacy-engine retirement and release acceptance remain pending, not shipped.
 
+The semantic session-memory index, `SearchTurns` SDK surface and retrieval
+configuration are removed under D-477. Removed YAML fields and environment
+overrides fail explicitly, including empty/zero values. Embeddings, semantic
+skill retrieval and external caller-memory composition remain intact. This is
+a partial retirement increment: the old pair-store projection and summarizer
+still require removal before consolidation acceptance.
+
 ## RFC anchor
 
 - RFC §6.2

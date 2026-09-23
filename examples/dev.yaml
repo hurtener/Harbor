@@ -220,13 +220,6 @@ memory:
   driver: inmem
   strategy: none
   recovery_backlog_max: 16
-  # Opt-in semantic retrieval (Phase 84d — D-191): embeds turns and
-  # serves MemoryStore.SearchTurns by cosine similarity, composing
-  # with the strategy above. Requires a top-level `embeddings:` block
-  # (provider + model + api_key — see examples/harbor.yaml); the
-  # validator fails the boot loudly without one. `skills.retrieval:
-  # semantic` opts skill_search into the same mode.
-  # retrieval: semantic
 
 # Phase 233a / D-400 — durable session-personal skills. This sample leaves
 # the block absent, so every tenant is safely read-only `dual_read`: existing

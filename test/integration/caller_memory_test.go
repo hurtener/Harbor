@@ -19,7 +19,7 @@
 //   - COMPOSITION: the runtime's own conversation-memory producer and
 //     the caller's External key both survive on one run, and (through
 //     the production FetchMemoryBlocks → ComposeCallerMemory sequence
-//     with semantic recall ON) `recalled_turns` and `caller_supplied`
+//     with semantic recall ON) `conversation` and `caller_supplied`
 //     coexist in one tier with neither altering the other;
 //   - the admission event carries a SIZE and never CONTENT;
 //   - FAILURE MODE 1: an over-cap payload is refused 400 naming the
@@ -401,16 +401,9 @@ func TestE2E_CallerMemory_ReachesTheExternalTierAndNothingElse(t *testing.T) {
 	}
 }
 
-// TestE2E_CallerMemory_ComposesWithSemanticRecall drives the PRODUCTION
-// fetch→compose sequence the run loop executes, with semantic recall ON,
-// over a real inmem memory driver and its real semantic executor.
-//
-// It is wired here rather than through devstack because devstack exposes
-// no Embedder seam and `memory.Open` refuses a semantic config without
-// one (fail-loud, never a stub). The Embedder is an explicit injection
-// point on `memory.Deps` — the deterministic one below is a fixture on a
-// declared seam, not a re-implementation of a subsystem.
-func TestE2E_CallerMemory_ComposesWithSemanticRecall(t *testing.T) {
+// TestE2E_CallerMemory_ComposesWithConversation preserves external caller data
+// separately from the runtime-owned conversation projection.
+func TestE2E_CallerMemory_ComposesWithConversation(t *testing.T) {
 	red := patternsAudit.New()
 	bus, err := eventsInmem.New(config.EventsConfig{
 		Driver:                   "inmem",
@@ -430,18 +423,10 @@ func TestE2E_CallerMemory_ComposesWithSemanticRecall(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 
-	// The production factory, not the driver constructor: the registry is
-	// what threads Deps.Embedder into the strategy executor, and going
-	// round it would test a wiring production does not use.
-	// Strategy `none` deliberately: FetchMemoryBlocks dedupes a recalled
-	// turn that is ALREADY in the patch's recent window, so a strategy
-	// that replays recent turns would suppress the very recall this leg
-	// exists to compose against.
 	store, err := memory.Open(context.Background(), memory.ConfigSnapshot{
-		Driver:    "inmem",
-		Strategy:  memory.StrategyNone,
-		Retrieval: memory.RetrievalSemantic,
-	}, memory.Deps{State: st, Bus: bus, Embedder: cmEmbedder{}})
+		Driver:   "inmem",
+		Strategy: memory.StrategyTruncation,
+	}, memory.Deps{State: st, Bus: bus})
 	if err != nil {
 		t.Fatalf("memory inmem: %v", err)
 	}
@@ -463,18 +448,16 @@ func TestE2E_CallerMemory_ComposesWithSemanticRecall(t *testing.T) {
 		t.Fatalf("AddTurn: %v", err)
 	}
 
-	mb, err := runctx.FetchMemoryBlocks(ctx, store, id, "refund window question",
-		memory.RecallSettings{Enabled: true, TopK: 5, MinScore: -1}, nil)
+	mb, err := runctx.FetchMemoryBlocks(ctx, store, id)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}
-	ext, ok := mb.External.(map[string]any)
-	if !ok {
-		t.Fatalf("precondition: semantic recall wrote no External tier (%T) — the composition leg would be vacuous", mb.External)
+	if mb == nil || mb.Conversation == nil || mb.External != nil {
+		t.Fatalf("missing conversation or unexpected external memory: %+v", mb)
 	}
-	recalledBefore, err := json.Marshal(ext["recalled_turns"])
+	recalledBefore, err := json.Marshal(mb.Conversation)
 	if err != nil {
-		t.Fatalf("marshal recalled_turns: %v", err)
+		t.Fatalf("marshal conversation: %v", err)
 	}
 
 	composed, err := runctx.ComposeCallerMemory(mb, json.RawMessage(fmt.Sprintf(`{"note":%q}`, cmMarker)))
@@ -485,45 +468,19 @@ func TestE2E_CallerMemory_ComposesWithSemanticRecall(t *testing.T) {
 	if !ok {
 		t.Fatalf("composed External is %T, want map[string]any", composed.External)
 	}
-	if _, present := composedExt["recalled_turns"]; !present {
-		t.Fatal("the runtime's recalled_turns key was displaced by the caller's write")
-	}
 	if _, present := composedExt[runctx.CallerSuppliedKey]; !present {
 		t.Fatalf("the caller's %q key is absent from the composed tier", runctx.CallerSuppliedKey)
 	}
-	recalledAfter, err := json.Marshal(composedExt["recalled_turns"])
+	recalledAfter, err := json.Marshal(composed.Conversation)
 	if err != nil {
-		t.Fatalf("marshal recalled_turns (after): %v", err)
+		t.Fatalf("marshal conversation (after): %v", err)
 	}
 	if !bytes.Equal(recalledBefore, recalledAfter) {
 		t.Fatalf("the runtime producer's value changed:\nbefore=%s\n after=%s", recalledBefore, recalledAfter)
 	}
 	if strings.Contains(string(recalledAfter), cmMarker) {
-		t.Fatal("the caller's content bled into the runtime's recalled_turns value")
+		t.Fatal("the caller's content bled into the runtime's conversation value")
 	}
-}
-
-// cmEmbedder is a deterministic fixture on the declared
-// `memory.Deps.Embedder` seam: a stable per-text vector so cosine
-// similarity is reproducible and the recall path is exercised for real.
-type cmEmbedder struct{}
-
-func (cmEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	for i, txt := range texts {
-		v := make([]float32, 8)
-		for j := range v {
-			var acc float32
-			for k, r := range txt {
-				if k%8 == j {
-					acc += float32(r%17) / 17
-				}
-			}
-			v[j] = acc + 0.1
-		}
-		out[i] = v
-	}
-	return out, nil
 }
 
 // TestE2E_CallerMemory_OverCapRefusedAndNoTaskCreated is failure mode 1.

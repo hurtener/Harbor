@@ -1178,7 +1178,6 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		TaskKind:                 tasks.KindForeground,
 		DriveBackground:          true,
 		Memory:                   memStore,
-		MemoryRecall:             memory.RecallFromConfig(cfg.Memory),
 		SkillsDirectory:          skillsDir,
 		PlanningHints:            planner.HintsFromConfig(cfg.Planner.PlanningHints),
 		SkillStore:               skillStore,

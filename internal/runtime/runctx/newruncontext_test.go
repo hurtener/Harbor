@@ -239,7 +239,7 @@ func TestNewRunContext_EmptyRunID_RemainsSupportedWithoutReaderSnapshot(t *testi
 // args (NewRunContext composes the helper, does not reimplement it).
 func TestNewRunContext_MemoryParity(t *testing.T) {
 	bus := newFetchTestBus(t)
-	store := newFetchTestStore(t, bus, memory.StrategyRollingSummary, memory.RetrievalDefault)
+	store := newFetchTestStore(t, bus, memory.StrategyRollingSummary)
 	q := parityQuad()
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	goal := "what did we discuss?"
@@ -258,7 +258,7 @@ func TestNewRunContext_MemoryParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunContext: %v", err)
 	}
-	want, err := runctx.FetchMemoryBlocks(context.Background(), store, sessionQ, goal, memory.RecallSettings{}, nil)
+	want, err := runctx.FetchMemoryBlocks(context.Background(), store, sessionQ)
 	if err != nil {
 		t.Fatalf("FetchMemoryBlocks: %v", err)
 	}

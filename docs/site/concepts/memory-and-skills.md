@@ -1,5 +1,5 @@
 ---
-description: Two identity-scoped, pluggable Harbor subsystems — Memory (three strategies plus opt-in semantic retrieval) and the runtime Skills subsystem (token-savvy, DB-backed, with a Skills.md importer and a persisting generator). Distills RFC §6.6 and §6.7.
+description: Two identity-scoped, pluggable Harbor subsystems — cumulative session memory and the runtime Skills subsystem (token-savvy, DB-backed, with a Skills.md importer and a persisting generator). Distills RFC §6.6 and §6.7.
 ---
 
 # Memory and skills
@@ -23,11 +23,8 @@ flows through every Runtime context (see
 [Identity and isolation](/concepts/identity-and-isolation)). The session is the
 default scope; there is no global memory pool.
 
-The isolation contract here is the same fail-closed rule the rest of the Runtime
-honors: a request with a **missing identity component yields an empty result plus
-an audit event** — not a best-effort guess, not a silent fall-through to some
-other scope. The predecessor's `require_explicit_key=false` knob is removed;
-there is no way to weaken this.
+Missing identity fails with an explicit error and an audit event, never a
+best-effort guess or cross-scope fallback.
 
 ::: tip Why declared-policy matters
 Memory policy is an explicit, reviewable config decision, not an emergent
@@ -37,43 +34,22 @@ side-effect of how much the model happened to remember. That is what makes the
 nothing leaks into what the model sees.
 :::
 
-## Three strategies
+## Cumulative session memory
 
-Memory ships three strategies. All three are backed by the same conformance
-suite across all three V1 drivers (in-memory, SQLite, Postgres — see
-[Persistence](/concepts/persistence)), so the strategy is independent of where
-you store it.
+The normal `rolling_summary` strategy keeps a cumulative checkpoint and a
+bounded recent execution tail. `recent_turns: 20` limits detailed history,
+not how far back the checkpoint carries context. Each rollover combines the
+previous checkpoint with newly settled evidence. Failed compaction preserves
+the prior committed state; capacity failures are explicit.
 
-| Strategy | What it does | Reach for it when |
-|---|---|---|
-| `none` | No memory retained between turns. | The agent is stateless per turn, or you manage context yourself. |
-| `truncation` | Keeps a recent window within a token budget; older turns fall off the end. | You want recent-conversation fidelity and predictable token cost. |
-| `rolling_summary` | Summarizes older context in the background, carrying a compacted summary forward (with summarization health states: `healthy → retry → degraded → recovering → healthy`). | Long sessions where early context still matters but cannot fit verbatim. |
+Set `memory.strategy: none` for stateless execution. Working-input compaction
+uses `memory.budget_tokens`; model output limits remain independent.
+In-memory, SQLite and PostgreSQL use the same identity-scoped execution owner.
+Session expiry and authorized deletion invalidate derived context.
 
-`truncation` is the simple, cost-predictable default mindset; `rolling_summary`
-trades a background summarization step for durable long-horizon recall.
-
-## Opt-in semantic retrieval
-
-On top of whichever strategy you pick, Harbor offers an **opt-in semantic
-retrieval mode** (`retrieval: semantic`). It layers embedding-similarity search
-over the configured strategy via an **injected `Embedder`** — Harbor does not
-ship a built-in embedding model, so retrieval depends on the embedder you wire.
-This is composition, never replacement: `GetLLMContext` keeps its
-strategy-shaped patch unchanged while a `SearchTurns` surface ranks embedded
-turns by cosine similarity.
-
-This is a fail-loud seam, by design:
-
-::: warning Semantic retrieval needs an embedder, and says so
-If you turn on `retrieval: semantic` without wiring an `Embedder`, the Runtime
-**fails loudly** rather than silently degrading to keyword matching or returning
-nothing. Harbor's posture throughout is that a missing capability is an error,
-not a quiet downgrade.
-:::
-
-To stand up the embedder and run a retrieval round-trip end to end, follow the
-[Embed and retrieve recipe](/recipes/embed-and-retrieve).
+Native semantic session-memory retrieval is removed: there is no parallel
+vector index or `SearchTurns` surface. External long-term memory remains
+external. Skill retrieval may still use the [embedding client](/recipes/embed-and-retrieve).
 
 ## The runtime Skills subsystem
 

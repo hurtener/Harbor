@@ -564,6 +564,11 @@ func applyEnvOverrides(cfg *Config) error {
 	if _, present := os.LookupEnv("HARBOR_PLANNER_TOKEN_BUDGET"); present {
 		return errors.New("HARBOR_PLANNER_TOKEN_BUDGET was removed; use HARBOR_MEMORY_BUDGET_TOKENS for input compaction")
 	}
+	for _, key := range []string{"HARBOR_MEMORY_RETRIEVAL", "HARBOR_MEMORY_RETRIEVAL_TOP_K", "HARBOR_MEMORY_RETRIEVAL_MIN_SCORE"} {
+		if _, present := os.LookupEnv(key); present {
+			return fmt.Errorf("%s was removed; cumulative session memory does not maintain a semantic index", key)
+		}
+	}
 	v := reflect.ValueOf(cfg).Elem()
 	return walkLeaves(v, nil, func(path []string, leaf reflect.Value) error {
 		envName := envPrefix + strings.ToUpper(strings.Join(path, "_"))

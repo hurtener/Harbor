@@ -44,14 +44,6 @@ type (
 	Strategy = internal.Strategy
 	// OverflowPolicy names the bounded-buffer overflow behavior.
 	OverflowPolicy = internal.OverflowPolicy
-	// RetrievalMode names the opt-in retrieval shape layered on the
-	// strategy.
-	RetrievalMode = internal.RetrievalMode
-	// Embedder is the injectable text→vector callable the semantic
-	// retrieval mode consumes (any embeddings.Embedder satisfies it).
-	Embedder = internal.Embedder
-	// ScoredTurn is one SearchTurns result with its similarity score.
-	ScoredTurn = internal.ScoredTurn
 )
 
 // DefaultDriver is the driver name Open resolves when the config
@@ -83,19 +75,6 @@ const (
 // OverflowDropOldest is the default bounded-buffer overflow policy.
 const OverflowDropOldest = internal.OverflowDropOldest
 
-// RetrievalMode values.
-const (
-	// RetrievalDefault — strategy-shaped retrieval only.
-	RetrievalDefault = internal.RetrievalDefault
-	// RetrievalSemantic — embedding-similarity SearchTurns (requires
-	// Deps.Embedder).
-	RetrievalSemantic = internal.RetrievalSemantic
-)
-
-// DefaultSemanticTopK is the SearchTurns result cap when neither the
-// caller nor the config supplies one.
-const DefaultSemanticTopK = internal.DefaultSemanticTopK
-
 // Re-exported sentinel errors callers compare via errors.Is.
 var (
 	// ErrNotFound — no record under that key.
@@ -108,9 +87,6 @@ var (
 	ErrStoreClosed = internal.ErrStoreClosed
 	// ErrInvalidSnapshot — the snapshot does not fit the strategy.
 	ErrInvalidSnapshot = internal.ErrInvalidSnapshot
-	// ErrSemanticDisabled — SearchTurns on a store whose retrieval
-	// mode is not semantic.
-	ErrSemanticDisabled = internal.ErrSemanticDisabled
 )
 
 // Open resolves the configured memory driver and opens it.

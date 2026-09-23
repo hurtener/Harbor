@@ -607,8 +607,7 @@ Default request-queue buffer per provider. Default: `0`.
 The embedding-client block (Phase 84d — D-191): the model/provider
 pair Harbor turns text into vectors with, configured separately from
 the chat `llm` block. Fully optional — but REQUIRED the moment an
-embedding-consuming mode is enabled (`memory.retrieval: semantic` or
-`skills.retrieval: semantic`); the validator names the missing key so
+embedding-consuming mode is enabled (`skills.retrieval: semantic`); the validator names the missing key so
 the boot failure is actionable, and a semantic mode never silently
 degrades to non-semantic retrieval.
 
@@ -951,28 +950,15 @@ conciseness/preserve-goals guarantees. Default: empty → baseline
 prompt only (no behavior change). Ignored by the `none` and
 `truncation` strategies.
 
-### memory.retrieval
+### Removed semantic-memory settings
 
-Opt-in retrieval mode layered ON TOP of the strategy (Phase 84d —
-D-191). Empty (the default) keeps strategy-shaped retrieval;
-`semantic` additionally embeds turns at `AddTurn` and serves
-similarity search via `MemoryStore.SearchTurns`, composing with —
-never replacing — `rolling_summary`. Default: empty. Validation:
-empty or `semantic`; `semantic` requires the `embeddings` block.
-
-### memory.retrieval_top_k
-
-Result cap for a semantic `SearchTurns` when the caller passes no
-limit. Default: `0` (resolves to the subsystem default, 5).
-Validation: >= 0. Ignored unless `memory.retrieval = "semantic"`.
-
-### memory.retrieval_min_score
-
-Cosine-similarity floor for semantic recall: a scored turn must meet
-or exceed this value to be injected into the prompt's External memory
-tier. Turns that fall below the floor are silently skipped. Default:
-`0.0`. Validation: must be in the range `[-1, 1]`. Ignored unless
-`memory.retrieval = "semantic"`.
+`memory.retrieval`, `memory.retrieval_top_k` and
+`memory.retrieval_min_score` are removed under D-477. Their corresponding
+`HARBOR_MEMORY_RETRIEVAL*` overrides are also rejected, including empty or zero
+values. Remove these settings; cumulative session memory uses checkpoints and
+recent execution evidence, not a separate vector index. External long-term
+memory remains an integration responsibility. Semantic skill retrieval and the
+embedding-client seam are unchanged.
 
 ---
 

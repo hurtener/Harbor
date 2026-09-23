@@ -31,6 +31,52 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Native semantic session-memory retirement — partial consolidation
+
+On parent `05e415027162108ef9724da800749f8884f62404`, remove the native
+session-memory vector index, `SearchTurns` and SDK aliases, retrieval settings
+and runtime recall plumbing. Removed YAML fields and environment overrides fail
+explicitly, including empty/zero values. Semantic skill retrieval, embeddings
+and external caller-memory composition remain intact. No vector migration,
+compatibility reader, dependency or provider-specific behavior is added.
+The default agent template and operator docs no longer advertise removed keys.
+The old pair-store projection/summarizer remains pending removal: this increment
+does **not** finish the one-owner consolidation or authorize an RC verdict.
+
+Reviewed source tree `7bf4c1403f0b53341009e4aa91cd3c11d4550bbe`, Go 1.27.1:
+
+- `GOFLAGS=-p=1 go test -race ./internal/memory/... ./internal/config
+  ./internal/runtime/runctx -coverprofile=<local receipt> -count=1` passes.
+  Coverage: memory **90.2%**, in-memory **96.1%**, SQLite **74.5%**, memory
+  Protocol **87.7%**, cumulative owner **84.6%**, remaining strategy **86.5%**,
+  config **83.1%**, runctx **92.4%**. SQLite (85%), cumulative owner (92%)
+  and config (85%) remain below their binding floors. PostgreSQL **5.6%** is
+  an unset-service run, not a conformance pass. Coverage changes caused by
+  removal of the retired feature are not evidence of improved test depth.
+- `GOFLAGS=-p=1 go test -race ./test/integration -run
+  'TestE2E_(CallerMemory|Phase84d)' -count=1` passes (**2.550s**), including
+  retained semantic-skill behavior and N=128 isolated session projections.
+- `GOFLAGS=-p=1 go test -race ./internal/runtime/assemble
+  ./internal/runtime/serve -count=1` passes (**87.491s / 50.245s**).
+- `GOFLAGS=-p=1 go test -race ./cmd/harbor/... -run
+  '(Init|Generate|Scaffold|Template|Golden)' -count=1` passes.
+- Affected-package golangci-lint 2.13.2: **0 issues**; broad production Go build
+  passes, not a full Console/release build. Markdown **599 files / 0 errors**,
+  mirror, shell syntax and whitespace checks pass. Canonical Protocol docs,
+  Console manifest and external-client TypeScript generation checks pass.
+
+Initial verification caught a stale parity-test reference, an accidentally
+removed semantic-skill fixture embedder (restored before the passing integration
+run), and the existing Bifrost 1.9 provider-list mismatch. The validator now
+includes `databricks` and `github-copilot`, matching the pinned SDK's enum and
+existing exact-set tests; no new provider integration is introduced.
+
+The local PostgreSQL container's `psql` executable returned an I/O error during
+a read-only readiness probe; no database or Docker service was changed. Required
+service-backed evidence, full final-tree gates and matched live RC acceptance
+remain pending. Harbor local/web preflight is waived by the owner, not passed.
+No RC tag, deployment, stable publication or merge belongs to this increment.
+
 ### OAuth precheck cannot dispatch a superseded action
 
 Parent `47bd512625842b6e783554357768363885641cb5` fails three deterministic

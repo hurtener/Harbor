@@ -302,7 +302,6 @@ func (s *Stack) RunOnce(
 	}
 
 	memoryStore := s.Memory
-	recall := memory.RecallFromConfig(s.Cfg.Memory)
 	var retained *sessionmemory.RetainedRun
 	if memoryTurns > 0 {
 		ttl := s.Cfg.Sessions.IdleTTL
@@ -314,7 +313,6 @@ func (s *Stack) RunOnce(
 			return planner.AnswerEnvelope{}, err
 		}
 		memoryStore = nil
-		recall = memory.RecallSettings{}
 	}
 	var retainedTrajectory *planner.Trajectory
 	retainedStatus, retainedAnswer := "interrupted", ""
@@ -336,7 +334,6 @@ func (s *Stack) RunOnce(
 
 	base, err := runctx.NewRunContext(runCtx, runctx.Sources{
 		Memory:          memoryStore,
-		MemoryRecall:    recall,
 		SkillsDirectory: skillsDir,
 		Catalog:         s.Catalog,
 		Artifacts:       s.Artifacts,

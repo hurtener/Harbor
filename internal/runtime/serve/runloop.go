@@ -151,7 +151,6 @@ type RunLoopDriverOptions struct {
 	// producer (the directory carries its own MaxEntries cap; the
 	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
 	Memory          memory.MemoryStore
-	MemoryRecall    memory.RecallSettings
 	SkillsDirectory *skills.Directory
 	PlanningHints   *planner.PlanningHints
 
@@ -387,7 +386,6 @@ type RunLoopDriver struct {
 	// per-run consumer wiring; the canonical-skills work
 	// — Directory as the skills surface. See driver opts godoc.
 	memory                memory.MemoryStore
-	memoryRecall          memory.RecallSettings
 	skillsDirectory       *skills.Directory
 	planningHints         *planner.PlanningHints
 	skillStore            skills.SkillStore
@@ -556,7 +554,6 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		taskKind:              opts.TaskKind,
 		driveBackground:       opts.DriveBackground,
 		memory:                opts.Memory,
-		memoryRecall:          opts.MemoryRecall,
 		skillsDirectory:       opts.SkillsDirectory,
 		planningHints:         opts.PlanningHints,
 		skillStore:            opts.SkillStore,
@@ -1540,7 +1537,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
 	if d.memory != nil && d.retainedContextTurns == 0 {
-		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall, d.logger)
+		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ)
 		if mErr != nil {
 			d.logger.Warn("RunLoopDriver: FetchMemoryBlocks failed; failing run",
 				slog.String("task_id", string(taskID)),

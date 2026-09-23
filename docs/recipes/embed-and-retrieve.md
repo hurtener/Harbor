@@ -2,11 +2,10 @@
 
 Harbor's embedding client (`Embedder`, Phase 84d — D-191) turns text
 into vectors. It is a **standalone, factory-constructible primitive**:
-the opt-in semantic-retrieval modes in memory and skills are its first
-consumers, not its gatekeepers. This recipe walks the à-la-carte
+semantic skill retrieval is a built-in consumer, not its gatekeeper. This recipe walks the à-la-carte
 headless path — `embeddings.Open` + `Embed` + cosine ranking over your
 own corpus, with **no memory subsystem, no config file, no Protocol**
-— then shows the one-knob opt-ins for the two built-in consumers.
+— then shows the one-knob opt-in for skill retrieval.
 
 This is the primitive that makes the `ref` / `tool:<name>` document
 path powerful: keep a document as an artifact reference (see
@@ -113,43 +112,12 @@ Two rules worth keeping:
   linear cosine scan is the honest implementation; reach for an ANN
   index only when your corpus actually demands it.
 
-## 4. Consumer opt-in: semantic memory retrieval
+## 4. Session memory is not a vector index
 
-The memory subsystem composes the same primitive behind one knob.
-Inject the embedder via `Deps.Embedder` and flip the retrieval mode —
-the strategy (`rolling_summary` etc.) keeps its summary + recent-turn
-patch unchanged; `SearchTurns` is added on top:
-
-```go
-import "github.com/hurtener/Harbor/sdk/memory"
-
-mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-    Driver:    "sqlite",
-    DSN:       "/var/lib/harbor/memory.sqlite",
-    Strategy:  memory.StrategyRollingSummary,
-    Retrieval: memory.RetrievalSemantic, // opt-in; composes, never replaces
-}, memory.Deps{
-    State:      stateStore,
-    Bus:        bus,
-    Summarizer: summarizer,
-    Embedder:   emb, // REQUIRED for semantic mode — no stub fallback
-})
-if err != nil {
-    return err
-}
-
-hits, err := mem.SearchTurns(ctx, quad, "what did we decide about mooring?", 5)
-```
-
-Vectors persist alongside the memory records through the same
-StateStore floor (in-mem / SQLite / Postgres — conformance parity),
-identity-scoped: retrieval never crosses the `(tenant, user, session)`
-boundary. Omitting `Embedder` with the mode enabled fails loudly at
-`Open`.
-
-In `harbor.yaml` the same opt-in is `memory.retrieval: semantic` (+
-optional `memory.retrieval_top_k`), backed by the `embeddings:` block
-— the validator refuses a semantic mode without one.
+Native session-memory semantic retrieval was removed under D-477.
+Use cumulative `memory.strategy: rolling_summary` for short-term session
+continuity. External long-term retrieval stays in your integration or capability;
+it is not another Harbor memory store.
 
 ## 5. Consumer opt-in: semantic skill retrieval
 
@@ -174,12 +142,11 @@ Config carrier: `skills.retrieval: semantic`.
 
 | Situation | Behaviour |
 |---|---|
-| Semantic mode enabled, no `Deps.Embedder` | `Open` errors naming `Deps.Embedder` (memory and skills both) |
-| `memory.retrieval: semantic` in yaml, no `embeddings:` block | `harbor validate` / boot fails naming the missing keys |
+| Semantic mode enabled, no `Deps.Embedder` | `Open` errors naming `Deps.Embedder` (skills) |
+| Removed `memory.retrieval*` settings | Configuration fails; remove the obsolete settings |
 | `Embed` without identity in ctx | `ErrIdentityMissing` — fail closed, like the chat edge |
 | Embedding provider down mid-search | the search errors loudly; **never** a silent fallback to lexical ranking |
 | Vector dimension mismatch (model changed) | `ErrDimensionMismatch` — re-embed; vectors are derived, not source-of-truth |
-| `SearchTurns` on a non-semantic store | `memory.ErrSemanticDisabled` — never an empty success |
 
 ## Related
 

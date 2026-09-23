@@ -976,7 +976,6 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				Logger:                   opts.Logger,
 				SessionOverrides:         runsStore,
 				Memory:                   resolveMemoryStore(opts, stack),
-				MemoryRecall:             memory.RecallFromConfig(cfg.Memory),
 				SkillsDirectory:          skillsDir,
 				PlanningHints:            resolvePlanningHints(opts, cfg),
 				SkillStore:               stack.Skills,

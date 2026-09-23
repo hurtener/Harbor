@@ -5085,7 +5085,7 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 
 **Date:** 2026-06-11
 
-**Status:** Settled (shipping with Phase 84d)
+**Status:** Memory retrieval superseded by D-477; embedding client and skill retrieval remain settled.
 
 **Where it lives:** `internal/embeddings/` (the `Embedder` interface + sentinel errors + `Cosine` + the registry/factory `Open(ctx, cfg, deps)` with the identity-mandatory guard wrapper + `SnapshotFromConfig`); `internal/embeddings/drivers/bifrost/` (the production driver over the gateway's embedding surface, with the `HARBOR_LIVE_LLM`-gated conformance probe); `internal/embeddings/embeddingstest/` (the deterministic test-grade embedder — never registered, never a default); `internal/memory/` (`RetrievalMode` + `Deps.Embedder` + the registry guard + `MemoryStore.SearchTurns` + `ErrSemanticDisabled`; `internal/memory/strategy/semantic.go` — the wrapper executor + the `memory.vectors` StateStore record; the conformance suite's semantic cases, passed by all three drivers); `internal/skills/` (`RetrievalMode` + `Deps.Embedder` + the registry guard + `PathSemantic`; `internal/skills/drivers/localdb/search_semantic.go`); `internal/config/` (the `embeddings` block + `memory.retrieval`/`retrieval_top_k` + `skills.retrieval` + `validateEmbeddings`'s cross-block rule); `internal/runtime/assemble/` (`Stack.Embedder` + `Options.Embedder` + the Deps threading); `internal/drivers/prod` (the driver's blank import); `sdk/embeddings` + the `sdk/memory`/`sdk/skills` additions; `docs/recipes/embed-and-retrieve.md` (+ the docs-site stub/nav); `test/integration/phase84d_semantic_retrieval_test.go`; RFC §6.5 (the D-191 contract sentence), §6.6, §6.7.
 
@@ -5110,7 +5110,7 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 
 **Date:** 2026-06-12
 
-**Status:** Settled (shipping with Phase 84e)
+**Status:** Superseded by D-477; native session-memory semantic recall is removed.
 
 **Where it lives:** `internal/runtime/runctx/memory_fetch.go` (`FetchMemoryBlocks` + `capText`); `internal/memory/from_config.go` (`RecallSettings` + `RecallFromConfig`); `internal/config/config.go` (`RetrievalMinScore` field on `MemoryConfig`); `internal/config/validate.go` (`validateMemory` range check); `cmd/harbor/cmd_dev_runloop.go` (collapsed to thin `FetchMemoryBlocks` call + `memoryRecall` field); `cmd/harbor/cmd_dev.go` (`RecallFromConfig` projection into opts); `harbortest/devstack/devstack.go` (D-094 mirror collapsed, same pattern); `internal/runtime/runctx/memory_fetch_test.go` (unit + concurrent-reuse + fail-loud suite); `test/integration/phase84e_semantic_recall_test.go` (E2E acceptance); `scripts/smoke/phase-84e.sh` (real assertions); `docs/CONFIG.md` / `examples/harbor.yaml` / `cmd/harbor/init/templates/default/harbor.yaml.tmpl` (new field documented); `docs/glossary.md` (`Semantic recall` term); `docs/skills/configure-memory-and-skills/SKILL.md` (§18 sweep).
 
@@ -15826,7 +15826,8 @@ owned payload, with SDK aliases rather than another implementation.
 ## D-477 — Cumulative session memory replaces bounded-window forgetting
 
 **Date:** 2026-09-23. **Scope:** RFC 002 / PR #779; accepted, implementation pending.
-**Supersedes:** D-464 activation/count-eviction semantics, D-465, D-469.
+**Supersedes:** D-464 activation/count-eviction semantics, D-465, D-469,
+the memory retrieval portion of D-191, and D-211's native semantic recall.
 
 The single public entry point is `memory`. Standard `rolling_summary` uses one
 cumulative checkpoint and a bounded recent execution tail (`recent_turns: 20`).
@@ -15837,6 +15838,15 @@ output limits remain independent. Remove `sessions.retained_context_turns`,
 `WithRetainedContext`, `planner.token_budget` and the old pair-summary pipeline.
 Serving and embedding share the existing compactor, StateStore, ArtifactStore
 and dispatch journal. No compatibility layer, second memory engine or service.
+
+Native session-memory semantic indexing is removed, including `SearchTurns`,
+its SDK aliases, retrieval configuration and environment overrides. It is not
+adapted onto cumulative checkpoints or kept as a second history store. Existing
+stored vector rows are not migrated, read or deleted by this change; ordinary
+authorized session erasure remains responsible for clearing session data.
+The embedding client, semantic skill retrieval and caller-supplied external
+memory keep their separate contracts. Legacy pair-store retirement remains
+required; removing semantic retrieval alone does not finish consolidation.
 
 Freeze settled evidence, generate outside storage locks and the five-second
 persistence budget, validate, then conditionally commit against the unchanged
