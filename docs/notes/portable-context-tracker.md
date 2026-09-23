@@ -1,5 +1,38 @@
 # Portable session context implementation tracker
 
+## Owner functional acceptance — 2026-09-23
+
+The owner accepts the demonstrated cumulative-memory behavior: continuity over
+successive UI edits, reuse of the same project and earlier requirements, and
+focused reads rather than repeated reconstruction. The owner also reports
+approximately **80% OpenRouter cache hits in normal interactions**, compared
+with approximately zero before this change. This is an owner-observed live
+measurement, not a controlled benchmark or an equivalent cost-saving claim.
+
+The live candidate remains `v1.32.0-rc.5` at `4a6f187e`; the verified PR head
+before this documentation increment is `570faedb34f11e929f0b31f5a15f0df4092f201e`.
+CI run `35895153111` on that exact head has all 16 unwaived jobs passing,
+including Linux/macOS race suites and builds, Console Playwright, performance,
+lint and service-backed conformance. The owner-waived preflight job is still
+running at this observation; it is not a pass. This supersedes the older CI
+snapshot below, without claiming a root-cause repair for the previous flake.
+
+The candidate reached revision 13 of the same sample project. A queued turn
+started after confirmed completion without Resume/resubmission; a subsequent
+queued turn also ran without resubmission and restored the first-turn-only
+`Request cover` wording. The owner acceptance does not relabel the incomplete
+stable-agent trial as a matched multi-window benchmark.
+
+Release hardening is still pending separately. At 18:55:00 UTC, sample task
+`01M37SKJ34GY814KXV6KCDRYTJ` failed its terminal write with
+`retained execution context capacity exceeded`, after its external edit and
+Show had succeeded. The next task completed at 18:57:14 UTC. Investigate which
+storage/checkpoint capacity branch fired and how compaction handles the
+retained evidence; this error is not proof of provider context exhaustion and
+must not authorize replay of the already executed tool calls. The
+`memory/session` 92% coverage floor remains open. No stable release or merge
+is authorized by this functional acceptance.
+
 ## Current recovery direction — 2026-09-23
 
 The owner-approved D-477 amendment makes cumulative session memory the required
