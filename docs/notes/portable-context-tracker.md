@@ -31,6 +31,29 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### OAuth precheck cannot dispatch a superseded action
+
+Parent `47bd512625842b6e783554357768363885641cb5` fails three deterministic
+race regressions (**0.651s**): invalidation before token acquisition, steering
+during acquisition, and cancellation during acquisition all entered the tool.
+The existing OAuth wrapper now checks the existing invocation fence before and
+after credential acquisition. Identity validation retains precedence, provider
+errors remain intact, and unfenced/current calls retain their normal behavior.
+No OAuth lifecycle, provider, tool contract or new cancellation mechanism.
+
+Source tree `feeef760e1acf4166ea0b2bec5f3576bb3d6028d`, Go 1.27.1,
+`GOFLAGS=-p=1 go test -race ./internal/tools/catalog -cover -count=1` passes
+with **88.5%** coverage; targeted vet and pinned golangci-lint 2.13.2 pass.
+The first lint run rejected an unnecessary test-only conversion; it was removed
+and the complete package gates rerun. No deadline, concurrency or assertion was
+weakened. This is a focused boundary repair, not full final-tree acceptance.
+
+Parent `47bd5126` docs CI `35858355360` passes; main CI `35858355364`
+still has Linux/macOS tests running at inspection, with other jobs passed.
+No active run cancelled/restarted, tag, deployment or live-model call here.
+Consumer controls, remaining memory consolidation and matched live multi-window
+acceptance are still required; earlier receipts below remain revision-specific.
+
 ### Text-only steering rejects unsupported inputs before interruption
 
 Parent `5e5b18e3ba04b103ad85f8b0ef1ca50d5f37e76c` fails the new admission
