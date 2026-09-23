@@ -41,6 +41,7 @@ func (resultClient) Close(context.Context) error { return nil }
 func retainedLargeResult(t *testing.T) (*assemble.Stack, identity.Identity, string, string, *atomic.Int64) {
 	t.Helper()
 	s := runnableStack(t)
+	s.Cfg.Memory.Strategy, s.Cfg.Memory.RecentTurns = "rolling_summary", 4
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	if err := builtin.RegisterWith(builtin.RegistryContext{Catalog: s.Catalog, ArtifactStore: s.Artifacts}, []string{"artifact_fetch"}); err != nil {
 		t.Fatal(err)
@@ -150,7 +151,7 @@ func TestRunOnce_RetainedResults_ReferenceSurvivesAndFetchReachesRequest(t *test
 		}
 		return llm.CompleteResponse{Content: "exact source recovered"}, nil
 	}})
-	if _, err := s.RunOnce(t.Context(), "recover the exact result", id, assemble.WithRunID("next"), assemble.WithRetainedContext(4)); err != nil {
+	if _, err := s.RunOnce(t.Context(), "recover the exact result", id, assemble.WithRunID("next")); err != nil {
 		t.Fatal(err)
 	}
 	if modelCalls != 2 || originalCalls.Load() != 1 {
@@ -168,7 +169,7 @@ func TestRunOnce_RetainedResults_DeletedBlobCannotReachInference(t *testing.T) {
 		modelCalls++
 		return llm.CompleteResponse{Content: "must not see stale source"}, nil
 	}})
-	_, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("deleted"), assemble.WithRetainedContext(4))
+	_, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("deleted"))
 	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || modelCalls != 0 {
 		t.Fatalf("deleted evidence accepted: calls=%d err=%v", modelCalls, err)
 	}
@@ -184,7 +185,7 @@ func TestRunOnce_RetainedResults_DeletionDuringInferenceFencesDispatch(t *testin
 		}
 		return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: "write-after-delete", Name: "large_read", Args: json.RawMessage(`{}`)}}}, nil
 	}})
-	_, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("deleted-during"), assemble.WithRetainedContext(4))
+	_, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("deleted-during"))
 	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || modelCalls != 1 || calls.Load() != 1 {
 		t.Fatalf("deleted evidence permitted dispatch: calls=%d tools=%d err=%v", modelCalls, calls.Load(), err)
 	}

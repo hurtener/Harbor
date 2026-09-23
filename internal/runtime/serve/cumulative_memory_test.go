@@ -108,7 +108,7 @@ func TestRetainedServer_CumulativeMemoryAcrossFiveWindows(t *testing.T) {
 				}
 				opts.StateStore = store
 				opts.ArtifactStore = blobs
-				opts.RetainedContextTurns = 20
+				opts.SessionMemory = config.MemoryConfig{Strategy: "rolling_summary", RecentTurns: 20}
 				opts.TokenBudget = 100000 // Storage pressure, not an artificially tiny token target.
 				opts.Compression = planner.NewCompressionRunner(summary)
 				opts.Planner = react.New(composed)

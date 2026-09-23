@@ -50,7 +50,8 @@ func servedRecoverySource(t *testing.T, d projWiringDeps, session string, settle
 
 func TestE2E_ServedContextRecovery_SealsAndContinues(t *testing.T) {
 	d := buildProjWiringMux(t)
-	d.in.Cfg.Sessions.RetainedContextTurns = 4
+	d.in.Cfg.Memory.Strategy = "rolling_summary"
+	d.in.Cfg.Memory.RecentTurns = 4
 	mux, err := BuildMux(d.in)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +88,8 @@ func TestE2E_ServedContextRecovery_SealsAndContinues(t *testing.T) {
 
 func TestE2E_ServedContextRecovery_RefusesPendingAndForeignIdentity(t *testing.T) {
 	d := buildProjWiringMux(t)
-	d.in.Cfg.Sessions.RetainedContextTurns = 4
+	d.in.Cfg.Memory.Strategy = "rolling_summary"
+	d.in.Cfg.Memory.RecentTurns = 4
 	mux, err := BuildMux(d.in)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +129,8 @@ func TestE2E_ServedContextRecovery_DisabledAndInvalid(t *testing.T) {
 	if code, _ := postMux(t, disabled.Mux, "/v1/sessions/reconcile_context", id, `{"source_run_id":"source"}`); code != http.StatusNotFound {
 		t.Fatal("disabled recovery enabled")
 	}
-	d.in.Cfg.Sessions.RetainedContextTurns = 4
+	d.in.Cfg.Memory.Strategy = "rolling_summary"
+	d.in.Cfg.Memory.RecentTurns = 4
 	enabled, err := BuildMux(d.in)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +148,8 @@ func TestE2E_ServedContextRecovery_DisabledAndInvalid(t *testing.T) {
 
 func TestE2E_ServedContextRecovery_ConcurrentIsolation(t *testing.T) {
 	d := buildProjWiringMux(t)
-	d.in.Cfg.Sessions.RetainedContextTurns = 4
+	d.in.Cfg.Memory.Strategy = "rolling_summary"
+	d.in.Cfg.Memory.RecentTurns = 4
 	mux, err := BuildMux(d.in)
 	if err != nil {
 		t.Fatal(err)

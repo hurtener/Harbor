@@ -34,7 +34,8 @@ func TestBoot_PostgresProjectionServicesComposeAndClose(t *testing.T) {
 	}
 	cfg.Sessions.Turns = config.TurnsConfig{Driver: "postgres", DSN: dsn, Retention: 32}
 	cfg.Observability.Rollups = config.RollupsConfig{Driver: "postgres", DSN: dsn}
-	cfg.Sessions.RetainedContextTurns = 2
+	cfg.Memory.Strategy = "rolling_summary"
+	cfg.Memory.RecentTurns = 2
 
 	opts := baseOptions(t)
 	opts.Config = cfg

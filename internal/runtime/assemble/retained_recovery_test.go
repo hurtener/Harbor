@@ -18,7 +18,8 @@ import (
 
 func TestRunOnce_RetainedRecoveryActualRequest(t *testing.T) {
 	stack, client, toolCalls := retainedRecordingStack(t)
-	stack.Cfg.Sessions.RetainedContextTurns = 4
+	stack.Cfg.Memory.Strategy = "rolling_summary"
+	stack.Cfg.Memory.RecentTurns = 4
 	sink := registerHookSink(t, stack, "recovery_sink")
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "recovery-sdk"}
 	q := identity.Quadruple{Identity: id, RunID: "lost-process"}
@@ -89,7 +90,8 @@ func TestRunOnce_RetainedRecoveryDisabledIdentityAndCancellation(t *testing.T) {
 	if err := absent.ReconcileRetainedContext(t.Context(), id, "source"); !errors.Is(err, sdk.ErrRetainedContextUnavailable) {
 		t.Fatal("nil stack accepted")
 	}
-	stack.Cfg.Sessions.RetainedContextTurns = 4
+	stack.Cfg.Memory.Strategy = "rolling_summary"
+	stack.Cfg.Memory.RecentTurns = 4
 	if err := stack.ReconcileRetainedContext(t.Context(), identity.Identity{}, "source"); err == nil {
 		t.Fatal("missing identity accepted")
 	}

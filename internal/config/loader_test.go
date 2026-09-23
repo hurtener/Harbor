@@ -130,6 +130,43 @@ func TestLoad_MemoryBudgetEnvironmentHasOneOwner(t *testing.T) {
 	}
 }
 
+func TestLoad_SessionMemoryHasOneActivation(t *testing.T) {
+	fixture, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "4"} {
+		data := string(fixture) + "\nsessions:\n  retained_context_turns: " + value + "\n"
+		if _, err := config.LoadFromBytes(t.Context(), []byte(data)); !errors.Is(err, config.ErrConfigInvalid) || !strings.Contains(err.Error(), "memory.strategy") {
+			t.Fatalf("removed retention setting must fail with migration guidance: %v", err)
+		}
+	}
+	for _, strategy := range []string{"none", "rolling_summary"} {
+		data := string(fixture) + "\nmemory:\n  strategy: " + strategy + "\n"
+		cfg, err := config.LoadFromBytes(t.Context(), []byte(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if strategy == "rolling_summary" {
+			want = 20
+		}
+		if got := cfg.Memory.RecentTurnsResolved(); got != want {
+			t.Fatalf("%s window=%d want=%d", strategy, got, want)
+		}
+	}
+	t.Setenv("HARBOR_MEMORY_STRATEGY", "rolling_summary")
+	t.Setenv("HARBOR_MEMORY_RECENT_TURNS", "8")
+	cfg, err := config.Load(t.Context(), validMinimalFixture)
+	if err != nil || cfg.Memory.RecentTurnsResolved() != 8 {
+		t.Fatalf("memory environment activation: cfg=%v err=%v", cfg != nil, err)
+	}
+	t.Setenv("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS", "")
+	if _, err := config.Load(t.Context(), validMinimalFixture); !errors.Is(err, config.ErrConfigInvalid) || !strings.Contains(err.Error(), "HARBOR_MEMORY_STRATEGY") {
+		t.Fatalf("removed environment activation silently accepted: %v", err)
+	}
+}
+
 func TestLoad_AppliesDefaults(t *testing.T) {
 	// The minimal fixture omits telemetry.service_name's default; our
 	// loader should still produce a valid config because the fixture

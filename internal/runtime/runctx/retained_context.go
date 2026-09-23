@@ -25,7 +25,7 @@ const (
 	retainedContextKind      = state.InternalKindPrefix + "session-execution-context"
 	retainedContextVersion   = 4
 	maxRetainedContextBytes  = 512 * 1024
-	maxRetainedContextTurns  = config.MaxRetainedContextTurns
+	maxRetainedContextTurns  = config.MaxMemoryRecentTurns
 	maxRetainedContextActive = 32
 	maxRetainedContextSteps  = 256
 	retainedContextAttempts  = 32

@@ -21,11 +21,11 @@ var ErrRetainedContextUnsettled = runctx.ErrRetainedContextUnsettled
 // or uncommitted external operation is refused as an unknown outcome. Already
 // sealed context is idempotent while retained; expiry is never extended.
 func (s *Stack) ReconcileRetainedContext(ctx context.Context, id identity.Identity, sourceRunID string) error {
-	if s == nil || s.Cfg == nil || s.Cfg.Sessions.RetainedContextTurns <= 0 {
+	if s == nil || s.Cfg == nil || s.Cfg.Memory.RecentTurnsResolved() <= 0 {
 		return runctx.ErrRetainedContextUnavailable
 	}
 	if err := identity.Validate(id); err != nil {
 		return err
 	}
-	return runctx.ReconcileRetainedRun(ctx, s.State, s.Redactor, identity.Quadruple{Identity: id, RunID: sourceRunID}, s.Cfg.Sessions.RetainedContextTurns, nil)
+	return runctx.ReconcileRetainedRun(ctx, s.State, s.Redactor, identity.Quadruple{Identity: id, RunID: sourceRunID}, s.Cfg.Memory.RecentTurnsResolved(), nil)
 }

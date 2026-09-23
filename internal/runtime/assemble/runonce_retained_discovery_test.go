@@ -37,6 +37,7 @@ func (*retainedDiscoveryClient) Close(context.Context) error { return nil }
 
 func TestRunOnce_RetainedDiscoveryRefreshAndRevocation(t *testing.T) {
 	s := runnableStack(t)
+	s.Cfg.Memory.Strategy, s.Cfg.Memory.RecentTurns = "rolling_summary", 4
 	defer func() { _ = s.Close(context.Background()) }()
 	client := &retainedDiscoveryClient{requests: map[string][]llm.CompleteRequest{}}
 	s.Planner = react.New(client)
@@ -65,7 +66,7 @@ func TestRunOnce_RetainedDiscoveryRefreshAndRevocation(t *testing.T) {
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "discovery"}
 	run := func(name string) {
 		t.Helper()
-		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(name), assemble.WithRetainedContext(4)); err != nil {
+		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(name)); err != nil {
 			t.Fatal(err)
 		}
 	}

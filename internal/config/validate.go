@@ -931,9 +931,6 @@ func (c *Config) validateEvents() error {
 }
 
 func (c *Config) validateSessions() error {
-	if c.Sessions.RetainedContextTurns < 0 || c.Sessions.RetainedContextTurns > MaxRetainedContextTurns {
-		return fieldError("sessions.retained_context_turns", fmt.Sprintf("must be between 0 and %d", MaxRetainedContextTurns))
-	}
 	if c.Sessions.IdleTTL <= 0 {
 		return fieldError("sessions.idle_ttl", "must be > 0")
 	}
@@ -1313,8 +1310,8 @@ func (c *Config) validateMemory() error {
 	if c.Memory.RecoveryBacklogMax < 0 {
 		return fieldError("memory.recovery_backlog_max", "must be >= 0")
 	}
-	if c.Memory.RecentTurns < 0 {
-		return fieldError("memory.recent_turns", "must be >= 0")
+	if c.Memory.RecentTurns < 0 || c.Memory.RecentTurns > MaxMemoryRecentTurns {
+		return fieldError("memory.recent_turns", fmt.Sprintf("must be between 0 and %d (zero selects 20)", MaxMemoryRecentTurns))
 	}
 	if _, ok := allowedRetrievalModes[c.Memory.Retrieval]; !ok {
 		return fieldError("memory.retrieval",

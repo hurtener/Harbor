@@ -854,9 +854,11 @@ RC tags or delete uncertain-operation evidence to make a session start.
 **Landed budget consolidation:** `planner.token_budget` and
 `HARBOR_PLANNER_TOKEN_BUDGET` are removed and fail with migration guidance.
 Use `memory.budget_tokens` / `HARBOR_MEMORY_BUDGET_TOKENS`. Rolling-summary
-execution builds the compactor even with a zero explicit target. Consolidating
-the memory owner, default strategy and separate retention switches is still
-pending; this budget change is not the full D-477 implementation.
+execution builds the compactor even with a zero explicit target. The separate
+session/SDK activation switches are also removed: choose
+`memory.strategy: rolling_summary` and `memory.recent_turns` for serving and
+embedding. Removing the legacy memory-store interfaces and changing the omitted
+strategy default remain pending; these increments are not the full D-477 implementation.
 
 ### memory.driver
 
@@ -920,10 +922,10 @@ loop (D-035). Default: `16`. Validation: >= 0.
 
 ### memory.recent_turns
 
-Number of most-recent conversation turns the `rolling_summary`
-strategy keeps verbatim before older turns spill into the rolling
-summary (D-242). Default: `0` → strategy default
-(`strategy.FullZoneTurns` = 4). Validation: >= 0. Ignored by the
+Number of recent root executions the cumulative `rolling_summary` strategy
+keeps in detail. Default: `0` → twenty turns. Validation: `0..32`.
+The checkpoint carries earlier meaning after covered detail leaves the window;
+this number is not a checkpoint-history limit. Ignored by the
 `none` and `truncation` strategies.
 
 ### memory.summarizer.model
@@ -1221,27 +1223,32 @@ requiring user confirmation. Default: `8`. Validation: > 0.
 
 ## Sessions
 
-### sessions.retained_context_turns
+### Session execution memory
 
-Explicit private execution-context retention for root conversations. Default:
-`0` (disabled). Validation: `0..32`. Restart-required. A positive value retains
-that many recent terminal root runs in the configured StateStore and projects
+Configure root conversation memory under `memory`, not `sessions`.
+`rolling_summary` selects cumulative execution-context memory; `recent_turns`
+accepts `0..32`, with zero selecting twenty detailed turns. Restart-required.
+It persists recent terminal root runs in the configured StateStore and projects
 permitted historical evidence into the next root request. It replaces legacy
 pair-only memory projection for this mode; external long-term memory and trusted
 completion hooks are unchanged. Child tasks use their explicit task context,
 not the root window, and their private transcripts are not added to it.
 
 ```yaml
-sessions:
-  retained_context_turns: 4
+memory:
+  strategy: rolling_summary
+  recent_turns: 20
 ```
 
-`RunOnce` uses the same configured value; `WithRetainedContext(n)` overrides it
-for one embedded invocation, including explicit zero to disable. In-memory
+`RunOnce` uses the same memory configuration; no per-call activation override
+exists. `sessions.retained_context_turns`, its environment override and the SDK
+`WithRetainedContext` option are removed. Use `memory.strategy: none` for a
+stateless stack. In-memory
 StateStore retention ends with the process; SQLite/Postgres preserve committed
-content across restarts. The retained window remains bounded by 32 turns,
+content across restarts. The detailed window remains bounded by 32 turns,
 256 own steps per turn, 512 KiB, and the configured session idle TTL. Expiry,
-erasure, and whole-turn eviction apply; an indivisible oversized turn fails
+and erasure apply. Successful compaction replaces covered detail with cumulative
+checkpoint meaning; window rollover is not forgetting. An indivisible oversized turn fails
 instead of being clipped. This is private execution evidence, not additional
 content in `sessions.turns.*`.
 
@@ -1254,10 +1261,10 @@ run can still have an unknown outcome between external execution and settlement.
 Reconcile with the owning service rather than automatically repeating it.
 Automatic cold-run continuation remains unsupported.
 
-Retained windows use format version 2 for native historical exchange projection.
+Private windows use format version 4 with cumulative coverage and fenced admissions.
 Source strings and identifier/completeness values remain exact, while JSON
-envelope formatting may canonicalize. Version-1 windows remain readable as inert
-evidence and upgrade on a write; older version-1 readers reject the new format.
+envelope formatting may canonicalize. Incompatible older records are refused
+explicitly; there is no compatibility layer or implicit source conversion.
 No stored historical action is executed by restoration.
 
 ### sessions.idle_ttl

@@ -98,6 +98,12 @@ capacity and output reservation. A positive target also enables within-run
 compaction for stateless agents. Fresh results remain protected, so this is a
 soft working target, not permission to truncate evidence to fit.
 
+On the PR #779 cumulative-memory branch, `rolling_summary` also enables the
+shared served/embedded execution-context path. `recent_turns: 20` (or zero)
+bounds detailed history, not checkpoint age. The separate
+`sessions.retained_context_turns` and SDK activation option are removed.
+The omitted-strategy default and old memory-store retirement remain in progress.
+
 The WAL trap: `dsn: ./...` inside the project directory triggers `harbor dev`'s fsnotify watcher and reboots the runtime in a loop. Default-drop the DSN at `/tmp/harbor-validation/my-agent-memory.sqlite` or `~/.harbor/my-agent-memory.sqlite`. See [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) §3.
 
 ### `state`

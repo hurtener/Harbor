@@ -98,6 +98,16 @@ func WithTrajectorySystemPrompt(prompt string) TrajectoryOption {
 	}
 }
 
+// WithTrajectoryPromptExtension appends operator guidance without replacing
+// the baseline execution-evidence instructions or local validation rules.
+func WithTrajectoryPromptExtension(extra string) TrajectoryOption {
+	return func(s *TrajectorySummariser) {
+		if trimmed := strings.TrimSpace(extra); trimmed != "" {
+			s.systemPrompt += promptExtensionSeparator + trimmed
+		}
+	}
+}
+
 // WithTrajectoryMaxSummaryTokens bounds each completion. Non-positive values
 // leave the bounded default unchanged; the response byte ceiling also applies.
 func WithTrajectoryMaxSummaryTokens(n int) TrajectoryOption {

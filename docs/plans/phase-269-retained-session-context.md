@@ -137,25 +137,19 @@ an intent without a returned receipt remains unknown, never automatically replay
 
 ## Public API surface
 
-The target entry point is `memory` in YAML and its corresponding SDK config.
-`WithRetainedContext` and `sessions.retained_context_turns` below describe the
-historical API being removed, not a compatibility promise. Removed settings
-fail clearly; old private formats need not be supported. The own-session
-reconciliation Protocol and exact settlement/erasure authority remain unchanged.
+The entry point is `memory` in YAML and its corresponding SDK config.
+`memory.strategy: rolling_summary` selects cumulative execution context in
+serving, development and embedding. `memory.recent_turns` accepts 0..32; zero
+selects twenty detailed turns. `memory.strategy: none` selects stateless runs.
+The old `WithRetainedContext` API and `sessions.retained_context_turns` key are
+removed, without a compatibility layer. YAML/environment use of the removed
+setting fails with migration guidance. The omitted-strategy default and old
+pair-store interfaces/loop remain pending owner-consolidation work.
 
-Historical activation:
-
-```go
-func WithRetainedContext(turns int) RunOption
-```
-
-The SDK aliases the existing assembly implementation. The explicit own-session
-`sessions.reconcile_context` Protocol operation and typed Go client use the same
-settled-journal primitive. No backend, production dependency, or default retention
-change is added.
-The explicit `sessions.retained_context_turns` setting applies to serving and
-embedding; the per-call option overrides it. Zero is disabled by default. Child
-tasks never publish private transcripts into the root conversation window.
+The explicit own-session `sessions.reconcile_context` Protocol operation and
+typed Go client use the same settled-journal primitive. Exact settlement/erasure
+authority remains unchanged. Child tasks never publish private transcripts into
+the root conversation window. No backend or production dependency is added.
 
 ## Test plan
 

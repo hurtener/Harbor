@@ -37,10 +37,9 @@ instead uses synthetic local responses.
 On a disposable deployment, explicitly set:
 
 ```yaml
-sessions:
-  retained_context_turns: 8
 memory:
-  strategy: none
+  strategy: rolling_summary
+  recent_turns: 20
   budget_tokens: 12000
 ```
 

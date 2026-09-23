@@ -82,6 +82,7 @@ func TestRunOnce_RetainedJournalDispatchBoundaries(t *testing.T) {
 	for _, fail := range []string{"", "intent", "settlement"} {
 		t.Run("fail="+fail, func(t *testing.T) {
 			s := runnableStack(t)
+			s.Cfg.Memory.Strategy, s.Cfg.Memory.RecentTurns = "rolling_summary", 2
 			t.Cleanup(func() { _ = s.Close(context.Background()) })
 			store := &failingJournalStore{StateStore: s.State, fail: fail}
 			s.State = store
@@ -115,7 +116,7 @@ func TestRunOnce_RetainedJournalDispatchBoundaries(t *testing.T) {
 			}
 			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "journal"}
 			q := identity.Quadruple{Identity: id, RunID: "r"}
-			_, err = s.RunOnce(t.Context(), "persist every boundary", id, assemble.WithRunID(q.RunID), assemble.WithRetainedContext(2))
+			_, err = s.RunOnce(t.Context(), "persist every boundary", id, assemble.WithRunID(q.RunID))
 			if fail != "" {
 				if err == nil || client.calls != 1 {
 					t.Fatalf("persistence failure reached next decision: calls=%d err=%v", client.calls, err)

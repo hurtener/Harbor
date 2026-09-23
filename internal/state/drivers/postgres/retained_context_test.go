@@ -134,7 +134,19 @@ func TestPostgres_RetainedContext_CheckpointAndSourceExpiry(t *testing.T) {
 		base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{Action: planner.CallTool{Tool: "read", CallID: marker, Args: json.RawMessage(`{}`)}, LLMObservation: marker})
 	}
 	base.Budget.TokenBudget = 1
-	if err := planner.NewCompressionRunner(&retainedSummaryRecorder{}).MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
+	compactor := planner.NewCompressionRunner(&retainedSummaryRecorder{})
+	if err := compactor.MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
+		t.Fatal(err)
+	}
+	if base.Trajectory.Summary != nil {
+		t.Fatal("unobserved execution evidence was compacted")
+	}
+	// This direct-compactor fixture bypasses the run loop's observation
+	// acknowledgement. Mark only the earlier prefix observed, leaving the
+	// newest result protected until it reaches the next decision request.
+	seen := len(base.Trajectory.Steps) - 1
+	base.Trajectory.UnseenFrom = &seen
+	if err := compactor.MaybeCompress(t.Context(), base, base.Trajectory); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Finish(t.Context(), base.Trajectory, base.Query, "saved", "complete"); err != nil {

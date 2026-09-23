@@ -11,9 +11,10 @@ import (
 
 func TestRunOnce_RetainedNativeExchange(t *testing.T) {
 	s, client, calls := retainedRecordingStack(t)
+	s.Cfg.Memory.RecentTurns = 2
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "native"}
 	for _, run := range []string{"first", "second"} {
-		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(run), assemble.WithRetainedContext(2)); err != nil {
+		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(run)); err != nil {
 			t.Fatal(err)
 		}
 	}

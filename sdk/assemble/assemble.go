@@ -37,11 +37,6 @@ type RunOption = internal.RunOption
 // WithRunID pins the run's RunID instead of synthesising a fresh ULID.
 var WithRunID = internal.WithRunID
 
-// WithRetainedContext explicitly retains a bounded recent terminal execution
-// window for RunOnce. It does not replay historical actions or provide automatic
-// crash recovery; zero leaves legacy memory and retention behavior unchanged.
-var WithRetainedContext = internal.WithRetainedContext
-
 // WithInputArtifacts pre-resolves operator-uploaded artifact IDs into
 // the run's first-turn multimodal inputs.
 var WithInputArtifacts = internal.WithInputArtifacts

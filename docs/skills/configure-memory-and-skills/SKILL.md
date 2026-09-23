@@ -60,10 +60,13 @@ limits; fresh tool results cannot be silently truncated to satisfy it. A positiv
 value also enables within-run compaction for stateless agents. The removed
 `planner.token_budget` is rejected with migration guidance.
 
-The cumulative-memory owner migration is still in progress in PR #779; until it
-lands, the pair-store strategy also consumes this budget and
-`recovery_backlog_max` still bounds its legacy recovery queue. Do not treat the
-budget consolidation alone as completion of that migration. See the
+In PR #779, `rolling_summary` now selects the cumulative execution-context path
+for both served and embedded root runs. Set `recent_turns: 20` (zero also selects
+twenty); this bounds detail, not how far back checkpoint meaning reaches.
+The separate `sessions.retained_context_turns` and SDK activation option are
+removed. Persistence uses the configured StateStore and session lifetime.
+The legacy memory-store interfaces/recovery loop and omitted-strategy default
+are still being retired; this is not the complete owner migration. See the
 [implementation tracker](../../notes/portable-context-tracker.md).
 
 ### Opt-in semantic retrieval

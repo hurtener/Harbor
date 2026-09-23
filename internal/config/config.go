@@ -735,10 +735,9 @@ type RuntimeNamingConfig struct {
 // drops oldest and emits `memory.recovery_dropped` on the bus.
 // Ignored by the `none` and `truncation` strategies.
 //
-// `RecentTurns` is the number of most-recent conversation turns the
-// `rolling_summary` strategy keeps verbatim before older turns spill
-// into the rolling summary. Zero selects the strategy default
-// (`strategy.FullZoneTurns`, currently 4). Ignored by the `none`
+// `RecentTurns` bounds the detailed execution window for cumulative
+// `rolling_summary` memory. Zero selects twenty turns; the maximum is 32.
+// It does not bound the age of meaning in the checkpoint. Ignored by the `none`
 // strategy; the `truncation` strategy keeps every turn that fits the
 // budget so it does not consult this knob.
 //
@@ -750,8 +749,7 @@ type MemoryConfig struct {
 	Strategy           string          `yaml:"strategy,omitempty"`
 	BudgetTokens       int             `yaml:"budget_tokens,omitempty"`
 	RecoveryBacklogMax int             `yaml:"recovery_backlog_max,omitempty"`
-	// RecentTurns is the verbatim recent-window size for the
-	// `rolling_summary` strategy. 0 → strategy default (FullZoneTurns).
+	// RecentTurns bounds recent execution detail; zero selects twenty turns.
 	RecentTurns int `yaml:"recent_turns,omitempty"`
 
 	// Summarizer tunes the `rolling_summary` compaction LLM: a
@@ -1014,22 +1012,29 @@ type DistributedConfig struct {
 	BusPollInterval time.Duration `yaml:"bus_poll_interval,omitempty"`
 }
 
-// MaxRetainedContextTurns bounds private execution-history retention.
-const MaxRetainedContextTurns = 32
+// MaxMemoryRecentTurns bounds the detailed execution window, not checkpoint age.
+const MaxMemoryRecentTurns = 32
+
+// RecentTurnsResolved returns the cumulative memory window. Zero recent_turns
+// selects twenty detailed turns. Other strategies do not use this projection.
+func (c MemoryConfig) RecentTurnsResolved() int {
+	if c.Strategy != "rolling_summary" {
+		return 0
+	}
+	if c.RecentTurns == 0 {
+		return 20
+	}
+	return c.RecentTurns
+}
 
 // SessionsConfig configures the SessionRegistry's GC sweeper and optional
-// private execution-context retention. Defaults match RFC §6.9: idle TTL 24h,
-// hard cap 30 days, sweep every 15 min, and execution retention disabled.
+// session lifetime. Defaults match RFC §6.9: idle TTL 24h,
+// hard cap 30 days and sweep every 15 min. Memory activation belongs to memory.
 // Fields are not hot-reloadable; changing them requires a restart.
 type SessionsConfig struct {
-	// RetainedContextTurns explicitly retains this many recent root-run
-	// execution records. Zero preserves legacy memory behavior. This private
-	// StateStore projection is independent of the consumer Turns store and
-	// external long-term memory. Restart-required; bounded by session idle TTL.
-	RetainedContextTurns int           `yaml:"retained_context_turns,omitempty"`
-	IdleTTL              time.Duration `yaml:"idle_ttl"`
-	HardCap              time.Duration `yaml:"hard_cap"`
-	SweepInterval        time.Duration `yaml:"sweep_interval"`
+	IdleTTL       time.Duration `yaml:"idle_ttl"`
+	HardCap       time.Duration `yaml:"hard_cap"`
+	SweepInterval time.Duration `yaml:"sweep_interval"`
 
 	// Turns configures the durable conversation-turn projection store
 	// (HA-64) — the indexed read model backing

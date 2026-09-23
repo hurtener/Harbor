@@ -112,14 +112,13 @@ Register your own in-process tools before assembling via
 
 ## Retain recent execution evidence across embedded calls
 
-On the incremental portable-context branch, explicitly enable retained execution context
-with `sessions.retained_context_turns` for both serving and embedded calls, or
-set the per-call option below. Reuse the same identity triple and configured
+On the incremental portable-context branch, choose `memory.strategy: rolling_summary`
+and `memory.recent_turns: 20` before assembly, for both serving and embedded calls.
+There is no separate per-call activation option. Reuse the same identity triple and configured
 StateStore; SQLite or Postgres is needed to retain content across process exits.
 
 ```go
-env, err := stack.RunOnce(ctx, "Edit the document from the previous turn.", id,
-    assemble.WithRetainedContext(4))
+env, err := stack.RunOnce(ctx, "Edit the document from the previous turn.", id)
 if err != nil {
     // A terminal write may fail after external effects succeeded.
     // Reconcile through the owning service; do not repeat the run blindly.
@@ -127,24 +126,24 @@ if err != nil {
 }
 ```
 
-The configured default is zero and preserves existing behavior. The per-call
-option overrides configuration; explicit `WithRetainedContext(0)` disables
-retention for that invocation. A positive value replaces legacy pair-only memory
-projection, not external-memory retrieval or trusted completion-hook capture.
+`memory.strategy: none` selects a stateless stack. A zero `recent_turns` selects
+twenty detailed turns; it does not disable memory. Cumulative memory replaces
+pair-only history projection, not caller-supplied external memory or trusted completion-hook capture.
 Historical tool actions are supplied as inert evidence, never dispatched.
 
 Retained mode commits admitted input, dispatch intent, and settlement before the
 next dependent decision. Hard interruption may still leave an unknown external
 outcome. No historical write is retried automatically. The window is limited to 32 turns, 256 own steps per turn,
-and 512 KiB, with the session idle TTL (24 hours when unspecified). Expiry and
-whole-turn eviction are disclosed; an oversized indivisible turn fails explicitly.
+and 512 KiB, with the session idle TTL (24 hours when unspecified). Covered detail
+leaves only after checkpoint publication; expiry invalidates derived context.
+An oversized indivisible turn fails explicitly.
 See the [phase 269 plan](../plans/phase-269-retained-session-context.md).
 
 ### Reconcile a fully settled interrupted run
 
 For an explicitly selected source run, an embedder can recover its committed
-evidence without relaunching execution. Enable `sessions.retained_context_turns`
-on the stack; per-call retention alone is not permission to change that policy.
+evidence without relaunching execution. Enable `memory.strategy: rolling_summary`
+on the stack; a recovery call does not change that policy.
 Use the same tenant/user/session identity and the original run ID.
 
 ```go
@@ -518,7 +517,7 @@ Three things distinguish the serving path from the headless one:
 
 ### Reconcile from a served client
 
-With `sessions.retained_context_turns` already enabled, a typed Protocol client
+With `memory.strategy: rolling_summary` already enabled, a typed Protocol client
 may call `SessionsReconcileContext` with `SourceRunID`. The client's verified
 identity supplies the session; this operation has no cross-session admin mode.
 The HTTP equivalent is `POST /v1/sessions/reconcile_context` with

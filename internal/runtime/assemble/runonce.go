@@ -66,10 +66,9 @@ var (
 // RunOnce's signature. The streaming sink (WithStream) is one such
 // sibling addition.
 type runOnceConfig struct {
-	retainedContextTurns int
-	runID                string
-	inputArtifactIDs     []string
-	stream               func(StreamEvent)
+	runID            string
+	inputArtifactIDs []string
+	stream           func(StreamEvent)
 	// outputSchema carries the run-level output schema (raw JSON-Schema
 	// bytes) set via WithOutputSchema. Nil means "not set"; a set-but-
 	// empty schema is caught as a loud error in RunOnce (never a silent
@@ -93,18 +92,6 @@ type RunOption func(*runOnceConfig)
 // Useful for correlating a run with externally-minted identifiers.
 func WithRunID(runID string) RunOption {
 	return func(c *runOnceConfig) { c.runID = runID }
-}
-
-// WithRetainedContext retains up to turns completed execution records for the
-// same identity-scoped session. A positive value (1..32) opts this invocation
-// into required terminal persistence and replaces legacy pair-only memory
-// projection. It overrides sessions.retained_context_turns, including zero to
-// keep legacy behavior for this invocation. Retention follows session idle
-// TTL; it is not long-term memory or authorization to replay interrupted actions.
-// Dispatch intent and returned outcomes are persisted before dependent work.
-// Automatic cold-run recovery or replay of interrupted actions is not provided.
-func WithRetainedContext(turns int) RunOption {
-	return func(c *runOnceConfig) { c.retainedContextTurns = turns }
 }
 
 // WithInputArtifacts pre-resolves operator-uploaded artifact IDs into
@@ -268,13 +255,14 @@ func (s *Stack) RunOnce(
 	}
 
 	var cfg runOnceConfig
+	var memoryTurns int
 	if s.Cfg != nil {
-		cfg.retainedContextTurns = s.Cfg.Sessions.RetainedContextTurns
+		memoryTurns = s.Cfg.Memory.RecentTurnsResolved()
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	if cfg.retainedContextTurns < 0 || cfg.retainedContextTurns > config.MaxRetainedContextTurns {
+	if memoryTurns < 0 || memoryTurns > config.MaxMemoryRecentTurns {
 		return planner.AnswerEnvelope{}, runctx.ErrRetainedContextCapacity
 	}
 	// WithOutputSchema fails loud on a nil/empty schema at call time — a
@@ -315,12 +303,12 @@ func (s *Stack) RunOnce(
 	memoryStore := s.Memory
 	recall := memory.RecallFromConfig(s.Cfg.Memory)
 	var retained *runctx.RetainedRun
-	if cfg.retainedContextTurns > 0 {
+	if memoryTurns > 0 {
 		ttl := s.Cfg.Sessions.IdleTTL
 		if ttl <= 0 {
 			ttl = 24 * time.Hour
 		}
-		retained, err = runctx.BeginRetainedRun(runCtx, s.State, s.Redactor, q, cfg.retainedContextTurns, ttl, nil)
+		retained, err = runctx.BeginRetainedRun(runCtx, s.State, s.Redactor, q, memoryTurns, ttl, nil)
 		if err != nil {
 			return planner.AnswerEnvelope{}, err
 		}

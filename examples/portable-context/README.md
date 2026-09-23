@@ -34,8 +34,9 @@ available; it is a credential destination, not an untrusted model argument.
 This is a headless SDK example, so it uses `ValidateCore` and does not configure
 a Protocol JWT listener. It builds its config from flags, not the full YAML or
 `HARBOR_*` override layer. It deliberately selects SQLite state, filesystem
-artifacts, `memory.strategy: none`, and eight retained turns. This explicit
-sample configuration does not change Harbor's zero-retention default.
+artifacts, `memory.strategy: rolling_summary`, and `memory.recent_turns: 8`.
+There is no separate retention switch. The current branch is still migrating
+the omitted-strategy default and legacy memory-store interfaces.
 
 ## Run three distinct user turns
 

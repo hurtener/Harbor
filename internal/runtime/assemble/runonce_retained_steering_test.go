@@ -53,7 +53,7 @@ func TestRunOnce_RetainedSteering_ReachesFollowingTurn(t *testing.T) {
 				}
 				return llm.CompleteResponse{Content: "Complete."}, nil
 			}})
-			if _, err := s.RunOnce(t.Context(), "initial request", id, assemble.WithRunID(q.RunID), assemble.WithRetainedContext(4)); err != nil {
+			if _, err := s.RunOnce(t.Context(), "initial request", id, assemble.WithRunID(q.RunID)); err != nil {
 				t.Fatal(err)
 			}
 			s.Planner = react.New(resultClient{fn: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -75,7 +75,7 @@ func TestRunOnce_RetainedSteering_ReachesFollowingTurn(t *testing.T) {
 				}
 				return llm.CompleteResponse{Content: "Continued."}, nil
 			}})
-			if _, err := s.RunOnce(context.Background(), "continue", id, assemble.WithRunID("next"), assemble.WithRetainedContext(4)); err != nil {
+			if _, err := s.RunOnce(context.Background(), "continue", id, assemble.WithRunID("next")); err != nil {
 				t.Fatal(err)
 			}
 			if toolCalls.Load() != 1 {
@@ -132,6 +132,7 @@ func (*sharedSteeringClient) Close(context.Context) error { return nil }
 
 func TestRunOnce_RetainedSteering_SharedStackIsolation(t *testing.T) {
 	s, _, calls := retainedRecordingStack(t)
+	s.Cfg.Memory.RecentTurns = 2
 	client := &sharedSteeringClient{registry: s.Steering, t: t, calls: map[identity.Quadruple]int{}}
 	s.Planner = react.New(client)
 	var wg sync.WaitGroup
@@ -141,7 +142,7 @@ func TestRunOnce_RetainedSteering_SharedStackIsolation(t *testing.T) {
 			defer wg.Done()
 			id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: fmt.Sprintf("steering-%03d", i)}
 			for _, run := range []string{"steered", "next"} {
-				if _, err := s.RunOnce(t.Context(), "edit", id, assemble.WithRunID(run), assemble.WithRetainedContext(2)); err != nil {
+				if _, err := s.RunOnce(t.Context(), "edit", id, assemble.WithRunID(run)); err != nil {
 					t.Error(err)
 					return
 				}

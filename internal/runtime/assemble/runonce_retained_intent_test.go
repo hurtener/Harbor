@@ -54,11 +54,12 @@ func (r changedIntentIdentityRedactor) Redact(ctx context.Context, value any) (a
 // runs, rather than discovering the invalid durable intent after its side effect.
 func TestRunOnce_RetainedJournalRejectsAmbiguousIntentBeforeTool(t *testing.T) {
 	stack, _, calls := retainedRecordingStack(t)
+	stack.Cfg.Memory.RecentTurns = 2
 	original := stack.Redactor
 	stack.Redactor = ambiguousIntentRedactor{inner: original}
 	defer func() { stack.Redactor = original }()
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "intent-validation"}
-	_, err := stack.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"), assemble.WithRetainedContext(2))
+	_, err := stack.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"))
 	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
 		t.Fatalf("malformed intent was not rejected: %v", err)
 	}
@@ -69,11 +70,12 @@ func TestRunOnce_RetainedJournalRejectsAmbiguousIntentBeforeTool(t *testing.T) {
 
 func TestRunOnce_RetainedJournalRejectsChangedIntentIdentityBeforeTool(t *testing.T) {
 	stack, _, calls := retainedRecordingStack(t)
+	stack.Cfg.Memory.RecentTurns = 2
 	original := stack.Redactor
 	stack.Redactor = changedIntentIdentityRedactor{inner: original}
 	defer func() { stack.Redactor = original }()
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "intent-identity"}
-	_, err := stack.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"), assemble.WithRetainedContext(2))
+	_, err := stack.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"))
 	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
 		t.Fatalf("changed intent identity was not rejected: %v", err)
 	}

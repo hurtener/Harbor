@@ -332,11 +332,12 @@ make install-hooks # one-time per clone
 
 ### Portable session context (in progress)
 
-The incremental context branch supports explicit terminal execution-evidence
-retention for serving and embedded root conversations through
-`sessions.retained_context_turns`. It is disabled by default, uses the existing
-StateStore, and leaves long-term memory external. See the
-[configuration contract](docs/CONFIG.md#sessionsretained_context_turns),
+The incremental context branch uses `memory.strategy: rolling_summary` and
+`memory.recent_turns` for cumulative execution context in serving and embedded
+root conversations. It uses the existing StateStore and leaves long-term memory
+external. The omitted-strategy default and legacy memory-store retirement are
+still being migrated. See the
+[configuration contract](docs/CONFIG.md#session-execution-memory),
 [serving example](examples/serve.yaml), and
 [implementation status](docs/plans/phase-269-retained-session-context.md).
-Per-action crash durability and RC acceptance remain unfinished.
+Final memory-owner consolidation and RC acceptance remain unfinished.

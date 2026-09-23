@@ -2,6 +2,10 @@
 
 RFC 002 / phase 269, draft implementation in PR #779. Not a release candidate.
 
+Historical checkpoint: D-477 supersedes the separate activation described below.
+Current code uses `memory.strategy: rolling_summary` and `memory.recent_turns`;
+the old SDK option and session key are removed. See the consolidated tracker.
+
 This checkpoint publishes the previously unreferenced phase-269 tree
 `d6280f15e2a90d883106780942167040a9b68436` so terminal-retention work is not lost.
 The first consumer is embedded `RunOnce`, with explicit `WithRetainedContext`.

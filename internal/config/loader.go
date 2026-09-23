@@ -165,6 +165,9 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir stri
 	cfg := Defaults()
 	if err := yaml.UnmarshalWithOptions(cleaned, cfg, yaml.Strict()); err != nil {
 		var unknown *yaml.UnknownFieldError
+		if errors.As(err, &unknown) && unknown.Token != nil && unknown.Token.Value == "retained_context_turns" {
+			return nil, fmt.Errorf("%w: %s: sessions.retained_context_turns was removed; use memory.strategy: rolling_summary and memory.recent_turns: %w", ErrConfigInvalid, source, err)
+		}
 		if errors.As(err, &unknown) && unknown.Token != nil && unknown.Token.Value == "token_budget" {
 			return nil, fmt.Errorf("%w: %s: token_budget is not supported here; use memory.budget_tokens for input compaction (planner.token_budget was removed; model output limits are independent): %w", ErrConfigInvalid, source, err)
 		}
@@ -554,6 +557,9 @@ func boolPtr(b bool) *bool { return &b }
 // Unset env vars are no-ops (zero or default value remains). Slice
 // fields accept comma-separated values.
 func applyEnvOverrides(cfg *Config) error {
+	if _, present := os.LookupEnv("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS"); present {
+		return errors.New("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS was removed; use HARBOR_MEMORY_STRATEGY=rolling_summary and HARBOR_MEMORY_RECENT_TURNS")
+	}
 	if _, present := os.LookupEnv("HARBOR_PLANNER_TOKEN_BUDGET"); present {
 		return errors.New("HARBOR_PLANNER_TOKEN_BUDGET was removed; use HARBOR_MEMORY_BUDGET_TOKENS for input compaction")
 	}

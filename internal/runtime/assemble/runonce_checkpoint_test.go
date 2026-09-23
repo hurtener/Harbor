@@ -16,10 +16,11 @@ import (
 )
 
 type retainedCheckpointDriver struct {
-	mu        sync.Mutex
-	decisions map[string]int
-	summaries map[string]int
-	requests  map[string]llm.CompleteRequest
+	mu          sync.Mutex
+	decisions   map[string]int
+	summaries   map[string]int
+	requests    map[string]llm.CompleteRequest
+	maintenance []llm.CompleteRequest
 }
 
 func (d *retainedCheckpointDriver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -36,6 +37,7 @@ func (d *retainedCheckpointDriver) Complete(ctx context.Context, req llm.Complet
 		}
 	}
 	if isSummary {
+		d.maintenance = append(d.maintenance, req)
 		d.summaries[q.RunID]++
 		return llm.CompleteResponse{Content: `{"goals":["edit"],"facts":["Preserve the approved navigation"],"pending":["verify"],"last_output_digest":"older checks complete","note":"portable"}`, FinishReason: "stop"}, nil
 	}
@@ -51,11 +53,15 @@ func (*retainedCheckpointDriver) Close(context.Context) error { return nil }
 
 func TestRunOnce_RetainedCheckpoint_ReachesNextEffectiveRequest(t *testing.T) {
 	cfg := minimalCfg(t)
+	cfg.Memory.Strategy, cfg.Memory.RecentTurns = "rolling_summary", 4
+	cfg.Memory.Summarizer.Model = "summary-fixture"
+	cfg.Memory.Summarizer.Prompt = "Preserve the approved navigation exactly."
 	cfg.Memory.BudgetTokens = 1 // Force repeated compaction while retaining the newest exchange.
 	driver := &retainedCheckpointDriver{decisions: map[string]int{}, summaries: map[string]int{}, requests: map[string]llm.CompleteRequest{}}
 	name := "retained-checkpoint-" + string(state.NewEventID())
 	llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
 	snapshot := llm.ConfigSnapshot{Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024, ModelProfiles: map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}}, DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true}
+	snapshot.ModelProfiles["summary-fixture"] = llm.ModelProfile{ContextWindowTokens: 100000}
 	stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
 	if err != nil {
 		t.Fatal(err)
@@ -75,19 +81,27 @@ func TestRunOnce_RetainedCheckpoint_ReachesNextEffectiveRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "checkpoint"}
-	if _, err := stack.RunOnce(t.Context(), "Read three versions", id, assemble.WithRunID("first"), assemble.WithRetainedContext(4)); err != nil {
+	if _, err := stack.RunOnce(t.Context(), "Read three versions", id, assemble.WithRunID("first")); err != nil {
 		t.Fatal(err)
 	}
 	// Raising the soft target proves the next turn restores an existing summary
 	// rather than generating a replacement that merely happens to look similar.
 	cfg.Memory.BudgetTokens = 100000
-	if _, err := stack.RunOnce(t.Context(), "Now edit the footer", id, assemble.WithRunID("second"), assemble.WithRetainedContext(4)); err != nil {
+	if _, err := stack.RunOnce(t.Context(), "Now edit the footer", id, assemble.WithRunID("second")); err != nil {
 		t.Fatal(err)
 	}
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
 	if driver.summaries["first"] < 1 || driver.summaries["second"] != 0 {
 		t.Fatalf("unexpected summary calls: %v", driver.summaries)
+	}
+	for _, req := range driver.maintenance {
+		if req.Model != "summary-fixture" {
+			t.Fatalf("configured maintenance model ignored: %q", req.Model)
+		}
+		if req.Messages[0].Content.Text == nil || !strings.Contains(*req.Messages[0].Content.Text, "extend the above; do not override it") || !strings.Contains(*req.Messages[0].Content.Text, cfg.Memory.Summarizer.Prompt) {
+			t.Fatal("configured additive memory guidance did not reach the compactor")
+		}
 	}
 	if toolCalls != 3 {
 		t.Fatalf("historical read executed again: %d", toolCalls)

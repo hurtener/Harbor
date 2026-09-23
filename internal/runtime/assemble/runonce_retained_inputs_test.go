@@ -91,7 +91,7 @@ func TestRunOnce_RetainedInputsSurviveCompaction(t *testing.T) {
 		}
 		return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: "recover-input", Name: "artifact_fetch", Args: args}}}, nil
 	}})
-	if _, err := s.RunOnce(t.Context(), "Revise the attached source from before", id, assemble.WithRunID("second"), assemble.WithRetainedContext(4)); err != nil {
+	if _, err := s.RunOnce(t.Context(), "Revise the attached source from before", id, assemble.WithRunID("second")); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 || toolsCalled.Load() != 0 {
@@ -101,6 +101,7 @@ func TestRunOnce_RetainedInputsSurviveCompaction(t *testing.T) {
 
 func TestRunOnce_RetainedInputsDeletionDuringInferenceFencesDispatch(t *testing.T) {
 	s, _, toolsCalled := retainedRecordingStack(t)
+	s.Cfg.Memory.RecentTurns = 2
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "delete-input"}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	ref, err := s.Artifacts.PutText(t.Context(), scope, "source", artifacts.PutOpts{MimeType: "text/plain"})
@@ -118,7 +119,7 @@ func TestRunOnce_RetainedInputsDeletionDuringInferenceFencesDispatch(t *testing.
 		}
 		return llm.CompleteResponse{Content: "done"}, nil
 	}})
-	_, err = s.RunOnce(t.Context(), "Apply the source", id, assemble.WithInputArtifacts(ref.ID), assemble.WithRetainedContext(2))
+	_, err = s.RunOnce(t.Context(), "Apply the source", id, assemble.WithInputArtifacts(ref.ID))
 	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || calls != 1 || toolsCalled.Load() != 0 {
 		t.Fatalf("deleted input allowed dependent work: err=%v model=%d tools=%d", err, calls, toolsCalled.Load())
 	}
@@ -126,12 +127,13 @@ func TestRunOnce_RetainedInputsDeletionDuringInferenceFencesDispatch(t *testing.
 
 func TestRunOnce_RetainedInputsMissingAdmissionRefused(t *testing.T) {
 	s, _, _ := retainedRecordingStack(t)
+	s.Cfg.Memory.RecentTurns = 2
 	calls := 0
 	s.Planner = react.New(resultClient{fn: func(llm.CompleteRequest) (llm.CompleteResponse, error) {
 		calls++
 		return llm.CompleteResponse{Content: "done"}, nil
 	}})
-	_, err := s.RunOnce(context.Background(), "Inspect", identity.Identity{TenantID: "t", UserID: "u", SessionID: "missing-input"}, assemble.WithInputArtifacts("missing"), assemble.WithRetainedContext(2))
+	_, err := s.RunOnce(context.Background(), "Inspect", identity.Identity{TenantID: "t", UserID: "u", SessionID: "missing-input"}, assemble.WithInputArtifacts("missing"))
 	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || calls != 0 {
 		t.Fatalf("missing input silently dropped: %v calls=%d", err, calls)
 	}

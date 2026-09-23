@@ -63,6 +63,8 @@ func (c *retainedRecordingClient) body(t *testing.T, key string) string {
 func retainedRecordingStack(t *testing.T) (*assemble.Stack, *retainedRecordingClient, *atomic.Int64) {
 	t.Helper()
 	s := runnableStack(t)
+	s.Cfg.Memory.Strategy = "rolling_summary"
+	s.Cfg.Memory.RecentTurns = 4
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	c := &retainedRecordingClient{calls: map[string]int{}, requests: map[string][]llm.CompleteRequest{}}
 	s.Planner = react.New(c)
@@ -85,7 +87,7 @@ type forbiddenRetainedMemory struct {
 	calls atomic.Int64
 }
 
-func (m *forbiddenRetainedMemory) GetContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
+func (m *forbiddenRetainedMemory) GetLLMContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
 	m.calls.Add(1)
 	return memory.LLMContextPatch{}, errors.New("legacy memory must not be projected twice")
 }
@@ -104,7 +106,7 @@ func TestRunOnce_RetainedContextActualRequestAndHook(t *testing.T) {
 	defer func() { s.Memory = nil }()
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "session"}
 	for _, run := range []string{"first", "second"} {
-		env, err := s.RunOnce(t.Context(), "continue the edit", id, assemble.WithRunID(run), assemble.WithRetainedContext(4), assemble.WithCompletionHook(&steering.CompletionHookSpec{Tool: "retained_sink"}))
+		env, err := s.RunOnce(t.Context(), "continue the edit", id, assemble.WithRunID(run), assemble.WithCompletionHook(&steering.CompletionHookSpec{Tool: "retained_sink"}))
 		if err != nil || env.FinishReason != string(planner.FinishGoal) {
 			t.Fatalf("%s: %v", run, err)
 		}
@@ -132,8 +134,9 @@ func TestRunOnce_RetainedContextActualRequestAndHook(t *testing.T) {
 	}
 }
 
-func TestRunOnce_RetainedContextDisabledAndInvalidOption(t *testing.T) {
+func TestRunOnce_RetainedContextDisabledAndInvalidConfig(t *testing.T) {
 	s, c, _ := retainedRecordingStack(t)
+	s.Cfg.Memory.Strategy = "none"
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "legacy"}
 	for _, run := range []string{"first", "second"} {
 		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(run)); err != nil {
@@ -141,13 +144,14 @@ func TestRunOnce_RetainedContextDisabledAndInvalidOption(t *testing.T) {
 		}
 	}
 	if strings.Contains(c.body(t, "legacy/second"), "doc-a") {
-		t.Fatal("default path silently enabled retention")
+		t.Fatal("stateless path silently enabled retention")
 	}
 	if _, err := s.State.Load(t.Context(), identity.Quadruple{Identity: id}, state.InternalKindPrefix+"session-execution-context"); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("default wrote execution content: %v", err)
+		t.Fatalf("stateless run wrote execution content: %v", err)
 	}
 	for _, n := range []int{-1, 33} {
-		if _, err := s.RunOnce(t.Context(), "bad", id, assemble.WithRetainedContext(n)); err == nil {
+		s.Cfg.Memory.Strategy, s.Cfg.Memory.RecentTurns = "rolling_summary", n
+		if _, err := s.RunOnce(t.Context(), "bad", id); err == nil {
 			t.Fatal("bad retention bound accepted")
 		}
 	}
@@ -173,11 +177,12 @@ func TestRunOnce_RetainedContextRequiredWrites(t *testing.T) {
 	for _, failAt := range []int{1, 2} {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
 			s, _, toolsCalled := retainedRecordingStack(t)
+			s.Cfg.Memory.RecentTurns = 2
 			store := s.State
 			s.State = &failingRetainedWrite{StateStore: store, failAt: failAt}
 			defer func() { s.State = store }()
 			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "failure"}
-			_, err := s.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"), assemble.WithRetainedContext(2))
+			_, err := s.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"))
 			if err == nil {
 				t.Fatal("required persistence failure reported success")
 			}
@@ -190,6 +195,7 @@ func TestRunOnce_RetainedContextRequiredWrites(t *testing.T) {
 
 func TestRunOnce_RetainedContextConcurrentReuse(t *testing.T) {
 	s, c, calls := retainedRecordingStack(t)
+	s.Cfg.Memory.RecentTurns = 2
 	var wg sync.WaitGroup
 	for i := range 128 {
 		wg.Add(1)
@@ -197,7 +203,7 @@ func TestRunOnce_RetainedContextConcurrentReuse(t *testing.T) {
 			defer wg.Done()
 			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: fmt.Sprintf("isolation-%03d", i)}
 			for _, run := range []string{"first", "second"} {
-				if _, err := s.RunOnce(t.Context(), id.SessionID, id, assemble.WithRunID(run), assemble.WithRetainedContext(2)); err != nil {
+				if _, err := s.RunOnce(t.Context(), id.SessionID, id, assemble.WithRunID(run)); err != nil {
 					t.Error(err)
 					return
 				}
@@ -215,7 +221,8 @@ func TestRunOnce_RetainedContextConcurrentReuse(t *testing.T) {
 
 func TestRunOnce_RetainedContextConfigAndExplicitDisable(t *testing.T) {
 	s, client, _ := retainedRecordingStack(t)
-	s.Cfg.Sessions.RetainedContextTurns = 4
+	s.Cfg.Memory.Strategy = "rolling_summary"
+	s.Cfg.Memory.RecentTurns = 4
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "configured"}
 	for _, run := range []string{"first", "second"} {
 		if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID(run)); err != nil {
@@ -225,12 +232,14 @@ func TestRunOnce_RetainedContextConfigAndExplicitDisable(t *testing.T) {
 	if !strings.Contains(client.body(t, "configured/second"), "doc-a") {
 		t.Fatal("configured retention did not reach the next request")
 	}
-	if _, err := s.RunOnce(t.Context(), "without history", id, assemble.WithRunID("disabled"), assemble.WithRetainedContext(0)); err != nil {
+	s.Cfg.Memory.Strategy = "none"
+	if _, err := s.RunOnce(t.Context(), "without history", id, assemble.WithRunID("disabled")); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(client.body(t, "configured/disabled"), "doc-a") {
-		t.Fatal("explicit zero did not override configured retention")
+		t.Fatal("explicit none did not disable session memory")
 	}
+	s.Cfg.Memory.Strategy = "rolling_summary"
 	if _, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("third")); err != nil {
 		t.Fatal(err)
 	}

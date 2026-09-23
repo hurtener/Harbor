@@ -119,14 +119,13 @@ import (
 // MarkRunning / MarkComplete / MarkFailed on to advance the FSM
 // (closes issue #123).
 type RunLoopDriverOptions struct {
-	// RetainedContextTurns opts root runs into the shared bounded execution
-	// window instead of pair-only memory. Children use their explicit task
-	// context and do not read or append root conversation history. The store,
-	// redactor and positive TTL are mandatory only when retention is enabled.
-	RetainedContextTurns int
-	RetainedContextTTL   time.Duration
-	StateStore           state.StateStore
-	Redactor             audit.Redactor
+	// SessionMemory uses the same memory configuration as embedded runs.
+	// Children use explicit task context, not root conversation history.
+	// Cumulative memory requires the StateStore, redactor and positive TTL.
+	SessionMemory      config.MemoryConfig
+	RetainedContextTTL time.Duration
+	StateStore         state.StateStore
+	Redactor           audit.Redactor
 
 	Logger   *slog.Logger
 	Bus      events.EventBus
@@ -501,10 +500,11 @@ var ErrRunLoopDriverMisconfigured = errors.New("dev: per-task RunLoop driver mis
 // NewRunLoopDriver validates the opts and returns a stopped
 // driver. Call Start before serving; call Close to drain.
 func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
-	if opts.RetainedContextTurns < 0 || opts.RetainedContextTurns > config.MaxRetainedContextTurns {
+	memoryTurns := opts.SessionMemory.RecentTurnsResolved()
+	if memoryTurns < 0 || memoryTurns > config.MaxMemoryRecentTurns {
 		return nil, fmt.Errorf("%w: retained context turn limit is invalid", ErrRunLoopDriverMisconfigured)
 	}
-	if opts.RetainedContextTurns > 0 && (opts.StateStore == nil || opts.Redactor == nil || opts.RetainedContextTTL <= 0) {
+	if memoryTurns > 0 && (opts.StateStore == nil || opts.Redactor == nil || opts.RetainedContextTTL <= 0) {
 		return nil, fmt.Errorf("%w: retained context requires StateStore, Redactor and a positive TTL", ErrRunLoopDriverMisconfigured)
 	}
 	if opts.Bus == nil {
@@ -544,7 +544,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		opts.TaskKind = tasks.KindForeground
 	}
 	return &RunLoopDriver{
-		retainedContextTurns:  opts.RetainedContextTurns,
+		retainedContextTurns:  memoryTurns,
 		retainedContextTTL:    opts.RetainedContextTTL,
 		stateStore:            opts.StateStore,
 		redactor:              opts.Redactor,

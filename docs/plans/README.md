@@ -5951,16 +5951,19 @@ deployment, or downstream acceptance is claimed.
 
 - **Current amendment:** D-477 makes cumulative `rolling_summary` the standard
   session-memory path, replacing the separate retained-context activation and
-  pair-summary pipeline. The 20-turn actual-request regression loses the first
-  constraint on turn 22 with in-memory and SQLite. Repair, both consumers and
-  100-turn/five-generation acceptance are pending. Prior within-window continuity
-  remains valid evidence for that narrower behavior, not final acceptance.
+  pair-summary pipeline. `4bba36f6` repaired the turn-22 loss with cumulative
+  coverage and 100-turn/five-generation tests on all three StateStore drivers;
+  `2055d373` consolidated the input budget and added automatic zero-target tests.
+  Both consumers now select execution context through `memory.strategy` and
+  `memory.recent_turns`; separate YAML/SDK activation is removed. Legacy-store
+  retirement, the omitted-strategy default and full release acceptance remain
+  pending. Revision-specific results and known failures are in the tracker.
 - **Status:** In progress — PR #779, not released or RC-ready. The implementation
-  head covered by the current evidence is `cea93340`.
+  evidence is tracked in `docs/notes/portable-context-tracker.md`.
 - **Owner:** runtime/runctx + serve/assembly + StateStore/ArtifactStore;
   RFC §6.2, §6.9, §6.11.
-- **Implemented increment:** explicit `sessions.retained_context_turns` for serving
-  and embedded runs, with a per-call `WithRetainedContext` override. Bounded
+- **Implemented increment:** cumulative `memory.strategy: rolling_summary` for
+  serving and embedding, without a separate per-call activation switch. Bounded
   terminal evidence, exact JSON/source restoration, erasure/expiry guards,
   mandatory write errors, and no duplicate legacy-memory or completion ingestion.
 - **Additional increments:** required per-action intent/settlement persistence,

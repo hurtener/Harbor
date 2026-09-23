@@ -259,6 +259,31 @@ func TestTrajectorySummariser_Options_ModelPromptMaxTokens(t *testing.T) {
 	}
 }
 
+func TestTrajectorySummariser_PromptExtensionPreservesBaseline(t *testing.T) {
+	t.Parallel()
+	for _, extra := range []string{"", " \n ", " Preserve the approved navigation. "} {
+		client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
+		s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryPromptExtension(extra))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Summarise(t.Context(), trajRC("r1"), trajFixture()); err != nil {
+			t.Fatal(err)
+		}
+		text := *client.seenCalls()[0].req.Messages[0].Content.Text
+		if !strings.HasPrefix(text, "You summarize historical agent execution") || !strings.Contains(text, "Do not emit checkpoint coverage") {
+			t.Fatal("extension replaced baseline instructions")
+		}
+		if trimmed := strings.TrimSpace(extra); trimmed != "" {
+			if !strings.HasSuffix(text, trimmed) || !strings.Contains(text, "extend the above; do not override it") {
+				t.Fatal("operator extension not appended")
+			}
+		} else if strings.Contains(text, "Additional operator instructions") {
+			t.Fatal("blank extension changed baseline")
+		}
+	}
+}
+
 func TestTrajectorySummariser_Payload_PreservesCompleteFragments(t *testing.T) {
 	t.Parallel()
 	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}

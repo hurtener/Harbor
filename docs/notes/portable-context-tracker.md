@@ -167,7 +167,73 @@ service conformance and Console Playwright passed on `4bba36f6`. Its preflight
 was still running at the last inspection. None of those results is final-head
 approval of this next increment or the overall release.
 
-### RC increment disposition
+### Single memory activation — implementation increment, not release acceptance
+
+`memory.strategy: rolling_summary` now selects the cumulative execution-context
+path for served, development and embedded runs. `memory.recent_turns` controls
+the detailed window (0 selects 20; maximum 32), not checkpoint age.
+`sessions.retained_context_turns`, its environment override, and the SDK
+`WithRetainedContext` option are removed. YAML/environment use of the removed
+setting fails with migration guidance, including explicit zero/empty values.
+`memory.strategy: none` remains the stateless choice. Recovery reads the same
+configuration; no per-call override can select a different history policy.
+
+Wiring review also found that the devstack driver had never received the shared
+history configuration and the execution compactor omitted existing operator
+summarizer model/prompt settings. Both are wired here, with a real devstack
+two-turn regression and actual outgoing maintenance-request assertions. Prompt
+configuration appends operator text to the existing baseline; no baseline
+guidance or capability-specific prompt changed. The model override still uses
+the governed client. Existing isolation, receipt, failure and fresh-result
+tests now use the sole memory config, with the same test bounds and workloads.
+
+The omitted-strategy default is deliberately not called migrated yet. The old
+pair-store interfaces/loop and their Protocol/semantic-retrieval consumers still
+need replacement before release: they must observe and mutate the same
+cumulative owner rather than the stale pair store. This partial configuration
+increment is not safe evidence of complete memory management or RC acceptance.
+No deployment or tag is included.
+
+Local evidence: Go 1.26.4 / darwin-arm64 / `GOFLAGS=-p=1` / `-race -count=1`,
+isolated source tree `246d97a4232f68040eb4cea892797368d13d8a49` (unfinished
+Stop edits excluded). Later tree `0df4eadc2e0b53ef20f1636330771ced24871d1f`
+adds only the phase-plan documentation and the PostgreSQL fixture correction
+described below; runtime source is unchanged.
+
+- Retained/cumulative selections pass in runctx, embedded assembly and serving,
+  including N=128 isolation, actual receipt/attachment requests, recovery,
+  source expiry and deletion fences. Embedded time: **79.823s**; served:
+  **16.124s**. These successful executions do not close the previously recorded
+  intermittent five-second concurrent-cleanup failure.
+- **1,200 deterministic turns** pass across the three StateStore drivers:
+  embedded targets 0/1/100000 on each backend, plus served 100-turn cases on each
+  backend. The dedicated PostgreSQL 17.11 run exercises 400 of these turns
+  (**33.080s** embedded / **6.092s** served), with restarts and at least five
+  checkpoint generations. The temporary PostgreSQL instance was stopped after
+  testing; no shared service or deployment was changed.
+- Full config, LLM summarizer, devstack, SDK assembly and portable-context sample
+  race suites pass (**2.405s / 1.436s / 2.988s / 1.987s / 4.053s**). The
+  devstack test drives actual assembly and two completed tasks rather than
+  hand-constructing a driver that could conceal missing wiring. Affected-package
+  vet passes.
+- Hosted state/PostgreSQL job **107083299621**, run **35830990450** on prior
+  published `2055d373`, failed `TestPostgres_RetainedContext_CheckpointAndSourceExpiry`:
+  `checkpoint not rebound to next request: 0 <nil>`. Reproduced locally on the
+  isolated tree before repair. This direct-compactor fixture bypassed the run
+  loop's observation acknowledgement. The correction first proves unobserved
+  evidence cannot compact, then marks only the older prefix observed, leaving
+  the newest result fresh. No production guard or assertion was weakened.
+  All four retained PostgreSQL roots pass (**3.946s**); the full service-backed
+  state/PostgreSQL race package then passes (**3.527s**).
+- Repository lint passes with **0 issues**, using a fresh dedicated lint cache
+  after the shared cache referenced a retired temporary checkout. Markdown
+  (599 files), mirror, VitePress build and drift audit
+  (**1,592 OK / 0 WARN / 0 FAIL**) pass.
+  Full local/web preflight remains owner-waived, not green. Hosted gates
+  on the forthcoming published head, release coverage/build, full owner
+  consolidation and live acceptance remain pending.
+
+### RC increment disposition (historical releases)
 
 The RC4 signed per-tool retry-policy extension (`80165fd5`) and its dependent
 restart compensation (`7434b645`) are withdrawn from this candidate. They were

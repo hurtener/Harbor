@@ -965,6 +965,10 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				devBootReader = bootIndex
 			}
 			driver, drvErr := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
+				SessionMemory:            cfg.Memory,
+				RetainedContextTTL:       cfg.Sessions.IdleTTL,
+				StateStore:               core.State,
+				Redactor:                 core.Redactor,
 				Bus:                      bus,
 				RunLoop:                  stack.RunLoop,
 				Planner:                  core.Planner,

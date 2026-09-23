@@ -1206,6 +1206,8 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		// the run it exists to save). Zero falls back to the canonical
 		// default inside the option.
 		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM,
+			llmsummarizer.WithTrajectoryModel(cfg.Memory.Summarizer.Model),
+			llmsummarizer.WithTrajectoryPromptExtension(cfg.Memory.Summarizer.Prompt),
 			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes))
 		if err != nil {
 			return fmt.Errorf("trajectory summariser: %w", err)

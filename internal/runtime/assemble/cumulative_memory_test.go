@@ -77,8 +77,8 @@ func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testi
 						t.Skip("HARBOR_PG_DSN not set; cumulative PostgreSQL acceptance requires a real service")
 					}
 				}
-				// The separate retention switch is removed in the owner migration.
-				cfg.Sessions.RetainedContextTurns = 20
+				// Memory alone selects the cumulative window for embedded runs.
+				cfg.Memory.RecentTurns = 20
 				cfg.Memory.Strategy = "rolling_summary"
 				cfg.Memory.BudgetTokens = budget
 				driver := &cumulativeMemoryDriver{requests: map[string]string{}}

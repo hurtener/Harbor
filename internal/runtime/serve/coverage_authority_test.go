@@ -224,7 +224,8 @@ func TestBoot_InMemoryProjectionServicesComposeAndClose(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 	cfg.Sessions.Turns = config.TurnsConfig{Driver: "inmem", Retention: 32}
-	cfg.Sessions.RetainedContextTurns = 2
+	cfg.Memory.Strategy = "rolling_summary"
+	cfg.Memory.RecentTurns = 2
 	cfg.Observability.Rollups = config.RollupsConfig{Driver: "inmem"}
 
 	opts := baseOptions(t)

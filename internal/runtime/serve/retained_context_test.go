@@ -72,7 +72,7 @@ type retainedServerMemory struct {
 	calls atomic.Int64
 }
 
-func (m *retainedServerMemory) GetContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
+func (m *retainedServerMemory) GetLLMContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
 	m.calls.Add(1)
 	return memory.LLMContextPatch{}, errors.New("legacy memory was consulted")
 }
@@ -109,7 +109,8 @@ func retainedServerHarness(t *testing.T, change func(*RunLoopDriverOptions)) (fa
 	mem := &retainedServerMemory{}
 	startFailDriver(t, env, func(opts *RunLoopDriverOptions) {
 		opts.StateStore, opts.Redactor = store, redactor
-		opts.RetainedContextTurns, opts.RetainedContextTTL = 4, time.Hour
+		opts.SessionMemory = config.MemoryConfig{Strategy: "rolling_summary", RecentTurns: 4}
+		opts.RetainedContextTTL = time.Hour
 		opts.Memory, opts.Planner, opts.Catalog = mem, react.New(client), cat
 		opts.Executor = dispatch.NewToolExecutor(cat, nil, env.reg)
 		opts.DriveBackground = true
@@ -283,8 +284,8 @@ func TestRetainedServer_ConstructorRejectsIncompleteConfiguration(t *testing.T) 
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*RunLoopDriverOptions){
-		"negative":    func(o *RunLoopDriverOptions) { o.RetainedContextTurns = -1 },
-		"too many":    func(o *RunLoopDriverOptions) { o.RetainedContextTurns = config.MaxRetainedContextTurns + 1 },
+		"negative":    func(o *RunLoopDriverOptions) { o.SessionMemory.RecentTurns = -1 },
+		"too many":    func(o *RunLoopDriverOptions) { o.SessionMemory.RecentTurns = config.MaxMemoryRecentTurns + 1 },
 		"no state":    func(o *RunLoopDriverOptions) { o.StateStore = nil },
 		"no redactor": func(o *RunLoopDriverOptions) { o.Redactor = nil },
 		"no ttl":      func(o *RunLoopDriverOptions) { o.RetainedContextTTL = 0 },
@@ -292,7 +293,7 @@ func TestRetainedServer_ConstructorRejectsIncompleteConfiguration(t *testing.T) 
 		t.Run(name, func(t *testing.T) {
 			o := RunLoopDriverOptions{Bus: env.bus, Tasks: env.reg, RunLoop: env.rl,
 				Planner:    &driverTestPlanner{finishGoalImmediately: true},
-				StateStore: store, Redactor: redactor, RetainedContextTurns: 4, RetainedContextTTL: time.Hour}
+				StateStore: store, Redactor: redactor, SessionMemory: config.MemoryConfig{Strategy: "rolling_summary", RecentTurns: 4}, RetainedContextTTL: time.Hour}
 			mutate(&o)
 			if got, err := NewRunLoopDriver(o); got != nil || !errors.Is(err, ErrRunLoopDriverMisconfigured) {
 				t.Fatalf("invalid retained configuration accepted: %v", err)
@@ -311,7 +312,7 @@ func TestRetainedServer_BootConfig(t *testing.T) {
 			llm.Register(driver, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return client, nil })
 			opts := baseOptions(t)
 			if enabled {
-				data := strings.Replace(serveTestYAML, "sessions:\n", "sessions:\n  retained_context_turns: 4\n", 1)
+				data := strings.Replace(serveTestYAML, "strategy: none", "strategy: rolling_summary\n  recent_turns: 4", 1)
 				if err := os.WriteFile(opts.ConfigPath, []byte(data), 0o600); err != nil {
 					t.Fatal(err)
 				}
