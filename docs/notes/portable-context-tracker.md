@@ -26,6 +26,21 @@ compaction, include reload/session switching, and verify terminal persistence
 and original constraints. That new live check is started, not yet passed.
 Existing coverage, hosted reliability and matched-comparison gaps remain.
 
+The fresh UI build was bounded with hard Stop after fifteen Create invocations
+(ten successful, five `invalid_argument: title is required`). Steering was
+reported applied but did not end that loop. Task `01M38ACQ97P47NQ1ECRJ2FQX3C`
+reached cancelled at 23:45:54 UTC; the log also records an invalid attempt to
+mark that already-cancelled task failed. No retained-capacity refusal was logged
+for this fresh run. The consumer disabled Send after Stop, then showed an empty
+chat after reload; this is a rehydration symptom, not proof of runtime data loss.
+The drafted no-tool continuation was never admitted and must not count as a turn.
+On unchanged implementation, the real pinned-provider SSE / ReAct declaration
+and dispatch regression passes under race (2.588s). It verifies distinct names
+and arguments but uses scripted responses, so it does not assign the live loop
+to model choice or transport corruption. No prompt/tool guidance was changed.
+Fresh-session compaction acceptance remains pending, separately from these
+consumer/tool-use failures. No baseline inference was started in this check.
+
 ## Remove independent retention ceilings — 2026-09-23
 
 Published implementation `548d25c0786a58849f5107fbe08ef6d62f3323fb` follows
