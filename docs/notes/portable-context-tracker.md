@@ -31,6 +31,54 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### In-flight steering — bounded implementation increment
+
+On parent `0f2431c3c16085916a39214b5569e2880f02e374`, the new blocked-model
+and intent-admission regressions fail: steering cannot interrupt either late
+Finish or late tool decisions, and the obsolete intent executes. The focused
+race command fails in **4.574s**. D-479 now gives each planning attempt the
+existing run inbox's instruction generation and cancellation handle. New text
+interrupts planning, invalidates serial pending calls, and fences obsolete
+decisions and chunks. Already-started tools settle normally; an intent refused
+before dispatch settles explicitly as not executed. Required failures joined
+with cancellation remain failures, not retry instructions. No new store,
+provider, prompt, wire shape or production timeout.
+
+Source tree `e7492b7f7ca7bee6a7e8423795ea4b743f2ba51f`, Go 1.27.1
+darwin-arm64, `GOFLAGS=-p=1`, race tests with `-count=1`: full steering,
+ReAct, dispatch and parallel packages pass **1.812s / 1.749s / 1.599s /
+1.398s**, coverage **87.7% / 88.1% / 79.8% / 92.4%**. Dispatch remains
+below its 85% target; this is not full coverage acceptance. The authenticated
+HTTP/JWT/JWKS control test passes **2.134s**, proving exact correction text
+reaches the replacement ReAct request and foreign-user steering is refused.
+N=128 in-flight identity isolation, late-output rejection, final-response
+arbitration, independent intent settlement, attachment carry and required-write
+failure tests pass.
+
+The first full consumer check exposed two stale fixture expectations: they
+expected a superseded read to execute. Preserve the original one-execution and
+no-replay assertions by issuing one fresh read after correction; explicitly
+assert no obsolete read occurred. All 128 shared-stack sessions remain. These
+focused retained-steering tests pass **4.500s**. The core suite also caught an
+overbroad callback guard; normal completion callbacks now retain the existing
+terminal-seal behavior while superseded generations are rejected.
+
+After those fixture corrections, both complete consumer race packages pass:
+embedded assembly **87.088s**, served runtime **50.818s**. No service/provider
+opt-ins were configured; these are not service-backed or coverage acceptance.
+Final targeted lint (steering, assembly and integration) reports zero issues;
+targeted vet, Markdown (599 files), mirrors and whitespace checks pass.
+The final HTTP-control rerun passes **2.229s**; the drift audit reports
+**1,592 OK / 0 WARN / 0 FAIL**. Publication adds this evidence only.
+
+Still pending: per-invocation fencing for queued parallel/approval calls,
+explicit unsupported steering-attachment refusal, consumer lifecycle/queue UX,
+legacy memory removal and matched live multi-window acceptance. No tag, deploy
+or real-model call in this increment. Parent CI `35851315472` now passes lint,
+frontend, PostgreSQL, S3 and auxiliary jobs; both platform suites are still
+running at this checkpoint, not green. Harbor preflight remains explicitly
+waived by the owner, not executed or passed.
+
 ### Go 1.27 analyzer compatibility — release-gate repair
 
 Parent `957880c9` CI `35848630795`, job `107140739102`, fails inside

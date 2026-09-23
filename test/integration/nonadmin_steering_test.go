@@ -21,7 +21,9 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
@@ -309,6 +311,55 @@ func TestE2E_NonAdminToken_SteeringContract(t *testing.T) {
 		})
 	}
 
+	t.Run("user_message_interrupts_and_reaches_actual_model_request", func(t *testing.T) {
+		runCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		q := identity.Quadruple{Identity: owner, RunID: "steer-inflight"}
+		loop, err := steering.NewRunLoop(steerReg, pauseresume.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		const correction = "Use amber.\n  Preserve NORTH-STAR-47."
+		started := make(chan struct{})
+		requests := 0
+		client := controlModelFunc(func(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+			requests++
+			if requests == 1 {
+				close(started)
+				<-ctx.Done()
+				return llm.CompleteResponse{Content: "obsolete", FinishReason: "stop"}, nil
+			}
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleUser && msg.Content.Text != nil && *msg.Content.Text == correction {
+					return llm.CompleteResponse{Content: "corrected", FinishReason: "stop"}, nil
+				}
+			}
+			return llm.CompleteResponse{}, errors.New("HTTP steering did not reach model input")
+		})
+		done := make(chan error, 1)
+		go func() {
+			_, err := loop.Run(runCtx, steering.RunSpec{Planner: react.New(client), Base: planner.RunContext{Quadruple: q, Goal: "fixture"}})
+			done <- err
+		}()
+		select {
+		case <-started:
+		case <-runCtx.Done():
+			t.Fatal("model did not start")
+		}
+		body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":{"message":%q}}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID, correction)
+		foreign := owner
+		foreign.UserID = "different-user"
+		if status, _ := call("user_message", sign(foreign, nil), body); status != http.StatusUnauthorized {
+			t.Fatalf("foreign steer=%d", status)
+		}
+		if status, code := call("user_message", nonAdmin, body); status != http.StatusOK {
+			t.Fatalf("owner steer=%d %s", status, code)
+		}
+		if err := <-done; err != nil || requests != 2 {
+			t.Fatalf("requests=%d outcome=%v", requests, err)
+		}
+	})
+
 	// (6) Concurrency stress — N non-admin owners each steer their OWN
 	// distinct run concurrently. Each control must land ONLY on its own
 	// inbox (no cross-talk).
@@ -354,6 +405,14 @@ func TestE2E_NonAdminToken_SteeringContract(t *testing.T) {
 }
 
 type controlInterruptPlanner func(context.Context, planner.RunContext) (planner.Decision, error)
+
+type controlModelFunc func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error)
+
+func (f controlModelFunc) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return f(ctx, req)
+}
+
+func (controlModelFunc) Close(context.Context) error { return nil }
 
 func (p controlInterruptPlanner) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
 	return p(ctx, rc)

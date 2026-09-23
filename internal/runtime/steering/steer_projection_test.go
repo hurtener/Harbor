@@ -15,6 +15,66 @@ import (
 
 type steeringRequestClient struct{ requests []llm.CompleteRequest }
 
+type steerModelFunc func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error)
+
+func (f steerModelFunc) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return f(ctx, req)
+}
+
+func (steerModelFunc) Close(context.Context) error { return nil }
+
+func TestRun_SteerInvalidatesUndispatchedSerialTail(t *testing.T) {
+	loop, registry, _ := newTestRunLoop(t)
+	requests, executions := 0, 0
+	client := steerModelFunc(func(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		requests++
+		if requests == 1 {
+			return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{
+				{ID: "first", Name: "inspect", Args: json.RawMessage(`{}`)},
+				{ID: "obsolete-tail", Name: "inspect", Args: json.RawMessage(`{}`)},
+			}}, nil
+		}
+		calls, results, correction := 0, 0, false
+		for _, msg := range req.Messages {
+			calls += len(msg.ToolCalls)
+			if msg.Role == llm.RoleTool {
+				results++
+			}
+			if msg.Content.Text != nil && *msg.Content.Text == "Stop the old plan" {
+				correction = msg.Role == llm.RoleUser
+			}
+			for _, call := range msg.ToolCalls {
+				if call.ID == "obsolete-tail" {
+					t.Error("unexecuted tail entered the request as execution evidence")
+				}
+			}
+		}
+		if calls != 1 || results != 1 || !correction {
+			t.Errorf("calls=%d results=%d correction=%v", calls, results, correction)
+		}
+		return llm.CompleteResponse{Content: "corrected", FinishReason: "stop"}, nil
+	})
+	spec := runSpecFor(runA, react.New(client, react.WithParallelToolCalls(false)))
+	spec.Base.Catalog = steeringRequestCatalog{}
+	spec.Base.Trajectory = &planner.Trajectory{}
+	spec.ToolExecutor = checkpointExecutor(func(ctx context.Context, _ planner.RunContext, _ planner.Decision) (any, any, error) {
+		executions++
+		if err := enqueueCorrection(registry, "Stop the old plan"); err != nil {
+			return nil, nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			t.Error("steering cancelled already-admitted tool execution")
+		}
+		return "inspected", "inspected", nil
+	})
+	if _, err := loop.Run(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || executions != 1 {
+		t.Fatalf("model=%d dispatch=%d", requests, executions)
+	}
+}
+
 func (c *steeringRequestClient) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
 	c.requests = append(c.requests, req)
 	if len(c.requests) <= 2 {

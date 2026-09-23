@@ -590,8 +590,16 @@ as inert trajectory context for subsequent steps in the same run, including
 when cross-run memory is disabled. When cumulative memory is enabled, its
 existing required context checkpoint must succeed before further inference.
 Historical context cannot reapply a control or authorize an external action.
-In-flight attempt interruption and invalidation of previously planned tool
-calls remain separate acceptance items in the PR #779 tracker.
+**In-flight steering (D-479).** A verified nonempty user message interrupts
+the current planning attempt, not the run. Per-run instruction generations fence
+re-planning, terminal completion and decision admission. Discard superseded
+decisions, serial pending calls and late output; carry first-attempt inputs and
+already-applied controls into the replacement request. A saved intent that loses
+admission is settled explicitly as not executed under the existing bounded
+cleanup context. Required persistence/accounting failures are terminal, never
+masked as cancellation retries. Preserve already-started invocation outcomes.
+Per-invocation fencing inside queued parallel/approval execution, attachment
+refusal and live consumer acceptance remain open in the PR #779 tracker.
 
 **Hard Stop (D-478).** A verified `CANCEL` with `payload.hard: true` cancels
 the identity-scoped execution context immediately at inbox admission, not at

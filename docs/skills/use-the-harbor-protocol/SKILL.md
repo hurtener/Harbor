@@ -194,6 +194,14 @@ X-Harbor-Session: <session_id>
 - **`X-Harbor-Session`**: the per-request session selector (D-171). The connection JWT verifies the WHO (`tenant` + `user`) and the scopes; the **session is chosen per-conversation** by this header and may differ on every request — the connection token is a per-backend credential, not a single-session pin. A new session id is a new conversation (create-on-first-use on the first `start`). The token's `session` claim is a back-compat **default** used only when the header is absent. `X-Harbor-Tenant` / `X-Harbor-User` can never widen the JWT-verified principal. Every storage call still filters by the full `(tenant, user, session)` triple — no cross-session leakage. Full Console contract: [`docs/notes/session-model-contract.md`](../../notes/session-model-contract.md).
   - **Optional `session_reach` claim (D-409).** A bearer minted with the signed `session_reach` claim is pinned to exactly those session IDs: the effective session — from this header, the SSE `?session=` projection, or the token `session` default — must be a member, or the request fails closed `403 {"code": "scope_mismatch"}` before any handler side effect. **Absent claim = this dynamic per-request selection is unchanged.** A coordinating client that must mint a session-specific bearer whose authority cannot be re-pointed at another session uses this claim; see [`configure-production-identity`](../configure-production-identity/SKILL.md) §2 for the claim shape.
 
+For an in-flight text correction, `user_message` with a nonempty `message`
+interrupts the planning attempt and re-plans with that text as user input.
+It does not cancel the run or undo completed actions. Its acknowledgement is
+admission, not proof that the correction has reached the model: follow
+`control.applied` and subsequent run events. New attachments belong on `start`.
+See the [task-control choreography](../../site/protocol/task-control.md) for
+the current execution boundaries and remaining release-acceptance work.
+
 Routes group by surface family:
 
 - **Task control** — `start` plus the nine steering verbs (`cancel` / `pause` / `resume` / `redirect` / `inject_context` / `approve` / `reject` / `prioritize` / `user_message`) all POST to `POST /v1/control/{method}` (e.g. `/v1/control/start`, `/v1/control/cancel`). The read-only posture methods (`runtime.info`, `topology.snapshot`) and `artifacts.put` share this route shape.

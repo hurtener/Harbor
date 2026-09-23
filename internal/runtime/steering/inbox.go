@@ -60,6 +60,8 @@ type Inbox struct {
 	// Execution state is guarded by mu. The identity-scoped cancellation
 	// handle is installed before registry publication, never a stored context.
 	cancelExecution   context.CancelFunc
+	cancelAttempt     context.CancelFunc
+	steerGeneration   uint64
 	hardCancellation  *ControlEvent
 	executionFinished bool
 	identity          identity.Quadruple
@@ -154,6 +156,14 @@ func (in *Inbox) enqueueLocked(ev ControlEvent) error {
 		return fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
 	}
 	ev.EnqueuedAt = in.clock.Now()
+	if ev.Type == ControlUserMessage {
+		if message, ok := stringFromPayload(ev.Payload, "message"); ok && message != "" {
+			in.steerGeneration++
+			if in.cancelAttempt != nil {
+				in.cancelAttempt()
+			}
+		}
+	}
 	if in.cancelExecution != nil && ev.Type == ControlCancel && boolFromPayload(ev.Payload, "hard") {
 		if in.hardCancellation != nil {
 			return nil // an already-accepted hard cancellation is idempotent
@@ -247,17 +257,23 @@ func (in *Inbox) finishExecution() *ControlEvent {
 // The returned slice is owned by the caller — the Inbox keeps no
 // reference to it.
 func (in *Inbox) Drain() ([]ControlEvent, error) {
+	drained, _, err := in.drainWithGeneration()
+	return drained, err
+}
+
+// The boundary and its instruction generation are one atomic snapshot.
+func (in *Inbox) drainWithGeneration() ([]ControlEvent, uint64, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	if in.closed {
-		return nil, fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
+		return nil, in.steerGeneration, fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
 	}
 	drained := in.queue
 	in.queue = nil
 	if drained == nil {
-		return []ControlEvent{}, nil
+		return []ControlEvent{}, in.steerGeneration, nil
 	}
-	return drained, nil
+	return drained, in.steerGeneration, nil
 }
 
 // Len returns the number of currently-queued events. Primarily for

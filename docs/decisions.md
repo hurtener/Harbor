@@ -15895,3 +15895,31 @@ proxy, provider allowlist expansion or new plugin is introduced. Preserve
 Harbor's token-cost breakdown when adapting Bifrost's nested cost schema; all
 reported non-token charges remain in the authoritative total. In-flight steering,
 consumer queue lifecycle and live-provider acceptance remain pending.
+
+## D-479 — In-flight user corrections supersede the planning attempt
+
+**Date:** 2026-09-23. **Scope:** PR #779 run control; staged implementation.
+
+A verified nonempty USER_MESSAGE advances the run's instruction generation and
+interrupts its active planning attempt without cancelling the whole run. Drain
+and generation observation are atomic. A superseded decision cannot finish the
+run or enter execution; queued serial calls are invalidated before re-planning.
+Carry the current input attachments and already-applied signals across an
+interrupted attempt. Project the new correction as user input, never system
+guidance, and preserve its inert context through the existing memory owner.
+
+Decision admission and terminal completion arbitrate against corrections under
+the same per-run lock. If a durable intent was saved before admission lost the
+race, settle it as not executed rather than leaving an unknown external outcome.
+Use the existing five-second cleanup context. Preserve actual outcomes from
+already-started invocations. Required write/accounting failures, including errors
+joined with cancellation, remain terminal; steering is not a retry instruction.
+
+Reject late output from superseded attempts while preserving normal accepted
+callbacks through the existing terminal chunk seal. No new wire shape, store,
+provider SDK, system guidance, retry policy or production timeout.
+
+The first implementation fences whole-decision admission and serial pending
+calls. Complete per-invocation fencing for queued parallel branches and approval
+waits before declaring full steering acceptance. Text-only control validation
+and consumer pending/applied UX remain tracked with the live acceptance gates.

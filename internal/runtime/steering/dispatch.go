@@ -64,6 +64,7 @@ func (rl *RunLoop) dispatchDecision(
 	ctx context.Context,
 	q identity.Quadruple,
 	inbox *Inbox,
+	generation uint64,
 	exec ToolExecutor,
 	rc planner.RunContext,
 	decision planner.Decision,
@@ -84,6 +85,10 @@ func (rl *RunLoop) dispatchDecision(
 		// this goroutine waits to run. Do not enter a queued executor then.
 		if err := stepCtx.Err(); err != nil {
 			done <- execOutcome{err: err}
+			return
+		}
+		if !inbox.admitDecision(generation, false) {
+			done <- execOutcome{err: errDecisionSuperseded}
 			return
 		}
 		obs, llmObs, err := exec.ExecuteDecision(stepCtx, rc, decision)

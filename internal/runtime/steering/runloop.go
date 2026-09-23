@@ -717,7 +717,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// REJECT controls mid-step; everything else it drained rides
 		// in carryEvents and is applied at THIS boundary, exactly
 		// once.) ---
-		drained, derr := inbox.Drain()
+		drained, generation, derr := inbox.drainWithGeneration()
 		if derr != nil {
 			return planner.Finish{}, fmt.Errorf("steering: draining run inbox: %w", derr)
 		}
@@ -742,6 +742,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlReceived, "")
 			applyErr := rl.applier.applyEvent(runCtx, sc, ev, outstandingToken)
+			if applyErr == nil && ev.Type == ControlUserMessage {
+				if message, ok := stringFromPayload(ev.Payload, "message"); ok && message != "" {
+					spec.Base.PendingToolCalls = nil
+				}
+			}
 			if applyErr == nil && (spec.DispatchCheckpoint != nil || ev.Type == ControlUserMessage) {
 				// Even with cross-run memory disabled, an accepted correction
 				// belongs to this run's trajectory and must survive later steps.
@@ -1009,18 +1014,31 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// Request-aware planners compact only after their complete request is
 		// assembled and its route/profile is resolved. Non-LLM planners keep
 		// the standalone compaction contract at the step boundary.
-		plannerCtx := llm.WithAttemptStep(runCtx, step)
 		preparation := llm.ContextPreparation{
 			InputTarget: rc.Budget.TokenBudget,
 			History:     func() *llm.ContextHistory { return contextHistory(spec, rc) },
 		}
-		storagePressure := spec.CompactBeforeFirstDecision && step == 1
+		storagePressure := spec.CompactBeforeFirstDecision
 		if storagePressure {
 			if spec.Compression == nil {
 				return planner.Finish{}, fmt.Errorf("steering: session history capacity requires a compactor")
 			}
 			preparation.InputTarget = 1
 		}
+		attemptCtx, cancelAttempt := context.WithCancel(runCtx)
+		if !inbox.beginAttempt(generation, cancelAttempt) {
+			cancelAttempt()
+			carryInterruptedAttempt(&spec.Base, rc)
+			continue
+		}
+		if onChunk := rc.OnChunk; onChunk != nil {
+			rc.OnChunk = func(delta string, done bool, kind planner.ChunkKind) {
+				if runCtx.Err() == nil && inbox.acceptsOutput(generation) {
+					onChunk(delta, done, kind)
+				}
+			}
+		}
+		plannerCtx := llm.WithAttemptStep(attemptCtx, step)
 		if compactionEnabled {
 			if requestAware {
 				preparation.Compact = func(ctx context.Context, inputTokens, target int) (bool, error) {
@@ -1030,6 +1048,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				compactionRC := rc
 				compactionRC.Budget.TokenBudget = preparation.InputTarget
 				if cerr := compressTrajectory(plannerCtx, spec, compactionRC); cerr != nil {
+					current := inbox.endAttempt(generation)
+					cancelAttempt()
+					if !current && runCtx.Err() == nil && onlyAttemptCancellation(cerr) {
+						carryInterruptedAttempt(&spec.Base, rc)
+						continue
+					}
 					return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 				}
 			}
@@ -1038,9 +1062,26 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		plannerCtx = llm.WithContextPreparation(plannerCtx, preparation)
 
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
+		currentAttempt := inbox.endAttempt(generation)
+		cancelAttempt()
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, err
 		}
+		if flush := rc.AfterPlannerStep; flush != nil {
+			// Preserve already-accepted chunks with the live run context, not
+			// the cancelled attempt. A required write failure remains terminal.
+			if ferr := flush(runCtx); ferr != nil {
+				return planner.Finish{}, fmt.Errorf("steering: persist completion chunks after planner step %d: %w", step, ferr)
+			}
+		}
+		if !currentAttempt || !inbox.admitDecision(generation, false) {
+			if nerr != nil && !onlyAttemptCancellation(nerr) {
+				return planner.Finish{}, fmt.Errorf("steering: interrupted planner step %d: %w", step, nerr)
+			}
+			carryInterruptedAttempt(&spec.Base, rc)
+			continue
+		}
+		spec.CompactBeforeFirstDecision = false
 		// A pending-call drain does not ask for another decision. Its results
 		// remain protected until the complete pending group has been presented.
 		if compactionEnabled && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {
@@ -1051,11 +1092,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			rc.Trajectory.UnseenFrom = &presented
 			if spec.TrajectoryMu != nil {
 				spec.TrajectoryMu.Unlock()
-			}
-		}
-		if flush := rc.AfterPlannerStep; flush != nil {
-			if ferr := flush(plannerCtx); ferr != nil {
-				return planner.Finish{}, fmt.Errorf("steering: persist completion chunks after planner step %d: %w", step, ferr)
 			}
 		}
 		if nerr != nil {
@@ -1128,9 +1164,17 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// --- EXECUTE the decision. ---
 		switch d := decision.(type) {
 		case planner.Finish:
+			if !inbox.admitDecision(generation, true) {
+				carryInterruptedAttempt(&spec.Base, rc)
+				continue
+			}
 			return d, nil
 
 		case planner.RequestPause:
+			if !inbox.admitDecision(generation, false) {
+				carryInterruptedAttempt(&spec.Base, rc)
+				continue
+			}
 			// Every completed nonterminal decision consumes one tranche unit,
 			// including control decisions. Tool invocation accounting is
 			// separate and never drives this counter.
@@ -1215,7 +1259,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// joined before dispatchDecision returns; run-ctx
 				// cancellation still aborts an in-flight gated
 				// decision (the step ctx is a child of runCtx).
-				out, deferred, bridgeErr := rl.dispatchDecision(runCtx, q, inbox, spec.ToolExecutor, rc, decision)
+				out, deferred, bridgeErr := rl.dispatchDecision(runCtx, q, inbox, generation, spec.ToolExecutor, rc, decision)
 				carryEvents = deferred
 				// The joined executor may have returned a real receipt while the
 				// control bridge failed. Preserve it before surfacing that failure;
@@ -1312,6 +1356,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					// the honest failure surface; the generic string
 					// stays the legacy safe fallback.
 					stepRecord.Error = "tool execution failed"
+					if errors.Is(execErr, errDecisionSuperseded) {
+						stepRecord.Error = errDecisionSuperseded.Error()
+					}
 				}
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, stepRecord)
 				if spec.TrajectoryMu != nil {

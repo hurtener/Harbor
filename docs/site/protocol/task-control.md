@@ -134,8 +134,16 @@ internal settlement and terminal persistence still run with bounded cleanup.
 An HTTP success acknowledges the control, not confirmed termination: reconcile
 the terminal event or `tasks.get`. Already-completed effects cannot be undone,
 and independently running external jobs require their cancellation API.
-The current Bifrost transport still leaves a request pending if cancellation
-arrives before response headers; full provider-termination acceptance is pending.
+The governed Bifrost transport is tested for cancellation before response headers
+and during streaming; live consumer acceptance remains a separate release gate.
+
+A nonempty `user_message` interrupts the active planning attempt and reaches the
+replacement request as user input. It does not stop the run. Old serial pending
+calls and superseded decisions are discarded; already-started external actions
+cannot be undone. Required write failures remain failures, not automatic retries.
+First-attempt input attachments survive an interrupted attempt, but this control
+itself is text-only: new attachments belong on `start`. Queued parallel/approval
+invocation fencing and consumer pending/applied UX remain release-acceptance work.
 
 ## Preconditions: controls target LIVE runs
 

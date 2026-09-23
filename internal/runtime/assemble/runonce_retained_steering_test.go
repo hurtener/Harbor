@@ -51,6 +51,14 @@ func TestRunOnce_RetainedSteering_ReachesFollowingTurn(t *testing.T) {
 				if !strings.Contains(text.String(), marker) {
 					t.Error("accepted correction absent from request")
 				}
+				if control == steering.ControlUserMessage && calls == 2 {
+					// The first plan was superseded before dispatch. Execute a
+					// fresh read so the following turn still proves no replay.
+					if got := toolCalls.Load(); got != 0 {
+						t.Fatalf("superseded read executed: %d calls", got)
+					}
+					return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: "fresh-read", Name: "retained_read", Args: json.RawMessage(`{}`)}}}, nil
+				}
 				return llm.CompleteResponse{Content: "Complete."}, nil
 			}})
 			if _, err := s.RunOnce(t.Context(), "initial request", id, assemble.WithRunID(q.RunID)); err != nil {
@@ -111,6 +119,18 @@ func (c *sharedSteeringClient) Complete(ctx context.Context, req llm.CompleteReq
 			return llm.CompleteResponse{}, err
 		}
 		return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: "read", Name: "retained_read", Args: json.RawMessage(`{}`)}}}, nil
+	}
+	if q.RunID == "steered" && n == 2 {
+		found := false
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleUser && m.Content.Text != nil && *m.Content.Text == marker {
+				found = true
+			}
+		}
+		if !found {
+			c.t.Error("fresh plan missing this session's correction")
+		}
+		return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: "fresh-read", Name: "retained_read", Args: json.RawMessage(`{}`)}}}, nil
 	}
 	if q.RunID == "next" {
 		count := 0
