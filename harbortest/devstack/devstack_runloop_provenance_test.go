@@ -81,12 +81,18 @@ func runDevstackProvenanceProbe(t *testing.T, agentConfigID string) string {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &provenanceProbePlanner{got: make(chan string, 1)}
+	// Match the real devstack's standard session-memory dependencies. Provenance
+	// must also propagate when the run owns retained execution context.
 	driver, err := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
-		Bus:           bus,
-		RunLoop:       rl,
-		Planner:       p,
-		Tasks:         reg,
-		AgentConfigID: agentConfigID,
+		SessionMemory:      config.Defaults().Memory,
+		RetainedContextTTL: time.Hour,
+		StateStore:         store,
+		Redactor:           red,
+		Bus:                bus,
+		RunLoop:            rl,
+		Planner:            p,
+		Tasks:              reg,
+		AgentConfigID:      agentConfigID,
 	})
 	if err != nil {
 		t.Fatalf("serve.NewRunLoopDriver: %v", err)

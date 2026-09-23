@@ -33,6 +33,21 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Consolidated memory owner — release acceptance pending
 
+RC5 hosted CI `35881558751` finished with failures in both platform Go jobs
+and the benchmark gate. Both Go jobs name the same two devstack provenance
+fixtures: they construct a standard-memory driver without its required
+StateStore, redactor and positive retention TTL. The real devstack assembly
+already supplies those dependencies. This follow-on wires the fixture's real
+in-memory store and redactor with the standard memory config and a one-hour
+TTL; no disabled-memory shortcut, timeout increase or assertion reduction.
+On Go 1.27.1 / darwin-arm64, `GOFLAGS=-p=1 go test -race
+./harbortest/devstack -count=1` passes (**3.040s**), including the real devstack
+cumulative-memory wiring test. Package vet, golangci-lint 2.13.2 (**0 issues**),
+tracker Markdown and whitespace checks pass. Hosted verification of this
+correction remains pending. The **32.66%** benchmark regression and coverage/live acceptance
+requirements below are still open. This test-only follow-on does not change
+the published RC5 runtime or its tag.
+
 Exploratory **v1.32.0-rc.5** is published at
 `4a6f187e6b9fa9f26ce0e03f870cc6e69b230025`, annotated tag object
 `c1a8e7c582f6f3a4452b84bd228513f582af43ab`. The public Go proxy independently
