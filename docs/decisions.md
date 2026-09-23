@@ -16018,3 +16018,57 @@ Static-model runs retain the existing model-profile configuration path.
 
 This extends only the earlier independent-route limitation. The route itself
 remains restart-required; the admin memory section edits only the input budget.
+
+## D-483 — Failed compaction must not prevent settled terminal persistence
+
+**Date:** 2026-09-23. **Scope:** PR #779; recovery and configurable summary output.
+**Supersedes:** D-463's fixed 16 KiB narrative capacity and count rollover as a
+precondition for committing an interrupted/cancelled, fully settled run.
+
+When maintenance fails at a full recent-detail window, preserve the interrupted
+or cancelled terminal turn and unsummarized overflow. Otherwise the failed
+terminal write leaves an active admission that blocks future checkpoint
+publication, including explicit recovery of the same fully settled journal.
+The next successful compaction must cover the preserved history before normal
+rollover resumes. No historical evidence authorizes execution, pending external
+outcomes remain unknown, and explicit recovery neither renews expiry nor bypasses
+redaction, identity, generation/erasure fences or conditional terminal writes.
+Prolonged maintenance failure may grow the interrupted tail within its existing
+lifetime; the recent-turn target is not a total storage cap in this condition.
+
+Valid summary output and persisted narratives have no additional fixed 16 KiB
+ceiling. The operator's existing completion-token allowance, governed model
+capacity and strict schema/completion validation apply. Prior narratives remain
+subject to configured byte and token admission when placed in the next request.
+This does not remove step, reference, concurrency or maintenance-call limits,
+change the public Protocol, add a store, or relax persistence deadlines.
+
+## D-484 — Keep continuity limits on their governing policies
+
+**Date:** 2026-09-23. **Scope:** PR #779; owner-approved hardcoded-limit audit.
+**Supersedes:** D-480/D-483's retained aggregate count/metadata ceilings and
+D-463's non-configurable maintenance-call allowance.
+
+Remove the 256 accumulated-evidence-entry, 64 retained-reference and 16 KiB
+reference-manifest caps. Remove the 256-step retention/journal cap: existing
+configured execution steps and continuable tranches govern work, including
+multiple continuations of one run. `memory.recent_turns` keeps its default of
+20 but no hardcoded maximum of 32. Retention does not silently delete source
+evidence to satisfy any of these former ceilings. TTL, erasure, identity,
+redaction, schema, generation, pending-outcome, recursion-depth, concurrency and
+five-second persistence guards remain. Storage/processing costs can still grow
+with retained evidence; there is no promise of infinite physical capacity.
+
+The existing assembled-request admission accounts for reference metadata as
+model input. Removing its storage/projection byte ceiling does not authorize
+over-capacity model requests, shorten source strings or create a second store.
+The separate configured heavy-content guard is preserved.
+
+`memory.summarizer.max_calls` (environment: `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS`)
+is restart-required, non-negative, with zero/omitted resolving to 16 calls per
+compaction. Positive values are operator-selected work allowances, not new retry
+budgets. Exhaustion fails before candidate publication. Maintenance identity
+derivation accepts canonical positive ordinals instead of embedding the old
+default in receipt validation; deterministic nonce, parent, identity, route and
+governance checks remain. Older receipt consumers need an upgrade before a
+deployment selects more than sixteen calls. No wire-field change is introduced.

@@ -29,7 +29,6 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -266,7 +265,7 @@ func (s *Stack) RunOnce(
 	for _, o := range opts {
 		o(&cfg)
 	}
-	if memoryTurns < 0 || memoryTurns > config.MaxMemoryRecentTurns {
+	if memoryTurns < 0 {
 		return planner.AnswerEnvelope{}, sessionmemory.ErrRetainedContextCapacity
 	}
 	// WithOutputSchema fails loud on a nil/empty schema at call time — a

@@ -166,8 +166,11 @@ Summary coverage; updated compression-budget and runner semantics.
 
 D-463 removes pre-summary step elision and fragment clipping. Every selected
 exchange enters one bounded chronological request; the prior narrative carries
-forward. Defaults cap generation at 16 completion calls, 2,048 output tokens per
-call, and 16 KiB returned narrative (or half the smaller payload allowance).
+forward. Defaults cap generation at 16 completion calls and 2,048 output tokens
+per call; both allowances are configurable (D-484). D-483 removes the original
+16 KiB returned/prior narrative ceiling (and the half-payload output check).
+Valid summaries still pass strict schema/completion validation, and subsequent
+requests must satisfy configured input-byte and model-token admission.
 An indivisible oversized exchange requires a bounded reference or raises an
 explicit capacity error. The effective composed-client model window is still
 an additional guard, not interchangeable with this byte budget.

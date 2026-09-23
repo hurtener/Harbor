@@ -16,12 +16,12 @@ func TestMemoryRecentTurns_BoundAndResolution(t *testing.T) {
 	if got := (config.MemoryConfig{Strategy: "none", RecentTurns: 20}).RecentTurnsResolved(); got != 0 {
 		t.Fatalf("none resolved to %d, want disabled", got)
 	}
-	for _, n := range []int{-1, 0, 1, 32, 33} {
+	for _, n := range []int{-1, 0, 1, 32, 33, 1000} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			c := defaultsForCore()
 			c.Memory.Strategy, c.Memory.RecentTurns = "rolling_summary", n
 			err := c.ValidateCore()
-			if n < 0 || n > config.MaxMemoryRecentTurns {
+			if n < 0 {
 				if err == nil || !strings.Contains(err.Error(), "memory.recent_turns") {
 					t.Fatalf("bad bound: %v", err)
 				}

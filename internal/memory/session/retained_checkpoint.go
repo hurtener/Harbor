@@ -24,8 +24,6 @@ type retainedCheckpoint struct {
 	Narrative     *planner.Summary  `json:"narrative"`
 }
 
-const maxRetainedNarrativeBytes = 16 * 1024
-
 func retainedDigest(value any) (string, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -66,10 +64,6 @@ func validateRetainedCheckpoint(window retainedWindow) error {
 		return nil
 	}
 	if c.Version != 2 || c.Generation == 0 || c.Generation != window.Generation || c.ThroughStep < 1 || c.ExpiresAt.IsZero() || c.Narrative == nil || c.Narrative.Coverage != nil || !c.Narrative.HasContent() {
-		return ErrRetainedContextUnavailable
-	}
-	narrative, err := json.Marshal(c.Narrative)
-	if err != nil || len(narrative) > maxRetainedNarrativeBytes {
 		return ErrRetainedContextUnavailable
 	}
 	sources, err := checkpointSources(window)
@@ -243,9 +237,6 @@ func (r *RetainedRun) retainCheckpoint(ctx context.Context, tr *planner.Trajecto
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxRetainedNarrativeBytes {
-		return nil, ErrRetainedContextCapacity
-	}
 	if err := decodeRetained(data, &c.Narrative); err != nil {
 		return nil, err
 	}
@@ -294,12 +285,9 @@ func discardCoveredTurn(window *retainedWindow) error {
 		return ErrRetainedContextCapacity
 	}
 	// Preserve exact execution evidence separately from the lossy narrative.
-	// It remains bounded by the same session byte/step limits; pressure fails
-	// closed until authorized reference offload can represent it, never drops it.
+	// Retention lifetime and erasure govern this evidence, not an independent
+	// count ceiling that could eventually prevent successful compaction.
 	if len(oldest.Steps) > 0 {
-		if len(window.Evidence) >= maxRetainedContextSteps {
-			return ErrRetainedContextCapacity
-		}
 		window.Evidence = append(window.Evidence, retainedEvidence{Admission: oldest.Admission, ExpiresAt: oldest.ExpiresAt, Steps: oldest.Steps})
 	}
 	c := *window.Checkpoint

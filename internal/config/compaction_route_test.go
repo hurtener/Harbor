@@ -49,6 +49,38 @@ func TestMemorySummarizer_OutputBudgetConfiguration(t *testing.T) {
 	}
 }
 
+func TestMemorySummarizer_CallAllowanceConfiguration(t *testing.T) {
+	fixture, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []int{0, 1, 16, 32, 1000} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			data := []byte(string(fixture) + fmt.Sprintf("\nmemory:\n  recent_turns: 100\n  summarizer:\n    max_calls: %d\n", value))
+			cfg, err := config.LoadFromBytes(t.Context(), data)
+			if err != nil || cfg.Memory.Summarizer.MaxCalls != value || cfg.Memory.RecentTurnsResolved() != 100 {
+				t.Fatalf("YAML allowance not applied: %v", err)
+			}
+			t.Setenv("HARBOR_MEMORY_SUMMARIZER_MAX_CALLS", "24")
+			cfg, err = config.LoadFromBytes(t.Context(), data)
+			if err != nil || cfg.Memory.Summarizer.MaxCalls != 24 {
+				t.Fatalf("environment allowance not applied: %v", err)
+			}
+		})
+	}
+	for _, value := range []string{"-1", "not-a-number", "99999999999999999999999999999"} {
+		t.Run("invalid-"+value, func(t *testing.T) {
+			t.Setenv("HARBOR_MEMORY_SUMMARIZER_MAX_CALLS", value)
+			if _, err := config.Load(t.Context(), validMinimalFixture); !errors.Is(err, config.ErrConfigInvalid) {
+				t.Fatalf("invalid call allowance accepted: %v", err)
+			}
+		})
+	}
+	if _, err := config.LoadFromBytes(t.Context(), []byte(string(fixture)+"\nmemory:\n  summarizer:\n    max_calls: -1\n")); !errors.Is(err, config.ErrConfigInvalid) {
+		t.Fatalf("negative YAML allowance accepted: %v", err)
+	}
+}
+
 func TestMemoryCompactionRoute_EnvironmentSelection(t *testing.T) {
 	// Dummy route metadata, never a provider credential. Exact uint64 generations
 	// must survive environment parsing just as they do YAML parsing.

@@ -9,18 +9,19 @@ import (
 	"strings"
 )
 
-// MaxCompactionCalls bounds chronological maintenance within one planner step.
-// It is not a retry allowance: every completion still has its own retry budget.
-const MaxCompactionCalls = 16
+// DefaultCompactionCalls is the chronological maintenance allowance when the
+// operator has not configured one. It is not a receipt-identity grammar limit.
+const DefaultCompactionCalls = 16
 
 type compactionAttemptKey struct{}
 
 // CompactionAttemptContext starts a distinct maintenance invocation, retaining
 // the host-owned planner step but not its retry/downgrade coordinates. A supplied
 // grant is authenticated by the ordinary wrapper and deterministically derives
-// a bounded child identity. No model output can select this coordinate.
+// a child identity. The summarizer enforces the configured call allowance;
+// no model output can select this coordinate.
 func CompactionAttemptContext(ctx context.Context, ordinal int) (context.Context, error) {
-	if ordinal < 1 || ordinal > MaxCompactionCalls {
+	if ordinal < 1 {
 		return ctx, ErrExternalGrantInvalid
 	}
 	if err := ctx.Err(); err != nil {
@@ -36,7 +37,7 @@ func compactionAttemptIdentity(parentID, parentNonce string, ordinal int) (strin
 	return fmt.Sprintf("%s/compaction/%d", parentID, ordinal), hex.EncodeToString(digest[:])
 }
 
-// validCompactionAttempt admits only the exact, bounded child grammar. Existing
+// validCompactionAttempt admits only the exact positive-ordinal child grammar. Existing
 // receipt fields and canonical bytes are unchanged; recipients must understand
 // this derivation before enabling granted compaction. Older validators reject it.
 func validCompactionAttempt(callID, nonce, parentID, parentNonce string) bool {
@@ -45,7 +46,7 @@ func validCompactionAttempt(callID, nonce, parentID, parentNonce string) bool {
 		return false
 	}
 	ordinal, err := strconv.Atoi(suffix)
-	if err != nil || ordinal < 1 || ordinal > MaxCompactionCalls || strconv.Itoa(ordinal) != suffix {
+	if err != nil || ordinal < 1 || strconv.Itoa(ordinal) != suffix {
 		return false
 	}
 	wantID, wantNonce := compactionAttemptIdentity(parentID, parentNonce, ordinal)

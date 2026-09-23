@@ -219,7 +219,7 @@ func Put(ctx context.Context, store state.StateStore, redactor audit.Redactor, i
 		return "", err
 	}
 	r, err := inspectionHandle(store, id, now)
-	if err != nil || redactor == nil || turns < 1 || turns > maxRetainedContextTurns || ttl <= 0 {
+	if err != nil || redactor == nil || turns < 1 || ttl <= 0 {
 		return "", ErrRetainedContextUnavailable
 	}
 	if !utf8.ValidString(query) || !utf8.ValidString(answer) {

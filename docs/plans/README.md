@@ -5937,6 +5937,8 @@ deployment, or downstream acceptance is claimed.
 - **Current amendment:** D-477 consolidates compaction under `memory` and reuses
   this compactor across long runs and session-window rollover. Multi-window
   acceptance is pending; the following evidence is historical.
+  D-483/D-484 remove hidden summary/evidence ceilings, preserve settled failure
+  outcomes through compaction failure, and make maintenance calls configurable.
 - **Status:** In progress — PR #779, not released or RC-ready. The implementation
   head covered by the current evidence is `cea93340`.
 - **Owner:** planner / steering / LLM edge; RFC §6.2, RFC §6.3, RFC §6.5.
@@ -5960,6 +5962,8 @@ deployment, or downstream acceptance is claimed.
   `none` is the explicit stateless opt-out. Legacy-store retirement and full
   release acceptance remain pending. Revision-specific results and known
   failures are in the tracker.
+  D-483/D-484 preserve unsummarized failure overflow until successful compaction
+  and remove aggregate evidence/reference limits without relaxing scope or expiry.
 - **Status:** In progress — PR #779, not released or RC-ready. The implementation
   evidence is tracked in `docs/notes/portable-context-tracker.md`.
 - **Owner:** runtime/runctx + serve/assembly + StateStore/ArtifactStore;

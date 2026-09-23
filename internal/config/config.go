@@ -769,6 +769,9 @@ type MemorySummarizerConfig struct {
 	// provider reasoning where applicable. Zero keeps the 2048-token default;
 	// positive values remain subject to the selected model's capacity.
 	MaxTokens int `yaml:"max_tokens,omitempty"`
+	// MaxCalls bounds chronological maintenance calls per compaction. Zero
+	// selects sixteen; each call retains its ordinary governed retry allowance.
+	MaxCalls int `yaml:"max_calls,omitempty"`
 	// ProviderRoute selects a separately authorized route for compaction on
 	// externally routed runs. It uses the existing llm.provider_route resolver,
 	// never embeds credentials, and cannot choose the run's identity.
@@ -998,9 +1001,6 @@ type DistributedConfig struct {
 	// Ignored by the loopback driver.
 	BusPollInterval time.Duration `yaml:"bus_poll_interval,omitempty"`
 }
-
-// MaxMemoryRecentTurns bounds the detailed execution window, not checkpoint age.
-const MaxMemoryRecentTurns = 32
 
 // RecentTurnsResolved returns the cumulative memory window. Zero recent_turns
 // selects twenty detailed turns. Other strategies do not use this projection.

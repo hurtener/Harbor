@@ -15,9 +15,6 @@ const retainedInputRefsKey = "retained_input_refs"
 // keep their existing input policy. The guard separately verifies current scope
 // and lifetime before inference and dependent dispatch.
 func ValidateRetainedInputs(requested []string, resolved []planner.InputArtifactView) error {
-	if len(requested) > maxRetainedResultRefs || len(resolved) > maxRetainedResultRefs {
-		return ErrRetainedContextCapacity
-	}
 	ids := make(map[string]bool, len(requested))
 	for _, id := range requested {
 		if !validRetainedInputID(id) {
@@ -49,9 +46,6 @@ func validRetainedInputID(id string) bool {
 func retainedInputContext(inputs []planner.InputArtifactView) (*planner.Step, error) {
 	if len(inputs) == 0 {
 		return nil, nil
-	}
-	if len(inputs) > maxRetainedResultRefs {
-		return nil, ErrRetainedContextCapacity
 	}
 	ids := make([]string, 0, len(inputs))
 	seen := make(map[string]bool, len(inputs))

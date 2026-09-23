@@ -1180,6 +1180,7 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		summaryOptions := []llmsummarizer.TrajectoryOption{
 			llmsummarizer.WithTrajectoryModel(cfg.Memory.Summarizer.Model),
 			llmsummarizer.WithTrajectoryMaxSummaryTokens(cfg.Memory.Summarizer.MaxTokens),
+			llmsummarizer.WithTrajectoryMaxCalls(cfg.Memory.Summarizer.MaxCalls),
 			llmsummarizer.WithTrajectoryPromptExtension(cfg.Memory.Summarizer.Prompt),
 			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
 		}

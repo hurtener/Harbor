@@ -402,8 +402,14 @@ func TestRetainedRecovery_CannotSucceedByImmediatelyEvictingSource(t *testing.T)
 	if err := sibling.Finish(t.Context(), newer.Trajectory, newer.Query, "done", "complete"); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, nil); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
-		t.Fatalf("missing source acknowledged: %v", err)
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, nil); err != nil {
+		t.Fatalf("settled source could not be preserved beyond the detail target: %v", err)
+	}
+	window := loadHostRecord(t, store, identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
+	for _, want := range []string{`"run_id":"old"`, `"run_id":"newer"`, "9007199254740993", `"status":"interrupted"`} {
+		if !strings.Contains(string(window.Bytes), want) {
+			t.Fatalf("recovery evicted unsummarized source %s", want)
+		}
 	}
 	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 		t.Fatal(err)

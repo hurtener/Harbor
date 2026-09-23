@@ -49,7 +49,19 @@ room to finish a summary. The matching environment override is
 `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`; both are restart-required. This does not
 change the working-input target or driving model's output limit. Routed model
 capacity and governance still apply, and incomplete output never replaces a
-checkpoint. See [the reference](../../CONFIG.md#memorysummarizermax_tokens).
+checkpoint. Valid summaries are not additionally capped at 16 KiB; subsequent
+requests still pass configured byte and token admission. See
+[the reference](../../CONFIG.md#memorysummarizermax_tokens).
+
+`memory.summarizer.max_calls` sets the maintenance-call allowance per compaction
+(zero/omitted: `16`). YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS` changes require
+a restart. Raise it only when more chronological chunks are needed; exhaustion
+preserves the previous checkpoint, and increasing the allowance can increase
+time and spend. There is no separate session-wide reference/evidence count cap,
+and `recent_turns` has no fixed maximum of 32. Existing execution tranches,
+configured request admission, identity, expiry and erasure still apply. See
+[the call allowance reference](../../CONFIG.md#memorysummarizermax_calls), including
+receipt-consumer compatibility when using more than sixteen calls.
 
 The removed `truncation` strategy is rejected rather than silently dropping
 unsummarized context when a window fills.
@@ -383,6 +395,7 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 
 - **Memory exceeds the working-input target mid-conversation.** Check `memory.budget_tokens` and the effective model profile. Fresh results remain protected; lowering the target is not permission to discard evidence. Compaction cost and savings depend on actual input and provider usage, not a fixed per-turn estimate.
 - **Compaction reports an incomplete summary with `finish_reason: length`.** Inspect provider usage and `memory.summarizer.max_tokens`, including reasoning tokens. Increase the deployment's allowance within the selected model's capacity and restart; do not accept truncated summaries or blindly replay external actions after a failed turn.
+- **Compaction fails while the recent-turn window is full.** An interrupted or cancelled run with fully settled dispatches can record its terminal state while preserving unsummarized overflow. The next run must compact that tail before successful rollover. Existing abandoned journals require explicit authorized recovery; an unknown external outcome remains refused. No tool is replayed and recovery does not renew the source lifetime.
 - **`harbor dev` reboots in a loop after enabling memory.** Your `memory.dsn` is inside the project directory and the SQLite WAL trap fires. Move the DSN to `/tmp/harbor-validation/<project>-memory.sqlite` or `~/.harbor/<project>-memory.sqlite`.
 - **`harbor skill import` fails with "skill name already exists".** The catalog rejects duplicate names by default. Re-import with `--overwrite`, remove the old entry first (`harbor skill rm <name>`), or rename the skill in the file.
 - **The planner doesn't pick a skill I imported.** Either the skill's `trigger:` doesn't pattern-match the user's input (write more concrete trigger language), the run can't see a tool the skill requires (`required_tools` is capability-filtered — default-deny), or `planner.max_steps` is too low to reach the skill-search turn. Pin it (`skills.directory.pinned`) to guarantee it's at least visible in every `<skills_context>` block.

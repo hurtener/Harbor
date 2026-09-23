@@ -283,12 +283,31 @@ tool name.
 Keep reads proportional to the retained window, with indexed/keyset access and
 bounded writes. Do not scan raw telemetry, enumerate the whole session on each
 request, or rewrite an ever-growing trajectory after every tool call. Persisted
-records retain explicit count, lifetime and generation fences on all drivers.
+records retain explicit lifetime, identity and generation fences on all drivers.
 The retired 512 KiB execution-evidence ceiling is not a context-window policy:
 do not reject, clip or discard exact evidence because its record exceeds that
 size. `memory.budget_tokens` and the effective model capacity govern model-facing
 compaction; neither claims to cap stored bytes. Keep checkpoint-schema and
 transport bounds distinct from session-evidence storage (D-480).
+
+A full detailed window must not prevent a fully settled interrupted or cancelled
+run from committing its terminal state. Preserve unsummarized overflow until a
+later successful compaction; do not discard evidence or leave a phantom active
+admission solely because maintenance failed. Explicit recovery keeps the source
+expiry and refuses unknown external outcomes. Valid narratives are governed by
+the configured completion allowance, not an additional fixed 16 KiB summary
+ceiling; subsequent requests still pass input admission (D-483).
+
+Do not add aggregate evidence-count, reference-count or metadata-byte ceilings
+that eventually prevent otherwise valid continuity. The operator configures
+`memory.recent_turns` (default 20, no fixed upper bound); the existing execution
+step/tranche policy owns run work admission, not a second retention-step cap.
+Reference identity, scope, lifetime and recursion validation remain mandatory.
+Model-facing metadata is included in assembled-request token/byte admission;
+removing a storage ceiling does not grant unbounded model input. Chronological
+maintenance uses `memory.summarizer.max_calls` (default 16), with ordinary
+governance/cancellation on every call and no partial checkpoint on exhaustion
+(D-484).
 
 An independently configured compaction model uses the same governed Bifrost
 client. For externally routed runs, the operator may pin an opaque maintenance

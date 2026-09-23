@@ -269,7 +269,6 @@ func TestRetainedServer_ConstructorRejectsIncompleteConfiguration(t *testing.T) 
 	}
 	for name, mutate := range map[string]func(*RunLoopDriverOptions){
 		"negative":    func(o *RunLoopDriverOptions) { o.SessionMemory.RecentTurns = -1 },
-		"too many":    func(o *RunLoopDriverOptions) { o.SessionMemory.RecentTurns = config.MaxMemoryRecentTurns + 1 },
 		"no state":    func(o *RunLoopDriverOptions) { o.StateStore = nil },
 		"no redactor": func(o *RunLoopDriverOptions) { o.Redactor = nil },
 		"no ttl":      func(o *RunLoopDriverOptions) { o.RetainedContextTTL = 0 },

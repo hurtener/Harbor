@@ -149,7 +149,7 @@ an intent without a returned receipt remains unknown, never automatically replay
 
 The entry point is `memory` in YAML and its corresponding SDK config.
 `memory.strategy: rolling_summary` selects cumulative execution context in
-serving, development and embedding. `memory.recent_turns` accepts 0..32; zero
+serving, development and embedding. `memory.recent_turns` accepts non-negative values; zero
 selects twenty detailed turns. `memory.strategy: none` selects stateless runs.
 The old `WithRetainedContext` API and `sessions.retained_context_turns` key are
 removed, without a compatibility layer. YAML/environment use of the removed
@@ -202,14 +202,23 @@ commit. The source-dependent cache and count-eviction rules below describe the
 old implementation and must not remain in the replacement. TTL/erasure still
 remove information, including derived summaries; incompatible data fails closed.
 
-The bounded session window retains up to 32 recent turns and 256 own steps per
-turn; up to 32 active admissions are tracked. D-480 removes the former 512 KiB
+The session window uses configured `recent_turns`; up to 32 active admissions
+are tracked. D-484 removes the former 32-turn, 256-own-step, 256-older-evidence,
+64-reference and 16 KiB reference-metadata ceilings. Execution follows its
+existing configured step/tranche budget. D-480 removes the former 512 KiB
 session-slot and journal ceiling, including the historical-envelope and result
 scan copies of that ceiling. Per-action frames use the same existing StateStore,
 with exact byte accounting and generation checks, not a fixed byte capacity.
 A run's TTL uses the configured session idle TTL (24 hours when unspecified).
 Model-input compaction uses `memory.budget_tokens`, independently of stored bytes.
-The existing checkpoint-schema, step-count and reference-validation bounds remain.
+Checkpoint-schema, reference identity/lifetime, recursion-depth and concurrency
+validation remain. Model-facing metadata uses assembled-request admission.
+D-483 removes the additional 16 KiB checkpoint-narrative cap. A fully settled
+interrupted/cancelled turn may temporarily overflow the recent-turn target so
+its terminal state can commit after compaction failure. Successful rollover
+still requires a covering checkpoint; no unsummarized turn is silently evicted.
+Explicit recovery preserves expiry and fences the source, with no external
+execution or model call. Unknown dispatch outcomes still refuse recovery.
 
 Historical native envelopes remain context, not executable Decisions. Source
 selection is frozen on admission; siblings' in-flight results are excluded.

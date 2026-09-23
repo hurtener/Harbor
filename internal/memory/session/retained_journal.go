@@ -90,9 +90,8 @@ func (r *RetainedRun) BeforeDispatch(ctx context.Context, rc planner.RunContext,
 	if r.journal.Pending || step.Action == nil {
 		return ErrRetainedContextUnavailable
 	}
-	if r.journal.Count >= maxRetainedContextSteps {
-		return ErrRetainedContextCapacity
-	}
+	// Execution's configured step/tranche budget owns work admission. The
+	// persistence journal must not add another lifetime cap across continuations.
 	frame, _, err := r.makeFrame(ctx, r.journal.Count, false, step, r.journal.ExpiresAt)
 	if err != nil {
 		return err
@@ -160,9 +159,6 @@ func (r *RetainedRun) RecordContext(ctx context.Context, rc planner.RunContext, 
 	if r.journal.Pending || step.Action != nil || step.LLMObservation == nil || step.Historical != nil ||
 		step.Observation != nil || step.ReasoningTrace != "" || step.AssistantPreamble != "" || step.Streams != nil || step.Failure != nil || step.Error != "" {
 		return ErrRetainedContextUnavailable
-	}
-	if r.journal.Count >= maxRetainedContextSteps {
-		return ErrRetainedContextCapacity
 	}
 	frame, _, err := r.makeFrame(ctx, r.journal.Count, true, step, r.journal.ExpiresAt)
 	if err != nil {

@@ -936,7 +936,8 @@ evidence cannot fit; it never drops a recovery backlog to create space.
 
 Number of recent root executions the cumulative `rolling_summary` strategy
 keeps in detail. Default: `20`; explicit `0` also selects twenty turns.
-Validation: `0..32`.
+Validation: non-negative, with no separate 32-turn maximum. Larger windows
+retain more detail and can increase storage, projection and compaction work.
 The checkpoint carries earlier meaning after covered detail leaves the window;
 this number is not a checkpoint-history limit. Ignored by `none`.
 
@@ -951,13 +952,30 @@ output allowance. Governed model-capacity admission still applies; independently
 routed compaction clamps the allowance to its selected profile's output maximum.
 Increasing this allowance reserves more output space and can reduce input space
 per compaction chunk. Truncated or otherwise incomplete summaries remain errors;
-they never replace a valid checkpoint. Structured-summary byte validation is
-unchanged.
+they never replace a valid checkpoint. Valid narratives have no separate fixed
+16 KiB output or persisted-checkpoint ceiling. Strict structured-summary
+validation remains, and each subsequent maintenance request must still fit
+the configured heavy-content threshold and its selected model's input budget.
 
 Set it in YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`. Restart-required; not an
 agent-config Protocol field. It applies to both within-run and cross-turn
 compaction through the same governed client, with no change to prompts, reasoning
 controls or route authority.
+
+### memory.summarizer.max_calls
+
+Maximum chronological completion calls in one compaction. Omitted or zero
+selects `16`; positive values set the deployment's allowance. Negative values
+are rejected. Configure through YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS`;
+restart-required. This is a maintenance-work allowance, not a retry count or
+session-lifetime limit. Every call still follows model admission, cancellation,
+rate/cost governance and the existing retry policy. Exhaustion fails explicitly
+without installing a partial summary or dropping retained evidence.
+
+Increasing this value can increase maintenance time and spend. Receipt consumers
+must accept the positive-ordinal maintenance identity grammar before using more
+than sixteen calls; older versions may reject those receipts. The default
+remains compatible. Identity, nonce and route validation are unchanged.
 
 ### memory.summarizer.model
 
@@ -1294,7 +1312,7 @@ requiring user confirmation. Default: `8`. Validation: > 0.
 
 Configure root conversation memory under `memory`, not `sessions`.
 `rolling_summary` selects cumulative execution-context memory; `recent_turns`
-accepts `0..32`, with zero selecting twenty detailed turns. Restart-required.
+accepts non-negative values, with zero selecting twenty detailed turns. Restart-required.
 It persists recent terminal root runs in the configured StateStore and projects
 permitted historical evidence into the next root request. It replaces legacy
 pair-only memory projection for this mode; external long-term memory and trusted
@@ -1312,10 +1330,15 @@ exists. `sessions.retained_context_turns`, its environment override and the SDK
 `WithRetainedContext` option are removed. Use `memory.strategy: none` for a
 stateless stack. In-memory
 StateStore retention ends with the process; SQLite/Postgres preserve committed
-content across restarts. The detailed window remains bounded by 32 turns,
-256 own steps per turn and the configured session idle TTL. Expiry
-and erasure apply. The former 512 KiB evidence/journal ceiling is removed:
+content across restarts. The configured recent-turn window and session idle TTL
+govern retention; interrupted settlement can temporarily overflow the detail
+target until successful compaction. Expiry and erasure apply. The old 32-turn,
+256-step, 256-older-turn, 64-reference and 16 KiB reference-metadata ceilings
+are removed, as is the former 512 KiB evidence/journal ceiling:
 `memory.budget_tokens` governs model-input compaction, not stored byte size.
+Run execution follows its existing configured step/tranche budget rather than a
+second journal cap. All retained references remain scope/lifetime-validated;
+their model-facing metadata passes ordinary assembled-request admission.
 Successful compaction replaces model-facing covered detail with cumulative
 checkpoint meaning while retaining exact evidence; window rollover is not
 forgetting. This is private execution evidence, not additional

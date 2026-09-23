@@ -149,7 +149,7 @@ func TestRunOnce_RetainedContextDisabledAndInvalidConfig(t *testing.T) {
 	if _, err := s.State.Load(t.Context(), identity.Quadruple{Identity: id}, state.InternalKindPrefix+"session-execution-context"); !errors.Is(err, state.ErrNotFound) {
 		t.Fatalf("stateless run wrote execution content: %v", err)
 	}
-	for _, n := range []int{-1, 33} {
+	for _, n := range []int{-1} {
 		s.Cfg.Memory.Strategy, s.Cfg.Memory.RecentTurns = "rolling_summary", n
 		if _, err := s.RunOnce(t.Context(), "bad", id); err == nil {
 			t.Fatal("bad retention bound accepted")

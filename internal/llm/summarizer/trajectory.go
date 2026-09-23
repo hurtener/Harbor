@@ -50,8 +50,6 @@ const (
 	trajectoryPayloadHeadroom      = 4096
 	defaultTrajectoryPayloadBudget = llm.DefaultHeavyOutputThreshold - trajectoryPayloadHeadroom
 	defaultTrajectorySummaryTokens = 2048
-	maxTrajectorySummaryBytes      = 16 * 1024
-	maxTrajectorySummaryCalls      = llm.MaxCompactionCalls
 )
 
 // ErrTrajectorySummaryCapacity means the selected evidence cannot be processed
@@ -71,6 +69,7 @@ type TrajectorySummariser struct {
 	model            string
 	systemPrompt     string
 	maxSummaryTokens int
+	maxCalls         int
 	payloadBudget    int
 	providerRoute    *llm.ProviderRoute
 	routeConfig      llm.ProviderRouteConfig
@@ -121,11 +120,23 @@ func WithTrajectoryPromptExtension(extra string) TrajectoryOption {
 }
 
 // WithTrajectoryMaxSummaryTokens bounds each completion. Non-positive values
-// leave the bounded default unchanged; the response byte ceiling also applies.
+// leave the bounded default unchanged. There is no separate fixed byte ceiling
+// on a valid completion; subsequent model requests still pass input admission.
 func WithTrajectoryMaxSummaryTokens(n int) TrajectoryOption {
 	return func(s *TrajectorySummariser) {
 		if n > 0 {
 			s.maxSummaryTokens = n
+		}
+	}
+}
+
+// WithTrajectoryMaxCalls selects the chronological completion allowance for
+// one compaction. Non-positive values retain the default of sixteen calls.
+// Exhaustion preserves the old checkpoint; it never publishes a partial summary.
+func WithTrajectoryMaxCalls(n int) TrajectoryOption {
+	return func(s *TrajectorySummariser) {
+		if n > 0 {
+			s.maxCalls = n
 		}
 	}
 }
@@ -155,6 +166,7 @@ func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*T
 		client: client, systemPrompt: trajectorySystemPromptV2,
 		payloadBudget:    defaultTrajectoryPayloadBudget,
 		maxSummaryTokens: defaultTrajectorySummaryTokens,
+		maxCalls:         llm.DefaultCompactionCalls,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -220,7 +232,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 	}
 	previous := tr.Summary
 	position := 0
-	for calls := range maxTrajectorySummaryCalls {
+	for calls := range s.maxCalls {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -302,9 +314,6 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		if len(resp.ToolCalls) != 0 || (resp.FinishReason != "" && resp.FinishReason != "stop") {
 			return nil, ErrTrajectorySummaryIncomplete
 		}
-		if len(resp.Content) > min(maxTrajectorySummaryBytes, s.payloadBudget/2) {
-			return nil, fmt.Errorf("%w: summary exceeds byte allowance", ErrTrajectorySummaryCapacity)
-		}
 		previous, err = parseTrajectorySummary(resp.Content)
 		if err != nil {
 			return nil, err
@@ -326,9 +335,6 @@ func encodeNarrative(summary *planner.TrajectorySummary) (string, error) {
 	b, err := json.Marshal(copy)
 	if err != nil {
 		return "", errors.New("summarizer: prior narrative encoding failed")
-	}
-	if len(b) > maxTrajectorySummaryBytes {
-		return "", ErrTrajectorySummaryCapacity
 	}
 	return string(b), nil
 }

@@ -16,7 +16,7 @@ func TestCompactionAttempt_DeterministicDistinctAndReadOnly(t *testing.T) {
 	}
 	original := *parent
 	seen := map[string]bool{}
-	for i := range MaxCompactionCalls {
+	for i := range DefaultCompactionCalls + 4 {
 		ordinal := i + 1
 		child, err := CompactionAttemptContext(ctx, ordinal)
 		if err != nil {
@@ -47,7 +47,7 @@ func TestCompactionAttempt_DeterministicDistinctAndReadOnly(t *testing.T) {
 	if *parent != original {
 		t.Fatal("mutated parent scope")
 	}
-	for _, ordinal := range []int{-1, 0, MaxCompactionCalls + 1} {
+	for _, ordinal := range []int{-1, 0} {
 		if _, err := CompactionAttemptContext(ctx, ordinal); err == nil {
 			t.Fatal("invalid ordinal accepted")
 		}
@@ -69,7 +69,8 @@ func TestCompactionAttempt_RejectsForgedDerivation(t *testing.T) {
 		{"root/step/7/compaction/01", nonce, "root/step/7", "nonce"},
 		{"root/step/7/compaction/+1", nonce, "root/step/7", "nonce"},
 		{"root/step/7/compaction/0", nonce, "root/step/7", "nonce"},
-		{"root/step/7/compaction/17", nonce, "root/step/7", "nonce"},
+		{"root/step/7/compaction/17", nonce, "root/step/7", "nonce"}, // wrong nonce for this ordinal
+		{"root/step/7/compaction/9999999999999999999999999999", nonce, "root/step/7", "nonce"},
 		{id + "/compaction/1", nonce, "root/step/7", "nonce"},
 		{"root/step/7/arbitrary/1", nonce, "root/step/7", "nonce"},
 	} {
@@ -88,13 +89,13 @@ func TestCompactionAttempt_ConcurrentScopes(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx, err := CompactionAttemptContext(parent, 1+i%MaxCompactionCalls)
+			ctx, err := CompactionAttemptContext(parent, 1+i%(DefaultCompactionCalls+4))
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			_, scope, err := EnsureGrantAttemptScope(ctx, grant)
-			if err != nil || scope.LogicalCallID != fmt.Sprintf("root/step/4/compaction/%d", 1+i%MaxCompactionCalls) {
+			if err != nil || scope.LogicalCallID != fmt.Sprintf("root/step/4/compaction/%d", 1+i%(DefaultCompactionCalls+4)) {
 				t.Errorf("scope bleed: %v", err)
 			}
 		}()

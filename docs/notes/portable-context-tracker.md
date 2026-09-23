@@ -1,5 +1,70 @@
 # Portable session context implementation tracker
 
+## Remove independent retention ceilings — 2026-09-23
+
+Owner-approved local increment over `47710c5b41ce2d1b04764ac8636b9faad42caa87`:
+
+- Remove the accumulated 64-reference, 16 KiB reference-metadata, 256-evidence
+  and 256-journal-step ceilings. Exact receipts remain retained; ordinary
+  execution budgets, model-input admission, TTL and erasure keep their roles.
+- Remove the separate 32-turn maximum from `memory.recent_turns`; omitted/zero
+  still selects twenty. The deployment's window is configuration, not a
+  lifetime history limit.
+- Add YAML/environment `memory.summarizer.max_calls` with omitted/zero default
+  sixteen, strict non-negative integer validation and shared production wiring.
+  Maintenance receipt ordinals remain authenticated and canonical but no longer
+  impose another fixed sixteen-call ceiling. Consumers must upgrade their
+  validator before an operator selects a larger allowance.
+- Remove the separate 16 KiB valid-summary/checkpoint ceiling. Output tokens
+  remain configured and subsequent requests still pass normal input admission.
+- Permit fully settled interrupted/cancelled runs to persist an unsummarized
+  overflow after compaction fails. Successful completion still requires covered
+  rollover. Unknown dispatch outcomes remain refused, and recovery never
+  re-executes an action. The next healthy compaction can cover the overflow.
+
+D-483/D-484 and RFC 002 describe the narrow changes. No prompt, tool guidance,
+provider SDK, storage service or hardcoded deployment token target is added.
+The isolated sample retains its YAML 64000 input target, 8192 summary output
+allowance and separately authorized `openai/gpt-6-luna` maintenance route.
+
+Focused Go 1.27.1 race regressions pass with PostgreSQL 17.11 available, as well
+as SQLite and in-memory storage: 260 retained turns preserve 259 older exact
+evidence entries, 300-step journals complete and explicitly recover, and a
+40-turn configured detail window remains intact. Configuration also accepts
+1000 turns. The actual assembled next request contains all seventy references
+with metadata exceeding 16 KiB. A configured compactor completes more than
+sixteen calls, while exhaustion preserves the previous checkpoint. Failed
+compaction recovery passes through both embedded and served production seams.
+Scoped vet and golangci-lint 2.13.2 pass with zero lint issues. Canonical
+`GOFLAGS=-p=1 go test -race -count=1 -coverprofile=... ./internal/config
+./internal/llm ./internal/llm/summarizer ./internal/memory/session
+./internal/runtime/assemble ./internal/runtime/serve` passes with the local
+PostgreSQL DSN set. Package coverage is respectively 83.5%, 76.5%, 88.8%, 85.1%,
+86.6% and 86.3%; the first four remain below their existing 85%, 85%, 90% and
+92% targets. The served package exceeds its 85% floor; this does not waive
+other deficits. All three generated-Protocol checks, mirror, Markdown (599
+files) and drift audit (1592 OK / 0 WARN / 0 FAIL) pass. The full `make build`
+passes with Node 24.21.0, a freshly built Console and CGo-free CLI. Complete
+`sdk/assemble` and `examples/portable-context` race suites also pass (1.955s,
+3.016s). No deployment or new live acceptance is claimed.
+
+The latest live RC10 Luna task `01M386Y9HNC9X9CZBS0PYS2PK8` answered the
+original constraints correctly but failed its terminal write at 22:43:10 UTC
+with retained-context capacity exceeded. No summary error was reported on
+that attempt. The local failure/recovery reproduction establishes a relevant
+failure class, not the exact uninstrumented live refusal branch. Repeatable
+live compaction and original-session recovery remain pending.
+
+RC10 exact-implementation CI `35927456827` completed red: both platforms
+failed stale config-projection/capability-count assertions; macOS additionally
+failed the two embedded retained-context concurrency tests on journal cleanup
+deadlines. The assertion corrections pass focused local checks in this
+increment. The hosted cleanup failure is still unresolved: do not change the
+five-second production deadlines, N=128 workload, race detector or platforms.
+Thirteen other jobs passed; downstream Playwright was skipped, not passed.
+Preflight remains owner-waived. Existing coverage gaps, consumer catch-up/control
+issues and the incomplete matched comparison remain main-release blockers.
+
 ## Configurable compaction completion allowance — 2026-09-23
 
 Published implementation `030cdc860603a366152b956fe6ed507824cb57ed` is tagged
@@ -30,14 +95,34 @@ Scoped vet and golangci-lint 2.13.2 pass, with zero lint issues.
 
 Post-publication canonical Protocol docs/Console manifest/external TS checks
 also pass. Drift audit completes with 1592 OK, 0 WARN, 0 FAIL. Exact-implementation
-CI `35927456827` has thirteen completed jobs passing, with Linux/macOS Go jobs
-still running at the latest observation. Fresh full-package race coverage is
+CI `35927456827` subsequently finished with thirteen jobs passing and both
+Go platforms failing; see the failure details in the newer section above.
+Fresh full-package race coverage on that increment is
 83.5% for config (85% floor) and 88.4% for summarizer (90% floor): both remain
 below target. No unavailable service execution is counted as passing.
 
-These are implementation/release-build checks, not new real-model acceptance.
-RC10 deployment, failed-session recovery, repeatable live compaction and
-transcript catch-up are still pending at this checkpoint. Coverage gaps and the incomplete matched comparison remain
+The isolated consumer deployed RC10 and reports the exact implementation through
+Protocol; health and readiness return 200. At 22:26 UTC, reloading the original
+session also restored the previously missing revision-15 reply and preview.
+This confirms eventual transcript projection, not its latency or root cause.
+
+The subsequent no-tool recall task `01M3861X1H36ECYTXC2SPXYNVT` failed at
+22:27:22 UTC: `summarizer: trailing narrative content`, followed by a retained
+terminal capacity refusal. Provider generation
+`gen-1790202433-osT0UYR83xPytSunU5Ci` reports Mercury 2.5, 13175 native input
+tokens, 2916 native completion tokens (2459 reasoning), finish reason `stop`,
+and cost 0.0009644 USD. This is one observed maintenance call, not whole-turn
+cost. The larger output allowance is effective, but complete provider output
+does not establish valid summary JSON. The response body was not captured;
+neither its precise trailing text nor a provider-format root cause is proven.
+Strict validation and prior retained state remain intact; no tools ran.
+
+The owner-authorized alternative `openai/gpt-6-luna` is now selected through
+the existing governed maintenance route on the same RC10 implementation.
+The 64000-token YAML input target and 8192 summary completion allowance are
+unchanged, as are the driving model, prompts, tools and exact evidence.
+Failed-session recovery, repeatable live compaction and transcript catch-up
+remain pending. Coverage gaps and the incomplete matched comparison remain
 main-release blockers. Both local and hosted preflight remain owner-waived, not
 green; the owner separately authorized quick exploratory RC publication before
 all main-release gates finish.

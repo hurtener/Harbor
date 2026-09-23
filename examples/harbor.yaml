@@ -544,6 +544,7 @@ memory:
   # conciseness guarantees. Unset → baseline prompt only (no change).
   # summarizer:
   #   max_tokens: 8192 # Example completion allowance incl. reasoning; 0/unset = 2048.
+  #   max_calls: 16    # Chronological calls per compaction; 0/unset = 16, not retries.
   #   model: anthropic/claude-haiku
   #   prompt: "Always preserve numeric thresholds and dollar amounts verbatim."
   # For externally routed runs, a different compaction model needs its own

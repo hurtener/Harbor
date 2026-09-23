@@ -15,7 +15,6 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/state"
@@ -24,9 +23,7 @@ import (
 const (
 	retainedContextKind      = state.InternalKindPrefix + "session-execution-context"
 	retainedContextVersion   = 4
-	maxRetainedContextTurns  = config.MaxMemoryRecentTurns
 	maxRetainedContextActive = 32
-	maxRetainedContextSteps  = 256
 	retainedContextAttempts  = 32
 )
 
@@ -124,7 +121,7 @@ func BeginRetainedRun(ctx context.Context, store state.StateStore, redactor audi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if store == nil || redactor == nil || identity.Validate(q.Identity) != nil || q.RunID == "" || turns < 1 || turns > maxRetainedContextTurns || ttl <= 0 {
+	if store == nil || redactor == nil || identity.Validate(q.Identity) != nil || q.RunID == "" || turns < 1 || ttl <= 0 {
 		return nil, ErrRetainedContextUnavailable
 	}
 	if now == nil {
@@ -255,9 +252,6 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 	if r.finished || tr == nil || r.prefixLen > len(tr.Steps) || !validRetainedStatus(status) || !utf8.ValidString(query) || !utf8.ValidString(answer) {
 		return ErrRetainedContextUnavailable
 	}
-	if len(tr.Steps)-r.prefixLen > maxRetainedContextSteps {
-		return ErrRetainedContextCapacity
-	}
 	if !expiresAt.After(r.now()) {
 		return ErrRetainedContextUnavailable
 	}
@@ -337,6 +331,14 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 		}
 		for len(window.Turns) > r.turns {
 			if err := discardCoveredTurn(&window); err != nil {
+				// An interrupted/cancelled run must be able to publish its known
+				// outcome even when compaction failed. Keep the unsummarized tail
+				// until the next successful compaction instead of leaving this
+				// settled admission active and poisoning future checkpoints.
+				// Pending dispatches were refused above; this never adopts them.
+				if status != "complete" && errors.Is(err, ErrRetainedContextCapacity) {
+					break
+				}
 				return err
 			}
 		}
@@ -438,7 +440,7 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 	if err := decodeRetained(record.Bytes, &window); err != nil {
 		return retainedWindow{}, "", err
 	}
-	if window.Version != retainedContextVersion || len(window.Turns) > maxRetainedContextTurns || len(window.Active) > maxRetainedContextActive || len(window.Evidence) > maxRetainedContextSteps {
+	if window.Version != retainedContextVersion || len(window.Active) > maxRetainedContextActive {
 		return retainedWindow{}, "", ErrRetainedContextUnavailable
 	}
 	if (window.CompactedThrough.ID == "") != (window.CompactedThrough.RunID == "") ||
@@ -462,7 +464,7 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 		}
 	}
 	for _, turn := range window.Turns {
-		if !check(turn.Admission) || turn.Admission.Sequence <= window.CompactedThrough.Sequence || turn.ExpiresAt.IsZero() || !validRetainedStatus(turn.Status) || len(turn.Steps) > maxRetainedContextSteps {
+		if !check(turn.Admission) || turn.Admission.Sequence <= window.CompactedThrough.Sequence || turn.ExpiresAt.IsZero() || !validRetainedStatus(turn.Status) {
 			return retainedWindow{}, "", ErrRetainedContextUnavailable
 		}
 		if _, err := projectRetainedSteps(turn.Admission, turn.Steps); err != nil {
@@ -470,7 +472,7 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 		}
 	}
 	for _, turn := range window.Evidence {
-		if !check(turn.Admission) || turn.Admission.Sequence > window.CompactedThrough.Sequence || turn.ExpiresAt.IsZero() || len(turn.Steps) == 0 || len(turn.Steps) > maxRetainedContextSteps {
+		if !check(turn.Admission) || turn.Admission.Sequence > window.CompactedThrough.Sequence || turn.ExpiresAt.IsZero() || len(turn.Steps) == 0 {
 			return retainedWindow{}, "", ErrRetainedContextUnavailable
 		}
 		if _, err := projectRetainedSteps(turn.Admission, turn.Steps); err != nil {

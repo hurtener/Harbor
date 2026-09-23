@@ -3,6 +3,7 @@ package assemble_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ type cumulativeMemoryDriver struct {
 	summaries        int
 	summaryInputs    []string
 	maxRequestTokens int
+	failSummaries    int
 }
 
 func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -46,6 +48,10 @@ func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteR
 	if strings.Contains(body, "You summarize historical agent execution") {
 		d.summaries++
 		d.summaryInputs = append(d.summaryInputs, body)
+		if d.failSummaries > 0 {
+			d.failSummaries--
+			return llm.CompleteResponse{}, errors.New("fixture compactor unavailable")
+		}
 		facts := []string{"The layout has been inspected."}
 		if strings.Contains(body, cumulativeConstraint) {
 			facts = append(facts, cumulativeConstraint)
@@ -62,6 +68,61 @@ func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteR
 }
 
 func (*cumulativeMemoryDriver) Close(context.Context) error { return nil }
+
+func TestRunOnce_CumulativeMemory_RecoversAfterCompactionFailure(t *testing.T) {
+	for _, backend := range []string{"inmem", "sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			cfg := minimalCfg(t)
+			cfg.State.Driver = backend
+			if backend == "sqlite" {
+				cfg.State.DSN = filepath.Join(t.TempDir(), "recovery.db")
+			}
+			if backend == "postgres" {
+				cfg.State.DSN = os.Getenv("HARBOR_PG_DSN")
+				if cfg.State.DSN == "" {
+					t.Skip("HARBOR_PG_DSN not set; PostgreSQL recovery acceptance requires a real service")
+				}
+			}
+			cfg.Memory = config.Defaults().Memory
+			cfg.Memory.RecentTurns, cfg.Memory.BudgetTokens = 1, 100000
+			driver := &cumulativeMemoryDriver{requests: map[string]string{}}
+			name := "cumulative-recovery-" + string(state.NewEventID())
+			llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
+			snapshot := llm.ConfigSnapshot{Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
+				ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
+				DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true}
+			stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stack.Close(context.Background()) })
+			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "recovery-" + string(state.NewEventID())}
+			t.Cleanup(func() {
+				if _, err := stack.State.DeleteScope(context.Background(), id); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := stack.RunOnce(t.Context(), cumulativeConstraint, id, assemble.WithRunID("seed")); err != nil {
+				t.Fatal(err)
+			}
+			driver.mu.Lock()
+			driver.failSummaries = 1
+			driver.mu.Unlock()
+			if _, err := stack.RunOnce(t.Context(), "Inspect the same layout.", id, assemble.WithRunID("failed")); err == nil || !strings.Contains(err.Error(), "fixture compactor unavailable") {
+				t.Fatalf("compactor failure was not surfaced: %v", err)
+			}
+			if _, err := stack.RunOnce(t.Context(), "Recall the original constraint without tools.", id, assemble.WithRunID("recovered")); err != nil {
+				t.Fatalf("next turn remained poisoned: %v", err)
+			}
+			driver.mu.Lock()
+			body := driver.requests["recovered"]
+			driver.mu.Unlock()
+			if !strings.Contains(body, cumulativeConstraint) || strings.Contains(body, "unsettled_historical_runs") {
+				t.Fatal("actual next request lost the constraint or retained a phantom active run")
+			}
+		})
+	}
+}
 
 func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testing.T) {
 	for _, backend := range []string{"inmem", "sqlite", "postgres"} {

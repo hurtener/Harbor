@@ -122,17 +122,14 @@ func TestRetainedResults_RejectsUnavailableOrForeignReference(t *testing.T) {
 
 func TestRetainedResults_BoundsAndCancellation(t *testing.T) {
 	t.Parallel()
-	for _, n := range []int{64, 65} {
+	for _, n := range []int{64, 65, 257} {
 		values := make([]any, n)
 		for i := range values {
 			values[i] = offloadedReference(fmt.Sprint(i))
 		}
 		refs, err := retainedResultReferences(t.Context(), referenceContext(values...), referenceStore())
-		if n == 64 && (err != nil || len(refs) != 64) {
+		if err != nil || len(refs) != n {
 			t.Fatalf("bounded references lost: %d %v", len(refs), err)
-		}
-		if n == 65 && !errors.Is(err, ErrRetainedContextCapacity) {
-			t.Fatal("reference ceiling silently truncated")
 		}
 	}
 	for _, ref := range []string{"", " ref", strings.Repeat("x", 257)} {
@@ -154,11 +151,11 @@ func TestRetainedResults_BoundsAndCancellation(t *testing.T) {
 	old := store.lookup
 	store.lookup = func(ctx context.Context, scope artifacts.ArtifactScope, id string) (*artifacts.ArtifactRef, bool, error) {
 		ref, found, err := old(ctx, scope, id)
-		ref.Filename = strings.Repeat("x", maxRetainedResultMetadataBytes)
+		ref.Filename = strings.Repeat("x", 16*1024+1)
 		return ref, found, err
 	}
-	if _, err := retainedResultReferences(t.Context(), referenceContext(offloadedReference("a")), store); !errors.Is(err, ErrRetainedContextCapacity) {
-		t.Fatal("unbounded metadata")
+	if refs, err := retainedResultReferences(t.Context(), referenceContext(offloadedReference("a")), store); err != nil || len(refs) != 1 || len(refs[0].Filename) != 16*1024+1 {
+		t.Fatalf("legacy byte ceiling rejected or clipped metadata: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

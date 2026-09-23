@@ -41,7 +41,8 @@ func TestRunOne_RetirementDuringConfigProjectionKeepsTypedRefusal(t *testing.T) 
 		{"agent prompt", 3, "prompt-layer projection failed"},
 		{"user prompt", 4, "prompt-layer projection failed"},
 		{"prompt blocks", 5, "prompt-layer projection failed"},
-		{"completion hook", 6, "run-completion-hook projection failed"},
+		{"memory budget", 6, "memory-budget projection failed"},
+		{"completion hook", 7, "run-completion-hook projection failed"},
 	} {
 		for _, retired := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/retired=%t", stage.name, retired), func(t *testing.T) {

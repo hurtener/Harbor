@@ -282,7 +282,7 @@ func TestRetainedContext_RequiredWriteAndRedaction(t *testing.T) {
 	if strings.Contains(string(record.Bytes), "SECRET") {
 		t.Fatal("unredacted content retained")
 	}
-	for _, size := range []int{0, 33, -1} {
+	for _, size := range []int{0, -1} {
 		if _, err = sessionmemory.BeginRetainedRun(t.Context(), store, redactor, retainedBase("other", "s").Quadruple, size, time.Hour, nil); err == nil {
 			t.Fatal("invalid capacity")
 		}

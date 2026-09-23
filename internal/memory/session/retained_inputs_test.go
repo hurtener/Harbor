@@ -64,6 +64,33 @@ func TestRetainedInputs_ValidationAndBoundedProjection(t *testing.T) {
 	}
 }
 
+func TestRetainedInputs_MoreThanSixtyFourReferences(t *testing.T) {
+	inputs := make([]planner.InputArtifactView, 100)
+	ids := make([]string, len(inputs))
+	for i := range inputs {
+		ids[i] = fmt.Sprintf("input-%03d", i)
+		inputs[i].ID = ids[i]
+	}
+	if err := ValidateRetainedInputs(ids, inputs); err != nil {
+		t.Fatal(err)
+	}
+	step, err := retainedInputContext(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := referenceContext()
+	rc.Trajectory.Steps = append(rc.Trajectory.Steps, *step)
+	refs, err := retainedResultReferences(t.Context(), rc, referenceStore())
+	if err != nil || len(refs) != len(inputs) {
+		t.Fatalf("reference round-trip failed: %d, %v", len(refs), err)
+	}
+	for i, ref := range refs {
+		if ref.Ref != ids[i] || ref.Provenance != "retained input attachment" {
+			t.Fatal("input reference changed")
+		}
+	}
+}
+
 func TestRetainedInputs_ConcurrentScopeAndDeletedReferences(t *testing.T) {
 	t.Parallel()
 	store := retainedReferenceStore{lookup: func(_ context.Context, scope artifacts.ArtifactScope, id string) (*artifacts.ArtifactRef, bool, error) {

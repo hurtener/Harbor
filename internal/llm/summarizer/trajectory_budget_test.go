@@ -10,6 +10,8 @@ package summarizer_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -18,6 +20,43 @@ import (
 	"github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/planner"
 )
+
+func TestTrajectoryBudget_ConfigurableMaintenanceCalls(t *testing.T) {
+	for _, limit := range []int{0, 2, 20} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON, FinishReason: "stop"}}
+			s, err := summarizer.NewTrajectorySummariser(client,
+				summarizer.WithTrajectoryMaxCalls(limit), summarizer.WithTrajectoryHeavyOutputThreshold(8192))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tr := budgetTrajectory(20)
+			before, err := tr.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary, err := s.Summarise(t.Context(), trajRC("call-allowance"), tr)
+			want := limit
+			if want == 0 {
+				want = 16
+			}
+			if len(client.seenCalls()) != want {
+				t.Fatalf("maintenance calls=%d want=%d", len(client.seenCalls()), want)
+			}
+			if want < 20 {
+				if !errors.Is(err, summarizer.ErrTrajectorySummaryCapacity) || summary != nil {
+					t.Fatalf("exhaustion published partial summary: %v", err)
+				}
+			} else if err != nil || summary == nil {
+				t.Fatalf("configured calls beyond sixteen failed: %v", err)
+			}
+			after, err := tr.Serialize()
+			if err != nil || string(before) != string(after) {
+				t.Fatal("maintenance mutated source trajectory")
+			}
+		})
+	}
+}
 
 // budgetTrajectory returns a trajectory whose naive rendering far
 // exceeds any plausible budget, so the builder must use bounded chronological chunks.

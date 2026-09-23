@@ -12,11 +12,6 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 )
 
-const (
-	maxRetainedResultRefs          = 64
-	maxRetainedResultMetadataBytes = 16 * 1024
-)
-
 // Recover existing dispatcher envelopes and admitted attachment frames, never identifiers generated
 // by a summary or inferred from prose. This is an ephemeral projection of the
 // bounded window, not a new persistent index or domain-specific registry.
@@ -47,9 +42,6 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 					return ErrRetainedContextUnavailable
 				}
 				ids[ref] = struct{}{}
-				if len(ids) > maxRetainedResultRefs {
-					return ErrRetainedContextCapacity
-				}
 			}
 			for _, child := range value {
 				if err := walk(child, depth+1); err != nil {
@@ -99,7 +91,7 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 		if body, ok := value.(map[string]any); ok && step.Action == nil {
 			if raw, exists := body[retainedInputRefsKey]; exists {
 				refs, valid := raw.([]any)
-				if !valid || len(refs) == 0 || len(refs) > maxRetainedResultRefs {
+				if !valid || len(refs) == 0 {
 					return nil, ErrRetainedContextUnavailable
 				}
 				for _, rawID := range refs {
@@ -108,9 +100,6 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 						return nil, ErrRetainedContextUnavailable
 					}
 					ids[id], inputs[id] = struct{}{}, true
-				}
-				if len(ids) > maxRetainedResultRefs {
-					return nil, ErrRetainedContextCapacity
 				}
 			}
 		}
@@ -148,9 +137,7 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 		}
 		refs = append(refs, planner.ArtifactManifestEntry{Ref: id, Filename: ref.Filename, MIME: ref.MimeType, SizeBytes: ref.SizeBytes, Provenance: provenance})
 	}
-	encoded, err := json.Marshal(refs)
-	if err != nil || len(encoded) > maxRetainedResultMetadataBytes {
-		return nil, ErrRetainedContextCapacity
-	}
+	// The planner's assembled-request token admission owns projection size.
+	// Accumulated references must not impose a second session-lifetime ceiling.
 	return refs, nil
 }

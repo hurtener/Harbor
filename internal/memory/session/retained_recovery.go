@@ -27,7 +27,7 @@ func ReconcileRetainedRun(ctx context.Context, store state.StateStore, redactor 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if store == nil || redactor == nil || identity.Validate(q.Identity) != nil || q.RunID == "" || turns < 1 || turns > maxRetainedContextTurns {
+	if store == nil || redactor == nil || identity.Validate(q.Identity) != nil || q.RunID == "" || turns < 1 {
 		return ErrRetainedContextUnavailable
 	}
 	if now == nil {
@@ -72,7 +72,7 @@ func ReconcileRetainedRun(ctx context.Context, store state.StateStore, redactor 
 		return err
 	}
 	head := r.journal
-	if head.Version != retainedJournalVersion || head.Admission != r.admission || head.Count < 0 || head.Count > maxRetainedContextSteps || head.Bytes < 0 || head.ExpiresAt.IsZero() {
+	if head.Version != retainedJournalVersion || head.Admission != r.admission || head.Count < 0 || head.Count > head.Bytes || head.Bytes < 0 || head.ExpiresAt.IsZero() {
 		return ErrRetainedContextUnavailable
 	}
 	if head.Pending {

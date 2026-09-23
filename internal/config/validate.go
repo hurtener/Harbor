@@ -1305,6 +1305,9 @@ func (c *Config) validateMemory() error {
 	if c.Memory.Summarizer.MaxTokens < 0 {
 		return fieldError("memory.summarizer.max_tokens", "must be >= 0")
 	}
+	if c.Memory.Summarizer.MaxCalls < 0 {
+		return fieldError("memory.summarizer.max_calls", "must be >= 0")
+	}
 	if route := c.Memory.Summarizer.ProviderRoute; route != nil {
 		if strings.TrimSpace(route.RouteID) == "" || strings.TrimSpace(route.ProviderConnectionID) == "" ||
 			strings.TrimSpace(route.ModelSelector) == "" || route.RouteGeneration == 0 ||
@@ -1315,8 +1318,8 @@ func (c *Config) validateMemory() error {
 			return fieldError("memory.summarizer.model", "must be omitted when provider_route selects the compaction model")
 		}
 	}
-	if c.Memory.RecentTurns < 0 || c.Memory.RecentTurns > MaxMemoryRecentTurns {
-		return fieldError("memory.recent_turns", fmt.Sprintf("must be between 0 and %d (zero selects 20)", MaxMemoryRecentTurns))
+	if c.Memory.RecentTurns < 0 {
+		return fieldError("memory.recent_turns", "must be >= 0 (zero selects 20)")
 	}
 	return nil
 }

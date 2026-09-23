@@ -1113,7 +1113,7 @@ func EnsureGrantAttemptScope(ctx context.Context, grant ExternalGrant) (context.
 		copyScope.AttemptNonce = hex.EncodeToString(digest[:])
 	}
 	if ordinal, present := ctx.Value(compactionAttemptKey{}).(int); present {
-		if ordinal < 1 || ordinal > MaxCompactionCalls {
+		if ordinal < 1 {
 			return ctx, nil, ErrExternalGrantInvalid
 		}
 		copyScope.LogicalCallID, copyScope.AttemptNonce = compactionAttemptIdentity(copyScope.LogicalCallID, copyScope.AttemptNonce, ordinal)

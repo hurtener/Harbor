@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,9 +28,10 @@ const servedCumulativeConstraint = "Keep the emergency exit labelled NORTH-STAR-
 // if it appears in the request it actually received. This verifies transport,
 // projection and persistence, not a real model's summarization proficiency.
 type servedCumulativeClient struct {
-	mu        sync.Mutex
-	requests  map[string]string
-	summaries []string
+	mu            sync.Mutex
+	requests      map[string]string
+	summaries     []string
+	failSummaries int
 }
 
 func (c *servedCumulativeClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -48,6 +50,10 @@ func (c *servedCumulativeClient) Complete(ctx context.Context, req llm.CompleteR
 	defer c.mu.Unlock()
 	if strings.Contains(body, "You summarize historical agent execution") {
 		c.summaries = append(c.summaries, body)
+		if c.failSummaries > 0 {
+			c.failSummaries--
+			return llm.CompleteResponse{}, errors.New("fixture compactor unavailable")
+		}
 		facts := []string{"Layout inspected."}
 		if strings.Contains(body, servedCumulativeConstraint) {
 			facts = append(facts, servedCumulativeConstraint)
@@ -65,6 +71,83 @@ func (c *servedCumulativeClient) Complete(ctx context.Context, req llm.CompleteR
 }
 
 func (*servedCumulativeClient) Close(context.Context) error { return nil }
+
+func TestRetainedServer_RecoversAfterCompactionFailure(t *testing.T) {
+	for _, backend := range []string{"inmem", "sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			cfg := config.StateConfig{Driver: backend}
+			if backend == "sqlite" {
+				cfg.DSN = filepath.Join(t.TempDir(), "recovery.sqlite")
+			}
+			if backend == "postgres" {
+				cfg.DSN = os.Getenv("HARBOR_PG_DSN")
+				if cfg.DSN == "" {
+					t.Skip("HARBOR_PG_DSN not set; PostgreSQL recovery acceptance requires a real service")
+				}
+			}
+			store, err := state.Open(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close(context.Background()) })
+			client := &servedCumulativeClient{requests: map[string]string{}}
+			name := "served-recovery-" + string(state.NewEventID())
+			llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return client, nil })
+			blobs, err := artifacts.Open(t.Context(), config.ArtifactsConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = blobs.Close(context.Background()) })
+			env, _, tools := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
+				composed, err := llm.Open(t.Context(), llm.ConfigSnapshot{Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
+					ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
+					DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true}, llm.Deps{Artifacts: blobs, Bus: opts.Bus})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = composed.Close(context.Background()) })
+				summary, err := summarizer.NewTrajectorySummariser(composed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				opts.StateStore, opts.ArtifactStore = store, blobs
+				opts.SessionMemory = config.Defaults().Memory
+				opts.SessionMemory.RecentTurns = 1
+				opts.TokenBudget = 100000
+				opts.Compression = planner.NewCompressionRunner(summary)
+				opts.Planner = react.New(composed)
+			})
+			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "served-recovery-" + string(state.NewEventID())}
+			t.Cleanup(func() {
+				if _, err := store.DeleteScope(context.Background(), id); err != nil {
+					t.Error(err)
+				}
+			})
+			if result := retainedServerTurn(t, env, id, servedCumulativeConstraint, nil); result.Status != tasks.StatusComplete {
+				t.Fatalf("seed: %+v", result.Error)
+			}
+			client.mu.Lock()
+			client.failSummaries = 1
+			client.mu.Unlock()
+			if result := retainedServerTurn(t, env, id, "Inspect the same layout.", nil); result.Status != tasks.StatusFailed {
+				t.Fatalf("compactor failure hidden: %v", result.Status)
+			}
+			result := retainedServerTurn(t, env, id, "Recall the original constraint without tools.", nil)
+			if result.Status != tasks.StatusComplete {
+				t.Fatalf("next turn remained poisoned: %+v", result.Error)
+			}
+			client.mu.Lock()
+			body := client.requests[string(result.ID)]
+			client.mu.Unlock()
+			if !strings.Contains(body, servedCumulativeConstraint) || strings.Contains(body, "unsettled_historical_runs") {
+				t.Fatal("actual next request lost the constraint or retained a phantom active run")
+			}
+			if tools.Load() != 0 {
+				t.Fatal("failure recovery replayed tools")
+			}
+		})
+	}
+}
 
 func TestRetainedServer_CumulativeMemoryAcrossFiveWindows(t *testing.T) {
 	for _, backend := range []string{"inmem", "sqlite", "postgres"} {

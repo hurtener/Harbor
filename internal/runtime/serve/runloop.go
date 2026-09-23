@@ -498,7 +498,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		return nil, fmt.Errorf("run loop memory: %w", err)
 	}
 	memoryTurns := opts.SessionMemory.RecentTurnsResolved()
-	if memoryTurns < 0 || memoryTurns > config.MaxMemoryRecentTurns {
+	if memoryTurns < 0 {
 		return nil, fmt.Errorf("%w: retained context turn limit is invalid", ErrRunLoopDriverMisconfigured)
 	}
 	if memoryTurns > 0 && (opts.StateStore == nil || opts.Redactor == nil || opts.RetainedContextTTL <= 0) {

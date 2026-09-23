@@ -80,6 +80,35 @@ func TestNewTrajectorySummariser_NilClient_FailsLoud(t *testing.T) {
 	}
 }
 
+func TestTrajectorySummariser_ConfiguredOutputHasNoFixedByteCeiling(t *testing.T) {
+	fact := strings.Repeat("preserve-me ", 2048)
+	client := &stubClient{response: llm.CompleteResponse{Content: `{"goals":[],"facts":["` + fact + `"],"pending":[],"last_output_digest":"done","note":""}`, FinishReason: "stop"}}
+	s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryMaxSummaryTokens(8192))
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := s.Summarise(t.Context(), trajRC("large-output"), trajFixture())
+	if err != nil {
+		t.Fatalf("configured completion rejected by byte ceiling: %v", err)
+	}
+	if len(summary.Facts) != 1 || summary.Facts[0] != fact {
+		t.Fatal("valid output changed")
+	}
+	calls := client.seenCalls()
+	if len(calls) != 1 || calls[0].req.MaxTokens == nil || *calls[0].req.MaxTokens != 8192 {
+		t.Fatal("configured output allowance not sent")
+	}
+	next := trajFixture()
+	next.Summary = summary
+	if _, err := s.Summarise(t.Context(), trajRC("large-prior-summary"), next); err != nil {
+		t.Fatalf("prior valid summary rejected by byte ceiling: %v", err)
+	}
+	calls = client.seenCalls()
+	if len(calls) != 2 || !strings.Contains(*calls[1].req.Messages[1].Content.Text, fact) {
+		t.Fatal("next maintenance request lost the complete prior summary")
+	}
+}
+
 func TestTrajectorySummariser_Summarise_HappyPath(t *testing.T) {
 	t.Parallel()
 	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}

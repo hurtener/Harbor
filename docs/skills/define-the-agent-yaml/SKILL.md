@@ -106,6 +106,13 @@ Omitted/zero preserves 2048; a positive deployment-specific value remains subjec
 to governed model capacity. YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS` changes
 require a restart. See [the reference](../../CONFIG.md#memorysummarizermax_tokens).
 
+`memory.summarizer.max_calls` separately limits chronological calls per compaction
+(zero/omitted: 16); `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS` is its environment override.
+It is restart-required and never authorizes extra tool work or a partial summary.
+Increasing it can increase time and spend. `recent_turns` remains configurable
+with a default of 20 and no hardcoded 32-turn maximum. See
+[the maintenance allowance](../../CONFIG.md#memorysummarizermax_calls).
+
 On the PR #779 cumulative-memory branch, `rolling_summary` also enables the
 shared served/embedded execution-context path. `recent_turns: 20` (or zero)
 bounds detailed history, not checkpoint age. The separate

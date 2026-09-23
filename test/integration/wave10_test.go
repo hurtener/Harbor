@@ -404,9 +404,12 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapRunLLMSettings) {
 		t.Fatal("atomic run LLM settings must appear in the canonical capability set")
 	}
+	if !h.Accepts(types.CapAgentConfigMemory) {
+		t.Fatal("versioned memory budget must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 16 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly 16 canonical capabilities including atomic run LLM settings", caps)
+	if len(caps) != 17 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly 17 canonical capabilities including memory budget configuration", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {
