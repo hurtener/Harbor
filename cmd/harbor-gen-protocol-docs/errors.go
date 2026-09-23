@@ -79,7 +79,7 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		Retry: "No — re-authenticate with a scope-bearing token.",
 	},
 	protoerrors.CodePayloadInvalid: {
-		When:  "A control payload violated an RFC §6.3 bound (depth > 6, > 64 keys, > 50 list items, a string > 4096 chars, > 16 KiB total) or carried an unsupported leaf type.",
+		When:  "A control payload violated an RFC §6.3 bound (depth > 6, > 64 keys, > 50 list items, a string > 4096 chars, > 16 KiB total), carried an unsupported leaf type, or violated a control's shape (for example attachments on text-only `user_message`).",
 		Retry: "No — shrink / restructure the payload.",
 	},
 	protoerrors.CodeUnknownMethod: {

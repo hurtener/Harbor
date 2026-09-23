@@ -54,6 +54,14 @@ deployment, real-model call or service-backed acceptance in this increment.
 Consumer Stop/Steer/Queue, legacy memory retirement, coverage, final-tree gates
 and matched live multi-window acceptance remain open. Preflight is owner-waived.
 
+Publication follow-up: exact-head docs run `35857236721` on `01a552f6` failed
+`protocol-docs-gen-check`: the error-table description was edited in generated
+output without its canonical generator. Correct the generator and regenerate;
+the generated page remains byte-identical to the intended published description.
+`GOFLAGS=-p=1 make protocol-docs-gen-check` and the full generator race suite
+pass locally. This repairs that actual hosted failure; new-head hosted
+verification is still pending. No runtime behavior changes in this follow-up.
+
 ### Steering fences queued invocations and approval waits
 
 Parent `a6d9433d9213d45e07ce0fd9679cc1fd335cc254` fails two new race
