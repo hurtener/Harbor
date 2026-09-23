@@ -2,6 +2,14 @@
 
 ## Configurable compaction completion allowance — 2026-09-23
 
+Published implementation `030cdc860603a366152b956fe6ed507824cb57ed` is tagged
+`v1.32.0-rc.10`, annotated object `fb13c9b3f14c3e51fd08be392cfe573a7bb7ba2b`.
+Release workflow `35927514986` passed six platform builds and published thirteen
+prerelease assets. Public module provenance resolves the exact commit with
+checksum `h1:SDS+Ke9V3RKjbMEhSckE0dJ3VWd3FC0UUO+bRapVBsM=`. Darwin ARM64
+checksum, workflow attestation and the native version stamp verify; binary
+SHA-256 is `8601330e88957c5ca41bc0ad7138d67661f9c198db109d67163b3242c2d35829`.
+
 The narrow RC9 follow-up exposes the existing summarizer output option as
 `memory.summarizer.max_tokens` / `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`, wired
 through the shared assembly path. Omitted/zero preserves 2048; deployments can
@@ -20,10 +28,16 @@ default, configured 8192, and configured 32000 clamped to the selected route's
 without retry, and subsequent route revocation prevents any external call.
 Scoped vet and golangci-lint 2.13.2 pass, with zero lint issues.
 
-These are local implementation checks, not new real-model acceptance or final
-coverage evidence. Publication, RC10 release/deployment, failed-session recovery,
-repeatable live compaction and transcript catch-up are still pending at this
-checkpoint. Existing coverage gaps and the incomplete matched comparison remain
+Post-publication canonical Protocol docs/Console manifest/external TS checks
+also pass. Drift audit completes with 1592 OK, 0 WARN, 0 FAIL. Exact-implementation
+CI `35927456827` has thirteen completed jobs passing, with Linux/macOS Go jobs
+still running at the latest observation. Fresh full-package race coverage is
+83.5% for config (85% floor) and 88.4% for summarizer (90% floor): both remain
+below target. No unavailable service execution is counted as passing.
+
+These are implementation/release-build checks, not new real-model acceptance.
+RC10 deployment, failed-session recovery, repeatable live compaction and
+transcript catch-up are still pending at this checkpoint. Coverage gaps and the incomplete matched comparison remain
 main-release blockers. Both local and hosted preflight remain owner-waived, not
 green; the owner separately authorized quick exploratory RC publication before
 all main-release gates finish.
