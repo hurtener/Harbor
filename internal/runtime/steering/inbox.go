@@ -158,7 +158,10 @@ func (in *Inbox) enqueueLocked(ev ControlEvent) error {
 		if in.hardCancellation != nil {
 			return nil // an already-accepted hard cancellation is idempotent
 		}
-		in.hardCancellation = &ev
+		// Only the accepted hard cancellation needs a retained pointer. Taking
+		// &ev would heap-allocate every ordinary steering event as well.
+		accepted := ev
+		in.hardCancellation = &accepted
 		// CancelFunc performs no external I/O. Calling it under the same lock
 		// as finishExecution makes cancellation versus completion atomic.
 		in.cancelExecution()

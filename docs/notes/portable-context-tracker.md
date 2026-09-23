@@ -33,6 +33,19 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Hard Stop — partial implementation increment
 
+Follow-up on published `6bc266ea`: hosted CI `35845869347` failed its performance
+gate because `SteeringApply_EnqueueDrain` grew from 256 to 416 B/op (+62.5%).
+Taking the address of the enqueue argument made every event escape to the heap,
+even ordinary soft controls. Retain a branch-local copy only for accepted hard
+Stop instead. No benchmark, threshold, workload or cancellation semantics change.
+The unchanged benchmark, Go 1.26.4 darwin-arm64, six 100ms samples before/after
+on this host, confirms **416 B/op / 6 allocations -> 256 B/op / 5 allocations**.
+Full steering `-race -count=1` passes **1.650s**. This is a local repair of that
+specific allocation regression, not a substitute for final-head hosted validation.
+Source tree `98494be84ef22ca1a41b1e34740e85315082a27f`: targeted lint reports
+zero issues; the existing performance-gate parser passes the six-sample pair
+with its unchanged 30% threshold. Markdown passes; no performance baseline reset.
+
 Built on published `9524fef16daa0c1a2cfcd970a5d5f18d2c1fa0f1`, same PR/branch.
 The verified control inbox now interrupts its own execution context immediately
 for `hard: true`, with identity isolation and atomic cancellation versus terminal
