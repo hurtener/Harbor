@@ -39,8 +39,27 @@ Locally verified with Go 1.27.1 on the correction tree:
   zero issues for the touched memory/planner trees. Changed Markdown, mirror
   and diff checks pass.
 
-Publication, exact-head hosted validation and RC deployment must be recorded
-separately; these local checks are not a claim that the live RC5 is repaired.
+Published implementation: `8c6fc405cce7765615ca74a4f60093b1d842509a`.
+The final focused embedded/served race regression also passes on this tree:
+`HARBOR_PG_DSN=... GOMAXPROCS=2 GOFLAGS=-p=1 go test -race
+./internal/runtime/assemble ./internal/runtime/serve -run
+'TestRunOnce_(Retained|CumulativeMemory)|TestRetainedServer_' -count=1`
+(166.720s / 31.721s). This includes actual-request multi-window checks, not
+only persisted-state assertions.
+
+Exploratory `v1.32.0-rc.6` points to that exact implementation (annotated tag
+`efab61217c5381ba1d6fb7f4c80f3459c2b177bf`). Release workflow `35910506218`
+passes all six platform builds and publishes thirteen prerelease assets.
+The public module checksum is
+`h1:X8Odny6hSJSBFt7z/VifxNDN7IHo5fJQo4FVaji1Et0=`. The owner explicitly
+authorized quick RC cycles before final acceptance; this does not authorize
+a stable release or merge. Exact implementation docs run `35909435652`
+passes; main CI `35909435862` remains in progress at this publication.
+
+The isolated owner sample has been deployed to RC6, with runtime-reported
+version and commit independently verified through Protocol. Its existing
+conversation is being resumed for a short post-restart edit; live capacity
+regression acceptance is not yet claimed.
 The owner-selected sample budget is 64,000 tokens in its deployment YAML.
 Memory fields are currently restart-required and absent from the admin
 agent-config Protocol. A separate static summarizer model is supported without
