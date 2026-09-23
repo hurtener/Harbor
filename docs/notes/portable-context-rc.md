@@ -5,6 +5,10 @@ RFC 002 / PR #779. `v1.32.0-rc.1` is published as a prerelease at
 snapshots, not the current recovery target: the candidate withdraws the RC4
 signed retry-policy extension while retaining the narrow RC2/RC3 corrections.
 Hard cancellation, steering and consumer control acceptance remain pending.
+The hard-Stop increment interrupts runtime execution and closes established
+provider streams, but a deterministic pre-response-header probe still leaves the
+provider socket open. Do not claim complete provider termination or RC acceptance
+from the established-stream test. See the tracker's explicit transport blocker.
 This procedure neither announces a stable release nor changes existing tags.
 The live implementation/release tracker is
 [portable-context-tracker.md](portable-context-tracker.md).

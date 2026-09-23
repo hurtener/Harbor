@@ -57,8 +57,13 @@ type ControlEvent struct {
 // Construct an Inbox via Registry.Open; do not construct one
 // directly.
 type Inbox struct {
-	identity identity.Quadruple
-	clock    Clock
+	// Execution state is guarded by mu. The identity-scoped cancellation
+	// handle is installed before registry publication, never a stored context.
+	cancelExecution   context.CancelFunc
+	hardCancellation  *ControlEvent
+	executionFinished bool
+	identity          identity.Quadruple
+	clock             Clock
 
 	mu     sync.Mutex
 	queue  []ControlEvent
@@ -145,10 +150,19 @@ func (in *Inbox) validateEvent(ev ControlEvent) error {
 // the events (the batch-arbitration semantics under test require one
 // drain).
 func (in *Inbox) enqueueLocked(ev ControlEvent) error {
-	if in.closed {
+	if in.closed || in.executionFinished {
 		return fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
 	}
 	ev.EnqueuedAt = in.clock.Now()
+	if in.cancelExecution != nil && ev.Type == ControlCancel && boolFromPayload(ev.Payload, "hard") {
+		if in.hardCancellation != nil {
+			return nil // an already-accepted hard cancellation is idempotent
+		}
+		in.hardCancellation = &ev
+		// CancelFunc performs no external I/O. Calling it under the same lock
+		// as finishExecution makes cancellation versus completion atomic.
+		in.cancelExecution()
+	}
 	in.queue = append(in.queue, ev)
 
 	// Coalesced wake: a non-blocking send on the 1-buffered notify
@@ -210,6 +224,15 @@ func (in *Inbox) WaitForEvent(ctx context.Context) error {
 			// and the re-check; that is fine, we just wait again).
 		}
 	}
+}
+
+// finishExecution closes control admission at the terminal decision boundary.
+// The first accepted hard cancellation wins over any late planner result.
+func (in *Inbox) finishExecution() *ControlEvent {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.executionFinished = true
+	return in.hardCancellation
 }
 
 // Drain atomically removes and returns every queued ControlEvent in

@@ -31,6 +31,70 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Hard Stop — partial implementation increment
+
+Built on published `9524fef16daa0c1a2cfcd970a5d5f18d2c1fa0f1`, same PR/branch.
+The verified control inbox now interrupts its own execution context immediately
+for `hard: true`, with identity isolation and atomic cancellation versus terminal
+completion. Queued dispatch rejects cancellation; late planner success cannot
+win after accepted Stop. Returned tool evidence and settlement are preserved.
+Terminal bookkeeping retains identity in a separate five-second cleanup context.
+Hard Stop suppresses new external completion-hook/naming dispatch (D-478).
+
+The real local provider-stream probe reproduced a pooled-reader close race on
+Bifrost 1.7.4 / fasthttp 1.71.0. Pinning fasthttp 1.74.0 and its required module
+graph fixes that probe under `-race`; Bifrost remains 1.7.4 and Go remains 1.26.4.
+Queued late stream chunks are rejected after cancellation is observed, and both
+routed and ordinary provider failures preserve typed context cancellation rather
+than misclassifying it as an outage. No provider-specific API or new service.
+
+**Still blocking provider-termination acceptance:** cancellation before response
+headers returns to Harbor but leaves Bifrost's underlying network call open.
+The deterministic `TestDriver_CancellationBeforeHeadersClosesUpstream` fails on
+this candidate after a one-second observation window; this is not a successful
+Stop gate. The diagnostic probe and red logs are retained outside the working
+tree for the next dependency repair. The pinned upstream
+`providers/utils.makeRequestWithDoFunc` explicitly does not cancel the underlying
+fasthttp call. Do not hide this with longer deadlines, sleeps or skipped gates.
+
+Upstream now documents a context-aware RoundTripper repair in
+[the Bifrost 2.2.0 transport release](https://github.com/maximhq/bifrost/releases/tag/transports%2Fv2.2.0),
+issues #7034/#7104. The inspected core 1.8.0, 1.9.1 and 1.10.0 manifests require
+Go 1.27.0; adopting a newer core entails a toolchain/dependency compatibility
+review, not merely the fasthttp pin. No upstream fork, local module replacement,
+proxy, or toolchain change was introduced for this increment.
+
+Local evidence on source tree `228fbf78a980cb9777e0a74245da5ec1a5123eac`,
+Go 1.26.4 darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1`:
+
+- Full steering, dispatch, parallel and Bifrost package suites pass:
+  **1.801s / 1.574s / 1.472s / 7.216s**. Coverage is
+  **86.3% / 78.3% / 91.5% / 80.8%**. Steering meets 85%; dispatch remains below
+  85% and Bifrost below the later Phase 233c 90% target. These coverage gates
+  are not satisfied. Live-provider opt-in tests were not run.
+- Real HTTP/JWT/JWKS control endpoint regression passes **2.277s**, including
+  foreign-user rejection, blocked model/tool interruption, late-finish rejection
+  and N=128 isolated controls. Unit tests also cover N=128 run isolation,
+  cancellation during intent persistence, cleanup failure and the inverse
+  completion-before-Stop ordering. No concurrency reduction or test retry.
+- Repository-wide `make lint` and `make vet` pass. Initial drift audit found
+  decision IDs in three new godoc comments; those references were removed.
+  The runtime is unchanged; lint/vet rerun on corrected tree
+  `b6704ef4aaebecefb0856c5bef11e90ff8087dfe` also passes.
+- Markdown (599 files), root/template mirrors and corrected drift audit pass:
+  **1,592 OK / 0 WARN / 0 FAIL**. The final publication adds only evidence text
+  to the checked implementation. No full release build, service-backed full
+  suite, browser acceptance or complete provider-cancellation pass is claimed.
+
+In-flight steering, consumer Stop/Queue lifecycle, cumulative-memory legacy
+retirement and live acceptance remain pending. No RC tag, deployment, model call,
+Workbench change or old-service deletion accompanies this increment.
+
+Exact published-head CI check before this increment: `9524fef1` run
+`35843299832` still runs Linux/macOS tests; all completed ancillary jobs pass.
+The matching docs run `35843299831` passed.
+Running jobs are not approval, and this does not resolve earlier cleanup failures.
+
 ### Default cumulative activation — implementation increment
 
 Ordinary YAML and `config.Defaults()` now select `rolling_summary` with

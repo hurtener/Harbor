@@ -15865,3 +15865,29 @@ later corrections, failures, restart, concurrent siblings, erasure, expiry and
 model switches. Verify bounded storage/requests on all three StateStore drivers.
 Then test matched real UI agents across multiple windows; report summary loss
 honestly. No Stowage recall or repeated prompt may manufacture continuity.
+
+## D-478 — Hard Stop interrupts execution before the next step
+
+**Date:** 2026-09-23. **Scope:** PR #779 run control; partial implementation.
+**Amends:** D-280/D-289 terminal hook/naming behavior for accepted hard Stop only.
+
+Verified hard CANCEL owns a per-run cancellation handle published with the
+identity-scoped inbox. Admission interrupts the execution context immediately;
+one lock arbitrates cancellation against terminal completion. A late model
+success cannot resurrect an accepted cancellation. Queued tool dispatch checks
+cancellation; active tools/retries/waits receive the cancelled context. Join
+execution and preserve returned evidence, including errors and unknown outcomes.
+Use separate bounded five-second cleanup contexts for required persistence.
+
+Hard Stop does not start external completion-hook or naming calls. Other terminal
+outcomes retain their existing hook behavior. No new wire type, service or
+provider SDK. Control acknowledgement is not terminal confirmation: a client
+must await the authoritative task outcome and surface cancellation failures.
+An external side effect already completed cannot be undone; an independent job
+requires its own cancellation API.
+
+Bifrost 1.7.4 with fasthttp 1.74.0 closes established provider streams without
+the reproduced pooled-reader race. Its pre-response-header socket cancellation
+remains unimplemented in that pinned version and fails the local probe. This is
+an explicit release blocker, not a passing provider-termination gate. In-flight
+steering and consumer queue lifecycle remain separate pending implementation.

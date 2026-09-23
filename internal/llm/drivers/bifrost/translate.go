@@ -727,6 +727,12 @@ func translateErrorForContext(ctx context.Context, berr *bfschemas.BifrostError,
 	if berr == nil {
 		return nil
 	}
+	// Cancellation is a caller-owned outcome, not a provider outage or a
+	// string-matched transport failure. Preserve errors.Is for both routed
+	// and ordinary calls without exposing Bifrost's diagnostic text.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", kind, err)
+	}
 	if _, routed := llm.ResolvedProviderRouteFrom(ctx); routed {
 		// Keep the narrow structured-output repair signal while discarding
 		// all provider text. Masking every routed error as the same sentinel

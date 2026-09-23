@@ -349,6 +349,9 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 // observation/cancel observations are compact (status rows / a cancel
 // bool) and carry no heavy content.
 func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	// Seat the run-scoped artifact resolver ONCE, at the single dispatch
 	// entry point, so every tool-invoking shape below (and every shape a
 	// later decision adds) inherits it rather than re-deriving it. The
@@ -466,6 +469,9 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	}
 	if desc.Invoke == nil {
 		return nil, nil, fmt.Errorf("tool %q is registered without an Invoke function", d.Tool)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	result, err := desc.Invoke(ctx, d.Args)
 	if err != nil {

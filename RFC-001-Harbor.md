@@ -583,6 +583,19 @@ type Coordinator interface {
 
 **Steering payload bounds:** depth ≤ 6, ≤ 64 keys, ≤ 50 list items, ≤ 4096 chars per string, ≤ 16 KiB total. Enforced at the Protocol edge. (Settled.)
 
+**Hard Stop (D-478).** A verified `CANCEL` with `payload.hard: true` cancels
+the identity-scoped execution context immediately at inbox admission, not at
+the next planner boundary. Cancellation and terminal completion arbitrate under
+one per-run lock: an accepted Stop cannot become success through a late model
+response; a terminal decision rejects new controls. Queued dispatch checks
+cancellation, active execution receives it, and returned tool evidence remains
+evidence rather than authorization to replay an action. Cancellation bookkeeping
+uses an independent five-second context preserving identity. A control response
+acknowledges admission, not proof of upstream termination. Clients wait for the
+terminal task outcome; independently running external jobs need their own cancel
+API. Provider socket termination before response headers remains an explicit
+implementation blocker in the PR #779 tracker.
+
 **Rejected HITL gate is terminal.** `APPROVE` and `RESUME` resolve an outstanding pause and the planner re-enters. `REJECT`, by contrast, resolves the pause via `Coordinator.Resume` with a `rejected: true` marker and **terminates the run** with `Finish{constraints_conflict}` — a rejected human-in-the-loop gate is a constraint the planner cannot resolve, not a recoverable signal. (Settled — D-071. The alternative "re-enter the planner on `REJECT` so it can replan" was considered and rejected for V1: it lets a rejected gate loop indefinitely. A planner that should replan-on-reject is a future planner-*policy* concern, not a steering-*primitive* one — it would be a separate RFC change.)
 
 **Pause-state serialization format:** JSON with `format_version: 1`. Settled to align with the event bus (also JSON) and operational simplicity. (Resolves brief 02 Q-2.)
@@ -2532,6 +2545,12 @@ The run-completion hook is the Runtime's one run-lifecycle egress point: an oper
 **Egress is the tool catalog — one path, not two.** The hook's target is a tool name resolved in the runtime's catalog (an MCP tool on a connection, an in-process tool, or a config-declared HTTP tool), dispatched through the **same executor path planner tool calls take**. This is deliberate: provenance stamping, mandatory identity capture, the per-tool policy shell (timeout, bounded retries), and the args-free `tool.invoked` / `tool.completed` / `tool.failed` audit events all come from the existing machinery. A bespoke webhook/HTTP-callback subsystem was considered and **rejected**: it would re-implement transport, auth, retry, provenance, and audit in parallel with the catalog — the "two parallel implementations" smell. The catalog is the egress. Because the executor resolves against the full catalog while the planner's prompt sees the filtered per-run view, a hook target can be dispatchable without ever being exposed to the LLM. The dispatch is not a planner tool invocation: it appends no trajectory step and advances neither `tool_calls_seen` nor the Console `tool_count`. Retries beyond the target tool's own policy shell do not exist at the hook level — one attempt, bounded, no queues.
 
 **Cancellation bridge.** For a cancelled run the run's own context is already dead when the hook fires. The dispatch runs under a **bounded detached context** — cancellation detached from the run, context **values preserved** (the identity quadruple keeps flowing; the bridge is never a bare background context, which would drop identity), bounded by an explicit configurable timeout. This is the same documented bridge pattern the tool-auth subsystem uses for post-cancellation token work.
+
+**Hard-Stop exception (D-478 amends D-280/D-289).** An accepted hard Stop
+suppresses the external completion-hook dispatch and auto-naming trigger: Stop
+must not launch a new tool or model call during teardown. Durable internal
+settlement and completion-chunk sealing still run using bounded cleanup contexts.
+Soft cancellation and other terminal outcomes retain the firing contract above.
 
 **The transcript payload is a public contract.** The hook delivers a typed, versioned payload (`format_version: 1`, golden-pinned JSON — it leaves the process to operator servers): run metadata (the identity quadruple; the registration `agent_id` when the wiring layer knows it — metadata per §6.16, never an isolation key; outcome; timings; the true tool-invocation count) plus the **faithful ordered conversation** — the initial goal, every steering-injected `USER_MESSAGE` and `REDIRECT` in arrival order with step indices, the assistant's per-step prose and compact tool lines, and the final answer. Steering text is captured **from live run state at completion**: the run loop accumulates applied user messages per run (they are otherwise consumed per step and never durably recorded — the applied-control history deliberately drops payloads). Steering entries are bounded by the §6.3 Protocol-edge payload caps; raw tool observations are excluded (the transcript is conversation-shaped, not a trajectory dump — trace consumers use the observability surface). The payload travels only as tool arguments to the target's transport: it never traverses the LLM edge (the §6.5 context-window safety net does not apply) and never rides a bus event or log line.
 

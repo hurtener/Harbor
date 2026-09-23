@@ -103,6 +103,30 @@ func TestTranslateErrorForContext_RoutedSchemaFailureKeepsDowngradeSignal(t *tes
 	}
 }
 
+func TestTranslateErrorForContext_PreservesCancellation(t *testing.T) {
+	for _, routed := range []bool{false, true} {
+		for _, deadline := range []bool{false, true} {
+			ctx := t.Context()
+			if routed {
+				ctx = llm.WithResolvedProviderRoute(ctx, llm.ResolvedProviderRoute{RouteID: "route"})
+			}
+			var cancel context.CancelFunc
+			want := context.Canceled
+			if deadline {
+				ctx, cancel = context.WithDeadline(ctx, time.Unix(1, 0))
+				want = context.DeadlineExceeded
+			} else {
+				ctx, cancel = context.WithCancel(ctx)
+			}
+			cancel()
+			err := translateErrorForContext(ctx, &bfschemas.BifrostError{Error: &bfschemas.ErrorField{Message: "private-provider-diagnostic"}}, "stream")
+			if !errors.Is(err, want) || strings.Contains(err.Error(), "private-provider-diagnostic") {
+				t.Errorf("routed=%v deadline=%v: cancellation misclassified or leaked: %v", routed, deadline, err)
+			}
+		}
+	}
+}
+
 func TestDriver_RoutedSchemaRejectionDowngradesWithoutLeaking(t *testing.T) {
 	const secret = "private-route-key-canary"
 	status := 400

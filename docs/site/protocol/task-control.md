@@ -108,7 +108,7 @@ method-specific `payload`, and an optional `event_id` idempotency key.
 
 | Method | What it does | Payload | Minimum scope (RFC §6.3) |
 |---|---|---|---|
-| `cancel` | Stop the run (soft; `{"hard": true}` propagates a hard cancellation context). | optional | `owner_user` |
+| `cancel` | Soft stop at a step boundary; `{"hard": true}` interrupts execution at verified admission. | optional | `owner_user` |
 | `pause` | Park the run at the next planner-step boundary (the unified pause primitive). | optional | `owner_user` |
 | `resume` | Resume a paused run. | optional | `owner_user` |
 | `approve` | Approve a HITL-gated step; the pause advances. | optional | `owner_user` |
@@ -126,6 +126,16 @@ below the minimum is rejected `403 scope_mismatch`.
 Payloads are bounded at the edge (depth ≤ 6, ≤ 64 keys, ≤ 50 list items,
 ≤ 4096 chars per string, ≤ 16 KiB total) — an oversize payload is rejected
 `422 payload_invalid`, never truncated.
+
+Hard cancellation interrupts model/tool execution through the run context and
+rejects queued dispatch. An accepted cancellation cannot become success through
+a late final response. It suppresses new completion-hook and auto-naming calls;
+internal settlement and terminal persistence still run with bounded cleanup.
+An HTTP success acknowledges the control, not confirmed termination: reconcile
+the terminal event or `tasks.get`. Already-completed effects cannot be undone,
+and independently running external jobs require their cancellation API.
+The current Bifrost transport still leaves a request pending if cancellation
+arrives before response headers; full provider-termination acceptance is pending.
 
 ## Preconditions: controls target LIVE runs
 

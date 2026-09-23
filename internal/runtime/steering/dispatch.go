@@ -37,7 +37,7 @@ type execOutcome struct {
 //     control.applied lifecycle emits + control-history record the
 //     boundary path produces, and is NOT re-applied at the next
 //     boundary (consumed is consumed).
-//   - EVERY other drained control (PAUSE / RESUME / CANCEL / REDIRECT /
+//   - Other drained controls (PAUSE / RESUME / soft CANCEL / REDIRECT /
 //     INJECT_CONTEXT / USER_MESSAGE / PRIORITIZE, and any APPROVE /
 //     REJECT no gate owns) keeps its step-boundary semantics: it is
 //     returned in `deferred` and the run loop merges it ahead of the
@@ -45,10 +45,10 @@ type execOutcome struct {
 //     full applyEvent treatment — exactly when it would have been
 //     applied under the synchronous dispatch (the step was in flight;
 //     the boundary is the first point it could ever act).
-//   - Cancellation is unchanged: the execution runs under a stepCtx
-//     derived from the run ctx, so cancelling the run still aborts an
-//     in-flight gated decision (RunGuarded honours ctx); the next step
-//     boundary surfaces ctx.Err() exactly as before.
+//   - Hard CANCEL already cancelled the run context at inbox admission.
+//     The execution's child stepCtx interrupts an in-flight gated decision;
+//     queued execution checks it before dispatch. Terminal bookkeeping
+//     records the accepted cancellation after the executor joins.
 //   - The per-step goroutine is ALWAYS joined before return — on the
 //     happy path, on run-ctx cancellation, and on a bridge error (where
 //     stepCtx is cancelled first so a parked RunGuarded waiter
@@ -80,6 +80,12 @@ func (rl *RunLoop) dispatchDecision(
 	// below receives from it exactly once (the join).
 	done := make(chan execOutcome, 1)
 	go func() {
+		// Stop may win while the durable intent is being written or while
+		// this goroutine waits to run. Do not enter a queued executor then.
+		if err := stepCtx.Err(); err != nil {
+			done <- execOutcome{err: err}
+			return
+		}
 		obs, llmObs, err := exec.ExecuteDecision(stepCtx, rc, decision)
 		done <- execOutcome{observation: obs, llmObservation: llmObs, err: err}
 	}()

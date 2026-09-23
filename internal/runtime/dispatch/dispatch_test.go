@@ -81,6 +81,25 @@ func registerEcho(t *testing.T, cat tools.ToolCatalog, name string) {
 	}
 }
 
+func TestExecutor_CancelledDecisionNeverInvokesTool(t *testing.T) {
+	cat := tools.NewCatalog()
+	called := false
+	if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "must-not-run"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+		called = true
+		return tools.ToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	q := dispatchTestQuad("cancelled-before-dispatch")
+	ctx, cancel := context.WithCancel(dispatchTestCtx(t, q))
+	cancel()
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
+	_, _, err := exec.ExecuteDecision(ctx, dispatchRunContext(cat, q), planner.CallTool{Tool: "must-not-run"})
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("cancelled decision invoked tool: called=%v err=%v", called, err)
+	}
+}
+
 // failingPutTextStore wraps the REAL inmem store and forces PutText to
 // fail — the D-026 artifact-store-failure degradation path's forced
 // failure mode.

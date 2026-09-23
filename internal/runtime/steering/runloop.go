@@ -54,7 +54,9 @@ import (
 //	}
 //	Retire the Inbox  -- always, even on error
 //
-// The full applyEvent treatment happens exactly ONCE per step boundary.
+// Hard CANCEL interrupts the execution context at verified inbox admission;
+// its terminal cleanup is recorded once when execution joins. Other controls
+// receive the full applyEvent treatment exactly ONCE per step boundary.
 // While a decision execution is in flight the loop ALSO drains the
 // inbox, but consumes ONLY approval-bridge-eligible APPROVE /
 // REJECT controls there (the gate bridge — without the mid-step
@@ -136,9 +138,9 @@ func WithRunLoopBus(b events.EventBus) RunLoopOption {
 // cancellation context into an in-flight decision execution (the
 // §6). The RunLoop holds ONLY a func(ctx, runID) error, never a hard
 // import of internal/runtime/engine — this keeps the step-loop family
-// decoupled from the graph engine. A nil hook is tolerated: a hard
-// CANCEL still sets Control.Cancelled (so the run terminates at the next
-// boundary), the hook only accelerates an in-flight tool's teardown.
+// decoupled from the graph engine. RunLoop's own execution context is cancelled
+// immediately at inbox admission even without this hook. The optional hook
+// performs additional cancellation bookkeeping at the terminal boundary.
 func WithHardCancelHook(fn func(ctx context.Context, runID string) error) RunLoopOption {
 	return func(c *runLoopConfig) {
 		if fn != nil {
@@ -455,7 +457,8 @@ type RunSpec struct {
 
 	// CompletionHook, when set, is the operator-configured run-completion
 	// hook: at Run's terminal boundary the runloop fires it exactly once —
-	// for EVERY terminal outcome, never mid-run and never on pause —
+	// for every terminal outcome except accepted hard Stop, never
+	// mid-run and never on pause —
 	// dispatching the run's RunCompletionPayload transcript to the named
 	// catalog tool through ToolExecutor. The outcome rides in the payload.
 	// The hook runs AFTER the run's (fin, err) are settled and can NEVER
@@ -508,8 +511,8 @@ type RunSpec struct {
 //
 // Named returns (fin, err) are load-bearing: the deferred run-completion
 // hook fire reads them AFTER they are settled at any terminal exit, so the
-// hook covers every terminal outcome (goal, no-path, constraints-conflict,
-// cancelled, error) uniformly without a fire at each return site.
+// hook covers terminal outcomes uniformly without a fire at each return site.
+// Accepted hard Stop skips external hook/naming dispatch.
 func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, err error) {
 	if spec.Planner == nil {
 		return planner.Finish{}, ErrNoPlanner
@@ -527,7 +530,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 	}
 
-	inbox, err := rl.registry.Open(q)
+	ctx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	inbox, err := rl.registry.open(q, cancelExecution)
 	if err != nil {
 		return planner.Finish{}, fmt.Errorf("steering: opening run inbox: %w", err)
 	}
@@ -597,51 +602,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	var steeringEntries []steeringEntry
 	initialGoal := spec.Base.Goal
 	runStartedAt := rl.clock.Now()
-	// TERMINAL-BOUNDARY ORDERING (load-bearing, LIFO): the auto-naming defer
-	// is registered FIRST and the completion-hook defer SECOND, so the HOOK
-	// fires first at the terminal exit. The hook stamps CompletedAt/DurationMS
-	// from the clock when it fires — if naming (a synchronous, up-to-10s LLM
-	// call) ran first, a slow naming call would inflate the hook's timestamps
-	// and delay transcript egress. Naming has no timing fields of its own, so
-	// running second costs it nothing. Pinned by
-	// TestRun_TerminalOrdering_HookFiresBeforeNaming.
-	//
-	// The session auto-naming trigger is a SIBLING of the completion hook at
-	// the same terminal boundary: registered after runCtx/identity are
-	// established so it never fires for a pre-run misconfiguration, and reads
-	// the settled (fin, err) named returns. Fires only when a naming policy is
-	// active for the run; a nil Naming is byte-identical to the naming-off
-	// path.
-	if spec.Naming != nil && spec.Naming.Titler != nil {
-		defer func() {
-			rl.fireNaming(runCtx, spec, q, steeringEntries, initialGoal, fin)
-		}()
-	}
-	if spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
-		defer func() {
-			rl.fireCompletionHook(runCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
-		}()
-	}
-	// The completion-chunk seal is registered LAST so LIFO defer ordering runs
-	// it before naming, completion-hook egress, and inbox retirement. This is
-	// the terminal boundary for the streaming lane: callbacks accepted before
-	// the seal are drained, while callbacks racing after it are rejected by the
-	// publisher before they can become live frames. A seal failure changes a
-	// would-be terminal result into a run error so the caller cannot mark the
-	// task complete while accepted chunks remain non-durable.
-	if spec.Base.SealCompletionChunks != nil {
-		defer func() {
-			if sealErr := spec.Base.SealCompletionChunks(runCtx); sealErr != nil {
-				fin = planner.Finish{}
-				sealErr = fmt.Errorf("steering: seal completion chunks at terminal boundary: %w", sealErr)
-				if err == nil {
-					err = sealErr
-				} else {
-					err = errors.Join(err, sealErr)
-				}
-			}
-		}()
-	}
 
 	// outstandingToken is the run's current pause Token, "" when the run
 	// is not paused. It is per-run loop state — it lives on this
@@ -662,6 +622,49 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	// "resets only tranche counter" contract — and leave a
 	// mid-tranche planner pause's budget intact.
 	outstandingTranche := false
+	// One terminal boundary arbitrates cancellation versus completion, then
+	// seals accepted chunks before external completion hooks and naming. The
+	// hook still precedes naming (TestRun_TerminalOrdering_HookFiresBeforeNaming).
+	// Hard Stop skips both sources of new external work, but uses a separate
+	// bounded context for its own bookkeeping. Cleanup owns and cancels that
+	// context within this closure; execution cancellation cannot cancel it.
+	defer func() {
+		ev := inbox.finishExecution()
+		terminalCtx := runCtx
+		if ev != nil {
+			var cancelCleanup context.CancelFunc
+			terminalCtx, cancelCleanup = context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
+			defer cancelCleanup()
+			fin = planner.Finish{Reason: planner.FinishCancelled}
+			err = errors.Join(err, context.Canceled)
+			cleanupErr := rl.applier.hardCancel(terminalCtx, q.RunID)
+			if outstandingTranche && outstandingToken != "" {
+				cleanupErr = errors.Join(cleanupErr, pauseresume.CancelTranche(terminalCtx, rl.coord, outstandingToken))
+			}
+			rl.emitLifecycle(terminalCtx, q, ev.Type, EventTypeControlReceived, "")
+			rl.history.record(q.SessionID, AppliedControl{Type: ev.Type, RunID: q.RunID, AppliedAt: rl.clock.Now(), Err: cleanupErr})
+			rl.emitLifecycle(terminalCtx, q, ev.Type, EventTypeControlApplied, classifyApplyErr(cleanupErr))
+			err = errors.Join(err, cleanupErr)
+		}
+		// Seal failures cannot turn accepted, non-durable chunks into success.
+		if spec.Base.SealCompletionChunks != nil {
+			if sealErr := spec.Base.SealCompletionChunks(terminalCtx); sealErr != nil {
+				if ev == nil {
+					fin = planner.Finish{}
+				}
+				err = errors.Join(err, fmt.Errorf("steering: seal completion chunks at terminal boundary: %w", sealErr))
+			}
+		}
+		if ev != nil {
+			return
+		}
+		if spec.CompletionHook != nil && spec.CompletionHook.Tool != "" {
+			rl.fireCompletionHook(terminalCtx, spec, q, fin, err, steeringEntries, initialGoal, runStartedAt)
+		}
+		if spec.Naming != nil && spec.Naming.Titler != nil {
+			rl.fireNaming(terminalCtx, spec, q, steeringEntries, initialGoal, fin)
+		}
+	}()
 
 	// carryEvents holds control events drained mid-step (while a
 	// decision execution was in flight) that were NOT
@@ -732,6 +735,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 		}
 		for _, ev := range drained {
+			if ev.Type == ControlCancel && boolFromPayload(ev.Payload, "hard") {
+				// Already interrupted at admission; the terminal arbiter records
+				// this control once, after joining execution and before sealing.
+				continue
+			}
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlReceived, "")
 			applyErr := rl.applier.applyEvent(runCtx, sc, ev, outstandingToken)
 			if applyErr == nil && spec.DispatchCheckpoint != nil {
@@ -792,13 +800,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 		}
 
-		// A hard CANCEL fires the cancellation propagator. Done after the
-		// drain loop so a single step's drained events are all applied
-		// before the in-flight execution is torn down.
-		if sc.hardCancel {
-			if err := rl.applier.hardCancel(runCtx, q.RunID); err != nil {
-				return planner.Finish{}, err
-			}
+		if err := ctx.Err(); err != nil {
+			return planner.Finish{}, err
 		}
 
 		// A PRIORITIZE reaches the TaskRegistry once the run's TaskID is
@@ -1030,6 +1033,9 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		plannerCtx = llm.WithContextPreparation(plannerCtx, preparation)
 
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
+		if err := ctx.Err(); err != nil {
+			return planner.Finish{}, err
+		}
 		// A pending-call drain does not ask for another decision. Its results
 		// remain protected until the complete pending group has been presented.
 		if compactionEnabled && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {

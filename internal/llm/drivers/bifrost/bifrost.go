@@ -282,14 +282,13 @@ func (d *Driver) unaryComplete(
 // route to `req.OnContent`; reasoning deltas route to `req.OnReasoning`;
 // the assembled content is concatenated into `CompleteResponse.Content`.
 //
-// Cancellation: a `select` on `ctx.Done()` lets the driver abandon
-// the bifrost chunk reader as soon as the caller cancels — the
-// runtime never blocks waiting for upstream to drain (a design premise:
-// §"Cancellation caveat"). Bifrost's worker goroutine continues
-// draining the upstream HTTP body until completion, but Harbor is no
-// longer reading from the channel; the goroutine exits when the
-// channel closes, and the runtime's goroutine-leak test asserts
-// baseline restoration.
+// Once response headers arrive, cancellation propagates through BifrostContext
+// to Bifrost's transport, which closes the upstream stream. Pinned fasthttp
+// interrupts the socket and joins active reads before releasing pooled
+// resources. Harbor also stops consuming queued chunks on cancellation;
+// it does not wait for another provider delta to return ctx.Err().
+// Before headers, Bifrost still leaves its network call pending: see the
+// explicit release blocker in docs/notes/portable-context-tracker.md.
 func (d *Driver) streamComplete(
 	client bifrostClient,
 	ctx context.Context,
@@ -317,13 +316,17 @@ readLoop:
 	for {
 		select {
 		case <-ctx.Done():
-			// Abandon the reader. Bifrost's goroutine drains
-			// upstream on its own; we never block waiting for it.
-			// The caller receives `ctx.Err()` (Canceled or
-			// DeadlineExceeded).
+			// The transport receives this same cancellation. Do not wait
+			// for its stream channel to close before returning to the caller.
 			streamErr = ctx.Err()
 			break readLoop
 		case chunk, ok := <-ch:
+			// A ready chunk and cancellation can win select in either order.
+			// Never publish a queued late delta after observing cancellation.
+			if err := ctx.Err(); err != nil {
+				streamErr = err
+				break readLoop
+			}
 			if !ok {
 				// Channel closed — stream terminated cleanly.
 				break readLoop
