@@ -33,6 +33,26 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Consolidated memory owner — release acceptance pending
 
+Published consolidation: `d0a091c888e5fed9775ef588f62c950e12043473`.
+Phase 268 passes **10 OK / 0 SKIP / 0 FAIL** on that head. The first Phase 269
+run found a repeat-run PostgreSQL fixture collision: the expiry test reused
+the fixed `t/u/expired` scope, which already contained a previous invocation's
+backdated note (the database contained two sources). The follow-on gives every
+invocation its own session, including the expiry fixture, with unchanged
+expiry/restart assertions. Three consecutive real-store race repetitions pass
+on in-memory, SQLite and PostgreSQL (**1.974s**, Go 1.27.1). This is a test
+isolation correction, not a retention change or blanket retry.
+
+Hosted docs run `35880617274` failed on one relative tracker link in the
+configuration page as included by VitePress. The follow-on points to the exact
+repository document; no dead-link exclusion or weakened gate is added.
+The corrected `make docs` passes (VitePress 1.6.4, 8.83s), and full
+`make build` passes, including a fresh Svelte Console bundle and the static
+CLI binary. The first Phase 269 run completed **14 OK / 0 SKIP / 1 FAIL**;
+its sole failure was the shared expiry fixture above. The complete service-backed
+rerun is in progress. The upcoming exploratory RC does not waive final coverage,
+main-release or matched real-model acceptance.
+
 Retirement started on `444fc01c145d814c540f7430c58a5903f9646426`. The local
 increment removes the pair-summary/truncation executors, background recovery
 loop, pair summarizer, SDK snapshot/restore/context-patch vocabulary and both

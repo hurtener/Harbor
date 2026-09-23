@@ -830,7 +830,7 @@ The accepted D-477 / RFC 002 target replaces the separate retained execution
 window and pair-only summary pipeline. It is **not implemented by the historical
 RC1–RC4 tags**. The current implementation uses one execution-memory owner;
 release acceptance remains tracked separately in
-[the implementation tracker](notes/portable-context-tracker.md).
+[the implementation tracker](https://github.com/hurtener/Harbor/blob/docs/portable-session-context-plan/docs/notes/portable-context-tracker.md).
 
 The target standard configuration is:
 

@@ -93,14 +93,16 @@ func TestSourceReference_RealStoreLifetimeAndRestart(t *testing.T) {
 				return st, mem
 			}
 			st, mem := open()
-			id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+			// A shared PostgreSQL service outlives this test process. Give each
+			// repetition its own scope, including the backdated expiry fixture.
+			id := identity.Quadruple{Identity: identity.Identity{TenantID: "source-reference-test", UserID: "u", SessionID: string(state.NewEventID())}}
 			key, err := mem.Put(t.Context(), id, memory.ConversationTurn{UserMessage: "keep the original constraint", AssistantResponse: "noted"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			view, err := mem.Inspect(t.Context(), id)
 			if err != nil || len(view.Items) != 1 {
-				t.Fatalf("inspect: %v", err)
+				t.Fatalf("inspect: items=%d err=%v", len(view.Items), err)
 			}
 			ref, err := memory.SourceReference(id, view.Items[0])
 			if err != nil {
@@ -141,13 +143,13 @@ func TestSourceReference_RealStoreLifetimeAndRestart(t *testing.T) {
 			// sleep and no copied blob can make expired information reappear.
 			past := time.Now().Add(-2 * time.Hour)
 			now := func() time.Time { return past }
-			id.SessionID = "expired"
+			id.SessionID += "-expired"
 			if _, err := sessionmemory.Put(t.Context(), st, red, id, "expired private data", "noted", 20, time.Hour, now); err != nil {
 				t.Fatal(err)
 			}
 			expiredView, err := sessionmemory.Inspect(t.Context(), st, id, now)
 			if err != nil || len(expiredView.Items) != 1 {
-				t.Fatalf("inspect before expiry: %v", err)
+				t.Fatalf("inspect before expiry: items=%d err=%v", len(expiredView.Items), err)
 			}
 			expired, err := memory.SourceReference(id, expiredView.Items[0])
 			if err != nil {
