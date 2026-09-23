@@ -44,8 +44,10 @@ func checkpointSteeringContext(ctx context.Context, spec RunSpec, ev ControlEven
 		return fmt.Errorf("steering: encode applied context: %w", err)
 	}
 	step := planner.Step{LLMObservation: json.RawMessage(body)}
-	if err := spec.DispatchCheckpoint.RecordContext(ctx, spec.Base, step); err != nil {
-		return fmt.Errorf("steering: persist applied context: %w", err)
+	if spec.DispatchCheckpoint != nil {
+		if err := spec.DispatchCheckpoint.RecordContext(ctx, spec.Base, step); err != nil {
+			return fmt.Errorf("steering: persist applied context: %w", err)
+		}
 	}
 	// No storage I/O is performed under the inspection lock. This does not
 	// advance the planner-step/tranche counter or introduce another model call.

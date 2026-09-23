@@ -742,7 +742,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlReceived, "")
 			applyErr := rl.applier.applyEvent(runCtx, sc, ev, outstandingToken)
-			if applyErr == nil && spec.DispatchCheckpoint != nil {
+			if applyErr == nil && (spec.DispatchCheckpoint != nil || ev.Type == ControlUserMessage) {
+				// Even with cross-run memory disabled, an accepted correction
+				// belongs to this run's trajectory and must survive later steps.
+				if spec.Base.Trajectory == nil {
+					spec.Base.Trajectory = &planner.Trajectory{}
+				}
 				applyErr = checkpointSteeringContext(runCtx, spec, ev)
 			}
 			rl.history.record(q.SessionID, AppliedControl{

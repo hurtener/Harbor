@@ -40,6 +40,34 @@ func finishClient() *capturingClient {
 	}
 }
 
+func TestUserMessages_ReachActualRequestWithoutChangingSystemPrompt(t *testing.T) {
+	client := finishClient()
+	p := react.New(client)
+	rc := overrideRC(nil)
+	if _, err := p.Next(t.Context(), rc); err != nil {
+		t.Fatal(err)
+	}
+	baseline := client.lastRequest()
+	want := []string{"Use amber accents.\n  Preserve NORTH-STAR-47.", "Keep version 9007199254740993 exactly."}
+	rc.Control.UserMessages = want
+	if _, err := p.Next(t.Context(), rc); err != nil {
+		t.Fatal(err)
+	}
+	got := client.lastRequest()
+	if len(got.Messages) != len(baseline.Messages)+len(want) {
+		t.Fatalf("request has %d messages, want %d including steering", len(got.Messages), len(baseline.Messages)+len(want))
+	}
+	if *got.Messages[0].Content.Text != *baseline.Messages[0].Content.Text {
+		t.Fatal("user steering altered system instructions")
+	}
+	for i, text := range want {
+		msg := got.Messages[len(baseline.Messages)+i]
+		if msg.Role != llm.RoleUser || msg.Content.Text == nil || *msg.Content.Text != text {
+			t.Errorf("steering %d did not arrive byte-exact as a user message: %+v", i, msg)
+		}
+	}
+}
+
 // TestApplyLLMOverrides_ScalarsStampedOntoRequest asserts the run-start
 // override bundle's scalar fields land on the LLM request the planner
 // sends (model / temperature / max-tokens / reasoning-effort).

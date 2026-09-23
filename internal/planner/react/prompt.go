@@ -361,6 +361,13 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 				"A reference is not proof of the current external resource version. Attachment references do not prove that image or other contents were inspected; retrieve content with a compatible tool when needed.\n" + string(data))})
 	}
 
+	// Fresh steering is user input, not operator/system guidance. Put it
+	// after complete prior exchanges so it cannot break tool-result pairing
+	// or mutate the reusable system prefix. Preserve source strings exactly.
+	for _, message := range rc.Control.UserMessages {
+		messages = append(messages, llm.ChatMessage{Role: llm.RoleUser, Content: textContent(message)})
+	}
+
 	return llm.CompleteRequest{
 		Messages: messages,
 	}, nil

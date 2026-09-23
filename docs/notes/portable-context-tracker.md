@@ -31,6 +31,38 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Steering text reaches actual requests — bounded repair
+
+On published `957880c9c99ace6b24b6acef6ef338e1f4e43f88`, the ReAct
+request builder never read `Control.UserMessages`. Without a dispatch
+checkpoint, the runtime also discarded that correction after one boundary.
+Two new real-request regressions reproduce both failures (ReAct **FAIL
+0.614s**, steering **FAIL 0.396s**). They exercise the actual ReAct planner and
+run loop, not merely control-history persistence.
+
+The repair appends fresh steering verbatim as user messages, preserving FIFO,
+whitespace, large numeric strings and the unchanged system prefix. It records
+inert context in the existing trajectory for subsequent steps even with
+cross-run memory disabled; it does not enable cross-run persistence in that
+mode. Enabled cumulative memory still requires its existing context checkpoint
+before inference. No new store, wire type, system guidance or tool policy.
+
+Source tree `54837394de3039ac49280391e888f45295e120a1`, Go 1.27.1
+darwin-arm64: `GOFLAGS=-p=1 go test -race ./internal/planner/react
+./internal/runtime/steering -count=1 -coverprofile=<temporary-file>` passes
+both complete packages: **1.742s / 1.639s**, **88.1% / 88.0%**. Focused
+regressions pass with and without the required-checkpoint seam. Targeted vet
+and the Go-1.27-built golangci-lint 2.12.2 pass (zero issues).
+
+This is not in-flight Steer completion: interrupt/re-plan, pending-tool
+invalidation, explicit unsupported-attachment rejection, real control-endpoint
+acceptance and consumer pending/applied UX remain open. No tag, deploy or model
+call. Parent CI `35848630795` still runs both platform tests. Its lint job
+**failed** inside staticcheck's Go 1.27 standard-library analysis
+(`poll`, `unexpected expr: *ast.KeyValueExpr`); rebuilding 2.12.2 is not enough
+on Linux. Tool compatibility needs repair without disabling checks. Existing
+macOS journal deadlines, coverage and release acceptance remain unresolved.
+
 ### LLM-free HTTP manifest fixture repair
 
 On published `5a2f9d774cb02c7b79a1e1cc751c2553c0d495d5`, reproduce all five

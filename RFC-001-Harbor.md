@@ -583,6 +583,16 @@ type Coordinator interface {
 
 **Steering payload bounds:** depth ≤ 6, ≤ 64 keys, ≤ 50 list items, ≤ 4096 chars per string, ≤ 16 KiB total. Enforced at the Protocol edge. (Settled.)
 
+**User-message projection.** Applied `USER_MESSAGE` text reaches the next
+decision request verbatim as user input, after complete prior tool exchanges;
+it never rewrites the system prefix. The runtime also keeps the applied text
+as inert trajectory context for subsequent steps in the same run, including
+when cross-run memory is disabled. When cumulative memory is enabled, its
+existing required context checkpoint must succeed before further inference.
+Historical context cannot reapply a control or authorize an external action.
+In-flight attempt interruption and invalidation of previously planned tool
+calls remain separate acceptance items in the PR #779 tracker.
+
 **Hard Stop (D-478).** A verified `CANCEL` with `payload.hard: true` cancels
 the identity-scoped execution context immediately at inbox admission, not at
 the next planner boundary. Cancellation and terminal completion arbitrate under
@@ -593,8 +603,9 @@ evidence rather than authorization to replay an action. Cancellation bookkeeping
 uses an independent five-second context preserving identity. A control response
 acknowledges admission, not proof of upstream termination. Clients wait for the
 terminal task outcome; independently running external jobs need their own cancel
-API. Provider socket termination before response headers remains an explicit
-implementation blocker in the PR #779 tracker.
+API. Provider socket termination before and after response headers is verified
+through the governed Bifrost transport; live consumer acceptance remains tracked
+separately in PR #779.
 
 **Rejected HITL gate is terminal.** `APPROVE` and `RESUME` resolve an outstanding pause and the planner re-enters. `REJECT`, by contrast, resolves the pause via `Coordinator.Resume` with a `rejected: true` marker and **terminates the run** with `Finish{constraints_conflict}` — a rejected human-in-the-loop gate is a constraint the planner cannot resolve, not a recoverable signal. (Settled — D-071. The alternative "re-enter the planner on `REJECT` so it can replan" was considered and rejected for V1: it lets a rejected gate loop indefinitely. A planner that should replan-on-reject is a future planner-*policy* concern, not a steering-*primitive* one — it would be a separate RFC change.)
 
