@@ -93,12 +93,18 @@ memory:
   budget_tokens: 8000                          # working-input target, NOT an output limit
 ```
 
-Compaction is configured only with `memory.budget_tokens`; the removed
+The working-input compaction target is configured with `memory.budget_tokens`; the removed
 `planner.token_budget` is rejected, not silently translated. With
 `rolling_summary`, zero derives the target from the effective model's input
 capacity and output reservation. A positive target also enables within-run
 compaction for stateless agents. Fresh results remain protected, so this is a
 soft working target, not permission to truncate evidence to fit.
+
+Separately, `memory.summarizer.max_tokens` sets the compaction call's completion
+allowance (including provider reasoning), not the driving model's output limit.
+Omitted/zero preserves 2048; a positive deployment-specific value remains subject
+to governed model capacity. YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS` changes
+require a restart. See [the reference](../../CONFIG.md#memorysummarizermax_tokens).
 
 On the PR #779 cumulative-memory branch, `rolling_summary` also enables the
 shared served/embedded execution-context path. `recent_turns: 20` (or zero)

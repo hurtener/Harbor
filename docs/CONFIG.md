@@ -920,8 +920,12 @@ capacity, context reserve and requested output reservation. A positive value
 also builds the within-run compactor for stateless execution. It is a soft
 target: preserve fresh tool results; the final model admission guard remains
 mandatory. It never sets or lowers a model's output-token allowance.
-Set the value in `harbor.yaml` (or `HARBOR_MEMORY_BUDGET_TOKENS`); it is
-restart-required and is not currently exposed by the agent-config Protocol.
+Set the deployment default in `harbor.yaml` (or `HARBOR_MEMORY_BUDGET_TOKENS`);
+changing that default requires a restart. Served runtimes advertising
+`agent_config_memory_v1` also accept a per-agent `memory.budget_tokens` override
+through a versioned `agent_config.set_revision`. Omit that revision section to
+inherit YAML again. Overrides apply to the next run and require an already wired
+compactor; they cannot enable a missing LLM dependency.
 
 There is no second planner budget or pair-only summary engine.
 The former `memory.recovery_backlog_max` setting and its environment override
@@ -935,6 +939,25 @@ keeps in detail. Default: `20`; explicit `0` also selects twenty turns.
 Validation: `0..32`.
 The checkpoint carries earlier meaning after covered detail leaves the window;
 this number is not a checkpoint-history limit. Ignored by `none`.
+
+### memory.summarizer.max_tokens
+
+Completion-token allowance per compaction call, including provider reasoning
+where applicable. Validation: >= 0. Omitted or zero keeps the existing 2048-token
+default; a positive value selects a deployment-specific allowance. For example,
+`8192` gives a reasoning model more room to finish its structured summary. This
+is separate from `memory.budget_tokens` (working input) and the driving model's
+output allowance. Governed model-capacity admission still applies; independently
+routed compaction clamps the allowance to its selected profile's output maximum.
+Increasing this allowance reserves more output space and can reduce input space
+per compaction chunk. Truncated or otherwise incomplete summaries remain errors;
+they never replace a valid checkpoint. Structured-summary byte validation is
+unchanged.
+
+Set it in YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`. Restart-required; not an
+agent-config Protocol field. It applies to both within-run and cross-turn
+compaction through the same governed client, with no change to prompts, reasoning
+controls or route authority.
 
 ### memory.summarizer.model
 

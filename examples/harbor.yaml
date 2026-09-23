@@ -543,6 +543,7 @@ memory:
   # separator — it never replaces the baseline role framing or
   # conciseness guarantees. Unset → baseline prompt only (no change).
   # summarizer:
+  #   max_tokens: 8192 # Example completion allowance incl. reasoning; 0/unset = 2048.
   #   model: anthropic/claude-haiku
   #   prompt: "Always preserve numeric thresholds and dollar amounts verbatim."
   # For externally routed runs, a different compaction model needs its own

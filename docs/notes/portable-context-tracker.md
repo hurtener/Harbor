@@ -1,5 +1,33 @@
 # Portable session context implementation tracker
 
+## Configurable compaction completion allowance — 2026-09-23
+
+The narrow RC9 follow-up exposes the existing summarizer output option as
+`memory.summarizer.max_tokens` / `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`, wired
+through the shared assembly path. Omitted/zero preserves 2048; deployments can
+select a larger value without changing the framework default or the driving
+model. Negative, malformed and overflowing values fail configuration loading.
+The 64000 working-input target, prompts, reasoning policy, exact evidence and
+retention semantics are unchanged. No new Protocol field or provider bypass.
+
+Local Go 1.27.1 evidence on this increment over `684755f0`: complete config,
+assembly, summarizer and LLM race suites pass (2.317s, 95.090s, 1.663s and
+24.006s). The added embedded checkpoint assertion also passes separately
+(2.305s), verifying 8192 reaches the actual maintenance request and the next
+root run reuses its checkpoint. Real Bifrost HTTP regressions observe 2048 by
+default, configured 8192, and configured 32000 clamped to the selected route's
+16384 maximum. A second, truncated compaction preserves the previous checkpoint
+without retry, and subsequent route revocation prevents any external call.
+Scoped vet and golangci-lint 2.13.2 pass, with zero lint issues.
+
+These are local implementation checks, not new real-model acceptance or final
+coverage evidence. Publication, RC10 release/deployment, failed-session recovery,
+repeatable live compaction and transcript catch-up are still pending at this
+checkpoint. Existing coverage gaps and the incomplete matched comparison remain
+main-release blockers. Both local and hosted preflight remain owner-waived, not
+green; the owner separately authorized quick exploratory RC publication before
+all main-release gates finish.
+
 ## RC9 live compaction checkpoint — 2026-09-23
 
 Published implementation `ae4ca9a9565b99773a545787c4a12675ed37804a` is tagged

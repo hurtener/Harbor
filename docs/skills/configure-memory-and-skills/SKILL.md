@@ -42,6 +42,15 @@ It reuses the same resolver and verified run identity; it cannot repurpose a
 signed grant or silently fall back after revocation. Model routing remains
 restart-required even when the working-input budget is edited through Protocol.
 
+`memory.summarizer.max_tokens` separately configures the completion allowance
+for each compaction call, including provider reasoning. Omitted/zero preserves
+the 2048-token default; for example, set `8192` for a deployment that needs more
+room to finish a summary. The matching environment override is
+`HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`; both are restart-required. This does not
+change the working-input target or driving model's output limit. Routed model
+capacity and governance still apply, and incomplete output never replaces a
+checkpoint. See [the reference](../../CONFIG.md#memorysummarizermax_tokens).
+
 The removed `truncation` strategy is rejected rather than silently dropping
 unsummarized context when a window fills.
 
@@ -372,7 +381,8 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 
 ## Common failure modes
 
-- **Memory blows the token budget mid-conversation.** Lower `budget_tokens` OR switch strategy from `truncation` to `rolling_summary`. The summariser uses ~1500 tokens of LLM per turn but saves ~5000 tokens of payload.
+- **Memory exceeds the working-input target mid-conversation.** Check `memory.budget_tokens` and the effective model profile. Fresh results remain protected; lowering the target is not permission to discard evidence. Compaction cost and savings depend on actual input and provider usage, not a fixed per-turn estimate.
+- **Compaction reports an incomplete summary with `finish_reason: length`.** Inspect provider usage and `memory.summarizer.max_tokens`, including reasoning tokens. Increase the deployment's allowance within the selected model's capacity and restart; do not accept truncated summaries or blindly replay external actions after a failed turn.
 - **`harbor dev` reboots in a loop after enabling memory.** Your `memory.dsn` is inside the project directory and the SQLite WAL trap fires. Move the DSN to `/tmp/harbor-validation/<project>-memory.sqlite` or `~/.harbor/<project>-memory.sqlite`.
 - **`harbor skill import` fails with "skill name already exists".** The catalog rejects duplicate names by default. Re-import with `--overwrite`, remove the old entry first (`harbor skill rm <name>`), or rename the skill in the file.
 - **The planner doesn't pick a skill I imported.** Either the skill's `trigger:` doesn't pattern-match the user's input (write more concrete trigger language), the run can't see a tool the skill requires (`required_tools` is capability-filtered — default-deny), or `planner.max_steps` is too low to reach the skill-search turn. Pin it (`skills.directory.pinned`) to guarantee it's at least visible in every `<skills_context>` block.

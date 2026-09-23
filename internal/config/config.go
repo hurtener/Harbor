@@ -765,6 +765,10 @@ type MemoryConfig struct {
 type MemorySummarizerConfig struct {
 	Model  string `yaml:"model,omitempty"`  // "" → main LLM default model
 	Prompt string `yaml:"prompt,omitempty"` // "" → baseline only; else appended to the baseline summariser prompt
+	// MaxTokens reserves completion tokens for each compaction call, including
+	// provider reasoning where applicable. Zero keeps the 2048-token default;
+	// positive values remain subject to the selected model's capacity.
+	MaxTokens int `yaml:"max_tokens,omitempty"`
 	// ProviderRoute selects a separately authorized route for compaction on
 	// externally routed runs. It uses the existing llm.provider_route resolver,
 	// never embeds credentials, and cannot choose the run's identity.

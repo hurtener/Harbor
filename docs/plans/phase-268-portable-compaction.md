@@ -179,6 +179,22 @@ preserve choice-zero finish reasons; absent reasons remain unknown. Exact JSON
 integers survive the runner's detached summary-input copy. No partial candidate
 is installed after failure, cancellation, or bounded-maintenance exhaustion.
 
+## Configurable maintenance output increment
+
+Live RC acceptance exposed incomplete summaries when provider reasoning consumed
+the existing 2048-token completion allowance. Expose the existing trajectory
+summarizer option through `memory.summarizer.max_tokens` and
+`HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`, using the shared production assembly path.
+Omitted/zero retains the default; negative and malformed values fail validation.
+This restart-required setting is separate from the working-input target and
+driving-model output policy, and adds no Protocol field or reasoning override.
+
+The actual governed Bifrost request must prove default preservation, a configured
+larger allowance and selected-route output-capacity clamping. A subsequent
+truncated completion must preserve the prior checkpoint without retry or fallback;
+route revocation must still prevent dispatch. Existing structured-summary byte
+validation and maintenance accounting remain unchanged.
+
 ## Physical request capacity increment
 
 The mandatory final safety guard subtracts explicit or profile-default output

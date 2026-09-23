@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 )
@@ -43,9 +45,19 @@ func (r *assemblyCompactionResolver) ResolveProviderRoute(context.Context, llm.P
 }
 
 func TestAssemble_IndependentCompactionRouteReachesGovernedBifrost(t *testing.T) {
+	for _, tc := range []struct{ configured, expected int }{{0, 2048}, {8192, 8192}, {32000, 16384}} {
+		t.Run(fmt.Sprint(tc.configured), func(t *testing.T) {
+			testAssembleIndependentCompactionRoute(t, tc.configured, tc.expected)
+		})
+	}
+}
+
+func testAssembleIndependentCompactionRoute(t *testing.T, configured, expected int) {
+	t.Helper()
 	const env = "HARBOR_COMPACTION_ROUTE_FIXTURE_KEY"
 	t.Setenv(env, "unused-local-fixture-key")
 	var calls atomic.Int64
+	var truncated atomic.Bool
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.Header.Get("Authorization") != "Bearer route-only-fixture-key" {
@@ -62,7 +74,7 @@ func TestAssemble_IndependentCompactionRouteReachesGovernedBifrost(t *testing.T)
 		if output == nil {
 			output = request["max_completion_tokens"]
 		}
-		if output != float64(2048) {
+		if output != float64(expected) {
 			t.Errorf("wrong outgoing maintenance allowance: %v", output)
 		}
 		format, _ := request["response_format"].(map[string]any)
@@ -72,6 +84,10 @@ func TestAssemble_IndependentCompactionRouteReachesGovernedBifrost(t *testing.T)
 			t.Errorf("maintenance request lacks the provider's named schema envelope: %v", format)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if truncated.Load() {
+			_, _ = w.Write([]byte(`{"id":"truncated","object":"chat.completion","created":1,"model":"compact-model","choices":[{"index":0,"message":{"role":"assistant","content":"{\"goals\":[\"edit layout\"],\"facts\":[],\"pending\":[],\"last_output_digest\":\"inspected\",\"note\":\"\"}"},"finish_reason":"length"}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"summary","object":"chat.completion","created":1,"model":"compact-model","choices":[{"index":0,"message":{"role":"assistant","content":"{\"goals\":[\"edit layout\"],\"facts\":[\"keep the original project\"],\"pending\":[],\"last_output_digest\":\"inspected\",\"note\":\"\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`))
 	}))
 	defer provider.Close()
@@ -86,10 +102,11 @@ func TestAssemble_IndependentCompactionRouteReachesGovernedBifrost(t *testing.T)
 		ProviderConnectionID: route.ProviderConnectionID, ProviderConnectionGeneration: route.ProviderConnectionGeneration,
 		CredentialAssetGeneration: route.CredentialAssetGeneration, ModelSelector: route.ModelSelector, ExpiresAt: time.Now().Add(time.Minute),
 		Endpoint:     &llm.ProviderEndpointBinding{Kind: llm.ProviderEndpointOpenAICompatible, Value: endpoint, Digest: digest},
-		ModelProfile: &llm.ProviderModelProfile{ContextWindowTokens: 16000, MaxOutputTokens: 4096},
+		ModelProfile: &llm.ProviderModelProfile{ContextWindowTokens: 128000, MaxOutputTokens: 16384},
 	}}
 	cfg := minimalCfg(t)
 	cfg.Memory.BudgetTokens, cfg.Memory.Summarizer.ProviderRoute = 100, route
+	cfg.Memory.Summarizer.MaxTokens = configured
 	cfg.LLM.Driver, cfg.LLM.Provider, cfg.LLM.Model = "bifrost", "fixture-route", "driving-model"
 	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{{Name: "fixture-route", BaseURL: provider.URL,
 		APIKeyEnvVar: env, Models: []string{"driving-model", "compact-model"}, Timeout: 5 * time.Second}}
@@ -121,11 +138,21 @@ func TestAssemble_IndependentCompactionRouteReachesGovernedBifrost(t *testing.T)
 	if tr.Summary == nil || calls.Load() != 1 || resolver.selects.Load() != 2 || resolver.resolves.Load() != 1 {
 		t.Fatalf("missing actual governed route: summary=%v calls=%d selects=%d resolves=%d", tr.Summary != nil, calls.Load(), resolver.selects.Load(), resolver.resolves.Load())
 	}
+	truncated.Store(true)
+	prior := tr.Summary
+	// Advance the protected tail so the previous fresh result is now eligible.
+	tr.Steps = append(tr.Steps, planner.Step{LLMObservation: "new fresh result"})
+	if err := stack.Compression.MaybeCompressRequest(ctx, rc, tr, 1000); !errors.Is(err, summarizer.ErrTrajectorySummaryIncomplete) {
+		t.Fatalf("truncated maintenance did not fail closed: %v", err)
+	}
+	if tr.Summary != prior || calls.Load() != 2 {
+		t.Fatal("truncated completion replaced the prior checkpoint or retried inference")
+	}
 	resolver.revoked.Store(true)
 	if err := stack.Compression.MaybeCompressRequest(ctx, rc, trajectory(), 1000); !errors.Is(err, llm.ErrProviderRouteResolutionFailed) {
 		t.Fatalf("revoked maintenance route did not fail closed: %v", err)
 	}
-	if calls.Load() != 1 || resolver.resolves.Load() != 1 {
+	if calls.Load() != 2 || resolver.resolves.Load() != 2 {
 		t.Fatal("revoked maintenance fell back to another credential")
 	}
 }

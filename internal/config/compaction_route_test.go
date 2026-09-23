@@ -2,12 +2,52 @@ package config_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
 )
+
+func TestMemorySummarizer_OutputBudgetConfiguration(t *testing.T) {
+	fixture, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []int{0, 8192, 128000} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			data := []byte(string(fixture) + fmt.Sprintf("\nmemory:\n  budget_tokens: 64000\n  summarizer:\n    max_tokens: %d\n", value))
+			cfg, err := config.LoadFromBytes(t.Context(), data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Memory.Summarizer.MaxTokens != value || cfg.Memory.BudgetTokens != 64000 || cfg.Memory.Summarizer.ProviderRoute != nil {
+				t.Fatalf("output budget changed unrelated memory policy: %+v", cfg.Memory)
+			}
+			t.Setenv("HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS", "4096")
+			cfg, err = config.LoadFromBytes(t.Context(), data)
+			if err != nil || cfg.Memory.Summarizer.MaxTokens != 4096 {
+				t.Fatalf("environment override not applied: cfg=%v err=%v", cfg, err)
+			}
+		})
+	}
+	cfg, err := config.Load(t.Context(), validMinimalFixture)
+	if err != nil || cfg.Memory.Summarizer.MaxTokens != 0 {
+		t.Fatalf("omitted output allowance changed: cfg=%v err=%v", cfg, err)
+	}
+	for _, value := range []string{"-1", "not-a-number", "99999999999999999999999999999"} {
+		t.Run("invalid-"+value, func(t *testing.T) {
+			t.Setenv("HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS", value)
+			if _, err := config.Load(t.Context(), validMinimalFixture); !errors.Is(err, config.ErrConfigInvalid) {
+				t.Fatalf("invalid maintenance allowance accepted: %v", err)
+			}
+		})
+	}
+	if _, err := config.LoadFromBytes(t.Context(), []byte(string(fixture)+"\nmemory:\n  summarizer:\n    max_tokens: -1\n")); !errors.Is(err, config.ErrConfigInvalid) {
+		t.Fatalf("negative YAML maintenance allowance accepted: %v", err)
+	}
+}
 
 func TestMemoryCompactionRoute_EnvironmentSelection(t *testing.T) {
 	// Dummy route metadata, never a provider credential. Exact uint64 generations

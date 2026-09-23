@@ -55,6 +55,7 @@ func TestRunOnce_RetainedCheckpoint_ReachesNextEffectiveRequest(t *testing.T) {
 	cfg := minimalCfg(t)
 	cfg.Memory.Strategy, cfg.Memory.RecentTurns = "rolling_summary", 4
 	cfg.Memory.Summarizer.Model = "summary-fixture"
+	cfg.Memory.Summarizer.MaxTokens = 8192
 	cfg.Memory.Summarizer.Prompt = "Preserve the approved navigation exactly."
 	cfg.Memory.BudgetTokens = 1 // Force repeated compaction while retaining the newest exchange.
 	driver := &retainedCheckpointDriver{decisions: map[string]int{}, summaries: map[string]int{}, requests: map[string]llm.CompleteRequest{}}
@@ -96,6 +97,9 @@ func TestRunOnce_RetainedCheckpoint_ReachesNextEffectiveRequest(t *testing.T) {
 		t.Fatalf("unexpected summary calls: %v", driver.summaries)
 	}
 	for _, req := range driver.maintenance {
+		if req.MaxTokens == nil || *req.MaxTokens != cfg.Memory.Summarizer.MaxTokens {
+			t.Fatal("configured maintenance output allowance did not reach embedded compaction")
+		}
 		if req.Model != "summary-fixture" {
 			t.Fatalf("configured maintenance model ignored: %q", req.Model)
 		}

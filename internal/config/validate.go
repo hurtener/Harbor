@@ -1302,6 +1302,9 @@ func (c *Config) validateMemory() error {
 	if c.Memory.BudgetTokens < 0 {
 		return fieldError("memory.budget_tokens", "must be >= 0")
 	}
+	if c.Memory.Summarizer.MaxTokens < 0 {
+		return fieldError("memory.summarizer.max_tokens", "must be >= 0")
+	}
 	if route := c.Memory.Summarizer.ProviderRoute; route != nil {
 		if strings.TrimSpace(route.RouteID) == "" || strings.TrimSpace(route.ProviderConnectionID) == "" ||
 			strings.TrimSpace(route.ModelSelector) == "" || route.RouteGeneration == 0 ||
