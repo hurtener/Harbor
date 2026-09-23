@@ -33,6 +33,27 @@ No backward-compatibility layer is required. Long-term memory remains external.
 
 ### Consolidated memory owner — release acceptance pending
 
+Exploratory **v1.32.0-rc.5** is published at
+`4a6f187e6b9fa9f26ce0e03f870cc6e69b230025`, annotated tag object
+`c1a8e7c582f6f3a4452b84bd228513f582af43ab`. The public Go proxy independently
+resolves that tag/commit with module sum
+`h1:ze9HGZiqfVbFs6KUPoNfwg1w2MoT+qZJyFB7Zk9EcU0=`. Release workflow
+`35881621360` passed all six binary builds and published 13 prerelease assets.
+No old RC tag moved, no stable release or merge occurred, and artifact-level
+checksum/attestation verification remains distinct from successful publication.
+
+The complete corrected Phase 269 smoke passes **15 OK / 0 SKIP / 0 FAIL**
+with real PostgreSQL 17.11, Go 1.27.1 and `GOFLAGS=-p=1`. This includes actual
+HTTP source reads, all cumulative store/budget combinations, exact result and
+attachment continuity, steering, settlement/recovery, independent-pool
+PostgreSQL fences and the public SDK sample. Full Console/static build and
+docs also passed as recorded below. The RC5 docs workflow `35881558677`
+passes. CI `35881558751` is not green: its declared-tool ReAct benchmark was
+**32.66%** slower than the same-host baseline, above the **30%** gate; the
+regression still needs investigation. No threshold is changed. Main coverage
+deficits and matched real-model acceptance remain open. Preflight alone is
+owner-waived for this exploratory cycle.
+
 Published consolidation: `d0a091c888e5fed9775ef588f62c950e12043473`.
 Phase 268 passes **10 OK / 0 SKIP / 0 FAIL** on that head. The first Phase 269
 run found a repeat-run PostgreSQL fixture collision: the expiry test reused
