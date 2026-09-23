@@ -380,11 +380,6 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	if cfg == nil {
 		return nil, fmt.Errorf("assemble: cfg is required (call config.Load, or config.Defaults + ValidateCore for headless embedding)")
 	}
-	logger := opts.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
 	stack := &Stack{Cfg: cfg}
 
 	// Open the runtime-wide PostgreSQL pool manager before any store. It
@@ -433,8 +428,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// mandatory, identity-attributed, bus-paired (RFC §6.14:
 	// "Logger.Error emits both an slog record AND a paired
 	// runtime.error bus event"). Constructed the moment the redactor +
-	// bus exist; the bare Options.Logger remains only the bootstrap /
-	// wiring logger.
+	// bus exist; earlier setup failures return directly to the caller.
 	tlog, err := telemetry.New(cfg.Telemetry, red,
 		append([]telemetry.Option{telemetry.WithBusEmitter(televentbus.New(bus))}, opts.TelemetryOptions...)...)
 	if err != nil {
@@ -447,11 +441,8 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// subscriber, the pause sweeper, the dispatch executor, the MCP
 	// attach loop, the search-cache warn path, the run loop) logs
 	// through the telemetry pipeline — ctx identity stamping,
-	// mandatory redaction, bus-paired errors. The bare Options.Logger
-	// served only the pre-telemetry bootstrap window above, which
-	// makes the "bootstrap-only" posture true inside the
-	// assembly.
-	logger = tlog.Slog()
+	// mandatory redaction, bus-paired errors.
+	logger := tlog.Slog()
 
 	// the production engine run-error handler —
 	// `engine.WithRunErrorHandler`\'s godoc made true. Flow composition

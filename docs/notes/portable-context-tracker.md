@@ -31,6 +31,43 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Go 1.27 analyzer compatibility — release-gate repair
+
+Parent `957880c9` CI `35848630795`, job `107140739102`, fails inside
+staticcheck 0.7.0 while analysing Linux's standard-library `poll` package:
+`unexpected expr: *ast.KeyValueExpr`. This is a failed gate, not a lint pass.
+Rebuilding golangci-lint 2.12.2 with Go 1.27.1 only addresses build-version
+admission, not analyzer support. The official
+[2.13 changelog](https://github.com/golangci/golangci-lint/blob/v2.13.2/CHANGELOG.md)
+adds Go 1.27 support; pin patch release **2.13.2**, with staticcheck 0.8.1,
+in CI and the Makefile installation instruction. Runtime dependencies and lint
+configuration/targets are unchanged.
+
+The new analyzer exposed eight findings. Remove unused assignment results
+without removing their side-effecting calls; remove an unused bootstrap logger
+assignment; preserve the TUI's existing unconditional styled-span output
+(its background getter is never nil). Replace deprecated ECDSA key-field
+construction with the standard validated SEC 1 parser, preserving leading-zero
+coordinate acceptance. Tests cover all three allowed curves, exact key identity,
+invalid points and oversized coordinates. Two line-local documented deprecation
+exceptions retain tests that intentionally exercise forbidden legacy TLS hooks;
+no production warning or enabled linter is suppressed.
+
+Source tree `057d7bdab619fa0d33406bdbc3d80f69cfe46627`, Go 1.27.1
+darwin-arm64, `GOFLAGS=-p=1 go test -race` with `-count=1`: complete durable
+events, provider-route HTTP transport, Protocol auth, agent-config Protocol,
+embedded assembly and TUI app packages pass **30.141s / 1.643s / 2.047s /
+10.979s / 90.099s / 22.962s**. No live-provider or service opt-in configured;
+this is not service-backed or final-tree coverage acceptance. Full `make lint`
+with 2.13.2 built using Go 1.27.1 reports **zero issues** both natively and with
+`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-p=1`. The latter checks Linux
+source/analyzers from macOS; it is not a native Linux test run or hosted CI
+pass. Full `GOFLAGS=-p=1 make vet`, Markdown (599 files), mirror and whitespace
+checks pass. Publication
+adds this receipt and clarifies the CI installation comment. Exact-head hosted
+verification, the original journal deadline issue and release acceptance remain
+pending. No tag, deployment, prompt change or model call.
+
 ### Steering text reaches actual requests — bounded repair
 
 On published `957880c9c99ace6b24b6acef6ef338e1f4e43f88`, the ReAct

@@ -687,14 +687,20 @@ func parseECJWK(k jwk) (*ecdsa.PublicKey, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("EC JWK y: %w", err)
 	}
-	pub := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+	// Encode the integer coordinates as a fixed-width SEC 1 point rather
+	// than writing deprecated raw key fields. Preserve the prior acceptance
+	// of leading-zero encodings; reject oversized values before FillBytes.
+	x, y := new(big.Int).SetBytes(xBytes), new(big.Int).SetBytes(yBytes)
+	size := (curve.Params().BitSize + 7) / 8
+	if x.BitLen() > size*8 || y.BitLen() > size*8 {
+		return nil, "", fmt.Errorf("EC JWK point invalid for %s: coordinate out of range", k.Crv)
 	}
-	// Validate the point is on the curve via the non-deprecated ECDH
-	// conversion (which rejects an off-curve or identity point).
-	if _, err := pub.ECDH(); err != nil {
+	point := make([]byte, 1+2*size)
+	point[0] = 4
+	x.FillBytes(point[1 : 1+size])
+	y.FillBytes(point[1+size:])
+	pub, err := ecdsa.ParseUncompressedPublicKey(curve, point)
+	if err != nil {
 		return nil, "", fmt.Errorf("EC JWK point invalid for %s: %w", k.Crv, err)
 	}
 	return pub, alg, nil

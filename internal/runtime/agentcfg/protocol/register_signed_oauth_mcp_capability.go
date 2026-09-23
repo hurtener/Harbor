@@ -120,7 +120,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		operationKey.UserID = id.UserID
 		operationKey.SessionID = id.SessionID
 	}
-	op, _, err := s.signedOAuthMCPOperations.Claim(ctx, operationKey, binding, claims.ExpiresAt.Time)
+	_, _, err = s.signedOAuthMCPOperations.Claim(ctx, operationKey, binding, claims.ExpiresAt.Time)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
@@ -137,7 +137,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	// Claim precedes this process-local lock so independent runtimes compete at
 	// the durable StateStore boundary. Refresh after waiting: a same-JTI caller
 	// may already have advanced the exact receipt.
-	op, err = s.signedOAuthMCPOperations.Load(ctx, operationKey)
+	op, err := s.signedOAuthMCPOperations.Load(ctx, operationKey)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}

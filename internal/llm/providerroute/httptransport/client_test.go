@@ -114,7 +114,7 @@ func TestNewWithNetworkOwnsTransportEgressHooks(t *testing.T) {
 	}
 	custom := &http.Transport{
 		DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return nil, nil },
-		DialTLS:        func(string, string) (net.Conn, error) { return nil, nil },
+		DialTLS:        func(string, string) (net.Conn, error) { return nil, nil }, //nolint:staticcheck // Deliberately test rejection of the deprecated bypass hook.
 	}
 	if _, err := newWithNetwork(Config{ResolverURL: "https://resolver.example.test", AuthToken: "fixture-token", HTTPClient: &http.Client{Transport: custom}}, lookup, dial); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("custom TLS transport error = %v, want ErrInvalidConfig", err)
@@ -126,7 +126,7 @@ func TestNewWithNetworkClearsInheritedLegacyDialTLS(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = previous })
 	legacyCalls := 0
 	http.DefaultTransport = &http.Transport{
-		DialTLS: func(string, string) (net.Conn, error) {
+		DialTLS: func(string, string) (net.Conn, error) { //nolint:staticcheck // Deliberately test clearing the inherited deprecated bypass hook.
 			legacyCalls++
 			return nil, errors.New("legacy DialTLS hook called")
 		},

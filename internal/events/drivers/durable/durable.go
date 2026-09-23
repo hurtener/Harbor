@@ -1397,7 +1397,7 @@ func (b *bus) persistAtomicBatchAttempt(ctx context.Context, batch []events.Even
 		return fmt.Errorf("load head record: %w", err)
 	}
 	if !headMetadataReady(head) {
-		head, err = b.ensureHeadMetadata(ctx, sessionID, head)
+		_, err = b.ensureHeadMetadata(ctx, sessionID, head)
 		if err != nil {
 			return fmt.Errorf("upgrade head index: %w", err)
 		}
