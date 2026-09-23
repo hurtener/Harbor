@@ -15950,3 +15950,26 @@ invalid messages return the existing `payload_invalid` classification (HTTP 422)
 before queuing, cancelling a planning attempt or invalidating queued invocations.
 Valid source text is preserved exactly, including whitespace and numeric strings.
 New attachments belong on a new turn; they are never silently dropped.
+
+## D-480 — Token-governed compaction is independent of evidence storage size
+
+**Date:** 2026-09-23. **Scope:** PR #779; owner-directed correction.
+**Supersedes:** D-464's 512 KiB session-slot and journal capacity.
+
+Remove the fixed 512 KiB retained-evidence ceiling, not replace it with a larger
+hidden byte cap. Exact settled evidence, context updates, administrative notes,
+historical envelopes and authorized reference projection may exceed that size.
+The same StateStore remains authoritative; no new store or transcript is added.
+Token compaction reduces model input, not the size of preserved exact evidence.
+
+Operators choose the working-input target in `memory.budget_tokens` in YAML;
+there is no framework-specific 64,000-token constant. The effective model's
+physical capacity, protected fresh results and governed maintenance still apply.
+Keep lifetime, count, identity, redaction, generation/erasure and unknown-outcome
+fences, exact journal accounting and the five-second persistence deadlines.
+Schema/transport bounds are separate and are not removed by this decision.
+
+At this increment memory configuration is restart-required. Administrative
+Protocol memory configuration and separately authorized compaction model routing
+remain unimplemented; setting a different summarizer model on a bound external
+route must not bypass that route's authorization or silently use another key.

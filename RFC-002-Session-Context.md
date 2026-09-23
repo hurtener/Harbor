@@ -277,7 +277,12 @@ tool name.
 Keep reads proportional to the retained window, with indexed/keyset access and
 bounded writes. Do not scan raw telemetry, enumerate the whole session on each
 request, or rewrite an ever-growing trajectory after every tool call. Persisted
-records and checkpoints need explicit byte/count/retention bounds on all drivers.
+records retain explicit count, lifetime and generation fences on all drivers.
+The retired 512 KiB execution-evidence ceiling is not a context-window policy:
+do not reject, clip or discard exact evidence because its record exceeds that
+size. `memory.budget_tokens` and the effective model capacity govern model-facing
+compaction; neither claims to cap stored bytes. Keep checkpoint-schema and
+transport bounds distinct from session-evidence storage (D-480).
 
 The next user turn restores checkpoint plus recent execution context through the
 same projection used within a run. Do not also inject a second pair-only or
@@ -374,7 +379,7 @@ the effective request and Bifrost serialization; it does not prove model skill.
 | Provider/model switch, cache off | An authorized compatible Bifrost route continues from the portable checkpoint; changed limits/modalities are revalidated, including fallback attempts. |
 | Long retained history | Instrumented storage work is bounded by the configured window, not total historical event count. |
 | At least 100 turns and five checkpoint generations | A constraint introduced only in turn 1 remains in actual later decision requests; later corrections survive. Every maintenance request receives the previous checkpoint plus new eligible evidence. No Stowage, repeated instruction or canned summary may manufacture a missing constraint. |
-| Multiple complete windows with failures and restarts | Repeat with failed writes/summarization, concurrent siblings, deletion during inference, expired references and model changes on in-memory, SQLite and PostgreSQL. Prove bounded stored bytes and request size, not just successful summary creation. |
+| Multiple complete windows with failures and restarts | Repeat with failed writes/summarization, concurrent siblings, deletion during inference, expired references and model changes on in-memory, SQLite and PostgreSQL. Verify retention/count fences, exact evidence above the retired byte ceiling, and token-budgeted requests, not just successful summary creation. |
 
 Run the shared persistence conformance suite across in-memory, SQLite, and
 Postgres where those configured drivers participate. Reusable components require

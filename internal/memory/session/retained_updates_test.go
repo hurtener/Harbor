@@ -69,7 +69,7 @@ func TestRetainedUpdates_ContextFrameRecovery(t *testing.T) {
 }
 
 func TestRetainedUpdates_RefusesInvalidOrPendingContext(t *testing.T) {
-	for _, scenario := range []string{"pending", "action", "historical", "private", "empty", "oversized", "cancelled"} {
+	for _, scenario := range []string{"pending", "action", "historical", "private", "empty", "cancelled"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			base := retainedBase("run", scenario)
@@ -99,8 +99,6 @@ func TestRetainedUpdates_RefusesInvalidOrPendingContext(t *testing.T) {
 				step.ReasoningTrace = "private"
 			case "empty":
 				step.LLMObservation = nil
-			case "oversized":
-				step.LLMObservation = strings.Repeat("x", 512*1024)
 			case "cancelled":
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)

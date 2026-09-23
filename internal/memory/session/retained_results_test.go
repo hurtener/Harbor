@@ -144,10 +144,11 @@ func TestRetainedResults_BoundsAndCancellation(t *testing.T) {
 	for range 66 {
 		deep = []any{deep}
 	}
-	for _, value := range []any{deep, strings.Repeat("x", 2*maxRetainedContextBytes+1)} {
-		if _, err := retainedResultReferences(t.Context(), referenceContext(value), referenceStore()); !errors.Is(err, ErrRetainedContextCapacity) {
-			t.Fatal("unbounded retained scan")
-		}
+	if _, err := retainedResultReferences(t.Context(), referenceContext(deep), referenceStore()); !errors.Is(err, ErrRetainedContextCapacity) {
+		t.Fatal("unbounded retained scan depth")
+	}
+	if refs, err := retainedResultReferences(t.Context(), referenceContext(strings.Repeat("x", 1024*1024+1), offloadedReference("large")), referenceStore()); err != nil || len(refs) != 1 || refs[0].Ref != "large" {
+		t.Fatalf("legacy byte ceiling prevented reference projection: %v, %v", refs, err)
 	}
 	store := referenceStore()
 	old := store.lookup

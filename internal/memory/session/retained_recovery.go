@@ -65,14 +65,14 @@ func ReconcileRetainedRun(ctx context.Context, store state.StateStore, redactor 
 	if alreadySealed && errors.Is(err, state.ErrNotFound) {
 		return nil
 	}
-	if err != nil || record.Identity != q || record.Kind != retainedJournalKind || len(record.Bytes) > maxRetainedContextBytes {
+	if err != nil || record.Identity != q || record.Kind != retainedJournalKind {
 		return ErrRetainedContextUnavailable
 	}
 	if err := decodeRetained(record.Bytes, &r.journal); err != nil {
 		return err
 	}
 	head := r.journal
-	if head.Version != retainedJournalVersion || head.Admission != r.admission || head.Count < 0 || head.Count > maxRetainedContextSteps || head.Bytes < 0 || head.Bytes > maxRetainedContextBytes || head.ExpiresAt.IsZero() {
+	if head.Version != retainedJournalVersion || head.Admission != r.admission || head.Count < 0 || head.Count > maxRetainedContextSteps || head.Bytes < 0 || head.ExpiresAt.IsZero() {
 		return ErrRetainedContextUnavailable
 	}
 	if head.Pending {
@@ -87,6 +87,9 @@ func ReconcileRetainedRun(ctx context.Context, store state.StateStore, redactor 
 		return ErrRetainedContextUnavailable
 	}
 	totalBytes := len(query)
+	if totalBytes > head.Bytes {
+		return ErrRetainedContextUnavailable
+	}
 	tr := &planner.Trajectory{Query: head.Query}
 	for index := range head.Count {
 		frameRecord, err := store.Load(ctx, q, retainedFrameKind(index))
@@ -94,7 +97,7 @@ func ReconcileRetainedRun(ctx context.Context, store state.StateStore, redactor 
 			r.frameIDs = append(r.frameIDs, "") // a previous cleanup already removed it
 			continue
 		}
-		if err != nil || frameRecord.Identity != q || frameRecord.Kind != retainedFrameKind(index) || len(frameRecord.Bytes) > maxRetainedContextBytes-totalBytes {
+		if err != nil || frameRecord.Identity != q || frameRecord.Kind != retainedFrameKind(index) || len(frameRecord.Bytes) > head.Bytes-totalBytes {
 			return ErrRetainedContextUnavailable
 		}
 		var frame retainedFrame

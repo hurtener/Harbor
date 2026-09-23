@@ -164,7 +164,7 @@ func redactFailedHistoricalArguments(step Step, kind string, body []byte) ([]byt
 // tool-result payloads remain data; only the host-owned envelope is interpreted.
 func ReadHistoricalStep(outer Step) (Step, error) {
 	h := outer.Historical
-	if h == nil || h.Version != 1 || h.SourceRun == "" || h.Index < 0 || len(h.Body) > 512*1024 ||
+	if h == nil || h.Version != 1 || h.SourceRun == "" || h.Index < 0 ||
 		outer.Action != nil || outer.Observation != nil || outer.LLMObservation != nil ||
 		outer.AssistantPreamble != "" || outer.ReasoningTrace != "" || outer.Failure != nil ||
 		outer.Error != "" || outer.Streams != nil || !utf8.Valid(h.Body) {

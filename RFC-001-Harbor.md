@@ -1085,6 +1085,9 @@ recent execution tail; `recent_turns: 20` bounds detail, not the age of remember
 constraints. Each compaction receives the preceding checkpoint and newly eligible
 evidence. `memory.budget_tokens` controls assembled-request compaction, with zero
 deriving the safe target from the effective model; output limits remain separate.
+There is no fixed 512 KiB execution-evidence storage ceiling (D-480). Exact
+retained evidence may exceed the working-input size; token compaction does not
+promise bounded storage bytes. Lifetime, identity and generation fences remain.
 `memory.strategy: none` explicitly disables session memory. Replace the pair-only
 summary pipeline, separate `sessions.retained_context_turns`/`WithRetainedContext`
 activation and `planner.token_budget`; no compatibility layer or second memory

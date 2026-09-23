@@ -1,5 +1,54 @@
 # Portable session context implementation tracker
 
+## Evidence-size correction — 2026-09-23
+
+Owner direction: remove the legacy 512 KiB retained-evidence capacity, not replace
+it with a larger hidden cap. Working-input compaction remains an operator YAML
+choice through `memory.budget_tokens`; no deployment-specific token constant is
+introduced in Harbor. D-480 records the corrected storage/input distinction.
+
+On base `c41ce48c`, the new real-store regression failed on turn 8 in both
+in-memory and SQLite after **seven successful compactions**. Command:
+`GOFLAGS=-p=1 go test -race ./internal/memory/session -run
+'^TestRetainedCumulative_LargeReceiptsStayBoundedAfterCompaction$' -count=1 -v`
+(the test is renamed to `LargeReceiptsExceedLegacyByteLimitAfterCompaction`
+after the owner clarified that exact stored bytes are not token-bounded).
+This reproduces the storage failure class, not the exact private live payload.
+
+The correction removes that ceiling from terminal records, intent/settlement
+journals, recovery, historical-envelope decoding, administrative notes and
+reference scanning. Keep all existing identity/redactor/expiry/erasure and
+generation checks, unknown-outcome refusal, count/depth/schema bounds and
+five-second production persistence contexts. Recovery still checks exact byte
+accounting against its journal head; no evidence is silently clipped or replayed.
+
+Locally verified with Go 1.27.1 on the correction tree:
+
+- Real in-memory, SQLite and PostgreSQL 17.11 regressions preserve twelve exact
+  64 KiB receipts through repeated compaction, including large version strings
+  and `more:false`, past the old aggregate ceiling.
+- Query, intent preamble, settled result and steering entries each larger than
+  512 KiB survive explicit recovery; SQLite is closed and reopened. Pending
+  external outcomes still refuse recovery. Large administrative notes round-trip.
+- Canonical `GOMAXPROCS=2 GOFLAGS=-p=1 go test -race
+  ./internal/memory/session -count=1 -coverprofile=...` with `HARBOR_PG_DSN`
+  set passes: **84.7%**, still below the **92%** release target. The earlier
+  no-service run passed but is not service-backed acceptance.
+- Full `planner`, `llm` and `llm/summarizer` race suites pass; targeted
+  `go vet` passes. Pinned golangci-lint 2.13.2 (built with Go 1.27.1) reports
+  zero issues for the touched memory/planner trees. Changed Markdown, mirror
+  and diff checks pass.
+
+Publication, exact-head hosted validation and RC deployment must be recorded
+separately; these local checks are not a claim that the live RC5 is repaired.
+The owner-selected sample budget is 64,000 tokens in its deployment YAML.
+Memory fields are currently restart-required and absent from the admin
+agent-config Protocol. A separate static summarizer model is supported without
+an external route/grant; a bound route still forbids changing its admitted model.
+The requested administrative editor and independently authorized maintenance
+route remain pending. Do not bypass route authority or silently fall back to a
+different credential while adding them.
+
 ## Owner functional acceptance — 2026-09-23
 
 The owner accepts the demonstrated cumulative-memory behavior: continuity over

@@ -24,7 +24,6 @@ import (
 const (
 	retainedContextKind      = state.InternalKindPrefix + "session-execution-context"
 	retainedContextVersion   = 4
-	maxRetainedContextBytes  = 512 * 1024
 	maxRetainedContextTurns  = config.MaxMemoryRecentTurns
 	maxRetainedContextActive = 32
 	maxRetainedContextSteps  = 256
@@ -108,15 +107,13 @@ type RetainedRun struct {
 	journalFailure   error
 }
 
-// CompactionRequired reports admission-time pressure on the detailed history.
+// CompactionRequired reports admission-time turn pressure on the detailed history.
 // It does not compact or renew retention. The run loop uses its ordinary
 // compactor before the first decision, outside persistence deadlines and locks.
+// Token pressure is governed by the configured working-input budget, not the
+// byte size of retained exact evidence.
 func (r *RetainedRun) CompactionRequired() bool {
-	if len(r.sourceTurns) >= r.turns {
-		return true
-	}
-	encoded, err := json.Marshal(r.sourceTurns)
-	return err != nil || len(encoded) >= maxRetainedContextBytes*3/4
+	return len(r.sourceTurns) >= r.turns
 }
 
 // BeginRetainedRun explicitly opts one run into retained execution-context
@@ -233,7 +230,7 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 	}
 	// Historical exchanges are settled, not fresh output of this execution.
 	// This boundary is independent of an explicit token target: automatic
-	// model-capacity and storage-pressure compaction use it as well.
+	// model-capacity and turn-pressure compaction use it as well.
 	seen := r.prefixLen
 	base.Trajectory.UnseenFrom = &seen
 	return nil
@@ -279,8 +276,8 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 		turn.Steps = append(turn.Steps, encoded)
 	}
 	encoded, err := json.Marshal(turn)
-	if err != nil || len(encoded) > maxRetainedContextBytes {
-		return ErrRetainedContextCapacity
+	if err != nil {
+		return ErrRetainedContextUnavailable
 	}
 	var evidence any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
@@ -293,8 +290,8 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 		return fmt.Errorf("%w: redaction refused retention: %w", ErrRetainedContextUnavailable, err)
 	}
 	encoded, err = json.Marshal(redacted)
-	if err != nil || len(encoded) > maxRetainedContextBytes {
-		return ErrRetainedContextCapacity
+	if err != nil {
+		return ErrRetainedContextUnavailable
 	}
 	var safe retainedTurn
 	if err := decodeRetained(encoded, &safe); err != nil {
@@ -339,21 +336,6 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 			}
 		}
 		for len(window.Turns) > r.turns {
-			if err := discardCoveredTurn(&window); err != nil {
-				return err
-			}
-		}
-		for {
-			body, marshalErr := json.Marshal(window)
-			if marshalErr != nil {
-				return ErrRetainedContextUnavailable
-			}
-			if len(body) <= maxRetainedContextBytes {
-				break
-			}
-			if len(window.Turns) <= 1 {
-				return ErrRetainedContextCapacity
-			}
 			if err := discardCoveredTurn(&window); err != nil {
 				return err
 			}
@@ -449,7 +431,7 @@ func (r *RetainedRun) load(ctx context.Context) (retainedWindow, state.EventID, 
 	if err != nil {
 		return retainedWindow{}, "", fmt.Errorf("%w: %w", ErrRetainedContextUnavailable, err)
 	}
-	if record.Identity != q || record.Kind != retainedContextKind || len(record.Bytes) > maxRetainedContextBytes {
+	if record.Identity != q || record.Kind != retainedContextKind {
 		return retainedWindow{}, "", ErrRetainedContextUnavailable
 	}
 	var window retainedWindow
@@ -533,8 +515,8 @@ func (r *RetainedRun) checkErasure(ctx context.Context) error {
 
 func (r *RetainedRun) save(ctx context.Context, previous state.EventID, window retainedWindow) error {
 	data, err := json.Marshal(window)
-	if err != nil || len(data) > maxRetainedContextBytes {
-		return ErrRetainedContextCapacity
+	if err != nil {
+		return ErrRetainedContextUnavailable
 	}
 	q := identity.Quadruple{Identity: r.q.Identity}
 	predicates, err := r.erasurePredicates()

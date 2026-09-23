@@ -25,7 +25,7 @@ func TestHistoricalValidation_ClosedEnvelope(t *testing.T) {
 		"ambiguous result": func(s *planner.Step) { s.LLMObservation = "PRIVATE" },
 		"outer reasoning":  func(s *planner.Step) { s.ReasoningTrace = "PRIVATE" },
 		"outer failure":    func(s *planner.Step) { s.Error = "PRIVATE" },
-		"large body":       func(s *planner.Step) { s.Historical.Body = json.RawMessage(strings.Repeat(" ", 512*1024+1)) },
+		"missing JSON":     func(s *planner.Step) { s.Historical.Body = json.RawMessage(strings.Repeat(" ", 512*1024+1)) },
 	}
 	bodies := []string{
 		`null`, `[]`, `{`, `{}`, `{} {}`, `{"action":null}`,
@@ -55,6 +55,28 @@ func TestHistoricalValidation_ClosedEnvelope(t *testing.T) {
 	}
 	if _, err := planner.ReadHistoricalStep(valid()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHistoricalValidation_LargeExactEvidence(t *testing.T) {
+	source := strings.Repeat("café 東京", 100000)
+	live := planner.Step{Action: planner.CallTool{Tool: "read", CallID: "large"}, LLMObservation: source}
+	retained, err := planner.RetainStep(live, "source", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained.Historical.Body) <= 512*1024 {
+		t.Fatal("fixture did not cross legacy ceiling")
+	}
+	restored, err := planner.ReadHistoricalStep(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.LLMObservation != source {
+		t.Fatal("large exact source changed")
+	}
+	if _, executable := restored.Action.(planner.Decision); executable {
+		t.Fatal("history became executable")
 	}
 }
 

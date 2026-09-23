@@ -55,7 +55,7 @@ reasoning, tool handles, and duplicate raw observations are not summary input.
 - [ ] One compactor consumes the previous checkpoint plus newly eligible evidence
       within runs and between turns, using `memory` budgets and current model
       capacity; remove the separate planner compaction knob.
-- [ ] Count/byte pressure triggers compaction before detailed-history eviction;
+- [ ] Turn-count/token pressure triggers compaction before detailed-history eviction;
       failed maintenance preserves committed state or returns capacity failure.
 - [ ] Actual requests over 100 turns and five or more generations preserve a
       turn-1-only constraint and later corrections across complete windows.

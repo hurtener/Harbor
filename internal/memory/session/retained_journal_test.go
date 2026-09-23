@@ -115,7 +115,7 @@ func TestRetainedJournal_RestartDoesNotReplayPendingWrite(t *testing.T) {
 }
 
 func TestRetainedJournal_FailClosedBoundsAndIdentity(t *testing.T) {
-	for _, scenario := range []string{"wrong identity", "pending terminal", "oversize", "changed action", "expired prefix", "cancelled intent"} {
+	for _, scenario := range []string{"wrong identity", "pending terminal", "changed action", "expired prefix", "cancelled intent"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			base := retainedBase("r", scenario)
@@ -135,9 +135,6 @@ func TestRetainedJournal_FailClosedBoundsAndIdentity(t *testing.T) {
 				other := base
 				other.Quadruple.UserID = "other"
 				err = r.BeforeDispatch(t.Context(), other, step)
-			case "oversize":
-				step.AssistantPreamble = strings.Repeat("x", 512*1024)
-				err = r.BeforeDispatch(t.Context(), base, step)
 			case "cancelled intent":
 				ctx, cancel := context.WithCancel(t.Context())
 				cancel()

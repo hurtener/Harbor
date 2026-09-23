@@ -44,6 +44,10 @@ the prior committed state; capacity failures are explicit.
 
 Set `memory.strategy: none` for stateless execution. Working-input compaction
 uses `memory.budget_tokens`; model output limits remain independent.
+Set that target in the agent YAML, not application code. The memory settings
+currently require redeployment/restart and have no agent-config Protocol editor.
+Exact retained evidence has no fixed 512 KiB storage ceiling; token compaction
+controls model input, not persisted byte size. Lifetime and erasure still apply.
 In-memory, SQLite and PostgreSQL use the same identity-scoped execution owner.
 Session expiry and authorized deletion invalidate derived context.
 

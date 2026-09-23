@@ -225,9 +225,6 @@ func Put(ctx context.Context, store state.StateStore, redactor audit.Redactor, i
 	if !utf8.ValidString(query) || !utf8.ValidString(answer) {
 		return "", ErrRetainedContextUnavailable
 	}
-	if len(query) > maxRetainedContextBytes || len(answer) > maxRetainedContextBytes-len(query) {
-		return "", ErrRetainedContextCapacity
-	}
 	// Redact content before attaching immutable host metadata. A custom redactor
 	// cannot change admissions, retention or provenance through this input.
 	redacted, err := redactor.Redact(ctx, map[string]any{"query": query, "answer": answer})
@@ -237,9 +234,6 @@ func Put(ctx context.Context, store state.StateStore, redactor audit.Redactor, i
 	encoded, err := json.Marshal(redacted)
 	if err != nil {
 		return "", ErrRetainedContextUnavailable
-	}
-	if len(encoded) > maxRetainedContextBytes {
-		return "", ErrRetainedContextCapacity
 	}
 	var safe struct {
 		Query  *string `json:"query"`

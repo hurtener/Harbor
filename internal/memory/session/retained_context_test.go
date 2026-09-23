@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +29,12 @@ func retainedStore(t *testing.T, driver string) (state.StateStore, audit.Redacto
 	cfg := config.StateConfig{Driver: driver}
 	if driver == "sqlite" {
 		cfg.DSN = filepath.Join(t.TempDir(), "context.sqlite")
+	}
+	if driver == "postgres" {
+		cfg.DSN = os.Getenv("HARBOR_PG_DSN")
+		if cfg.DSN == "" {
+			t.Skip("HARBOR_PG_DSN required for service-backed retained evidence")
+		}
 	}
 	store, err := state.Open(t.Context(), cfg)
 	if err != nil {
@@ -367,7 +374,7 @@ func TestRetainedContext_ErasureDuringDecisionBlocksDispatch(t *testing.T) {
 	}
 }
 
-func TestRetainedContext_CancelledAdmissionAndOversizedTerminal(t *testing.T) {
+func TestRetainedContext_CancelledAdmissionAndLargeTerminal(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("run", "bounds")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -382,9 +389,24 @@ func TestRetainedContext_CancelledAdmissionAndOversizedTerminal(t *testing.T) {
 	if err = r.Apply(&base); err != nil {
 		t.Fatal(err)
 	}
-	base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: strings.Repeat("x", 512*1024)})
-	if err = r.Finish(t.Context(), base.Trajectory, "request", "done", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
-		t.Fatalf("oversized evidence clipped: %v", err)
+	receipt := strings.Repeat("x", 512*1024+1)
+	base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: receipt})
+	if err = r.Finish(t.Context(), base.Trajectory, "request", "done", "complete"); err != nil {
+		t.Fatalf("legacy byte ceiling rejected evidence: %v", err)
+	}
+	next := retainedBase("next", "bounds")
+	restored, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Apply(&next); err != nil {
+		t.Fatal(err)
+	}
+	if restored.CompactionRequired() {
+		t.Fatal("stored byte size forced compaction below the configured turn window")
+	}
+	if !strings.Contains(encodeRetained(t, next), receipt) {
+		t.Fatal("large terminal evidence was clipped")
 	}
 }
 

@@ -88,7 +88,7 @@ an intent without a returned receipt remains unknown, never automatically replay
 - [ ] 100-turn, five-generation actual-request acceptance across several windows,
       corrections, restart, write/summary failures, siblings, deletion, expired
       references and model changes on in-memory, SQLite and PostgreSQL.
-- [ ] Bounded storage/request sizes and content-free generation/coverage/size,
+- [ ] Retention/count-fenced storage, token-budgeted requests and content-free generation/coverage/size,
       reason, maintenance-cost and invalidation diagnostics are verified.
 - [ ] Preserve exact receipt, large-version, pair-validity, current-authority,
       N=128 race/isolation, fresh-result and unknown-outcome/no-replay regressions.
@@ -197,16 +197,19 @@ that full branch coverage or repository preflight is already green.
 
 ## Risks / open questions
 
-Under D-477, count/byte cleanup is permitted only after cumulative checkpoint
+Under D-477, count cleanup is permitted only after cumulative checkpoint
 commit. The source-dependent cache and count-eviction rules below describe the
 old implementation and must not remain in the replacement. TTL/erasure still
 remove information, including derived summaries; incompatible data fails closed.
 
-The bounded session window retains up to 32 recent turns, 256 own steps per turn
-and 512 KiB per session slot; up to 32 active admissions are tracked. Per-action
-frames use the same existing StateStore, with explicit size and generation bounds.
+The bounded session window retains up to 32 recent turns and 256 own steps per
+turn; up to 32 active admissions are tracked. D-480 removes the former 512 KiB
+session-slot and journal ceiling, including the historical-envelope and result
+scan copies of that ceiling. Per-action frames use the same existing StateStore,
+with exact byte accounting and generation checks, not a fixed byte capacity.
 A run's TTL uses the configured session idle TTL (24 hours when unspecified).
-An indivisible entry exceeding its bound fails rather than being clipped.
+Model-input compaction uses `memory.budget_tokens`, independently of stored bytes.
+The existing checkpoint-schema, step-count and reference-validation bounds remain.
 
 Historical native envelopes remain context, not executable Decisions. Source
 selection is frozen on admission; siblings' in-flight results are excluded.

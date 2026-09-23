@@ -120,7 +120,7 @@ func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, 
 	if err != nil {
 		return fmt.Errorf("%w: load dispatch intent: %w", ErrRetainedContextUnavailable, err)
 	}
-	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) || len(old.Bytes) > maxRetainedContextBytes {
+	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) {
 		return ErrRetainedContextUnavailable
 	}
 	frame, settledAction, err := r.makeFrame(ctx, index, true, step, r.journal.ExpiresAt)
@@ -274,9 +274,6 @@ func (r *RetainedRun) redactJournalValue(ctx context.Context, value any) ([]byte
 	if err != nil {
 		return nil, ErrRetainedContextUnavailable
 	}
-	if len(encoded) > maxRetainedContextBytes {
-		return nil, ErrRetainedContextCapacity
-	}
 	var tree any
 	if err := decodeRetained(encoded, &tree); err != nil {
 		return nil, err
@@ -292,16 +289,13 @@ func (r *RetainedRun) redactJournalValue(ctx context.Context, value any) ([]byte
 	if err != nil {
 		return nil, ErrRetainedContextUnavailable
 	}
-	if len(encoded) > maxRetainedContextBytes {
-		return nil, ErrRetainedContextCapacity
-	}
 	return encoded, nil
 }
 
 func (r *RetainedRun) commitJournal(ctx context.Context, head retainedJournal, frame []byte, previousFrame state.EventID) error {
 	body, err := json.Marshal(head)
-	if err != nil || head.Bytes < 0 || head.Bytes+len(body) > maxRetainedContextBytes {
-		return ErrRetainedContextCapacity
+	if err != nil || head.Bytes < 0 {
+		return ErrRetainedContextUnavailable
 	}
 	next := state.NewInternalRecord(state.NewEventID(), r.q, retainedJournalKind, body)
 	var nextFrame state.StateRecord
@@ -366,8 +360,8 @@ func (r *RetainedRun) saveTerminal(ctx context.Context, previous state.EventID, 
 		return r.save(ctx, previous, window)
 	}
 	data, err := json.Marshal(window)
-	if err != nil || len(data) > maxRetainedContextBytes {
-		return ErrRetainedContextCapacity
+	if err != nil {
+		return ErrRetainedContextUnavailable
 	}
 	head := r.journal
 	head.Terminal = status

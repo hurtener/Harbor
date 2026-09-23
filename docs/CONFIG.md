@@ -920,6 +920,8 @@ capacity, context reserve and requested output reservation. A positive value
 also builds the within-run compactor for stateless execution. It is a soft
 target: preserve fresh tool results; the final model admission guard remains
 mandatory. It never sets or lowers a model's output-token allowance.
+Set the value in `harbor.yaml` (or `HARBOR_MEMORY_BUDGET_TOKENS`); it is
+restart-required and is not currently exposed by the agent-config Protocol.
 
 There is no second planner budget or pair-only summary engine.
 The former `memory.recovery_backlog_max` setting and its environment override
@@ -943,6 +945,11 @@ default model (today's behavior). A model with no matching
 `model_profiles` entry fails at runtime like any unsupported model; it
 is not rejected at load time. It selects the maintenance model whenever a
 within-run or cross-turn compactor is configured.
+An externally selected provider route or execution grant remains authoritative:
+it currently binds maintenance to its admitted model too. A different static
+summarizer model is rejected on that path, not silently authorized or replaced
+with the runtime's local key. Separately authorized maintenance routing is not
+implemented by this YAML field. This setting is restart-required.
 
 ### memory.summarizer.prompt
 
@@ -1238,10 +1245,12 @@ exists. `sessions.retained_context_turns`, its environment override and the SDK
 stateless stack. In-memory
 StateStore retention ends with the process; SQLite/Postgres preserve committed
 content across restarts. The detailed window remains bounded by 32 turns,
-256 own steps per turn, 512 KiB, and the configured session idle TTL. Expiry,
-and erasure apply. Successful compaction replaces covered detail with cumulative
-checkpoint meaning; window rollover is not forgetting. An indivisible oversized turn fails
-instead of being clipped. This is private execution evidence, not additional
+256 own steps per turn and the configured session idle TTL. Expiry
+and erasure apply. The former 512 KiB evidence/journal ceiling is removed:
+`memory.budget_tokens` governs model-input compaction, not stored byte size.
+Successful compaction replaces model-facing covered detail with cumulative
+checkpoint meaning while retaining exact evidence; window rollover is not
+forgetting. This is private execution evidence, not additional
 content in `sessions.turns.*`.
 
 Admission and the query are committed before work. Each dispatch requires an

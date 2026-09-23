@@ -29,7 +29,6 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 	}
 	ids := make(map[string]struct{})
 	inputs := make(map[string]bool)
-	remaining := 2 * maxRetainedContextBytes // retained window plus current run
 	var walk func(any, int) error
 	walk = func(v any, depth int) error {
 		if depth > 64 {
@@ -89,10 +88,6 @@ func retainedResultReferences(ctx context.Context, rc planner.RunContext, store 
 		if err != nil {
 			return nil, ErrRetainedContextUnavailable
 		}
-		if len(encoded) > remaining {
-			return nil, ErrRetainedContextCapacity
-		}
-		remaining -= len(encoded)
 		var value any
 		decoder := json.NewDecoder(bytes.NewReader(encoded))
 		decoder.UseNumber()
