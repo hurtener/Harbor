@@ -571,18 +571,41 @@ func applyEnvOverrides(cfg *Config) error {
 			return fmt.Errorf("%s was removed; cumulative session memory does not maintain a semantic index", key)
 		}
 	}
-	v := reflect.ValueOf(cfg).Elem()
-	return walkLeaves(v, nil, func(path []string, leaf reflect.Value) error {
+	if _, err := applyEnvToStruct(reflect.ValueOf(cfg).Elem(), nil); err != nil {
+		return err
+	}
+	// This optional section stays absent unless YAML or one of its environment
+	// leaves explicitly selects it. Partial/empty selectors still reach normal
+	// validation and fail closed; never silently inherit the driving route.
+	route := cfg.Memory.Summarizer.ProviderRoute
+	if route == nil {
+		route = &MemorySummarizerProviderRoute{}
+	}
+	applied, err := applyEnvToStruct(reflect.ValueOf(route).Elem(), []string{"memory", "summarizer", "provider_route"})
+	if err != nil {
+		return err
+	}
+	if applied {
+		cfg.Memory.Summarizer.ProviderRoute = route
+	}
+	return nil
+}
+
+func applyEnvToStruct(v reflect.Value, prefix []string) (bool, error) {
+	applied := false
+	err := walkLeaves(v, prefix, func(path []string, leaf reflect.Value) error {
 		envName := envPrefix + strings.ToUpper(strings.Join(path, "_"))
 		raw, ok := os.LookupEnv(envName)
 		if !ok {
 			return nil
 		}
+		applied = true
 		if err := setLeaf(leaf, raw); err != nil {
 			return fmt.Errorf("config.%s: %w", strings.Join(path, "."), err)
 		}
 		return nil
 	})
+	return applied, err
 }
 
 // setByPath resolves a dotted key path against *Config and sets the

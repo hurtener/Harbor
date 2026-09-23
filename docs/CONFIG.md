@@ -984,7 +984,17 @@ model's reasoning effort or large output reservation. The existing summary
 output allowance is clamped to the selected model's maximum; reasoning controls
 are omitted. Selection is rechecked by the normal client, and credentials are
 resolved afresh by the Bifrost leaf for each actual attempt. This route selection
-remains YAML-only; `agent_config_memory_v1` edits only the working-input budget.
+is boot configuration; `agent_config_memory_v1` edits only the working-input budget.
+
+Each selector leaf also accepts its normal environment override, prefixed with
+`HARBOR_MEMORY_SUMMARIZER_PROVIDER_ROUTE_`: `ROUTE_ID`, `ROUTE_GENERATION`,
+`PROVIDER_CONNECTION_ID`, `PROVIDER_CONNECTION_GENERATION`,
+`CREDENTIAL_ASSET_GENERATION`, and `MODEL_SELECTOR`. Supply all six when YAML
+omits the section. Environment values override individual YAML leaves; omitting
+both leaves the route unselected. Partial or empty selectors fail validation,
+and generation values must be positive unsigned 64-bit integers. This lets an
+immutable image keep its working-input budget in YAML while selecting a route
+through deployment configuration, without embedding environment-specific IDs.
 
 ### memory.summarizer.prompt
 

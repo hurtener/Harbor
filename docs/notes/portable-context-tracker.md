@@ -1,5 +1,23 @@
 # Portable session context implementation tracker
 
+## Compaction route deployment override — 2026-09-23
+
+Integration of published RC7 (`bbcfa275`) exposed that the existing environment
+loader did not descend the optional `memory.summarizer.provider_route` section.
+This narrow correction applies the six documented leaf overrides to that section
+only, without broadening other optional configuration surfaces. Absent selectors
+remain absent; partial/empty selectors and invalid uint64 generations fail loud.
+The working-input target remains independent YAML data. No model, prompt, route
+credential or runtime identity is hardcoded in the framework.
+
+On this increment, Go 1.27.1 `GOFLAGS=-p=1 go test -race ./internal/config
+-count=1`, `go vet ./internal/config` and golangci-lint 2.13.2 pass. Tests cover
+environment-only selection, exact large generations, invalid/partial overrides,
+YAML precedence and preserving unselected routes. These are configuration gates,
+not a deployed compaction-model acceptance claim. RC7 publication workflow
+`35919056022` completed successfully with all six platform builds and 13 release
+assets; its immutable tag is not moved by this correction.
+
 ## Independent compaction route — 2026-09-23
 
 On base `b8353ec3458e5cf89fd01952424be8ffc257d7a2`, the source now adds the
