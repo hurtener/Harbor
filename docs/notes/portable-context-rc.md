@@ -1,10 +1,12 @@
 # Portable context RC acceptance
 
 RFC 002 / PR #779. `v1.32.0-rc.1` is published as a prerelease at
-`742a76e123dca5dbc94939206cb89360ccba6e63`; the current code head is the newer
-`95bd401257a02c991317b66c99ae0907c208f5c6`. This procedure does not announce a
-stable release or claim that the older RC contains the newer durable `no_path`
-projection fix. The live implementation/release tracker is
+`742a76e123dca5dbc94939206cb89360ccba6e63`. Later prereleases are historical
+snapshots, not the current recovery target: the candidate withdraws the RC4
+signed retry-policy extension while retaining the narrow RC2/RC3 corrections.
+Hard cancellation, steering and consumer control acceptance remain pending.
+This procedure neither announces a stable release nor changes existing tags.
+The live implementation/release tracker is
 [portable-context-tracker.md](portable-context-tracker.md).
 
 ## Before selecting an RC tag

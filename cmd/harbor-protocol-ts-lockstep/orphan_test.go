@@ -41,7 +41,6 @@ var nonMethodRootedTypes = map[string]string{
 	// is reachable in reality (every row's `measures` values are exactly this
 	// type) but invisible to the ref-graph walk.
 	"ObservabilityMeasureValue": "map value type of ObservabilityQueryRow.measures; map fields carry no ref in the manifest",
-	"SignedMCPToolRetryPolicy":  "map value type of SignedOAuthMCPConnectionDescriptor.tool_policies; map fields carry no ref in the manifest",
 
 	// The runtime-origin provider catalog is an alternate response family of
 	// the existing `llm.posture` method. The shared RuntimeInfoRequest

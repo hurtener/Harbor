@@ -462,7 +462,6 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigOAuthProviders":                         "types",
 	"AgentConfigOAuthProvidersDiff":                     "types",
 	"SignedOAuthMCPConnectionDescriptor":                "types",
-	"SignedMCPToolRetryPolicy":                          "types",
 	"AgentConfigSignedOAuthMCPPair":                     "types",
 	"AgentConfigSetOAuthProviderRequest":                "types",
 	"AgentConfigSetOAuthProviderResponse":               "types",

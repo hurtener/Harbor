@@ -13,7 +13,7 @@ func TestRegisterOAuthMCPCapabilityWire_FieldSetsAreClosed(t *testing.T) {
 	})
 	assertExactJSONFields(t, reflect.TypeOf(SignedOAuthMCPConnectionDescriptor{}), []string{
 		"name", "url", "tool_allowlist", "tool_denylist", "connect_timeout_ms", "request_timeout_ms",
-		"tool_policies", "injection", "artifact_byte_eligible", "artifact_params",
+		"injection", "artifact_byte_eligible", "artifact_params",
 	})
 }
 

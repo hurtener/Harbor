@@ -1285,7 +1285,6 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject(t
 	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-reconcile-restart", "aud-reconcile", prototypes.SignedOAuthMCPConnectionDescriptor{
 		Name: "cap", URL: canonical, ArtifactByteEligible: true,
 		ArtifactParams: map[string][]string{"knowledge.ingest": {"content_base64"}},
-		ToolPolicies:   map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}},
 	}, sink)
 	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); err != nil {
 		t.Fatalf("register: %v", err)
@@ -1310,9 +1309,6 @@ func TestSignedOAuthMCPReconciler_Restart_ReattachesFrozenOwnerForLaterSubject(t
 	}
 	if !reattached.ArtifactByteEligible || len(reattached.ArtifactParams["knowledge.ingest"]) != 1 || reattached.ArtifactParams["knowledge.ingest"][0] != "content_base64" {
 		t.Fatalf("restart reattach lost signed egress declaration: %+v", reattached)
-	}
-	if reattached.ToolPolicies["workbench_create"].MaxAttempts != 1 {
-		t.Fatalf("restart reattach lost signed retry ceiling: %+v", reattached.ToolPolicies)
 	}
 	owner := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
 	active, set, err := reg.Active(context.Background(), owner, testAgentID, agentcfg.ConfigScopeAgent)
@@ -2173,7 +2169,6 @@ func signedCapabilityRequestNamed(t *testing.T, key *rsa.PrivateKey, now time.Ti
 			ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
 			Injection:            testDomainInjection(connection.Injection),
 			ArtifactByteEligible: connection.ArtifactByteEligible, ArtifactParams: cloneTestArtifactParams(connection.ArtifactParams),
-			ToolPolicies: testSignedToolPolicies(connection.ToolPolicies),
 		},
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: "issuer", ID: jti, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(30 * time.Minute))},
 	}
@@ -2187,17 +2182,6 @@ func signedCapabilityRequestNamed(t *testing.T, key *rsa.PrivateKey, now time.Ti
 		Identity: scope, AgentID: agentID, ProviderName: providerName, Broker: "broker", Audience: audience, Scopes: []string{"read"},
 		Connection: connection, AuthorityEnvelope: raw,
 	}
-}
-
-func testSignedToolPolicies(in map[string]prototypes.SignedMCPToolRetryPolicy) map[string]agentcfg.SignedMCPToolRetryPolicy {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]agentcfg.SignedMCPToolRetryPolicy, len(in))
-	for name, policy := range in {
-		out[name] = agentcfg.SignedMCPToolRetryPolicy{MaxAttempts: policy.MaxAttempts}
-	}
-	return out
 }
 
 func TestRegisterOAuthMCPCapability_MultiplePairsCoexistRestartAndTargetedRemoval(t *testing.T) {
@@ -2594,47 +2578,6 @@ func TestRegisterOAuthMCPCapability_SignedArtifactEgressRoundTripsAndBindsAttach
 	}
 }
 
-func TestRegisterOAuthMCPCapability_SignedToolRetryPolicyRoundTripReplayAndTamper(t *testing.T) {
-	now := time.Date(2026, 8, 4, 14, 0, 0, 0, time.UTC)
-	svc, key, _, preparer := signedCapabilityService(t, now)
-	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	connection := prototypes.SignedOAuthMCPConnectionDescriptor{Name: "workbench", URL: canonical,
-		ToolPolicies: map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}, "workbench_edit": {MaxAttempts: 1}}}
-	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-tool-policy", "aud", connection, sink)
-	got, err := svc.RegisterOAuthMCPCapability(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pair := got.Revision.Payload.SignedOAuthMCPPair
-	if pair == nil || pair.Connection.ToolPolicies["workbench_create"].MaxAttempts != 1 {
-		t.Fatalf("readback lost policy: %+v", pair)
-	}
-	preparer.mu.Lock()
-	attached := preparer.lastReq.ToolPolicies["workbench_edit"].MaxAttempts
-	preparer.mu.Unlock()
-	if attached != 1 {
-		t.Fatalf("attach lost signed policy: %d", attached)
-	}
-	tampered := req
-	tampered.Connection.ToolPolicies = map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 4}, "workbench_edit": {MaxAttempts: 1}}
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), tampered); !errors.Is(err, agentcfg.ErrSignedCapabilityBinding) {
-		t.Fatalf("unsigned widening = %v", err)
-	}
-	replayed := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-tool-policy", "aud", tampered.Connection, sink)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), replayed); !errors.Is(err, agentcfg.ErrSignedCapabilityReplay) {
-		t.Fatalf("same-JTI widening = %v", err)
-	}
-	invalid := connection
-	invalid.ToolPolicies = map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 5}}
-	invalidReq := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-invalid-tool-policy", "aud", invalid, sink)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), invalidReq); !errors.Is(err, agentcfgprotocol.ErrInvalidSignedCapabilityDescriptor) {
-		t.Fatalf("widening beyond default = %v", err)
-	}
-}
-
 func TestRegisterOAuthMCPCapability_ArtifactEgressTamperAndBoundsFailBeforePersistence(t *testing.T) {
 	now := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
 	svc, key, reg, _, _ := signedCapabilityServiceWithRegistry(t, now)
@@ -2756,45 +2699,6 @@ func TestRegisterOAuthMCPCapability_InvalidDiscoveredArtifactMappingRollsBackAto
 	}
 }
 
-func TestRegisterOAuthMCPCapability_UnmatchedSignedPolicyCompensatesCandidate(t *testing.T) {
-	now := time.Date(2026, 8, 4, 15, 0, 0, 0, time.UTC)
-	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
-	preparer.failPrepare = tools.ErrSignedToolPolicyTarget
-	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-policy-target", "aud", prototypes.SignedOAuthMCPConnectionDescriptor{
-		Name: "workbench", URL: canonical, ToolPolicies: map[string]prototypes.SignedMCPToolRetryPolicy{"unknown_create": {MaxAttempts: 1}},
-	}, sink)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); !errors.Is(err, tools.ErrSignedToolPolicyTarget) {
-		t.Fatalf("unmatched policy refusal = %v", err)
-	}
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
-		t.Fatalf("unmatched policy retained active authority: set=%t err=%v", set, err)
-	}
-	history, err := reg.ListRevisions(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent, 0)
-	if err != nil || len(history) != 1 || history[0].Payload.SignedOAuthMCPPair == nil {
-		t.Fatalf("rejected policy history = %+v err=%v", history, err)
-	}
-	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	op, err := operations.LoadForPair(context.Background(), q.TenantID, history[0].Payload.SignedOAuthMCPPair)
-	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected {
-		t.Fatalf("rejected policy phase=%q err=%v", op.Phase, err)
-	}
-	preparer.failPrepare = nil
-	corrected := req.Connection
-	corrected.ToolPolicies = map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}}
-	newReq := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-policy-corrected", "aud", corrected, sink)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), newReq); err != nil {
-		t.Fatalf("corrected new-JTI registration blocked: %v", err)
-	}
-}
-
 func TestSignedOAuthMCPReconciler_RestartCompletesArtifactSchemaRejectionAdmission(t *testing.T) {
 	now := time.Now().UTC()
 	base, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
@@ -2845,68 +2749,6 @@ func TestSignedOAuthMCPReconciler_RestartCompletesArtifactSchemaRejectionAdmissi
 	}
 	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
 		t.Fatalf("restart left rejected candidate active: set=%t err=%v", set, err)
-	}
-}
-
-func TestSignedOAuthMCPReconciler_RestartRejectsUnknownSignedToolPolicyTarget(t *testing.T) {
-	now := time.Now().UTC()
-	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
-	preparer.failPrepare = errors.New("interrupted before tool discovery")
-	canonical, sink, err := agentcfg.CanonicalOAuthMCPURL("https://example.test/mcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-policy-restart", "aud", prototypes.SignedOAuthMCPConnectionDescriptor{
-		Name: "workbench", URL: canonical,
-		ToolPolicies: map[string]prototypes.SignedMCPToolRetryPolicy{"unknown_create": {MaxAttempts: 1}},
-	}, sink)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); err == nil {
-		t.Fatal("interrupted registration unexpectedly succeeded")
-	}
-	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-	active, set, err := reg.(interface {
-		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
-	}).PhysicalActive(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent)
-	if err != nil || !set || active.Payload.SignedOAuthMCPPair == nil {
-		t.Fatalf("pre-restart physical candidate = (%+v, %t, %v)", active, set, err)
-	}
-	operations, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	op, err := operations.LoadForPair(context.Background(), q.TenantID, active.Payload.SignedOAuthMCPPair)
-	if err != nil || op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
-		t.Fatalf("pre-restart operation phase=%q err=%v", op.Phase, err)
-	}
-	preparer.failPrepare = tools.ErrSignedToolPolicyTarget
-	restarted, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restarted.ReconcileSignedOAuthMCPCapability(context.Background(), q, testAgentID); err != nil {
-		t.Fatalf("restart policy-target rejection: %v", err)
-	}
-	latest, err := operations.Load(context.Background(), op.ReplayKey)
-	if err != nil || latest.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected {
-		t.Fatalf("post-restart operation phase=%q err=%v", latest.Phase, err)
-	}
-	if _, set, err := reg.Active(context.Background(), q, testAgentID, agentcfg.ConfigScopeAgent); err != nil || set {
-		t.Fatalf("restart left rejected candidate active: set=%t err=%v", set, err)
-	}
-	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fence, err := fences.Load(context.Background(), q.TenantID, testAgentID)
-	if err != nil || fence.Phase != agentcfg.SignedOAuthMCPFenceAborted || fence.CandidateRevisionID != active.RevisionID {
-		t.Fatalf("post-restart fence phase=%q candidate=%q err=%v", fence.Phase, fence.CandidateRevisionID, err)
-	}
-	preparer.failPrepare = nil
-	corrected := req.Connection
-	corrected.ToolPolicies = map[string]prototypes.SignedMCPToolRetryPolicy{"workbench_create": {MaxAttempts: 1}}
-	newReq := signedCapabilityRequestWithConnection(t, key, now, scope(), testAgentID, "jti-policy-restart-corrected", "aud", corrected, sink)
-	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), newReq); err != nil {
-		t.Fatalf("corrected new-JTI registration blocked after restart compensation: %v", err)
 	}
 }
 

@@ -95,7 +95,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		Name: connection.Name, URL: canonicalURL, ToolAllowlist: connection.ToolAllowlist,
 		ToolDenylist: connection.ToolDenylist, ConnectTimeoutMS: connection.ConnectTimeoutMS,
 		RequestTimeoutMS: connection.RequestTimeoutMS, Injection: domainInjection.Clone(), ArtifactByteEligible: connection.ArtifactByteEligible,
-		ArtifactParams: cloneArtifactParams(connection.ArtifactParams), ToolPolicies: signedToolPoliciesToDomain(connection.ToolPolicies),
+		ArtifactParams: cloneArtifactParams(connection.ArtifactParams),
 	}
 	binding := agentcfg.SignedOAuthMCPBinding{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, AgentID: req.AgentID, Broker: broker,
@@ -336,14 +336,13 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 		ToolAllowlist: connection.ToolAllowlist, ToolDenylist: connection.ToolDenylist,
 		ConnectTimeoutMS: connection.ConnectTimeoutMS, RequestTimeoutMS: connection.RequestTimeoutMS,
 		ArtifactByteEligible: connection.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(connection.ArtifactParams),
-		ToolPolicies:          cloneSignedToolPolicies(domainConnection.ToolPolicies),
 		DescriptorFingerprint: signedCapabilityPublisherAttachmentFingerprint(domainConnection, operationKind, op.PublisherEpoch),
 	})
 	if err != nil {
 		closeErr := closePreparedSignedCapability(ctx, nil, preparedProvider)
-		if errors.Is(err, tools.ErrArtifactEgressSchema) || errors.Is(err, tools.ErrSignedToolPolicyTarget) {
+		if errors.Is(err, tools.ErrArtifactEgressSchema) {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closeErr,
-				s.compensateRejectedSignedPreparation(ctx, q, req.AgentID, op, rev))
+				s.compensateInvalidSignedArtifactMapping(ctx, q, req.AgentID, op, rev))
 		}
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(err, closeErr)
 	}
@@ -414,11 +413,11 @@ func (s *Service) RegisterUserOAuthMCPCapability(ctx context.Context, req protot
 	return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse(response), nil
 }
 
-func (s *Service) compensateRejectedSignedPreparation(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
+func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted || op.RevisionID != candidate.RevisionID {
-		return fmt.Errorf("%w: signed preparation rejection does not bind committed candidate", agentcfg.ErrSignedCapabilityReplay)
+		return fmt.Errorf("%w: signed artifact mapping rejection does not bind committed candidate", agentcfg.ErrSignedCapabilityReplay)
 	}
 	physical, ok := s.registry.(physicalActiveRegistry)
 	if !ok {
@@ -664,11 +663,6 @@ func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionD
 	if out.ToolDenylist, err = agentcfg.CanonicalScopes(out.ToolDenylist); err != nil {
 		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: tool_denylist: %w", ErrInvalidSignedCapabilityDescriptor, err)
 	}
-	policies, err := agentcfg.NormalizeSignedMCPToolPolicies(signedToolPoliciesToDomain(out.ToolPolicies))
-	if err != nil {
-		return prototypes.SignedOAuthMCPConnectionDescriptor{}, nil, fmt.Errorf("%w: tool_policies: %w", ErrInvalidSignedCapabilityDescriptor, err)
-	}
-	out.ToolPolicies = signedToolPoliciesToWire(policies)
 	var injection *agentcfg.MCPCredentialInjectionDescriptor
 	if out.Injection != nil {
 		injection, err = validateWireInjectionDescriptor(out.Injection)
@@ -690,39 +684,6 @@ func normalizeSignedCapabilityConnection(in prototypes.SignedOAuthMCPConnectionD
 		out.ArtifactParams = canonicalParams
 	}
 	return out, injection, nil
-}
-
-func signedToolPoliciesToDomain(in map[string]prototypes.SignedMCPToolRetryPolicy) map[string]agentcfg.SignedMCPToolRetryPolicy {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]agentcfg.SignedMCPToolRetryPolicy, len(in))
-	for name, policy := range in {
-		out[name] = agentcfg.SignedMCPToolRetryPolicy{MaxAttempts: policy.MaxAttempts}
-	}
-	return out
-}
-
-func signedToolPoliciesToWire(in map[string]agentcfg.SignedMCPToolRetryPolicy) map[string]prototypes.SignedMCPToolRetryPolicy {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]prototypes.SignedMCPToolRetryPolicy, len(in))
-	for name, policy := range in {
-		out[name] = prototypes.SignedMCPToolRetryPolicy{MaxAttempts: policy.MaxAttempts}
-	}
-	return out
-}
-
-func cloneSignedToolPolicies(in map[string]agentcfg.SignedMCPToolRetryPolicy) map[string]agentcfg.SignedMCPToolRetryPolicy {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]agentcfg.SignedMCPToolRetryPolicy, len(in))
-	for name, policy := range in {
-		out[name] = policy
-	}
-	return out
 }
 
 func signedCapabilityOAuthProvider(providerName string, injection *agentcfg.MCPCredentialInjectionDescriptor) string {

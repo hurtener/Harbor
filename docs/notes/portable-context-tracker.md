@@ -1,5 +1,42 @@
 # Portable session context implementation tracker
 
+## Current recovery direction — 2026-09-23
+
+The RC4 signed per-tool retry-policy extension (`80165fd5`) and its dependent
+restart compensation (`7434b645`) are withdrawn from this candidate. They were
+not required for portable context or the requested interaction fixes. This is
+a normal forward removal, not a rewrite of history or an existing RC tag.
+The RC2 failure-reason fix, RC3 provider-route freshness/expiry fixes, and
+post-RC4 routed schema classification remain intact. Historical receipts below
+describe their original trees, not the newly narrowed candidate.
+
+The removal restores the pre-extension signed descriptor and ordinary MCP/tool
+behavior. Canonical Protocol generators regenerate documentation and TypeScript
+artifacts. A strict descriptor decoder rejects unsupported authority-bearing
+fields in both signed envelopes and persisted pairs: a downgraded reader must
+not silently erase a newer restriction. Regressions first reproduced that
+silent stripping, then passed with the rejection in place. No signed retry
+configuration or enforcement feature remains.
+
+Companion consumer removal must preserve already-applied migration history and
+refuse any nonempty legacy policy rather than silently widen behavior. This
+source increment does not change a deployed runtime. The known-working RC1
+reference remains unchanged. The owner also requested hard cancellation,
+effective in-flight steering, and single-owner queue lifecycle repairs; these
+are subsequent implementation and real-control-endpoint acceptance work, not
+completed by this removal. A restart-window preview race in a downstream
+consumer is accepted follow-up debt for the current test milestone, not evidence
+that retained context failed.
+
+Validation on Go 1.26.4, `GOFLAGS=-p=1`, with `-race -count=1`: full agentcfg,
+state-backed agentcfg driver, runtime agentcfg Protocol, tools, MCP driver,
+Protocol types and single-source packages pass. Focused served signed-MCP and
+attachment tests and the three Protocol generator packages pass. This is
+focused removal validation, not final-tree main-release acceptance. Preflight
+remains explicitly waived by the owner, not green.
+
+## Historical publication evidence
+
 RFC 002 / PR #779. Checked implementation items are published behavior, not
 stable-release or consumer acceptance. The published PR head before the
 retry-safety work was `e91791b8` (documentation); the reviewed PR head is

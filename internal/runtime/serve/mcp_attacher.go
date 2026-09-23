@@ -376,16 +376,6 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		ArtifactByteEligible: req.ArtifactByteEligible,
 		ArtifactParams:       config.MCPArtifactParams(cloneArtifactParams(req.ArtifactParams)),
 	}
-	if len(req.ToolPolicies) > 0 {
-		policies, err := agentcfg.NormalizeSignedMCPToolPolicies(req.ToolPolicies)
-		if err != nil {
-			return nil, fmt.Errorf("signed tool policies: %w", err)
-		}
-		ms.ToolPolicies = make(map[string]config.ToolPolicyConfig, len(policies))
-		for name, policy := range policies {
-			ms.ToolPolicies[name] = config.ToolPolicyConfig{MaxAttempts: policy.MaxAttempts, TimeoutMS: req.RequestTimeoutMS}
-		}
-	}
 	if req.RequestTimeoutMS > 0 {
 		ms.Policy = &config.ToolPolicyConfig{TimeoutMS: req.RequestTimeoutMS}
 	}
@@ -413,19 +403,18 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		})
 	}
 	prepared, err := mcpdrv.Prepare(prepareCtx, ms, mcpdrv.AttachDeps{
-		Catalog:                  a.catalog,
-		Registry:                 a.registry,
-		Bus:                      a.bus,
-		Logger:                   a.logger,
-		DefaultIdentity:          a.defaultIdentity,
-		Closers:                  &local,
-		OAuthProviders:           a.oauthProviders,
-		OAuthProviderSet:         a.oauthProviderSet,
-		OAuthProviderOverride:    req.OAuthProviderOverride,
-		OwnOAuthProvider:         req.OwnOAuthProvider,
-		ToolAllowlist:            append([]string(nil), req.ToolAllowlist...),
-		ToolDenylist:             append([]string(nil), req.ToolDenylist...),
-		RequireToolPolicyMatches: len(req.ToolPolicies) > 0,
+		Catalog:               a.catalog,
+		Registry:              a.registry,
+		Bus:                   a.bus,
+		Logger:                a.logger,
+		DefaultIdentity:       a.defaultIdentity,
+		Closers:               &local,
+		OAuthProviders:        a.oauthProviders,
+		OAuthProviderSet:      a.oauthProviderSet,
+		OAuthProviderOverride: req.OAuthProviderOverride,
+		OwnOAuthProvider:      req.OwnOAuthProvider,
+		ToolAllowlist:         append([]string(nil), req.ToolAllowlist...),
+		ToolDenylist:          append([]string(nil), req.ToolDenylist...),
 		// Capture app tool contexts on this connection exactly as the
 		// boot-config attach path does, so a `ui://` app declared by a tool on
 		// a runtime-added server renders with its real data instead of an

@@ -3,6 +3,22 @@
 PR #779 remains a draft. These are incremental fixes and measured validation,
 not an RC approval or a claim that all repository gates have passed.
 
+## RC4 scope withdrawal and downgrade boundary
+
+The recovery candidate removes the signed per-tool retry-policy extension and
+its dependent restart compensation, preserving portable-context implementation
+and the RC2/RC3 narrow corrections. Existing prerelease tags stay immutable.
+Simply removing the descriptor field exposed a security-relevant downgrade:
+the default JSON reader ignored a restriction in a correctly signed newer
+envelope. New red/green tests cover that actual verifier path and persisted-pair
+decoding. The replacement decoder refuses unsupported descriptor fields rather
+than weakening authority. It preserves supported descriptors and does not
+partially mutate the destination on an invalid/trailing JSON document.
+
+No runtime or external capability is redeployed by this source-only increment.
+Consumer migration compatibility and hard Stop/Steer/Queue repairs still need
+their own implementation and acceptance evidence.
+
 ## Console wire-type parity
 
 The final-tree Console lockstep check failed because the canonical

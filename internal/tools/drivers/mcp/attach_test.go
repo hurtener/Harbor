@@ -5,8 +5,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,27 +31,6 @@ func TestProjectToolPolicies_NilPolicy_ZeroDefault(t *testing.T) {
 	}
 	if perTool != nil {
 		t.Errorf("expected nil per-tool map, got %+v", perTool)
-	}
-}
-
-func TestProjectToolPolicies_StaticSingleAttemptDispatch(t *testing.T) {
-	_, overrides, err := ProjectToolPolicies(config.MCPServerConfig{ToolPolicies: map[string]config.ToolPolicyConfig{
-		"create": {MaxAttempts: 1},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var calls int
-	_, err = tools.RunWithPolicy(context.Background(), json.RawMessage(`{}`), func(context.Context, json.RawMessage) (tools.ToolResult, error) {
-		calls++
-		return tools.ToolResult{}, fmt.Errorf("transient transport timeout")
-	}, nil, nil, overrides["create"])
-	if err == nil || calls != 1 {
-		t.Fatalf("static max_attempts:1 calls=%d err=%v", calls, err)
-	}
-	// An unlisted sibling receives the unchanged default policy.
-	if _, present := overrides["read"]; present {
-		t.Fatal("unlisted tool acquired override")
 	}
 }
 
@@ -268,28 +245,6 @@ func TestAttach_EndToEnd_PolicyProjectionApplied(t *testing.T) {
 	}
 	if srv.ToolCount == 0 {
 		t.Errorf("discovery stats not seeded: tool_count=0")
-	}
-}
-
-func TestPrepare_SignedPolicyUnknownToolFailsBeforePublication(t *testing.T) {
-	mockSrv := newMockServer()
-	sseHandler := mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return mockSrv.server }, nil)
-	sseServer := httptest.NewServer(sseHandler)
-	defer sseServer.Close()
-	cat := tools.NewCatalog()
-	registry := NewRegistry()
-	closers := []func(context.Context) error{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := Prepare(ctx, config.MCPServerConfig{
-		Name: "mock", TransportMode: string(TransportSSE), URL: sseServer.URL,
-		ToolPolicies: map[string]config.ToolPolicyConfig{"misspelled_create": {MaxAttempts: 1}},
-	}, AttachDeps{Catalog: cat, Registry: registry, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), Closers: &closers, RequireToolPolicyMatches: true})
-	if !errors.Is(err, tools.ErrSignedToolPolicyTarget) {
-		t.Fatalf("unknown signed policy tool accepted: %v", err)
-	}
-	if _, ok := cat.Resolve("mock_echo"); ok || len(closers) != 0 {
-		t.Fatal("failed signed preparation published catalog or leaked closer")
 	}
 }
 

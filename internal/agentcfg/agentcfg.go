@@ -680,21 +680,15 @@ type OAuthProvidersSection struct {
 // provider must equal the pair's private provider. The production registration
 // verb is its sole author.
 type SignedOAuthMCPConnectionDescriptor struct {
-	Name                 string                              `json:"name"`
-	URL                  string                              `json:"url"`
-	ToolAllowlist        []string                            `json:"tool_allowlist,omitempty"`
-	ToolDenylist         []string                            `json:"tool_denylist,omitempty"`
-	ConnectTimeoutMS     int                                 `json:"connect_timeout_ms,omitempty"`
-	RequestTimeoutMS     int                                 `json:"request_timeout_ms,omitempty"`
-	ToolPolicies         map[string]SignedMCPToolRetryPolicy `json:"tool_policies,omitempty"`
-	Injection            *MCPCredentialInjectionDescriptor   `json:"injection,omitempty"`
-	ArtifactByteEligible bool                                `json:"artifact_byte_eligible,omitempty"`
-	ArtifactParams       map[string][]string                 `json:"artifact_params,omitempty"`
-}
-
-// SignedMCPToolRetryPolicy is the immutable per-tool signed retry ceiling.
-type SignedMCPToolRetryPolicy struct {
-	MaxAttempts int `json:"max_attempts"`
+	Name                 string                            `json:"name"`
+	URL                  string                            `json:"url"`
+	ToolAllowlist        []string                          `json:"tool_allowlist,omitempty"`
+	ToolDenylist         []string                          `json:"tool_denylist,omitempty"`
+	ConnectTimeoutMS     int                               `json:"connect_timeout_ms,omitempty"`
+	RequestTimeoutMS     int                               `json:"request_timeout_ms,omitempty"`
+	Injection            *MCPCredentialInjectionDescriptor `json:"injection,omitempty"`
+	ArtifactByteEligible bool                              `json:"artifact_byte_eligible,omitempty"`
+	ArtifactParams       map[string][]string               `json:"artifact_params,omitempty"`
 }
 
 // SignedOAuthMCPPair is immutable server-authored desired state for one

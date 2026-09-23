@@ -194,24 +194,10 @@ func sameSignedOAuthMCPConnection(left, right SignedOAuthMCPConnectionDescriptor
 	rightDeny, rightDenyErr := CanonicalScopes(right.ToolDenylist)
 	leftParams, leftParamsErr := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(left.ArtifactParams))
 	rightParams, rightParamsErr := config.NormalizeMCPArtifactParams(config.MCPArtifactParams(right.ArtifactParams))
-	leftPolicies, leftPoliciesErr := NormalizeSignedMCPToolPolicies(left.ToolPolicies)
-	rightPolicies, rightPoliciesErr := NormalizeSignedMCPToolPolicies(right.ToolPolicies)
-	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil && leftParamsErr == nil && rightParamsErr == nil && leftPoliciesErr == nil && rightPoliciesErr == nil &&
+	return leftAllowErr == nil && rightAllowErr == nil && leftDenyErr == nil && rightDenyErr == nil && leftParamsErr == nil && rightParamsErr == nil &&
 		left.Name == right.Name && left.URL == right.URL && left.ConnectTimeoutMS == right.ConnectTimeoutMS &&
 		left.RequestTimeoutMS == right.RequestTimeoutMS && left.ArtifactByteEligible == right.ArtifactByteEligible &&
-		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameInjection(left.Injection, right.Injection) && sameArtifactParams(leftParams, rightParams) && sameSignedMCPToolPolicies(leftPolicies, rightPolicies)
-}
-
-func sameSignedMCPToolPolicies(left, right map[string]SignedMCPToolRetryPolicy) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for name, policy := range left {
-		if right[name] != policy {
-			return false
-		}
-	}
-	return true
+		sameStrings(leftAllow, rightAllow) && sameStrings(leftDeny, rightDeny) && sameInjection(left.Injection, right.Injection) && sameArtifactParams(leftParams, rightParams)
 }
 
 func sameInjection(left, right *MCPCredentialInjectionDescriptor) bool {
@@ -269,11 +255,6 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 		artifactTools = append(artifactTools, tool)
 	}
 	sort.Strings(artifactTools)
-	policyTools := make([]string, 0, len(binding.Connection.ToolPolicies))
-	for tool := range binding.Connection.ToolPolicies {
-		policyTools = append(policyTools, tool)
-	}
-	sort.Strings(policyTools)
 	parts := make([]string, 0, 22+len(canonicalScopes)+len(allow)+len(deny)+len(artifactTools))
 	parts = append(parts, binding.TenantID, binding.UserID, binding.SessionID, binding.AgentID, binding.Broker, binding.ProviderName, binding.CapabilityRevision,
 		binding.URLDigest, binding.SinkDigest, binding.Audience, binding.Connection.Name, binding.Connection.URL,
@@ -302,13 +283,6 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 			sort.Strings(params)
 			parts = append(parts, tool, fmt.Sprintf("%d", len(params)))
 			parts = append(parts, params...)
-		}
-	}
-	// No policy declaration keeps every legacy pair fingerprint unchanged.
-	if len(policyTools) > 0 {
-		parts = append(parts, "tool_policies", fmt.Sprintf("%d", len(policyTools)))
-		for _, tool := range policyTools {
-			parts = append(parts, tool, fmt.Sprintf("%d", binding.Connection.ToolPolicies[tool].MaxAttempts))
 		}
 	}
 	h := sha256.New()

@@ -1542,7 +1542,6 @@ func signedOAuthMCPPairToWire(pair *agentcfg.SignedOAuthMCPPair) prototypes.Agen
 			ConnectTimeoutMS: pair.Connection.ConnectTimeoutMS, RequestTimeoutMS: pair.Connection.RequestTimeoutMS,
 			Injection: injectionDescriptorToWire(pair.Connection.Injection), ArtifactByteEligible: pair.Connection.ArtifactByteEligible,
 			ArtifactParams: cloneArtifactParams(pair.Connection.ArtifactParams),
-			ToolPolicies:   signedToolPoliciesToWire(pair.Connection.ToolPolicies),
 		},
 		AuthorityIssuer: pair.AuthorityIssuer, AuthorityKeyID: pair.AuthorityKeyID, AuthorityJTIHash: pair.AuthorityJTIHash,
 	}
