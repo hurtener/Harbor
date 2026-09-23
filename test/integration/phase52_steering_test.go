@@ -167,6 +167,9 @@ func TestE2E_Phase52_AuthScopePerEvent(t *testing.T) {
 			CallerScope:  min,
 			CallerTenant: run.TenantID,
 		}
+		if ct == steering.ControlUserMessage {
+			okEv.Payload = map[string]any{"message": "use the revised constraint"}
+		}
 		if err := inbox.Enqueue(okEv); err != nil {
 			t.Errorf("Enqueue(%q at min scope %q) = %v, want nil", ct, min, err)
 		}

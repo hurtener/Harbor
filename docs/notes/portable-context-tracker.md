@@ -31,6 +31,106 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Unpublished pair-engine retirement in progress
+
+Retirement started on `444fc01c145d814c540f7430c58a5903f9646426`. The local
+increment removes the pair-summary/truncation executors, background recovery
+loop, pair summarizer, SDK snapshot/restore/context-patch vocabulary and both
+runtime pair read/write branches. `Inspect`/`Put`/`Delete` share the cumulative
+owner; only explicit `none` disables memory. Removed strategy/backlog settings
+fail validation rather than selecting a compatibility path. Session erasure
+now marks memory purged after the authoritative StateStore scope deletion,
+not after flushing an unrelated pair store. This is not yet a published or
+fully validated increment.
+
+Go 1.27.1 local evidence: memory **1.507s**, cumulative owner **4.957s**,
+runctx **1.507s**, config **2.324s**, in-memory driver **1.590s**, shared
+conformance **1.583s**, trajectory summarizer **1.412s**, SQLite driver
+**8.713s** pass under `GOFLAGS=-p=1 go test -race ... -count=1`.
+The SQLite cohort uses a real SQLite StateStore; shared conformance preserves
+N=128, eight mutation/read/deletion cycles and the leak assertion. PostgreSQL
+was unset-service and is not accepted as a service-backed pass.
+
+The broader assembly race run completed in **85.699s** with one obsolete
+expected error string (it now fails at the single trajectory compactor instead
+of the removed pair summarizer). The expectation is repaired; full final-tree
+rerun remains required. Protocol tests still expose expiring heavy-memory
+reference retrieval and the legacy note-metadata expectation. Remaining
+SDK/integration/benchmark fixtures and docs still need migration
+off removed APIs. No skipped tests, compatibility stubs or disabled assertions
+are used to conceal those failures. Do not publish or deploy this working tree
+until its affected consumers and gates are repaired.
+
+Follow-on local evidence on this unpublished tree, Go 1.27.1:
+`GOFLAGS=-p=1 go test -race ./internal/sessions -count=1` passes **8.530s**;
+`GOFLAGS=-p=1 go test -race ./internal/runtime/serve -count=1` passes
+**50.308s**. Erasure faults now target the authoritative StateStore deletion,
+not a removed pair-store flush. A new regression first failed when deletion
+succeeded but its ledger checkpoint failed: convergence reported memory as
+unpurged. Convergence now repeats the idempotent clear and checkpoints it before
+terminal side effects; failed convergence, pending erasure and completed erasure
+all reject late memory writes. The default-strategy administrative projection
+also initially reported the obsolete memory driver; it now reports the actual
+StateStore. Served read/commit failure tests use the cumulative owner, and the
+default-strategy execution test verifies the same committed administrative view.
+The 14,660-byte receipt, large numeric version, no-replay and N=128 served tests
+remain in the passing package. PostgreSQL-dependent cases remain unset-service
+skips; these package passes do not replace service-backed acceptance or the
+remaining whole-tree gates.
+
+The whole-repository compile-only check (`GOFLAGS=-p=1 go test ./... -run '^$'`)
+failed on remaining integration/benchmark strategy imports and old fixture APIs.
+The HTTP fixtures now compile against the cumulative owner, and follow-on
+compile-only checks of `harbortest/devstack` and `cmd/harbor-gen-protocol-docs`
+pass (**0.700s / 0.695s**). The actual HTTP memory tests, run under race detection
+with `-run '^TestMemoryHandler' -count=1`, still fail
+`TestMemoryHandler_GetHeavyValueRoutesToArtifact`: expiring heavy values are
+rejected rather than copied into independently retained artifacts. This confirms
+the outstanding source-bound retrieval gap at the HTTP surface; it is not an
+accepted failure or a reason to remove the test.
+
+Follow-on consumer migration now compiles the integration package. The
+file-scoped cumulative budget/notes/Wave 7a/runtime-hardening race run passes
+**57.153s**, including 12 concurrent identities with 40 real assembled turns
+each. The package-selected caller-memory, Phase 23/83d/83f/84d/110c and Wave 8
+race run passes **3.584s**. It retains N=128 SQLite identity isolation and checks
+actual outgoing requests for separated external caller data and historical
+evidence. Malformed durable memory fails served admission before inference.
+The replacement cumulative-run/inspection benchmark smoke passes **3.102s**;
+its new workload is not comparable to the retired pair-append benchmark.
+
+The canonical integration-package race run completed in **272.656s** and
+**failed**. Besides the known heavy-memory retrieval gap, it found obsolete
+backlog settings in the Console/scaffold YAML, two agent-selection/reattachment
+fixtures lacking an explicit memory mode, and the control-test mismatches below.
+The YAML and fixture corrections are local; their focused reruns and a new full
+package pass remain pending. No service-backed or release acceptance is implied.
+
+### Published-head CI regression repair
+
+CI **35864195954** on `444fc01c` completed with both Linux and macOS Go jobs
+failing: the authority minting registry still named deleted `semantic.go`, the
+scope matrix supplied an empty USER_MESSAGE, and two hard-cancel tests expected
+the old nil-error/step-boundary behavior. Docs CI **35864196049** passed. Other
+completed jobs passed, but Playwright and preflight were skipped, not green.
+
+The narrow repair removes only that stale registration, supplies a valid steer
+message, and requires `context.Canceled` plus cancelled termination. The batch
+cascade fixture now dispatches its children before Stop; cancellation in its
+old position correctly prevents dispatch, so no descendants would exist. The
+test still requires both descendants to be cancelled and now checks that a late
+successful Finish loses. No production behavior, workload, deadline or retry
+policy is changed by this repair.
+
+Go 1.27.1, `GOFLAGS=-p=1 go test -race ./internal/protocol/bodyscope
+./test/integration -run 'TestGate_|TestE2E_Phase52_|TestE2E_Phase53_|
+TestBatchExecutor_HardCancelThroughRunLoop_CascadesToDescendants' -count=1`
+passes **3.494s / 2.297s** on the working tree, which also contains the unpublished
+memory migration. Hosted validation of the isolated published repair is pending;
+these focused results are not exact-published-tree or whole-suite acceptance.
+Harbor preflight remains owner-waived. The PR remains draft; no RC or deployment
+is part of this repair.
+
 ### Native semantic session-memory retirement — partial consolidation
 
 On parent `05e415027162108ef9724da800749f8884f62404`, remove the native

@@ -18,6 +18,7 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -378,13 +379,10 @@ func TestBatchExecutor_ConcurrentSessions_NoLeakage(t *testing.T) {
 	}
 }
 
-// batchThenCancelPlanner is a scripted PlannerOverride: step 0 emits a
-// spawns-only Batch (auto-grouped) and enqueues a HARD CANCEL onto the
-// run's own steering inbox; step 1 (which the runloop reaches only after
-// draining + firing the wired hard-cancel hook at the step boundary)
-// returns a cancelled Finish. It proves the hard CANCEL travels THROUGH
-// the runloop into the assemble-wired steering.WithHardCancelHook closure,
-// which cascades to the batch-spawned descendants.
+// batchThenCancelPlanner dispatches a spawns-only Batch before requesting hard
+// cancellation at the next decision. Cancelling in step zero now correctly
+// prevents the batch from dispatching at all, so it cannot exercise cascading.
+// The late successful Finish must lose to the accepted cancellation.
 type batchThenCancelPlanner struct {
 	reg   *steering.Registry // set after Assemble (the stack's steering registry)
 	q     identity.Quadruple
@@ -399,23 +397,21 @@ func (p *batchThenCancelPlanner) Next(_ context.Context, _ planner.RunContext) (
 	defer p.mu.Unlock()
 	if p.step == 0 {
 		p.step++
-		// The inbox is Opened by RunLoop.Run before the first Next, so a
-		// Lookup here succeeds. Enqueue the hard CANCEL so it is drained at
-		// THIS step's boundary (after the Batch dispatches), firing the
-		// wired hook before step 1's Next.
-		if in, err := p.reg.Lookup(p.q); err == nil {
-			_ = in.Enqueue(steering.ControlEvent{
-				Type:         steering.ControlCancel,
-				Identity:     p.q,
-				CallerScope:  steering.ScopeOwnerUser,
-				CallerTenant: p.q.TenantID,
-				Payload:      map[string]any{"hard": true},
-			})
-		}
 		return p.batch, nil
 	}
 	p.step++
-	return planner.Finish{Reason: planner.FinishCancelled}, nil
+	in, err := p.reg.Lookup(p.q)
+	if err != nil {
+		return nil, fmt.Errorf("batchThenCancelPlanner lookup: %w", err)
+	}
+	if err := in.Enqueue(steering.ControlEvent{
+		Type: steering.ControlCancel, Identity: p.q,
+		CallerScope: steering.ScopeOwnerUser, CallerTenant: p.q.TenantID,
+		Payload: map[string]any{"hard": true},
+	}); err != nil {
+		return nil, fmt.Errorf("batchThenCancelPlanner cancel: %w", err)
+	}
+	return planner.Finish{Reason: planner.FinishGoal}, nil
 }
 
 // TestBatchExecutor_HardCancelThroughRunLoop_CascadesToDescendants — the
@@ -484,8 +480,8 @@ func TestBatchExecutor_HardCancelThroughRunLoop_CascadesToDescendants(t *testing
 		ToolExecutor: stack.Executor,
 		MaxSteps:     stack.Cfg.Planner.MaxSteps,
 	})
-	if err != nil {
-		t.Fatalf("RunLoop.Run: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunLoop.Run: %v, want context.Canceled", err)
 	}
 	if fin.Reason != planner.FinishCancelled {
 		t.Errorf("Finish.Reason = %q, want %q", fin.Reason, planner.FinishCancelled)
