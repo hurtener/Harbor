@@ -345,9 +345,8 @@ func TestWithOverrides_RevalidatesAfterChange(t *testing.T) {
 }
 
 // TestMemoryConfig_DefaultsApplied confirms the memory section's
-// default values land when the YAML omits the block. Phase 24
-// adds `recovery_backlog_max: 16` to the defaults alongside the
-// Phase 23 `driver: inmem` + `strategy: none` + `budget_tokens: 0`.
+// default values land when the YAML omits the block. Session memory is
+// cumulative by default; an explicit strategy=none remains the opt-out.
 func TestMemoryConfig_DefaultsApplied(t *testing.T) {
 	cfg, err := config.Load(context.Background(), validMinimalFixture)
 	if err != nil {
@@ -356,8 +355,11 @@ func TestMemoryConfig_DefaultsApplied(t *testing.T) {
 	if cfg.Memory.Driver != "inmem" {
 		t.Errorf("Memory.Driver=%q, want %q", cfg.Memory.Driver, "inmem")
 	}
-	if cfg.Memory.Strategy != "none" {
-		t.Errorf("Memory.Strategy=%q, want %q", cfg.Memory.Strategy, "none")
+	if cfg.Memory.Strategy != "rolling_summary" {
+		t.Errorf("Memory.Strategy=%q, want %q", cfg.Memory.Strategy, "rolling_summary")
+	}
+	if cfg.Memory.RecentTurns != 20 || cfg.Memory.RecentTurnsResolved() != 20 {
+		t.Errorf("Memory.RecentTurns=%d, want 20 detailed turns", cfg.Memory.RecentTurns)
 	}
 	if cfg.Memory.BudgetTokens != 0 {
 		t.Errorf("Memory.BudgetTokens=%d, want 0", cfg.Memory.BudgetTokens)

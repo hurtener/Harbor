@@ -718,7 +718,7 @@ type RuntimeNamingConfig struct {
 // audit-redacted logs.
 //
 // `Strategy` selects the memory shape: `"none"`, or
-// `"truncation"` / `"rolling_summary"`. Default `none`.
+// `"truncation"` / `"rolling_summary"`. Default `rolling_summary`.
 // `memory.Open` rejects strategies the configured driver does not
 // implement with `ErrStrategyNotImplemented`.
 //

@@ -132,6 +132,9 @@ func TestInit_YAMLPassesValidatorAfterUncommentingOpenRouter(t *testing.T) {
 	if cfg.LLM.Model == "" {
 		t.Fatalf("cfg.LLM.Model is empty")
 	}
+	if cfg.Memory.Strategy != "rolling_summary" || cfg.Memory.RecentTurnsResolved() != 20 {
+		t.Fatalf("scaffold did not inherit cumulative session-memory defaults: %+v", cfg.Memory)
+	}
 }
 
 // uncommentOpenRouterBlock simulates an operator uncommenting the

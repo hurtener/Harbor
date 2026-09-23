@@ -9,9 +9,11 @@ historical projection, checkpoint reuse and source-lifetime checks. Implementati
 acceptance is tracked below; final release gates remain in progress. D-477
 supersedes the separate opt-in window with cumulative session memory through
 `memory`. The prior three-turn/checkpoint tests did not cover the count boundary:
-the current actual-request regression loses a turn-1 constraint on turn 22 with
-a 20-turn window in both in-memory and SQLite. This is an implementation gap,
-not model proficiency. The amendment below is pending, not shipped.
+the original actual-request regression lost a turn-1 constraint on turn 22 with
+a 20-turn window in both in-memory and SQLite. Cumulative rollover now preserves
+that constraint through the deterministic multi-window tests on all three
+stores. Ordinary config defaults select rolling memory with 20 detailed turns.
+Legacy-engine retirement and release acceptance remain pending, not shipped.
 
 ## RFC anchor
 
@@ -62,7 +64,7 @@ an intent without a returned receipt remains unknown, never automatically replay
 
 ## Acceptance criteria
 
-- [ ] `memory.strategy: rolling_summary` is the standard cumulative session
+- [x] `memory.strategy: rolling_summary` is the standard cumulative session
       memory path; `recent_turns` bounds detail, not checkpoint history.
       `none` is explicitly stateless. Remove separate config/SDK activation.
 - [ ] One versioned checkpoint with committed generation/coverage, bounded recent

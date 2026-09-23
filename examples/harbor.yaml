@@ -522,22 +522,20 @@ memory:
   # Memory shape strategy:
   #   - `none`            — AddTurn is a no-op; GetLLMContext returns empty.
   #   - `truncation`      — recent-turn window + budget enforcement (drop-oldest).
-  #   - `rolling_summary` — recent window + background-summarised long-term
-  #                         context. Health FSM observable via
-  #                         `memory.health_changed`. Requires an injectable
-  #                         Summarizer (LLM-backed at Phase 32+; not
-  #                         registry-reachable today).
-  strategy: none
+  #   - `rolling_summary` — default cumulative short-term session context,
+  #                         compacted through the configured governed LLM.
+  #                         Long-term memory remains external.
+  strategy: rolling_summary
   # Working-input target, independent of model output limits. A positive
   # value enables within-run compaction; with rolling_summary, zero derives
   # the target from the effective model's input capacity/output reservation.
   # Replaces the removed planner.token_budget (no compatibility alias).
   budget_tokens: 0
-  # Number of most-recent conversation turns rolling_summary keeps
-  # verbatim before older turns spill into the rolling summary.
-  # 0 → strategy default (FullZoneTurns = 4). Must be >= 0. Ignored by
+  # Number of recent root executions kept in detail. Earlier meaning stays
+  # in the cumulative checkpoint after successful compaction.
+  # 0 also selects 20; maximum 32. Ignored by
   # the `none` and `truncation` strategies.
-  recent_turns: 0
+  recent_turns: 20
   # Operator-tunable compaction summariser (rolling_summary only).
   # `model` pins the model used for compaction LLM calls, independent
   # of the planner's model — set it to a cheaper/faster model to keep

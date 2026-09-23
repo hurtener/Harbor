@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
@@ -77,9 +78,9 @@ func TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover(t *testi
 						t.Skip("HARBOR_PG_DSN not set; cumulative PostgreSQL acceptance requires a real service")
 					}
 				}
-				// Memory alone selects the cumulative window for embedded runs.
-				cfg.Memory.RecentTurns = 20
-				cfg.Memory.Strategy = "rolling_summary"
+				// The ordinary configuration defaults must preserve cumulative
+				// context without a separate SDK or session activation switch.
+				cfg.Memory = config.Defaults().Memory
 				cfg.Memory.BudgetTokens = budget
 				driver := &cumulativeMemoryDriver{requests: map[string]string{}}
 				name := "cumulative-memory-" + string(state.NewEventID())

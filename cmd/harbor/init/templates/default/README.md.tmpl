@@ -92,9 +92,10 @@ deployment uses (no mocks at the seams).
   name to `tools.built_in` in `harbor.yaml`. Custom Go function →
   call `inproc.RegisterFunc` in `agent.go`. External over MCP →
   add an entry to `tools.mcp_servers` in `harbor.yaml`.
-- **Enable memory.** Uncomment the `memory:` block in
-  `harbor.yaml`. Strategies: `none` (default), `truncation`,
-  `rolling_summary`.
+- **Tune session memory.** Rolling memory is on by default, retaining 20
+  detailed turns plus a cumulative checkpoint. Edit `memory:` in `harbor.yaml`;
+  use `strategy: none` to opt out. A durable `state.driver` preserves it
+  across restarts. Compaction uses the configured governed LLM.
 - **Plug in skills.** Uncomment the `skills:` block in
   `harbor.yaml`. The catalog is a token-savvy DB-backed surface the
   planner can search and inject into prompts.

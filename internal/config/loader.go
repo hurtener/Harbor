@@ -514,7 +514,8 @@ func Defaults() *Config {
 		},
 		Memory: MemoryConfig{
 			Driver:             "inmem",
-			Strategy:           "none",
+			Strategy:           "rolling_summary",
+			RecentTurns:        20,
 			RecoveryBacklogMax: 16,
 		},
 		// closes issue #126. The V1 planner-driver default is

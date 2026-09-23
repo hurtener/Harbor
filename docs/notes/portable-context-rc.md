@@ -94,8 +94,11 @@ instruction. Do not claim recovery passed merely because a new run starts.
 
 ## Migration and rollback
 
-Retained context defaults to zero. Enabling it is explicit consent to the richer
-bounded session representation; `memory.strategy: none` is not equivalent consent.
+The current D-477 candidate defaults to cumulative session memory with 20
+detailed turns; historical RC1–RC4 opt-in defaults are not the current contract.
+Deployment review must account for the richer bounded session representation
+and governed compaction calls. Set `memory.strategy: none` explicitly for
+stateless execution; never treat that opt-out as consent to retention.
 Old pair-only answers cannot recreate missing tool receipts. Readers migrate
 supported older retained-window versions without inventing summary coverage;
 unknown, malformed or invalid covered evidence is rejected. Source expiry,

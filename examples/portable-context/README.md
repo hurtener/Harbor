@@ -35,8 +35,10 @@ This is a headless SDK example, so it uses `ValidateCore` and does not configure
 a Protocol JWT listener. It builds its config from flags, not the full YAML or
 `HARBOR_*` override layer. It deliberately selects SQLite state, filesystem
 artifacts, `memory.strategy: rolling_summary`, and `memory.recent_turns: 8`.
-There is no separate retention switch. The current branch is still migrating
-the omitted-strategy default and legacy memory-store interfaces.
+There is no separate retention switch. Ordinary YAML and `config.Defaults()`
+now select rolling memory with 20 detailed turns; this sample uses eight to
+exercise rollover sooner. Set `memory.strategy: none` for a stateless agent.
+The current branch is still retiring legacy memory-store interfaces.
 
 ## Run three distinct user turns
 

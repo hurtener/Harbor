@@ -857,8 +857,11 @@ Use `memory.budget_tokens` / `HARBOR_MEMORY_BUDGET_TOKENS`. Rolling-summary
 execution builds the compactor even with a zero explicit target. The separate
 session/SDK activation switches are also removed: choose
 `memory.strategy: rolling_summary` and `memory.recent_turns` for serving and
-embedding. Removing the legacy memory-store interfaces and changing the omitted
-strategy default remain pending; these increments are not the full D-477 implementation.
+embedding. Omitted YAML memory settings and `config.Defaults()` now select
+`rolling_summary` with `recent_turns: 20`. This retains short-term session
+context and may make governed compaction calls. Set `memory.strategy: none`
+explicitly for stateless execution. Legacy memory-store retirement remains
+pending; these increments are not the full D-477 implementation.
 
 ### memory.driver
 
@@ -893,7 +896,7 @@ completed. Restart-required.
 
 ### memory.strategy
 
-Memory shape. Default: `none`. Validation: `none` / `truncation` /
+Memory shape. Default: `rolling_summary`. Validation: `none` / `truncation` /
 `rolling_summary`. All three strategies run on every memory driver
 (`inmem` / `sqlite` / `postgres`) — they delegate to a shared strategy
 executor that persists through the configured StateStore, so a SQL
@@ -923,7 +926,8 @@ loop (D-035). Default: `16`. Validation: >= 0.
 ### memory.recent_turns
 
 Number of recent root executions the cumulative `rolling_summary` strategy
-keeps in detail. Default: `0` → twenty turns. Validation: `0..32`.
+keeps in detail. Default: `20`; explicit `0` also selects twenty turns.
+Validation: `0..32`.
 The checkpoint carries earlier meaning after covered detail leaves the window;
 this number is not a checkpoint-history limit. Ignored by the
 `none` and `truncation` strategies.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -29,7 +30,7 @@ func (p *sessionMemoryProbe) Next(_ context.Context, rc planner.RunContext) (pla
 // and RunOnce. A hand-constructed driver would miss this wiring regression.
 func TestDevStack_CumulativeMemoryUsesSharedConfig(t *testing.T) {
 	cfg := minimalConfig(t)
-	cfg.Memory.Strategy = "rolling_summary"
+	cfg.Memory = config.Defaults().Memory
 	probe := &sessionMemoryProbe{requests: make(chan string, 2)}
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{PlannerOverride: probe, SkipAuth: true, SkipTransports: true})
 	defer stack.Close()

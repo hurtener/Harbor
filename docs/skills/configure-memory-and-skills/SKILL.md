@@ -28,9 +28,9 @@ Memory has two axes you tune independently:
 
 | Strategy           | When to use                                                                 |
 |--------------------|------------------------------------------------------------------------------|
-| `none` (default)   | Single-turn agents. No memory; each run starts cold.                         |
+| `none`            | Explicit stateless opt-out. Each run starts cold.                           |
 | `truncation`       | Chat agents with short windows. Keep last N messages; drop older verbatim.    |
-| `rolling_summary`  | Long-running chat agents. Summarise older turns; keep recent N verbatim.     |
+| `rolling_summary` (default) | Cumulative short-term session context with 20 recent detailed turns. |
 
 `rolling_summary` is the sweet spot for chatbots — it preserves the conversation arc without blowing the context window. The summariser is the same LLM as the planner (Bifrost reuses the configured provider).
 
@@ -65,8 +65,10 @@ for both served and embedded root runs. Set `recent_turns: 20` (zero also select
 twenty); this bounds detail, not how far back checkpoint meaning reaches.
 The separate `sessions.retained_context_turns` and SDK activation option are
 removed. Persistence uses the configured StateStore and session lifetime.
-The legacy memory-store interfaces/recovery loop and omitted-strategy default
-are still being retired; this is not the complete owner migration. See the
+Omitted YAML settings and `config.Defaults()` now enable that memory behavior;
+set `memory.strategy: none` explicitly to disable it. Compaction can incur
+governed model calls. Legacy memory-store interfaces/recovery-loop retirement
+remains unfinished; this is not the complete owner migration. See the
 [implementation tracker](../../notes/portable-context-tracker.md).
 
 ### Opt-in semantic retrieval

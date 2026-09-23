@@ -409,7 +409,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |266 | Indexed fan-out and ordered observability event path (D-453/D-454/D-455): exact-triple plus admin-bucket fan-out, atomic `PublishBatch` retaining individual records/sequences/cursors, and one bounded per-bus FIFO for async cost/tool lifecycle with synchronous terminal barriers; explicit process-loss window; no second transcript or turns/resume/wire change | events + durable log + llm/tool observability | §4, §5.2, §6.4, §6.5, §6.13, §6.14 | 05, 06, 57, 147, 161, 246, D-293, D-425, D-452 | focused race/integration + 1K/10K comparative benchmark + static smoke | Shipped (v1.31.0; exact main CI and release workflow green; downstream deployment/acceptance pending) |
 |267 | Same-runtime agent-pack inspect/copy (D-456): admin-only `agent_config.agent_packs.inspect` with complete distinct boot/revision bodies plus effective hashes, and additive `agent_config.agent_packs.copy` with bounded `pack_ids`, expected source/target composition-hash CAS, one all-or-nothing target revision, server-stamped copy lineage, equal-content no-op, fail-closed independent collision, and boot read-only/target governance preservation | agent-config pack resolver + StateStore CAS + Protocol/SDK/reference surfaces | §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9 | 04, 05, 06, 07, 09, 11, 37, 40, 202, 205, 206, 232, 237, 240, 248, 250, 266, D-411, D-414, D-415, D-427, D-430 | focused wire/driver conformance + same-runtime admin/reach isolation + CAS/idempotency/collision/reconciliation race + static smoke | Shipped (v1.31.0; explicit-empty reconciliation corrected in v1.31.1; canonical empty-target CAS corrected in v1.31.2; copied operator-pack run resolution corrected in v1.31.3; release workflows green; downstream deployment/acceptance pending) |
 |268 | Portable compaction and request budgets | planner + steering + LLM | §6.2, §6.3, §6.5 | 43, 45, 46, 111e | request/race/adapter smoke + measured package coverage; final gates pending | In progress — PR #779 |
-|269 | Cumulative session execution memory | memory + runctx + serve/assembly + StateStore/ArtifactStore | §6.2, §6.6, §6.9, §6.11 | 15, 16, 17, 246, 268 | 100 turns / five generations + three-driver boundedness + N=128 race; final gates pending | In progress — D-477 rollover repair and consolidation pending |
+|269 | Cumulative session execution memory | memory + runctx + serve/assembly + StateStore/ArtifactStore | §6.2, §6.6, §6.9, §6.11 | 15, 16, 17, 246, 268 | 100 turns / five generations + three-driver boundedness + N=128 race; final gates pending | In progress — cumulative rollover and default activation implemented; legacy retirement and acceptance pending |
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -5955,9 +5955,11 @@ deployment, or downstream acceptance is claimed.
   coverage and 100-turn/five-generation tests on all three StateStore drivers;
   `2055d373` consolidated the input budget and added automatic zero-target tests.
   Both consumers now select execution context through `memory.strategy` and
-  `memory.recent_turns`; separate YAML/SDK activation is removed. Legacy-store
-  retirement, the omitted-strategy default and full release acceptance remain
-  pending. Revision-specific results and known failures are in the tracker.
+  `memory.recent_turns`; separate YAML/SDK activation is removed. Omitted YAML
+  settings and `config.Defaults()` select rolling memory with 20 detailed turns;
+  `none` is the explicit stateless opt-out. Legacy-store retirement and full
+  release acceptance remain pending. Revision-specific results and known
+  failures are in the tracker.
 - **Status:** In progress — PR #779, not released or RC-ready. The implementation
   evidence is tracked in `docs/notes/portable-context-tracker.md`.
 - **Owner:** runtime/runctx + serve/assembly + StateStore/ArtifactStore;

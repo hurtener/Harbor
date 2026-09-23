@@ -31,6 +31,61 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
+### Default cumulative activation — implementation increment
+
+Ordinary YAML and `config.Defaults()` now select `rolling_summary` with
+`recent_turns: 20`. Explicit `none` remains stateless. The 100-turn/five-generation
+served and embedded regressions now consume these defaults instead of manually
+enabling memory; the scaffold and shared devstack also assert the default.
+Configuration, sample, scaffold and operator documentation describe the changed
+retention behavior and governed compaction calls. No live configuration, model
+prompt, Workbench guidance, dependency, timeout or concurrency workload changed.
+The legacy pair engine/interfaces remain to be removed; this is not complete
+owner consolidation or RC acceptance.
+
+Go 1.26.4, darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1`, dedicated
+PostgreSQL 17.11 on all applicable runs, excluding unfinished Stop edits:
+
+- Tree `be7fee6a7c05485407205db07bd08e00241ea236`: 900 embedded and 300 served
+  deterministic turns pass across in-memory, SQLite and PostgreSQL, preserving
+  the turn-1 constraint in actual requests and previous-checkpoint input across
+  multiple windows/restarts. Embedded selection **92.836s**, served **14.616s**.
+  Explicit stateless opt-out regressions also pass.
+- Tree `dd93bb1459c40e41cb092bdc74e11db38c43343f`: full config, embedded assembly,
+  devstack, SDK assembly, scaffold and SDK-sample race suites pass. Coverage:
+  **83.0%, 84.3%, 81.6%, 100%, 82.4%, 80.5%**, respectively. Full served coverage
+  measured 85.1%, but that initial run **failed** the disabled-recovery test,
+  which implicitly assumed omitted memory configuration still meant disabled.
+- Tree `36dd637ff7eb66d4b155b1064f135374b9cc3321`: the disabled test explicitly
+  selects `none` and additionally verifies that default-enabled recovery refuses
+  absent evidence. Full canonical served race/coverage rerun passes **52.424s /
+  85.1%**, meeting its documented 85% target. No grouping, skipped roots, weaker
+  assertion or denominator change. Runtime code is unchanged from the earlier
+  tested trees; only tests, smoke selection and documentation were added.
+- Whole-repository lint on that isolated tree passes with **0 issues**, and
+  `GOFLAGS=-p=1 go vet ./...` passes. Markdown
+  (599 files, zero errors), root/template mirrors and smoke shell syntax pass.
+  The unchanged published `14f516da` config package also measures 83.0% under
+  the same race/coverage command; the default change did not reduce it.
+  Config and assembly coverage remain below their 85% floors; all other
+  outstanding coverage/release gates remain explicit blockers.
+- The CGO-disabled portable-context sample builds and its `-h` succeeds on
+  tree `36dd637f`. This is not a full Console/release build or live-model test.
+- Working-tree drift audit passes **1,592 OK / 0 WARN / 0 FAIL**; unfinished
+  Stop edits were present only for this coherence check, not the isolated Go
+  gates. The disposable PostgreSQL instance was stopped after validation.
+
+Cleanup diagnosis before this increment: the unchanged `14f516da` served suite
+passes under `GOMAXPROCS=2` (**54.666s**). Its unchanged N=128 cleanup test also
+passes with CPU/mutex/block profiling (**7.647s**). Moving StateStore byte copies
+outside the shared map lock did not improve the comparison (**7.686s**; aggregate
+driver lock delay increased from 228.69s to 268.92s). Aggregate goroutine delay is
+not wall time. The candidate and its extra tests were discarded, not published.
+This does **not** resolve the earlier hosted cleanup failure. Hosted run
+`35840104883` on `14f516da` was still running both platform test jobs at this
+checkpoint; completed ancillary jobs and docs `35840104837` passed. No run was
+cancelled/restarted, and no new tag, deployment or real-model call was made.
+
 ### Cumulative inspection and mutation — implementation increment
 
 Rolling-memory List/Get/Health/StrategyTrace now read the execution owner's

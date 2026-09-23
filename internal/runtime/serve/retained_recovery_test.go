@@ -121,11 +121,19 @@ func TestE2E_ServedContextRecovery_RefusesPendingAndForeignIdentity(t *testing.T
 
 func TestE2E_ServedContextRecovery_DisabledAndInvalid(t *testing.T) {
 	d := buildProjWiringMux(t)
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	defaultMux, err := BuildMux(d.in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := postMux(t, defaultMux.Mux, "/v1/sessions/reconcile_context", id, `{"source_run_id":"source"}`); code != http.StatusConflict {
+		t.Fatalf("default memory must expose recovery and refuse absent evidence: %d %s", code, body)
+	}
+	d.in.Cfg.Memory.Strategy = "none"
 	disabled, err := BuildMux(d.in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
 	if code, _ := postMux(t, disabled.Mux, "/v1/sessions/reconcile_context", id, `{"source_run_id":"source"}`); code != http.StatusNotFound {
 		t.Fatal("disabled recovery enabled")
 	}
