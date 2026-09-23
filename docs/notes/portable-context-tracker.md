@@ -2,7 +2,9 @@
 
 ## Remove independent retention ceilings — 2026-09-23
 
-Owner-approved local increment over `47710c5b41ce2d1b04764ac8636b9faad42caa87`:
+Published implementation `548d25c0786a58849f5107fbe08ef6d62f3323fb` follows
+`47710c5b41ce2d1b04764ac8636b9faad42caa87` on the same draft PR. The
+owner-approved increment:
 
 - Remove the accumulated 64-reference, 16 KiB reference-metadata, 256-evidence
   and 256-journal-step ceilings. Exact receipts remain retained; ordinary
@@ -47,6 +49,16 @@ files) and drift audit (1592 OK / 0 WARN / 0 FAIL) pass. The full `make build`
 passes with Node 24.21.0, a freshly built Console and CGo-free CLI. Complete
 `sdk/assemble` and `examples/portable-context` race suites also pass (1.955s,
 3.016s). No deployment or new live acceptance is claimed.
+
+The exact-commit release dry-run also passes: fresh Console/static binary,
+checksum verification, stamped SHA/version and unstamped sentinel checks.
+Exploratory `v1.32.0-rc.11` peels to that implementation (annotated object
+`6d2e1820ff3cd12da16ca0fad5f0fd434cb41ef2`). Release workflow `35933587714`
+is queued, not passed. Implementation CI `35933443466` and docs `35933443429`
+are in progress at publication. The documentation-only follow-up containing
+this receipt is not a substitute for those exact implementation checks.
+The currently deployed isolated sample remains RC10 until an explicitly
+verified RC11 pin/deploy; no stable tag or main merge is authorized.
 
 The latest live RC10 Luna task `01M386Y9HNC9X9CZBS0PYS2PK8` answered the
 original constraints correctly but failed its terminal write at 22:43:10 UTC
