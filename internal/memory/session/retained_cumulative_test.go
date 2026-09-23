@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"bytes"
@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	artinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -22,6 +24,16 @@ type cumulativeFailCommit struct {
 	failures int
 }
 
+func cumulativeArtifactStore(t *testing.T) artifacts.ArtifactStore {
+	t.Helper()
+	store, err := artinmem.New(config.ArtifactsConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	return store
+}
+
 // ULID entropy is not an admission ordering contract. A prior ID that sorts
 // after every subsequently generated ID must not prevent a legitimate rollover.
 func TestRetainedCumulative_AdmissionOrderDoesNotDependOnEventID(t *testing.T) {
@@ -29,7 +41,7 @@ func TestRetainedCumulative_AdmissionOrderDoesNotDependOnEventID(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, driver)
 			firstBase := retainedBase("first", "admission-order")
-			first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, firstBase.Quadruple, 1, time.Hour, nil)
+			first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, firstBase.Quadruple, 1, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -57,7 +69,7 @@ func TestRetainedCumulative_AdmissionOrderDoesNotDependOnEventID(t *testing.T) {
 			record.Bytes = bytes.Replace(record.Bytes, []byte(window.Turns[0].Admission.ID), []byte("7ZZZZZZZZZZZZZZZZZZZZZZZZZ"), 1)
 			replaceHostRecord(t, store, record)
 			secondBase := retainedBase("second", "admission-order")
-			second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, secondBase.Quadruple, 1, time.Hour, nil)
+			second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, secondBase.Quadruple, 1, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,7 +105,7 @@ func TestRetainedCumulative_ExactReferencesSurviveRollover(t *testing.T) {
 		for _, deletion := range []string{"none", "before inference", "during inference"} {
 			t.Run(driver+"/"+deletion, func(t *testing.T) {
 				store, redactor, cfg := retainedStore(t, driver)
-				blobs := newRunctxArtifactStore(t)
+				blobs := cumulativeArtifactStore(t)
 				firstBase := retainedBase("first", "exact-rollover")
 				scope := artifacts.ArtifactScope{TenantID: "t", UserID: "u", SessionID: "exact-rollover"}
 				receipt := []byte(`{"source":"` + strings.Repeat("x", 14585) + `","resource_id":"doc-a","version":9007199254740993,"more":false}`)
@@ -104,7 +116,7 @@ func TestRetainedCumulative_ExactReferencesSurviveRollover(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, firstBase.Quadruple, 1, time.Hour, nil)
+				first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, firstBase.Quadruple, 1, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -116,7 +128,7 @@ func TestRetainedCumulative_ExactReferencesSurviveRollover(t *testing.T) {
 					t.Fatal(err)
 				}
 				secondBase := retainedBase("second", "exact-rollover")
-				second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, secondBase.Quadruple, 1, time.Hour, nil)
+				second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, secondBase.Quadruple, 1, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -141,7 +153,7 @@ func TestRetainedCumulative_ExactReferencesSurviveRollover(t *testing.T) {
 					defer func() { _ = store.Close(context.Background()) }()
 				}
 				base := retainedBase("third", "exact-rollover")
-				third, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, nil)
+				third, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -180,7 +192,7 @@ func TestRetainedCumulative_ExactReferencesSurviveRollover(t *testing.T) {
 					if err != nil || decision == nil || !called {
 						t.Fatalf("authorized rolled evidence unavailable: %v", err)
 					}
-				} else if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || decision != nil || called != (deletion == "during inference") {
+				} else if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || decision != nil || called != (deletion == "during inference") {
 					t.Fatalf("deleted evidence remained actionable: called=%t decision=%v err=%v", called, decision, err)
 				}
 			})
@@ -196,7 +208,7 @@ func TestRetainedCumulative_RolloverAndRestartDoNotRenewExpiry(t *testing.T) {
 			clock := func() time.Time { return now }
 			for _, run := range []string{"first", "second", "third"} {
 				base := retainedBase(run, "cumulative-expiry")
-				retained, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, clock)
+				retained, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, clock)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -226,7 +238,7 @@ func TestRetainedCumulative_RolloverAndRestartDoNotRenewExpiry(t *testing.T) {
 				defer func() { _ = store.Close(context.Background()) }()
 			}
 			base := retainedBase("after-expiry", "cumulative-expiry")
-			retained, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, clock)
+			retained, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, clock)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -245,10 +257,10 @@ func TestRetainedCumulative_RolloverPreservesNewerSiblingTail(t *testing.T) {
 	for _, driver := range []string{"inmem", "sqlite"} {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, driver)
-			admit := func(run string) (*runctx.RetainedRun, planner.RunContext) {
+			admit := func(run string) (*sessionmemory.RetainedRun, planner.RunContext) {
 				t.Helper()
 				base := retainedBase(run, "cumulative-siblings")
-				r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 3, time.Hour, nil)
+				r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 3, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -312,7 +324,7 @@ func TestRetainedCumulative_FailedRolloverPreservesCommittedState(t *testing.T) 
 				store, redactor, _ := retainedStore(t, driver)
 				wrapped := &cumulativeFailCommit{StateStore: store}
 				firstBase := retainedBase("first", "failed-rollover")
-				first, err := runctx.BeginRetainedRun(t.Context(), wrapped, redactor, firstBase.Quadruple, 1, time.Hour, nil)
+				first, err := sessionmemory.BeginRetainedRun(t.Context(), wrapped, redactor, firstBase.Quadruple, 1, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -323,7 +335,7 @@ func TestRetainedCumulative_FailedRolloverPreservesCommittedState(t *testing.T) 
 					t.Fatal(err)
 				}
 				base := retainedBase("second", "failed-rollover")
-				second, err := runctx.BeginRetainedRun(t.Context(), wrapped, redactor, base.Quadruple, 1, time.Hour, nil)
+				second, err := sessionmemory.BeginRetainedRun(t.Context(), wrapped, redactor, base.Quadruple, 1, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -352,7 +364,7 @@ func TestRetainedCumulative_FailedRolloverPreservesCommittedState(t *testing.T) 
 					t.Fatal(err)
 				}
 				err = second.Finish(t.Context(), base.Trajectory, base.Query, "done", "complete")
-				if err == nil || (failure == "no summary" && !errors.Is(err, runctx.ErrRetainedContextCapacity)) {
+				if err == nil || (failure == "no summary" && !errors.Is(err, sessionmemory.ErrRetainedContextCapacity)) {
 					t.Fatalf("failed rollover silently evicted prior context: %v", err)
 				}
 				if failure == "write failure" && wrapped.failures != 1 {

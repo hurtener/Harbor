@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
@@ -32,7 +33,7 @@ func TestRunOnce_RetainedInputsSurviveCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := runctx.BeginRetainedRun(t.Context(), s.State, s.Redactor, q, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), s.State, s.Redactor, q, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,7 @@ func TestRunOnce_RetainedInputsDeletionDuringInferenceFencesDispatch(t *testing.
 		return llm.CompleteResponse{Content: "done"}, nil
 	}})
 	_, err = s.RunOnce(t.Context(), "Apply the source", id, assemble.WithInputArtifacts(ref.ID))
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || calls != 1 || toolsCalled.Load() != 0 {
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || calls != 1 || toolsCalled.Load() != 0 {
 		t.Fatalf("deleted input allowed dependent work: err=%v model=%d tools=%d", err, calls, toolsCalled.Load())
 	}
 }
@@ -134,7 +135,7 @@ func TestRunOnce_RetainedInputsMissingAdmissionRefused(t *testing.T) {
 		return llm.CompleteResponse{Content: "done"}, nil
 	}})
 	_, err := s.RunOnce(context.Background(), "Inspect", identity.Identity{TenantID: "t", UserID: "u", SessionID: "missing-input"}, assemble.WithInputArtifacts("missing"))
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || calls != 0 {
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || calls != 0 {
 		t.Fatalf("missing input silently dropped: %v calls=%d", err, calls)
 	}
 }

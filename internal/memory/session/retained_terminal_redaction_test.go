@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 )
 
 type terminalShapeRedactor struct {
@@ -114,7 +114,7 @@ func TestRetainedContext_TerminalRedactorCannotChangeActionIdentity(t *testing.T
 			t.Run(driver+"/"+tc.name, func(t *testing.T) {
 				store, _, _ := retainedStore(t, driver)
 				base := retainedBase("source", "terminal-redactor-"+tc.name)
-				run, err := runctx.BeginRetainedRun(t.Context(), store, terminalShapeRedactor{shape: tc.shape}, base.Quadruple, 2, time.Hour, nil)
+				run, err := sessionmemory.BeginRetainedRun(t.Context(), store, terminalShapeRedactor{shape: tc.shape}, base.Quadruple, 2, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -122,7 +122,7 @@ func TestRetainedContext_TerminalRedactorCannotChangeActionIdentity(t *testing.T
 					t.Fatal(err)
 				}
 				base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{Action: tc.action, LLMObservation: "settled result"})
-				if err = run.Finish(t.Context(), base.Trajectory, "request", "answer", "complete"); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+				if err = run.Finish(t.Context(), base.Trajectory, "request", "answer", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 					t.Fatalf("terminal action mutation accepted: %v", err)
 				}
 				record, err := store.Load(t.Context(), identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
@@ -148,7 +148,7 @@ func TestRetainedContext_TerminalRedactorAllowsContentRedaction(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, _, _ := retainedStore(t, driver)
 			base := retainedBase("source", "terminal-content-redaction")
-			run, err := runctx.BeginRetainedRun(t.Context(), store, terminalShapeRedactor{shape: "content"}, base.Quadruple, 2, time.Hour, nil)
+			run, err := sessionmemory.BeginRetainedRun(t.Context(), store, terminalShapeRedactor{shape: "content"}, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

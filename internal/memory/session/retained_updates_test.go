@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -18,7 +18,7 @@ func TestRetainedUpdates_ContextFrameRecovery(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, cfg := retainedStore(t, driver)
 			base := retainedBase("steered", "context-frames")
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -44,11 +44,11 @@ func TestRetainedUpdates_ContextFrameRecovery(t *testing.T) {
 			}
 			// The old live trajectory never received the context step: recovery
 			// must use its committed journal, not process-local state.
-			if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 				t.Fatal(err)
 			}
 			next := retainedBase("next", "context-frames")
-			recovered, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
+			recovered, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -73,7 +73,7 @@ func TestRetainedUpdates_RefusesInvalidOrPendingContext(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			base := retainedBase("run", scenario)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +120,7 @@ func TestRetainedUpdates_ContextFrameCannotHideAnAction(t *testing.T) {
 	for _, contextFrame := range []bool{false, true} {
 		store, redactor, _ := retainedStore(t, "inmem")
 		base := retainedBase("run", "corrupt-frame")
-		r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+		r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +153,7 @@ func TestRetainedUpdates_ContextFrameCannotHideAnAction(t *testing.T) {
 		if err = store.SaveIf(t.Context(), []state.SlotExpectation{state.InternalSlotExpectation(base.Quadruple, record.Kind, record.ID)}, state.NewInternalRecord(state.NewEventID(), base.Quadruple, record.Kind, record.Bytes)); err != nil {
 			t.Fatal(err)
 		}
-		if err = runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+		if err = sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 			t.Fatalf("ambiguous frame accepted: %v", err)
 		}
 	}

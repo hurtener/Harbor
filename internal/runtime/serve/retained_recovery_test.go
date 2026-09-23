@@ -12,20 +12,20 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // Seed real durable intent/settlement, never a fake reconciliation callback.
-func servedRecoverySource(t *testing.T, d projWiringDeps, session string, settled bool) (*runctx.RetainedRun, planner.RunContext, planner.Step) {
+func servedRecoverySource(t *testing.T, d projWiringDeps, session string, settled bool) (*sessionmemory.RetainedRun, planner.RunContext, planner.Step) {
 	t.Helper()
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: session}, RunID: "source"}
 	base := planner.RunContext{Quadruple: q, Query: "edit the document", Trajectory: &planner.Trajectory{Query: "edit the document"}}
-	old, err := runctx.BeginRetainedRun(t.Context(), d.in.State, d.in.Redactor, q, 4, time.Hour, nil)
+	old, err := sessionmemory.BeginRetainedRun(t.Context(), d.in.State, d.in.Redactor, q, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestE2E_ServedContextRecovery_SealsAndContinues(t *testing.T) {
 			t.Fatal("private execution data leaked")
 		}
 	}
-	if err := old.BeforeDispatch(t.Context(), base, step); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if err := old.BeforeDispatch(t.Context(), base, step); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("old dispatch not fenced: %v", err)
 	}
 	env, client, calls, memory := retainedServerHarness(t, func(o *RunLoopDriverOptions) { o.StateStore, o.Redactor = d.in.State, d.in.Redactor })
@@ -114,7 +114,7 @@ func TestE2E_ServedContextRecovery_RefusesPendingAndForeignIdentity(t *testing.T
 			}
 		})
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), d.in.State, d.in.Redactor, base.Quadruple, 4, nil); !errors.Is(err, runctx.ErrRetainedContextUnsettled) {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), d.in.State, d.in.Redactor, base.Quadruple, 4, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnsettled) {
 		t.Fatal("pending state changed")
 	}
 }

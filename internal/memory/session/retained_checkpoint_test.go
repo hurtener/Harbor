@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -36,7 +36,7 @@ func TestRetainedCheckpoint_ReusesCoverageAcrossTurns(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, cfg := retainedStore(t, driver)
 			base := retainedBase("first", "checkpoint")
-			first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+			first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -77,7 +77,7 @@ func TestRetainedCheckpoint_ReusesCoverageAcrossTurns(t *testing.T) {
 			}
 			next := retainedBase("second", "checkpoint")
 			next.Query, next.Trajectory.Query = "Now change the footer", "Now change the footer"
-			second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
+			second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,7 +115,7 @@ func TestRetainedCheckpoint_ReusesCoverageAcrossTurns(t *testing.T) {
 				t.Fatal(err)
 			}
 			thirdBase := retainedBase("third", "checkpoint")
-			third, err := runctx.BeginRetainedRun(t.Context(), store, redactor, thirdBase.Quadruple, 4, time.Hour, nil)
+			third, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, thirdBase.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,7 +139,7 @@ func TestRetainedCheckpoint_InvalidationAndCorruption(t *testing.T) {
 			now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 			clock := func() time.Time { return now }
 			base := retainedBase("first", scenario)
-			first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, clock)
+			first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, clock)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -197,9 +197,9 @@ func TestRetainedCheckpoint_InvalidationAndCorruption(t *testing.T) {
 				}
 			}
 			next := retainedBase("next", scenario)
-			last, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, clock)
+			last, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, clock)
 			if scenario == "changed source" || scenario == "bad generation" || scenario == "unversioned injection" {
-				if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || last != nil {
+				if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || last != nil {
 					t.Fatal("corrupt checkpoint admitted")
 				}
 				return
@@ -220,14 +220,14 @@ func TestRetainedCheckpoint_InvalidationAndCorruption(t *testing.T) {
 func TestRetainedCheckpoint_ConcurrentSiblingCannotInventCoverage(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	a, b := retainedBase("a", "siblings"), retainedBase("b", "siblings")
-	first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, a.Quadruple, 4, time.Hour, nil)
+	first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, a.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Apply(&a); err != nil {
 		t.Fatal(err)
 	}
-	second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, b.Quadruple, 4, time.Hour, nil)
+	second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, b.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestRetainedCheckpoint_ConcurrentSiblingCannotInventCoverage(t *testing.T) 
 	// A may publish a checkpoint for A only (its admission precedes B). B's
 	// concurrent view cannot claim it observed A. B remains outside A's coverage.
 	next := retainedBase("next", "siblings")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestRetainedCheckpoint_SharedStoreReuse(t *testing.T) {
 			defer wg.Done()
 			session := fmt.Sprintf("checkpoint-%d", i)
 			base := retainedBase("first", session)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -298,7 +298,7 @@ func TestRetainedCheckpoint_SharedStoreReuse(t *testing.T) {
 				return
 			}
 			next := retainedBase("next", session)
-			r, err = runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
+			r, err = sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -357,7 +357,7 @@ func TestRetainedCheckpoint_RedactionAndChangedSource(t *testing.T) {
 		t.Run(fmt.Sprint(changed), func(t *testing.T) {
 			store, _, _ := retainedStore(t, "inmem")
 			base := retainedBase("first", "redaction")
-			first, err := runctx.BeginRetainedRun(t.Context(), store, checkpointScrubber{}, base.Quadruple, 4, time.Hour, nil)
+			first, err := sessionmemory.BeginRetainedRun(t.Context(), store, checkpointScrubber{}, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -385,7 +385,7 @@ func TestRetainedCheckpoint_RedactionAndChangedSource(t *testing.T) {
 				t.Fatal("checkpoint bypassed redaction")
 			}
 			next := retainedBase("second", "redaction")
-			r, err := runctx.BeginRetainedRun(t.Context(), store, checkpointScrubber{}, next.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, checkpointScrubber{}, next.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

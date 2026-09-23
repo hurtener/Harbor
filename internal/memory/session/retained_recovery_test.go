@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
-func journalAction(t *testing.T, r *runctx.RetainedRun, base planner.RunContext, settled bool) planner.Step {
+func journalAction(t *testing.T, r *sessionmemory.RetainedRun, base planner.RunContext, settled bool) planner.Step {
 	t.Helper()
 	step := planner.Step{Action: planner.CallTool{Tool: "save", CallID: "save-one", Args: json.RawMessage(`{"id":"doc-a"}`)}}
 	if err := r.BeforeDispatch(t.Context(), base, step); err != nil {
@@ -36,7 +36,7 @@ func TestRetainedRecovery_SettledRestartFencesSource(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, cfg := retainedStore(t, driver)
 			base := retainedBase("source", "recovery")
-			old, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+			old, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,14 +58,14 @@ func TestRetainedRecovery_SettledRestartFencesSource(t *testing.T) {
 				}
 				defer func() { _ = store.Close(context.Background()) }()
 			}
-			if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 				t.Fatal(err)
 			}
-			if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 				t.Fatalf("idempotent recovery: %v", err)
 			}
 			next := retainedBase("next", "recovery")
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,7 +89,7 @@ func TestRetainedRecovery_SettledRestartFencesSource(t *testing.T) {
 				}
 			}
 			if driver == "inmem" {
-				if err := old.BeforeDispatch(t.Context(), base, step); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+				if err := old.BeforeDispatch(t.Context(), base, step); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 					t.Fatalf("old execution was not fenced: %v", err)
 				}
 			}
@@ -100,7 +100,7 @@ func TestRetainedRecovery_SettledRestartFencesSource(t *testing.T) {
 func TestRetainedRecovery_PendingNeverBecomesFailedOrReplayable(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("pending", "s")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRetainedRecovery_PendingNeverBecomesFailedOrReplayable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); !errors.Is(err, runctx.ErrRetainedContextUnsettled) {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnsettled) {
 		t.Fatalf("pending action adopted: %v", err)
 	}
 	after, err := store.Load(t.Context(), base.Quadruple, journalHeadKind)
@@ -129,7 +129,7 @@ func TestRetainedRecovery_ExpiryAndIdentity(t *testing.T) {
 	now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	base := retainedBase("source", "s")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Minute, clock)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Minute, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,20 +141,20 @@ func TestRetainedRecovery_ExpiryAndIdentity(t *testing.T) {
 	}
 	journalAction(t, r, base, true)
 	for _, q := range []identity.Quadruple{{}, {Identity: identity.Identity{TenantID: "other", UserID: "u", SessionID: "s"}, RunID: "source"}, {Identity: identity.Identity{TenantID: "t", UserID: "other", SessionID: "s"}, RunID: "source"}, {Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "other"}, RunID: "source"}} {
-		if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, q, 4, clock); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+		if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, q, 4, clock); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 			t.Fatalf("wrong identity accepted: %v", err)
 		}
 	}
 	now = now.Add(30 * time.Second)
-	if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, clock); err != nil {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, clock); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(31 * time.Second)
-	if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, clock); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, clock); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("source TTL extended: %v", err)
 	}
 	next := retainedBase("next", "s")
-	newRun, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, clock)
+	newRun, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestRetainedRecovery_CompetesWithDispatchWithoutDoubleAuthority(t *testing.
 		go func() {
 			defer wg.Done()
 			base := retainedBase("source", fmt.Sprint("race-", i))
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -191,7 +191,7 @@ func TestRetainedRecovery_CompetesWithDispatchWithoutDoubleAuthority(t *testing.
 			recovered := make(chan error, 1)
 			go func() {
 				<-start
-				recovered <- runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil)
+				recovered <- sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil)
 			}()
 			close(start)
 			dispatchErr := r.BeforeDispatch(t.Context(), base, planner.Step{Action: planner.CallTool{Tool: "write", CallID: "new"}})
@@ -211,7 +211,7 @@ func TestRetainedRecovery_MissingCorruptOrErasedEvidenceFailsClosed(t *testing.T
 			now := time.Now()
 			clock := func() time.Time { return now }
 			base := retainedBase("source", scenario)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, clock)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, clock)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,7 +282,7 @@ func TestRetainedRecovery_MissingCorruptOrErasedEvidenceFailsClosed(t *testing.T
 					t.Fatal(err)
 				}
 			}
-			if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, clock); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, clock); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 				t.Fatalf("invalid source accepted: %v", err)
 			}
 			window, err := store.Load(t.Context(), identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
@@ -331,7 +331,7 @@ func TestRetainedRecovery_RequiredSealAndIdempotentCleanup(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			base := retainedBase("source", scenario)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -348,7 +348,7 @@ func TestRetainedRecovery_RequiredSealAndIdempotentCleanup(t *testing.T) {
 			if scenario == "redaction" {
 				chosen = retainedFailRedactor{}
 			}
-			if err := runctx.ReconcileRetainedRun(t.Context(), fault, chosen, base.Quadruple, 4, nil); err == nil {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), fault, chosen, base.Quadruple, 4, nil); err == nil {
 				t.Fatal("required operation failure acknowledged")
 			}
 			window, err := store.Load(t.Context(), identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
@@ -365,7 +365,7 @@ func TestRetainedRecovery_RequiredSealAndIdempotentCleanup(t *testing.T) {
 				}
 			}
 			fault.failSeal, fault.failDelete = false, false
-			if err := runctx.ReconcileRetainedRun(t.Context(), fault, redactor, base.Quadruple, 4, nil); err != nil {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), fault, redactor, base.Quadruple, 4, nil); err != nil {
 				t.Fatalf("safe retry: %v", err)
 			}
 			for _, kind := range []string{journalHeadKind, journalHeadKind + "/action/000", journalHeadKind + "/action/001"} {
@@ -380,7 +380,7 @@ func TestRetainedRecovery_RequiredSealAndIdempotentCleanup(t *testing.T) {
 func TestRetainedRecovery_CannotSucceedByImmediatelyEvictingSource(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("old", "capacity")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestRetainedRecovery_CannotSucceedByImmediatelyEvictingSource(t *testing.T)
 	}
 	journalAction(t, r, base, true)
 	newer := retainedBase("newer", "capacity")
-	sibling, err := runctx.BeginRetainedRun(t.Context(), store, redactor, newer.Quadruple, 4, time.Hour, nil)
+	sibling, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, newer.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,10 +402,10 @@ func TestRetainedRecovery_CannotSucceedByImmediatelyEvictingSource(t *testing.T)
 	if err := sibling.Finish(t.Context(), newer.Trajectory, newer.Query, "done", "complete"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, nil); !errors.Is(err, runctx.ErrRetainedContextCapacity) {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, nil); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
 		t.Fatalf("missing source acknowledged: %v", err)
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -413,7 +413,7 @@ func TestRetainedRecovery_CannotSucceedByImmediatelyEvictingSource(t *testing.T)
 func TestRetainedRecovery_ConcurrentReconciliationPublishesOnce(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("source", "same-admission")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,16 +429,16 @@ func TestRetainedRecovery_ConcurrentReconciliationPublishesOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil)
+			err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil)
 			// A reader racing exact-generation cleanup can observe an unavailable
 			// snapshot. It must not insert a second turn or adopt another source.
-			if err != nil && !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+			if err != nil && !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 				t.Errorf("unexpected recovery error: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
-	if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 		t.Fatal(err)
 	}
 	window, err := store.Load(t.Context(), identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
@@ -449,7 +449,7 @@ func TestRetainedRecovery_ConcurrentReconciliationPublishesOnce(t *testing.T) {
 		t.Fatal("reconciliation published duplicate turns")
 	}
 	base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: "late owner"})
-	if err := r.Finish(t.Context(), base.Trajectory, base.Query, "late success", "complete"); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if err := r.Finish(t.Context(), base.Trajectory, base.Query, "late success", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatal("late owner overwrote fenced outcome")
 	}
 }

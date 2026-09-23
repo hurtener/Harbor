@@ -14,8 +14,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns" // The real redactor is the only extra driver needed on this persistence seam.
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -48,7 +48,7 @@ func TestPostgres_RetainedContext_SettledRecoveryAndPendingRefusal(t *testing.T)
 	first, second, redactor := retainedPostgresStores(t)
 	base := retainedBase("source", "postgres-recovery")
 	base.InputArtifacts = []planner.InputArtifactView{{ID: "attachment-one", Bytes: []byte("PRIVATE-BINARY")}}
-	r, err := runctx.BeginRetainedRun(t.Context(), first, redactor, base.Quadruple, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), first, redactor, base.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestPostgres_RetainedContext_SettledRecoveryAndPendingRefusal(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil); !errors.Is(err, runctx.ErrRetainedContextUnsettled) {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnsettled) {
 		t.Fatalf("pending operation became replayable: %v", err)
 	}
 	after, err := second.Load(t.Context(), base.Quadruple, journalHeadKind)
@@ -83,14 +83,14 @@ func TestPostgres_RetainedContext_SettledRecoveryAndPendingRefusal(t *testing.T)
 	if err := first.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil); err != nil {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := runctx.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil); err != nil {
+	if err := sessionmemory.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil); err != nil {
 		t.Fatalf("idempotent cleanup: %v", err)
 	}
 	next := retainedBase("next", base.Quadruple.SessionID)
-	restored, err := runctx.BeginRetainedRun(t.Context(), second, redactor, next.Quadruple, 4, time.Hour, nil)
+	restored, err := sessionmemory.BeginRetainedRun(t.Context(), second, redactor, next.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestPostgres_RetainedContext_CheckpointAndSourceExpiry(t *testing.T) {
 	now := time.Now()
 	clock := func() time.Time { return now }
 	base := retainedBase("source", "postgres-checkpoint")
-	r, err := runctx.BeginRetainedRun(t.Context(), first, redactor, base.Quadruple, 4, time.Minute, clock)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), first, redactor, base.Quadruple, 4, time.Minute, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestPostgres_RetainedContext_CheckpointAndSourceExpiry(t *testing.T) {
 	}
 	next := retainedBase("next", base.Quadruple.SessionID)
 	next.Query, next.Trajectory.Query = "Change the footer", "Change the footer"
-	restored, err := runctx.BeginRetainedRun(t.Context(), second, redactor, next.Quadruple, 4, time.Hour, clock)
+	restored, err := sessionmemory.BeginRetainedRun(t.Context(), second, redactor, next.Quadruple, 4, time.Hour, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestPostgres_RetainedContext_CheckpointAndSourceExpiry(t *testing.T) {
 	}
 	now = now.Add(2 * time.Minute)
 	later := retainedBase("later", base.Quadruple.SessionID)
-	expired, err := runctx.BeginRetainedRun(t.Context(), first, redactor, later.Quadruple, 4, time.Hour, clock)
+	expired, err := sessionmemory.BeginRetainedRun(t.Context(), first, redactor, later.Quadruple, 4, time.Hour, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestPostgres_RetainedContext_CheckpointAndSourceExpiry(t *testing.T) {
 	if _, err := second.DeleteScope(t.Context(), later.Quadruple.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := expired.Finish(t.Context(), later.Trajectory, later.Query, "must not return", "complete"); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if err := expired.Finish(t.Context(), later.Trajectory, later.Query, "must not return", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("erased admission resurrected: %v", err)
 	}
 }
@@ -198,7 +198,7 @@ func TestPostgres_RetainedContext_TwoPoolDispatchReconciliationRace(t *testing.T
 		go func() {
 			defer wg.Done()
 			base := retainedBase("source", fmt.Sprintf("postgres-race-%03d", i))
-			r, err := runctx.BeginRetainedRun(t.Context(), first, redactor, base.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), first, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -215,7 +215,7 @@ func TestPostgres_RetainedContext_TwoPoolDispatchReconciliationRace(t *testing.T
 			recovered := make(chan error, 1)
 			go func() {
 				<-start
-				recovered <- runctx.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil)
+				recovered <- sessionmemory.ReconcileRetainedRun(t.Context(), second, redactor, base.Quadruple, 4, nil)
 			}()
 			close(start)
 			dispatchErr := r.BeforeDispatch(t.Context(), base, planner.Step{Action: planner.CallTool{Tool: "save", CallID: "next"}})
@@ -226,7 +226,7 @@ func TestPostgres_RetainedContext_TwoPoolDispatchReconciliationRace(t *testing.T
 			// A different tenant cannot recover this session's execution.
 			other := base.Quadruple
 			other.Identity = identity.Identity{TenantID: "other", UserID: other.UserID, SessionID: other.SessionID}
-			if err := runctx.ReconcileRetainedRun(t.Context(), second, redactor, other, 4, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), second, redactor, other, 4, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 				t.Errorf("scope %d crossed tenant authority: %v", i, err)
 			}
 		}()
@@ -247,7 +247,7 @@ func encodeRetained(t *testing.T, base planner.RunContext) string {
 	return string(data)
 }
 
-func journalAction(t *testing.T, r *runctx.RetainedRun, base planner.RunContext) planner.Step {
+func journalAction(t *testing.T, r *sessionmemory.RetainedRun, base planner.RunContext) planner.Step {
 	t.Helper()
 	step := planner.Step{Action: planner.CallTool{Tool: "save", CallID: "save-one", Args: json.RawMessage(`{"id":"doc-a"}`)}}
 	if err := r.BeforeDispatch(t.Context(), base, step); err != nil {

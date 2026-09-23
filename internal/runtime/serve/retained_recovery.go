@@ -6,7 +6,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -20,11 +20,11 @@ type retainedContextReconciler struct {
 }
 
 func (r retainedContextReconciler) ReconcileContext(ctx context.Context, id identity.Identity, run string) error {
-	err := runctx.ReconcileRetainedRun(ctx, r.store, r.redactor, identity.Quadruple{Identity: id, RunID: run}, r.turns, nil)
+	err := sessionmemory.ReconcileRetainedRun(ctx, r.store, r.redactor, identity.Quadruple{Identity: id, RunID: run}, r.turns, nil)
 	switch {
-	case errors.Is(err, runctx.ErrRetainedContextUnsettled):
+	case errors.Is(err, sessionmemory.ErrRetainedContextUnsettled):
 		return sessionsprotocol.ErrContextUnsettled
-	case errors.Is(err, runctx.ErrRetainedContextUnavailable):
+	case errors.Is(err, sessionmemory.ErrRetainedContextUnavailable):
 		return sessionsprotocol.ErrContextUnavailable
 	default:
 		return err

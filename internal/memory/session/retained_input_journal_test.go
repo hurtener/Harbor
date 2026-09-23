@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -18,7 +18,7 @@ func TestRetainedJournal_InputReferencesAtomicAndRecoverable(t *testing.T) {
 			store, redactor, cfg := retainedStore(t, driver)
 			base := retainedBase("original", "input-journal")
 			base.InputArtifacts = []planner.InputArtifactView{{ID: "source-ref", Bytes: []byte("PRIVATE-IMAGE-BYTES"), MIME: "image/png"}}
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -46,11 +46,11 @@ func TestRetainedJournal_InputReferencesAtomicAndRecoverable(t *testing.T) {
 				}
 				defer func() { _ = store.Close(context.Background()) }()
 			}
-			if err = runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
+			if err = sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); err != nil {
 				t.Fatal(err)
 			}
 			next := retainedBase("next", "input-journal")
-			r, err = runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
+			r, err = sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +78,7 @@ func TestRetainedJournal_InputAdmissionFailureCannotLeaveQueryOnlyHead(t *testin
 	fail := &inputAtomicStore{StateStore: store}
 	base := retainedBase("original", "input-atomic")
 	base.InputArtifacts = []planner.InputArtifactView{{ID: "source"}}
-	r, err := runctx.BeginRetainedRun(t.Context(), fail, redactor, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), fail, redactor, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

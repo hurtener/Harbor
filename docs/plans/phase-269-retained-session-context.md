@@ -129,7 +129,8 @@ an intent without a returned receipt remains unknown, never automatically replay
 
 ## Files added or changed
 
-- `internal/runtime/runctx/retained_context.go` and its driver/identity tests.
+- `internal/memory/session/` and its driver/identity tests; the cumulative
+  owner was relocated from `internal/runtime/runctx` without a second engine.
 - `internal/runtime/assemble/runonce.go` and request-level integration tests.
 - `internal/runtime/serve/`, `internal/config/`, configuration docs and example.
 - `sdk/assemble/assemble.go`, RFCs, decisions, glossary, and embedding recipe.
@@ -171,7 +172,10 @@ exactly-once external actions.
 
 ## Coverage target
 
-Preserve touched-package floors. Record `-cover` measurements for runctx and
+Preserve touched-package floors, including the relocated cumulative code and
+tests in `internal/memory/session` (the strictest touched runctx floor, 92%,
+continues to apply; relocation does not waive uncovered branches).
+Record `-cover` measurements for session memory, runctx and
 assembly and exercise every new admission, retention, erasure and failure branch
 before declaring the complete phase finished. Incremental tests are not a claim
 that full branch coverage or repository preflight is already green.

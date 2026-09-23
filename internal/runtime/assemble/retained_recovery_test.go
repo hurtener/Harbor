@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	sdk "github.com/hurtener/Harbor/sdk/assemble"
 )
@@ -24,7 +24,7 @@ func TestRunOnce_RetainedRecoveryActualRequest(t *testing.T) {
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "recovery-sdk"}
 	q := identity.Quadruple{Identity: id, RunID: "lost-process"}
 	base := planner.RunContext{Quadruple: q, Query: "edit the existing document", Trajectory: &planner.Trajectory{Query: "edit the existing document"}}
-	owner, err := runctx.BeginRetainedRun(t.Context(), stack.State, stack.Redactor, q, 4, time.Hour, nil)
+	owner, err := sessionmemory.BeginRetainedRun(t.Context(), stack.State, stack.Redactor, q, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestRunOnce_RetainedRecoveryActualRequest(t *testing.T) {
 	if toolCalls.Load() != 0 {
 		t.Fatal("historical action was dispatched on continuation")
 	}
-	if err := owner.BeforeDispatch(t.Context(), base, step); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if err := owner.BeforeDispatch(t.Context(), base, step); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("old admission still active: %v", err)
 	}
 }

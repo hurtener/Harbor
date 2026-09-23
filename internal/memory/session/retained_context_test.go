@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -16,8 +16,8 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	_ "github.com/hurtener/Harbor/internal/drivers/prod" // Exercise the same stores and redactor as production assembly.
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -58,7 +58,7 @@ func TestRetainedContext_ExactEvidenceRestartAndNoRecursiveHistory(t *testing.T)
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, cfg := retainedStore(t, driver)
 			base := retainedBase("first", "s")
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestRetainedContext_ExactEvidenceRestartAndNoRecursiveHistory(t *testing.T)
 				defer func() { _ = store.Close(context.Background()) }()
 			}
 			next := retainedBase("second", "s")
-			second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
+			second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +112,7 @@ func TestRetainedContext_ExactEvidenceRestartAndNoRecursiveHistory(t *testing.T)
 			if strings.Count(string(record.Bytes), "9007199254740993") != 1 {
 				t.Fatal("inherited history was persisted recursively")
 			}
-			if err = second.Finish(t.Context(), next.Trajectory, next.Query, "again", "complete"); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+			if err = second.Finish(t.Context(), next.Trajectory, next.Query, "again", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 				t.Fatalf("double finish accepted: %v", err)
 			}
 		})
@@ -124,14 +124,14 @@ func TestRetainedContext_WindowExpiryAndConcurrentSiblings(t *testing.T) {
 	now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	a, b := retainedBase("a", "s"), retainedBase("b", "s")
-	first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, a.Quadruple, 2, time.Minute, clock)
+	first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, a.Quadruple, 2, time.Minute, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = first.Apply(&a); err != nil {
 		t.Fatal(err)
 	}
-	second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, b.Quadruple, 2, time.Minute, clock)
+	second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, b.Quadruple, 2, time.Minute, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestRetainedContext_WindowExpiryAndConcurrentSiblings(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := retainedBase("c", "s")
-	third, err := runctx.BeginRetainedRun(t.Context(), store, redactor, c.Quadruple, 2, time.Minute, clock)
+	third, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, c.Quadruple, 2, time.Minute, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,12 +162,12 @@ func TestRetainedContext_WindowExpiryAndConcurrentSiblings(t *testing.T) {
 	}
 	// Reaching the detail bound is not permission to discard either sibling.
 	// Without a new checkpoint the terminal write must preserve both outcomes.
-	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); !errors.Is(err, runctx.ErrRetainedContextCapacity) {
+	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
 		t.Fatalf("unsummarized history silently evicted: %v", err)
 	}
 	now = now.Add(2 * time.Minute)
 	d := retainedBase("d", "s")
-	fourth, err := runctx.BeginRetainedRun(t.Context(), store, redactor, d.Quadruple, 2, time.Minute, clock)
+	fourth, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, d.Quadruple, 2, time.Minute, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestRetainedContext_ErasureAndCorruptionFailClosed(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			base := retainedBase("run", scenario)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -225,7 +225,7 @@ func TestRetainedContext_ErasureAndCorruptionFailClosed(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err = r.Finish(t.Context(), base.Trajectory, "request", "DONE", "complete"); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+			if err = r.Finish(t.Context(), base.Trajectory, "request", "DONE", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 				t.Fatalf("untrusted reconstruction accepted: %v", err)
 			}
 		})
@@ -254,11 +254,11 @@ func TestRetainedContext_RequiredWriteAndRedaction(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	f := &retainedFailStore{StateStore: store, fail: true}
 	base := retainedBase("run", "s")
-	if r, err := runctx.BeginRetainedRun(t.Context(), f, redactor, base.Quadruple, 2, time.Hour, nil); err == nil || r != nil {
+	if r, err := sessionmemory.BeginRetainedRun(t.Context(), f, redactor, base.Quadruple, 2, time.Hour, nil); err == nil || r != nil {
 		t.Fatal("admitted without required persistence")
 	}
 	f.fail = false
-	r, err := runctx.BeginRetainedRun(t.Context(), f, retainedFailRedactor{}, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), f, retainedFailRedactor{}, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestRetainedContext_RequiredWriteAndRedaction(t *testing.T) {
 		t.Fatal("unredacted content retained")
 	}
 	for _, size := range []int{0, 33, -1} {
-		if _, err = runctx.BeginRetainedRun(t.Context(), store, redactor, retainedBase("other", "s").Quadruple, size, time.Hour, nil); err == nil {
+		if _, err = sessionmemory.BeginRetainedRun(t.Context(), store, redactor, retainedBase("other", "s").Quadruple, size, time.Hour, nil); err == nil {
 			t.Fatal("invalid capacity")
 		}
 	}
@@ -291,7 +291,7 @@ func TestRetainedContext_SharedStoreIsolation(t *testing.T) {
 			defer wg.Done()
 			marker := fmt.Sprintf("session-%03d", i)
 			base := retainedBase("run-1", marker)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -306,7 +306,7 @@ func TestRetainedContext_SharedStoreIsolation(t *testing.T) {
 				return
 			}
 			next := retainedBase("run-2", marker)
-			r, err = runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
+			r, err = sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -332,7 +332,7 @@ func (f retainedDecisionFunc) Next(ctx context.Context, rc planner.RunContext) (
 func TestRetainedContext_ErasureBlocksFollowingDecision(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("run", "erase-decision")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestRetainedContext_ErasureBlocksFollowingDecision(t *testing.T) {
 	if _, err = store.DeleteScope(t.Context(), base.Quadruple.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if decision, err := guarded.Next(t.Context(), base); !errors.Is(err, runctx.ErrRetainedContextUnavailable) || decision != nil || called {
+	if decision, err := guarded.Next(t.Context(), base); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || decision != nil || called {
 		t.Fatal("erasure did not block the next planner request")
 	}
 }
@@ -352,7 +352,7 @@ func TestRetainedContext_ErasureBlocksFollowingDecision(t *testing.T) {
 func TestRetainedContext_ErasureDuringDecisionBlocksDispatch(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("run", "erase-during")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestRetainedContext_ErasureDuringDecisionBlocksDispatch(t *testing.T) {
 		}
 		return planner.CallTool{Tool: "write"}, nil
 	}), nil)
-	if decision, err := guarded.Next(t.Context(), base); !errors.Is(err, runctx.ErrRetainedContextUnavailable) || decision != nil {
+	if decision, err := guarded.Next(t.Context(), base); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || decision != nil {
 		t.Fatal("dispatch accepted after source erasure during model call")
 	}
 }
@@ -372,10 +372,10 @@ func TestRetainedContext_CancelledAdmissionAndOversizedTerminal(t *testing.T) {
 	base := retainedBase("run", "bounds")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if r, err := runctx.BeginRetainedRun(ctx, store, redactor, base.Quadruple, 2, time.Hour, nil); !errors.Is(err, context.Canceled) || r != nil {
+	if r, err := sessionmemory.BeginRetainedRun(ctx, store, redactor, base.Quadruple, 2, time.Hour, nil); !errors.Is(err, context.Canceled) || r != nil {
 		t.Fatal("cancelled admission accepted")
 	}
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestRetainedContext_CancelledAdmissionAndOversizedTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.Trajectory.Steps = append(base.Trajectory.Steps, planner.Step{LLMObservation: strings.Repeat("x", 512*1024)})
-	if err = r.Finish(t.Context(), base.Trajectory, "request", "done", "complete"); !errors.Is(err, runctx.ErrRetainedContextCapacity) {
+	if err = r.Finish(t.Context(), base.Trajectory, "request", "done", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
 		t.Fatalf("oversized evidence clipped: %v", err)
 	}
 }
@@ -410,8 +410,8 @@ func TestRetainedContext_LegacyWindowIsRejectedWithoutMutation(t *testing.T) {
 	if err = store.Save(t.Context(), state.NewInternalRecord(state.NewEventID(), q, retainedKind, data)); err != nil {
 		t.Fatal(err)
 	}
-	run, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || run != nil {
+	run, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || run != nil {
 		t.Fatalf("incompatible private representation admitted: %v", err)
 	}
 	record, err := store.Load(t.Context(), q, retainedKind)
@@ -430,7 +430,7 @@ func TestRetainedContext_InvalidHistoricalBodyBlocksAdmission(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, driver)
 			base := retainedBase("first", "corrupt-history")
-			first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -471,7 +471,7 @@ func TestRetainedContext_InvalidHistoricalBodyBlocksAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			next := retainedBase("second", "corrupt-history")
-			if r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) || r != nil {
+			if r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 2, time.Hour, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || r != nil {
 				t.Fatalf("invalid history admitted: %v", err)
 			}
 		})

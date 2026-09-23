@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -21,7 +21,7 @@ func TestPostgres_RetainedContext_RejectsAmbiguousHostEncoding(t *testing.T) {
 		t.Run(replacement.to, func(t *testing.T) {
 			writer, reader, redactor := retainedPostgresStores(t)
 			base := retainedBase("source", "ambiguous-host")
-			r, err := runctx.BeginRetainedRun(t.Context(), writer, redactor, base.Quadruple, 4, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), writer, redactor, base.Quadruple, 4, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -52,7 +52,7 @@ func TestPostgres_RetainedContext_RejectsAmbiguousHostEncoding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := runctx.ReconcileRetainedRun(t.Context(), reader, redactor, base.Quadruple, 4, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+			if err := sessionmemory.ReconcileRetainedRun(t.Context(), reader, redactor, base.Quadruple, 4, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 				t.Fatalf("ambiguous journal accepted: %v", err)
 			}
 			after, err := writer.Load(t.Context(), session, kind)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -19,10 +20,10 @@ func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steerin
 	if d.retainedContextTurns == 0 || !root {
 		return d.runLoop.Run(ctx, spec)
 	}
-	if err := runctx.ValidateRetainedInputs(inputIDs, spec.Base.InputArtifacts); err != nil {
+	if err := sessionmemory.ValidateRetainedInputs(inputIDs, spec.Base.InputArtifacts); err != nil {
 		return planner.Finish{}, err
 	}
-	retained, err := runctx.BeginRetainedRun(ctx, d.stateStore, d.redactor, spec.Base.Quadruple, d.retainedContextTurns, d.retainedContextTTL, nil)
+	retained, err := sessionmemory.BeginRetainedRun(ctx, d.stateStore, d.redactor, spec.Base.Quadruple, d.retainedContextTurns, d.retainedContextTTL, nil)
 	if err != nil {
 		return planner.Finish{}, fmt.Errorf("serve: retained context admission: %w", err)
 	}

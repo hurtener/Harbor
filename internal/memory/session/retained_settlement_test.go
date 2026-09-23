@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"bytes"
@@ -12,8 +12,8 @@ import (
 
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
@@ -62,7 +62,7 @@ func TestRetainedJournal_PreparedSettlementPreservesValidation(t *testing.T) {
 			t.Run(driver+"/"+shape, func(t *testing.T) {
 				store, _, _ := retainedStore(t, driver)
 				base := retainedBase("source", "prepared-settlement")
-				run, err := runctx.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: shape}, base.Quadruple, 2, time.Hour, nil)
+				run, err := sessionmemory.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: shape}, base.Quadruple, 2, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -95,7 +95,7 @@ func TestRetainedJournal_PreparedSettlementPreservesValidation(t *testing.T) {
 					}
 					return
 				}
-				if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || strings.Contains(err.Error(), "PRIVATE-FAILURE") {
+				if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || strings.Contains(err.Error(), "PRIVATE-FAILURE") {
 					t.Fatalf("invalid settlement did not fail with a content-free error: %v", err)
 				}
 				if newHead.ID != head.ID || newFrame.ID != frame.ID || !bytes.Equal(newHead.Bytes, head.Bytes) || !bytes.Equal(newFrame.Bytes, frame.Bytes) {
@@ -120,7 +120,7 @@ func BenchmarkRetainedJournal_Settlement(b *testing.B) {
 	for i := 0; b.Loop(); i++ {
 		b.StopTimer()
 		base := retainedBase(fmt.Sprint(i), "settlement-benchmark")
-		run, err := runctx.BeginRetainedRun(b.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+		run, err := sessionmemory.BeginRetainedRun(b.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestRetainedJournal_RejectsAmbiguousIntentBeforeDispatch(t *testing.T) {
 			t.Run(driver+"/"+shape, func(t *testing.T) {
 				store, _, _ := retainedStore(t, driver)
 				base := retainedBase("source", "ambiguous-intent")
-				run, err := runctx.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: shape, intent: true}, base.Quadruple, 2, time.Hour, nil)
+				run, err := sessionmemory.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: shape, intent: true}, base.Quadruple, 2, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -166,7 +166,7 @@ func TestRetainedJournal_RejectsAmbiguousIntentBeforeDispatch(t *testing.T) {
 				}
 				head := loadHostRecord(t, store, base.Quadruple, journalHeadKind)
 				step := planner.Step{Action: planner.CallTool{Tool: "write", CallID: "write", Args: json.RawMessage(`{}`)}}
-				if err := run.BeforeDispatch(t.Context(), base, step); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+				if err := run.BeforeDispatch(t.Context(), base, step); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 					t.Fatalf("ambiguous intent admitted an external action: %v", err)
 				}
 				after := loadHostRecord(t, store, base.Quadruple, journalHeadKind)
@@ -186,7 +186,7 @@ func TestRetainedJournal_AllowsIntentContentRedaction(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, _, _ := retainedStore(t, driver)
 			base := retainedBase("source", "redacted-intent")
-			run, err := runctx.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: "changed args", intent: true}, base.Quadruple, 2, time.Hour, nil)
+			run, err := sessionmemory.BeginRetainedRun(t.Context(), store, settlementShapeRedactor{shape: "changed args", intent: true}, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

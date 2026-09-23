@@ -34,6 +34,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
@@ -263,7 +264,7 @@ func (s *Stack) RunOnce(
 		o(&cfg)
 	}
 	if memoryTurns < 0 || memoryTurns > config.MaxMemoryRecentTurns {
-		return planner.AnswerEnvelope{}, runctx.ErrRetainedContextCapacity
+		return planner.AnswerEnvelope{}, sessionmemory.ErrRetainedContextCapacity
 	}
 	// WithOutputSchema fails loud on a nil/empty schema at call time — a
 	// set-but-empty schema is a config mistake, never a silent no-op.
@@ -302,13 +303,13 @@ func (s *Stack) RunOnce(
 
 	memoryStore := s.Memory
 	recall := memory.RecallFromConfig(s.Cfg.Memory)
-	var retained *runctx.RetainedRun
+	var retained *sessionmemory.RetainedRun
 	if memoryTurns > 0 {
 		ttl := s.Cfg.Sessions.IdleTTL
 		if ttl <= 0 {
 			ttl = 24 * time.Hour
 		}
-		retained, err = runctx.BeginRetainedRun(runCtx, s.State, s.Redactor, q, memoryTurns, ttl, nil)
+		retained, err = sessionmemory.BeginRetainedRun(runCtx, s.State, s.Redactor, q, memoryTurns, ttl, nil)
 		if err != nil {
 			return planner.AnswerEnvelope{}, err
 		}
@@ -351,7 +352,7 @@ func (s *Stack) RunOnce(
 
 	retainedTrajectory = base.Trajectory
 	if retained != nil {
-		if err := runctx.ValidateRetainedInputs(cfg.inputArtifactIDs, base.InputArtifacts); err != nil {
+		if err := sessionmemory.ValidateRetainedInputs(cfg.inputArtifactIDs, base.InputArtifacts); err != nil {
 			return planner.AnswerEnvelope{}, err
 		}
 		if err := retained.Apply(&base); err != nil {

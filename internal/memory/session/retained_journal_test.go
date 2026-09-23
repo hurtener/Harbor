@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -23,7 +23,7 @@ func TestRetainedJournal_AtomicFramesAndTerminalCleanup(t *testing.T) {
 		t.Run(driver, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, driver)
 			base := retainedBase("first", "journal")
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,7 +56,7 @@ func TestRetainedJournal_AtomicFramesAndTerminalCleanup(t *testing.T) {
 			}
 			// Sibling admission does not import even committed in-flight frames.
 			sibling := retainedBase("sibling", "journal")
-			other, err := runctx.BeginRetainedRun(t.Context(), store, redactor, sibling.Quadruple, 2, time.Hour, nil)
+			other, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, sibling.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +82,7 @@ func TestRetainedJournal_AtomicFramesAndTerminalCleanup(t *testing.T) {
 func TestRetainedJournal_RestartDoesNotReplayPendingWrite(t *testing.T) {
 	store, redactor, cfg := retainedStore(t, "sqlite")
 	base := retainedBase("crashed", "s")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRetainedJournal_RestartDoesNotReplayPendingWrite(t *testing.T) {
 	if err != nil || !strings.Contains(string(head.Bytes), `"pending":true`) {
 		t.Fatalf("pending write lost on restart: %v", err)
 	}
-	if _, err = runctx.BeginRetainedRun(t.Context(), reopened, redactor, base.Quadruple, 2, time.Hour, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if _, err = sessionmemory.BeginRetainedRun(t.Context(), reopened, redactor, base.Quadruple, 2, time.Hour, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatal("cold restart silently reacquired active execution")
 	}
 }
@@ -119,7 +119,7 @@ func TestRetainedJournal_FailClosedBoundsAndIdentity(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			store, redactor, _ := retainedStore(t, "inmem")
 			base := retainedBase("r", scenario)
-			r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func TestRetainedJournal_SettledReceiptSurvivesStoreReopen(t *testing.T) {
 	}
 	defer func() { _ = durable.Close(context.Background()) }()
 	base := retainedBase("r", "settled")
-	r, err := runctx.BeginRetainedRun(t.Context(), durable, redactor, base.Quadruple, 2, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), durable, redactor, base.Quadruple, 2, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

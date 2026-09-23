@@ -31,7 +31,58 @@ No backward-compatibility layer is required. Long-term memory remains external.
       all three stores, failure/restart/isolation cases and actual requests.
 - [ ] Repeat matched real UI iteration across compaction boundaries.
 
-### Cumulative rollover core — implementation increment, not release acceptance
+### Cumulative owner relocation — implementation increment
+
+The execution-memory implementation and all 58 named retained-context tests now
+live in `internal/memory/session`, below runtime composition. Serving, embedding
+and explicit recovery call that same implementation directly. All seven moved
+production files are byte-identical to the previous head after the package-name
+change; no algorithm, storage format, public Protocol field, prompt, timeout or
+workload changed. Phase 269's smoke selectors include the new package, so the
+move does not silently omit those tests.
+
+This is a dependency-direction step toward D-477's single owner, not completion
+of the migration. The old pair-store/summary loop and its inspection, mutation
+and retrieval consumers still need retirement. No wrapper, second engine, new
+storage service, default flip, RC tag or deployment is introduced here. The
+unfinished hard-Stop edits remain separate from this increment.
+
+Coverage stays a release obligation: the relocated package inherits the
+strictest touched runctx target (92%). Moving code does not lower that target
+or exclude uncovered production branches. The remaining runctx package retains
+its own target. Historical measurements below retain their original paths and
+revisions; they are not new-package acceptance.
+
+Local evidence on isolated tree `1912a8862f7a8168d90429fd6338c1678aed717c`
+(Go 1.26.4, darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1`; no unfinished
+Stop edits):
+
+- `Retained|Cumulative|SessionMemory` selections pass in session memory,
+  embedded assembly (**97.895s**), serving (**16.904s**), state/PostgreSQL
+  (**2.193s**) and devstack. This includes the same 1,200 deterministic turns
+  across in-memory, SQLite and dedicated PostgreSQL 17.11, plus the independent
+  pool conformance checks. Test workloads, five-second production persistence
+  deadlines and assertions are unchanged; this pass does not resolve the
+  earlier intermittent concurrent-cleanup failure.
+- Full race suites pass for session memory (**84.9%** statements), runctx
+  (**92.1%**), devstack (**81.6%**), SDK assembly (**100%**) and the public sample
+  (**80.5%**). The relocated memory package is still below its target; no
+  denominator or target was reduced. No new served-package coverage is claimed.
+- Affected-package vet passes. Repository lint passes with **zero issues** using
+  a fresh dedicated cache. The first lint invocation reused diagnostic paths
+  from a retired temporary checkout and failed; it is not counted as a pass.
+  Markdown (599 files, zero errors), mirror and Phase 269 shell syntax pass.
+  The working-tree drift audit passes **1,592 OK / 0 WARN / 0 FAIL**; unfinished
+  Stop edits were present for that documentation/coherence check only.
+- The dedicated PostgreSQL instance was stopped after testing. No shared
+  database or deployment changed. The temporary source tree excludes all
+  unfinished hard-Stop changes.
+
+The published source differs from this tested tree only by this tracker
+receipt. Final-head hosted CI, complete release gates and real-model UI
+acceptance remain pending; waived local/web preflight is not green.
+
+### Previously published cumulative rollover core
 
 The second increment replaces count eviction with conditional cumulative
 publication in the existing StateStore slot. A checkpoint records one generation,

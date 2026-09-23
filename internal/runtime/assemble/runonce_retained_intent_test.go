@@ -8,8 +8,8 @@ import (
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 )
 
 type ambiguousIntentRedactor struct{ inner audit.Redactor }
@@ -60,7 +60,7 @@ func TestRunOnce_RetainedJournalRejectsAmbiguousIntentBeforeTool(t *testing.T) {
 	defer func() { stack.Redactor = original }()
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "intent-validation"}
 	_, err := stack.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"))
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("malformed intent was not rejected: %v", err)
 	}
 	if got := calls.Load(); got != 0 {
@@ -76,7 +76,7 @@ func TestRunOnce_RetainedJournalRejectsChangedIntentIdentityBeforeTool(t *testin
 	defer func() { stack.Redactor = original }()
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "intent-identity"}
 	_, err := stack.RunOnce(t.Context(), "read", id, assemble.WithRunID("first"))
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 		t.Fatalf("changed intent identity was not rejected: %v", err)
 	}
 	if got := calls.Load(); got != 0 {

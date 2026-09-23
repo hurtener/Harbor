@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -23,7 +23,7 @@ func TestRetainedRecovery_AmbiguousHostEncoding(t *testing.T) {
 			t.Run(driver+"/"+scenario, func(t *testing.T) {
 				store, redactor, _ := retainedStore(t, driver)
 				base := retainedBase("source", "ambiguous")
-				r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+				r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -79,7 +79,7 @@ func TestRetainedRecovery_AmbiguousHostEncoding(t *testing.T) {
 				}
 				replaceHostRecord(t, store, head)
 				before := loadHostRecord(t, store, session, retainedKind)
-				if err := runctx.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); !errors.Is(err, runctx.ErrRetainedContextUnavailable) {
+				if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, nil); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
 					t.Errorf("ambiguous durable authority accepted: %v", err)
 				}
 				after := loadHostRecord(t, store, session, retainedKind)
@@ -110,7 +110,7 @@ func replaceHostRecord(t *testing.T, store state.StateStore, record state.StateR
 func TestRetainedContext_OpaqueResultKeysRemainData(t *testing.T) {
 	store, redactor, _ := retainedStore(t, "inmem")
 	base := retainedBase("source", "opaque")
-	r, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
+	r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestRetainedContext_OpaqueResultKeysRemainData(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := retainedBase("next", "opaque")
-	r, err = runctx.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
+	r, err = sessionmemory.BeginRetainedRun(t.Context(), store, redactor, next.Quadruple, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

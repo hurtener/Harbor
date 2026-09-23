@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
@@ -56,7 +57,7 @@ func retainedLargeResult(t *testing.T) (*assemble.Stack, identity.Identity, stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	retained, err := runctx.BeginRetainedRun(ctx, s.State, s.Redactor, q, 4, time.Hour, nil)
+	retained, err := sessionmemory.BeginRetainedRun(ctx, s.State, s.Redactor, q, 4, time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestRunOnce_RetainedResults_DeletedBlobCannotReachInference(t *testing.T) {
 		return llm.CompleteResponse{Content: "must not see stale source"}, nil
 	}})
 	_, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("deleted"))
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || modelCalls != 0 {
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || modelCalls != 0 {
 		t.Fatalf("deleted evidence accepted: calls=%d err=%v", modelCalls, err)
 	}
 }
@@ -186,7 +187,7 @@ func TestRunOnce_RetainedResults_DeletionDuringInferenceFencesDispatch(t *testin
 		return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: "write-after-delete", Name: "large_read", Args: json.RawMessage(`{}`)}}}, nil
 	}})
 	_, err := s.RunOnce(t.Context(), "continue", id, assemble.WithRunID("deleted-during"))
-	if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || modelCalls != 1 || calls.Load() != 1 {
+	if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || modelCalls != 1 || calls.Load() != 1 {
 		t.Fatalf("deleted evidence permitted dispatch: calls=%d tools=%d err=%v", modelCalls, calls.Load(), err)
 	}
 }

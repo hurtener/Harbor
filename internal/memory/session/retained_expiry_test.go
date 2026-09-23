@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
 )
 
 // An admitted run's frozen historical view is not an unlimited extension of
@@ -23,7 +23,7 @@ func TestRetainedContext_ExpiredFrozenSource(t *testing.T) {
 			now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 			clock := func() time.Time { return now }
 			old := retainedBase("old", "expiry")
-			first, err := runctx.BeginRetainedRun(t.Context(), store, redactor, old.Quadruple, 4, time.Minute, clock)
+			first, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, old.Quadruple, 4, time.Minute, clock)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -35,7 +35,7 @@ func TestRetainedContext_ExpiredFrozenSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			base := retainedBase("next", "expiry")
-			second, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Minute, clock)
+			second, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 4, time.Minute, clock)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -54,7 +54,7 @@ func TestRetainedContext_ExpiredFrozenSource(t *testing.T) {
 				now = now.Add(time.Minute)
 			}
 			decision, err := guarded.Next(t.Context(), base)
-			if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || decision != nil || called != during {
+			if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || decision != nil || called != during {
 				t.Fatalf("expired source remained actionable: decision=%v error=%v called=%t", decision, err, called)
 			}
 		})

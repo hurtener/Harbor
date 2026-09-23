@@ -1,4 +1,4 @@
-package runctx_test
+package session_test
 
 import (
 	"encoding/json"
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/runtime/runctx"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -43,8 +43,8 @@ func TestRetainedContext_LegacyEvidenceValidation(t *testing.T) {
 					if err = store.Save(t.Context(), record); err != nil {
 						t.Fatal(err)
 					}
-					run, err := runctx.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
-					if !errors.Is(err, runctx.ErrRetainedContextUnavailable) || run != nil {
+					run, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+					if !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) || run != nil {
 						t.Fatalf("unsafe legacy evidence admitted: %v", err)
 					}
 					if strings.Contains(err.Error(), "PRIVATE") {
