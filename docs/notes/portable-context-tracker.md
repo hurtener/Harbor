@@ -1,5 +1,64 @@
 # Portable session context implementation tracker
 
+## RC9 live compaction checkpoint — 2026-09-23
+
+Published implementation `ae4ca9a9565b99773a545787c4a12675ed37804a` is tagged
+`v1.32.0-rc.9` (annotated object
+`b57b9938082b3707ddef2a52eca8e350ee452729`). Public module provenance resolves
+that exact commit, with zip checksum
+`h1:UgxQLfHTREd6ugDnWBIxaFC9xdU/ySLGMcrJhuVNmXI=`. Release workflow
+`35924027479` succeeded; native Darwin ARM64 checksum, GitHub provenance
+attestation and version stamp verify. Full implementation CI `35923980566`
+still had both Go platforms running at the latest observation; the other
+thirteen completed jobs passed. This is not final main-release acceptance.
+
+The isolated consumer reports RC9 and the exact implementation through
+Protocol. The original long session resumed with its separate governed
+maintenance route and unchanged YAML 64000-token working-input budget.
+Task `01M3847DRXJMW4MV2KV0XC3QQ6` finished complete at 21:56:13 UTC, advancing
+the same saved UI project from revision 14 to 15. It used Read/Edit/Show and
+one unwanted, rejected Create; no exact-action replay was authorized.
+
+Provider telemetry independently confirms the maintenance call succeeded:
+`gen-1790200506-11Phiz4XxtX9V7r9vMVC`, resolved model
+`inception/mercury-2.5-20260908`, 93304 native input tokens, 1921 native output
+tokens (1540 reasoning), `finish_reason: stop`, 8826ms generation time,
+cost 0.00402031 USD. The driving model remained Terra High. Provider-native
+input tokenization differs from the estimator; this measurement is not the
+size of the subsequent compacted planner input or a cache-savings benchmark.
+
+Transcript projection remains a separate concern: the failed RC8 turn was
+absent on reload at 21:30 UTC but present at 21:52 UTC, before RC9 deployment.
+The completed RC9 turn was again temporarily absent on reload, despite the
+confirmed terminal task and saved edit. Eventual projection is not permanent
+memory loss, but exact catch-up latency/cause and clean reopen acceptance are
+not established. Do not replay a saved edit to repair its presentation.
+
+The next, read-only recall turn disproves repeatable acceptance. Task
+`01M384F9CV5BJVR80FJW24KXE7` failed at 21:59:45 UTC with
+`summarizer: incomplete trajectory summary`, followed by a retained terminal
+capacity refusal. Generation `gen-1790200772-O9TgSqkFs4q4RFaDEzUD` reports
+97111 native input tokens, 2036 output tokens and `finish_reason: length`.
+No tools were dispatched; the requested recall answer was not produced.
+
+Source inspection identifies a fixed 2048-token maintenance completion default
+in `internal/llm/summarizer/trajectory.go`. Its existing constructor option is
+not exposed by `MemorySummarizerConfig` or wired by assembly, so deployment YAML
+cannot adjust that allowance. This is distinct from the configurable 64000
+working-input target and the removed 512 KiB evidence ceiling. A truncated
+summary must remain rejected. The detailed-window rollover deliberately refuses
+to discard an oldest turn without complete summary coverage, which reproduces
+the subsequent capacity-failure class while preserving the prior record/journal.
+The precise live refusal branch is not instrumented and is not claimed proven.
+
+Next narrow repair: expose the existing maintenance-output option through
+validated YAML/environment configuration and the production assembly seam;
+preserve the omitted default and test actual routed requests and truncation
+refusal. Select the test deployment's larger allowance in configuration, not a
+new framework constant. Separately verify failure recovery/checkpoint reuse and
+transcript catch-up. No reasoning-policy, prompt, authority, baseline or storage
+change is authorized merely by this diagnosis.
+
 ## Live independent-model schema repair — 2026-09-23
 
 RC8 (`be1a794b554b4f716d4e2f739744a3a0b3109edd`) is published and the isolated
@@ -29,7 +88,9 @@ Go 1.27.1 verification on this repair tree passes: canonical
 `GOFLAGS=-p=1 go test -race ./internal/llm/... -count=1`, the focused assembled
 independent-route HTTP regression, scoped `go vet`, and golangci-lint 2.13.2
 (zero issues). Canonical Bifrost race/coverage execution measures **82.3%**,
-above its Phase 33 **80%** floor. Changed Markdown and diff checks pass.
+above the historical Phase 33 **80%** floor but below the later binding
+Phase 233c **90%** target. This remains a main-release coverage gap.
+Changed Markdown and diff checks pass.
 The new schema-envelope regression fails on RC8 before the repair.
 
 A new deployed continuation is still pending. RC8's Linux/macOS full CI jobs
