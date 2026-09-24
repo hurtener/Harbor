@@ -142,7 +142,7 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "web/console/ absent — SKIP"
           fi
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.detect.outputs.present == 'true'
         with:
           node-version: 'lts/*'
@@ -198,7 +198,7 @@ jobs:
         with:
           go-version: '1.27.1'
           check-latest: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.detect.outputs.present == 'true'
         with:
           node-version: 'lts/*'
