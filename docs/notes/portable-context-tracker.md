@@ -1,5 +1,60 @@
 # Portable session context implementation tracker
 
+## Explicit presentation and observed UI repair — 2026-09-24
+
+The unchanged RC11 sample continued the same fresh session through thirteen
+settled turns (eleven completed, two deliberately stopped). A discovery-only
+probe, `01M38DJENP7RBZW8A7JRKQX4HB`, completed at 00:39:14 UTC: Tool Search
+returned five other entries; exact Tool Get found the Show tool with required
+string `path`, optional integer `version`, and the current open-without-editing
+description. No project operation was requested or performed in that probe.
+This establishes live discoverability, not the cause of the earlier loop.
+
+An explicit single Show turn, `01M38DPM5KMPW6R0HFH1ZTC30H`, completed at
+00:41:10 UTC and opened version 7 without Create/Read/Edit/Write. The browser
+rendered the correct heading, time, teal resolved state, filters and exact
+receipt. Moving it to the side panel completed without a stuck loading state.
+Selection and an entered note survived filtering. Direct interaction found
+that the generated `Request cover` button did not react; this was not accepted
+on the model's earlier success claim.
+
+Feedback to the same agent produced Read, Edit, then Show in one turn, with
+no Create calls. Task `01M38DVRMG9RWKAPBWC4AX7RKN` completed at 00:44:36 UTC,
+opening version 8 of the same project. The repair tolerates unavailable browser
+storage. The browser verified that one click shows `Cover requested locally`
+and disables the button; the exact receipt remains intact. Selection, a new
+note, filter text and the disabled state survive moving the live app into chat
+and back to the side panel, without reloading it. This is successful iterative
+repair and presentation after rollover, not merely a saved-code claim.
+
+The generated filtered-export button reports success but no download arrives.
+The capability's preview intentionally uses an opaque-origin, script-only
+sandbox with no downloads or browser storage; its ordinary export mechanism
+lives outside that preview. This capability/prototype limitation is recorded
+separately, not fixed by weakening isolation or by changing Harbor memory.
+No runtime/capability source, agent guidance, model route or live configuration
+was changed during these tests. No automatic Create-to-Show substitution was
+introduced. The earlier autonomous Create loop remains unexplained; exact
+discovery and explicit invocation succeeding do not retrospectively fix it.
+
+Read-only final state: thirteen admissions, eight recent turns, four older
+exact-evidence entries, compacted-through admission 5, a valid checkpoint and
+zero active admissions (250,828 bytes). No fresh capacity refusal occurred.
+The sample is idle. These results extend the bounded memory acceptance below;
+they do not waive coverage, hosted reliability or main-release gates.
+
+On exact code head `8baf41a9`, the two unchanged embedded N=128 roots
+`TestRunOnce_RetainedContextConcurrentReuse` and
+`TestRunOnce_RetainedSteering_SharedStackIsolation` pass together under race
+with `GOMAXPROCS=2`, `GOFLAGS=-p=1`, count 1 (12.007s including profiler
+overhead). The same race-built binary at `GOMAXPROCS=1`, count 1, fails the
+steering root at dispatch settlement with the existing five-second deadline.
+That is a controlled CPU-pressure reproduction, not the exact earlier hosted
+cleanup branch. The two-root allocation profile samples approximately 1.3 GiB,
+with JSON decoder buffering and redaction among the large costs. No production
+deadline, workload, assertion, race setting or storage guard was changed.
+The profiles are local temporary artifacts, not committed build products.
+
 ## Fresh-session rollover and matched recall — 2026-09-24
 
 On unchanged deployed RC11 implementation `548d25c0`, the fresh Cedar Dispatch
