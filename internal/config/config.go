@@ -30,14 +30,17 @@ import (
 
 // Config is the root configuration. It is immutable after Load.
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	Identity    IdentityConfig    `yaml:"identity"`
-	Telemetry   TelemetryConfig   `yaml:"telemetry"`
-	Postgres    PostgresConfig    `yaml:"postgres,omitempty"`
-	State       StateConfig       `yaml:"state"`
-	LLM         LLMConfig         `yaml:"llm"`
-	Governance  GovernanceConfig  `yaml:"governance"`
-	Distributed DistributedConfig `yaml:"distributed,omitempty"`
+	Server    ServerConfig    `yaml:"server"`
+	Identity  IdentityConfig  `yaml:"identity"`
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+	Postgres  PostgresConfig  `yaml:"postgres,omitempty"`
+	State     StateConfig     `yaml:"state"`
+	// ConfigurationState optionally separates agent configuration and lifecycle
+	// records from execution state. Omission reuses State; restart-required.
+	ConfigurationState StateConfig       `yaml:"configuration_state,omitempty"`
+	LLM                LLMConfig         `yaml:"llm"`
+	Governance         GovernanceConfig  `yaml:"governance"`
+	Distributed        DistributedConfig `yaml:"distributed,omitempty"`
 
 	// Reserved slots for future phases — owning phase fills the body.
 	Runtime   RuntimeConfig   `yaml:"runtime,omitempty"`   // owned by runtime/* phases

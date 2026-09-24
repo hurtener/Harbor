@@ -254,8 +254,9 @@ type CascadeEraser struct {
 	// persists without erasing rows; DeleteScope erases them while the
 	// permanent fence survives). The HA-65 rollup seam erases rows AND
 	// fences in FenceSession alone.
-	turnsProjection   TurnsProjectionEraser
-	rollupsProjection ProjectionFencer
+	turnsProjection    TurnsProjectionEraser
+	rollupsProjection  ProjectionFencer
+	configurationState state.StateStore
 
 	// eraseLocks stripes a fixed-size array of mutexes over the
 	// (tenant, user, session) key so concurrent Erase calls for the SAME
@@ -299,6 +300,10 @@ type CascadeEraserDeps struct {
 	// erases rows and fences in one transaction.
 	TurnsProjection   TurnsProjectionEraser
 	RollupsProjection ProjectionFencer
+	// ConfigurationState is set only when configuration uses a separate store.
+	// Session-specific settings are fenced and erased there too; agent-level
+	// settings are outside the erased session scope and remain intact.
+	ConfigurationState state.StateStore
 }
 
 // ErrEraserMisconfigured — NewCascadeEraser was called with a missing
@@ -353,8 +358,9 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 		clock:    clock,
 		logger:   logger,
 
-		turnsProjection:   deps.TurnsProjection,
-		rollupsProjection: deps.RollupsProjection,
+		turnsProjection:    deps.TurnsProjection,
+		rollupsProjection:  deps.RollupsProjection,
+		configurationState: deps.ConfigurationState,
 	}, nil
 }
 
@@ -568,6 +574,9 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 			return zero, fmt.Errorf("sessions: erase rollups projection fence: %w", err)
 		}
 	}
+	if err := e.eraseConfiguration(ctx, id); err != nil {
+		return zero, err
+	}
 
 	// 3. Artifacts — checkpoint immediately so an interruption before the
 	//    next step never loses this attempt's contribution (#410).
@@ -670,6 +679,9 @@ func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Ide
 // gone but a ledger checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
+	if err := e.eraseConfiguration(ctx, id); err != nil {
+		return zero, err
+	}
 	// Scope deletion can succeed before its ledger checkpoint is saved. On
 	// convergence, repeat the idempotent clear while the pending ledger still
 	// fences writes; do not infer a successful memory purge from a missing
@@ -1038,6 +1050,25 @@ func tombstoneKind(sessionID string) string {
 // same-EventID write. Called from completeErasure BEFORE deleteLedger, and its
 // failure fails the erasure loud (never proceeding to deleteLedger).
 func (e *CascadeEraser) saveTombstone(ctx context.Context, id identity.Identity, resp prototypes.SessionsDeleteResponse) error {
+	return e.saveTombstoneTo(ctx, e.state, id, resp)
+}
+
+func (e *CascadeEraser) eraseConfiguration(ctx context.Context, id identity.Identity) error {
+	if e.configurationState == nil {
+		return nil
+	}
+	// Store-local conditional writes observe this permanent, content-free
+	// fence. Deletion is idempotent and never removes the fence itself.
+	if err := e.saveTombstoneTo(ctx, e.configurationState, id, prototypes.SessionsDeleteResponse{}); err != nil {
+		return fmt.Errorf("sessions: erase configuration fence: %w", err)
+	}
+	if _, err := e.configurationState.DeleteScope(ctx, id); err != nil {
+		return fmt.Errorf("sessions: erase configuration scope: %w", err)
+	}
+	return nil
+}
+
+func (e *CascadeEraser) saveTombstoneTo(ctx context.Context, store state.StateStore, id identity.Identity, resp prototypes.SessionsDeleteResponse) error {
 	rec := erasureTombstoneRecord{
 		SessionID:           id.SessionID,
 		StateRecordsDeleted: resp.StateRecordsDeleted,
@@ -1049,7 +1080,7 @@ func (e *CascadeEraser) saveTombstone(ctx context.Context, id identity.Identity,
 	if err != nil {
 		return fmt.Errorf("marshal erasure tombstone: %w", err)
 	}
-	return e.state.Save(ctx, state.StateRecord{
+	return store.Save(ctx, state.StateRecord{
 		ID:       state.NewEventID(),
 		Identity: ledgerScope(id),
 		Kind:     tombstoneKind(id.SessionID),

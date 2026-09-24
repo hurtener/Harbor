@@ -224,14 +224,17 @@ type Stack struct {
 	// Redactor / State / Bus / Metrics / Artifacts / Tasks / Sessions /
 	// Agents are always non-nil after a successful Assemble — the
 	// runtime's load-bearing core.
-	Redactor  audit.Redactor
-	State     state.StateStore
-	Bus       events.EventBus
-	Metrics   *telemetry.MetricsRegistry
-	Artifacts artifacts.ArtifactStore
-	Tasks     tasks.TaskRegistry
-	Sessions  *sessions.Registry
-	Agents    *agentregistry.Registry
+	Redactor audit.Redactor
+	State    state.StateStore
+	// ConfigurationState owns agent configuration, not execution history.
+	// It aliases State unless a separate configuration_state is configured.
+	ConfigurationState state.StateStore
+	Bus                events.EventBus
+	Metrics            *telemetry.MetricsRegistry
+	Artifacts          artifacts.ArtifactStore
+	Tasks              tasks.TaskRegistry
+	Sessions           *sessions.Registry
+	Agents             *agentregistry.Registry
 
 	// PostgresPools is the runtime-owned aggregate pool manager. PostgreSQL
 	// stores borrow its handles and the manager closes physical pools exactly
@@ -416,6 +419,21 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 	stack.State = stateStore
 	stack.closers = append(stack.closers, stateStore.Close)
+	stack.ConfigurationState = stateStore
+	if cfg.ConfigurationState.Driver != "" &&
+		(cfg.ConfigurationState.Driver != cfg.State.Driver || cfg.ConfigurationState.DSN != cfg.State.DSN) {
+		var configurationStore state.StateStore
+		if cfg.ConfigurationState.Driver == "postgres" {
+			configurationStore, err = postgresRuntime.State(ctx, cfg.ConfigurationState)
+		} else {
+			configurationStore, err = state.Open(ctx, cfg.ConfigurationState)
+		}
+		if err != nil {
+			return stack, fmt.Errorf("configuration_state: %w", err)
+		}
+		stack.ConfigurationState = configurationStore
+		stack.closers = append(stack.closers, configurationStore.Close)
+	}
 
 	bus, err := events.OpenWith(ctx, cfg.Events, red, events.Deps{State: stateStore})
 	if err != nil {
@@ -741,9 +759,9 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 
 	// the Agent Registry — the per-runtime-instance
 	// subsystem owning agent registration identity,
-	// persisted through the same StateStore as the rest of the runtime.
+	// persisted through the configuration StateStore.
 	agentRegistry, err := agentregistry.New(agentregistry.Deps{
-		Store:    stateStore,
+		Store:    stack.ConfigurationState,
 		Bus:      bus,
 		Redactor: red,
 	})

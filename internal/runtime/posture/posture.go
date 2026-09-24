@@ -391,6 +391,9 @@ func DriversFromConfig(cfg *config.Config) []types.SubsystemDriver {
 	out := []types.SubsystemDriver{
 		{Subsystem: "state", Driver: cfg.State.Driver},
 	}
+	if cfg.ConfigurationState.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "configuration_state", Driver: cfg.ConfigurationState.Driver})
+	}
 	if cfg.Artifacts.Driver != "" {
 		out = append(out, types.SubsystemDriver{Subsystem: "artifacts", Driver: cfg.Artifacts.Driver})
 	}

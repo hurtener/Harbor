@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.32.1] — 2026-09-24
+
+### Fixed
+
+- Optional `configuration_state` persistence keeps agent settings and lifecycle
+  records across restarts without making conversations durable. Existing
+  deployments retain the shared-store default. Session deletion fences and
+  removes separately stored session settings; cross-tenant isolation and
+  conditional lifecycle writes are preserved. No Protocol changes.
+
 ## [1.32.0] — 2026-09-24
 
 ### Added

@@ -685,7 +685,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 	var setPosturePolicy *governance.SetPosturePolicy
 	var bootLifecycleEnsurer agentcfg.BootLifecycleEnsurer
 	if core.State != nil {
-		reg, regErr := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: core.State, Bus: bus})
+		reg, regErr := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: core.ConfigurationState, Bus: bus})
 		if regErr != nil {
 			return stack, fmt.Errorf("agent-config registry: %w", regErr)
 		}
@@ -698,18 +698,18 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		// empty first revision only when that slot is truly absent. Existing
 		// slots are deliberately untouched: in particular a terminal tombstone
 		// must remain terminal across a reconstructed stack.
-		if lifecycleErr := serve.EnsureBootAgentLifecycle(ctx, core.State, reg, resolveDevIdentity(opts), devAgentConfigID); lifecycleErr != nil {
+		if lifecycleErr := serve.EnsureBootAgentLifecycle(ctx, core.ConfigurationState, reg, resolveDevIdentity(opts), devAgentConfigID); lifecycleErr != nil {
 			return stack, fmt.Errorf("devstack synthetic agent lifecycle: %w", lifecycleErr)
 		}
 		bootLifecycleEnsurer = func(runCtx context.Context, id identity.Identity, agentID string) error {
-			return serve.EnsureBootAgentLifecycle(runCtx, core.State, reg, id, agentID)
+			return serve.EnsureBootAgentLifecycle(runCtx, core.ConfigurationState, reg, id, agentID)
 		}
 
 		// The SESSION-scoped safe-subset overlay store (the non-admin lower
 		// tier) reuses the SAME StateStore for session-keyed identity
 		// isolation. Shared with the run-loop driver (run-start composition)
 		// and the mounted session-safe `agent_config.session.*` service.
-		ovStore, ovErr := sessionoverlay.NewStore(core.State, nil)
+		ovStore, ovErr := sessionoverlay.NewStore(core.ConfigurationState, nil)
 		if ovErr != nil {
 			return stack, fmt.Errorf("agent-config session-overlay store: %w", ovErr)
 		}
@@ -718,7 +718,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		if stack.Skills != nil {
 			authority, authorityErr := serve.NewSessionPersonalSkillAuthority(
 				ctx,
-				core.State,
+				core.ConfigurationState,
 				stack.Skills,
 				cfg.Skills.SessionPersonalCutover.Tenants,
 			)
@@ -1258,6 +1258,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			MCPRegistry:                    stack.MCPRegistry,
 			MCPToolContext:                 stack.MCPToolContext,
 			State:                          stack.State,
+			ConfigurationState:             core.ConfigurationState,
 			Skills:                         stack.Skills,
 			AgentPackLLM:                   stack.LLMClient,
 			AgentConfig:                    stack.AgentConfig,

@@ -133,6 +133,24 @@ state:
   dsn: /tmp/harbor-validation/my-agent-state.sqlite   # WAL trap caveat applies
 ```
 
+### `configuration_state` (optional)
+
+Use this when agent settings must survive restart but conversations must not.
+Omitting it keeps the existing shared `state` behavior. It accepts the same
+`driver`, secret `dsn` and PostgreSQL `migration_mode` as `state`; environment
+overrides are `HARBOR_CONFIGURATION_STATE_DRIVER`,
+`HARBOR_CONFIGURATION_STATE_DSN` and
+`HARBOR_CONFIGURATION_STATE_MIGRATION_MODE`.
+
+Keep `state.driver: inmem` and the other conversation stores ephemeral, then
+select a persistent `configuration_state` driver. Agent revisions, lifecycle,
+configuration journals and explicitly saved session settings use that store;
+messages, summaries and tool history do not. Do not claim that this disables
+independently configured durable events, artifacts or external memory tools.
+Apply PostgreSQL migrations on a direct endpoint before using `verify` with a
+transaction pool. Switching stores requires an explicit configuration restore;
+there is no automatic copying or recovery of lost in-memory settings.
+
 ### `tools`
 
 Three sources: `built_in` (tools shipped in the harbor binary; opt-in by name), `mcp_servers` (MCP southbound subprocesses Harbor spawns at boot), and `http_manifests` (UTCP-style YAML manifests describing HTTP endpoints as tools, loaded at boot — see `docs/CONFIG.md` › `tools.http_manifests`; `tools.entries[]` OAuth/approval/loading bindings apply to manifest tools by name like any other).

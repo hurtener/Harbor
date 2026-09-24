@@ -50,6 +50,7 @@ type Subsystem string
 
 const (
 	SubsystemState                Subsystem = "state"
+	SubsystemConfigurationState   Subsystem = "configuration_state"
 	SubsystemMemory               Subsystem = "memory"
 	SubsystemArtifacts            Subsystem = "artifacts"
 	SubsystemSkills               Subsystem = "skills"
@@ -59,6 +60,7 @@ const (
 
 var allSubsystems = [...]Subsystem{
 	SubsystemState,
+	SubsystemConfigurationState,
 	SubsystemMemory,
 	SubsystemArtifacts,
 	SubsystemSkills,
@@ -85,6 +87,8 @@ func PoolSpecs(cfg *config.Config) []postgrespool.Spec {
 		switch subsystem {
 		case SubsystemState:
 			driver, dsn = cfg.State.Driver, cfg.State.DSN
+		case SubsystemConfigurationState:
+			driver, dsn = cfg.ConfigurationState.Driver, cfg.ConfigurationState.DSN
 		case SubsystemMemory:
 			driver, dsn = cfg.Memory.Driver, cfg.Memory.DSN
 		case SubsystemArtifacts:

@@ -692,26 +692,26 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 
 	// The agent-config control plane registry, keyed by the dev agent's
-	// registration id, over the runtime StateStore.
+	// registration id, over the configuration StateStore.
 	const devAgentConfigID = "harbor-dev-agent"
-	agentConfigRegistry, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: stack.State, Bus: bus})
+	agentConfigRegistry, err := agentcfg.Open(ctx, agentcfg.Config{}, agentcfg.Deps{State: stack.ConfigurationState, Bus: bus})
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("agent-config registry: %w", err)
 	}
 	closers = append(closers, agentConfigRegistry.Close)
-	if lifecycleErr := EnsureBootAgentLifecycle(ctx, stack.State, agentConfigRegistry,
+	if lifecycleErr := EnsureBootAgentLifecycle(ctx, stack.ConfigurationState, agentConfigRegistry,
 		resolveMCPAttachIdentity(opts.MCPDefaultIdentity), devAgentConfigID); lifecycleErr != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("boot agent lifecycle: %w", lifecycleErr)
 	}
 	bootLifecycleEnsurer := agentcfg.BootLifecycleEnsurer(func(runCtx context.Context, id identity.Identity, agentID string) error {
-		return EnsureBootAgentLifecycle(runCtx, stack.State, agentConfigRegistry, id, agentID)
+		return EnsureBootAgentLifecycle(runCtx, stack.ConfigurationState, agentConfigRegistry, id, agentID)
 	})
 	runSnapshots := runsnapshot.NewGate()
 
 	// The session-scoped safe-subset overlay store (the non-admin lower tier).
-	sessionOverlayStore, err := sessionoverlay.NewStore(stack.State, nil)
+	sessionOverlayStore, err := sessionoverlay.NewStore(stack.ConfigurationState, nil)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("agent-config session-overlay store: %w", err)
@@ -721,7 +721,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if skillStore != nil {
 		sessionPersonalAuthority, err = NewSessionPersonalSkillAuthority(
 			ctx,
-			stack.State,
+			stack.ConfigurationState,
 			skillStore,
 			cfg.Skills.SessionPersonalCutover.Tenants,
 		)
@@ -1106,7 +1106,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			closeAll(ctx)
 			return nil, fmt.Errorf("signed oauth mcp capability recovery: %w", agentcfgprotocol.ErrSignedCapabilityUnavailable)
 		}
-		concreteReconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(agentConfigRegistry, stack.State, preparer, detacher, providers)
+		concreteReconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(agentConfigRegistry, stack.ConfigurationState, preparer, detacher, providers)
 		if err != nil {
 			closeAll(ctx)
 			return nil, fmt.Errorf("signed oauth mcp capability recovery: %w", err)
@@ -1281,6 +1281,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		MCPToolContext:                 mcpToolContext,
 		SourceAuthorizer:               sourceAuthorizer,
 		State:                          stack.State,
+		ConfigurationState:             stack.ConfigurationState,
 		Skills:                         skillStore,
 		AgentPackLLM:                   stack.LLM,
 		AgentConfig:                    agentConfigRegistry,

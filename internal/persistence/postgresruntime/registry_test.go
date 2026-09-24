@@ -13,9 +13,10 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 )
 
-func TestPostgresRegistry_EnumeratesAllSixStores(t *testing.T) {
+func TestPostgresRegistry_EnumeratesAllStoreBindings(t *testing.T) {
 	want := []Subsystem{
 		SubsystemState,
+		SubsystemConfigurationState,
 		SubsystemMemory,
 		SubsystemArtifacts,
 		SubsystemSkills,
@@ -35,12 +36,13 @@ func TestPostgresRegistry_EnumeratesAllSixStores(t *testing.T) {
 
 func TestPostgresRegistry_IncludesEveryEnabledProjection(t *testing.T) {
 	cfg := &config.Config{
-		State:         config.StateConfig{Driver: "postgres", DSN: "state"},
-		Memory:        config.MemoryConfig{Driver: "postgres", DSN: "memory"},
-		Artifacts:     config.ArtifactsConfig{Driver: "postgres", DSN: "artifacts"},
-		Skills:        config.SkillsConfig{Driver: "postgres", DSN: "skills"},
-		Sessions:      config.SessionsConfig{Turns: config.TurnsConfig{Driver: "postgres", DSN: "turns"}},
-		Observability: config.ObservabilityConfig{Rollups: config.RollupsConfig{Driver: "postgres", DSN: "rollups"}},
+		State:              config.StateConfig{Driver: "postgres", DSN: "state"},
+		ConfigurationState: config.StateConfig{Driver: "postgres", DSN: "configuration"},
+		Memory:             config.MemoryConfig{Driver: "postgres", DSN: "memory"},
+		Artifacts:          config.ArtifactsConfig{Driver: "postgres", DSN: "artifacts"},
+		Skills:             config.SkillsConfig{Driver: "postgres", DSN: "skills"},
+		Sessions:           config.SessionsConfig{Turns: config.TurnsConfig{Driver: "postgres", DSN: "turns"}},
+		Observability:      config.ObservabilityConfig{Rollups: config.RollupsConfig{Driver: "postgres", DSN: "rollups"}},
 	}
 	got := PoolSpecs(cfg)
 	if len(got) != len(ManagedSubsystems()) {

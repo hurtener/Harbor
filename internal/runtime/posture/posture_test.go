@@ -19,6 +19,18 @@ import (
 // TestCountersProvider_NilDeps_ReportsZeros asserts the Counters seam
 // does not panic when a dependency is nil — it reports zeros for the
 // missing subsystem rather than crashing the posture request.
+func TestDriversFromConfig_SeparateConfigurationState(t *testing.T) {
+	cfg := &config.Config{State: config.StateConfig{Driver: "inmem"}}
+	if got := DriversFromConfig(cfg); len(got) != 1 || got[0].Driver != "inmem" {
+		t.Fatalf("legacy storage posture changed: %+v", got)
+	}
+	cfg.ConfigurationState = config.StateConfig{Driver: "postgres", DSN: "secret-fixture"}
+	got := DriversFromConfig(cfg)
+	if len(got) != 2 || got[1].Subsystem != "configuration_state" || got[1].Driver != "postgres" {
+		t.Fatalf("separate configuration storage not reported: %+v", got)
+	}
+}
+
 func TestCountersProvider_NilDeps_ReportsZeros(t *testing.T) {
 	provider := CountersProvider(nil, nil, nil)
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
