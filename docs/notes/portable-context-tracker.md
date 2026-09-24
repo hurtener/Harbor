@@ -1,5 +1,58 @@
 # Portable session context implementation tracker
 
+## Fresh-session rollover and matched recall — 2026-09-24
+
+On unchanged deployed RC11 implementation `548d25c0`, the fresh Cedar Dispatch
+session `sess-89ba1de2-1712-4807-8891-da2c8e2d4cd1` now has ten settled turns:
+eight completed and the two previously documented, deliberately stopped turns.
+No database cleanup, backward-session repair, prompt change, quota change or
+model-route change was made. The owner-waived old session remains untouched.
+
+Five bounded edit turns after the presentation-loop attempt each used one Read
+and one Edit, with no Create or Show requested. They advanced the same project
+`/me/e1d3f538-14d6-4370-be3a-cf74852bb1a7` through versions 3–7: review time,
+filtered export, local-only cover requests, notes hint, then a final time edit.
+The export and escalation turns consumed the original requirements without
+restating their values: pipe-delimited output without operator names and
+`Request cover`. Queued recall dispatched automatically after the escalation
+turn completed. Switching to the baseline chat and reloading the candidate
+restored all seven then-settled turns; editing continued on the same project.
+
+Turn nine, `01M38D95E2QBKXAPSA9XAXZPDR`, completed at 00:33:39 UTC. It recalled
+all six original incident IDs, teal rather than red for resolved incidents,
+selection/notes surviving filtering, and the correct project/version without
+tools. Read-only inspection then confirmed eight recent turns, a committed
+checkpoint, compacted-through admission 1, one older exact-evidence entry and
+zero active admissions. Thus this was actual rollover, not just short recall.
+Provider usage showed GPT-6 Luna processing 61,354 input tokens at 00:33 UTC,
+followed by a Terra request with 6,669 input tokens. These usage rows corroborate
+the configured maintenance route; provider prompt logging remains disabled.
+
+The post-rollover edit, `01M38DAY0PH6CNWY3VZ5THP4V8`, completed at 00:35:03 UTC
+with version 7, heading `Cedar Response Desk`, time `09:50 UTC`, the original
+layout and exact receipt `9007199254740993127`. It used one Read and one Edit.
+The retained record now has eight recent turns, compacted-through admission 2,
+the older exact-evidence entry, a checkpoint and zero active admissions
+(217,590 bytes). No fresh retained-capacity refusal occurred. This verifies
+continued editing and terminal persistence after two boundary advances; it does
+not claim an unbounded live soak or that this record exceeded the old byte cap.
+The larger deterministic byte/count regressions remain separate evidence.
+
+For the matched no-tool recall, unchanged stable `v1.31.9` completed task
+`01M38D5AEXVAQAGMV19WA8Y9FG` at 00:31:27 UTC with: “I don't have the referenced
+Create receipt or first message in this conversation.” The candidate had
+recalled both correctly. Both initial builds had been stopped after the shared
+Create loop, so this comparison specifically demonstrates interrupted-run
+continuity; it is not a completed visual-proficiency comparison.
+
+Fresh-session cumulative-memory acceptance is now supported by the bounded
+live sequence. The Create/Show loop, visual validation of the saved app,
+earlier transient empty replay, coverage deficits and hosted cleanup timing
+remain distinct outstanding work. No new presentation fix is inferred here.
+Exact head `9e4530de` CI `35937885879` has thirteen successful jobs while both
+platform Go jobs remain running; separate docs `35937885751` passed. No running
+job, waived preflight or skipped downstream gate is relabeled green.
+
 ## RC11 deployment and fresh-session acceptance boundary — 2026-09-23
 
 Release workflow `35933587714` completed successfully for implementation
