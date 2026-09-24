@@ -1,14 +1,15 @@
 # Portable context RC acceptance
 
-RFC 002 / PR #779. `v1.32.0-rc.1` is published as a prerelease at
-`742a76e123dca5dbc94939206cb89360ccba6e63`. Later prereleases are historical
-snapshots, not the current recovery target: the candidate withdraws the RC4
-signed retry-policy extension while retaining the narrow RC2/RC3 corrections.
-Hard cancellation, steering and consumer control acceptance remain pending.
-The hard-Stop increment interrupts runtime execution and closes established
-provider streams, but a deterministic pre-response-header probe still leaves the
-provider socket open. Do not claim complete provider termination or RC acceptance
-from the established-stream test. See the tracker's explicit transport blocker.
+RFC 002 / draft PR #779. The deployed test candidate is `v1.32.0-rc.11`,
+implementation `548d25c0786a58849f5107fbe08ef6d62f3323fb`. RC1 through RC10
+are historical snapshots, not the current acceptance target. The RC4 signed
+retry-policy extension remains withdrawn. The Bifrost 1.9.0 / Go 1.27.1
+increment closes the previously recorded pre-response-header transport blocker:
+local socket-termination regressions pass for OpenAI and OpenRouter, streaming
+and unary. This is not a claim that every consumer control path is accepted.
+Fresh-session rollover, reload, continued edits and exact interrupted-run recall
+have bounded live evidence. Coverage deficits, final exact-head gates and the
+shared autonomous presentation loop remain separately tracked acceptance work.
 This procedure neither announces a stable release nor changes existing tags.
 The live implementation/release tracker is
 [portable-context-tracker.md](portable-context-tracker.md).
@@ -43,15 +44,20 @@ On a disposable deployment, explicitly set:
 ```yaml
 memory:
   strategy: rolling_summary
-  recent_turns: 20
-  budget_tokens: 12000
+  recent_turns: 8
+  budget_tokens: 64000
+  summarizer:
+    max_tokens: 8192
 ```
 
 Keep the deployment's existing provider, model, JWT, store and tool authority
 configuration. Set the model profile's actual context and output limits as well.
-The sample's `memory.budget_tokens: 12000` is a disposable working-input target
+The deployed test's `memory.budget_tokens: 64000` is a YAML working-input target
 for planner reasoning and compaction during this RC exercise. It is not a Harbor
-framework ceiling, a provider completion/output ceiling, or a price cap. Configure
+framework ceiling, a provider completion/output ceiling, or a price cap. The
+8192-token allowance applies to summary output, independently of the main model.
+The test uses a separately governed maintenance route; changing the summarizer
+does not authorize a new provider or bypass the existing route checks. Configure
 the selected model's real input and output limits independently. Keep the sample's
 useful deterministic planner-step and `-max-output` bounds; do not remove them to
 work around a provider profile or admission error. Use a durable configured
@@ -127,7 +133,12 @@ Keep real-model outcomes separate from deterministic test results. Include all
 maintenance/retry usage in cost analysis; request-prefix stability is not evidence
 of provider cache hits, lower bills or superior task success.
 
-## Current live findings and remaining consumer acceptance
+## Historical early-RC consumer findings
+
+The following observations describe the early-RC checkpoint, not current
+deployment status. The tracker records subsequent consumer repairs, the
+owner-deferred first-cold-reset race, and the fresh RC11 comparison. Current
+acceptance must use that revision-specific evidence rather than this history.
 
 The baseline failed the complex editing sequence. The RC-backed Terra run kept
 the exact project state through multiple complex revisions, a refused operation,

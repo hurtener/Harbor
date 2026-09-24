@@ -14,7 +14,7 @@ else
     fail "portable replay or inspection regression failed"
 fi
 if go test -race ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
-    -run 'TestTrajectoryChronological_|TestTrajectoryBudget_|TestTrajectorySummariser_Payload_|TestFinishReason_|TestE2E_PortableCompaction_|TestRequestContext_' -count=1; then
+    -run 'TestTrajectoryChronological_|TestTrajectoryAdmission_|TestTrajectoryBudget_|TestTrajectorySummariser_Payload_|TestFinishReason_|TestE2E_PortableCompaction_|TestRequestContext_' -count=1; then
     ok "bounded chronological summary and real Bifrost regressions pass"
 else
     fail "chronological summary or Bifrost regression failed"

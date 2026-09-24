@@ -1,5 +1,51 @@
 # Portable session context implementation tracker
 
+## Compaction refusal coverage and acceptance refresh — 2026-09-24
+
+Test-only hardening on parent `bbe1b769` raises the full summarizer package's
+race-tested statement coverage from 88.8% to **96.0%**, above its 90% target.
+New tests check missing identity, malformed grant envelopes, oversized source
+fields, unserializable actions, assistant evidence without raw reasoning,
+maintenance-route refusal and malformed summary responses. Refusal must happen
+before external dispatch where applicable and preserve the installed checkpoint
+and source. Route errors remain sanitized; this does not mock or claim grant
+authorization. The Phase 268 smoke selection now includes these admission tests.
+
+Go 1.27.1 darwin-arm64, `GOFLAGS=-p=1`, `go test -race -count=1
+-coverprofile=<temporary-file> ./internal/llm/summarizer`: PASS, 2.505s, 96.0%.
+The final unchanged-test repeat passes in 1.574s at the same 96.0%.
+Targeted `go vet` and pinned golangci-lint 2.13.2 pass with zero issues. Separate
+fresh canonical measurements remain config **83.5%** and core LLM **76.5%**;
+their deficits are not cleared by the summarizer improvement. No production
+behavior, provider route, workload, deadline or assertion is relaxed. A stale
+config comment about the removed 32-turn ceiling and the RC acceptance page
+are corrected to match the existing implementation.
+
+Both phase smoke scripts pass on this increment with `GOFLAGS=-p=1`:
+Phase 268 **10 OK / 0 SKIP / 0 FAIL**, Phase 269 **15 OK / 0 SKIP / 0 FAIL**.
+Phase 269 uses PostgreSQL 17.11 through `HARBOR_PG_DSN`, including actual
+independent-pool dispatch/reconciliation and exact recovery/expiry checks.
+These focused suites are not the owner-waived whole-repository preflight.
+Changed Markdown and `git diff --check` also pass.
+
+Hosted evidence remains revision-specific: `9e4530de`, CI `35937885879`, now
+has all sixteen non-preflight jobs passing, including both platform Go jobs
+and Console Playwright. Its owner-waived preflight is still running, not green.
+Parent `bbe1b769`, CI `35940249070`, has thirteen successful jobs while both
+platform Go jobs remain running at this checkpoint. Do not substitute the older
+run for final-head validation. The PR remains draft; no main/stable release.
+
+The generated-download limitation recorded below is now resolved outside
+Harbor. The consumer host and capability preview both allow downloads while
+retaining opaque-origin isolation; parent page, cookies and storage remain
+inaccessible in browser regressions. After deploying those narrow changes,
+the existing version-8 app exported the filtered CD-104 row as a 160-byte
+pipe-delimited file, preserving receipt `9007199254740993127` and omitting
+operator names. SHA-256:
+`cde89da4251fd65ed1993bfa17a1462f78f986595e5cd640903629afac571991`.
+No new model turn or project edit was needed. This closes the download blocker,
+not the unexplained autonomous Create loop or remaining main-release gates.
+
 ## Explicit presentation and observed UI repair — 2026-09-24
 
 The unchanged RC11 sample continued the same fresh session through thirteen

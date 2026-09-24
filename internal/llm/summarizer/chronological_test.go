@@ -61,6 +61,11 @@ func TestTrajectoryChronological_RejectsIncompleteOrInvalidNarrative(t *testing.
 		"null array":                {Content: strings.Replace(goodSummaryJSON, `["find the access code"]`, `null`, 1)},
 		"trailing object":           {Content: goodSummaryJSON + `{}`},
 		"unclosed fence":            {Content: "```json\n" + goodSummaryJSON},
+		"malformed key":             {Content: `{"facts":["PRIVATE-CONTENT"], false: []}`},
+		"malformed value":           {Content: `{"facts":["PRIVATE-CONTENT"],"goals":`},
+		"non-array facts":           {Content: strings.Replace(goodSummaryJSON, `["the access code is ACCESS-CODE-1457"]`, `"PRIVATE-CONTENT"`, 1)},
+		"missing closing brace":     {Content: strings.TrimSuffix(strings.TrimSpace(goodSummaryJSON), "}")},
+		"non-string digest":         {Content: strings.Replace(goodSummaryJSON, `"vault_list timed out"`, `{"private":"PRIVATE-CONTENT"}`, 1)},
 		"oversized":                 {Content: strings.Repeat("PRIVATE-CONTENT", 2000)},
 	}
 	for name, response := range cases {
@@ -69,12 +74,22 @@ func TestTrajectoryChronological_RejectsIncompleteOrInvalidNarrative(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := s.Summarise(context.Background(), trajRC("invalid"), trajFixture())
+			tr := trajFixture()
+			tr.Summary = &planner.TrajectorySummary{Facts: []string{"previous constraints"}, Coverage: &planner.SummaryCoverage{Version: 1, Generation: 7, ThroughStep: 2, PrefixDigest: "unchanged"}}
+			before, err := tr.Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Summarise(context.Background(), trajRC("invalid"), tr)
 			if err == nil || got != nil {
 				t.Fatal("invalid candidate accepted")
 			}
 			if strings.Contains(err.Error(), "PRIVATE-CONTENT") {
 				t.Fatal("response content leaked through error")
+			}
+			after, err := tr.Serialize()
+			if err != nil || string(before) != string(after) {
+				t.Fatal("rejected summary changed the installed checkpoint or source")
 			}
 		})
 	}

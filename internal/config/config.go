@@ -727,7 +727,7 @@ type RuntimeNamingConfig struct {
 // Model completion/output limits remain independent.
 //
 // `RecentTurns` bounds the detailed execution window for cumulative
-// `rolling_summary` memory. Zero selects twenty turns; the maximum is 32.
+// `rolling_summary` memory. Zero selects twenty turns; there is no fixed upper bound.
 // It does not bound the age of meaning in the checkpoint. Ignored by the `none`
 // strategy.
 //
