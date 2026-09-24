@@ -1,5 +1,45 @@
 # Portable session context implementation tracker
 
+## Model admission and route-boundary coverage — 2026-09-24
+
+Test-only hardening on parent `7865c3ef` raises canonical full-package race
+coverage to **85.1% config** (2.669s) and **85.1% core LLM** (4.995s), from
+83.5% and 76.5% respectively. Command: Go 1.27.1 darwin-arm64,
+`GOFLAGS=-p=1 go test -race -count=1 -coverprofile=<temporary-file>
+./internal/config ./internal/llm`. No service-backed execution is needed for
+these two package tests, and this is not a new PostgreSQL acceptance claim.
+Scoped vet and golangci-lint 2.13.2 pass with zero issues.
+
+The tests verify large configured output requests without inventing a framework
+ceiling, detached per-run overrides, model-profile/configuration refusal,
+provider wait/queue validation, exact endpoint/provider/digest binding,
+content-free endpoint diagnostics, unchanged attempt-time capacity/reasoning,
+canonical grant parsing with large numeric generations, monotonic renewal
+lineage and N=128 per-attempt context/credential-holder isolation. Grant parsing
+and lineage tests do not claim signature verification or new authority.
+The Phase 268 gate includes these cases. No production implementation, provider
+configuration, guidance, token allowance, deadline or workload changed.
+The updated Phase 268 smoke passes **10 OK / 0 SKIP / 0 FAIL** with
+`GOFLAGS=-p=1`; changed Markdown and diff checks pass. Phase 269's earlier
+15/0/0 PostgreSQL result is not relabeled as a rerun of this test-only increment.
+The full `GOFLAGS=-p=1 go test -race -count=1 ./internal/llm/...` subtree also
+passes, including Bifrost, grants, leases, receipts, retry and summarizer; no
+live-model opt-in was enabled. The full Bifrost package passes in 5.508s.
+
+Core LLM now meets its 85% floor. Config meets the original 85% floor, but
+Phases 166/168 also prescribe 90% for its validation work; retain that stricter
+requirement as open rather than silently lowering it. Session memory's 92%
+and Bifrost's 90% targets remain open at their last canonical measurements.
+Summarizer's 96.0% result belongs to the preceding published increment.
+Neither this coverage improvement nor older green jobs establish main readiness.
+
+Parent `7865c3ef` CI `35942845212` has thirteen passing jobs with Linux/macOS
+Go still running; its docs run `35942845339` passed. Older `bbe1b769` CI
+`35940249070` now passes both platform Go jobs (fifteen successes total), with
+Console Playwright still running at inspection. Preflight remains owner-waived,
+not green. The candidate remains RC11; no tag or deployment is needed for
+test-only changes, and the PR remains draft.
+
 ## Compaction refusal coverage and acceptance refresh — 2026-09-24
 
 Test-only hardening on parent `bbe1b769` raises the full summarizer package's

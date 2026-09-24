@@ -19,12 +19,13 @@ if go test -race ./internal/llm/summarizer ./internal/llm/drivers/bifrost \
 else
     fail "chronological summary or Bifrost regression failed"
 fi
-if go test -race ./internal/llm -run 'TestRequestInputLimit|TestSafety_OutputReservation|TestContextPreparation_' -count=1; then
+if go test -race ./internal/config ./internal/llm \
+    -run 'TestRequestInputLimit|TestSafety_OutputReservation|TestContextPreparation_|TestContinuityAdmission_|TestRunSettings_|TestProviderRoute_(Endpoint|Model|AttemptContext)|TestLiveKey_Revocation' -count=1; then
     ok "assembled input and output-reservation safety regressions pass"
 else
     fail "request capacity regression failed"
 fi
-if go test -race ./internal/llm ./internal/llm/grant -run '^TestCompaction' -count=1; then
+if go test -race ./internal/llm ./internal/llm/grant -run '^TestCompaction|^TestExternalGrant_(CanonicalDecode|RenewalLineage)' -count=1; then
     ok "model-sized and granted maintenance regressions pass"
 else
     fail "model-sized or granted maintenance regression failed"

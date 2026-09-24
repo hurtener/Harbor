@@ -26,6 +26,46 @@ func TestLiveKey_InitGetRotate(t *testing.T) {
 	}
 }
 
+func TestLiveKey_RevocationClearsOnlyItsHolderForConcurrentReaders(t *testing.T) {
+	t.Parallel()
+	// Documented dummy values; no provider or live credential is exercised.
+	const revokedFixture, siblingFixture = "revoked-fixture-value", "sibling-fixture-value"
+	revoked, sibling := llm.NewLiveKey(), llm.NewLiveKey()
+	revoked.Init(revokedFixture)
+	sibling.Init(siblingFixture)
+	if revoked.Fingerprint() != llm.Fingerprint(revokedFixture) {
+		t.Fatal("wrong pre-revocation fingerprint")
+	}
+	rotator := llm.NewProviderKeyRotator("openrouter", revoked)
+	if rotator.Provider() != "openrouter" {
+		t.Fatal("rotator lost provider binding")
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 128 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if revoked.Get() != "" || revoked.Fingerprint() != "sha256:" {
+				t.Error("revoked key remained readable")
+			}
+			if sibling.Get() != siblingFixture {
+				t.Error("revocation affected another holder")
+			}
+		}()
+	}
+	revoked.Zero()
+	close(start)
+	wg.Wait()
+	if err := revoked.Rotate("replacement-fixture-value"); err != nil {
+		t.Fatal(err)
+	}
+	if revoked.Get() != "replacement-fixture-value" {
+		t.Fatal("explicit replacement was not installed")
+	}
+}
+
 func TestLiveKey_RotateEmpty_FailsLoud(t *testing.T) {
 	k := llm.NewLiveKey()
 	k.Init("sk-boot")
