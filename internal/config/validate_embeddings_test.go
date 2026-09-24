@@ -83,21 +83,6 @@ func TestValidateEmbeddings_BlockShape(t *testing.T) {
 func TestValidateEmbeddings_SemanticModeRequiresBlock(t *testing.T) {
 	t.Parallel()
 
-	t.Run("memory semantic without block fails naming the key", func(t *testing.T) {
-		t.Parallel()
-		cfg := mustLoadValid(t)
-		cfg.Memory.Retrieval = "semantic"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("Validate accepted memory.retrieval=semantic with no embeddings block")
-		}
-		for _, want := range []string{"embeddings", "memory.retrieval", "examples/harbor.yaml"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q must mention %q", err.Error(), want)
-			}
-		}
-	})
-
 	t.Run("skills semantic without block fails", func(t *testing.T) {
 		t.Parallel()
 		cfg := mustLoadValid(t)
@@ -113,8 +98,9 @@ func TestValidateEmbeddings_SemanticModeRequiresBlock(t *testing.T) {
 	t.Run("semantic with block passes", func(t *testing.T) {
 		t.Parallel()
 		cfg := mustLoadValid(t)
-		cfg.Memory.Retrieval = "semantic"
-		cfg.Memory.RetrievalTopK = 8
+		cfg.Skills.Driver = "localdb"
+		cfg.Skills.DSN = ":memory:"
+		cfg.Skills.Retrieval = "semantic"
 		cfg.Embeddings = validEmbeddingsBlock()
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate: %v", err)
@@ -124,11 +110,6 @@ func TestValidateEmbeddings_SemanticModeRequiresBlock(t *testing.T) {
 	t.Run("unknown retrieval values rejected", func(t *testing.T) {
 		t.Parallel()
 		cfg := mustLoadValid(t)
-		cfg.Memory.Retrieval = "vibes"
-		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "memory.retrieval") {
-			t.Fatalf("err=%v, want memory.retrieval rejection", err)
-		}
-		cfg = mustLoadValid(t)
 		cfg.Skills.Driver = "localdb"
 		cfg.Skills.DSN = ":memory:"
 		cfg.Skills.Retrieval = "vibes"
@@ -147,12 +128,4 @@ func TestValidateEmbeddings_SemanticModeRequiresBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("negative retrieval_top_k rejected", func(t *testing.T) {
-		t.Parallel()
-		cfg := mustLoadValid(t)
-		cfg.Memory.RetrievalTopK = -1
-		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "memory.retrieval_top_k") {
-			t.Fatalf("err=%v, want memory.retrieval_top_k rejection", err)
-		}
-	})
 }

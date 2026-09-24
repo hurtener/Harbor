@@ -1,34 +1,10 @@
-// Package protocol — additions: the strategy-trace read
-// projection + the admin-gated mutation pair (`memory.put` /
-// `memory.delete`). Like List / Get / Health these are stateless pure
-// functions — every dependency is passed in per call. They compose ONLY
-// the shipped `memory.MemoryStore` interface (Snapshot / Restore / AddTurn
-// / GetLLMContext / Health) — no new driver-seam method, so all three V1
-// drivers (inmem / sqlite / postgres) back them with zero per-driver work.
-//
-// # strategy_trace is an honest read
-//
-// `StrategyTrace` projects the strategy's LIVE `GetLLMContext` + `Health`
-// output — the rolling-summary text the strategy injects, the verbatim-turn
-// count it keeps, the token estimate, and the health state. It is NOT a
-// fabricated per-step "selection with rejections" (the rolling_summary
-// strategy summarises; it does not select-and-reject candidates). An empty
-// session projects an empty trace (CLAUDE.md §13 — no synthesised data).
-//
-// # The mutations are read-modify-write on the shipped interface
-//
-// `Put` appends a turn via `AddTurn`. `Delete` removes ONE turn by key via a
-// `Snapshot` → drop-the-keyed-turn → `Restore` round-trip — the Record
-// envelope (incl. the rolling summary) is preserved losslessly (the
-// `memory.Record.Summary` field added in 108n). Both emit an audit event on
-// the bus (`memory.item_put` / `memory.item_deleted`, SafePayload — the
-// hashed key only, never the turn text). Admin-gating lives at the handler
-// edge; the service trusts a gated, identity-validated call.
+// Administrative memory mutations use the same owner as inspection and
+// execution. The transport validates identity and admin authority; the owner
+// validates source identity and atomically fences stale context publication.
 package protocol
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -44,30 +20,22 @@ type StrategyTraceDeps struct {
 	Store memory.MemoryStore
 }
 
-// StrategyTrace projects how the configured memory strategy is compacting
-// the caller's session memory right now — the strategy's live
-// `GetLLMContext` (rolling summary + verbatim turns + token estimate) plus
-// `Health`. Identity is validated before the store is touched; a missing
-// triple fails loudly with `memory.ErrIdentityRequired`.
+// StrategyTrace reports the checkpoint and bounded recent tail used by execution.
 func StrategyTrace(ctx context.Context, deps StrategyTraceDeps, id identity.Quadruple) (prototypes.MemoryStrategyTraceResponse, error) {
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryStrategyTraceResponse{}, err
 	}
-	patch, err := deps.Store.GetLLMContext(ctx, id)
+	patch, err := deps.Store.Inspect(ctx, id)
 	if err != nil {
-		return prototypes.MemoryStrategyTraceResponse{}, fmt.Errorf("memory/protocol: strategy_trace GetLLMContext: %w", err)
-	}
-	health, err := deps.Store.Health(ctx, id)
-	if err != nil {
-		return prototypes.MemoryStrategyTraceResponse{}, fmt.Errorf("memory/protocol: strategy_trace Health: %w", err)
+		return prototypes.MemoryStrategyTraceResponse{}, fmt.Errorf("memory/protocol: strategy_trace Inspect: %w", err)
 	}
 	return prototypes.MemoryStrategyTraceResponse{
 		Trace: prototypes.MemoryStrategyTrace{
 			Strategy:        string(patch.Strategy),
 			Summary:         patch.Summary,
-			RecentTurnCount: len(patch.RecentTurns),
-			EstimatedTokens: patch.Tokens,
-			Health:          string(health),
+			RecentTurnCount: patch.RecentTurns,
+			EstimatedTokens: patch.EstimatedTokens,
+			Health:          string(patch.Health),
 		},
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
@@ -82,35 +50,18 @@ type PutDeps struct {
 	Bus events.EventBus
 }
 
-// Put appends an operator-supplied conversation turn to the caller's
-// session memory via the shipped `AddTurn`, then emits the
-// `memory.item_put` audit event. Returns the deterministic key of the
-// appended turn (the value a subsequent `memory.get` resolves). Identity is
-// validated before the store is touched; admin-gating is the handler's job.
+// Put records an operator note and returns its committed, resolvable key.
 func Put(ctx context.Context, deps PutDeps, req prototypes.MemoryPutRequest, id identity.Quadruple) (prototypes.MemoryPutResponse, error) {
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryPutResponse{}, err
 	}
-	ts := time.Now()
 	turn := memory.ConversationTurn{
 		UserMessage:       req.Turn.UserMessage,
 		AssistantResponse: req.Turn.AssistantResponse,
-		Timestamp:         ts,
 	}
-	if err := deps.Store.AddTurn(ctx, id, turn); err != nil {
-		return prototypes.MemoryPutResponse{}, fmt.Errorf("memory/protocol: put AddTurn: %w", err)
-	}
-	// Resolve the appended turn's key the same way List / Get do — read
-	// the snapshot back and key the LAST turn (the one just appended). A
-	// strategy that immediately summarised it away (over-budget) leaves the
-	// key empty rather than a fabricated one (CLAUDE.md §13).
-	key := ""
-	snap, err := deps.Store.Snapshot(ctx, id)
-	if err == nil {
-		if turns, derr := decodeTurns(snap); derr == nil && len(turns) > 0 {
-			last := len(turns) - 1
-			key = memTurnKey(id, last, turns[last].Timestamp)
-		}
+	key, err := deps.Store.Put(ctx, id, turn)
+	if err != nil {
+		return prototypes.MemoryPutResponse{}, fmt.Errorf("memory/protocol: put: %w", err)
 	}
 	emitMutation(ctx, deps.Bus, id, memory.EventTypeMemoryItemPut, "put", key)
 	return prototypes.MemoryPutResponse{Key: key, ProtocolVersion: prototypes.ProtocolVersion}, nil
@@ -124,63 +75,23 @@ type DeleteDeps struct {
 	Bus events.EventBus
 }
 
-// Delete evicts ONE conversation turn (by key) from the caller's session
-// memory via a `Snapshot` → drop-the-keyed-turn → `Restore` read-modify-
-// write. The Record envelope — including the rolling-summary text — is
-// preserved losslessly (`memory.Record.Summary`). A key that matches no
-// turn fails loudly with `memory.ErrNotFound` (never a silent no-op).
-// Emits the `memory.item_deleted` audit event on success.
+// Delete removes the named source through the owner. Cumulative deletion
+// invalidates an affected checkpoint and fences frozen admissions; it never
+// blindly restores a stale snapshot or claims selective summary forgetting.
 func Delete(ctx context.Context, deps DeleteDeps, req prototypes.MemoryDeleteRequest, id identity.Quadruple) (prototypes.MemoryDeleteResponse, error) {
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryDeleteResponse{}, err
 	}
-	snap, err := deps.Store.Snapshot(ctx, id)
+	remaining, err := deps.Store.Delete(ctx, id, req.Key)
 	if err != nil {
-		return prototypes.MemoryDeleteResponse{}, fmt.Errorf("memory/protocol: delete Snapshot: %w", err)
-	}
-	if snap.IsEmpty() || len(snap.Bytes) == 0 {
-		return prototypes.MemoryDeleteResponse{}, memory.ErrNotFound
-	}
-	var rec memory.Record
-	if uerr := json.Unmarshal(snap.Bytes, &rec); uerr != nil {
-		return prototypes.MemoryDeleteResponse{}, fmt.Errorf("memory/protocol: delete decode snapshot: %w", uerr)
-	}
-	idx := -1
-	for i, turn := range rec.Turns {
-		if memTurnKey(id, i, turn.Timestamp) == req.Key {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return prototypes.MemoryDeleteResponse{}, memory.ErrNotFound
-	}
-	rec.Turns = append(rec.Turns[:idx], rec.Turns[idx+1:]...)
-	bytes, merr := json.Marshal(rec)
-	if merr != nil {
-		return prototypes.MemoryDeleteResponse{}, fmt.Errorf("memory/protocol: delete re-marshal record: %w", merr)
-	}
-	if rerr := deps.Store.Restore(ctx, id, memory.Snapshot{Strategy: snap.Strategy, Bytes: bytes}); rerr != nil {
-		return prototypes.MemoryDeleteResponse{}, fmt.Errorf("memory/protocol: delete Restore: %w", rerr)
+		return prototypes.MemoryDeleteResponse{}, fmt.Errorf("memory/protocol: delete: %w", err)
 	}
 	emitMutation(ctx, deps.Bus, id, memory.EventTypeMemoryItemDeleted, "delete", req.Key)
 	return prototypes.MemoryDeleteResponse{
 		Deleted:         true,
-		RemainingTurns:  len(rec.Turns),
+		RemainingTurns:  remaining,
 		ProtocolVersion: prototypes.ProtocolVersion,
 	}, nil
-}
-
-// decodeTurns decodes a snapshot's Record envelope into its turn slice.
-func decodeTurns(snap memory.Snapshot) ([]memory.ConversationTurn, error) {
-	if snap.IsEmpty() || len(snap.Bytes) == 0 {
-		return nil, nil
-	}
-	var rec memory.Record
-	if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
-		return nil, err
-	}
-	return rec.Turns, nil
 }
 
 // emitMutation publishes the `memory.item_put` / `memory.item_deleted`

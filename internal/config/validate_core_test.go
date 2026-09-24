@@ -69,7 +69,7 @@ func TestDefaults_BaselineGolden(t *testing.T) {
 	if cfg.Tasks.Driver != "inprocess" || cfg.Tasks.RetainTurnTimeout != 5*time.Minute || cfg.Tasks.ContinuationHopLimit != 8 {
 		t.Errorf("Tasks defaults = %+v", cfg.Tasks)
 	}
-	if cfg.Memory.Driver != "inmem" || cfg.Memory.Strategy != "none" || cfg.Memory.RecoveryBacklogMax != 16 {
+	if cfg.Memory.Driver != "inmem" || cfg.Memory.Strategy != "rolling_summary" || cfg.Memory.RecentTurns != 20 {
 		t.Errorf("Memory defaults = %+v", cfg.Memory)
 	}
 	if cfg.Planner.Driver != "react" {

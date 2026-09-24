@@ -446,6 +446,9 @@ func WrapWithApproval(d tools.ToolDescriptor, gate *approval.ApprovalGate, opts 
 			// via errors.As.
 			return tools.ToolResult{}, err
 		}
+		if err := tools.CheckInvocationFence(ctx); err != nil {
+			return tools.ToolResult{}, err
+		}
 		return innerInvoke(ctx, approvedArgs)
 	}
 	return out
@@ -484,12 +487,19 @@ func WrapWithOAuth(d tools.ToolDescriptor, prov auth.OAuthProvider, opts OAuthWr
 			return tools.ToolResult{}, fmt.Errorf("catalog: oauth wrapper (provider=%q, scope=%q): %w",
 				opts.ProviderName, opts.BindingScope, auth.ErrIdentityRequired)
 		}
+		if err := tools.CheckInvocationFence(ctx); err != nil {
+			return tools.ToolResult{}, err
+		}
 		// Pre-check token availability. A missing token surfaces
 		// `*auth.ErrAuthRequired` which propagates upward — the
 		// planner / runtime catches it and pauses via the
 		// Coordinator. We do NOT swallow the err; the §13 fail-loud
 		// principle is non-negotiable here.
 		if _, err := prov.Token(ctx, source); err != nil {
+			return tools.ToolResult{}, err
+		}
+		// Credential acquisition may wait while cancellation or steering wins.
+		if err := tools.CheckInvocationFence(ctx); err != nil {
 			return tools.ToolResult{}, err
 		}
 		return innerInvoke(ctx, args)

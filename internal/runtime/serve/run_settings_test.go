@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
+
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -35,7 +37,7 @@ func TestRunLLMSettingsReachProviderWithoutConsumingPendingSlot(t *testing.T) {
 	}
 	cap := &settingsCapture{calls: make(chan llm.CompleteRequest, 128)}
 	pending := runsprotocol.NewStore()
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{Bus: bus, RunLoop: rl, Planner: react.New(cap), Tasks: reg, SessionOverrides: pending})
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"}, Bus: bus, RunLoop: rl, Planner: react.New(cap), Tasks: reg, SessionOverrides: pending})
 	if err != nil {
 		t.Fatal(err)
 	}

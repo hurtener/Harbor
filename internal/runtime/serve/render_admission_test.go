@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -68,6 +69,27 @@ type fakeAdmissionAgentCfg struct {
 func (f *fakeAdmissionAgentCfg) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
 	f.activeQueriedAgent = agentID
 	return f.revision, f.hasActive, f.activeErr
+}
+
+func registerOwnedAdmissionSource(t *testing.T, f admissionGateFixture, owner toolauth.Owner, logical string) string {
+	t.Helper()
+	physical := f.registry.PhysicalSourceForOwner(logical, owner)
+	swap, err := f.registry.StageRegistration(mcp.ServerRegistration{
+		Provider:              admissionStubProvider{id: physical},
+		Transport:             "http+sse",
+		URLOrCommand:          "https://mcp.example.com/owned-apps",
+		InitialState:          mcp.ServerStateOnline,
+		Owner:                 owner,
+		LogicalName:           logical,
+		DescriptorFingerprint: "owned-fingerprint",
+	}, []tools.ToolDescriptor{{Tool: tools.Tool{Name: logical + "-tool"}}})
+	if err != nil {
+		t.Fatalf("StageRegistration owned source: %v", err)
+	}
+	if err := swap.Commit(t.Context()); err != nil {
+		t.Fatalf("Commit owned source: %v", err)
+	}
+	return physical
 }
 
 func (f *fakeAdmissionAgentCfg) RetirementStatus(ctx context.Context, id identity.Quadruple, agentID string) (agentcfg.RetirementStatus, bool, error) {
@@ -142,8 +164,8 @@ func buildAdmissionGateFixture(t *testing.T) admissionGateFixture {
 	bus := mkDriverTestBus(t, red)
 	t.Cleanup(func() { _ = bus.Close(ctx) })
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: st, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: st, Bus: bus, Redactor: auditpatterns.New()})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -166,7 +188,7 @@ func buildAdmissionGateFixture(t *testing.T) admissionGateFixture {
 	}
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(ctx) })
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: sessReg, State: st, Memory: mem, Artifacts: arts, Skills: skStore,
+		Registry: sessReg, State: st, Artifacts: arts, Skills: skStore,
 		Bus: bus, Redactor: red,
 	})
 	if err != nil {
@@ -516,4 +538,87 @@ func TestRenderAdmissionGate_EffectiveAgent_FailClosedAndUsed(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "retired-agent") {
 		t.Fatalf("retired-stamped-agent error %q does not name the stamped agent", err)
 	}
+}
+
+// TestRenderAdmissionGate_AuthorityDependencyFailuresFailClosed exercises the
+// dependency-failure boundaries that must never be collapsed into a mint. The
+// owned-source cases also prove an unavailable or negative current desired-
+// state decision cannot inherit visibility from the live registry.
+func TestRenderAdmissionGate_AuthorityDependencyFailuresFailClosed(t *testing.T) {
+	ctx := context.Background()
+	uiResource := "ui://" + renderAdmServer + "/app"
+
+	t.Run("owned source config read failure", func(t *testing.T) {
+		f := buildAdmissionGateFixture(t)
+		owner := toolauth.Owner{Tenant: renderAdmID.TenantID, Agent: renderAdmAgent}
+		physical := registerOwnedAdmissionSource(t, f, owner, "owned-apps")
+		f.agentCfg.activeErr = errors.New("desired state unavailable")
+		if _, err := f.gate.AuthorizeRender(admAgentCtx(ctx, renderAdmID, renderAdmAgent), physical, "ui://"+physical+"/app"); err == nil || !strings.Contains(err.Error(), "source") {
+			t.Fatalf("owned source config failure = %v, want fail-closed source authority error", err)
+		}
+	})
+
+	t.Run("owned source absent from desired state", func(t *testing.T) {
+		f := buildAdmissionGateFixture(t)
+		owner := toolauth.Owner{Tenant: renderAdmID.TenantID, Agent: renderAdmAgent}
+		physical := registerOwnedAdmissionSource(t, f, owner, "not-declared")
+		f.agentCfg.hasActive = false
+		if _, err := f.gate.AuthorizeRender(admAgentCtx(ctx, renderAdmID, renderAdmAgent), physical, "ui://"+physical+"/app"); !admErrIsRefused(err) {
+			t.Fatalf("owned source absent from config = %v, want typed refusal", err)
+		}
+	})
+
+	t.Run("retirement read failure", func(t *testing.T) {
+		f := buildAdmissionGateFixture(t)
+		f.agentCfg.retireErr = errors.New("retirement authority unavailable")
+		if _, err := f.gate.AuthorizeRender(admAgentCtx(ctx, renderAdmID, renderAdmAgent), renderAdmServer, uiResource); err == nil || !strings.Contains(err.Error(), "retirement gate") {
+			t.Fatalf("retirement authority failure = %v, want fail-closed dependency error", err)
+		}
+	})
+
+	t.Run("active config read failure", func(t *testing.T) {
+		f := buildAdmissionGateFixture(t)
+		f.agentCfg.activeErr = errors.New("active config unavailable")
+		if _, err := f.gate.AuthorizeRender(admAgentCtx(ctx, renderAdmID, renderAdmAgent), renderAdmServer, uiResource); err == nil || !strings.Contains(err.Error(), "read active config") {
+			t.Fatalf("active config failure = %v, want fail-closed dependency error", err)
+		}
+	})
+
+	t.Run("session overlay read failure", func(t *testing.T) {
+		f := buildAdmissionGateFixture(t)
+		st := runSnapshotState(t)
+		overlay, err := sessionoverlay.NewStore(st, nil)
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		if err := overlay.Close(ctx); err != nil {
+			t.Fatalf("Close overlay: %v", err)
+		}
+		f.gate.sessionOverlay = overlay
+		if _, err := f.gate.AuthorizeRender(admAgentCtx(ctx, renderAdmID, renderAdmAgent), renderAdmServer, uiResource); err == nil || !strings.Contains(err.Error(), "session overlay") {
+			t.Fatalf("closed overlay failure = %v, want fail-closed dependency error", err)
+		}
+	})
+
+	t.Run("session overlay pause narrows admission", func(t *testing.T) {
+		f := buildAdmissionGateFixture(t)
+		st := runSnapshotState(t)
+		overlay, err := sessionoverlay.NewStore(st, nil)
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		t.Cleanup(func() { _ = overlay.Close(context.Background()) })
+		reg := lifecycleTestRegistry(t, st)
+		if err := EnsureBootAgentLifecycle(ctx, st, reg, renderAdmID, renderAdmAgent); err != nil {
+			t.Fatalf("EnsureBootAgentLifecycle: %v", err)
+		}
+		q := identity.Quadruple{Identity: renderAdmID}
+		if _, err := overlay.SetSourceDisables(ctx, q, renderAdmAgent, []string{renderAdmServer}, []string{"tool-a"}); err != nil {
+			t.Fatalf("SetSourceDisables: %v", err)
+		}
+		f.gate.sessionOverlay = overlay
+		if _, err := f.gate.AuthorizeRender(admAgentCtx(ctx, renderAdmID, renderAdmAgent), renderAdmServer, uiResource); !admErrIsRefused(err) {
+			t.Fatalf("overlay-paused source = %v, want typed refusal", err)
+		}
+	})
 }

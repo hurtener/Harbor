@@ -80,3 +80,10 @@ var WithStream = internal.WithStream
 // assembled without a planner/run loop (no LLM driver, or
 // SkipSteering/SkipRunLoop). Compare via errors.Is.
 var ErrNotRunnable = internal.ErrNotRunnable
+
+// ErrRetainedContextUnavailable rejects disabled, expired, corrupt or stale recovery.
+var ErrRetainedContextUnavailable = internal.ErrRetainedContextUnavailable
+
+// ErrRetainedContextUnsettled means an external outcome is unknown; recovery
+// does not authorize repeating a pending action.
+var ErrRetainedContextUnsettled = internal.ErrRetainedContextUnsettled

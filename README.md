@@ -22,7 +22,7 @@
   <a href="https://github.com/hurtener/Harbor/actions/workflows/ci.yml"><img src="https://github.com/hurtener/Harbor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/hurtener/Harbor/releases"><img src="https://img.shields.io/github/v/release/hurtener/Harbor?sort=semver" alt="Release"></a>
   <a href="https://pkg.go.dev/github.com/hurtener/Harbor"><img src="https://pkg.go.dev/badge/github.com/hurtener/Harbor.svg" alt="Go Reference"></a>
-  <img src="https://img.shields.io/badge/go-1.26%2B-00ADD8" alt="Go 1.26+">
+  <img src="https://img.shields.io/badge/go-1.27.1%2B-00ADD8" alt="Go 1.27.1+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
 </p>
 
@@ -103,6 +103,9 @@ straight into your Go type. The complete worked path is the
 [Embed Harbor headless](docs/recipes/embed-harbor-headless.md) recipe; every
 snippet in it is executed by an integration test, so it cannot drift from
 the real API.
+
+Try the [portable session-context editing sample](examples/portable-context/README.md)
+for version-checked edits across compaction and separate process invocations.
 
 ## Five minutes to a working agent
 
@@ -326,3 +329,17 @@ make install-hooks # one-time per clone
 ## License
 
 [Apache-2.0](LICENSE). See `RFC-001-Harbor.md` §10 for the rationale.
+
+### Portable session context (in progress)
+
+The incremental context branch uses `memory.strategy: rolling_summary` and
+`memory.recent_turns` for cumulative execution context in serving and embedded
+root conversations. It uses the existing StateStore and leaves long-term memory
+external. Ordinary YAML and `config.Defaults()` select rolling memory with
+20 detailed turns; `memory.strategy: none` explicitly opts out. The old
+pair-summary engine is removed; inspection and runtime execution share one
+owner. See the
+[configuration contract](docs/CONFIG.md#session-execution-memory),
+[serving example](examples/serve.yaml), and
+[implementation status](docs/plans/phase-269-retained-session-context.md).
+Final coverage, release gates and matched live RC acceptance remain unfinished.

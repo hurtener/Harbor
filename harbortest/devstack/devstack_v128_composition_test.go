@@ -101,9 +101,8 @@ func devstackV128Config(t *testing.T, mut func(*config.Config)) *config.Config {
 			RemoteDriver: "loopback",
 		},
 		Memory: config.MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "none",
-			RecoveryBacklogMax: 8,
+			Driver:   "inmem",
+			Strategy: "none",
 		},
 	}
 	if mut != nil {

@@ -159,9 +159,9 @@ func defaultChatResponse(req *bfschemas.BifrostChatRequest) *bfschemas.BifrostCh
 			CompletionTokens: 5,
 			TotalTokens:      15,
 			Cost: &bfschemas.BifrostCost{
-				InputTokensCost:  0.001,
-				OutputTokensCost: 0.002,
-				TotalCost:        0.003,
+				InputCost:  0.001,
+				OutputCost: 0.002,
+				TotalCost:  0.003,
 			},
 		},
 	}
@@ -202,9 +202,9 @@ func defaultStreamResponse(req *bfschemas.BifrostChatRequest) chan *bfschemas.Bi
 					CompletionTokens: 9,
 					TotalTokens:      17,
 					Cost: &bfschemas.BifrostCost{
-						InputTokensCost:  0.0008,
-						OutputTokensCost: 0.0009,
-						TotalCost:        0.0017,
+						InputCost:  0.0008,
+						OutputCost: 0.0009,
+						TotalCost:  0.0017,
 					},
 				},
 			},

@@ -651,10 +651,10 @@ func waveV111SeedSession(t *testing.T, stack *devstack.DevStack, id identity.Ide
 	if _, err := stack.Sessions.Open(ctx, id.SessionID, id); err != nil {
 		t.Fatalf("sessions.Open: %v", err)
 	}
-	if err := stack.Memory.AddTurn(ctx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := stack.Memory.Put(ctx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
 	}); err != nil {
-		t.Fatalf("memory.AddTurn: %v", err)
+		t.Fatalf("memory.Put: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	for i := range 3 {
@@ -700,7 +700,7 @@ func TestE2E_WaveV111_ErasureAuditIntegrity(t *testing.T) {
 	flaky := &waveV111FlakyBus{EventBus: stack.Bus, fencer: fencer, replayer: replayer, fail: &fail}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: stack.Sessions, State: stack.State, Memory: stack.Memory,
+		Registry: stack.Sessions, State: stack.State,
 		Artifacts: stack.Artifacts, Skills: legacySkills, Bus: flaky, Redactor: stack.Audit,
 	})
 	if err != nil {
@@ -822,7 +822,7 @@ func TestE2E_WaveV111_ConcurrencyStress(t *testing.T) {
 
 	// One shared, concurrent-safe eraser (D-025 compiled artifact).
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: stack.Sessions, State: stack.State, Memory: stack.Memory,
+		Registry: stack.Sessions, State: stack.State,
 		Artifacts: stack.Artifacts, Skills: legacySkills, Bus: stack.Bus, Redactor: stack.Audit,
 	})
 	if err != nil {

@@ -198,6 +198,7 @@ func newSelRig(t *testing.T) *selRig {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	driver, err := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
+		SessionMemory: config.MemoryConfig{Strategy: "none"}, // This fixture isolates agent selection, not session continuity.
 		Bus:           bus,
 		RunLoop:       rl,
 		Planner:       obs,

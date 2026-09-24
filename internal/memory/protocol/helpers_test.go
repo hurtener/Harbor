@@ -75,7 +75,7 @@ func newMemHarness(t *testing.T, start memory.Strategy, budgetTokens int) memHar
 		Driver:       "inmem",
 		Strategy:     start,
 		BudgetTokens: budgetTokens,
-	}, memory.Deps{State: stateStore, Bus: bus}, memoryinmem.Options{})
+	}, memory.Deps{State: stateStore, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memoryinmem.New(%q): %v", start, err)
 	}
@@ -100,9 +100,8 @@ func seedTurns(t *testing.T, h memHarness, id identity.Quadruple, n int) {
 		turn := memory.ConversationTurn{
 			UserMessage:       "question " + strings.Repeat("q", i),
 			AssistantResponse: "answer " + strings.Repeat("a", i),
-			Timestamp:         time.Now().UTC().Add(time.Duration(i) * time.Second),
 		}
-		if err := h.store.AddTurn(context.Background(), id, turn); err != nil {
+		if _, err := h.store.Put(context.Background(), id, turn); err != nil {
 			t.Fatalf("AddTurn[%d]: %v", i, err)
 		}
 	}
@@ -116,9 +115,8 @@ func seedHeavyTurn(t *testing.T, h memHarness, id identity.Quadruple, sizeBytes 
 	turn := memory.ConversationTurn{
 		UserMessage:       "heavy",
 		AssistantResponse: strings.Repeat("X", sizeBytes),
-		Timestamp:         time.Now().UTC(),
 	}
-	if err := h.store.AddTurn(context.Background(), id, turn); err != nil {
+	if _, err := h.store.Put(context.Background(), id, turn); err != nil {
 		t.Fatalf("AddTurn(heavy): %v", err)
 	}
 }

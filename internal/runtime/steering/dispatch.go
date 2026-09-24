@@ -37,7 +37,7 @@ type execOutcome struct {
 //     control.applied lifecycle emits + control-history record the
 //     boundary path produces, and is NOT re-applied at the next
 //     boundary (consumed is consumed).
-//   - EVERY other drained control (PAUSE / RESUME / CANCEL / REDIRECT /
+//   - Other drained controls (PAUSE / RESUME / soft CANCEL / REDIRECT /
 //     INJECT_CONTEXT / USER_MESSAGE / PRIORITIZE, and any APPROVE /
 //     REJECT no gate owns) keeps its step-boundary semantics: it is
 //     returned in `deferred` and the run loop merges it ahead of the
@@ -45,10 +45,10 @@ type execOutcome struct {
 //     full applyEvent treatment — exactly when it would have been
 //     applied under the synchronous dispatch (the step was in flight;
 //     the boundary is the first point it could ever act).
-//   - Cancellation is unchanged: the execution runs under a stepCtx
-//     derived from the run ctx, so cancelling the run still aborts an
-//     in-flight gated decision (RunGuarded honours ctx); the next step
-//     boundary surfaces ctx.Err() exactly as before.
+//   - Hard CANCEL already cancelled the run context at inbox admission.
+//     The execution's child stepCtx interrupts an in-flight gated decision;
+//     queued execution checks it before dispatch. Terminal bookkeeping
+//     records the accepted cancellation after the executor joins.
 //   - The per-step goroutine is ALWAYS joined before return — on the
 //     happy path, on run-ctx cancellation, and on a bridge error (where
 //     stepCtx is cancelled first so a parked RunGuarded waiter
@@ -64,6 +64,7 @@ func (rl *RunLoop) dispatchDecision(
 	ctx context.Context,
 	q identity.Quadruple,
 	inbox *Inbox,
+	generation uint64,
 	exec ToolExecutor,
 	rc planner.RunContext,
 	decision planner.Decision,
@@ -74,12 +75,26 @@ func (rl *RunLoop) dispatchDecision(
 	// the execution (a bridge error, a retired inbox).
 	stepCtx, cancelStep := context.WithCancel(ctx)
 	defer cancelStep()
+	stepCtx, fenceErr := inbox.fenceInvocation(stepCtx, generation)
+	if fenceErr != nil {
+		return execOutcome{err: fenceErr}, nil, nil
+	}
 
 	// done is 1-buffered so the executor goroutine's send never blocks
 	// — the goroutine always runs to completion and every return path
 	// below receives from it exactly once (the join).
 	done := make(chan execOutcome, 1)
 	go func() {
+		// Stop may win while the durable intent is being written or while
+		// this goroutine waits to run. Do not enter a queued executor then.
+		if err := stepCtx.Err(); err != nil {
+			done <- execOutcome{err: err}
+			return
+		}
+		if !inbox.admitDecision(generation, false) {
+			done <- execOutcome{err: errDecisionSuperseded}
+			return
+		}
 		obs, llmObs, err := exec.ExecuteDecision(stepCtx, rc, decision)
 		done <- execOutcome{observation: obs, llmObservation: llmObs, err: err}
 	}()
@@ -141,9 +156,9 @@ func (rl *RunLoop) dispatchDecision(
 				})
 				rl.emitLifecycle(ctx, q, ev.Type, EventTypeControlApplied, classifyApplyErr(rerr))
 				cancelStep()
-				<-done // join; the outcome is discarded — the run is failing
+				out := <-done // join and retain any returned evidence
 				deferred = append(deferred, drained[i+1:]...)
-				return execOutcome{}, deferred, rerr
+				return out, deferred, rerr
 			}
 			if !routed {
 				// Not bridge-eligible mid-step. Defer verbatim — the

@@ -210,6 +210,7 @@ type SignedOAuthMCPUserReconciler interface {
 
 // Service implements the admin-scoped agent-config methods.
 type Service struct {
+	memoryBudgetAvailable bool
 	registry              agentcfg.Registry
 	bootDefaultAgentID    string
 	ensureBootLifecycle   agentcfg.BootLifecycleEnsurer
@@ -1147,6 +1148,9 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if err := s.validateNaming(req.Payload.Naming); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
+	if req.Payload.Memory != nil && (!s.memoryBudgetAvailable || req.Payload.Memory.BudgetTokens < 0) {
+		return prototypes.AgentConfigSetRevisionResponse{}, ErrInvalidMemory
+	}
 	// A full-payload set that pins additive prompt blocks runs the SAME
 	// name-charset + uniqueness + non-empty-body validation the
 	// set_extra_system_blocks door enforces, so a section this second door
@@ -1509,6 +1513,9 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 		}
 		out.ExtraSystemBlocks = &prototypes.AgentConfigExtraSystemBlocks{Blocks: wb}
 	}
+	if p.Memory != nil {
+		out.Memory = &prototypes.AgentConfigMemory{BudgetTokens: p.Memory.BudgetTokens}
+	}
 	if p.Naming != nil {
 		out.Naming = &prototypes.AgentConfigNaming{
 			Auto:           p.Naming.Auto,
@@ -1749,6 +1756,9 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 			Blocks: blocksToDomain(p.ExtraSystemBlocks.Blocks),
 		}
 	}
+	if p.Memory != nil {
+		out.Memory = &agentcfg.MemorySection{BudgetTokens: p.Memory.BudgetTokens}
+	}
 	if p.Naming != nil {
 		out.Naming = &agentcfg.NamingSection{
 			Auto:           p.Naming.Auto,
@@ -1831,6 +1841,11 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			RunCompletionTimeoutChanged: d.Hooks.RunCompletionTimeoutChanged,
 			RunCompletionTimeoutFrom:    d.Hooks.RunCompletionTimeoutFrom,
 			RunCompletionTimeoutTo:      d.Hooks.RunCompletionTimeoutTo,
+		},
+		Memory: prototypes.AgentConfigMemoryDiff{
+			BudgetTokensChanged: d.Memory.BudgetTokensChanged,
+			BudgetTokensFrom:    d.Memory.BudgetTokensFrom,
+			BudgetTokensTo:      d.Memory.BudgetTokensTo,
 		},
 		Naming: prototypes.AgentConfigNamingDiff{
 			AutoChanged: d.Naming.AutoChanged,

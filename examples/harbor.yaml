@@ -507,9 +507,8 @@ pauseresume:
   sweep_interval: 1m
 
 memory:
-  # MemoryStore driver — Phase 23 shipped `inmem`; Phase 25 adds
-  # `sqlite` and `postgres` (durable across restart). Default
-  # `inmem`.
+  # Administrative memory adapter. All drivers share the execution owner;
+  # actual memory durability comes from state.driver. Default: inmem.
   driver: inmem
   # DSN — required when driver is `sqlite` or `postgres`. SQLite
   # accepts a bare file path (or `:memory:` for the degenerate dev
@@ -520,26 +519,20 @@ memory:
   # dsn: /var/lib/harbor/memory.sqlite
   # migration_mode: apply # Postgres only; verify after a separate direct apply.
   # Memory shape strategy:
-  #   - `none`            — AddTurn is a no-op; GetLLMContext returns empty.
-  #   - `truncation`      — recent-turn window + budget enforcement (drop-oldest).
-  #   - `rolling_summary` — recent window + background-summarised long-term
-  #                         context. Health FSM observable via
-  #                         `memory.health_changed`. Requires an injectable
-  #                         Summarizer (LLM-backed at Phase 32+; not
-  #                         registry-reachable today).
-  strategy: none
-  # Per-key token cap for truncation and rolling_summary; zero
-  # disables budget enforcement (turns accumulate unbounded). When
-  # set, rolling_summary keeps the recent-turn set verbatim and
-  # recursively compacts older turns into the rolling summary (folding
-  # into — never discarding — prior summary content) until the
-  # assembled context fits this budget.
+  #   - `none`            — explicit stateless operation.
+  #   - `rolling_summary` — default cumulative short-term session context,
+  #                         compacted through the configured governed LLM.
+  #                         Long-term memory remains external.
+  strategy: rolling_summary
+  # Working-input target, independent of model output limits. A positive
+  # value enables within-run compaction; with rolling_summary, zero derives
+  # the target from the effective model's input capacity/output reservation.
+  # Replaces the removed planner.token_budget (no compatibility alias).
   budget_tokens: 0
-  # Number of most-recent conversation turns rolling_summary keeps
-  # verbatim before older turns spill into the rolling summary.
-  # 0 → strategy default (FullZoneTurns = 4). Must be >= 0. Ignored by
-  # the `none` and `truncation` strategies.
-  recent_turns: 0
+  # Number of recent root executions kept in detail. Earlier meaning stays
+  # in the cumulative checkpoint after successful compaction.
+  # 0 also selects 20; maximum 32. Ignored by `none`.
+  recent_turns: 20
   # Operator-tunable compaction summariser (rolling_summary only).
   # `model` pins the model used for compaction LLM calls, independent
   # of the planner's model — set it to a cheaper/faster model to keep
@@ -550,26 +543,16 @@ memory:
   # separator — it never replaces the baseline role framing or
   # conciseness guarantees. Unset → baseline prompt only (no change).
   # summarizer:
+  #   max_tokens: 8192 # Example completion allowance incl. reasoning; 0/unset = 2048.
+  #   max_calls: 16    # Chronological calls per compaction; 0/unset = 16, not retries.
   #   model: anthropic/claude-haiku
   #   prompt: "Always preserve numeric thresholds and dollar amounts verbatim."
-  # Bounded queue size for the rolling_summary recovery loop
-  # (D-034). Overflow drops oldest and emits
-  # `memory.recovery_dropped` on the events bus. Default 16; must
-  # be >= 0.
-  recovery_backlog_max: 16
-  # Opt-in retrieval mode (Phase 84d — D-191), layered ON TOP of the
-  # strategy. `semantic` embeds turns at AddTurn and serves
-  # similarity search via MemoryStore.SearchTurns, COMPOSING with
-  # rolling_summary (never replacing it). Requires the `embeddings`
-  # block above. Vectors persist through the configured StateStore
-  # (all three drivers; brute-force cosine at V1 scale).
-  # retrieval: semantic
-  # Result cap for a semantic SearchTurns when the caller passes no
-  # limit. 0/unset → 5.
-  # retrieval_top_k: 5
-  # Cosine-similarity floor: turns below this score are skipped.
-  # Range [-1, 1]. Ignored unless retrieval = "semantic".
-  # retrieval_min_score: 0.0
+  # For externally routed runs, a different compaction model needs its own
+  # authorized summarizer.provider_route selector instead of `model`.
+  # Reuse llm.provider_route's resolver; see docs/CONFIG.md for the six
+  # opaque selector fields and generation checks. Never put credentials here.
+  # Native semantic-memory indexing is removed. External long-term memory
+  # arrives through caller memory or connected capability tools.
 
 # D-103 — Planner driver selection (closes issue #126). The §4.4 seam
 # pattern that D-095 uses for OAuth providers, applied to the planner
@@ -652,12 +635,6 @@ planner:
   # parallel_tool_calls: true       # default true; false → serialise N>1 tool-calls (107c fallback)
   # max_tool_examples_per_tool: 3   # 0/unset → 3
   # skills_context_max: 5            # 0/unset → 5; cap on SkillStore.Search results per run
-  # token_budget: 0                  # 0/unset → trajectory compression OFF (Phase 111e / D-202).
-  #                                  # When > 0: once the trajectory's token estimate exceeds this
-  #                                  # budget, the runtime invokes the LLM-backed trajectory
-  #                                  # summariser and the compacted five-field summary replaces the
-  #                                  # raw step history in subsequent prompts (one compression per
-  #                                  # run, no auto-cascade; requires the llm block).
   # planning_hints:
   #   constraints: |
   #     Never call external download tools without confirming the URL

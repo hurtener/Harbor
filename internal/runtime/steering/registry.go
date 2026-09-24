@@ -1,6 +1,7 @@
 package steering
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -67,6 +68,12 @@ func NewRegistry(opts ...Option) *Registry {
 // The returned Inbox is owned by the Registry; retire it with
 // Retire when the run ends.
 func (r *Registry) Open(q identity.Quadruple) (*Inbox, error) {
+	return r.open(q, nil)
+}
+
+// open atomically publishes the execution cancellation handle with its inbox.
+// The plain SDK inbox remains usable without an executing RunLoop.
+func (r *Registry) open(q identity.Quadruple, cancel context.CancelFunc) (*Inbox, error) {
 	if err := validateQuadruple(q); err != nil {
 		return nil, err
 	}
@@ -76,9 +83,10 @@ func (r *Registry) Open(q identity.Quadruple) (*Inbox, error) {
 		return nil, fmt.Errorf("%w: %+v", ErrInboxExists, q)
 	}
 	in := &Inbox{
-		identity: q,
-		clock:    r.clock,
-		notify:   make(chan struct{}, 1),
+		identity:        q,
+		clock:           r.clock,
+		notify:          make(chan struct{}, 1),
+		cancelExecution: cancel,
 	}
 	r.inboxes[q] = in
 	return in, nil

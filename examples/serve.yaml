@@ -158,7 +158,8 @@ tasks:
 
 memory:
   driver: inmem
-  strategy: none
+  strategy: rolling_summary
+  recent_turns: 20
 
 planner:
   driver: react
@@ -170,3 +171,7 @@ tools:
 distributed:
   bus_driver: loopback
   remote_driver: loopback
+
+# Session memory is configured above under memory. Use a SQLite/Postgres
+# StateStore for restarts. A failed persistence write can follow a successful
+# external save: reconcile it; never automatically retry the external action.

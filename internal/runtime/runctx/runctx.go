@@ -39,38 +39,9 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/skills"
 )
-
-// ProjectMemoryBlocks shapes a memory.LLMContextPatch into the
-// JSON-encodable map the planner's `<read_only_conversation_memory>`
-// wrapper renders.
-// Returns nil when the patch is empty — the wrapper is omitted
-// entirely. Only the Conversation tier is populated here; callers that
-// enable semantic recall (via FetchMemoryBlocks) will additionally
-// populate the External tier with retrieved turns.
-func ProjectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
-	if len(patch.RecentTurns) == 0 && patch.Summary == "" {
-		return nil
-	}
-	recent := make([]map[string]any, 0, len(patch.RecentTurns))
-	for _, turn := range patch.RecentTurns {
-		recent = append(recent, map[string]any{
-			"user":      turn.UserMessage,
-			"assistant": turn.AssistantResponse,
-		})
-	}
-	conversation := map[string]any{
-		"strategy":     string(patch.Strategy),
-		"recent_turns": recent,
-	}
-	if patch.Summary != "" {
-		conversation["summary"] = patch.Summary
-	}
-	return &planner.MemoryBlocks{Conversation: conversation}
-}
 
 // ProjectSkillsContext shapes a []skills.RankedSkill into the []any
 // the planner's `<skills_context>` wrapper renders (

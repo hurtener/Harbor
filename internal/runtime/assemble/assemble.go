@@ -347,9 +347,10 @@ type Stack struct {
 	// Compression is the trajectory-compression runner:
 	// planner.NewCompressionRunner over the LLM-backed
 	// summarizer.NewTrajectorySummariser. Non-nil only when
-	// cfg.Planner.TokenBudget > 0 (and the steering band ran) — the
+	// rolling_summary or a working-input budget is configured — the
 	// per-task run-loop drivers project it onto RunSpec.Compression
-	// alongside Base.Budget.TokenBudget. Nil = compression off.
+	// alongside Base.Budget.TokenBudget. Zero budget uses the effective
+	// model's safe input target. Nil = compression off.
 	Compression *planner.CompressionRunner
 
 	closeOnce sync.Once
@@ -379,11 +380,6 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	if cfg == nil {
 		return nil, fmt.Errorf("assemble: cfg is required (call config.Load, or config.Defaults + ValidateCore for headless embedding)")
 	}
-	logger := opts.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
 	stack := &Stack{Cfg: cfg}
 
 	// Open the runtime-wide PostgreSQL pool manager before any store. It
@@ -432,8 +428,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// mandatory, identity-attributed, bus-paired (RFC §6.14:
 	// "Logger.Error emits both an slog record AND a paired
 	// runtime.error bus event"). Constructed the moment the redactor +
-	// bus exist; the bare Options.Logger remains only the bootstrap /
-	// wiring logger.
+	// bus exist; earlier setup failures return directly to the caller.
 	tlog, err := telemetry.New(cfg.Telemetry, red,
 		append([]telemetry.Option{telemetry.WithBusEmitter(televentbus.New(bus))}, opts.TelemetryOptions...)...)
 	if err != nil {
@@ -446,11 +441,8 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// subscriber, the pause sweeper, the dispatch executor, the MCP
 	// attach loop, the search-cache warn path, the run loop) logs
 	// through the telemetry pipeline — ctx identity stamping,
-	// mandatory redaction, bus-paired errors. The bare Options.Logger
-	// served only the pre-telemetry bootstrap window above, which
-	// makes the "bootstrap-only" posture true inside the
-	// assembly.
-	logger = tlog.Slog()
+	// mandatory redaction, bus-paired errors.
+	logger := tlog.Slog()
 
 	// the production engine run-error handler —
 	// `engine.WithRunErrorHandler`\'s godoc made true. Flow composition
@@ -651,10 +643,10 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 
 	// Embeddings: opened when the operator configured the block (or
-	// the caller injected one). The semantic retrieval modes consume
+	// the caller injected one). Semantic skill retrieval consumes
 	// it below; misconfiguration (semantic mode + zero block) is
-	// already rejected by the config validator, and the memory /
-	// skills registries fail loudly again if an embedder is missing.
+	// already rejected by the config validator, and the skills
+	// registry fails loudly again if an embedder is missing.
 	stack.Embedder = opts.Embedder
 	if stack.Embedder == nil && !cfg.Embeddings.IsZero() {
 		emb, embErr := embeddings.Open(ctx, embeddings.SnapshotFromConfig(cfg.Embeddings), embeddings.Deps{})
@@ -665,41 +657,22 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		stack.closers = append(stack.closers, emb.Close)
 	}
 
-	// Memory: ONE memory.Open serves every driver ×
-	// strategy; the Summarizer threads through Deps. For
-	// rolling_summary the Summarizer defaults to the configured LLM —
-	// no separate summariser model, no stub fallback (CLAUDE.md §13);
-	// rolling_summary without an LLM fails loud.
+	// Administrative access shares the cumulative owner; the governed compactor is wired below.
 	if cfg.Memory.Driver != "" {
 		memCfg := memory.SnapshotFromConfig(cfg.Memory)
-		var summarizer memory.Summarizer
-		if memCfg.Strategy == memory.StrategyRollingSummary {
-			if stack.LLM == nil {
-				return stack, fmt.Errorf("memory: strategy=rolling_summary requires an LLM (configure llm) so the default Summarizer can be built")
-			}
-			s, sErr := llmsummarizer.New(stack.LLM,
-				llmsummarizer.WithModel(cfg.Memory.Summarizer.Model),
-				llmsummarizer.WithSystemPromptExtension(cfg.Memory.Summarizer.Prompt))
-			if sErr != nil {
-				return stack, fmt.Errorf("summarizer: %w", sErr)
-			}
-			summarizer = s
-		}
 		var ms memory.MemoryStore
 		var openErr error
 		if memCfg.Driver == "postgres" {
 			ms, openErr = postgresRuntime.Memory(memCfg, memory.Deps{
-				State:      stateStore,
-				Bus:        bus,
-				Summarizer: summarizer,
-				Embedder:   stack.Embedder,
+				Redactor: stack.Redactor, RetentionTTL: cfg.Sessions.IdleTTL,
+				State: stateStore,
+				Bus:   bus,
 			})
 		} else {
 			ms, openErr = memory.Open(ctx, memCfg, memory.Deps{
-				State:      stateStore,
-				Bus:        bus,
-				Summarizer: summarizer,
-				Embedder:   stack.Embedder,
+				Redactor: stack.Redactor, RetentionTTL: cfg.Sessions.IdleTTL,
+				State: stateStore,
+				Bus:   bus,
 			})
 		}
 		if openErr != nil {
@@ -1191,14 +1164,12 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		stack.Planner = plnr
 	}
 
-	// the trajectory-compression runner — built
-	// when the operator set a non-zero `planner.token_budget`. The
-	// summariser needs a real LLM client; a budget without an LLM is a
-	// misconfiguration surfaced loudly at boot (CLAUDE.md §13 — no
-	// silent "compression configured but inert" path).
-	if cfg.Planner.TokenBudget > 0 {
+	// One working-input budget also serves within-run compaction. A rolling
+	// summary with a zero explicit budget derives its target from the actual
+	// model request; zero must not silently disable that compactor.
+	if cfg.Memory.Strategy == string(memory.StrategyRollingSummary) || cfg.Memory.BudgetTokens > 0 {
 		if stack.LLM == nil {
-			return fmt.Errorf("planner: token_budget=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Planner.TokenBudget)
+			return fmt.Errorf("memory: budget_tokens=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Memory.BudgetTokens)
 		}
 		// The operator's heavy-output threshold is threaded so the
 		// summariser's aggregate payload budget tracks the SAME limit
@@ -1206,8 +1177,21 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		// — a compaction payload must never trip ErrContextLeak on
 		// the run it exists to save). Zero falls back to the canonical
 		// default inside the option.
-		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM,
-			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes))
+		summaryOptions := []llmsummarizer.TrajectoryOption{
+			llmsummarizer.WithTrajectoryModel(cfg.Memory.Summarizer.Model),
+			llmsummarizer.WithTrajectoryMaxSummaryTokens(cfg.Memory.Summarizer.MaxTokens),
+			llmsummarizer.WithTrajectoryMaxCalls(cfg.Memory.Summarizer.MaxCalls),
+			llmsummarizer.WithTrajectoryPromptExtension(cfg.Memory.Summarizer.Prompt),
+			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
+		}
+		if route := cfg.Memory.Summarizer.ProviderRoute; route != nil {
+			summaryOptions = append(summaryOptions, llmsummarizer.WithTrajectoryProviderRoute(llm.ProviderRoute{
+				RouteID: route.RouteID, RouteGeneration: route.RouteGeneration,
+				ProviderConnectionID: route.ProviderConnectionID, ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+				CredentialAssetGeneration: route.CredentialAssetGeneration, ModelSelector: route.ModelSelector,
+			}, opts.ProviderRoute, cfg.LLM.ContextWindowReserve))
+		}
+		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM, summaryOptions...)
 		if err != nil {
 			return fmt.Errorf("trajectory summariser: %w", err)
 		}

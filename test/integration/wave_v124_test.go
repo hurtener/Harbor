@@ -379,6 +379,7 @@ func (r *wvRig) boot(t *testing.T) {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	driver, err := serve.NewRunLoopDriver(serve.RunLoopDriverOptions{
+		SessionMemory: config.MemoryConfig{Strategy: "none"}, // Reattachment fixture; cumulative continuity has its own assembled tests.
 		Bus:           r.bus,
 		RunLoop:       rl,
 		Planner:       r.observer,

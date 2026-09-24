@@ -80,6 +80,35 @@ func TestNewTrajectorySummariser_NilClient_FailsLoud(t *testing.T) {
 	}
 }
 
+func TestTrajectorySummariser_ConfiguredOutputHasNoFixedByteCeiling(t *testing.T) {
+	fact := strings.Repeat("preserve-me ", 2048)
+	client := &stubClient{response: llm.CompleteResponse{Content: `{"goals":[],"facts":["` + fact + `"],"pending":[],"last_output_digest":"done","note":""}`, FinishReason: "stop"}}
+	s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryMaxSummaryTokens(8192))
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := s.Summarise(t.Context(), trajRC("large-output"), trajFixture())
+	if err != nil {
+		t.Fatalf("configured completion rejected by byte ceiling: %v", err)
+	}
+	if len(summary.Facts) != 1 || summary.Facts[0] != fact {
+		t.Fatal("valid output changed")
+	}
+	calls := client.seenCalls()
+	if len(calls) != 1 || calls[0].req.MaxTokens == nil || *calls[0].req.MaxTokens != 8192 {
+		t.Fatal("configured output allowance not sent")
+	}
+	next := trajFixture()
+	next.Summary = summary
+	if _, err := s.Summarise(t.Context(), trajRC("large-prior-summary"), next); err != nil {
+		t.Fatalf("prior valid summary rejected by byte ceiling: %v", err)
+	}
+	calls = client.seenCalls()
+	if len(calls) != 2 || !strings.Contains(*calls[1].req.Messages[1].Content.Text, fact) {
+		t.Fatal("next maintenance request lost the complete prior summary")
+	}
+}
+
 func TestTrajectorySummariser_Summarise_HappyPath(t *testing.T) {
 	t.Parallel()
 	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
@@ -119,18 +148,20 @@ func TestTrajectorySummariser_Summarise_HappyPath(t *testing.T) {
 		t.Error("JSONSchema does not carry the five-field shape")
 	}
 	// Payload composition: query, goal, per-step action + LLM-facing
-	// observation + error + reasoning all render.
+	// observation + error render; raw reasoning stays private.
 	for _, want := range []string{
 		"what is the access code?",
 		"find the access code",
 		"vault_read",
 		"ACCESS-CODE-1457",
 		"vault_list timed out",
-		"read the vault first",
 	} {
 		if !strings.Contains(call.content, want) {
 			t.Errorf("compaction payload missing %q\npayload:\n%s", want, call.content)
 		}
+	}
+	if strings.Contains(call.content, "read the vault first") {
+		t.Error("raw internal reasoning entered compaction input")
 	}
 	// D-026 discipline: the payload renders the LLM-facing projection,
 	// not the raw observation.
@@ -174,7 +205,6 @@ func TestTrajectorySummariser_Summarise_EmptyOrVacuous_ErrEmptySummary(t *testin
 		"empty content": "",
 		"vacuous object": `{"goals":[],"facts":[],"pending":[],` +
 			`"last_output_digest":"","note":""}`,
-		"unrelated object": `{"unexpected":"fields"}`,
 	} {
 		client := &stubClient{response: llm.CompleteResponse{Content: content}}
 		s, err := summarizer.NewTrajectorySummariser(client)
@@ -258,7 +288,32 @@ func TestTrajectorySummariser_Options_ModelPromptMaxTokens(t *testing.T) {
 	}
 }
 
-func TestTrajectorySummariser_Payload_CapsOversizeFragments(t *testing.T) {
+func TestTrajectorySummariser_PromptExtensionPreservesBaseline(t *testing.T) {
+	t.Parallel()
+	for _, extra := range []string{"", " \n ", " Preserve the approved navigation. "} {
+		client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
+		s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryPromptExtension(extra))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Summarise(t.Context(), trajRC("r1"), trajFixture()); err != nil {
+			t.Fatal(err)
+		}
+		text := *client.seenCalls()[0].req.Messages[0].Content.Text
+		if !strings.HasPrefix(text, "You summarize historical agent execution") || !strings.Contains(text, "Do not emit checkpoint coverage") {
+			t.Fatal("extension replaced baseline instructions")
+		}
+		if trimmed := strings.TrimSpace(extra); trimmed != "" {
+			if !strings.HasSuffix(text, trimmed) || !strings.Contains(text, "extend the above; do not override it") {
+				t.Fatal("operator extension not appended")
+			}
+		} else if strings.Contains(text, "Additional operator instructions") {
+			t.Fatal("blank extension changed baseline")
+		}
+	}
+}
+
+func TestTrajectorySummariser_Payload_PreservesCompleteFragments(t *testing.T) {
 	t.Parallel()
 	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
 	s, err := summarizer.NewTrajectorySummariser(client)
@@ -267,7 +322,7 @@ func TestTrajectorySummariser_Payload_CapsOversizeFragments(t *testing.T) {
 	}
 	tr := trajFixture()
 	// A step whose only observation is RAW and oversized (the
-	// pre-projection-split legacy shape) — the payload must cap it.
+	// pre-projection-split legacy shape) — retain it when it fits.
 	big := strings.Repeat("x", 64*1024)
 	tr.Steps = append(tr.Steps, planner.Step{
 		Action:      map[string]any{"tool": "big_dump"},
@@ -277,8 +332,8 @@ func TestTrajectorySummariser_Payload_CapsOversizeFragments(t *testing.T) {
 		t.Fatalf("Summarise: %v", err)
 	}
 	payload := client.seenCalls()[0].content
-	if !strings.Contains(payload, "…[truncated]") {
-		t.Error("oversize fragment was not truncated")
+	if !strings.Contains(payload, big) || strings.Contains(payload, "…[truncated]") {
+		t.Error("permitted source body was clipped before summarization")
 	}
 	// Bound against the DERIVED budget rather than a re-typed literal:
 	// phase 213 moved the LLM-context heavy-output threshold and a
@@ -340,7 +395,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 	errs := make([]error, n)
 	for i := range n {
 		marker := fmt.Sprintf("run-marker-%03d", i)
-		tr := &planner.Trajectory{Query: marker}
+		tr := &planner.Trajectory{Query: marker, Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}}}
 		trajectories[i] = tr
 		rc := trajRC(fmt.Sprintf("run-%03d", i))
 		rc.Query = marker
@@ -378,7 +433,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 				payload += *m.Content.Text
 			}
 		}
-		if strings.Contains(payload, "blocker") {
+		if strings.Contains(payload, "[User query]\nblocker\n") {
 			select {
 			case <-ctx.Done():
 				return llm.CompleteResponse{}, ctx.Err()
@@ -404,7 +459,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 	cancelCtx, cancelBlocked := context.WithCancel(context.Background())
 	for i := range half {
 		// Blocked runs: the fake client parks on ctx.Done.
-		trB := &planner.Trajectory{Query: "blocker"}
+		trB := &planner.Trajectory{Query: "blocker", Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}}}
 		rcB := trajRC(fmt.Sprintf("blocked-%03d", i))
 		rcB.Budget = planner.Budget{TokenBudget: 10}
 		wg2.Add(1)
@@ -414,7 +469,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 		}()
 		// Free runs: independent ctx; must succeed despite siblings
 		// being cancelled mid-summarise.
-		trF := &planner.Trajectory{Query: "free"}
+		trF := &planner.Trajectory{Query: "free", Steps: []planner.Step{{LLMObservation: "older"}, {LLMObservation: "fresh"}}}
 		freeTrajs[i] = trF
 		rcF := trajRC(fmt.Sprintf("free-%03d", i))
 		rcF.Budget = planner.Budget{TokenBudget: 10}
@@ -454,15 +509,9 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 	}
 }
 
-// TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps pins
-// the aggregate cap (Wave C checkpoint audit): MANY individually
-// under-cap steps must not compose a payload past the heavy-output
-// threshold — the builder keeps the most recent steps under the
-// budget, collapses older ones into an elision marker, and the
-// summariser's own Complete call therefore can never trip the D-026
-// LLM-edge check. The per-fragment cap alone cannot provide this (the
-// single-big-fragment test above covers that axis).
-func TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps(t *testing.T) {
+// Every selected exchange must reach a bounded chronological request; an older
+// step cannot disappear just because the aggregate exceeds one request.
+func TestTrajectorySummariser_Payload_AggregateBudget_Chronological(t *testing.T) {
 	t.Parallel()
 	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
 	s, err := summarizer.NewTrajectorySummariser(client)
@@ -491,22 +540,8 @@ func TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps(t *testing.
 	if _, err := s.Summarise(context.Background(), trajRC("r-agg"), tr); err != nil {
 		t.Fatalf("Summarise: %v", err)
 	}
-	payload := client.seenCalls()[0].content
-	if len(payload) >= llm.DefaultHeavyOutputThreshold {
-		t.Fatalf("payload is %d bytes — at/over the %d heavy-output threshold; the aggregate budget failed",
-			len(payload), llm.DefaultHeavyOutputThreshold)
-	}
-	if !strings.Contains(payload, "earlier steps elided to fit the compaction payload budget") {
-		t.Error("overflowing trajectory rendered no elision marker")
-	}
-	// Recency wins: the LAST step is present, the FIRST is elided —
-	// with original step numbering preserved.
-	if !strings.Contains(payload, fmt.Sprintf("Step %d action:", steps)) {
-		t.Error("most recent step missing from the budgeted payload")
-	}
-	if strings.Contains(payload, "Step 1 action:") {
-		t.Error("oldest step survived a payload that should have elided it")
-	}
+	assertChronologicalCalls(t, client.seenCalls(), steps, llm.DefaultHeavyOutputThreshold)
+
 }
 
 // TestTrajectorySummariser_Payload_UnderBudget_NoElision pins the
@@ -559,11 +594,36 @@ func TestTrajectorySummariser_Payload_ThreadedThresholdShrinksBudget(t *testing.
 	if _, err := s.Summarise(context.Background(), trajRC("r-thr"), tr); err != nil {
 		t.Fatalf("Summarise: %v", err)
 	}
-	payload := client.seenCalls()[0].content
-	if len(payload) >= threshold {
-		t.Fatalf("payload is %d bytes — at/over the threaded %d threshold", len(payload), threshold)
+	assertChronologicalCalls(t, client.seenCalls(), 20, threshold)
+
+}
+
+func assertChronologicalCalls(t *testing.T, calls []recordedCall, steps, threshold int) {
+	t.Helper()
+	if len(calls) < 2 || len(calls) > 16 {
+		t.Fatalf("got %d calls, want bounded multi-chunk summary", len(calls))
 	}
-	if !strings.Contains(payload, "elided to fit") {
-		t.Error("tight threshold produced no elision on an overflowing trajectory")
+	all := ""
+	for i, call := range calls {
+		if len(call.req.Messages) != 2 || len(call.req.Tools) != 0 || call.req.MaxTokens == nil || *call.req.MaxTokens <= 0 {
+			t.Fatalf("unbounded or tool-bearing summary request %d", i)
+		}
+		payload := *call.req.Messages[1].Content.Text
+		if len(payload) >= threshold || strings.Contains(payload, "elided to fit") || strings.Contains(payload, "…[truncated]") {
+			t.Fatalf("request %d violates input bound or silently drops evidence", i)
+		}
+		if i > 0 && !strings.Contains(payload, `"the access code is ACCESS-CODE-1457"`) {
+			t.Fatalf("request %d lost previous narrative", i)
+		}
+		all += payload
+	}
+	last := -1
+	for step := 1; step <= steps; step++ {
+		marker := fmt.Sprintf("Step %d action:", step)
+		pos := strings.Index(all, marker)
+		if strings.Count(all, marker) != 1 || pos <= last {
+			t.Fatalf("exchange %d missing, duplicated or out of order", step)
+		}
+		last = pos
 	}
 }

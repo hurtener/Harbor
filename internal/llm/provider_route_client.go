@@ -38,6 +38,13 @@ func (c *providerRouteClient) Complete(ctx context.Context, req CompleteRequest)
 	if err != nil {
 		return CompleteResponse{}, err
 	}
+	// The resolver is networked and may return after a selection that was valid
+	// at request time has expired. Recheck at receipt before policy or the inner
+	// chain can observe it. The leaf still resolves a fresh credential for the
+	// eventual provider attempt.
+	if !selected.ExpiresAt.After(c.now()) {
+		return CompleteResponse{}, ErrProviderRouteInvalid
+	}
 	if err := c.validator.ValidateProviderRouteSelection(selected); err != nil {
 		return CompleteResponse{}, ErrProviderRouteInvalid
 	}

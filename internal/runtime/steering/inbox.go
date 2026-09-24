@@ -57,8 +57,16 @@ type ControlEvent struct {
 // Construct an Inbox via Registry.Open; do not construct one
 // directly.
 type Inbox struct {
-	identity identity.Quadruple
-	clock    Clock
+	// Execution state is guarded by mu. The identity-scoped cancellation
+	// handle is installed before registry publication, never a stored context.
+	cancelExecution       context.CancelFunc
+	cancelAttempt         context.CancelFunc
+	steerGeneration       uint64
+	invocationInvalidated chan struct{}
+	hardCancellation      *ControlEvent
+	executionFinished     bool
+	identity              identity.Quadruple
+	clock                 Clock
 
 	mu     sync.Mutex
 	queue  []ControlEvent
@@ -135,6 +143,12 @@ func (in *Inbox) validateEvent(ev ControlEvent) error {
 	if err := ValidatePayload(ev.Payload); err != nil {
 		return err
 	}
+	if ev.Type == ControlUserMessage {
+		message, ok := stringFromPayload(ev.Payload, "message")
+		if !ok || message == "" || len(ev.Payload) != 1 {
+			return fmt.Errorf("%w: USER_MESSAGE requires only a nonempty message string; send attachments with a new turn", ErrPayloadInvalid)
+		}
+	}
 	return nil
 }
 
@@ -145,10 +159,34 @@ func (in *Inbox) validateEvent(ev ControlEvent) error {
 // the events (the batch-arbitration semantics under test require one
 // drain).
 func (in *Inbox) enqueueLocked(ev ControlEvent) error {
-	if in.closed {
+	if in.closed || in.executionFinished {
 		return fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
 	}
 	ev.EnqueuedAt = in.clock.Now()
+	if ev.Type == ControlUserMessage {
+		if message, ok := stringFromPayload(ev.Payload, "message"); ok && message != "" {
+			in.steerGeneration++
+			if in.invocationInvalidated != nil {
+				close(in.invocationInvalidated)
+				in.invocationInvalidated = nil
+			}
+			if in.cancelAttempt != nil {
+				in.cancelAttempt()
+			}
+		}
+	}
+	if in.cancelExecution != nil && ev.Type == ControlCancel && boolFromPayload(ev.Payload, "hard") {
+		if in.hardCancellation != nil {
+			return nil // an already-accepted hard cancellation is idempotent
+		}
+		// Only the accepted hard cancellation needs a retained pointer. Taking
+		// &ev would heap-allocate every ordinary steering event as well.
+		accepted := ev
+		in.hardCancellation = &accepted
+		// CancelFunc performs no external I/O. Calling it under the same lock
+		// as finishExecution makes cancellation versus completion atomic.
+		in.cancelExecution()
+	}
 	in.queue = append(in.queue, ev)
 
 	// Coalesced wake: a non-blocking send on the 1-buffered notify
@@ -212,6 +250,15 @@ func (in *Inbox) WaitForEvent(ctx context.Context) error {
 	}
 }
 
+// finishExecution closes control admission at the terminal decision boundary.
+// The first accepted hard cancellation wins over any late planner result.
+func (in *Inbox) finishExecution() *ControlEvent {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.executionFinished = true
+	return in.hardCancellation
+}
+
 // Drain atomically removes and returns every queued ControlEvent in
 // FIFO order, leaving the inbox empty. This is the surface the
 // run loop calls between planner steps. Drain on an empty inbox
@@ -221,17 +268,23 @@ func (in *Inbox) WaitForEvent(ctx context.Context) error {
 // The returned slice is owned by the caller — the Inbox keeps no
 // reference to it.
 func (in *Inbox) Drain() ([]ControlEvent, error) {
+	drained, _, err := in.drainWithGeneration()
+	return drained, err
+}
+
+// The boundary and its instruction generation are one atomic snapshot.
+func (in *Inbox) drainWithGeneration() ([]ControlEvent, uint64, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	if in.closed {
-		return nil, fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
+		return nil, in.steerGeneration, fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
 	}
 	drained := in.queue
 	in.queue = nil
 	if drained == nil {
-		return []ControlEvent{}, nil
+		return []ControlEvent{}, in.steerGeneration, nil
 	}
-	return drained, nil
+	return drained, in.steerGeneration, nil
 }
 
 // Len returns the number of currently-queued events. Primarily for

@@ -231,12 +231,12 @@ var CanonicalMethods = map[string]struct{}{
 	// Console-Tasks-page cluster — two methods.
 	"tasks.list": {},
 	"tasks.get":  {},
-	// Console-Sessions-page cluster — four methods (two reads + the
-	// data-lifecycle erasure verb + the rename verb).
-	"sessions.list":      {},
-	"sessions.inspect":   {},
-	"sessions.delete":    {},
-	"sessions.set_title": {},
+	// Session methods: two reads, erasure, reconciliation and rename.
+	"sessions.list":              {},
+	"sessions.inspect":           {},
+	"sessions.delete":            {},
+	"sessions.reconcile_context": {},
+	"sessions.set_title":         {},
 	// Session-turns read pair — the turn-projection surface (routes are
 	// pinned explicitly; never derived generically).
 	"sessions.turns.list": {},
@@ -396,6 +396,8 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigHooks":                                  "types",
 	"AgentConfigHooksDiff":                              "types",
 	"AgentConfigNaming":                                 "types",
+	"AgentConfigMemory":                                 "types",
+	"AgentConfigMemoryDiff":                             "types",
 	"AgentConfigNamingDiff":                             "types",
 	"AgentConfigPayload":                                "types",
 	"AgentConfigRevisionView":                           "types",
@@ -745,19 +747,21 @@ var CanonicalWireTypes = map[string]string{
 	// SessionStatus / SessionSort are string-enum types (like
 	// methods.Method / errors.Code) and are NOT listed here —
 	// CanonicalWireTypes records struct wire types only.
-	"Window":                   "types",
-	"SessionFilter":            "types",
-	"SessionsListRequest":      "types",
-	"SessionRow":               "types",
-	"SessionsListResponse":     "types",
-	"InterventionSummary":      "types",
-	"ArtifactRefSummary":       "types",
-	"SessionsInspectRequest":   "types",
-	"SessionsInspectResponse":  "types",
-	"SessionsDeleteRequest":    "types",
-	"SessionsDeleteResponse":   "types",
-	"SessionsSetTitleRequest":  "types",
-	"SessionsSetTitleResponse": "types",
+	"Window":                           "types",
+	"SessionFilter":                    "types",
+	"SessionsListRequest":              "types",
+	"SessionRow":                       "types",
+	"SessionsListResponse":             "types",
+	"InterventionSummary":              "types",
+	"ArtifactRefSummary":               "types",
+	"SessionsInspectRequest":           "types",
+	"SessionsInspectResponse":          "types",
+	"SessionsDeleteRequest":            "types",
+	"SessionsDeleteResponse":           "types",
+	"SessionsReconcileContextRequest":  "types",
+	"SessionsReconcileContextResponse": "types",
+	"SessionsSetTitleRequest":          "types",
+	"SessionsSetTitleResponse":         "types",
 	// Session-turns wire types (HA-63/64) — the turn-projection read
 	// pair, all in internal/protocol/types/session_turns.go.
 	"SessionTurnsListRequest":   "types",

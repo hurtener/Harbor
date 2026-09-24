@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,14 +19,22 @@ import (
 
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/approval"
+	"github.com/hurtener/Harbor/internal/tools/catalog"
 
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -234,6 +243,190 @@ func TestE2E_NonAdminToken_SteeringContract(t *testing.T) {
 		}
 	})
 
+	// Real HTTP control -> verified identity -> inbox -> executing RunLoop.
+	// A hard cancellation is effective during generation/tool execution, not
+	// merely an event that a future step might happen to drain.
+	for _, stage := range []string{"model_late_finish", "blocked_tool"} {
+		t.Run("hard_cancel_"+stage, func(t *testing.T) {
+			runCtx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			q := identity.Quadruple{Identity: owner, RunID: "hard-" + stage}
+			loop, err := steering.NewRunLoop(steerReg, pauseresume.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan struct{})
+			var once sync.Once
+			p := controlInterruptPlanner(func(ctx context.Context, _ planner.RunContext) (planner.Decision, error) {
+				if stage == "blocked_tool" {
+					return planner.CallTool{Tool: "blocked"}, nil
+				}
+				once.Do(func() { close(started) })
+				<-ctx.Done()
+				return planner.Finish{Reason: planner.FinishGoal}, nil
+			})
+			spec := steering.RunSpec{Planner: p, Base: planner.RunContext{Quadruple: q, Goal: "fixture", Trajectory: &planner.Trajectory{}}}
+			calls := 0
+			spec.ToolExecutor = controlInterruptExecutor(func(ctx context.Context, _ planner.RunContext, _ planner.Decision) (any, any, error) {
+				calls++
+				once.Do(func() { close(started) })
+				<-ctx.Done()
+				return nil, nil, ctx.Err()
+			})
+			done := make(chan error, 1)
+			go func() {
+				fin, err := loop.Run(runCtx, spec)
+				if fin.Reason == planner.FinishGoal {
+					done <- errors.New("late model response won over accepted cancel")
+					return
+				}
+				done <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("execution did not start")
+			}
+			body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":{"hard":true}}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID)
+			foreign := owner
+			foreign.UserID = "different-user"
+			if status, _ := call("cancel", sign(foreign, nil), body); status != http.StatusUnauthorized {
+				t.Fatalf("foreign hard cancel = %d", status)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("foreign request interrupted owner: %v", err)
+			default:
+			}
+			if status, code := call("cancel", nonAdmin, body); status != http.StatusOK {
+				t.Fatalf("owner hard cancel = %d %s", status, code)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("hard cancel outcome = %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("HTTP hard cancellation did not interrupt execution")
+			}
+			if (stage == "blocked_tool" && calls != 1) || (stage == "model_late_finish" && calls != 0) {
+				t.Fatalf("unexpected post-cancel dispatch count: %d", calls)
+			}
+		})
+	}
+
+	t.Run("user_message_interrupts_and_reaches_actual_model_request", func(t *testing.T) {
+		runCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		q := identity.Quadruple{Identity: owner, RunID: "steer-inflight"}
+		loop, err := steering.NewRunLoop(steerReg, pauseresume.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		const correction = "Use amber.\n  Preserve NORTH-STAR-47."
+		started := make(chan struct{})
+		requests := 0
+		client := controlModelFunc(func(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+			requests++
+			if requests == 1 {
+				close(started)
+				<-ctx.Done()
+				return llm.CompleteResponse{Content: "obsolete", FinishReason: "stop"}, nil
+			}
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleUser && msg.Content.Text != nil && *msg.Content.Text == correction {
+					return llm.CompleteResponse{Content: "corrected", FinishReason: "stop"}, nil
+				}
+			}
+			return llm.CompleteResponse{}, errors.New("HTTP steering did not reach model input")
+		})
+		done := make(chan error, 1)
+		go func() {
+			_, err := loop.Run(runCtx, steering.RunSpec{Planner: react.New(client), Base: planner.RunContext{Quadruple: q, Goal: "fixture"}})
+			done <- err
+		}()
+		select {
+		case <-started:
+		case <-runCtx.Done():
+			t.Fatal("model did not start")
+		}
+		body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":{"message":%q}}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID, correction)
+		for _, payload := range []string{`{"message":"edit","input_artifact_ids":["ref"]}`, `{"message":"edit","attachments":[]}`, `{"message":42}`, `{"message":""}`, `{}`} {
+			invalid := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":%s}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID, payload)
+			if status, code := call("user_message", nonAdmin, invalid); status != http.StatusUnprocessableEntity || code != "payload_invalid" {
+				t.Fatalf("unsupported steer accepted: status=%d code=%s", status, code)
+			}
+		}
+		foreign := owner
+		foreign.UserID = "different-user"
+		if status, _ := call("user_message", sign(foreign, nil), body); status != http.StatusUnauthorized {
+			t.Fatalf("foreign steer=%d", status)
+		}
+		if status, code := call("user_message", nonAdmin, body); status != http.StatusOK {
+			t.Fatalf("owner steer=%d %s", status, code)
+		}
+		if err := <-done; err != nil || requests != 2 {
+			t.Fatalf("requests=%d outcome=%v", requests, err)
+		}
+	})
+
+	t.Run("user_message_withdraws_obsolete_approval_without_invocation", func(t *testing.T) {
+		runCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		q := identity.Quadruple{Identity: owner, RunID: "steer-approval"}
+		coord := pauseresume.New()
+		gate, err := approval.NewApprovalGate(approval.GateDeps{Policy: approval.AlwaysDenyPolicy{}, Coordinator: coord, Bus: bus, Redactor: red, Authorizer: approval.NewIdentityAuthorizer()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = gate.Close(context.Background()) }()
+		sub, err := bus.Subscribe(runCtx, events.Filter{Tenant: owner.TenantID, User: owner.UserID, Session: owner.SessionID, Types: []events.EventType{approval.EventTypeToolApprovalRequested}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Cancel()
+		loop, err := steering.NewRunLoop(steerReg, coord)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempts, invocations := 0, 0
+		desc := catalog.WrapWithApproval(tools.ToolDescriptor{Tool: tools.Tool{Name: "guarded"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			invocations++
+			return tools.ToolResult{}, nil
+		}}, gate, catalog.ApprovalWrapperOptions{})
+		p := controlInterruptPlanner(func(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
+			attempts++
+			if attempts == 1 {
+				return planner.CallTool{Tool: "guarded"}, nil
+			}
+			if len(rc.Control.UserMessages) != 1 || rc.Control.UserMessages[0] != "Change the plan" {
+				return nil, errors.New("correction absent after approval withdrawal")
+			}
+			return planner.Finish{Reason: planner.FinishGoal}, nil
+		})
+		exec := controlInterruptExecutor(func(ctx context.Context, _ planner.RunContext, _ planner.Decision) (any, any, error) {
+			result, err := desc.Invoke(ctx, json.RawMessage(`{}`))
+			return result.Value, result.Value, err
+		})
+		done := make(chan error, 1)
+		go func() {
+			_, err := loop.Run(runCtx, steering.RunSpec{Planner: p, ToolExecutor: exec, Base: planner.RunContext{Quadruple: q}})
+			done <- err
+		}()
+		select {
+		case <-sub.Events():
+		case <-runCtx.Done():
+			t.Fatal("approval request did not arrive")
+		}
+		body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q,"run":%q},"payload":{"message":"Change the plan"}}`, owner.TenantID, owner.UserID, owner.SessionID, q.RunID)
+		if status, code := call("user_message", nonAdmin, body); status != http.StatusOK {
+			t.Fatalf("steer=%d %s", status, code)
+		}
+		if err := <-done; err != nil || attempts != 2 || invocations != 0 {
+			t.Fatalf("attempts=%d invocations=%d err=%v", attempts, invocations, err)
+		}
+	})
+
 	// (6) Concurrency stress — N non-admin owners each steer their OWN
 	// distinct run concurrently. Each control must land ONLY on its own
 	// inbox (no cross-talk).
@@ -276,4 +469,24 @@ func TestE2E_NonAdminToken_SteeringContract(t *testing.T) {
 			}
 		}
 	})
+}
+
+type controlInterruptPlanner func(context.Context, planner.RunContext) (planner.Decision, error)
+
+type controlModelFunc func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error)
+
+func (f controlModelFunc) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return f(ctx, req)
+}
+
+func (controlModelFunc) Close(context.Context) error { return nil }
+
+func (p controlInterruptPlanner) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
+	return p(ctx, rc)
+}
+
+type controlInterruptExecutor func(context.Context, planner.RunContext, planner.Decision) (any, any, error)
+
+func (e controlInterruptExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, d planner.Decision) (any, any, error) {
+	return e(ctx, rc, d)
 }

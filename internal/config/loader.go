@@ -164,6 +164,13 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source, configDir stri
 	}
 	cfg := Defaults()
 	if err := yaml.UnmarshalWithOptions(cleaned, cfg, yaml.Strict()); err != nil {
+		var unknown *yaml.UnknownFieldError
+		if errors.As(err, &unknown) && unknown.Token != nil && unknown.Token.Value == "retained_context_turns" {
+			return nil, fmt.Errorf("%w: %s: sessions.retained_context_turns was removed; use memory.strategy: rolling_summary and memory.recent_turns: %w", ErrConfigInvalid, source, err)
+		}
+		if errors.As(err, &unknown) && unknown.Token != nil && unknown.Token.Value == "token_budget" {
+			return nil, fmt.Errorf("%w: %s: token_budget is not supported here; use memory.budget_tokens for input compaction (planner.token_budget was removed; model output limits are independent): %w", ErrConfigInvalid, source, err)
+		}
 		return nil, fmt.Errorf("%w: %s: parse: %w", ErrConfigInvalid, source, err)
 	}
 	cfg.source = source
@@ -506,9 +513,9 @@ func Defaults() *Config {
 			RemoteDriver: "loopback",
 		},
 		Memory: MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "none",
-			RecoveryBacklogMax: 16,
+			Driver:      "inmem",
+			Strategy:    "rolling_summary",
+			RecentTurns: 20,
 		},
 		// closes issue #126. The V1 planner-driver default is
 		// "react" (the reference LLM-driven ReAct concrete — /).
@@ -550,18 +557,55 @@ func boolPtr(b bool) *bool { return &b }
 // Unset env vars are no-ops (zero or default value remains). Slice
 // fields accept comma-separated values.
 func applyEnvOverrides(cfg *Config) error {
-	v := reflect.ValueOf(cfg).Elem()
-	return walkLeaves(v, nil, func(path []string, leaf reflect.Value) error {
+	if _, present := os.LookupEnv("HARBOR_MEMORY_RECOVERY_BACKLOG_MAX"); present {
+		return errors.New("HARBOR_MEMORY_RECOVERY_BACKLOG_MAX was removed; cumulative memory never drops unsummarized recovery work")
+	}
+	if _, present := os.LookupEnv("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS"); present {
+		return errors.New("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS was removed; use HARBOR_MEMORY_STRATEGY=rolling_summary and HARBOR_MEMORY_RECENT_TURNS")
+	}
+	if _, present := os.LookupEnv("HARBOR_PLANNER_TOKEN_BUDGET"); present {
+		return errors.New("HARBOR_PLANNER_TOKEN_BUDGET was removed; use HARBOR_MEMORY_BUDGET_TOKENS for input compaction")
+	}
+	for _, key := range []string{"HARBOR_MEMORY_RETRIEVAL", "HARBOR_MEMORY_RETRIEVAL_TOP_K", "HARBOR_MEMORY_RETRIEVAL_MIN_SCORE"} {
+		if _, present := os.LookupEnv(key); present {
+			return fmt.Errorf("%s was removed; cumulative session memory does not maintain a semantic index", key)
+		}
+	}
+	if _, err := applyEnvToStruct(reflect.ValueOf(cfg).Elem(), nil); err != nil {
+		return err
+	}
+	// This optional section stays absent unless YAML or one of its environment
+	// leaves explicitly selects it. Partial/empty selectors still reach normal
+	// validation and fail closed; never silently inherit the driving route.
+	route := cfg.Memory.Summarizer.ProviderRoute
+	if route == nil {
+		route = &MemorySummarizerProviderRoute{}
+	}
+	applied, err := applyEnvToStruct(reflect.ValueOf(route).Elem(), []string{"memory", "summarizer", "provider_route"})
+	if err != nil {
+		return err
+	}
+	if applied {
+		cfg.Memory.Summarizer.ProviderRoute = route
+	}
+	return nil
+}
+
+func applyEnvToStruct(v reflect.Value, prefix []string) (bool, error) {
+	applied := false
+	err := walkLeaves(v, prefix, func(path []string, leaf reflect.Value) error {
 		envName := envPrefix + strings.ToUpper(strings.Join(path, "_"))
 		raw, ok := os.LookupEnv(envName)
 		if !ok {
 			return nil
 		}
+		applied = true
 		if err := setLeaf(leaf, raw); err != nil {
 			return fmt.Errorf("config.%s: %w", strings.Join(path, "."), err)
 		}
 		return nil
 	})
+	return applied, err
 }
 
 // setByPath resolves a dotted key path against *Config and sets the

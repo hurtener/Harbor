@@ -527,6 +527,10 @@ type AgentConfigPayload struct {
 	// Naming, when non-nil, pins the agent's session auto-naming policy
 	// section for the revision.
 	Naming *AgentConfigNaming `json:"naming,omitempty"`
+	// Memory overrides memory.budget_tokens from YAML for subsequent runs.
+	// Omission inherits YAML; present zero selects the effective model's safe
+	// input target. Requires agent_config_memory_v1 on runtime.info.
+	Memory *AgentConfigMemory `json:"memory,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent contributes nothing and leaves
 	// the composed system prompt byte-identical.
@@ -745,6 +749,7 @@ type AgentConfigDiff struct {
 	LLMParams         AgentConfigLLMParamsDiff         `json:"llm_params"`
 	Hooks             AgentConfigHooksDiff             `json:"hooks"`
 	Naming            AgentConfigNamingDiff            `json:"naming"`
+	Memory            AgentConfigMemoryDiff            `json:"memory"`
 	ExtraSystemBlocks AgentConfigExtraSystemBlocksDiff `json:"extra_system_blocks"`
 }
 

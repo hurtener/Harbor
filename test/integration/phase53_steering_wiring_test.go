@@ -409,7 +409,7 @@ func TestE2E_Phase53_NineEventMatrix(t *testing.T) {
 		seen := newControlObserverPlanner(t, planner.FinishCancelled)
 		runWithPreEnqueue(t, deps, q, seen, func() {
 			enqueue(t, deps.registry, q, steering.ControlCancel, steering.ScopeOwnerUser, map[string]any{"hard": true})
-		})
+		}, context.Canceled)
 		if seen.stepCount() != 1 {
 			t.Errorf("planner steps = %d, want 1 (hard CANCEL is terminal after the initial turn)", seen.stepCount())
 		}
@@ -857,16 +857,16 @@ func (e *enqueueAtStep0Planner) Next(ctx context.Context, rc planner.RunContext)
 // runWithPreEnqueue drives the RunLoop with a wrapper that enqueues the
 // control event right after step 0 — so the observer planner sees it on
 // a subsequent step, deterministically.
-func runWithPreEnqueue(t *testing.T, deps *phase53Deps, q identity.Quadruple, p *controlObserverPlanner, enqueueFn func()) {
+func runWithPreEnqueue(t *testing.T, deps *phase53Deps, q identity.Quadruple, p *controlObserverPlanner, enqueueFn func(), wantErr ...error) {
 	t.Helper()
 	runWithPreEnqueueSpec(t, deps, q, steering.RunSpec{
 		Planner:  p,
 		Base:     planner.RunContext{Quadruple: q, Goal: "g", Catalog: tools.NewPlannerView(deps.catalog, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})},
 		MaxSteps: 32,
-	}, enqueueFn)
+	}, enqueueFn, wantErr...)
 }
 
-func runWithPreEnqueueSpec(t *testing.T, deps *phase53Deps, q identity.Quadruple, spec steering.RunSpec, enqueueFn func()) {
+func runWithPreEnqueueSpec(t *testing.T, deps *phase53Deps, q identity.Quadruple, spec steering.RunSpec, enqueueFn func(), wantErr ...error) {
 	t.Helper()
 	obs, ok := spec.Planner.(*controlObserverPlanner)
 	if !ok {
@@ -880,12 +880,14 @@ func runWithPreEnqueueSpec(t *testing.T, deps *phase53Deps, q identity.Quadruple
 	}
 	ctx := ctxFor(t, q)
 	fin, err := deps.runLoop.Run(ctx, spec)
-	if err != nil {
-		t.Fatalf("RunLoop.Run: %v", err)
+	var expected error
+	if len(wantErr) > 0 {
+		expected = wantErr[0]
 	}
-	_ = fin
+	if !errors.Is(err, expected) {
+		t.Fatalf("RunLoop.Run: %v, want %v", err, expected)
+	}
+	if errors.Is(expected, context.Canceled) && fin.Reason != planner.FinishCancelled {
+		t.Fatalf("hard Stop returned %q, want cancelled", fin.Reason)
+	}
 }
-
-// sanity: keep the errors import used (the matrix sub-tests use it via
-// the helpers indirectly; this guards against an accidental removal).
-var _ = errors.Is

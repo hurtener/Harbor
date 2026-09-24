@@ -586,6 +586,9 @@ func wv125Leg223(t *testing.T) {
 		// Controls.
 		"| 901 | Fixture: shipped phase | Shipped (v1.25) |",
 		"| 902 | Fixture: unrecognised status word | Frobnicated |",
+		"| 903 | Fixture: implemented phase awaiting release | In progress — release gates pending |",
+		"| 904 | Fixture: candidate implementation | Candidate for v1.32.0 |",
+		"| 905 | Fixture: unknown In-prefixed status | In review |",
 		"",
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(fixtureRoot, "docs", "plans", "README.md"), []byte(plan), 0o600); err != nil {
@@ -627,7 +630,7 @@ func wv125Leg223(t *testing.T) {
 	defer cancel()
 	// argv-form: bash <driver> <fixture-root> <tokens...>. No shell string.
 	out, err := exec.CommandContext(ctx, "bash", driver, fixtureRoot,
-		"85a", "900", "901", "902", "wv125-no-such-phase").CombinedOutput()
+		"85a", "900", "901", "902", "903", "904", "905", "wv125-no-such-phase").CombinedOutput()
 	if err != nil {
 		t.Fatalf("classifier driver failed: %v\n%s", err, out)
 	}
@@ -661,6 +664,17 @@ func wv125Leg223(t *testing.T) {
 	// classifiers. The correction may only relax, never tighten.
 	if v := got["901"]; v.arm != "shipped" || v.shipped != "yes" || v.old != "yes" {
 		t.Errorf("a Shipped row classified %s/%s (old %s), want shipped/yes under both", v.arm, v.shipped, v.old)
+	}
+
+	// Implemented-but-unreleased phases remain strictly enforced. Recognizing
+	// this vocabulary must not turn their all-SKIP smoke into a planning waiver.
+	for _, token := range []string{"903", "904"} {
+		if v := got[token]; v.arm != "shipped" || v.shipped != "yes" || v.old != "yes" {
+			t.Errorf("implemented phase %s classified %s/%s (old %s), want shipped/yes under both", token, v.arm, v.shipped, v.old)
+		}
+	}
+	if v := got["905"]; v.arm != "unknown" || v.shipped != "yes" {
+		t.Errorf("unrecognized In-prefixed status classified %s/%s, want unknown/yes", v.arm, v.shipped)
 	}
 
 	// FAILURE MODE / fail-closed default, twice over: an unrecognised

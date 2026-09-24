@@ -607,8 +607,7 @@ Default request-queue buffer per provider. Default: `0`.
 The embedding-client block (Phase 84d — D-191): the model/provider
 pair Harbor turns text into vectors with, configured separately from
 the chat `llm` block. Fully optional — but REQUIRED the moment an
-embedding-consuming mode is enabled (`memory.retrieval: semantic` or
-`skills.retrieval: semantic`); the validator names the missing key so
+embedding-consuming mode is enabled (`skills.retrieval: semantic`); the validator names the missing key so
 the boot failure is actionable, and a semantic mode never silently
 degrades to non-semantic retrieval.
 
@@ -825,6 +824,53 @@ section, so an omitted `reasoning_mode` there resolves to the default `off`.
 
 ## Memory
 
+### Cumulative session-memory migration — PR #779
+
+The accepted D-477 / RFC 002 target replaces the separate retained execution
+window and pair-only summary pipeline. It is **not implemented by the historical
+RC1–RC4 tags**. The current implementation uses one execution-memory owner;
+release acceptance remains tracked separately in
+[the implementation tracker](https://github.com/hurtener/Harbor/blob/docs/portable-session-context-plan/docs/notes/portable-context-tracker.md).
+
+The target standard configuration is:
+
+```yaml
+memory:
+  strategy: rolling_summary
+  recent_turns: 20
+```
+
+The checkpoint carries context across windows; `recent_turns` bounds detailed
+history only. Set `memory.strategy: none` for stateless operation. Compaction
+uses `memory.budget_tokens` for the complete assembled request (zero derives a
+safe target from the effective model), independently of model output limits.
+`sessions` continues to own lifetime and deletion. Remove
+`sessions.retained_context_turns`, the SDK `WithRetainedContext` switch and
+`planner.token_budget`; removed keys must fail with migration guidance. No
+compatibility engine or silent old-record reinterpretation is planned. Test the
+new version with fresh isolated sessions before deployment; do not rewrite old
+RC tags or delete uncertain-operation evidence to make a session start.
+
+**Landed budget consolidation:** `planner.token_budget` and
+`HARBOR_PLANNER_TOKEN_BUDGET` are removed and fail with migration guidance.
+Use `memory.budget_tokens` / `HARBOR_MEMORY_BUDGET_TOKENS`. Rolling-summary
+execution builds the compactor even with a zero explicit target. The separate
+session/SDK activation switches are also removed: choose
+`memory.strategy: rolling_summary` and `memory.recent_turns` for serving and
+embedding. Omitted YAML memory settings and `config.Defaults()` now select
+`rolling_summary` with `recent_turns: 20`. This retains short-term session
+context and may make governed compaction calls. Set `memory.strategy: none`
+explicitly for stateless execution. The legacy pair-summary engine and its
+background recovery loop are removed. Administrative `Inspect`/`Put`/`Delete`
+use the same cumulative owner as runtime execution. `Put` accepts a conversational
+note, not caller-asserted tool receipts or execution metadata.
+
+Large `memory.get` values return source-bound references. Read them through
+bounded `artifacts.get`, which checks the current memory source on every read.
+They are not separate stored artifacts and cannot be presigned. Deletion,
+expiry or a changed source invalidates the old reference; re-read `memory.list`
+to inspect the current representation. Use `memory.delete` to delete the source.
+
 ### memory.driver
 
 `MemoryStore` driver. Default: `inmem`. Validation: `inmem` /
@@ -836,8 +882,8 @@ Persistent-driver connection string. Default: empty. Validation:
 required when `driver != "inmem"`. Secret: redacted.
 
 Note (D-174): conversation memory durability rides on the configured
-**`state.driver`**, not `memory.dsn`. Under the executor-delegation model
-all memory drivers persist strategy state through the StateStore, so a SQL
+**`state.driver`**, not `memory.dsn`. All memory drivers share the cumulative
+owner backed by the StateStore, so a SQL
 memory driver with a SQL `memory.dsn` but an `inmem` `state.driver` is
 NOT durable across a restart. To make memory durable, set a SQL
 `state.driver`; `inmem` memory + a SQL StateStore is already durable.
@@ -858,33 +904,78 @@ completed. Restart-required.
 
 ### memory.strategy
 
-Memory shape. Default: `none`. Validation: `none` / `truncation` /
-`rolling_summary`. All three strategies run on every memory driver
-(`inmem` / `sqlite` / `postgres`) — they delegate to a shared strategy
-executor that persists through the configured StateStore, so a SQL
-`state.driver` makes `truncation` and `rolling_summary` durable across a
-runtime restart (D-174). `rolling_summary` requires an LLM: `harbor dev`
-builds the Summarizer from the configured `llm` automatically (no separate
-summariser model). Configuring `rolling_summary` with no LLM fails loud at
-boot — there is no stub fallback (CLAUDE.md §13).
+Memory shape. Default: `rolling_summary`. Validation: `none` / `rolling_summary`.
+The removed `truncation` strategy is rejected: cumulative memory never discards
+unsummarized history to fit the recent window. Every memory driver uses the same
+StateStore-backed execution owner. A SQL `state.driver` makes this history durable
+across restart. `rolling_summary` requires the governed LLM client; the runtime
+constructs its trajectory compactor through that client. Missing dependencies
+fail at boot rather than selecting a stub or a second summary pipeline.
 
 ### memory.budget_tokens
 
-Truncation / rolling-summary budget cap (token estimate). Default:
-`0` (unbounded append). Validation: >= 0.
+Working-input compaction target, in estimated tokens. Validation: >= 0.
+With `rolling_summary`, zero derives the target from the effective model's input
+capacity, context reserve and requested output reservation. A positive value
+also builds the within-run compactor for stateless execution. It is a soft
+target: preserve fresh tool results; the final model admission guard remains
+mandatory. It never sets or lowers a model's output-token allowance.
+Set the deployment default in `harbor.yaml` (or `HARBOR_MEMORY_BUDGET_TOKENS`);
+changing that default requires a restart. Served runtimes advertising
+`agent_config_memory_v1` also accept a per-agent `memory.budget_tokens` override
+through a versioned `agent_config.set_revision`. Omit that revision section to
+inherit YAML again. Overrides apply to the next run and require an already wired
+compactor; they cannot enable a missing LLM dependency.
 
-### memory.recovery_backlog_max
-
-Bounded queue size for the `rolling_summary` strategy's recovery
-loop (D-035). Default: `16`. Validation: >= 0.
+There is no second planner budget or pair-only summary engine.
+The former `memory.recovery_backlog_max` setting and its environment override
+are removed and rejected. Cumulative memory fails explicitly when unsummarized
+evidence cannot fit; it never drops a recovery backlog to create space.
 
 ### memory.recent_turns
 
-Number of most-recent conversation turns the `rolling_summary`
-strategy keeps verbatim before older turns spill into the rolling
-summary (D-242). Default: `0` → strategy default
-(`strategy.FullZoneTurns` = 4). Validation: >= 0. Ignored by the
-`none` and `truncation` strategies.
+Number of recent root executions the cumulative `rolling_summary` strategy
+keeps in detail. Default: `20`; explicit `0` also selects twenty turns.
+Validation: non-negative, with no separate 32-turn maximum. Larger windows
+retain more detail and can increase storage, projection and compaction work.
+The checkpoint carries earlier meaning after covered detail leaves the window;
+this number is not a checkpoint-history limit. Ignored by `none`.
+
+### memory.summarizer.max_tokens
+
+Completion-token allowance per compaction call, including provider reasoning
+where applicable. Validation: >= 0. Omitted or zero keeps the existing 2048-token
+default; a positive value selects a deployment-specific allowance. For example,
+`8192` gives a reasoning model more room to finish its structured summary. This
+is separate from `memory.budget_tokens` (working input) and the driving model's
+output allowance. Governed model-capacity admission still applies; independently
+routed compaction clamps the allowance to its selected profile's output maximum.
+Increasing this allowance reserves more output space and can reduce input space
+per compaction chunk. Truncated or otherwise incomplete summaries remain errors;
+they never replace a valid checkpoint. Valid narratives have no separate fixed
+16 KiB output or persisted-checkpoint ceiling. Strict structured-summary
+validation remains, and each subsequent maintenance request must still fit
+the configured heavy-content threshold and its selected model's input budget.
+
+Set it in YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`. Restart-required; not an
+agent-config Protocol field. It applies to both within-run and cross-turn
+compaction through the same governed client, with no change to prompts, reasoning
+controls or route authority.
+
+### memory.summarizer.max_calls
+
+Maximum chronological completion calls in one compaction. Omitted or zero
+selects `16`; positive values set the deployment's allowance. Negative values
+are rejected. Configure through YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS`;
+restart-required. This is a maintenance-work allowance, not a retry count or
+session-lifetime limit. Every call still follows model admission, cancellation,
+rate/cost governance and the existing retry policy. Exhaustion fails explicitly
+without installing a partial summary or dropping retained evidence.
+
+Increasing this value can increase maintenance time and spend. Receipt consumers
+must accept the positive-ordinal maintenance identity grammar before using more
+than sixteen calls; older versions may reject those receipts. The default
+remains compatible. Identity, nonce and route validation are unchanged.
 
 ### memory.summarizer.model
 
@@ -893,8 +984,58 @@ independent of the planner's model — set it to a cheaper/faster model
 to keep compaction cheap (D-243). Default: empty → the main LLM's
 default model (today's behavior). A model with no matching
 `model_profiles` entry fails at runtime like any unsupported model; it
-is not rejected at load time. Ignored by the `none` and `truncation`
-strategies.
+is not rejected at load time. It selects the maintenance model whenever a
+within-run or cross-turn compactor is configured.
+An externally selected provider route or execution grant remains authoritative:
+it currently binds maintenance to its admitted model too. A different static
+summarizer model is rejected on that path, not silently authorized or replaced
+with the runtime's local key. Separately authorized maintenance routing is not
+implemented by this YAML field. This setting is restart-required.
+
+### memory.summarizer.provider_route
+
+Optional, restart-required opaque selector for a separately authorized compaction
+model on externally routed runs (D-482). Mutually exclusive with `model`. Uses the
+existing `llm.provider_route` resolver and the same governed Bifrost client; it
+does not contain a credential, endpoint, or identity override. Supply all fields:
+
+```yaml
+memory:
+  budget_tokens: 64000 # example deployment target, not a framework default
+  summarizer:
+    provider_route:
+      route_id: your-maintenance-route
+      route_generation: 1
+      provider_connection_id: your-provider-connection
+      provider_connection_generation: 1
+      credential_asset_generation: 1
+      model_selector: your-compaction-alias
+```
+
+Obtain current selectors/generations from the configured resolver's control
+plane; the example identifiers are placeholders. The resolver must authorize
+that model for the actual runtime, agent and user and return its model profile.
+Missing admission, revocation, stale generations, missing profiles and signed
+execution grants fail closed. There is no fallback to a local key or the driving
+model. Plain static-model runs continue to use `summarizer.model` instead.
+
+Each chunk is packed against the selected compaction model's own input capacity,
+output allowance and configured context reserve. It does not inherit the driving
+model's reasoning effort or large output reservation. The existing summary
+output allowance is clamped to the selected model's maximum; reasoning controls
+are omitted. Selection is rechecked by the normal client, and credentials are
+resolved afresh by the Bifrost leaf for each actual attempt. This route selection
+is boot configuration; `agent_config_memory_v1` edits only the working-input budget.
+
+Each selector leaf also accepts its normal environment override, prefixed with
+`HARBOR_MEMORY_SUMMARIZER_PROVIDER_ROUTE_`: `ROUTE_ID`, `ROUTE_GENERATION`,
+`PROVIDER_CONNECTION_ID`, `PROVIDER_CONNECTION_GENERATION`,
+`CREDENTIAL_ASSET_GENERATION`, and `MODEL_SELECTOR`. Supply all six when YAML
+omits the section. Environment values override individual YAML leaves; omitting
+both leaves the route unselected. Partial or empty selectors fail validation,
+and generation values must be positive unsigned 64-bit integers. This lets an
+immutable image keep its working-input budget in YAML while selecting a route
+through deployment configuration, without embedding environment-specific IDs.
 
 ### memory.summarizer.prompt
 
@@ -902,31 +1043,17 @@ Operator guidance APPENDED to the baseline `rolling_summary`
 summariser system prompt behind an explicit "extend, do not override"
 separator (D-243) — it never replaces the baseline role framing or
 conciseness/preserve-goals guarantees. Default: empty → baseline
-prompt only (no behavior change). Ignored by the `none` and
-`truncation` strategies.
+prompt only. It applies whenever a within-run or cross-turn compactor is configured.
 
-### memory.retrieval
+### Removed semantic-memory settings
 
-Opt-in retrieval mode layered ON TOP of the strategy (Phase 84d —
-D-191). Empty (the default) keeps strategy-shaped retrieval;
-`semantic` additionally embeds turns at `AddTurn` and serves
-similarity search via `MemoryStore.SearchTurns`, composing with —
-never replacing — `rolling_summary`. Default: empty. Validation:
-empty or `semantic`; `semantic` requires the `embeddings` block.
-
-### memory.retrieval_top_k
-
-Result cap for a semantic `SearchTurns` when the caller passes no
-limit. Default: `0` (resolves to the subsystem default, 5).
-Validation: >= 0. Ignored unless `memory.retrieval = "semantic"`.
-
-### memory.retrieval_min_score
-
-Cosine-similarity floor for semantic recall: a scored turn must meet
-or exceed this value to be injected into the prompt's External memory
-tier. Turns that fall below the floor are silently skipped. Default:
-`0.0`. Validation: must be in the range `[-1, 1]`. Ignored unless
-`memory.retrieval = "semantic"`.
+`memory.retrieval`, `memory.retrieval_top_k` and
+`memory.retrieval_min_score` are removed under D-477. Their corresponding
+`HARBOR_MEMORY_RETRIEVAL*` overrides are also rejected, including empty or zero
+values. Remove these settings; cumulative session memory uses checkpoints and
+recent execution evidence, not a separate vector index. External long-term
+memory remains an integration responsibility. Semantic skill retrieval and the
+embedding-client seam are unchanged.
 
 ---
 
@@ -1180,6 +1307,57 @@ requiring user confirmation. Default: `8`. Validation: > 0.
 ---
 
 ## Sessions
+
+### Session execution memory
+
+Configure root conversation memory under `memory`, not `sessions`.
+`rolling_summary` selects cumulative execution-context memory; `recent_turns`
+accepts non-negative values, with zero selecting twenty detailed turns. Restart-required.
+It persists recent terminal root runs in the configured StateStore and projects
+permitted historical evidence into the next root request. It replaces legacy
+pair-only memory projection for this mode; external long-term memory and trusted
+completion hooks are unchanged. Child tasks use their explicit task context,
+not the root window, and their private transcripts are not added to it.
+
+```yaml
+memory:
+  strategy: rolling_summary
+  recent_turns: 20
+```
+
+`RunOnce` uses the same memory configuration; no per-call activation override
+exists. `sessions.retained_context_turns`, its environment override and the SDK
+`WithRetainedContext` option are removed. Use `memory.strategy: none` for a
+stateless stack. In-memory
+StateStore retention ends with the process; SQLite/Postgres preserve committed
+content across restarts. The configured recent-turn window and session idle TTL
+govern retention; interrupted settlement can temporarily overflow the detail
+target until successful compaction. Expiry and erasure apply. The old 32-turn,
+256-step, 256-older-turn, 64-reference and 16 KiB reference-metadata ceilings
+are removed, as is the former 512 KiB evidence/journal ceiling:
+`memory.budget_tokens` governs model-input compaction, not stored byte size.
+Run execution follows its existing configured step/tranche budget rather than a
+second journal cap. All retained references remain scope/lifetime-validated;
+their model-facing metadata passes ordinary assembled-request admission.
+Successful compaction replaces model-facing covered detail with cumulative
+checkpoint meaning while retaining exact evidence; window rollover is not
+forgetting. This is private execution evidence, not additional
+content in `sessions.turns.*`.
+
+Admission and the query are committed before work. Each dispatch requires an
+intent checkpoint before execution and a settlement checkpoint before dependent
+inference. A failed persistence write stops the run, never asks the planner to
+retry the action. Terminal publication seals the journal atomically with the
+session window, then removes transient frames by exact generation. An interrupted
+run can still have an unknown outcome between external execution and settlement.
+Reconcile with the owning service rather than automatically repeating it.
+Automatic cold-run continuation remains unsupported.
+
+Private windows use format version 4 with cumulative coverage and fenced admissions.
+Source strings and identifier/completeness values remain exact, while JSON
+envelope formatting may canonicalize. Incompatible older records are refused
+explicitly; there is no compatibility layer or implicit source conversion.
+No stored historical action is executed by restoration.
 
 ### sessions.idle_ttl
 
@@ -2359,20 +2537,6 @@ the first N — when its spawn count exceeds this cap. Distinct from
 `absolute_max_spawn_depth`, which bounds spawn-chain DEPTH, not the
 breadth of one response's spawns. Default: `0` → dev-runtime default of
 5 (conservative, operator-revisable). Validation: >= 0.
-
-### planner.token_budget
-
-Trajectory-compression threshold in estimated tokens (Phase 111e /
-D-202). When > 0, the runtime builds the LLM-backed trajectory
-summariser and the steering run loop invokes it at each step boundary:
-a trajectory whose token estimate exceeds the budget is compacted into
-the five-field `Trajectory.Summary`, which replaces the raw per-step
-history in subsequent prompt builds (the prompt shrinks). One
-compression per run at V1.1.x — no auto-cascade. Emits
-`trajectory.compressed` / `trajectory.compression_failed` on the
-canonical event stream. Requires a configured `llm` block when
-non-zero (fail-loud at boot otherwise). Default: `0` → compression
-disabled. Validation: >= 0.
 
 ### planner.skills_context_max
 

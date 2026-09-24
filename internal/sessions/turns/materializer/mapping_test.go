@@ -14,7 +14,8 @@ import (
 )
 
 // TestMaterialize_TerminalCauseMapping pins the three terminal causes
-// and the closed error-class derivation from task error codes.
+// and the independent closed finish-reason / error-class derivation
+// from task error codes.
 func TestMaterialize_TerminalCauseMapping(t *testing.T) {
 	t.Run("cancelled", func(t *testing.T) {
 		h := newHarness(t, "")
@@ -30,6 +31,40 @@ func TestMaterialize_TerminalCauseMapping(t *testing.T) {
 		row := mustGetRow(t, h, "task-cx")
 		if row.Status != turns.StatusCancelled || !row.Sealed || row.FinishReason != turns.FinishCancelled {
 			t.Errorf("cancelled row = status %q sealed %v finish %q", row.Status, row.Sealed, row.FinishReason)
+		}
+	})
+	t.Run("failed finish reason derivation", func(t *testing.T) {
+		cases := []struct {
+			code string
+			want turns.FinishReason
+		}{
+			{code: "no_path", want: turns.FinishNoPath},
+			{code: "cancelled", want: turns.FinishCancelled},
+			{code: "deadline_exceeded", want: turns.FinishDeadlineExceeded},
+			{code: "constraints_conflict", want: turns.FinishConstraintsConflict},
+			{code: "goal", want: ""},
+			{code: "NO_PATH", want: ""},
+			{code: "provider_specific_failure", want: ""},
+		}
+		for _, tc := range cases {
+			t.Run(tc.code, func(t *testing.T) {
+				h := newHarness(t, "")
+				defer h.closeStore()
+				m := h.newMaterializer(t)
+				quad := testQuad(h.id, "run-fr")
+				h.src.publish(t, spawnEv(h.id, quad.RunID, "task-fr", tasks.KindForeground, ""))
+				h.src.publish(t, failedEv(h.id, "task-fr", tc.code))
+				if _, err := m.Materialize(context.Background()); err != nil {
+					t.Fatalf("materialize: %v", err)
+				}
+				row := mustGetRow(t, h, "task-fr")
+				if row.FinishReason != tc.want {
+					t.Errorf("finish reason = %q, want %q", row.FinishReason, tc.want)
+				}
+				if row.ErrorClass == "" {
+					t.Error("failed row lost its independent error class")
+				}
+			})
 		}
 	})
 	t.Run("error class derivation", func(t *testing.T) {

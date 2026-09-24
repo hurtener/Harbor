@@ -88,6 +88,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
@@ -105,6 +106,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/publication"
+	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/virtualagent"
@@ -117,6 +119,14 @@ import (
 // MarkRunning / MarkComplete / MarkFailed on to advance the FSM
 // (closes issue #123).
 type RunLoopDriverOptions struct {
+	// SessionMemory uses the same memory configuration as embedded runs.
+	// Children use explicit task context, not root conversation history.
+	// Cumulative memory requires the StateStore, redactor and positive TTL.
+	SessionMemory      config.MemoryConfig
+	RetainedContextTTL time.Duration
+	StateStore         state.StateStore
+	Redactor           audit.Redactor
+
 	Logger   *slog.Logger
 	Bus      events.EventBus
 	RunLoop  *steering.RunLoop
@@ -140,8 +150,6 @@ type RunLoopDriverOptions struct {
 	// pinned-then-recent, capability-filtered `<skills_context>`
 	// producer (the directory carries its own MaxEntries cap; the
 	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
-	Memory          memory.MemoryStore
-	MemoryRecall    memory.RecallSettings
 	SkillsDirectory *skills.Directory
 	PlanningHints   *planner.PlanningHints
 
@@ -197,13 +205,11 @@ type RunLoopDriverOptions struct {
 	// routes via the catalog.
 	ArtifactStore artifacts.ArtifactStore
 
-	// trajectory compression. `tokenBudget`
-	// projects onto RunSpec.Base.Budget.TokenBudget (the per-run
-	// runtime budget — a run option, never
-	// planner state); `compression` is the assembly-built
-	// planner.CompressionRunner the runloop invokes at each step
-	// boundary when the budget is non-zero. Both zero/nil (the
-	// default) = compression off, byte-identical behaviour.
+	// TokenBudget is the YAML working-input target, overridden by an active
+	// agent-config memory section at run start. Zero selects automatic sizing
+	// for assembled-request-aware planners. Compression is the assembly-built
+	// compactor; nil means no compaction. These are per-run inputs, not shared
+	// mutable planner state.
 	TokenBudget int
 	Compression *planner.CompressionRunner
 
@@ -361,6 +367,11 @@ type trackedTrajectory struct {
 // RunLoop per spawned foreground task. The driver is constructed by
 // bootDevStack and Closed during stack teardown.
 type RunLoopDriver struct {
+	retainedContextTurns int
+	retainedContextTTL   time.Duration
+	stateStore           state.StateStore
+	redactor             audit.Redactor
+
 	logger          *slog.Logger
 	bus             events.EventBus
 	runLoop         *steering.RunLoop
@@ -371,8 +382,6 @@ type RunLoopDriver struct {
 
 	// per-run consumer wiring; the canonical-skills work
 	// — Directory as the skills surface. See driver opts godoc.
-	memory                memory.MemoryStore
-	memoryRecall          memory.RecallSettings
 	skillsDirectory       *skills.Directory
 	planningHints         *planner.PlanningHints
 	skillStore            skills.SkillStore
@@ -485,6 +494,16 @@ var ErrRunLoopDriverMisconfigured = errors.New("dev: per-task RunLoop driver mis
 // NewRunLoopDriver validates the opts and returns a stopped
 // driver. Call Start before serving; call Close to drain.
 func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
+	if err := memory.ValidateStrategy(memory.Strategy(opts.SessionMemory.Strategy)); err != nil {
+		return nil, fmt.Errorf("run loop memory: %w", err)
+	}
+	memoryTurns := opts.SessionMemory.RecentTurnsResolved()
+	if memoryTurns < 0 {
+		return nil, fmt.Errorf("%w: retained context turn limit is invalid", ErrRunLoopDriverMisconfigured)
+	}
+	if memoryTurns > 0 && (opts.StateStore == nil || opts.Redactor == nil || opts.RetainedContextTTL <= 0) {
+		return nil, fmt.Errorf("%w: retained context requires StateStore, Redactor and a positive TTL", ErrRunLoopDriverMisconfigured)
+	}
 	if opts.Bus == nil {
 		return nil, fmt.Errorf("%w: bus is nil", ErrRunLoopDriverMisconfigured)
 	}
@@ -522,6 +541,10 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		opts.TaskKind = tasks.KindForeground
 	}
 	return &RunLoopDriver{
+		retainedContextTurns:  memoryTurns,
+		retainedContextTTL:    opts.RetainedContextTTL,
+		stateStore:            opts.StateStore,
+		redactor:              opts.Redactor,
 		logger:                opts.Logger,
 		bus:                   opts.Bus,
 		runLoop:               opts.RunLoop,
@@ -529,8 +552,6 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		tasks:                 opts.Tasks,
 		taskKind:              opts.TaskKind,
 		driveBackground:       opts.DriveBackground,
-		memory:                opts.Memory,
-		memoryRecall:          opts.MemoryRecall,
 		skillsDirectory:       opts.SkillsDirectory,
 		planningHints:         opts.PlanningHints,
 		skillStore:            opts.SkillStore,
@@ -1173,6 +1194,16 @@ func runSnapshotAdmissionTaskError(err error) tasks.TaskError {
 	return tasks.TaskError{Code: "runtime_fetch_error", Message: "run snapshot admission: " + err.Error()}
 }
 
+// Retirement can become visible on any configuration read after admission.
+// Preserve its existing public refusal code instead of reporting an unhealthy
+// runtime. Every unrelated failure retains that projection's original mapping.
+func runConfigTaskError(err error, fallback tasks.TaskError) tasks.TaskError {
+	if errors.Is(err, agentcfg.ErrAgentRetired) {
+		return tasks.TaskError{Code: string(protoerrors.CodeAgentRetired), Message: "agent is retired"}
+	}
+	return fallback
+}
+
 func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
@@ -1391,7 +1422,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: boot agent lifecycle unavailable; failing run",
 				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID),
 				slog.String("agent_id", effectiveAgentID), slog.String("err", err.Error()))
-			if markErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "boot agent lifecycle: " + err.Error()}); markErr != nil {
+			if markErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(err, tasks.TaskError{Code: "runtime_fetch_error", Message: "boot agent lifecycle: " + err.Error()})); markErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("task_id", string(taskID)), slog.String("err", markErr.Error()))
 			}
 			return
@@ -1411,10 +1442,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("run_id", q.RunID),
 			slog.String("agent_id", effectiveAgentID),
 			slog.String("err", snapshotErr.Error()))
-		if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(snapshotErr, tasks.TaskError{
 			Code:    "runtime_fetch_error",
 			Message: "skills snapshot: " + snapshotErr.Error(),
-		}); fErr != nil {
+		})); fErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", fErr.Error()))
@@ -1503,25 +1534,6 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// slice. Directory wiring.
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
-	if d.memory != nil {
-		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall, d.logger)
-		if mErr != nil {
-			d.logger.Warn("RunLoopDriver: FetchMemoryBlocks failed; failing run",
-				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", mErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("FetchMemoryBlocks: %v", mErr),
-			}); fErr != nil {
-				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
-		}
-		memBlocks = mb
-	}
 
 	var skillsCtx []any
 	if d.catalog == nil && d.skillsDirectory != nil {
@@ -1558,7 +1570,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		views, sErr = d.projectAgentConfigSkills(taskCtx, effectiveAgentID, q, views)
 		if sErr != nil {
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "agent-config skills projection: " + sErr.Error()}); fErr != nil {
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(sErr, tasks.TaskError{Code: "runtime_fetch_error", Message: "agent-config skills projection: " + sErr.Error()})); fErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
 			}
 			return
@@ -1616,10 +1628,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", vErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(vErr, tasks.TaskError{
 				Code:    "runtime_fetch_error",
 				Message: "agent-config tool-exposure projection: " + vErr.Error(),
-			}); fErr != nil {
+			})); fErr != nil {
 				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", fErr.Error()))
@@ -1807,10 +1819,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", ovErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(ovErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "tenant-override resolution failed: " + ovErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after override-resolution error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1830,10 +1842,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", plErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(plErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "prompt-layer projection failed: " + plErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after prompt-layer-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1856,7 +1868,17 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// virtual-agent defaults. Prompt and governance authority is unchanged.
 	llmOverrides = applyTaskLLMSettings(llmOverrides, task.LLMSettings)
 	maxSteps := d.maxStepsRunLoop
-	tokenBudget := d.tokenBudget
+	tokenBudget, memoryErr := projection.ActiveMemoryBudget(taskCtx, d.agentConfig, effectiveAgentID, q, d.tokenBudget, d.compression != nil)
+	if memoryErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: memory-budget projection failed", slog.String("err", memoryErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(memoryErr, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "memory-budget projection failed: " + memoryErr.Error(),
+		})); mErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed after memory-budget projection failed", slog.String("err", mErr.Error()))
+		}
+		return
+	}
 	if virtualProfile != nil {
 		profile := *virtualProfile
 		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)
@@ -1872,10 +1894,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", chErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(chErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "run-completion-hook projection failed: " + chErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after run-completion-hook-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1893,10 +1915,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
 			slog.String("err", nmErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(nmErr, tasks.TaskError{
 			Code:    planner.TaskErrorCodeRunLoopError,
 			Message: "naming-policy projection failed: " + nmErr.Error(),
-		}); mErr != nil {
+		})); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkFailed after naming-policy-projection error failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -1998,7 +2020,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	if hasSkillSnapshot {
 		runCtx = skills.WithRunSkillReaderSnapshot(runCtx, skillSnapshot)
 	}
-	fin, err := d.runLoop.Run(runCtx, spec)
+	fin, err := d.runWithRetainedContext(runCtx, spec, task.ParentTaskID == nil, task.InputArtifactIDs)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
 		// The FSM has no auto-cancelled status (Cancel is the external-
@@ -2011,7 +2033,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			code = planner.TaskErrorCodeCancelled
 			d.logger.Debug("RunLoopDriver: run cancelled",
 				slog.String("task_id", string(taskID)))
-		case compiledSchema != nil && (errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
+		case compiledSchema != nil && (errors.Is(err, planner.ErrOutputInvalid) || errors.Is(err, llm.ErrRetryExhausted) || errors.Is(err, llm.ErrDowngradeExhausted)):
 			// A schema-constrained run whose generation-steering retry loop
 			// or provider-downgrade chain exhausted its budget fails LOUD
 			// with the output_invalid terminal code — never a schemaless
@@ -2107,30 +2129,6 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 					slog.String("err", mErr.Error()))
 			}
 			return
-		}
-
-		// Memory writeback. The 83d/83f read path
-		// is wired (run loop hands MemoryBlocks to the planner); the
-		// write path was the missing half. Without a writeback the
-		// session-scoped memory stays empty forever and the operator's
-		// multi-turn sessions cannot carry context. Best-effort: a
-		// memory.AddTurn error is logged Warn but does NOT downgrade
-		// the run's terminal status — the planner reached FinishGoal,
-		// the operator should see Complete. AssistantResponse is the
-		// envelope's Answer (the validated payload string on a schema
-		// run; the extracted answer text otherwise).
-		if d.memory != nil {
-			turn := memory.ConversationTurn{
-				UserMessage:       task.Query,
-				AssistantResponse: envelope.Answer,
-				Timestamp:         time.Now(),
-			}
-			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil {
-				d.logger.Warn("RunLoopDriver: memory.AddTurn failed; run still marked complete",
-					slog.String("task_id", string(taskID)),
-					slog.String("run_id", q.RunID),
-					slog.String("err", mErr.Error()))
-			}
 		}
 
 		raw, err := json.Marshal(envelope)

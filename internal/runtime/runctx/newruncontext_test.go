@@ -22,7 +22,6 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/skills"
 	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
@@ -234,39 +233,15 @@ func TestNewRunContext_EmptyRunID_RemainsSupportedWithoutReaderSnapshot(t *testi
 	}
 }
 
-// TestNewRunContext_MemoryParity — RunContext.MemoryBlocks equals the
-// shared FetchMemoryBlocks helper's output for the same session-scoped
-// args (NewRunContext composes the helper, does not reimplement it).
-func TestNewRunContext_MemoryParity(t *testing.T) {
-	bus := newFetchTestBus(t)
-	store := newFetchTestStore(t, bus, memory.StrategyRollingSummary, memory.RetrievalDefault)
-	q := parityQuad()
-	sessionQ := identity.Quadruple{Identity: q.Identity}
-	goal := "what did we discuss?"
-
-	// Seed a turn so the projection is non-trivial (non-nil blocks).
-	if err := store.AddTurn(context.Background(), sessionQ, memory.ConversationTurn{
-		UserMessage:       "hello",
-		AssistantResponse: "hi there",
-	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
-	}
-
-	rc, err := runctx.NewRunContext(context.Background(), runctx.Sources{
-		Memory: store, Bus: bus,
-	}, q, goal)
+// Execution memory is applied by the session owner after this base projection.
+// The base constructor must not inject a second pair-only history.
+func TestNewRunContext_NoParallelMemoryProjection(t *testing.T) {
+	rc, err := runctx.NewRunContext(t.Context(), runctx.Sources{}, parityQuad(), "current request")
 	if err != nil {
-		t.Fatalf("NewRunContext: %v", err)
+		t.Fatal(err)
 	}
-	want, err := runctx.FetchMemoryBlocks(context.Background(), store, sessionQ, goal, memory.RecallSettings{}, nil)
-	if err != nil {
-		t.Fatalf("FetchMemoryBlocks: %v", err)
-	}
-	if want == nil {
-		t.Fatal("fixture sanity: expected non-nil memory blocks after AddTurn")
-	}
-	if !reflect.DeepEqual(rc.MemoryBlocks, want) {
-		t.Errorf("memory parity mismatch:\n NewRunContext = %+v\n FetchMemoryBlocks = %+v", rc.MemoryBlocks, want)
+	if rc.MemoryBlocks != nil {
+		t.Fatalf("unexpected second memory projection: %+v", rc.MemoryBlocks)
 	}
 }
 

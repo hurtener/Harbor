@@ -1,37 +1,5 @@
-// Package postgres is Harbor's Postgres-backed `memory.MemoryStore`
-// driver. It is the third leg of the memory persistence triad
-// (in-memory, SQLite, Postgres) defined by RFC §6.6 + §9.
-//
-// The driver uses `pgx/v5/stdlib` so the rest of Harbor sees a
-// `database/sql.DB`. Parametric queries everywhere; no string
-// concatenation into SQL (AGENTS.md §9). Advisory locks serialise
-// the migration runner so multi-replica boots are race-free.
-//
-// # Strategy delegation
-//
-// All three memory strategies (`none`, `truncation`,
-// `rolling_summary`) are implemented by the driver-agnostic
-// `internal/memory/strategy` executor package; this driver is a thin
-// shell that owns the boundary (identity validation + the
-// `memory.identity_rejected` emit + the `closed` flag) and delegates
-// every `MemoryStore` method to a `strategy.StrategyExecutor`. The
-// executor persists state through the injected `state.StateStore`
-// (typed wrapper, `Kind = "memory.state"`). When that
-// StateStore is itself Postgres-backed (the operator's
-// `state.driver: postgres`), the memory strategies persist durably —
-// which is what makes `truncation` / `rolling_summary` survive a
-// restart. No strategy algorithm is reimplemented in SQL here.
-//
-// The driver still opens its own `*sql.DB` against `cfg.DSN` and runs
-// its embedded `memory_state` migration so a misconfigured DSN fails
-// loudly at boot, but the live read/write path rides entirely on the
-// executor's `state.StateStore` writes. The driver's own
-// `memory_state` table is vestigial under delegation; it is kept
-// (never edited — migrations are forward-only, AGENTS.md §9 / §13)
-// for back-compat with rows written by the pre-25a strategy=none path.
-//
-// Per AGENTS.md §5, the driver is safe for concurrent reuse
-// across N goroutines.
+// Package postgres provides the postgres driver for cumulative session-memory access.
+// The injected StateStore remains the authoritative memory owner.
 package postgres
 
 import (
@@ -48,7 +16,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 )
 
@@ -74,16 +41,9 @@ const (
 // `cfg.DSN`. Production callers go through `memory.Open`; tests may
 // call `New` directly to skip the registry.
 //
-// The configured strategy is resolved by the shared
-// `strategy.StrategyExecutor`: `none`,
-// `truncation`, and `rolling_summary` all delegate to the executor,
-// which persists through `deps.State`. `rolling_summary` requires a
-// non-nil `deps.Summarizer`; the executor's `New` rejects a nil
-// summariser for that strategy — fail loudly, never a stub fallback
-// (AGENTS.md §13).
-//
-// `deps.Bus` is required. `deps.State` is required — it is the
-// persistence floor the strategy executor writes through.
+// Cumulative memory uses the injected StateStore owner. This adapter has no
+// summary engine, private transcript or recovery goroutine. Bus and State are
+// mandatory; note writes additionally require the execution redactor.
 func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("memory/postgres: deps.Bus is required")
@@ -93,6 +53,10 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 	}
 	if cfg.DSN == "" {
 		return nil, errors.New("memory/postgres: cfg.DSN is required")
+	}
+	// Reject removed strategies before sql.Open starts its connection opener.
+	if err := memory.ValidateStrategy(cfg.Strategy); err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open(pgxDriverName, cfg.DSN)
@@ -125,13 +89,12 @@ func newWithDB(cfg memory.ConfigSnapshot, deps memory.Deps, db *sql.DB, ownsDB b
 	if cfg.DSN == "" {
 		return nil, errors.New("memory/postgres: cfg.DSN is required")
 	}
-	strategyName := cfg.Strategy
-	if strategyName == "" {
-		strategyName = memory.StrategyNone
+	if err := memory.ValidateStrategy(cfg.Strategy); err != nil {
+		return nil, err
 	}
 
 	// Probe the connection eagerly. A misconfigured DSN should fail
-	// loudly at boot, not on the first AddTurn.
+	// loudly at boot, not on the first memory operation.
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
@@ -148,33 +111,11 @@ func newWithDB(cfg memory.ConfigSnapshot, deps memory.Deps, db *sql.DB, ownsDB b
 		return nil, err
 	}
 
-	// Build the strategy executor. Persistence rides on deps.State
-	// (typically the Postgres StateStore), giving truncation +
-	// rolling_summary durable, restart-surviving state.
-	exec, err := strategy.New(strategyName, strategy.Deps{
-		State:              deps.State,
-		Bus:                deps.Bus,
-		Summarizer:         deps.Summarizer,
-		BudgetTokens:       cfg.BudgetTokens,
-		RecoveryBacklogMax: cfg.RecoveryBacklogMax,
-		RecentTurns:        cfg.RecentTurns,
-		Embedder:           deps.Embedder,
-		Retrieval:          cfg.Retrieval,
-		RetrievalTopK:      cfg.RetrievalTopK,
-	})
-	if err != nil {
-		if ownsDB {
-			_ = db.Close()
-		}
-		return nil, err
-	}
-
 	return &driver{
-		strategy: strategyName,
-		db:       db,
-		ownsDB:   ownsDB,
-		bus:      deps.Bus,
-		exec:     exec,
+		access: memory.NewAccess(cfg, deps),
+		db:     db,
+		ownsDB: ownsDB,
+		bus:    deps.Bus,
 	}, nil
 }
 
@@ -187,121 +128,60 @@ func init() {
 // Fields are immutable after construction except for the atomic
 // `closed` flag and the internally-synchronised executor.
 type driver struct {
-	strategy memory.Strategy
-	db       *sql.DB
-	ownsDB   bool
-	bus      events.EventBus
-	exec     strategy.StrategyExecutor
+	access *memory.Access
+	db     *sql.DB
+	ownsDB bool
+	bus    events.EventBus
 
 	mu     sync.Mutex
 	closed atomic.Bool
 }
 
-// Compile-time assertion that *driver satisfies memory.MemoryStore.
-var _ memory.MemoryStore = (*driver)(nil)
-
-// AddTurn implements memory.MemoryStore.
-func (d *driver) AddTurn(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) error {
+// Inspect implements memory.MemoryStore using the execution-memory owner.
+func (d *driver) Inspect(ctx context.Context, id identity.Quadruple) (memory.Inspection, error) {
 	if d.closed.Load() {
-		return memory.ErrStoreClosed
+		return memory.Inspection{}, memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
-		return memory.EmitIdentityRejected(ctx, d.bus, id, "AddTurn")
+		return memory.Inspection{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Inspect")
 	}
-	return d.exec.AddTurn(ctx, id, turn)
+	return d.access.Inspect(ctx, id)
 }
 
-// GetLLMContext implements memory.MemoryStore.
-func (d *driver) GetLLMContext(ctx context.Context, id identity.Quadruple) (memory.LLMContextPatch, error) {
-	if d.closed.Load() {
-		return memory.LLMContextPatch{}, memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return memory.LLMContextPatch{}, memory.EmitIdentityRejected(ctx, d.bus, id, "GetLLMContext")
-	}
-	return d.exec.GetLLMContext(ctx, id)
-}
-
-// EstimateTokens implements memory.MemoryStore.
-func (d *driver) EstimateTokens(ctx context.Context, id identity.Quadruple) (int, error) {
-	if d.closed.Load() {
-		return 0, memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return 0, memory.EmitIdentityRejected(ctx, d.bus, id, "EstimateTokens")
-	}
-	return d.exec.EstimateTokens(ctx, id)
-}
-
-// Flush implements memory.MemoryStore.
-func (d *driver) Flush(ctx context.Context, id identity.Quadruple) error {
-	if d.closed.Load() {
-		return memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return memory.EmitIdentityRejected(ctx, d.bus, id, "Flush")
-	}
-	return d.exec.Flush(ctx, id)
-}
-
-// Health implements memory.MemoryStore.
-func (d *driver) Health(ctx context.Context, id identity.Quadruple) (memory.Health, error) {
+// Put implements memory.MemoryStore and returns a committed item identity.
+func (d *driver) Put(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) (string, error) {
 	if d.closed.Load() {
 		return "", memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
-		return "", memory.EmitIdentityRejected(ctx, d.bus, id, "Health")
+		return "", memory.EmitIdentityRejected(ctx, d.bus, id, "Put")
 	}
-	return d.exec.Health(ctx, id)
+	return d.access.Put(ctx, id, turn)
 }
 
-// Snapshot implements memory.MemoryStore.
-func (d *driver) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Snapshot, error) {
+// Delete implements memory.MemoryStore through its conditional owner mutation.
+func (d *driver) Delete(ctx context.Context, id identity.Quadruple, key string) (int, error) {
 	if d.closed.Load() {
-		return memory.Snapshot{}, memory.ErrStoreClosed
+		return 0, memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
-		return memory.Snapshot{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Snapshot")
+		return 0, memory.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
-	return d.exec.Snapshot(ctx, id)
+	return d.access.Delete(ctx, id, key)
 }
 
-// SearchTurns implements memory.MemoryStore. Identity validated at
-// the boundary; the strategy executor (semantic wrapper when the
-// mode is on) owns the similarity search.
-func (d *driver) SearchTurns(ctx context.Context, id identity.Quadruple, query string, limit int) ([]memory.ScoredTurn, error) {
-	if d.closed.Load() {
-		return nil, memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return nil, memory.EmitIdentityRejected(ctx, d.bus, id, "SearchTurns")
-	}
-	return d.exec.SearchTurns(ctx, id, query, limit)
-}
+// Compile-time assertion that *driver satisfies memory.MemoryStore.
+var _ memory.MemoryStore = (*driver)(nil)
 
-// Restore implements memory.MemoryStore.
-func (d *driver) Restore(ctx context.Context, id identity.Quadruple, snap memory.Snapshot) error {
-	if d.closed.Load() {
-		return memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return memory.EmitIdentityRejected(ctx, d.bus, id, "Restore")
-	}
-	return d.exec.Restore(ctx, id, snap)
-}
-
-// Close implements memory.MemoryStore. Idempotent. Flips the atomic
-// flag BEFORE tearing down the executor + closing `db` so subsequent
-// calls fast-fail with `ErrStoreClosed`. Joins the strategy
-// executor's per-strategy resources (the rolling_summary recovery
-// loop goroutine) so the goroutine baseline is restored (AC-9).
+// Close implements memory.MemoryStore. It rejects new operations before
+// closing an owned SQL pool. Borrowed pools and the shared StateStore remain
+// owned by the runtime. Repeated closes are harmless.
 func (d *driver) Close(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	execErr := d.exec.Close(ctx)
 	var dbErr error
 	if d.ownsDB {
 		dbErr = d.db.Close()
@@ -309,8 +189,6 @@ func (d *driver) Close(ctx context.Context) error {
 	if dbErr != nil {
 		dbErr = fmt.Errorf("memory/postgres: db.Close: %w", dbErr)
 	}
-	if execErr != nil {
-		execErr = fmt.Errorf("memory/postgres: executor close: %w", execErr)
-	}
-	return errors.Join(dbErr, execErr)
+
+	return dbErr
 }

@@ -15,6 +15,7 @@ examples/
 ├── harbor.yaml            annotated reference configuration
 ├── dev.yaml               `harbor dev` loop configuration
 ├── embed-runonce/         headless assemble → Stack.RunOnce one-call run
+├── portable-context/      persistent version-checked editing / compaction sample
 ├── agents/
 │   └── echo/              worked harbortest.Agent + test
 └── tools/
@@ -81,3 +82,10 @@ go build ./examples/...
 # Run the worked-example tests.
 go test ./examples/...
 ```
+
+## Portable session context
+
+[`portable-context`](portable-context/README.md) is a public-SDK editing agent
+with a persistent synthetic document, version-checked replacements, separate-turn
+restoration, and scripted Bifrost integration tests. Live inference is opt-in and
+requires an explicitly selected provider/model.

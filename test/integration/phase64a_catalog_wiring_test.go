@@ -235,9 +235,8 @@ func phase64aTestConfig(t *testing.T, entries []config.ToolEntryConfig) *config.
 			RemoteDriver: "loopback",
 		},
 		Memory: config.MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "none",
-			RecoveryBacklogMax: 8,
+			Driver:   "inmem",
+			Strategy: "none",
 		},
 		Tools: config.ToolsConfig{
 			Entries: entries,

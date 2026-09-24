@@ -628,6 +628,8 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 			warnUnseatedWrapper("governance", "github.com/hurtener/Harbor/internal/governance")
 		}
 	}
+	client = &contextPreparationClient{inner: client, cfg: cfg}
+
 	// Route selection is deliberately OUTSIDE governance and the entire
 	// model-sensitive chain. It returns no credential; the Bifrost leaf
 	// independently resolves and exact-confirms a credential for every actual

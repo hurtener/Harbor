@@ -22,21 +22,53 @@ Both subsystems share a key contract: **identity-scoped by (tenant, user, sessio
 Memory has two axes you tune independently:
 
 - **Strategy** (`memory.strategy`) — how the planner uses memory each turn.
-- **Driver** (`memory.driver`) — where memory is stored.
+- **Driver** (`memory.driver`) — the administrative memory adapter. Durability
+  comes from the shared `state.driver`, not from a separate memory transcript.
 
 ### Strategies
 
 | Strategy           | When to use                                                                 |
 |--------------------|------------------------------------------------------------------------------|
-| `none` (default)   | Single-turn agents. No memory; each run starts cold.                         |
-| `truncation`       | Chat agents with short windows. Keep last N messages; drop older verbatim.    |
-| `rolling_summary`  | Long-running chat agents. Summarise older turns; keep recent N verbatim.     |
+| `none`            | Explicit stateless opt-out. Each run starts cold.                           |
+| `rolling_summary` (default) | Cumulative short-term session context with 20 recent detailed turns. |
 
-`rolling_summary` is the sweet spot for chatbots — it preserves the conversation arc without blowing the context window. The summariser is the same LLM as the planner (Bifrost reuses the configured provider).
+`rolling_summary` preserves the conversation arc while compacting model input.
+By default the summariser uses the run's model through the governed Bifrost
+client. For local inference, `memory.summarizer.model` selects a separately
+profiled model. For externally routed runs, use the independently authorized
+`memory.summarizer.provider_route` selector described in
+[the configuration reference](../../CONFIG.md#memorysummarizerprovider_route).
+It reuses the same resolver and verified run identity; it cannot repurpose a
+signed grant or silently fall back after revocation. Model routing remains
+restart-required even when the working-input budget is edited through Protocol.
 
-### Drivers
+`memory.summarizer.max_tokens` separately configures the completion allowance
+for each compaction call, including provider reasoning. Omitted/zero preserves
+the 2048-token default; for example, set `8192` for a deployment that needs more
+room to finish a summary. The matching environment override is
+`HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS`; both are restart-required. This does not
+change the working-input target or driving model's output limit. Routed model
+capacity and governance still apply, and incomplete output never replaces a
+checkpoint. Valid summaries are not additionally capped at 16 KiB; subsequent
+requests still pass configured byte and token admission. See
+[the reference](../../CONFIG.md#memorysummarizermax_tokens).
 
-| Driver     | When to use                                                                |
+`memory.summarizer.max_calls` sets the maintenance-call allowance per compaction
+(zero/omitted: `16`). YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS` changes require
+a restart. Raise it only when more chronological chunks are needed; exhaustion
+preserves the previous checkpoint, and increasing the allowance can increase
+time and spend. There is no separate session-wide reference/evidence count cap,
+and `recent_turns` has no fixed maximum of 32. Existing execution tranches,
+configured request admission, identity, expiry and erasure still apply. See
+[the call allowance reference](../../CONFIG.md#memorysummarizermax_calls), including
+receipt-consumer compatibility when using more than sixteen calls.
+
+The removed `truncation` strategy is rejected rather than silently dropping
+unsummarized context when a window fills.
+
+### Persistence
+
+| State driver | When to use                                                              |
 |------------|----------------------------------------------------------------------------|
 | `inmem`    | Dev. Memory dies on `harbor dev` restart.                                  |
 | `sqlite`   | Single-node production. Survives restarts. Default for self-hosted agents. |
@@ -46,50 +78,72 @@ Memory has two axes you tune independently:
 
 ```yaml
 memory:
-  driver: sqlite
-  dsn: /tmp/harbor-validation/my-agent-memory.sqlite   # outside the project dir (WAL trap)
+  driver: inmem              # shares the durable StateStore below
   strategy: rolling_summary
-  budget_tokens: 8000          # max tokens the planner replays per turn (0 = unbounded)
-  recovery_backlog_max: 16     # bounded queue for the summariser's recovery loop (default 16)
+  recent_turns: 20
+  budget_tokens: 8000          # working-input compaction target, not output tokens
+state:
+  driver: sqlite
+  dsn: /tmp/harbor-validation/my-agent-state.sqlite   # outside the project dir (WAL trap)
 ```
 
-`budget_tokens` is the hard cap — once a conversation exceeds it, older turns are summarised together into one assistant-role message while recent turns stay verbatim. The planner sees: `[summary of turns 1-12] [turn 13] [turn 14] ... [turn 18]`. `recovery_backlog_max` bounds the `rolling_summary` recovery loop's queue; on overflow it drops the oldest and emits `memory.recovery_dropped`. Both knobs are ignored by the `none` and `truncation` strategies.
+`budget_tokens` is the soft working-input target for the complete assembled
+request. With `rolling_summary`, zero derives that target from the effective
+model's input capacity and output reservation. It is independent of completion
+limits; fresh tool results cannot be silently truncated to satisfy it. A positive
+value also enables within-run compaction for stateless agents. The removed
+`planner.token_budget` is rejected with migration guidance.
 
-### Opt-in semantic retrieval
+On served runtimes advertising `agent_config_memory_v1`, an admin can override
+this same target per agent through the versioned `agent_config.set_revision`
+payload: `{"memory":{"budget_tokens":64000}}`. This is an example value, not a
+framework default. Read the current revision, preserve its writable sibling
+sections, and supply its `expected_content_hash` to avoid overwriting concurrent
+edits. Omit `memory` to inherit YAML again; present zero requests automatic
+sizing. Changes apply to the next run, never a running one. The runtime must
+already have its compactor configured; this edit cannot enable an unwired LLM.
 
-`memory.retrieval: semantic` layers embedding-similarity search ON TOP of the strategy you picked above — it composes with `rolling_summary`, never replaces it. Turns are embedded as they land (`AddTurn`) and a `SearchTurns` surface ranks them by cosine; `GetLLMContext` keeps its normal summary + recent-turn patch. Vectors persist identity-scoped through the same state store, on all three drivers.
+In PR #779, `rolling_summary` now selects the cumulative execution-context path
+for both served and embedded root runs. Set `recent_turns: 20` (zero also selects
+twenty); this bounds detail, not how far back checkpoint meaning reaches.
+The separate `sessions.retained_context_turns` and SDK activation option are
+removed. Persistence uses the configured StateStore and session lifetime.
+Omitted YAML settings and `config.Defaults()` now enable that memory behavior;
+set `memory.strategy: none` explicitly to disable it. Compaction can incur
+governed model calls. The pair-summary engine and its recovery loop are removed;
+admin inspection and mutation use the same owner as execution. See the
+[implementation tracker](../../notes/portable-context-tracker.md).
 
-```yaml
-memory:
-  driver: sqlite
-  dsn: /tmp/harbor-validation/my-agent-memory.sqlite
-  strategy: rolling_summary
-  retrieval: semantic        # opt-in; composes with the strategy
-  retrieval_top_k: 5         # optional result cap (default 5)
-  retrieval_min_score: 0.0   # cosine similarity floor [-1, 1]; 0.0 is the default
+Administrative `Put` accepts conversational notes only; execution receipts and
+their provenance come from the runtime journal. Heavy `memory.get` values return
+references resolved through bounded `artifacts.get`, without storing a second
+copy. These references cannot be presigned and stop resolving when their source
+is deleted, expired or replaced. Refresh `memory.list` for the current projection;
+use `memory.delete`, not artifact deletion, to remove a memory source.
 
-embeddings:                  # REQUIRED when any retrieval is semantic
-  provider: openai
-  model: text-embedding-3-small
-  api_key: env.OPENAI_API_KEY
-```
+### Removed semantic-memory retrieval
 
-The `embeddings:` block is the embedding model/provider pair — configured **separately from the chat `llm` block** (they routinely come from different providers). Enabling a semantic mode without it fails validation loudly, naming the missing keys; there is no silent fallback to non-semantic retrieval and no mock embeddings driver.
+Remove `memory.retrieval`, `memory.retrieval_top_k`,
+`memory.retrieval_min_score` and their `HARBOR_MEMORY_RETRIEVAL*` environment
+overrides. They now fail validation. Cumulative session memory uses checkpoints
+and recent execution evidence; it does not maintain a separate embedding index.
+External long-term memory can still arrive through caller memory or ordinary
+capability tools. Semantic skill retrieval remains available.
 
-When `memory.retrieval: semantic` is set the run loop calls `SearchTurns` on every task, applies the `retrieval_min_score` floor, deduplicates against the recent-turn window, caps each recalled turn at 2 KiB per side, and injects the result into the prompt's `<read_only_external_memory>` tier under the map key `recalled_turns`. A `SearchTurns` error fails the run loudly (`runtime_fetch_error`) — there is no silent fall-back to summary-only.
+### Caller-supplied external memory (D-364)
 
-**Sizing `retrieval_top_k` is on you, and there is no safety net beneath it.** The 2 KiB cap bounds each TURN, not the aggregate: the injected block is at most `top_k × 2 × 2 KiB`. Nothing downstream re-checks the total. The LLM-edge context-leak guard byte-exempts everything that is not tool-role text, and memory tiers render under the system role — so the only backstop is the token-budget check, which fires after the whole prompt is assembled and **fails the run** rather than trimming it. A large `top_k` plus a long trajectory is how a run dies late.
-
-### Caller-supplied memory — the second producer of that tier (D-364)
-
-The `<read_only_external_memory>` tier has **two** producers, and they compose at map-key granularity rather than competing for the slot. Semantic recall writes `recalled_turns`; a Protocol client writes the fixed `caller_supplied` key by sending `caller_memory` on a `start` request (see the [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md) skill). Neither can displace the other, and a caller names no key at all — it supplies only a value — so no deny-list is needed and no future runtime producer can collide with one.
+A Protocol client supplies the fixed `caller_supplied` entry by sending
+`caller_memory` on a `start` request (see
+[`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md)).
+That content remains separate from runtime-owned conversation context and
+cannot replace it. Native semantic recall no longer produces `recalled_turns`.
 
 What this means for you as the operator:
 
 - **You do not enable it.** There is no config key. It is on the Protocol surface for every caller with a valid identity, and it is bounded at 32 KiB per request at the edge, refused before any task is created. Your runtime advertises `caller_memory` in `runtime.info.capabilities`, so a client can tell whether it is supported before relying on it.
-- **That 32 KiB is a resource bound, not a security boundary — do not budget your threat model against it.** It exists because nothing downstream re-checks these bytes (see the `retrieval_top_k` note above): without it an oversized document reaches the token-budget guard and fails the whole run late instead of costing one cheap refusal. It tells you nothing about how much content a caller can put in front of the model — the same caller can send more through the uncapped `query`, which lands in the *unframed* conversation position, and through `agent_config.session.set_user_prompt`, which needs no admin scope, takes a 1 MiB body, and lands *inside* the system prompt. What contains a caller's payload is the tier it lands in, never its size.
+- **That 32 KiB is a resource bound, not a security boundary — do not budget your threat model against it.** It bounds caller-memory admission before dispatch; it does not authorize the content or replace assembled-request budgeting. It tells you nothing about how much content a caller can put in front of the model — the same caller can send more through the uncapped `query`, which lands in the *unframed* conversation position, and through `agent_config.session.set_user_prompt`, which needs no admin scope, takes a 1 MiB body, and lands *inside* the system prompt. What contains a caller's payload is the tier it lands in, never its size.
 - **A caller can only reach that ONE prompt position.** It never touches the trusted base prompt (that is `system_prompt_override`, a different and strictly more powerful knob) and it never writes the conversation-memory tier, which is a claim about the session's stored turns only the runtime makes.
-- **You can see it happening.** Every admitting run emits `memory.caller_block_admitted` with `bytes` / `tier` / `key` — a size, never content — so an audit trail shows caller-asserted memory entering a run without becoming a copy of it. In a trace, the tier reads `{"recalled_turns":[…],"caller_supplied":{…}}`: you can always tell which half came from where.
+- **You can see it happening.** Every admitting run emits `memory.caller_block_admitted` with `bytes` / `tier` / `key` — a size, never content — so an audit trail shows caller-asserted memory entering a run without becoming a copy of it. In a trace, the external tier carries `{"caller_supplied":{…}}`, distinct from runtime-owned conversation memory.
 - **It is stored redacted, like its siblings.** The payload is persisted on the task record (and so to disk), and it goes through the audit redactor on the way in — the same one the run's `query` and description take. The redactor walks the decoded JSON, so structure survives and only secret-shaped keys (`api_key` / `password` / `secret` / `token` / `cookie` / `authorization`) and inline `Bearer …` / `Basic …` values become `***`. The redacted form is what the prompt sees too, which is already true of `query`.
 - **The framing is the mitigation, and neither it nor the redactor is a sanitiser.** The tier's five-line anti-injection preamble tells the MODEL not to obey the content; it does nothing about what the bytes contain. The audit redactor is a PATTERN redactor: it does not detect PII, does not detect a credential that reads as ordinary prose, and cannot make hostile text safe. A caller that pipes unredacted third-party content through `caller_memory` still has a data-leakage path no prompt wrapper and no pattern redactor closes.
 - **Nothing meters admission volume.** Token spend is metered at the LLM edge by the governance layer, so the cost is governed — but a caller may send 32 KiB on every `start` and no per-tenant accounting of admission itself exists yet.
@@ -339,7 +393,9 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 
 ## Common failure modes
 
-- **Memory blows the token budget mid-conversation.** Lower `budget_tokens` OR switch strategy from `truncation` to `rolling_summary`. The summariser uses ~1500 tokens of LLM per turn but saves ~5000 tokens of payload.
+- **Memory exceeds the working-input target mid-conversation.** Check `memory.budget_tokens` and the effective model profile. Fresh results remain protected; lowering the target is not permission to discard evidence. Compaction cost and savings depend on actual input and provider usage, not a fixed per-turn estimate.
+- **Compaction reports an incomplete summary with `finish_reason: length`.** Inspect provider usage and `memory.summarizer.max_tokens`, including reasoning tokens. Increase the deployment's allowance within the selected model's capacity and restart; do not accept truncated summaries or blindly replay external actions after a failed turn.
+- **Compaction fails while the recent-turn window is full.** An interrupted or cancelled run with fully settled dispatches can record its terminal state while preserving unsummarized overflow. The next run must compact that tail before successful rollover. Existing abandoned journals require explicit authorized recovery; an unknown external outcome remains refused. No tool is replayed and recovery does not renew the source lifetime.
 - **`harbor dev` reboots in a loop after enabling memory.** Your `memory.dsn` is inside the project directory and the SQLite WAL trap fires. Move the DSN to `/tmp/harbor-validation/<project>-memory.sqlite` or `~/.harbor/<project>-memory.sqlite`.
 - **`harbor skill import` fails with "skill name already exists".** The catalog rejects duplicate names by default. Re-import with `--overwrite`, remove the old entry first (`harbor skill rm <name>`), or rename the skill in the file.
 - **The planner doesn't pick a skill I imported.** Either the skill's `trigger:` doesn't pattern-match the user's input (write more concrete trigger language), the run can't see a tool the skill requires (`required_tools` is capability-filtered — default-deny), or `planner.max_steps` is too low to reach the skill-search turn. Pin it (`skills.directory.pinned`) to guarantee it's at least visible in every `<skills_context>` block.

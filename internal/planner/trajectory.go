@@ -31,6 +31,9 @@ type Step = trajectory.Step
 // planner-package level; the subpackage rename to Summary is part of
 type Summary = trajectory.Summary
 
+// SummaryCoverage identifies the exact prefix replaced by a checkpoint.
+type SummaryCoverage = trajectory.SummaryCoverage
+
 // ToolContext is the split serialisable / handle-registry tool-handle
 // bundle. Re-exported from the canonical subpackage.
 type ToolContext = trajectory.ToolContext

@@ -6,6 +6,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/protocol/projectioncheck"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -24,13 +25,9 @@ func init() {
 		// fully-populated one-turn snapshot and returns the projected
 		// MemoryItem the gate reflects.
 		Probe: func() any {
-			rec := memory.Record{
-				Strategy: memory.StrategyTruncation,
-				Turns: []memory.ConversationTurn{{
-					UserMessage:       "probe user message",
-					AssistantResponse: "probe assistant response",
-					Timestamp:         time.Unix(1_700_000_000, 0).UTC(),
-				}},
+			rec := memory.ConversationTurn{
+				UserMessage:       "probe user message",
+				AssistantResponse: "probe assistant response",
 			}
 			b, err := json.Marshal(rec)
 			if err != nil {
@@ -39,7 +36,7 @@ func init() {
 				return prototypes.MemoryItem{}
 			}
 			id := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-			rows, err := snapshotTurns(memory.Snapshot{Strategy: memory.StrategyTruncation, Bytes: b}, id, string(prototypes.MemoryDriverInmem), 0)
+			rows, err := snapshotTurns(memory.Inspection{Strategy: memory.StrategyRollingSummary, Items: []sessionmemory.Item{{Key: "probe", CreatedAt: time.Unix(1_700_000_000, 0).UTC(), Value: b}}}, id, string(prototypes.MemoryDriverInmem), 0)
 			if err != nil || len(rows) == 0 {
 				return prototypes.MemoryItem{}
 			}

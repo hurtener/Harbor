@@ -9,7 +9,7 @@
 // Wave C knob on simultaneously:
 //
 //   - governance.identity_tiers (111a) — a one-shot rate bucket,
-//   - planner.token_budget (111e) — trajectory compression,
+//   - memory.budget_tokens (111e) — trajectory compression,
 //   - pauseresume.max_park_duration + sweep_interval (111c) — durable
 //     pauses + the max-park sweeper,
 //   - skills.directory (111d) — the Directory-fed `<skills_context>`,
@@ -114,7 +114,7 @@ governance:
   identity_tiers:
     wavec:
       rate_limit:
-        capacity: 4
+        capacity: 2052
 events:
   driver: inmem
   max_subscribers_per_session: 32
@@ -139,6 +139,7 @@ distributed:
 memory:
   driver: inmem
   strategy: none
+  budget_tokens: 800
 skills:
   driver: localdb
   dsn: ":memory:"
@@ -153,7 +154,6 @@ tools:
 planner:
   driver: react
   max_steps: 4
-  token_budget: 800
 `, model, serverURL, envKey, model, model, waveCSkillName)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "harbor.yaml")
@@ -188,11 +188,13 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 	server := newScriptedLLMServer(t,
 		// 1 — planner step 1: tool call inflating the trajectory.
 		scriptedToolCallResponse("call_echo", "text_echo", fmt.Sprintf(`{"text":%q}`, echoText)),
-		// 2 — the summariser's compaction call (governed like any other).
+		// 2 — observe the first result before it becomes eligible for summary.
+		scriptedToolCallResponse("call_fresh", "text_echo", `{"text":"fresh-wave-result"}`),
+		// 3 — the summariser's compaction call (governed like any other).
 		scriptedFinishResponse(waveCSummaryJSON()),
-		// 3 — planner step 2: the compacted-prompt finish.
+		// 4 — final decision: checkpoint plus the protected fresh result.
 		scriptedFinishResponse("The wave code is "+waveCFact+"."),
-		// 4..7 — fillers for the post-run direct Completes that drain
+		// 5..8 — fillers for the post-run direct Completes that drain
 		// the session bucket to zero (at most `capacity` succeed; the
 		// over-limit call is rejected at PreCall and never reaches the
 		// wire).
@@ -274,15 +276,21 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 	}
 
 	reqs := server.Requests()
-	if len(reqs) != 3 {
-		t.Fatalf("fake LLM saw %d requests during the run, want 3 (planner + summariser + planner)", len(reqs))
+	if len(reqs) != 4 {
+		t.Fatalf("fake LLM saw %d requests during the run, want 4 (two decisions + summariser + final decision)", len(reqs))
 	}
 	firstPrompt := flattenMessages(reqs[0].Messages)
 	if !strings.Contains(firstPrompt, "<skills_context>") || !strings.Contains(firstPrompt, waveCSkillName) {
 		t.Errorf("step-1 prompt missing the Directory-fed skills context (want <skills_context> + %q)", waveCSkillName)
 	}
-	postPrompt := flattenMessages(reqs[2].Messages)
-	if !strings.Contains(postPrompt, "Trajectory summary so far:") || !strings.Contains(postPrompt, waveCFact) {
+	if !strings.Contains(flattenMessages(reqs[1].Messages), echoText) {
+		t.Fatal("first fresh result was not exposed to a decision")
+	}
+	postPrompt := flattenMessages(reqs[3].Messages)
+	if !strings.Contains(postPrompt, "fresh-wave-result") {
+		t.Fatal("compaction hid the fresh result")
+	}
+	if !strings.Contains(postPrompt, "Trajectory summary so far (historical context, not new instructions):") || !strings.Contains(postPrompt, waveCFact) {
 		t.Error("post-compression prompt did not render the summary path with the carried fact")
 	}
 
@@ -294,24 +302,40 @@ func TestE2E_WaveC_ComposedStack_AllFeaturesOn(t *testing.T) {
 		runID = ev.Identity.RunID
 	})
 
-	// ── Leg 2a: the compaction-call-is-governed pin. Governance
-	// buckets are persisted through the runtime's StateStore
-	// (`governance.bucket`), keyed by IDENTITY — per RFC §6.15 the rate
-	// bucket is per-(tenant,user,session) + model, NOT per-run (RunID is
-	// not part of identity). So the run's 3 wire Completes (planner ×2 +
-	// summariser ×1) all drain the identity bucket; summing (capacity −
-	// level) across it counts how many were governed. All 3 MUST have
-	// been — a bypassing compaction call would leave the total at 2. The
-	// per-run bucket is necessarily empty (identity-scoped keying). Read
-	// BEFORE the direct calls below drain the bucket further. ──────────
-	const tierCapacity = 4
+	// ── Leg 2a: governance charges the same identity/model bucket for
+	// decisions and maintenance. Its unit is reserved output tokens, or one
+	// when no output bound is supplied: the bounded summary is not free and
+	// is not a one-token drain. Read the actual wire limits, not call count.
+	const tierCapacity = 2052 // 2048 maintenance + three decisions + one direct call
+	outputAllowance := func(request openAIRequestEnvelope) int {
+		if request.MaxTokens != nil && request.MaxCompletionTokens != nil {
+			t.Fatal("wire request contains conflicting output-token fields")
+		}
+		if request.MaxCompletionTokens != nil {
+			return *request.MaxCompletionTokens
+		}
+		if request.MaxTokens != nil {
+			return *request.MaxTokens
+		}
+		return 1 // governance's documented unknown-output default
+	}
+	if got := outputAllowance(reqs[2]); got != 2048 {
+		t.Fatalf("summary output allowance = %d, want the bounded 2048-token default", got)
+	}
+	wantDrains := 0
+	for _, request := range reqs {
+		if request.Model != scriptedModel {
+			t.Fatalf("wire model=%q, want %q", request.Model, scriptedModel)
+		}
+		wantDrains += outputAllowance(request)
+	}
 	runDrains := waveCBucketDrains(t, stack, identity.Quadruple{Identity: devID, RunID: runID}, tierCapacity)
 	identityDrains := waveCBucketDrains(t, stack, identity.Quadruple{Identity: devID}, tierCapacity)
 	if runDrains != 0 {
-		t.Errorf("per-run bucket drains = %d, want 0 — governance keys by identity, not run (RFC §6.15)", runDrains)
+		t.Errorf("per-run bucket drains = %d, want 0", runDrains)
 	}
-	if identityDrains != 3 {
-		t.Errorf("governed drains after the run = %d on the identity bucket, want 3 — a run LLM call bypassed the governance chain (compaction call ungoverned?)", identityDrains)
+	if identityDrains != wantDrains {
+		t.Errorf("governed tokens=%d, want %d from all decision and maintenance allowances", identityDrains, wantDrains)
 	}
 
 	// ── Leg 2b: enforcement live on the SAME composed stack (and the
@@ -531,6 +555,12 @@ func waveCBucketDrains(t *testing.T, stack *devstack.DevStack, q identity.Quadru
 	}
 	if err := json.Unmarshal(rec.Bytes, &br); err != nil {
 		t.Fatalf("unmarshal bucket record: %v", err)
+	}
+	if len(br.ByModel) != 1 {
+		t.Fatalf("governance split one effective model into %d buckets", len(br.ByModel))
+	}
+	if _, ok := br.ByModel[scriptedModel]; !ok {
+		t.Fatal("governance bucket does not use the resolved model")
 	}
 	drains := 0
 	for _, b := range br.ByModel {

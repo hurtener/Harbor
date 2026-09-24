@@ -1,5 +1,11 @@
 # Phase 111e — Trajectory compression consumer
 
+The original shipped design below is historical. D-462 / D-477 and phases
+268–269 supersede its single-compression scope and `planner.token_budget`
+activation. Current compaction uses `memory.budget_tokens`; zero with rolling
+memory derives the target from the effective model. See RFC 002 and the
+[implementation tracker](../notes/portable-context-tracker.md).
+
 ## Summary
 
 Trajectory compression is Harbor's "durable long-running agents" value prop —

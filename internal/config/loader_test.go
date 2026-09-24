@@ -95,6 +95,78 @@ func TestLoadFromBytes_ValidMinimal(t *testing.T) {
 	}
 }
 
+func TestLoad_MemoryBudgetRejectsRemovedPlannerSetting(t *testing.T) {
+	fixture, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "12000"} {
+		t.Run(value, func(t *testing.T) {
+			old := append([]byte(string(fixture)), []byte("\nplanner:\n  token_budget: "+value+"\n")...)
+			if _, err := config.LoadFromBytes(t.Context(), old); !errors.Is(err, config.ErrConfigInvalid) || !strings.Contains(err.Error(), "memory.budget_tokens") {
+				t.Fatalf("removed planner setting must fail with migration guidance: %v", err)
+			}
+			current := append([]byte(string(fixture)), []byte("\nmemory:\n  budget_tokens: "+value+"\n")...)
+			cfg, err := config.LoadFromBytes(t.Context(), current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(cfg.Memory.BudgetTokens) != value {
+				t.Fatalf("memory budget not preserved: %d", cfg.Memory.BudgetTokens)
+			}
+		})
+	}
+}
+
+func TestLoad_MemoryBudgetEnvironmentHasOneOwner(t *testing.T) {
+	t.Setenv("HARBOR_MEMORY_BUDGET_TOKENS", "12000")
+	cfg, err := config.Load(t.Context(), validMinimalFixture)
+	if err != nil || cfg.Memory.BudgetTokens != 12000 {
+		t.Fatalf("memory budget override: cfg=%v err=%v", cfg != nil, err)
+	}
+	t.Setenv("HARBOR_PLANNER_TOKEN_BUDGET", "1")
+	if _, err := config.Load(t.Context(), validMinimalFixture); !errors.Is(err, config.ErrConfigInvalid) {
+		t.Fatalf("removed environment override silently accepted: %v", err)
+	}
+}
+
+func TestLoad_SessionMemoryHasOneActivation(t *testing.T) {
+	fixture, err := os.ReadFile(validMinimalFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "4"} {
+		data := string(fixture) + "\nsessions:\n  retained_context_turns: " + value + "\n"
+		if _, err := config.LoadFromBytes(t.Context(), []byte(data)); !errors.Is(err, config.ErrConfigInvalid) || !strings.Contains(err.Error(), "memory.strategy") {
+			t.Fatalf("removed retention setting must fail with migration guidance: %v", err)
+		}
+	}
+	for _, strategy := range []string{"none", "rolling_summary"} {
+		data := string(fixture) + "\nmemory:\n  strategy: " + strategy + "\n"
+		cfg, err := config.LoadFromBytes(t.Context(), []byte(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if strategy == "rolling_summary" {
+			want = 20
+		}
+		if got := cfg.Memory.RecentTurnsResolved(); got != want {
+			t.Fatalf("%s window=%d want=%d", strategy, got, want)
+		}
+	}
+	t.Setenv("HARBOR_MEMORY_STRATEGY", "rolling_summary")
+	t.Setenv("HARBOR_MEMORY_RECENT_TURNS", "8")
+	cfg, err := config.Load(t.Context(), validMinimalFixture)
+	if err != nil || cfg.Memory.RecentTurnsResolved() != 8 {
+		t.Fatalf("memory environment activation: cfg=%v err=%v", cfg != nil, err)
+	}
+	t.Setenv("HARBOR_SESSIONS_RETAINED_CONTEXT_TURNS", "")
+	if _, err := config.Load(t.Context(), validMinimalFixture); !errors.Is(err, config.ErrConfigInvalid) || !strings.Contains(err.Error(), "HARBOR_MEMORY_STRATEGY") {
+		t.Fatalf("removed environment activation silently accepted: %v", err)
+	}
+}
+
 func TestLoad_AppliesDefaults(t *testing.T) {
 	// The minimal fixture omits telemetry.service_name's default; our
 	// loader should still produce a valid config because the fixture
@@ -273,9 +345,8 @@ func TestWithOverrides_RevalidatesAfterChange(t *testing.T) {
 }
 
 // TestMemoryConfig_DefaultsApplied confirms the memory section's
-// default values land when the YAML omits the block. Phase 24
-// adds `recovery_backlog_max: 16` to the defaults alongside the
-// Phase 23 `driver: inmem` + `strategy: none` + `budget_tokens: 0`.
+// default values land when the YAML omits the block. Session memory is
+// cumulative by default; an explicit strategy=none remains the opt-out.
 func TestMemoryConfig_DefaultsApplied(t *testing.T) {
 	cfg, err := config.Load(context.Background(), validMinimalFixture)
 	if err != nil {
@@ -284,14 +355,14 @@ func TestMemoryConfig_DefaultsApplied(t *testing.T) {
 	if cfg.Memory.Driver != "inmem" {
 		t.Errorf("Memory.Driver=%q, want %q", cfg.Memory.Driver, "inmem")
 	}
-	if cfg.Memory.Strategy != "none" {
-		t.Errorf("Memory.Strategy=%q, want %q", cfg.Memory.Strategy, "none")
+	if cfg.Memory.Strategy != "rolling_summary" {
+		t.Errorf("Memory.Strategy=%q, want %q", cfg.Memory.Strategy, "rolling_summary")
+	}
+	if cfg.Memory.RecentTurns != 20 || cfg.Memory.RecentTurnsResolved() != 20 {
+		t.Errorf("Memory.RecentTurns=%d, want 20 detailed turns", cfg.Memory.RecentTurns)
 	}
 	if cfg.Memory.BudgetTokens != 0 {
 		t.Errorf("Memory.BudgetTokens=%d, want 0", cfg.Memory.BudgetTokens)
-	}
-	if cfg.Memory.RecoveryBacklogMax != 16 {
-		t.Errorf("Memory.RecoveryBacklogMax=%d, want 16", cfg.Memory.RecoveryBacklogMax)
 	}
 }
 

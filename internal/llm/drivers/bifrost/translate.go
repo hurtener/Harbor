@@ -24,17 +24,18 @@
 // by bifrost. The `closed` flag is `atomic.Bool` for the idempotent
 // Close path. Safe for N concurrent goroutines after construction.
 //
-// Cancellation semantics: a streaming Complete cancelled mid-flight
-// returns `ctx.Err()` immediately; the driver abandons the bifrost
-// chunk reader. Bifrost drains its
-// upstream HTTP connection on its own goroutine; Harbor never blocks
-// waiting for it. The goroutine-leak test pins this.
+// Cancellation semantics: Complete propagates cancellation to Bifrost's
+// context-aware transport, which interrupts the upstream socket even before
+// response headers arrive. Harbor returns ctx.Err() without waiting for another
+// provider delta and rejects queued late chunks. Real HTTP cancellation tests
+// pin socket teardown; abandoning Harbor's chunk reader alone is insufficient.
 package bifrost
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
@@ -556,14 +557,24 @@ func translateResponseFormat(rf *llm.ResponseFormat) (*interface{}, error) {
 		if len(schema) == 0 {
 			return nil, fmt.Errorf("ResponseFormat.JSONSchema is empty for kind %q", rf.Kind)
 		}
-		// Wrap the raw schema bytes inside the `{"type":"json_schema",
-		// "json_schema": {...}}` envelope. Many providers expect the
-		// envelope (`name`, `strict`, `schema` keys); the
-		// SchemaSanitizer normalizes the shape per provider — this driver
-		// passes the operator-supplied schema bytes verbatim.
+		// Harbor's callers supply a JSON Schema, while the wire protocol
+		// requires a named envelope around it. Preserve legacy callers that
+		// already supply that envelope. Do not impose strict mode or round
+		// numeric schema constants through float64.
 		var schemaObj any
-		if err := json.Unmarshal(schema, &schemaObj); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(string(schema)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&schemaObj); err != nil {
 			return nil, fmt.Errorf("decode JSONSchema: %w", err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return nil, fmt.Errorf("decode JSONSchema: trailing content")
+		}
+		envelope, isObject := schemaObj.(map[string]any)
+		_, hasSchema := envelope["schema"]
+		_, hasName := envelope["name"]
+		if !isObject || !hasSchema || !hasName {
+			schemaObj = map[string]any{"name": "harbor_response", "schema": schemaObj}
 		}
 		var v interface{} = map[string]any{
 			"type":        "json_schema",
@@ -587,6 +598,9 @@ func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse
 	out.Content = extractContent(resp)
 	out.ToolCalls = extractToolCalls(resp)
 	out.Reasoning = extractReasoning(resp)
+	if choice := selectedNonStreamChoice(resp); choice != nil && choice.FinishReason != nil {
+		out.FinishReason = *choice.FinishReason
+	}
 	out.Usage, out.Cost = extractUsageAndCost(resp)
 	return out
 }
@@ -653,22 +667,25 @@ func extractContent(resp *bfschemas.BifrostChatResponse) string {
 
 // extractUsageAndCost decodes bifrost's usage shape (which carries
 // `*BifrostCost` as a sub-field) into Harbor's `Usage` + `Cost`. A
-// nil-usage response yields zero values; the accumulator
-// treats zero cost as "no charge for this call" (a deliberate
-// no-op).
+// nil-usage response leaves availability unknown and numeric fields at zero.
+// Presence flags describe the normalized SDK objects, not individual raw wire
+// fields. Numeric zero with no report must not be presented as measured usage.
 func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Cost) {
 	var usage llm.Usage
 	var cost llm.Cost
 	if resp == nil || resp.Usage == nil {
 		return usage, cost
 	}
+	usage.ReportPresent = true
 	usage.PromptTokens = resp.Usage.PromptTokens
 	usage.CompletionTokens = resp.Usage.CompletionTokens
 	usage.TotalTokens = resp.Usage.TotalTokens
 	if resp.Usage.CompletionTokensDetails != nil {
+		usage.CompletionDetailsPresent = true
 		usage.ReasoningTokens = resp.Usage.CompletionTokensDetails.ReasoningTokens
 	}
 	if resp.Usage.PromptTokensDetails != nil {
+		usage.PromptDetailsPresent = true
 		// Cache read/write counts are a subset of PromptTokens (prompt
 		// tokens served from / newly written to the provider's prompt
 		// cache), not additional tokens. A nil PromptTokensDetails leaves
@@ -678,9 +695,19 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 	}
 	usage.LatencyMS = resp.ExtraFields.Latency
 	if resp.Usage.Cost != nil {
-		cost.InputTokensCost = resp.Usage.Cost.InputTokensCost
-		cost.OutputTokensCost = resp.Usage.Cost.OutputTokensCost
-		cost.ReasoningTokensCost = resp.Usage.Cost.ReasoningTokensCost
+		cost.ReportPresent = true
+		cost.InputTokensCost = resp.Usage.Cost.InputCost
+		cost.OutputTokensCost = resp.Usage.Cost.OutputCost
+		// Preserve Harbor's token-only breakdown. Bifrost's totals now
+		// include request surcharges and output-side non-token charges;
+		// those remain accounted for in TotalCost, not token categories.
+		if details := resp.Usage.Cost.InputCostDetails; details != nil {
+			cost.InputTokensCost = details.TextCost + details.AudioCost + details.ImageCost + details.CachedReadCost + details.CachedWriteCost
+		}
+		if details := resp.Usage.Cost.OutputCostDetails; details != nil {
+			cost.OutputTokensCost = details.TextCost + details.AudioCost + details.ImageCost
+			cost.ReasoningTokensCost = details.ReasoningCost
+		}
 		cost.TotalCost = resp.Usage.Cost.TotalCost
 		cost.Currency = "USD"
 	}
@@ -720,7 +747,24 @@ func translateErrorForContext(ctx context.Context, berr *bfschemas.BifrostError,
 	if berr == nil {
 		return nil
 	}
+	// Cancellation is a caller-owned outcome, not a provider outage or a
+	// string-matched transport failure. Preserve errors.Is for both routed
+	// and ordinary calls without exposing Bifrost's diagnostic text.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", kind, err)
+	}
 	if _, routed := llm.ResolvedProviderRouteFrom(ctx); routed {
+		// Keep the narrow structured-output repair signal while discarding
+		// all provider text. Masking every routed error as the same sentinel
+		// prevents the ordinary json_schema -> json_object -> text downgrade
+		// chain from repairing a provider's schema-class 4xx rejection.
+		// Never infer this signal from a 5xx outage even when its message
+		// happens to mention response_format.
+		if berr.StatusCode == nil || *berr.StatusCode == 400 || *berr.StatusCode == 422 {
+			if llm.IsInvalidJSONSchemaError(translateError(berr, kind)) {
+				return fmt.Errorf("%w: %w", llm.ErrProviderRouteProviderFailed, llm.ErrInvalidJSONSchema)
+			}
+		}
 		return llm.ErrProviderRouteProviderFailed
 	}
 	return translateError(berr, kind)

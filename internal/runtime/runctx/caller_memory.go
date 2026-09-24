@@ -76,9 +76,8 @@ var ErrCallerMemoryTierShape = errors.New("runctx: External memory tier is not a
 // a TOP-LEVEL key on either side cannot be observed through the other;
 // in particular the caller's key is never written into the input. The
 // entries are copied SHALLOWLY, so a value that is itself a map or slice
-// is SHARED, and a mutation reaching INTO such a value — the runtime's
-// own producer writes `{"recalled_turns": []map[string]any{…}}`, so this
-// is the normal shape rather than a corner — IS visible on both sides.
+// is SHARED, and a mutation reaching INTO such a value is visible on
+// both sides. There is no native session-memory semantic-recall producer.
 //
 // That sharing is safe today for a structural reason, not a hopeful one:
 // the input has exactly one holder. The blocks are built per run by the

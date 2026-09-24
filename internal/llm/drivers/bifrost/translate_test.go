@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -469,6 +470,54 @@ func TestTranslateRequest_ResponseFormat(t *testing.T) {
 	}
 }
 
+func TestTranslateResponseFormat_SchemaEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"bare", `{"type":"object","properties":{"version":{"const":9007199254740993127}}}`, `{"type":"json_schema","json_schema":{"name":"harbor_response","schema":{"type":"object","properties":{"version":{"const":9007199254740993127}}}}}`},
+		{"legacy envelope", `{"name":"reply","strict":false,"schema":{"type":"object"}}`, `{"type":"json_schema","json_schema":{"name":"reply","strict":false,"schema":{"type":"object"}}}`},
+		{"boolean schema", `false`, `{"type":"json_schema","json_schema":{"name":"harbor_response","schema":false}}`},
+		{"schema extension", `{"type":"object","schema":{"custom":true}}`, `{"type":"json_schema","json_schema":{"name":"harbor_response","schema":{"type":"object","schema":{"custom":true}}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := json.RawMessage(tc.input)
+			got, err := translateResponseFormat(&llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The assertion must not round the large numeric schema constant.
+			var actual, want any
+			gd, wd := json.NewDecoder(strings.NewReader(string(encoded))), json.NewDecoder(strings.NewReader(tc.want))
+			gd.UseNumber()
+			wd.UseNumber()
+			if err := gd.Decode(&actual); err != nil {
+				t.Fatal(err)
+			}
+			if err := wd.Decode(&want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(actual, want) {
+				t.Fatalf("response envelope = %s, want %s", encoded, tc.want)
+			}
+			if string(raw) != tc.input {
+				t.Fatal("caller schema mutated")
+			}
+		})
+	}
+}
+
+func TestTranslateResponseFormat_InvalidSchema(t *testing.T) {
+	for _, raw := range []string{"", "{", `{} {}`, `{} trailing`} {
+		if _, err := translateResponseFormat(&llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: json.RawMessage(raw)}); err == nil {
+			t.Errorf("accepted invalid schema %q", raw)
+		}
+	}
+}
+
 // TestTranslateRequest_ReasoningEffort — maps levels + handles "off".
 func TestTranslateRequest_ReasoningEffort(t *testing.T) {
 	txt := "x"
@@ -626,9 +675,9 @@ func TestTranslateResponse_TextContent(t *testing.T) {
 			CompletionTokens: 20,
 			TotalTokens:      30,
 			Cost: &bfschemas.BifrostCost{
-				InputTokensCost:  0.001,
-				OutputTokensCost: 0.002,
-				TotalCost:        0.003,
+				InputCost:  0.001,
+				OutputCost: 0.002,
+				TotalCost:  0.003,
 			},
 		},
 	}
@@ -644,6 +693,34 @@ func TestTranslateResponse_TextContent(t *testing.T) {
 	}
 	if out.Cost.Currency != "USD" {
 		t.Errorf("Currency = %q want USD", out.Cost.Currency)
+	}
+}
+
+// Bifrost accepts both legacy provider reports and its nested cost schema.
+// Non-token charges must remain in the authoritative total without being
+// relabeled as token or reasoning costs by Harbor's adapter.
+func TestTranslateResponse_CostSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name, wire                      string
+		input, output, reasoning, total float64
+	}{
+		{"nested", `{"input_cost":63,"input_cost_details":{"text_cost":1,"audio_cost":2,"image_cost":4,"cached_read_cost":8,"cached_write_cost":16,"request_cost":32},"output_cost":63,"output_cost_details":{"text_cost":1,"audio_cost":2,"image_cost":4,"reasoning_cost":8,"citation_cost":16,"search_queries_cost":32},"additional_cost":64,"total_cost":190}`, 31, 7, 8, 190},
+		{"legacy", `{"input_tokens_cost":24,"cache_read_tokens_cost":8,"output_tokens_cost":7,"reasoning_tokens_cost":8,"request_cost":32,"citation_tokens_cost":16,"search_queries_cost":32,"total_cost":119}`, 24, 7, 8, 119},
+		{"totals_without_details", `{"input_cost":3,"output_cost":7,"total_cost":10}`, 3, 7, 0, 10},
+		{"total_only", `12`, 0, 0, 0, 12},
+		{"reported_zero", `{}`, 0, 0, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reported bfschemas.BifrostCost
+			if err := json.Unmarshal([]byte(tc.wire), &reported); err != nil {
+				t.Fatal(err)
+			}
+			out := translateResponse(&bfschemas.BifrostChatResponse{Usage: &bfschemas.BifrostLLMUsage{Cost: &reported}})
+			want := llm.Cost{ReportPresent: true, InputTokensCost: tc.input, OutputTokensCost: tc.output, ReasoningTokensCost: tc.reasoning, TotalCost: tc.total, Currency: "USD"}
+			if out.Cost != want {
+				t.Errorf("cost = %+v, want %+v", out.Cost, want)
+			}
+		})
 	}
 }
 

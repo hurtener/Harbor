@@ -209,6 +209,12 @@ type RunContext struct {
 	// Empty on text-only turns AND on every turn after the first.
 	InputArtifacts []InputArtifactView
 
+	// RetainedResultRefs are current, identity-checked metadata for the exact
+	// offloaded results in the bounded retained execution window. The runtime
+	// rebuilds this read-only projection independently of lossy summaries.
+	// Bytes remain in ArtifactStore and are read with the existing artifact_fetch.
+	RetainedResultRefs []ArtifactManifestEntry
+
 	// Control is the accumulated steering signals (control events
 	// observed since the last planner step). The Planner reads;
 	// the Runtime owns the inbox.
@@ -725,26 +731,12 @@ type Budget struct {
 	// CostSpent is the cost accumulated so far this run. Same units
 	// as CostCap.
 	CostSpent int64
-	// TokenBudget is the maximum estimated token count the planner-
-	// observed trajectory may carry before the runtime invokes the
-	// trajectory summariser (seam; consumer —).
-	// Zero means no token-budget enforcement; the trajectory
-	// grows unbounded (until the context-window safety net
-	// backstops it).
-	//
-	// The runtime's CompressionRunner reads this field: the steering
-	// RunLoop calls [CompressionRunner.MaybeCompress] at each step
-	// boundary when TokenBudget > 0 and a runner is configured on the
-	// run spec. When the trajectory's estimate exceeds the budget the
-	// configured [Summariser] (production: the LLM-backed
-	// TrajectorySummariser in internal/llm/summarizer) produces a
-	// [TrajectorySummary] that replaces the raw step history in
-	// subsequent prompt builds (RFC §6.2). One
-	// compression per run at V1.1.x (the runner's Summary != nil
-	// idempotence). Production wiring: the `planner.token_budget`
-	// config knob projects here via the per-task run-loop drivers.
-	// Compression is a runtime concern; the planner sees only the
-	// compacted view via the trajectory summary.
+	// TokenBudget is the working-input compaction target, projected from
+	// memory.budget_tokens. Request-aware planners resolve zero against the
+	// effective model's safe input capacity; standalone trajectory callers
+	// need a positive target. This never sets a model output-token limit.
+	// The shared runner may compact repeatedly, preserving a recent tail
+	// and previously summarized constraints in a cumulative checkpoint.
 	TokenBudget int
 }
 

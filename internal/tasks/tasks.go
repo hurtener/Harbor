@@ -1088,7 +1088,7 @@ func ValidateRequest(req SpawnRequest) error {
 		}
 	}
 	if err := llm.ValidateRunSettings(req.LLMSettings, req.ProviderRoute); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	if req.ProviderRoute != nil {
 		if err := llm.ValidateProviderRoute(*req.ProviderRoute); err != nil || req.ProviderRoute.RouteID == "" {

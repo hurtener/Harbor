@@ -17,6 +17,60 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.32.0] — 2026-09-24
+
+### Added
+
+- Cumulative short-term session memory for served and embedded agents, with
+  rolling provider-neutral compaction, exact settled tool evidence, reusable
+  source-bound checkpoints and explicit interrupted-run reconciliation.
+  Older meaning survives the recent-turn window; historical evidence never
+  authorizes replaying an action or resolving an unknown external outcome.
+- Assembled-request token budgeting, independently governed summarizer routes,
+  configurable compaction-call allowances, artifact-reference retrieval,
+  attachment and steering continuity, and content-free preparation diagnostics.
+- Session-context configuration through the existing authenticated agent-config
+  surface, plus a persistent public-SDK read/edit/continue sample.
+
+### Fixed
+
+- Hard cancellation interrupts active model/tool execution, fences late output
+  and preserves cancellation during terminal bookkeeping. In-flight steering
+  reaches the next model request and invalidates obsolete planned dispatch.
+- Bifrost transport cancellation now closes upstream requests, including before
+  response headers. Exact tool-call/result pairs, large numeric versions,
+  generation-fenced settlement and erasure, and current authority checks survive
+  compaction and recovery.
+- Removed independent fixed continuity byte/count ceilings that could reject
+  settled history despite available configured token capacity. Fully settled
+  interrupted runs preserve unsummarized overflow when compaction fails; unknown
+  pending effects still fail closed.
+
+### Action required
+
+- Build with Go 1.27.1 or newer; the pinned Bifrost cancellation fix requires it.
+- Review memory policy before rollout: cumulative rolling memory defaults to
+  20 recent detailed turns. Set `memory.strategy: none` explicitly for stateless
+  execution. Long-term memory remains an independent integration.
+- Configure `memory.budget_tokens`, `memory.recent_turns` and summarizer model,
+  output and call budgets for the deployment. The RC's 64000-token test setting
+  is not a new framework default. Model input/output admission still applies.
+- Preserve state before rollout; do not assume old binaries understand newer
+  retained records. Old transcript-only history cannot recreate absent receipts.
+  Unknown external outcomes need explicit reconciliation, never blind retries.
+- Upgrade maintenance-receipt consumers before configuring more than the
+  default sixteen compaction calls. Protocol version remains `0.1.0`.
+
+### Release evidence
+
+- PR #779 records revision-specific race, service-backed, Protocol, frontend,
+  build and live continuation evidence in `docs/notes/portable-context-tracker.md`.
+  The owner authorized main release after bounded RC acceptance; remaining
+  numerical coverage gaps are accepted debt. Local and hosted preflight are
+  explicitly waived, not passing. Running final-head checks remain pending.
+- Autonomous presentation-tool repetition reproduced on both stable and RC
+  samples and is tracked separately from cumulative-memory acceptance.
+
 ## [1.31.9] — 2026-09-15
 
 ### Fixed

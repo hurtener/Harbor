@@ -35,7 +35,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -65,7 +64,7 @@ const (
 const maxMemoryBodyBytes = 64 << 10
 
 // ErrMemoryHandlerMisconfigured — NewMemoryHandler was called with a
-// nil mandatory dependency (MemoryStore, ArtifactStore, or the
+// nil mandatory dependency (MemoryStore, or the
 // heavy-content threshold was non-positive).
 var ErrMemoryHandlerMisconfigured = errors.New("stream: memory handler missing a mandatory dependency")
 
@@ -77,7 +76,6 @@ var ErrMemoryHandlerMisconfigured = errors.New("stream: memory handler missing a
 // construction; ServeHTTP holds no per-request state.
 type MemoryHandler struct {
 	store      memory.MemoryStore
-	artifacts  artifacts.ArtifactStore
 	aggregator *events.Aggregator // optional — nil ⇒ 24h counters report 0
 	bus        events.EventBus    // optional — nil ⇒ mutation audit events not emitted
 	logger     *slog.Logger
@@ -140,7 +138,7 @@ func WithMemoryDriverName(name string) MemoryOption {
 }
 
 // NewMemoryHandler builds the memory handler over a memory.MemoryStore
-// + an artifacts.ArtifactStore. store and artStore are mandatory — a
+// with source-bound heavy-value references. store is mandatory — a
 // nil fails loud with ErrMemoryHandlerMisconfigured rather than
 // building a handler that would nil-panic on the first request
 // (CLAUDE.md §5). threshold is the inline-payload bound in bytes — the
@@ -152,19 +150,15 @@ func WithMemoryDriverName(name string) MemoryOption {
 //
 // The returned *MemoryHandler is immutable after construction
 // and safe for concurrent use by N goroutines.
-func NewMemoryHandler(store memory.MemoryStore, artStore artifacts.ArtifactStore, threshold int, opts ...MemoryOption) (*MemoryHandler, error) {
+func NewMemoryHandler(store memory.MemoryStore, threshold int, opts ...MemoryOption) (*MemoryHandler, error) {
 	if store == nil {
 		return nil, fmt.Errorf("%w: memory.MemoryStore is nil", ErrMemoryHandlerMisconfigured)
-	}
-	if artStore == nil {
-		return nil, fmt.Errorf("%w: artifacts.ArtifactStore is nil", ErrMemoryHandlerMisconfigured)
 	}
 	if threshold <= 0 {
 		return nil, fmt.Errorf("%w: heavy-content threshold %d is non-positive", ErrMemoryHandlerMisconfigured, threshold)
 	}
 	h := &MemoryHandler{
 		store:      store,
-		artifacts:  artStore,
 		logger:     slog.Default(),
 		threshold:  threshold,
 		driverName: string(prototypes.MemoryDriverInmem),
@@ -400,7 +394,6 @@ func (h *MemoryHandler) serveGet(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := memprotocol.Get(r.Context(), memprotocol.GetDeps{
 		Store:          h.store,
-		Artifacts:      h.artifacts,
 		DriverName:     h.driverName,
 		HeavyThreshold: h.threshold,
 	}, req, identity.Quadruple{Identity: id})

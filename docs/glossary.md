@@ -337,9 +337,22 @@ D-316.
 
 **ConformanceScenario** — one named subtest inside the conformance pack. Subtest names are pinned (stable strings) so per-concrete suites' pass/fail boards remain comparable across phases. A scenario whose required capability is absent calls `t.Skip(...)` with a reason — never silently passes. The pack's `ScenarioFactory` hook lets per-concrete tests supply a scenario-specific planner configuration (ReAct: a scripted-mock LLM that emits the right envelope; Deterministic: a bespoke `DecisionTreeStep` set that emits the right Decision shape). RFC §6.2, D-058.
 
-**Compression budget** — `Budget.TokenBudget int` (Phase 46). The token-estimate threshold above which the runtime invokes the trajectory summariser via `CompressionRunner.MaybeCompress`. Zero means no compression (parity with `HopBudget` / `CostCap` conventions). Estimated via the pluggable `TokenEstimator` callback; the default `DefaultTokenEstimator` walks `Trajectory.Serialize` bytes and returns `len/4 + 1` — mirrors `internal/llm/tokens.go::chars4Estimator` so the two estimators agree (single surface; no parallel implementation per §13). RFC §6.2, brief 02 §4, D-055.
+**Compression budget** — `Budget.TokenBudget` triggers runtime compaction; zero
+keeps compression disabled. The standalone estimator measures the active
+model-facing trajectory, excluding covered steps and raw diagnostic duplicates.
+Assembled-request capacity and output reservation are separate admission concerns;
+phase 268 unifies their production use without treating output as consumed input.
+RFC §6.2, RFC §6.5, D-462.
 
-**`CompressionRunner`** — runtime-side reusable artifact (D-025) at `internal/planner.CompressionRunner` that owns the "estimate → optional summariser invocation → stamp `Trajectory.Summary`" loop. Constructed via `NewCompressionRunner(summariser Summariser, opts ...CompressionOption)`; entrypoint is `MaybeCompress(ctx, rc, tr) error`. Idempotent on `Summary != nil` — the V1.1.x single-compression-per-run scope fence (re-compaction cadence is the recorded D-202 follow-up). Production call site: the steering RunLoop's step boundary, gated on `Budget.TokenBudget > 0` (Phase 111e). Identity-mandatory (§6 rule 9 + D-001 — wrapped `llm.ErrIdentityMissing` on a partial quadruple). Fail-loudly per §13: summariser errors propagate verbatim; the `(nil, nil)` contract violation surfaces as `ErrEmptySummary`; both failure paths emit `trajectory.compression_failed` before returning. RFC §6.2, D-055.
+**`CompressionRunner`** — the reusable runtime mechanism that selects an eligible
+older prefix, generates a candidate, validates its source, and publishes a
+checkpoint. A summary is not a permanent short-circuit: new eligible history can
+be compacted again. Errors preserve the prior checkpoint. RFC §6.2, D-462.
+
+**Summary coverage** — runtime-owned checkpoint version, generation, exclusive
+covered-through step index, and canonical source-prefix digest. The request
+replays every exchange after this boundary. The summarizer cannot mint coverage,
+and legacy summaries are never assigned a guessed boundary. RFC §6.2, D-462.
 
 **Context-window safety net** — Harbor's runtime-wide invariant that **no message reaching the `LLMClient` carries raw heavy content**. Multi-stage: producers (tool dispatcher, memory, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s during normal output; a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` (≥-threshold raw payload found) or `ErrContextWindowExceeded` (estimated tokens within `ContextWindowReserve` of the model's context limit, default 5%). V1 fails loudly; auto-cascading recovery is post-V1. The pass is mandatory by construction — `internal/llm.Open` returns a wrapper that runs it before delegating to the underlying driver (D-039). RFC §6.5, D-026, D-039.
 
@@ -962,7 +975,7 @@ Non-batchable in this wave; each returns `{task_id, steered|paused|resumed}`.
 
 **`parallel_tool_calls`** — Phase 107d (D-169) operator-yaml knob at `planner.parallel_tool_calls` (pointer-bool, omitted → `true`). `true`: the React planner emits a native `planner.CallParallel` when the LLM returns N>1 tool-calls in one response, and the dev `ToolExecutor` dispatches the branches concurrently via `internal/runtime/parallel.Executor` (non-atomic mode). `false`: the Phase 107c serialization fallback (`RunContext.PendingToolCalls`) fires instead — one `CallTool` per step. Threads to the planner via `react.WithParallelToolCalls(bool)`. The reserved-name co-occurrence guard (a `_finish` / `_spawn_task` / `_await_task` alongside another tool-call → `ErrInvalidDecision`) is independent of this knob and fires in both modes. RFC §6.2, D-169.
 
-**`planner.token_budget`** — operator config knob (Phase 111e, D-202; 0 = off, the default) projected onto `Budget.TokenBudget` by the per-task run-loop drivers; the threshold above which the steering RunLoop invokes `CompressionRunner.MaybeCompress` at each step boundary. When non-zero the runtime assembly builds the `TrajectorySummariser` + `CompressionRunner` pair (fail-loud when no `llm` block is configured). One compression per run at V1.1.x. Cross-reference: **Compression budget** (the `Budget.TokenBudget` field semantics + estimator). RFC §6.2, §6.5, D-202.
+**`memory.budget_tokens`** — the working-input compaction target, projected onto `Budget.TokenBudget` by both served and embedded consumers. With rolling memory, zero derives a safe target from the effective model's input capacity and output reservation. Model completion limits are independent. Compaction can repeat while preserving fresh exchanges. Replaces the removed `planner.token_budget` with no compatibility alias (D-477). Cross-reference: **Compression budget**. RFC §6.2, §6.5; RFC 002.
 
 **`pat_store` (Console DB table)** — Phase 72h Console DB table that persists per-operator Console-local Personal Access Tokens (one-time revealed at create; **encrypted at rest** via AES-GCM with a PBKDF2-derived KEK per Brief 12). Columns: `name` (operator-picked label), `runtime_id` (NULL = "all runtimes"; non-NULL ties the PAT to one runtime), `scope_summary` (cached display label; the runtime is the source of truth), `encrypted_token_blob` (Uint8Array ciphertext), `iv` (12-byte AES-GCM IV), `created_at`, `last_used_at`. NOT a runtime-side token table — the runtime owns the canonical PAT registry (post-V1 Protocol surface); the Console DB caches the encrypted token blob so the operator does not have to paste it on every page load. Per-operator scoped. RFC §7, D-061, D-091, Phase 72h.
 
@@ -1184,7 +1197,13 @@ Non-batchable in this wave; each returns `{task_id, steered|paused|resumed}`.
 
 **RunContext** — passed to each `Planner.Next` call. Carries identity (the triple), tools available, memory snapshot, control surface (`RunContext.Control`), trajectory pointer, deadlines. The planner reads from this; it never reads runtime internals directly.
 
-**`RunContext.DiscoveredTools`** — Phase 107c (D-167) per-run `[]string` field carrying the names of deferred tools the LLM discovered via the `tool_search` meta-tool during this run. The React planner appends to it when it observes a `tool_search` tool-call result and reads it on the next step to extend the next turn's `req.Tools[]` declaration with the discovered tool. Stack-local-per-run (D-025) — pre-cleared at run start, accumulates within ONE run, never on the shared planner struct. The structural enforcement of the two-turn discovery cycle: turn N the LLM calls `tool_search`, turn N+1 the planner has the discovered tool in `Tools[]`, the LLM calls it. RFC §6.2, brief 15 §3.
+**`RunContext.DiscoveredTools`** — per-run names of deferred tools used to extend
+native declarations after discovery. ReAct derives current names from single,
+parallel and batch `tool_search` outcomes. Retained native history contributes
+at most 128 recent canonical invoked identities/discovered names, resolved through
+the current visibility-filtered catalog rather than replaying old schemas or
+permissions. No discovery state lives on the shared planner instance; unknown
+names are not fuzzy-dispatched. RFC §6.2, D-167, D-468.
 
 **`RunContext.PendingToolCalls`** — Phase 107c (D-167 — AC-19 + AC-19a) per-run `[]ToolCallDeferred` field that carries the N-1 remaining native tool-calls when the LLM emits N>1 ToolCalls in one response. The React planner emits `CallTool` for the head of the slice, records the tail, and consumes the queue before consulting the LLM again. **Phase 107d (D-169) demoted this from the default to the OPT-OUT + discovery-race path:** with `parallel_tool_calls: true` (the new default) the projector emits a native `CallParallel` instead, and the dev executor dispatches the branches concurrently. The serialization queue is now reached only when `parallel_tool_calls: false`, OR as the same-turn-discovery-race guard (D-167 risk #4 — a `tool_search` plus a call to the not-yet-declared tool must serialise). The runloop's `OnPendingToolCalls` closure captures the post-step queue and writes it back into `spec.Base`. Stack-local-per-run (D-025); never on the planner struct. Empty by default. RFC §6.2, brief 15 §6, D-169.
 
@@ -1257,7 +1276,7 @@ D-316.
 
 **`saved_views` (Console DB table)** — Phase 72h Console DB table that persists per-operator dashboard layouts, column-set preferences, sort orders, and group-by on Console list pages. Columns: `page` (one of the named list pages), `name` (operator-picked label), `view_spec_json` (JSON-encoded view spec: columns, sort, group-by, density). NOT a runtime saved query, NOT a shared team view. Per-operator scoped. Consumers: every Stage-2 Console page that exposes a "saved views" dropdown (most prominently Sessions, Tasks, Events, Memory). RFC §7, D-061, Phase 72h.
 
-**`Summariser`** — runtime-side interface at `internal/planner.Summariser` (Phase 46): `Summarise(ctx, rc, tr) (*TrajectorySummary, error)`. The `CompressionRunner` calls Summarise when the trajectory's token estimate exceeds `Budget.TokenBudget`. Fail-loudly per §13: errors propagate verbatim through `MaybeCompress`; returning `(nil, nil)` is a contract violation surfaced as `ErrEmptySummary`. The production implementation is **`TrajectorySummariser`** (Phase 111e, D-202): an LLM client + versioned compaction prompt that invokes `llm.LLMClient.Complete` and parses the response into the five `TrajectorySummary` fields. Phase 46 shipped the seam + test fixtures (`staticSummariser` / `errSummariser`). RFC §6.2, brief 02 §4, D-055, D-202.
+**`Summariser`** — runtime-side interface at `internal/planner.Summariser` (Phase 46): `Summarise(ctx, rc, tr) (*TrajectorySummary, error)`. The `CompressionRunner` calls Summarise when the trajectory's token estimate exceeds `Budget.TokenBudget`. Fail-loudly per §13: errors propagate verbatim through `MaybeCompress`; returning `(nil, nil)` is a contract violation surfaced as `ErrEmptySummary`. The production implementation is **`TrajectorySummariser`** — the production portable `planner.Summariser` in `internal/llm/summarizer`. It visits selected older exchanges in bounded chronological chunks through the existing `LLMClient.Complete`, carrying forward the previous five-field narrative. Runtime coverage is not generated by the model. Inputs are not silently elided or fragment-clipped; an oversized exchange requires a bounded reference or an explicit capacity error. Output shape, byte size and reported termination are validated locally. Defaults: 16 completion calls, 2,048 output tokens per call, and a 16 KiB narrative ceiling further bounded by the input allowance. The model-window guard is additional; summary fidelity is not guaranteed by JSON validation. Distinct from the legacy memory-subsystem summarizer. RFC §6.2, §6.5, D-463.
 
 **`Subsystem` (governance)** — the Phase 36a interface every governance policy implements: `PreCall(ctx, req) error` + `PostCall(ctx, req, resp, callErr) error`. `governance.Wrap(inner, sub)` composes a Subsystem around `LLMClient`. `governance.NewCompound(subs...)` bundles many Subsystems into one (fan PreCall on first-failure, fan PostCall to all members). Concrete V1 implementations: `CostAccumulator`, `RateLimiter`, `MaxTokensEnforcer`. RFC §6.15, D-044.
 
@@ -1305,9 +1324,9 @@ D-316.
 - `ErrContextWindowExceeded` — LLM-edge safety pass: assembled `CompleteRequest`'s estimated token count is within `ContextWindowReserve` of the model's configured `ContextWindowTokens` cap (`internal/llm`, RFC §6.5, D-026, D-039).
 Additions to this set are RFC PRs.
 
-**Semantic recall** — the run-loop step (D-211) that fires when `memory.retrieval: semantic` is enabled: `runctx.FetchMemoryBlocks` calls `MemoryStore.SearchTurns` with the current task query, applies the `retrieval_min_score` cosine-similarity floor, deduplicates against the recent-turn window already in the Conversation tier, caps each recalled turn's text at 2 KiB per side (D-026), and populates `MemoryBlocks.External` with a `map["recalled_turns"][]map[string]any` — the `<read_only_external_memory>` tier the ReAct planner injects. Composes with rolling_summary (the Conversation tier is byte-untouched). Mode off → byte-for-byte prompt parity, zero embedder traffic. Fail-loud: a `SearchTurns` error fails the run (`runtime_fetch_error`); there is no silent fall-back to summary-only. **The External tier now has TWO producers, and they compose at MAP-KEY granularity rather than competing for the slot**: recall writes `recalled_turns`, a **caller-supplied memory block** writes the fixed `caller_supplied` key, and neither can displace the other. Every future producer inherits that rule — add a sibling key, never replace the map. Note that no downstream guard bounds an oversized tier: the LLM-edge context-leak guard byte-exempts everything that is not tool-role text and memory tiers render under the system role, so the only backstop is the late, run-fatal token-budget check (`ErrContextWindowExceeded`). RFC §6.5, §6.6, D-211, D-364.
+**Semantic recall** — historical native session-memory retrieval (D-211), superseded by cumulative checkpoints and recent execution evidence under D-477. Harbor no longer indexes session turns into a separate vector store or injects `recalled_turns`. External caller memory remains a separate, untrusted `caller_supplied` entry.
 
-**Semantic retrieval** — the opt-in retrieval mode (D-191) that ranks by embedding similarity, COMPOSING with — never replacing — the default retrieval: in memory (`memory.retrieval: semantic`), turns are embedded at `AddTurn` and `MemoryStore.SearchTurns` ranks them by cosine while `GetLLMContext` keeps its strategy patch (vectors persist identity-scoped through the same StateStore floor, all three drivers, brute-force at V1 scale); in skills (`skills.retrieval: semantic`), `Search` / `skill_search` ranks the identity-scoped catalog by similarity (result path `semantic`) with capability filtering + redaction + the budgeter unchanged. Requires the `embeddings` block / `Deps.Embedder` — enabling a semantic mode without an embedder fails loudly at validation and at `Open`; a disabled-mode `SearchTurns` fails loudly with `ErrSemanticDisabled`. RFC §6.6, §6.7, D-191. See also: Semantic recall (D-211) for the run-loop consumer that calls `SearchTurns`.
+**Semantic retrieval** — embedding-similarity ranking for the identity-scoped skills catalog (`skills.retrieval: semantic`), with capability filtering, redaction and budgets intact. Requires the embedding client; missing configuration fails explicitly. The native session-memory portion of D-191 is superseded by D-477. External integrations may use the standalone embedding primitive for their own retrieval.
 
 **Session** — a longer-lived multi-turn conversation that contains many Runs. Identity for runtime concerns is `(tenant, user, session)`. RFC §6.9.
 
@@ -2227,3 +2246,80 @@ used by the in-memory and durable drivers: exact `(tenant, user, session)`
 buckets for non-admin subscriptions plus one Admin bucket, with the complete
 `Filter.Matches` predicate retained before bounded enqueue. Subscribe, Cancel,
 and Close keep the indexes synchronized with canonical lifecycle state. D-453.
+
+**Retained execution window** — an explicitly enabled, bounded private session
+projection in the existing StateStore, distinct from long-term memory, consumer
+turn rows, and authorization to repeat external actions. Explicit serving or
+embedded configuration stores own terminal root evidence and imports prior
+retained turns as inert history; children keep their explicit task context. Whole-turn expiry/eviction is explicit; source lifetime and session
+erasure still constrain an admitted view. Per-action crash durability is separate
+pending acceptance, not implied by terminal retention. Historical D-464 shape;
+D-477 replaces its separate activation and count-eviction semantics with
+cumulative session memory. RFC §6.9, RFC 002.
+
+**Cumulative session memory** — the D-477 replacement for pair-only summaries and
+separately activated retained windows. One `memory` owner retains a current
+checkpoint, bounded recent execution evidence and validated references. The next
+checkpoint consumes the previous one plus newly eligible evidence. A committed
+generation/coverage boundary survives successful covered-detail cleanup; expiry
+and erasure still invalidate affected derived context. No checkpoint/source-ID
+chain, external long-term recall or historical-action replay. RFC §6.6, RFC 002.
+
+**Dispatch checkpoint** — required persistence in retained-context mode before
+runtime dispatch and before another model decision consumes its outcome.
+A run-scoped bounded head and action frame use the existing StateStore's atomic
+conditional writes; a pending frame records an unknown outcome, not a failed
+external action. Terminal publication and transient cleanup are separate from
+the trusted completion hook. RFC 002, D-466.
+
+**Historical exchange envelope** — a versioned, non-executable record of one
+retained exchange, with source run, ordinal, concrete action kind and permitted
+body. It is rendered with the existing live native-call/result renderer, not
+placed on a dispatch queue. The exchange envelope remains version 1 inside
+version-3 retained windows; older untagged entries stay inert rather than
+receiving guessed action types. RFC 002, D-467, D-469.
+
+**Retained checkpoint** — one portable narrative and covered-through cursor in
+an existing retained execution window, bound to exact source-turn admissions and
+content. Restoration rebinds the verified prefix to the current query without
+inference. Source expiry/eviction invalidates the summary; it never extends
+retention or authorizes replay. This source-cache shape is superseded by D-477's
+cumulative committed coverage. RFC 002, D-469.
+
+**Settled-journal reconciliation** — an explicit identity-scoped operation that
+seals committed, fully settled execution evidence as interrupted session context
+while fencing the source admission. It never invokes historical actions, resets
+retention, or decides the outcome of a pending external operation. Available to
+embedded callers through `Stack.ReconcileRetainedContext`. RFC 002, D-470.
+
+**Retained context reconciliation** — an explicit request to seal fully settled,
+unexpired execution evidence as interrupted context while fencing its old
+admission. Embedded callers use `Stack.ReconcileRetainedContext`; served callers
+use `sessions.reconcile_context` in their own verified session. A pending action
+is unknown and refused, never replayed. No private evidence is returned over the
+Protocol. RFC §6.9, D-470, D-471.
+
+**Retained result references** — a bounded, runtime-resolved metadata view of
+existing dispatcher-offloaded results. It is independent of lossy summary prose,
+uses the current session's ArtifactStore scope, and is read through the existing
+`artifact_fetch` tool. It is not a new registry or an external-resource version
+authority. RFC §6.9, D-472.
+
+**Retained input reference** — an attachment ID associated with its admitted user
+turn, committed as a context-only journal frame without copying uploaded bytes.
+Scoped current metadata survives summary coverage and existing artifact tools
+supply authorized content. A reference is not proof of inspection or a new
+execution permission. D-474.
+
+**Usage report presence** — additive normalized usage/cost metadata indicating
+that the driver received the corresponding SDK object, distinct from Harbor's
+estimated backfill and from missing/legacy unknown values. Prompt-detail object
+presence does not establish individual cache-field presence when the SDK has
+collapsed absent fields into zeros. RFC 002, D-475.
+
+**Prepared request diagnostic** — the content-free `llm.context.prepared` event
+emitted at the mandatory leaf capacity check. Fixed structural input estimates
+sum to admission's estimate; output headroom is separate. Numeric attempt and
+optional installed runtime replay coordinates describe selected context, not
+provider delivery, source inspection or billed usage. Maintenance does not inherit
+parent history. Existing event/Protocol ownership applies. RFC §6.5, D-476.

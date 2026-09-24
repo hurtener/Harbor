@@ -74,9 +74,10 @@ These rules are non-negotiable. A violation is a bug, not a style nit.
   `docs/CONFIG.md#llm` in the Harbor repo).
 - **Tuning the planner:** `planner.max_steps`, `planner.extra_guidance`,
   `planner.reasoning_replay`. See `docs/CONFIG.md#planner`.
-- **Enabling multi-turn memory:** uncomment the `memory:` block in
-  `harbor.yaml`. Strategies: `none` (default), `truncation`,
-  `rolling_summary`.
+- **Tuning multi-turn memory:** rolling memory is enabled by default with
+  20 detailed turns and a cumulative checkpoint. Edit `memory:` in
+  `harbor.yaml`; `strategy: none` opts out. Use durable `state.driver`
+  storage to preserve context across restarts. Compaction uses the governed LLM.
 
 ---
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/trajectory"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -521,18 +522,8 @@ func TestDefaultBuilder_RendersBackgroundResults(t *testing.T) {
 	}
 }
 
-// TestDefaultBuilder_WithSummary_SkipsStepHistory is the Phase 46
-// contract assertion (D-055): when rc.Trajectory.Summary is non-nil,
-// the builder MUST NOT render per-step assistant/user pairs. The
-// summary block in the user content IS the trajectory representation;
-// rendering both would double-count tokens and defeat the
-// compression. Brief 02 §4: "The compressed digest replaces the raw
-// step history in subsequent prompt builds."
-//
-// Test shape: a trajectory carries 3 Steps AND a non-nil Summary.
-// Expected messages: [system, user (goal + summary)]. No assistant
-// messages from the step loop.
-func TestDefaultBuilder_WithSummary_SkipsStepHistory(t *testing.T) {
+// Verified coverage suppresses only the summarized prefix.
+func TestDefaultBuilder_WithSummary_ReplaysOnlyUncoveredHistory(t *testing.T) {
 	t.Parallel()
 	rc := planner.RunContext{
 		Goal: "test",
@@ -557,18 +548,22 @@ func TestDefaultBuilder_WithSummary_SkipsStepHistory(t *testing.T) {
 			},
 		},
 	}
+	digest, err := rc.Trajectory.PrefixDigest(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc.Trajectory.Summary.Coverage = &trajectory.SummaryCoverage{Version: 1, Generation: 1, ThroughStep: 2, PrefixDigest: digest}
 	req := defaultBuilder{}.Build(rc, "sys")
 
-	// Count assistant messages — Phase 46 contract: ZERO when Summary
-	// is non-nil.
+	// Only the uncovered final exchange should replay.
 	asstCount := 0
 	for _, m := range req.Messages {
 		if m.Role == llm.RoleAssistant {
 			asstCount++
 		}
 	}
-	if asstCount != 0 {
-		t.Errorf("Phase 46 contract: assistant message count = %d, want 0 (Summary present must skip step history)", asstCount)
+	if asstCount != 1 {
+		t.Errorf("assistant message count = %d, want 1 uncovered exchange", asstCount)
 	}
 
 	// Confirm the summary IS in the user content — the planner still
@@ -585,7 +580,7 @@ func TestDefaultBuilder_WithSummary_SkipsStepHistory(t *testing.T) {
 	}
 
 	// Confirm raw step history did NOT leak through.
-	for _, leak := range []string{"found 3 hits", `"tool":"search"`, `"tool":"summarize"`, `"tool":"verify"`} {
+	for _, leak := range []string{"found 3 hits", `"tool":"search"`, `"tool":"summarize"`} {
 		for _, m := range req.Messages {
 			if m.Content.Text != nil && strings.Contains(*m.Content.Text, leak) {
 				t.Errorf("Phase 46 contract: step-history fragment %q leaked into prompt despite non-nil Summary", leak)

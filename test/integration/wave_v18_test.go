@@ -537,7 +537,7 @@ func waveV18EmbedStack(t *testing.T) *assemble.Stack {
 		Artifacts:   config.ArtifactsConfig{Driver: "inmem", HeavyOutputThresholdBytes: 32 * 1024},
 		Tasks:       config.TasksConfig{Driver: "inprocess", RetainTurnTimeout: time.Minute, ContinuationHopLimit: 4},
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
-		Memory:      config.MemoryConfig{Driver: "inmem", Strategy: "none", RecoveryBacklogMax: 8},
+		Memory:      config.MemoryConfig{Driver: "inmem", Strategy: "none"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("embed cfg.Validate(): %v", err)

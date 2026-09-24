@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 147 canonical event types a Harbor Runtime can publish, read from the live
+The 148 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -538,6 +538,33 @@ Payload `CompletionChunkPayload` — safe payload (delivered typed, verbatim).
 | `Done` | `bool` |  |
 | `Kind` | `string` |  |
 | `OccurredAt` | `time.Time` |  |
+
+## `llm.context.prepared`
+
+Payload `ContextPreparedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Identity` | `identity.Quadruple` |  |
+| `OccurredAt` | `time.Time` |  |
+| `Sections` | `llm.RequestTokenSections` |  |
+| `EstimatedTokens` | `int` |  |
+| `ContextWindowTokens` | `int` |  |
+| `InputLimitExclusive` | `int` |  |
+| `OutputReserved` | `int` |  |
+| `OutputLimitKnown` | `bool` |  |
+| `CapacityExceeded` | `bool` |  |
+| `MessageCount` | `int` |  |
+| `ToolCount` | `int` |  |
+| `WorkingInputTarget` | `int` |  |
+| `PlannerStep` | `int` |  |
+| `Attempt` | `int` |  |
+| `Retry` | `int` |  |
+| `Downgrade` | `int` |  |
+| `FallbackHop` | `int` |  |
+| `AttemptKnown` | `bool` |  |
+| `MaintenanceOrdinal` | `int` |  |
+| `History` | `*llm.ContextHistory` | optional (`omitempty`) |
 
 ## `llm.context_leak`
 

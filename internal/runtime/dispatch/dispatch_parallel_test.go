@@ -29,6 +29,57 @@ func newParallelTestExecutor(t *testing.T, heavyThreshold int) (*toolExecutor, t
 	return exec, cat
 }
 
+func TestExecutor_ParallelCleanupFailurePreservesSiblingReceipt(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		for _, join := range []planner.JoinSpec{{Kind: planner.JoinAll}, {Kind: planner.JoinFirstSuccess}, {Kind: planner.JoinN, N: 2}} {
+			t.Run(fmt.Sprintf("batch-%v-%s", batch, join.Kind), func(t *testing.T) {
+				exec, cat := newParallelTestExecutor(t, 0)
+				cleanupStarted := make(chan struct{})
+				for _, name := range []string{"good", "cleanup"} {
+					if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: name}, Invoke: func(ctx context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+						if name == "cleanup" {
+							close(cleanupStarted)
+							return tools.ToolResult{}, tools.ErrInvocationCleanupFailed
+						}
+						select {
+						case <-cleanupStarted:
+						case <-ctx.Done():
+							return tools.ToolResult{}, ctx.Err()
+						}
+						return tools.ToolResult{Value: "known receipt"}, nil
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				q := dispatchTestQuad("cleanup")
+				branches := []planner.CallTool{{Tool: "good", CallID: "g"}, {Tool: "cleanup", CallID: "c"}}
+				var decision planner.Decision = planner.CallParallel{Branches: branches, Join: &join}
+				if batch {
+					decision = planner.Batch{Tools: branches, Join: &join}
+				}
+				raw, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), decision)
+				if !errors.Is(err, tools.ErrInvocationCleanupFailed) {
+					t.Fatalf("required branch failure swallowed: %v", err)
+				}
+				var observations []planner.ParallelBranchObservation
+				if batch {
+					observations = raw.(planner.BatchObservation).Tools
+				} else {
+					observations = raw.(planner.ParallelObservation).Branches
+				}
+				foundReceipt, foundFailure := false, false
+				for _, observation := range observations {
+					foundReceipt = foundReceipt || observation.CallID == "g" && observation.Value == "known receipt"
+					foundFailure = foundFailure || observation.CallID == "c" && observation.Error != ""
+				}
+				if len(observations) != 2 || !foundReceipt || !foundFailure {
+					t.Fatalf("sibling receipt lost: %+v", observations)
+				}
+			})
+		}
+	}
+}
+
 // TestExecutor_CallParallel_MixedSuccessFailure — AC-13 + AC-2:
 // a CallParallel with success / invoke-error / resolve-miss /
 // bad-args branches produces one aggregate outcome per branch keyed by

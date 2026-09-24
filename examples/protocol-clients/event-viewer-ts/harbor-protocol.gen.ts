@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:1ee2d3bcf265c9245338bb660de0a5f124b560149815b2a489859b7cf6b4fa87";
+export const WIRE_SURFACE_DIGEST = "sha256:2c19281e5885298d23b29e047cda27ecbd587b58c3602e36ace16c349355e8d1";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -147,6 +147,7 @@ export type HarborMethod =
   | "sessions.delete"
   | "sessions.inspect"
   | "sessions.list"
+  | "sessions.reconcile_context"
   | "sessions.set_title"
   | "sessions.turns.get"
   | "sessions.turns.list"
@@ -197,6 +198,8 @@ export type HarborErrorCode =
   | "render_authority_ambiguous"
   | "request_too_large"
   | "restart_unavailable"
+  | "retained_context_unavailable"
+  | "retained_context_unsettled"
   | "revision_conflict"
   | "runtime_error"
   | "scope_mismatch"
@@ -261,6 +264,7 @@ export type HarborEventType =
   | "governance.rate_limited"
   | "governance.tenant_overrides_set"
   | "llm.completion.chunk"
+  | "llm.context.prepared"
   | "llm.context_leak"
   | "llm.context_window_exceeded"
   | "llm.cost.recorded"
@@ -608,6 +612,7 @@ export interface AgentConfigDiff {
   llm_params: AgentConfigLLMParamsDiff;
   hooks: AgentConfigHooksDiff;
   naming: AgentConfigNamingDiff;
+  memory: AgentConfigMemoryDiff;
   extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 
@@ -730,6 +735,16 @@ export interface AgentConfigMCPCredentialInjectionDescriptor {
   meta_key?: string;
 }
 
+export interface AgentConfigMemory {
+  budget_tokens: number;
+}
+
+export interface AgentConfigMemoryDiff {
+  budget_tokens_changed: boolean;
+  budget_tokens_from: string;
+  budget_tokens_to: string;
+}
+
 export interface AgentConfigNamedBlock {
   name: string;
   body: string;
@@ -799,6 +814,7 @@ export interface AgentConfigPayload {
   llm_params?: AgentConfigLLMParams;
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
+  memory?: AgentConfigMemory;
   extra_system_blocks?: AgentConfigExtraSystemBlocks;
   agent_packs?: AgentConfigAgentPackItem[];
 }
@@ -3189,6 +3205,17 @@ export interface SessionsListResponse {
   rows: SessionRow[];
   next_cursor: string;
   truncated: boolean;
+}
+
+export interface SessionsReconcileContextRequest {
+  identity: IdentityScope;
+  source_run_id: string;
+}
+
+export interface SessionsReconcileContextResponse {
+  session_id: string;
+  source_run_id: string;
+  reconciled: boolean;
 }
 
 export interface SessionsSetTitleRequest {

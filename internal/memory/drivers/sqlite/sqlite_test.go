@@ -8,7 +8,6 @@ package sqlite_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -16,15 +15,11 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
-	"github.com/hurtener/Harbor/internal/embeddings/embeddingstest"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
-	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/memory/conformancetest"
-	memorydriverinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	memorydriversqlite "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
@@ -38,7 +33,6 @@ import (
 func TestSQLite_ConformanceSuite(t *testing.T) {
 	strategies := []memory.Strategy{
 		memory.StrategyNone,
-		memory.StrategyTruncation,
 		memory.StrategyRollingSummary,
 	}
 	for _, s := range strategies {
@@ -46,10 +40,7 @@ func TestSQLite_ConformanceSuite(t *testing.T) {
 			conformancetest.Run(t, func() conformancetest.Harness {
 				bus, store := buildDeps(t)
 				dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-				deps := memory.Deps{State: store, Bus: bus}
-				if s == memory.StrategyRollingSummary {
-					deps.Summarizer = strategy.EchoSummarizer{}
-				}
+				deps := memory.Deps{State: store, Bus: bus, Redactor: cumulativeRedactor(t)}
 				mem, err := memorydriversqlite.New(memory.ConfigSnapshot{
 					Driver:       "sqlite",
 					DSN:          dbPath,
@@ -60,10 +51,9 @@ func TestSQLite_ConformanceSuite(t *testing.T) {
 					t.Fatalf("sqlite.New(%q): %v", s, err)
 				}
 				return conformancetest.Harness{
-					Store:        mem,
-					Bus:          bus,
-					Strategy:     s,
-					BudgetTokens: 64,
+					Store:    mem,
+					Bus:      bus,
+					Strategy: s,
 					Cleanup: func() {
 						_ = mem.Close(context.Background())
 					},
@@ -71,40 +61,7 @@ func TestSQLite_ConformanceSuite(t *testing.T) {
 			})
 		})
 	}
-	// Semantic retrieval mode (Phase 84d, D-191): same suite,
-	// retrieval=semantic, deterministic test embedder — the §9
-	// conformance-parity leg for the SQLite driver.
-	t.Run("semantic/rolling_summary", func(t *testing.T) {
-		conformancetest.Run(t, func() conformancetest.Harness {
-			bus, store := buildDeps(t)
-			dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-			mem, err := memorydriversqlite.New(memory.ConfigSnapshot{
-				Driver:       "sqlite",
-				DSN:          dbPath,
-				Strategy:     memory.StrategyRollingSummary,
-				BudgetTokens: 64,
-				Retrieval:    memory.RetrievalSemantic,
-			}, memory.Deps{
-				State:      store,
-				Bus:        bus,
-				Summarizer: strategy.EchoSummarizer{},
-				Embedder:   embeddingstest.New(),
-			})
-			if err != nil {
-				t.Fatalf("sqlite.New(semantic): %v", err)
-			}
-			return conformancetest.Harness{
-				Store:        mem,
-				Bus:          bus,
-				Strategy:     memory.StrategyRollingSummary,
-				Retrieval:    memory.RetrievalSemantic,
-				BudgetTokens: 64,
-				Cleanup: func() {
-					_ = mem.Close(context.Background())
-				},
-			}
-		})
-	})
+
 }
 
 // TestSQLite_New_RequiresDSN pins the explicit-DSN-required contract.
@@ -114,7 +71,7 @@ func TestSQLite_New_RequiresDSN(t *testing.T) {
 	bus, store := buildDeps(t)
 	_, err := memorydriversqlite.New(memory.ConfigSnapshot{
 		Driver: "sqlite", Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
+	}, memory.Deps{State: store, Bus: bus, Redactor: cumulativeRedactor(t)})
 	if err == nil {
 		t.Fatal("err=nil, want non-nil")
 	}
@@ -132,219 +89,6 @@ func TestSQLite_New_RequiresBus(t *testing.T) {
 	}
 }
 
-// TestSQLite_New_RejectsRollingSummaryWithoutSummarizer pins the
-// fail-loud contract (AC-6): rolling_summary with no Summarizer must
-// error at construction — never a stub fallback (AGENTS.md §13).
-func TestSQLite_New_RejectsRollingSummaryWithoutSummarizer(t *testing.T) {
-	bus, store := buildDeps(t)
-	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-	_, err := memorydriversqlite.New(memory.ConfigSnapshot{
-		Driver: "sqlite", DSN: dbPath, Strategy: memory.StrategyRollingSummary,
-	}, memory.Deps{State: store, Bus: bus})
-	if err == nil {
-		t.Fatal("err=nil, want non-nil for rolling_summary without summarizer")
-	}
-}
-
-// TestSQLite_PersistsAcrossReopens proves the driver actually
-// persists state to disk: a Restore on one driver instance must be
-// visible to a Snapshot on a second driver opened against the same
-// DB file. This is the core "persistent" guarantee Phase 25 ships.
-func TestSQLite_PersistsAcrossReopens(t *testing.T) {
-	bus, store := buildDeps(t)
-	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-	ctx := context.Background()
-	id := tripleA()
-
-	m1, err := memorydriversqlite.New(memory.ConfigSnapshot{
-		Driver: "sqlite", DSN: dbPath, Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
-	if err != nil {
-		t.Fatalf("sqlite.New (1): %v", err)
-	}
-	if err := m1.Restore(ctx, id, memory.Snapshot{}); err != nil {
-		t.Fatalf("m1.Restore: %v", err)
-	}
-	snap1, err := m1.Snapshot(ctx, id)
-	if err != nil {
-		t.Fatalf("m1.Snapshot: %v", err)
-	}
-	if err := m1.Close(ctx); err != nil {
-		t.Fatalf("m1.Close: %v", err)
-	}
-
-	// Re-open the same DB; the persisted slot must surface.
-	m2, err := memorydriversqlite.New(memory.ConfigSnapshot{
-		Driver: "sqlite", DSN: dbPath, Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
-	if err != nil {
-		t.Fatalf("sqlite.New (2): %v", err)
-	}
-	defer func() { _ = m2.Close(ctx) }()
-	snap2, err := m2.Snapshot(ctx, id)
-	if err != nil {
-		t.Fatalf("m2.Snapshot: %v", err)
-	}
-	if snap1.Strategy != snap2.Strategy {
-		t.Errorf("strategy mismatch after reopen: %q vs %q", snap1.Strategy, snap2.Strategy)
-	}
-	if string(snap1.Bytes) != string(snap2.Bytes) {
-		t.Errorf("bytes mismatch after reopen: %q vs %q", snap1.Bytes, snap2.Bytes)
-	}
-}
-
-// TestSQLite_CrossDriver_ByteStableRoundTrip asserts the Phase 25
-// acceptance criterion: a Snapshot taken from one driver must
-// Restore via another driver byte-stably. The wire shape lives in
-// `internal/memory/wire.go`; both drivers marshal through it.
-//
-// This case pins the canonical empty (Strategy=none) record;
-// TestSQLite_CrossDriver_RollingSummary_PreservesSummary below covers
-// the strategy that actually carries a summary.
-func TestSQLite_CrossDriver_ByteStableRoundTrip(t *testing.T) {
-	bus, store := buildDeps(t)
-	ctx := context.Background()
-	id := tripleA()
-
-	// 1. Build an InMem driver, write the canonical empty record, take
-	//    a Snapshot.
-	inmemStore, err := memorydriverinmem.New(memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus}, memorydriverinmem.Options{})
-	if err != nil {
-		t.Fatalf("inmem.New: %v", err)
-	}
-	defer func() { _ = inmemStore.Close(ctx) }()
-	if err := inmemStore.Restore(ctx, id, memory.Snapshot{}); err != nil {
-		t.Fatalf("inmem.Restore: %v", err)
-	}
-	inmemSnap, err := inmemStore.Snapshot(ctx, id)
-	if err != nil {
-		t.Fatalf("inmem.Snapshot: %v", err)
-	}
-
-	// Bytes must unmarshal to the canonical empty record.
-	var rec memory.Record
-	if err := json.Unmarshal(inmemSnap.Bytes, &rec); err != nil {
-		t.Fatalf("unmarshal inmem snapshot bytes: %v", err)
-	}
-	if rec.Strategy != memory.StrategyNone {
-		t.Errorf("inmem record strategy=%q, want %q", rec.Strategy, memory.StrategyNone)
-	}
-	if len(rec.Turns) != 0 {
-		t.Errorf("inmem record turns=%d, want 0", len(rec.Turns))
-	}
-
-	// 2. Open a SQLite driver against a fresh DB, Restore the InMem
-	//    snapshot — must succeed (cross-driver byte-stable).
-	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-	sqliteStore, err := memorydriversqlite.New(memory.ConfigSnapshot{
-		Driver: "sqlite", DSN: dbPath, Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
-	if err != nil {
-		t.Fatalf("sqlite.New: %v", err)
-	}
-	defer func() { _ = sqliteStore.Close(ctx) }()
-	if err := sqliteStore.Restore(ctx, id, inmemSnap); err != nil {
-		t.Fatalf("sqlite.Restore(inmemSnap): %v", err)
-	}
-
-	// 3. Read the SQLite snapshot back; the bytes must round-trip to
-	//    the canonical empty record again.
-	sqliteSnap, err := sqliteStore.Snapshot(ctx, id)
-	if err != nil {
-		t.Fatalf("sqlite.Snapshot: %v", err)
-	}
-	var rec2 memory.Record
-	if err := json.Unmarshal(sqliteSnap.Bytes, &rec2); err != nil {
-		t.Fatalf("unmarshal sqlite snapshot bytes: %v", err)
-	}
-	if rec2.Strategy != memory.StrategyNone {
-		t.Errorf("sqlite record strategy=%q, want %q", rec2.Strategy, memory.StrategyNone)
-	}
-	if len(rec2.Turns) != 0 {
-		t.Errorf("sqlite record turns=%d, want 0", len(rec2.Turns))
-	}
-}
-
-// TestSQLite_CrossDriver_RollingSummary_PreservesSummary asserts AC-8 of
-// Phase 25a (D-174): a rolling_summary Snapshot taken on one driver
-// Restores on another with its SUMMARY intact. The prior cross-driver
-// test only exercised the empty strategy=none record; this guards the
-// strategy that carries a summary. The two stores use INDEPENDENT state
-// stores, so the summary can only reach the SQLite store through the
-// explicit Snapshot bytes — not a shared StateStore — which is what
-// makes this a real cross-driver byte-stability test.
-func TestSQLite_CrossDriver_RollingSummary_PreservesSummary(t *testing.T) {
-	ctx := context.Background()
-	id := tripleA()
-	bus := buildBus(t)
-
-	stA, err := state.Open(ctx, config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open A: %v", err)
-	}
-	defer func() { _ = stA.Close(ctx) }()
-	stB, err := state.Open(ctx, config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open B: %v", err)
-	}
-	defer func() { _ = stB.Close(ctx) }()
-
-	// 1. InMem rolling_summary: 6 turns overflow the recent window
-	//    (FullZoneTurns=4) so older turns are summarised. Snapshot.
-	inmemStore, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 256,
-	}, memory.Deps{State: stA, Bus: bus, Summarizer: strategy.EchoSummarizer{}})
-	if err != nil {
-		t.Fatalf("inmem memory.Open: %v", err)
-	}
-	defer func() { _ = inmemStore.Close(ctx) }()
-	for i := range 6 {
-		if err := inmemStore.AddTurn(ctx, id, memory.ConversationTurn{
-			UserMessage: "u", AssistantResponse: "a",
-		}); err != nil {
-			t.Fatalf("inmem.AddTurn %d: %v", i, err)
-		}
-	}
-	srcPatch, err := inmemStore.GetLLMContext(ctx, id)
-	if err != nil {
-		t.Fatalf("inmem.GetLLMContext: %v", err)
-	}
-	if srcPatch.Summary == "" {
-		t.Fatalf("precondition: inmem rolling_summary produced no summary after 6 turns: %+v", srcPatch)
-	}
-	inmemSnap, err := inmemStore.Snapshot(ctx, id)
-	if err != nil {
-		t.Fatalf("inmem.Snapshot: %v", err)
-	}
-
-	// 2. SQLite rolling_summary on an INDEPENDENT state store: Restore
-	//    the inmem snapshot, read back — the summary must survive.
-	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
-	sqliteStore, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "sqlite", DSN: dbPath, Strategy: memory.StrategyRollingSummary, BudgetTokens: 256,
-	}, memory.Deps{State: stB, Bus: bus, Summarizer: strategy.EchoSummarizer{}})
-	if err != nil {
-		t.Fatalf("sqlite memory.Open: %v", err)
-	}
-	defer func() { _ = sqliteStore.Close(ctx) }()
-	if err := sqliteStore.Restore(ctx, id, inmemSnap); err != nil {
-		t.Fatalf("sqlite.Restore(inmemSnap): %v", err)
-	}
-	dstPatch, err := sqliteStore.GetLLMContext(ctx, id)
-	if err != nil {
-		t.Fatalf("sqlite.GetLLMContext: %v", err)
-	}
-	if dstPatch.Summary == "" {
-		t.Error("rolling_summary cross-driver restore dropped the summary (got empty)")
-	}
-	if dstPatch.Summary != srcPatch.Summary {
-		t.Errorf("summary did not survive cross-driver restore:\n inmem:  %q\n sqlite: %q",
-			srcPatch.Summary, dstPatch.Summary)
-	}
-}
-
 // TestSQLite_DriverRegistered checks the init() side-effect: the
 // driver self-registers under "sqlite" so OpenDriver can resolve it.
 // Empty DSN means New surfaces the DSN error from the factory; that
@@ -353,147 +97,13 @@ func TestSQLite_DriverRegistered(t *testing.T) {
 	bus, store := buildDeps(t)
 	_, err := memory.OpenDriver("sqlite", memory.ConfigSnapshot{
 		Driver: "sqlite", Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
+	}, memory.Deps{State: store, Bus: bus, Redactor: cumulativeRedactor(t)})
 	if err == nil {
 		t.Fatal("OpenDriver(sqlite, empty DSN): err=nil, want non-nil")
 	}
 	if errors.Is(err, memory.ErrUnknownDriver) {
 		t.Fatalf("driver not registered: %v", err)
 	}
-}
-
-// TestSQLite_RestartRehydration is the durability proof (AC-5):
-// write turns under a strategy on a SQLite memory store backed by a
-// REAL SQLite `state.StateStore` (durable to disk), Close everything,
-// then reopen a fresh state store + memory store against the SAME
-// state DSN and assert `GetLLMContext` returns the prior summary +
-// recent turns. This is the "memory survives a restart" guarantee.
-//
-// It also exercises the fail-loud failure mode (AC-6): reopening
-// rolling_summary with a nil Summarizer errors at `memory.Open`.
-func TestSQLite_RestartRehydration(t *testing.T) {
-	ctx := context.Background()
-	id := tripleA()
-
-	cases := []struct {
-		name         string
-		strategyName memory.Strategy
-		summarizer   memory.Summarizer
-		wantSummary  bool
-	}{
-		{
-			name:         "rolling_summary",
-			strategyName: memory.StrategyRollingSummary,
-			summarizer:   strategy.EchoSummarizer{},
-			wantSummary:  true,
-		},
-		{
-			name:         "truncation",
-			strategyName: memory.StrategyTruncation,
-			summarizer:   nil,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// A real, disk-backed SQLite StateStore DSN is the durable
-			// backing the strategy executor persists through. The memory
-			// driver's own DSN is incidental (vestigial table); the
-			// strategy state lives in the StateStore.
-			stateDSN := filepath.Join(t.TempDir(), "state.sqlite")
-			memDSN := filepath.Join(t.TempDir(), "memory.sqlite")
-
-			bus := buildBus(t)
-
-			// --- Session 1: write turns, then Close everything. ---
-			st1, err := state.Open(ctx, config.StateConfig{Driver: "sqlite", DSN: stateDSN})
-			if err != nil {
-				t.Fatalf("state.Open (1): %v", err)
-			}
-			deps1 := memory.Deps{State: st1, Bus: bus, Summarizer: tc.summarizer}
-			m1, err := memorydriversqlite.New(memory.ConfigSnapshot{
-				Driver: "sqlite", DSN: memDSN, Strategy: tc.strategyName, BudgetTokens: 256,
-			}, deps1)
-			if err != nil {
-				t.Fatalf("sqlite.New (1): %v", err)
-			}
-			// 6 turns guarantees the recent-window (FullZoneTurns=4)
-			// overflows so rolling_summary spills + summarises.
-			for i := range 6 {
-				if err := m1.AddTurn(ctx, id, memory.ConversationTurn{
-					UserMessage: "u", AssistantResponse: "a",
-				}); err != nil {
-					t.Fatalf("AddTurn %d: %v", i, err)
-				}
-			}
-			patch1, err := m1.GetLLMContext(ctx, id)
-			if err != nil {
-				t.Fatalf("GetLLMContext (1): %v", err)
-			}
-			if tc.wantSummary && patch1.Summary == "" {
-				t.Fatalf("pre-restart: expected non-empty summary, got empty patch: %+v", patch1)
-			}
-			if len(patch1.RecentTurns) == 0 {
-				t.Fatalf("pre-restart: expected recent turns, got none")
-			}
-			if err := m1.Close(ctx); err != nil {
-				t.Fatalf("m1.Close: %v", err)
-			}
-			if err := st1.Close(ctx); err != nil {
-				t.Fatalf("st1.Close: %v", err)
-			}
-
-			// --- Session 2: reopen against the SAME state DSN. ---
-			st2, err := state.Open(ctx, config.StateConfig{Driver: "sqlite", DSN: stateDSN})
-			if err != nil {
-				t.Fatalf("state.Open (2): %v", err)
-			}
-			defer func() { _ = st2.Close(ctx) }()
-			deps2 := memory.Deps{State: st2, Bus: bus, Summarizer: tc.summarizer}
-			m2, err := memorydriversqlite.New(memory.ConfigSnapshot{
-				Driver: "sqlite", DSN: memDSN, Strategy: tc.strategyName, BudgetTokens: 256,
-			}, deps2)
-			if err != nil {
-				t.Fatalf("sqlite.New (2): %v", err)
-			}
-			defer func() { _ = m2.Close(ctx) }()
-
-			patch2, err := m2.GetLLMContext(ctx, id)
-			if err != nil {
-				t.Fatalf("GetLLMContext (2): %v", err)
-			}
-			if tc.wantSummary {
-				if patch2.Summary == "" {
-					t.Errorf("post-restart: lost the summary (got empty)")
-				}
-				if patch2.Summary != patch1.Summary {
-					t.Errorf("post-restart summary drift:\n pre=%q\npost=%q", patch1.Summary, patch2.Summary)
-				}
-			}
-			if len(patch2.RecentTurns) == 0 {
-				t.Errorf("post-restart: lost recent turns")
-			}
-		})
-	}
-
-	// Failure mode (AC-6): rolling_summary with a nil Summarizer fails
-	// loud at memory.Open — no stub fallback.
-	t.Run("rolling_summary_nil_summarizer_fails_loud", func(t *testing.T) {
-		stateDSN := filepath.Join(t.TempDir(), "state.sqlite")
-		memDSN := filepath.Join(t.TempDir(), "memory.sqlite")
-		bus := buildBus(t)
-		st, err := state.Open(ctx, config.StateConfig{Driver: "sqlite", DSN: stateDSN})
-		if err != nil {
-			t.Fatalf("state.Open: %v", err)
-		}
-		defer func() { _ = st.Close(ctx) }()
-		_, err = memory.Open(ctx, memory.ConfigSnapshot{
-			Driver: "sqlite", DSN: memDSN, Strategy: memory.StrategyRollingSummary,
-		}, memory.Deps{State: st, Bus: bus})
-		if err == nil {
-			t.Fatal("err=nil, want non-nil (rolling_summary needs a Summarizer)")
-		}
-	})
 }
 
 // buildBus builds just the EventBus (the rehydration test owns its
@@ -544,9 +154,11 @@ func buildDeps(t *testing.T) (events.EventBus, state.StateStore) {
 	return bus, store
 }
 
-func tripleA() identity.Quadruple {
-	return identity.Quadruple{
-		Identity: identity.Identity{TenantID: "tenant-A", UserID: "user-1", SessionID: "sess-1"},
-		RunID:    "run-1",
+func cumulativeRedactor(t *testing.T) audit.Redactor {
+	t.Helper()
+	red, err := audit.Open(t.Context(), config.AuditConfig{})
+	if err != nil {
+		t.Fatal(err)
 	}
+	return red
 }

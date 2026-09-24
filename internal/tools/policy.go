@@ -385,7 +385,7 @@ func runWithPolicy(
 
 	for attempt := range totalAttempts {
 		// Honor ctx cancellation between attempts.
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := CheckInvocationFence(ctx); ctxErr != nil {
 			return lastResult, terminalPolicyError(policyCancellationError(ctxErr, lastErr), attempt, totalAttempts, ErrClassPermanent)
 		}
 
@@ -398,9 +398,16 @@ func runWithPolicy(
 				case <-ctx.Done():
 					timer.Stop()
 					return lastResult, terminalPolicyError(policyCancellationError(ctx.Err(), lastErr), attempt, totalAttempts, ErrClassPermanent)
+				case <-InvocationInvalidated(ctx):
+					timer.Stop()
+					return lastResult, terminalPolicyError(policyCancellationError(ErrInvocationSuperseded, lastErr), attempt, totalAttempts, ErrClassPermanent)
 				case <-timer.C:
 				}
 			}
+		}
+
+		if err := CheckInvocationFence(ctx); err != nil {
+			return lastResult, terminalPolicyError(policyCancellationError(err, lastErr), attempt, totalAttempts, ErrClassPermanent)
 		}
 
 		// Per-attempt invocation context with timeout.
@@ -562,6 +569,9 @@ func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 		return ErrClassPermanent
 	}
 	if errors.Is(err, ErrToolResultMaterialization) {
+		return ErrClassPermanent
+	}
+	if errors.Is(err, ErrInvocationSuperseded) || errors.Is(err, ErrInvocationCleanupFailed) {
 		return ErrClassPermanent
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

@@ -130,8 +130,9 @@ if grep -qE '^const CallerSuppliedKey = "caller_supplied"$' internal/runtime/run
 else
     fail "phase 219 static: internal/runtime/runctx/caller_memory.go does not declare 'const CallerSuppliedKey = \"caller_supplied\"' — the fixed External-tier key is the whole collision-freedom argument, and both its NAME and its VALUE are load-bearing"
 fi
-if grep -q 'caller_supplied' internal/runtime/runctx/memory_fetch.go 2>/dev/null; then
-    fail "phase 219 static: memory_fetch.go writes the caller_supplied key — the runtime's recall producer MUST NOT write the caller's key (two indistinguishable producers on one map key)"
+assert_file "internal/memory/session/retained_context.go" "cumulative history projector exists"
+if grep -q 'caller_supplied' internal/memory/session/retained_context.go 2>/dev/null; then
+    fail "phase 219 static: retained_context.go writes the caller_supplied key — the runtime's recall producer MUST NOT write the caller's key (two indistinguishable producers on one map key)"
 else
     ok "phase 219 static: the runtime recall producer does NOT write caller_supplied (provenance stays separable)"
 fi
@@ -154,17 +155,9 @@ else
     fail "phase 219 static: ComposeCallerMemory (line ${COMPOSE_LINE}) runs BEFORE the emitter is built (line ${EMIT_LINE}) — the admission event would be emitted through a nil emitter and silently vanish"
 fi
 
-# (S5) §17.6 fix, pinned so it cannot regress. `findContextLeak` byte-exempts
-#      non-RoleTool text (internal/llm/safety.go), and memory tiers render as
-#      RoleSystem — so ErrContextLeak has never backstopped a memory tier. The
-#      old comment in memory_fetch.go claimed it did. A future author who
-#      re-adds that claim would rebuild this phase's edge bound on a guard that
-#      does not exist.
-if grep -q 'ErrContextLeak' internal/runtime/runctx/memory_fetch.go 2>/dev/null; then
-    fail "phase 219 static: memory_fetch.go claims ErrContextLeak backstops a memory tier — findContextLeak byte-exempts non-RoleTool text (internal/llm/safety.go) and memory tiers render as RoleSystem, so that guard has never covered this path"
-else
-    ok "phase 219 static: memory_fetch.go no longer claims ErrContextLeak backstops a memory tier (§17.6 fix pinned)"
-fi
+# (S5) Ordinary conversation text is governed by token admission, not the
+# tool/binary offload threshold. The real-request integration tests above
+# separately prove caller-data framing and separation from execution history.
 if grep -q 'offloadableText := m.Role == RoleTool' internal/llm/safety.go 2>/dev/null; then
     ok "phase 219 static: the leak guard's RoleTool byte-exemption is where this phase's bound reasoning assumes it is"
 else

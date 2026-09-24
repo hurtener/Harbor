@@ -247,6 +247,18 @@ export interface AgentConfigHooks {
  * (no unlimited value). `reasoning_mode` is `off` (the default) or
  * `provider_default` (omit provider reasoning controls without inheriting the
  * selected model profile). Mirrors `types.AgentConfigNaming`. */
+/** Working-input compaction target. Omission inherits YAML; zero uses the
+ * effective model's safe input target. Requires agent_config_memory_v1. */
+export interface AgentConfigMemory {
+	budget_tokens: number;
+}
+
+export interface AgentConfigMemoryDiff {
+	budget_tokens_changed: boolean;
+	budget_tokens_from: string;
+	budget_tokens_to: string;
+}
+
 export interface AgentConfigNaming {
 	auto?: boolean;
 	after_turns?: number;
@@ -299,6 +311,7 @@ export interface AgentConfigPayload {
 	llm_params?: AgentConfigLLMParams;
 	hooks?: AgentConfigHooks;
 	naming?: AgentConfigNaming;
+	memory?: AgentConfigMemory;
 	extra_system_blocks?: AgentConfigExtraSystemBlocks;
 	/** Read-only; generic set_revision must not author or clear this field. */
 	signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;
@@ -517,6 +530,7 @@ export interface AgentConfigDiff {
 	llm_params: AgentConfigLLMParamsDiff;
 	hooks: AgentConfigHooksDiff;
 	naming: AgentConfigNamingDiff;
+	memory?: AgentConfigMemoryDiff;
 	extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 

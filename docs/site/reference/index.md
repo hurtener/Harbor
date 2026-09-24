@@ -125,7 +125,7 @@ The [**Changelog**](/reference/changelog) is the release history. Two version
 lines matter and they move independently:
 
 - **Harbor** is at **v1.6** (v1.6.0, 2026-06-25) — Apache-2.0, built CGo-free as
-  a single static binary on Go 1.26+.
+  a single static binary on Go 1.27.1+.
 - **The Harbor Protocol** is pinned at **0.1.0**, versioned separately from the
   product. Bumping it is an RFC change with a deprecation window, so a
   third-party client knows exactly what it's building against.

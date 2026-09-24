@@ -1,55 +1,4 @@
-// Wave 7a cross-subsystem integration test per AGENTS.md §17.5.
-//
-// Wave 7a closed two big surfaces:
-//
-//   - Memory subsystem (Phases 23 / 24 / 25):
-//
-//   - `MemoryStore` interface + InMem driver + conformance suite
-//
-//   - `truncation` + `rolling_summary` strategies + `Summarizer`
-//     interface + health FSM + `RecoveryBacklogMax` recovery loop
-//
-//   - SQLite + Postgres memory drivers (persistent legs)
-//
-//   - Tools subsystem (Phases 26 / 26a / 27 / 28 / 29):
-//
-//   - Unified `Tool` / `ToolCatalog` / `ToolProvider` surface +
-//     `ToolPolicy` reliability shell (D-024)
-//
-//   - `tools.RegisterFunc[I,O]` with reflection-derived schemas
-//
-//   - `flow.Definition` + `flow.RegisterAsTool` + per-flow `Budget`
-//
-//   - HTTP / MCP / A2A transports (each transport's per-driver
-//     tests cover its wire surface; this wave-end E2E focuses on
-//     the in-process composition path so it exercises NO network)
-//
-// The wave-end E2E proves these COMPOSE: a tool invocation reads
-// ctx-carried identity, the result is appendable to memory under the
-// same identity, and the LLM-context patch surfaces the recorded
-// turn — the canonical "tool runs, the runtime remembers what it did"
-// loop that future planner phases (42+) will drive.
-//
-// Four focused tests:
-//
-//   - TestE2E_Wave7a_Tool_Memory_Composition — basic loop: tool
-//     resolves under identity, `Invoke` returns, runtime records the
-//     turn via `AddTurn`, `GetLLMContext` surfaces the recent-window
-//     view (truncation strategy).
-//   - TestE2E_Wave7a_RollingSummary_TriggersSummarizer — exercises the
-//     Phase 24 rolling-summary path with the `EchoSummarizer` test
-//     stub; flushes a budget-saturating burst of turns + verifies the
-//     summariser fires + the next `GetLLMContext` carries a Summary.
-//   - TestE2E_Wave7a_DurablePersistence_SQLiteMemory_AcrossClose —
-//     SQLite memory + a tool invocation, then Close + reopen against
-//     the same DSN; the recorded turn must survive (Phase 25 ↔
-//     Phase 26 wiring across the persistent boundary).
-//   - TestE2E_Wave7a_Concurrent_MultiTenant_ToolsAndMemory — 8 ×
-//     4 concurrent tenants × sessions sharing one catalog + one
-//     memory store + one event bus; the bus subscriber observes the
-//     happy-path `tool.invoked` + `tool.completed` cycle; cross-
-//     session memory isolation pins; goroutine baseline restored
-//     after teardown (D-025).
+// Cross-subsystem tool events, identity isolation and cumulative memory.
 package integration_test
 
 import (
@@ -59,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -70,9 +20,6 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
-	memorydriverinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
-	memorydriversqlite "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -149,23 +96,33 @@ func invokeEchoTool(t *testing.T, cat tools.ToolCatalog, ctx context.Context, na
 // observation renderer (Phase 26+). The wave-end E2E uses a simpler
 // stringification — the renderer itself is the planner phase's
 // responsibility.
+func wave7aNoteQuery(t *testing.T, item memory.Item) string {
+	t.Helper()
+	var note struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(item.Value, &note); err != nil {
+		t.Fatal(err)
+	}
+	return note.Query
+}
+
 func turnFromInvocation(msg string, out echoOut) memory.ConversationTurn {
 	return memory.ConversationTurn{
 		UserMessage:       msg,
 		AssistantResponse: fmt.Sprintf("echo=%s tenant=%s", out.Echo, out.Tenant),
-		Timestamp:         time.Now(),
 	}
 }
 
 // openMemoryInMem opens an InMem MemoryStore via the registry path
-// with the truncation strategy at the supplied budget. Returns the
+// with the cumulative strategy at the supplied budget. Returns the
 // store + the underlying event bus (so concurrent tests can subscribe
 // for tool-event observation) + a cleanup func that closes both the
 // store + the deps.
 func openMemoryInMem(t *testing.T, budget int) (memory.MemoryStore, events.EventBus, func()) {
 	t.Helper()
 	cfg := wave7aConfig()
-	cfg.Memory.Strategy = string(memory.StrategyTruncation)
+	cfg.Memory.Strategy = string(memory.StrategyRollingSummary)
 	cfg.Memory.BudgetTokens = budget
 
 	red := auditpatterns.New()
@@ -182,7 +139,7 @@ func openMemoryInMem(t *testing.T, budget int) (memory.MemoryStore, events.Event
 		Driver:       "inmem",
 		Strategy:     memory.Strategy(cfg.Memory.Strategy),
 		BudgetTokens: budget,
-	}, memory.Deps{State: store, Bus: bus})
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		_ = bus.Close(context.Background())
 		_ = store.Close(context.Background())
@@ -249,9 +206,8 @@ func wave7aConfig() *config.Config {
 		},
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 		Memory: config.MemoryConfig{
-			Driver:             "inmem",
-			Strategy:           "none",
-			RecoveryBacklogMax: 16,
+			Driver:   "inmem",
+			Strategy: "none",
 		},
 	}
 }
@@ -259,13 +215,13 @@ func wave7aConfig() *config.Config {
 // --- tests -----------------------------------------------------------------
 
 // TestE2E_Wave7a_Tool_Memory_Composition wires the in-process tool
-// catalog + an InMem `MemoryStore` (truncation) under one identity,
-// runs a tool, records the turn, and verifies `GetLLMContext`
+// catalog + an InMem `MemoryStore` (cumulative) under one identity,
+// runs a tool, records the turn, and verifies `Inspect`
 // surfaces it.
 //
 // What this exercises:
 //   - Phase 26 catalog + ToolPolicy default shell.
-//   - Phase 23 / 24 InMem MemoryStore (truncation strategy) under
+//   - Phase 23 / 24 InMem MemoryStore (cumulative strategy) under
 //     `memory.Open`.
 //   - Identity propagation: the tool reads ctx identity, the memory
 //     reads the same `Quadruple` for per-session storage.
@@ -295,26 +251,26 @@ func TestE2E_Wave7a_Tool_Memory_Composition(t *testing.T) {
 	}
 
 	turn := turnFromInvocation(msg, out)
-	if err := mem.AddTurn(ctx, quad, turn); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+	if _, err := mem.Put(ctx, quad, turn); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
 
-	patch, err := mem.GetLLMContext(ctx, quad)
+	patch, err := mem.Inspect(ctx, quad)
 	if err != nil {
-		t.Fatalf("GetLLMContext: %v", err)
+		t.Fatalf("Inspect: %v", err)
 	}
-	if patch.Strategy != memory.StrategyTruncation {
-		t.Errorf("patch.Strategy=%q want %q", patch.Strategy, memory.StrategyTruncation)
+	if patch.Strategy != memory.StrategyRollingSummary {
+		t.Errorf("patch.Strategy=%q want %q", patch.Strategy, memory.StrategyRollingSummary)
 	}
-	if got := len(patch.RecentTurns); got != 1 {
+	if got := len(patch.Items); got != 1 {
 		t.Fatalf("RecentTurns: got %d want 1", got)
 	}
-	if patch.RecentTurns[0].UserMessage != msg {
+	if wave7aNoteQuery(t, patch.Items[0]) != msg {
 		t.Errorf("RecentTurns[0].UserMessage=%q want %q",
-			patch.RecentTurns[0].UserMessage, msg)
+			wave7aNoteQuery(t, patch.Items[0]), msg)
 	}
-	if patch.Tokens <= 0 {
-		t.Errorf("Tokens=%d want > 0 (single non-empty turn)", patch.Tokens)
+	if patch.EstimatedTokens <= 0 {
+		t.Errorf("Tokens=%d want > 0 (single non-empty turn)", patch.EstimatedTokens)
 	}
 
 	// Failure mode: invoking the tool with a missing-identity ctx is
@@ -328,228 +284,72 @@ func TestE2E_Wave7a_Tool_Memory_Composition(t *testing.T) {
 	}
 }
 
-// TestE2E_Wave7a_RollingSummary_TriggersSummarizer exercises the
-// Phase 24 rolling-summary path with the `EchoSummarizer` test stub:
-// the summariser interface is injectable (Phase 32+ will land an
-// LLM-backed default), and a budget-saturating burst of turns must
-// trigger summarisation + leave a non-empty Summary on the next
-// `GetLLMContext`.
-//
-// Key composition points:
-//   - The rolling-summary strategy executor was authored at Phase 24
-//     but the LLM-backed Summarizer doesn't exist until Phase 32+.
-//     The injectable interface MUST be exercised today so we know
-//     the seam is alive. `EchoSummarizer{}` (a deterministic stub
-//     that returns the concatenation of incoming turns) is the
-//     wave-end vehicle.
-//   - This path also pins identity propagation through the
-//     background summariser: the executor invokes the summariser
-//     with the same `Quadruple` AddTurn received.
+// The production compactor must run between user turns and carry its prior
+// checkpoint through subsequent actual decision requests.
 func TestE2E_Wave7a_RollingSummary_TriggersSummarizer(t *testing.T) {
-	cfg := wave7aConfig()
-	red := auditpatterns.New()
-	bus, err := events.Open(context.Background(), cfg.Events, red)
-	if err != nil {
-		t.Fatalf("events.Open: %v", err)
-	}
-	defer func() { _ = bus.Close(context.Background()) }()
-	store, err := state.Open(context.Background(), cfg.State)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	defer func() { _ = store.Close(context.Background()) }()
-
-	// Direct driver construction is the path operators take to inject
-	// a Summarizer; the registry can't resolve one for `rolling_summary`
-	// today (Phase 32+ will land an LLM-backed default).
-	// The summariser fires on the count-based recent-window spill
-	// (the 5th turn overflows the FullZoneTurns=4 window into pending),
-	// independent of the token budget. The budget is set comfortably
-	// above the assembled context so the read-path budget clamp does not
-	// empty the EMITTED summary — a tiny budget smaller than a single
-	// recent turn would (correctly) clamp the emitted summary to "" (the
-	// single-oversize-turn residual case), which is not what this test
-	// is asserting.
-	mem, err := memorydriverinmem.New(memory.ConfigSnapshot{
-		Driver:       "inmem",
-		Strategy:     memory.StrategyRollingSummary,
-		BudgetTokens: 512,
-	}, memory.Deps{State: store, Bus: bus}, memorydriverinmem.Options{
-		Summarizer: strategy.EchoSummarizer{},
-	})
-	if err != nil {
-		t.Fatalf("inmem.New(rolling_summary): %v", err)
-	}
-	defer func() { _ = mem.Close(context.Background()) }()
-
+	seam := newBudgetSeam(t, 10000, 100000)
 	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
-	ctx, err := identity.With(context.Background(), id)
-	if err != nil {
-		t.Fatalf("identity.With: %v", err)
-	}
-	quad := identity.Quadruple{Identity: id}
-
-	for i := range 5 {
-		turn := memory.ConversationTurn{
-			UserMessage:       fmt.Sprintf("u-%d %s", i, longLine(64)),
-			AssistantResponse: fmt.Sprintf("a-%d %s", i, longLine(64)),
-			Timestamp:         time.Now(),
+	for i := range 25 {
+		query := fmt.Sprintf("edit-%d %s", i, longLine(64))
+		if i == 0 {
+			query = budgetConstraint + " " + query
 		}
-		if err := mem.AddTurn(ctx, quad, turn); err != nil {
-			t.Fatalf("AddTurn[%d]: %v", i, err)
+		decision := budgetTurn(t, seam, id, fmt.Sprintf("wave7a-%d", i), query)
+		if !strings.Contains(decision.body, budgetConstraint) {
+			t.Fatalf("turn %d lost early context", i)
 		}
 	}
-
-	// Wait briefly for the rolling-summary executor's background
-	// summariser to land at least one Summarize call. The executor
-	// MUST resolve eventually; deadline is the hard cap.
-	deadline := time.Now().Add(3 * time.Second)
-	var patch memory.LLMContextPatch
-	for time.Now().Before(deadline) {
-		patch, err = mem.GetLLMContext(ctx, quad)
-		if err != nil {
-			t.Fatalf("GetLLMContext: %v", err)
-		}
-		if patch.Summary != "" {
-			break
-		}
-		runtime.Gosched()
-	}
-	if patch.Summary == "" {
-		t.Fatalf("Summary stayed empty after 5 over-budget turns; rolling-summary path is dead")
-	}
-	if patch.Strategy != memory.StrategyRollingSummary {
-		t.Errorf("Strategy=%q want %q", patch.Strategy, memory.StrategyRollingSummary)
+	view, err := seam.mem.Inspect(t.Context(), identity.Quadruple{Identity: id})
+	if err != nil || view.Summary == "" || seam.driver.summaryCount() == 0 {
+		t.Fatalf("compactor not exercised: %+v, %v", view, err)
 	}
 }
 
-// TestE2E_Wave7a_DurablePersistence_SQLiteMemory_AcrossClose proves
-// the SQLite memory driver + the in-process tool catalog compose
-// across a Close/reopen boundary. Phase 25 ships SQLite with
-// `StrategyNone` only — the audit Wave 7a FAIL #2 captures that
-// truncation / rolling_summary persistence is deferred to a Phase 25b
-// follow-on; tracked as `TODO: phase-25b-persistent-strategies`.
-//
-// What this test still gates against, given the Phase 25 surface:
-//
-//  1. Tool invocation under identity composes with the SQLite memory
-//     driver's boundary (AddTurn on StrategyNone is a no-op but the
-//     driver still validates identity, runs the bus-emit on missing
-//     identity, and returns nil — the tool→memory hand-off works).
-//  2. Snapshot bytes round-trip across Close/reopen for the canonical
-//     empty-record envelope (`memory.Record{Strategy: "none"}`) —
-//     this is the cross-driver byte-stable invariant per D-034.
-//  3. Cross-tenant identity isolation pins at the SQLite layer.
-//  4. The persistent driver rejects missing identity at the boundary
-//     (`memory.identity_rejected` emit path, D-033).
+// Tool-derived administrative notes survive a real SQLite close/reopen; they
+// are not an alternate transcript or authority to execute the tool again.
 func TestE2E_Wave7a_DurablePersistence_SQLiteMemory_AcrossClose(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "wave7a.sqlite")
-	dsn := "file:" + dbPath + "?cache=shared"
-
-	cfg := wave7aConfig()
-	red := auditpatterns.New()
-	bus, err := events.Open(context.Background(), cfg.Events, red)
-	if err != nil {
-		t.Fatalf("events.Open: %v", err)
-	}
-	defer func() { _ = bus.Close(context.Background()) }()
-	store, err := state.Open(context.Background(), cfg.State)
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	defer func() { _ = store.Close(context.Background()) }()
-
-	// Step 1: open SQLite memory under StrategyNone, register a tool,
-	// drive the composition path. AddTurn is a no-op on StrategyNone
-	// (Phase 25 surface) but the boundary still validates identity.
-	mem1, err := memorydriversqlite.New(memory.ConfigSnapshot{
-		Driver:   "sqlite",
-		DSN:      dsn,
-		Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
-	if err != nil {
-		t.Fatalf("sqlite.New (1): %v", err)
-	}
-
+	dsn := filepath.Join(t.TempDir(), "wave7a.sqlite")
+	mem, bus, closeAll := phase24Memory(t, "sqlite", dsn, 20)
 	cat := tools.NewCatalog(tools.WithCatalogBus(bus))
 	wave7aIdentityEchoTool(t, cat, "echo")
-
 	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
-	ctx, err := identity.With(context.Background(), id)
+	ctx, err := identity.With(t.Context(), id)
 	if err != nil {
-		t.Fatalf("identity.With: %v", err)
+		t.Fatal(err)
 	}
-	quad := identity.Quadruple{Identity: id}
-
+	q := identity.Quadruple{Identity: id}
 	const msg = "durable hello"
 	out := invokeEchoTool(t, cat, ctx, "echo", msg)
-	turn := turnFromInvocation(msg, out)
-	if err := mem1.AddTurn(ctx, quad, turn); err != nil {
-		t.Fatalf("mem1.AddTurn: %v", err)
-	}
-
-	// Snapshot the empty-record envelope so we can verify byte-stable
-	// round-trip across Close/reopen. (StrategyNone snapshots are the
-	// canonical empty record per D-034.)
-	snap1, err := mem1.Snapshot(ctx, quad)
+	key, err := mem.Put(ctx, q, turnFromInvocation(msg, out))
 	if err != nil {
-		t.Fatalf("mem1.Snapshot: %v", err)
+		t.Fatal(err)
 	}
-	if err := mem1.Restore(ctx, quad, snap1); err != nil {
-		t.Fatalf("mem1.Restore (pre-close): %v", err)
+	before, err := mem.Inspect(ctx, q)
+	if err != nil || len(before.Items) != 1 {
+		t.Fatalf("before close: %+v, %v", before, err)
 	}
-	if err := mem1.Close(context.Background()); err != nil {
-		t.Fatalf("mem1.Close: %v", err)
+	closeAll()
+	reopened, _, _ := phase24Memory(t, "sqlite", dsn, 20)
+	after, err := reopened.Inspect(ctx, q)
+	if err != nil || len(after.Items) != 1 {
+		t.Fatalf("reopen: %+v, %v", after, err)
 	}
-
-	// Step 2: reopen against the same DSN. The memory_state row must
-	// survive the close/reopen cycle even on StrategyNone (the row
-	// persists the canonical empty record).
-	mem2, err := memorydriversqlite.New(memory.ConfigSnapshot{
-		Driver:   "sqlite",
-		DSN:      dsn,
-		Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
-	if err != nil {
-		t.Fatalf("sqlite.New (2): %v", err)
+	if after.Items[0].Key != key || string(after.Items[0].Value) != string(before.Items[0].Value) || !after.Items[0].ExpiresAt.Equal(before.Items[0].ExpiresAt) {
+		t.Fatal("reopen changed the note or renewed retention")
 	}
-	defer func() { _ = mem2.Close(context.Background()) }()
-
-	snap2, err := mem2.Snapshot(ctx, quad)
-	if err != nil {
-		t.Fatalf("mem2.Snapshot: %v", err)
+	other := identity.Quadruple{Identity: identity.Identity{TenantID: "T2", UserID: "U2", SessionID: "S2"}}
+	view, err := reopened.Inspect(t.Context(), other)
+	if err != nil || len(view.Items) != 0 {
+		t.Fatalf("cross-tenant note read: %+v, %v", view, err)
 	}
-	if snap2.Strategy != snap1.Strategy {
-		t.Errorf("snapshot Strategy across reopen: got %q want %q",
-			snap2.Strategy, snap1.Strategy)
-	}
-
-	// Cross-tenant isolation across the durable boundary: a different
-	// tenant's GetLLMContext sees an empty patch (no turns) even on
-	// the StrategyNone surface.
-	otherID := identity.Identity{TenantID: "T2", UserID: "U2", SessionID: "S2"}
-	otherCtx, _ := identity.With(context.Background(), otherID)
-	otherQuad := identity.Quadruple{Identity: otherID}
-	otherPatch, err := mem2.GetLLMContext(otherCtx, otherQuad)
-	if err != nil {
-		t.Fatalf("cross-tenant GetLLMContext: %v", err)
-	}
-	if len(otherPatch.RecentTurns) != 0 {
-		t.Errorf("cross-tenant leak: tenant %q saw %d turns from %q",
-			otherID.TenantID, len(otherPatch.RecentTurns), id.TenantID)
-	}
-
-	// Identity-rejection gate: an empty identity must fail closed per
-	// AGENTS.md §6 rule 9.
-	emptyQuad := identity.Quadruple{}
-	if err := mem2.AddTurn(context.Background(), emptyQuad, turn); err == nil {
-		t.Errorf("AddTurn with empty identity should fail closed, got nil")
+	if _, err := reopened.Put(t.Context(), identity.Quadruple{}, turnFromInvocation(msg, out)); !errors.Is(err, memory.ErrIdentityRequired) {
+		t.Fatalf("missing identity: %v", err)
 	}
 }
 
 // TestE2E_Wave7a_Concurrent_MultiTenant_ToolsAndMemory runs N tenants
 // × M sessions concurrently against ONE shared catalog + ONE shared
-// memory store. Each goroutine invokes the tool, AddTurns the
+// memory store. Each goroutine invokes the tool, Puts the
 // result, asserts its own RecentTurns surfaces ONLY its own turn.
 //
 // Also subscribes the bus to `tool.invoked` + `tool.completed` once
@@ -618,31 +418,31 @@ func TestE2E_Wave7a_Concurrent_MultiTenant_ToolsAndMemory(t *testing.T) {
 					return
 				}
 				turn := turnFromInvocation(msg, out)
-				if err := mem.AddTurn(ctx, quad, turn); err != nil {
+				if _, err := mem.Put(ctx, quad, turn); err != nil {
 					errCnt.Add(1)
-					t.Errorf("AddTurn(%s): %v", id.SessionID, err)
+					t.Errorf("Put(%s): %v", id.SessionID, err)
 					return
 				}
-				patch, err := mem.GetLLMContext(ctx, quad)
+				patch, err := mem.Inspect(ctx, quad)
 				if err != nil {
 					errCnt.Add(1)
-					t.Errorf("GetLLMContext(%s): %v", id.SessionID, err)
+					t.Errorf("Inspect(%s): %v", id.SessionID, err)
 					return
 				}
-				if len(patch.RecentTurns) != 1 {
+				if len(patch.Items) != 1 {
 					errCnt.Add(1)
 					t.Errorf("session %s saw %d turns (want 1) — cross-session leak",
-						id.SessionID, len(patch.RecentTurns))
+						id.SessionID, len(patch.Items))
 					return
 				}
-				if patch.RecentTurns[0].UserMessage != msg {
+				if wave7aNoteQuery(t, patch.Items[0]) != msg {
 					errCnt.Add(1)
 					t.Errorf("session %s saw foreign message %q (want %q)",
-						id.SessionID, patch.RecentTurns[0].UserMessage, msg)
+						id.SessionID, wave7aNoteQuery(t, patch.Items[0]), msg)
 					return
 				}
 				seenMu.Lock()
-				seen[id.SessionID] = patch.RecentTurns[0].UserMessage
+				seen[id.SessionID] = wave7aNoteQuery(t, patch.Items[0])
 				seenMu.Unlock()
 			}()
 		}

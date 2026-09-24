@@ -146,6 +146,10 @@ tools:
 // being read) and the given manifest declared.
 func p149BaseConfig(manifestPath string) *config.Config {
 	cfg := config.Defaults()
+	// This exercises catalog boot and direct HTTP invocation, not model runs.
+	// Explicitly disable memory with the absent LLM; the ordinary rolling
+	// default must continue failing loud when its summarizer cannot be built.
+	cfg.Memory.Strategy = "none"
 	cfg.LLM.Driver = ""
 	cfg.LLM.Provider = "openrouter"
 	cfg.LLM.Model = "anthropic/claude-sonnet-4"

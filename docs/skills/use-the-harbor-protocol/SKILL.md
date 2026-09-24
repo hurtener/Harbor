@@ -194,6 +194,17 @@ X-Harbor-Session: <session_id>
 - **`X-Harbor-Session`**: the per-request session selector (D-171). The connection JWT verifies the WHO (`tenant` + `user`) and the scopes; the **session is chosen per-conversation** by this header and may differ on every request — the connection token is a per-backend credential, not a single-session pin. A new session id is a new conversation (create-on-first-use on the first `start`). The token's `session` claim is a back-compat **default** used only when the header is absent. `X-Harbor-Tenant` / `X-Harbor-User` can never widen the JWT-verified principal. Every storage call still filters by the full `(tenant, user, session)` triple — no cross-session leakage. Full Console contract: [`docs/notes/session-model-contract.md`](../../notes/session-model-contract.md).
   - **Optional `session_reach` claim (D-409).** A bearer minted with the signed `session_reach` claim is pinned to exactly those session IDs: the effective session — from this header, the SSE `?session=` projection, or the token `session` default — must be a member, or the request fails closed `403 {"code": "scope_mismatch"}` before any handler side effect. **Absent claim = this dynamic per-request selection is unchanged.** A coordinating client that must mint a session-specific bearer whose authority cannot be re-pointed at another session uses this claim; see [`configure-production-identity`](../configure-production-identity/SKILL.md) §2 for the claim shape.
 
+For an in-flight text correction, `user_message` with a nonempty `message`
+interrupts the planning attempt and re-plans with that text as user input.
+It does not cancel the run or undo completed actions. Its acknowledgement is
+admission, not proof that the correction has reached the model: follow
+`control.applied` and subsequent run events. New attachments belong on `start`.
+Pending approval requests from the obsolete plan are withdrawn, not approved;
+queued tool calls and further retries are refused. Already-started calls retain
+their outcomes. A required withdrawal failure stops the run explicitly.
+See the [task-control choreography](../../site/protocol/task-control.md) for
+the current execution boundaries and remaining release-acceptance work.
+
 Routes group by surface family:
 
 - **Task control** — `start` plus the nine steering verbs (`cancel` / `pause` / `resume` / `redirect` / `inject_context` / `approve` / `reject` / `prioritize` / `user_message`) all POST to `POST /v1/control/{method}` (e.g. `/v1/control/start`, `/v1/control/cancel`). The read-only posture methods (`runtime.info`, `topology.snapshot`) and `artifacts.put` share this route shape.
@@ -555,7 +566,7 @@ The verb **always** writes `title_source: "manual"` — `auto` provenance is not
 
 - **`tasks.list`** — `has_pending_approval` is populated from the pause/approval registry, so `filter.has_pending_approval=true` narrows to tasks actually blocked on a HITL gate (not an empty page). `background_acknowledged` is `omitempty` (elided when false — never a fabricated known-false).
 - **`flows.list` / `flows.get`** — `budget_consumption.tokens_used` is summed per run (symmetric with `cost_usd_used`), truthful wherever a run is recorded.
-- **`memory.list` / `memory.health`** — the always-empty `has_ttl_expiring` facet and the two `expiring_in_1h` aggregate fields are **removed** from the wire (V1 memory has no TTL); `filter.agent_ids` loud-rejects with `invalid_request`/400 (a V1 record carries no producer identity), never a false-empty page.
+- **`memory.list` / `memory.health`** — `has_ttl_expiring` and the two `expiring_in_1h` aggregate fields remain **removed** from the wire; `filter.agent_ids` loud-rejects with `invalid_request`/400 (memory records carry no producer identity), never a false-empty page. Cumulative `rolling_summary` items now report their original source `expires_at`; inspection does not renew retention or expose unsettled journals.
 - **`tools.list` / `tools.metrics` / `tools.content_stats`** — a runtime that advertises the `tool_annotations` capability (negotiate via `Accepts(tool_annotations)`) serves REAL per-tool annotations: `filter.oauth_statuses` / `filter.approval_policies` narrow to real rows, the annotator-backed aggregates (`active` / `pending_approval` / `awaiting_oauth`) carry real counts (no `aggregates_partial`), `tools.metrics` returns real error-rate gauges + invocation/failure counts over the window, and `tools.content_stats` returns a real result-size histogram (D-314). The admin `tools.set_approval_policy` / `tools.revoke_oauth` methods persist through `tools/approval` / `tools/auth` with audit (they no longer return `admin_unsupported`). A runtime that does NOT advertise `tool_annotations` (a headless catalog stack) loud-rejects `filter.oauth_statuses` / `filter.approval_policies` with `invalid_request` and returns `aggregates_partial: true` with those counters zeroed — render them "unavailable," never a real-looking 0; only `aggregates.total` is authoritative in that state.
 
 The `owner` field in a `tools.*` catalog row is the logical configured MCP
@@ -565,6 +576,31 @@ not a client-side naming contract and is never reconstructed from a suffix or
 hash. The row's `id` and `name` remain the physical catalog keys needed for
 the exact `tools.get` / `tools.describe` request, while a runtime without a
 logical-source projection may honestly return the raw source identifier.
+
+### Cumulative memory inspection and administration (D-477)
+
+For `rolling_summary`, `memory.list`, `memory.get` and `memory.strategy_trace`
+read the same checkpoint, bounded recent tail and retained evidence as execution.
+Keys identify immutable sources, not row positions or the viewer's run. A source
+key survives raw-turn rollover while its evidence remains retained. Inspecting
+an expired source returns absence, not an extended lifetime. Token counts in the
+strategy trace are estimates of projected memory, not provider usage.
+
+The existing `memory.put` and `memory.delete` admin gates remain mandatory.
+Put records a redacted conversation note, never tool-result or action authority;
+if the detailed tail is full it reports capacity instead of evicting context.
+Delete removes that source conditionally, invalidates an affected checkpoint,
+and fences active admissions in that session so a late decision or settlement
+cannot restore erased material. It does not cancel an external action already
+in progress or erase an independently owned transcript. Other sessions remain
+unaffected.
+
+**Current migration limitation:** large expiring values cannot yet be exported
+through `memory.get`'s artifact arm: that path refuses the read rather than
+creating a private copy without source-bound expiry/deletion. This is not a
+successful detail read or completed release acceptance. Small values, metadata
+listing and source-key deletion remain available. Existing execution result-ref
+retrieval is a separate path with its own current-source checks.
 
 ## 4d. Reopening a chat — durable turns and the two-read open (v1.28)
 
@@ -1013,6 +1049,19 @@ For shared-runtime broker custody, require the runtime.info capability
 `tenant_scoped_broker_credentials_v1`; its absence means tenant-selected broker
 client credentials are unsupported. This describes the runtime pull implementation,
 not proof that a particular coordinator endpoint or grant is ready.
+
+### Configure the agent's working-input budget
+
+Negotiate `agent_config_memory_v1` on `runtime.info` before writing
+`agent_config.set_revision.payload.memory.budget_tokens`. This admin-only,
+nonnegative token target uses the existing revision/CAS/diff/rollback surface.
+An absent memory section inherits runtime YAML; explicit zero requests automatic
+model sizing. Preserve writable sibling sections and use the active revision's
+content hash as `expected_content_hash`. The next run freezes the new target;
+in-flight runs keep their original budget. It is not an output-token limit or
+a cap on stored exact evidence. An unwired compactor is a loud refusal, not an
+accepted but ineffective configuration. Embedded callers continue using YAML
+or the equivalent configuration object.
 
 ### Send model and thinking with Start
 

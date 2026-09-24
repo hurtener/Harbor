@@ -50,7 +50,17 @@ func NewPlannerView(cat ToolCatalog, filter CatalogFilter) PlannerView {
 // decision — never the dispatch-side ToolDescriptor.
 func (v PlannerView) Resolve(name string) (Tool, bool) {
 	desc, ok := v.cat.Resolve(name)
-	return desc.Tool, ok
+	if !ok {
+		return Tool{}, false
+	}
+	// Discovery changes prompt loading, never the run's scope visibility.
+	// Resolve must enforce the same predicate as List except for loading.
+	filter := v.filter
+	filter.LoadingModes = []LoadingMode{LoadingAlways, LoadingDeferred}
+	if !filter.matches(desc.Tool) {
+		return Tool{}, false
+	}
+	return desc.Tool, true
 }
 
 // List implements the planner's ToolCatalogView contract. Returns the

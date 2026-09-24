@@ -644,6 +644,21 @@ describe('AgentConfigPanelState — atomic "Save all" (92i)', () => {
 		});
 	});
 
+	it('Save all preserves a versioned memory budget during unrelated edits', async () => {
+		await seedConnection();
+		const revision = { ...ACTIVE_REVISION, payload: { ...ACTIVE_REVISION.payload, memory: { budget_tokens: 64000 } } };
+		const client = fakeClient({
+			get: vi.fn(async () => ({ revision, set: true, protocol_version: '0.1.0' })),
+			listRevisions: vi.fn(async () => ({ revisions: [revision], protocol_version: '0.1.0' }))
+		});
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.promptBase = 'Edited';
+		state.markPromptEdited();
+		await state.saveAll();
+		expect(ac(client).setRevision.mock.calls[0][1].memory).toEqual({ budget_tokens: 64000 });
+	});
+
 	it('saveAll no-ops when nothing is staged', async () => {
 		seedConnection();
 		const client = fakeClient();

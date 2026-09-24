@@ -87,7 +87,7 @@ func TestSpawnThenAwait_BackgroundDrivenEndToEnd(t *testing.T) {
 		finishGoalImmediately: true,
 		finishPayload:         map[string]any{"answer": "child done"},
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:             bus,
 		RunLoop:         rl,
 		Planner:         p,
@@ -161,7 +161,7 @@ func TestSpawnTask_RetainTurn_BlocksAndReturnsOutcome(t *testing.T) {
 	}
 	exec := newSpawnAwaitTestExecutor(t, reg, 32*1024, 4)
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "retained answer"}}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:             bus,
 		RunLoop:         rl,
 		Planner:         p,

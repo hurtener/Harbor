@@ -12,19 +12,21 @@ import (
 // stable status — the mapping is part of the wire contract.
 func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 	cases := map[protoerrors.Code]int{
-		protoerrors.CodeInvalidRequest:        http.StatusBadRequest,
-		protoerrors.CodeIdentityRequired:      http.StatusUnauthorized,
-		protoerrors.CodeScopeMismatch:         http.StatusForbidden,
-		protoerrors.CodePayloadInvalid:        http.StatusUnprocessableEntity,
-		protoerrors.CodeUnknownMethod:         http.StatusNotFound,
-		protoerrors.CodeNotFound:              http.StatusNotFound,
-		protoerrors.CodeRestartUnavailable:    http.StatusConflict,
-		protoerrors.CodeRuntimeError:          http.StatusInternalServerError,
-		protoerrors.CodeAuthRejected:          http.StatusUnauthorized,
-		protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
-		protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
-		protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
-		protoerrors.CodeSessionRunning:        http.StatusConflict,
+		protoerrors.CodeInvalidRequest:             http.StatusBadRequest,
+		protoerrors.CodeIdentityRequired:           http.StatusUnauthorized,
+		protoerrors.CodeScopeMismatch:              http.StatusForbidden,
+		protoerrors.CodePayloadInvalid:             http.StatusUnprocessableEntity,
+		protoerrors.CodeUnknownMethod:              http.StatusNotFound,
+		protoerrors.CodeNotFound:                   http.StatusNotFound,
+		protoerrors.CodeRestartUnavailable:         http.StatusConflict,
+		protoerrors.CodeRetainedContextUnsettled:   http.StatusConflict,
+		protoerrors.CodeRetainedContextUnavailable: http.StatusConflict,
+		protoerrors.CodeRuntimeError:               http.StatusInternalServerError,
+		protoerrors.CodeAuthRejected:               http.StatusUnauthorized,
+		protoerrors.CodeIdentityScopeRequired:      http.StatusForbidden,
+		protoerrors.CodePresignUnsupported:         http.StatusNotImplemented,
+		protoerrors.CodeRequestTooLarge:            http.StatusRequestEntityTooLarge,
+		protoerrors.CodeSessionRunning:             http.StatusConflict,
 		// CodeSessionErased was registered in the exhaustiveness set below but
 		// never VALUE-asserted here, so its arm's returned status was
 		// unpinned — the exhaustiveness check only proves a row exists, not
@@ -78,6 +80,8 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodeUnknownMethod:                    {},
 		protoerrors.CodeNotFound:                         {},
 		protoerrors.CodeRestartUnavailable:               {},
+		protoerrors.CodeRetainedContextUnsettled:         {},
+		protoerrors.CodeRetainedContextUnavailable:       {},
 		protoerrors.CodeRuntimeError:                     {},
 		protoerrors.CodeAuthRejected:                     {},
 		protoerrors.CodeIdentityScopeRequired:            {},

@@ -153,6 +153,7 @@ type Client interface {
 	SessionsInspect(context.Context, types.SessionsInspectRequest) (types.SessionsInspectResponse, error)
 	SessionsSetTitle(context.Context, types.SessionsSetTitleRequest) (types.SessionsSetTitleResponse, error)
 	SessionsDelete(context.Context) (types.SessionsDeleteResponse, error)
+	SessionsReconcileContext(context.Context, types.SessionsReconcileContextRequest) (types.SessionsReconcileContextResponse, error)
 	StateHistory(context.Context, types.StateHistoryRequest) (types.StateHistoryResponse, error)
 	PauseList(context.Context, types.PauseListRequest) (types.PauseListResponse, error)
 	Control(context.Context, methods.Method, types.ControlRequest) (types.ControlResponse, error)

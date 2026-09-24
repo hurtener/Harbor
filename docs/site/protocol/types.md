@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 457 canonical Harbor Protocol wire types, generated from the single-source
+The 461 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -368,6 +368,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `types.AgentConfigLLMParamsDiff` — see [`AgentConfigLLMParamsDiff`](./types.md#agentconfigllmparamsdiff) |  |
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 | `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
+| `memory` | `types.AgentConfigMemoryDiff` — see [`AgentConfigMemoryDiff`](./types.md#agentconfigmemorydiff) |  |
 | `extra_system_blocks` | `types.AgentConfigExtraSystemBlocksDiff` — see [`AgentConfigExtraSystemBlocksDiff`](./types.md#agentconfigextrasystemblocksdiff) |  |
 
 ## AgentConfigDiffRequest
@@ -553,6 +554,24 @@ Declared in `internal/protocol/types`.
 | `basic_username` | `string` | optional (`omitempty`) |
 | `meta_key` | `string` | optional (`omitempty`) |
 
+## AgentConfigMemory
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `budget_tokens` | `int` |  |
+
+## AgentConfigMemoryDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `budget_tokens_changed` | `bool` |  |
+| `budget_tokens_from` | `string` |  |
+| `budget_tokens_to` | `string` |  |
+
 ## AgentConfigNamedBlock
 
 Declared in `internal/protocol/types`.
@@ -651,6 +670,7 @@ Declared in `internal/protocol/types`.
 | `llm_params` | `*types.AgentConfigLLMParams` — see [`AgentConfigLLMParams`](./types.md#agentconfigllmparams) | optional (`omitempty`) |
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
+| `memory` | `*types.AgentConfigMemory` — see [`AgentConfigMemory`](./types.md#agentconfigmemory) | optional (`omitempty`) |
 | `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
 | `agent_packs` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
 
@@ -2816,7 +2836,7 @@ Declared in `internal/protocol/types`.
 | `render_admission` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` | optional (`omitempty`) |
 | `tool` | `string` |  |
-| `arguments` | `json.RawMessage` | optional (`omitempty`) |
+| `arguments` | `jsontext.Value` | optional (`omitempty`) |
 
 ## MCPAppCallToolResponse
 
@@ -2825,7 +2845,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `tool` | `string` |  |
-| `content` | `json.RawMessage` | optional (`omitempty`) |
+| `content` | `jsontext.Value` | optional (`omitempty`) |
 | `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
 | `is_error` | `bool` |  |
 | `app` | `*types.MCPAppRef` — see [`MCPAppRef`](./types.md#mcpappref) | optional (`omitempty`) |
@@ -4342,6 +4362,25 @@ Declared in `internal/protocol/types`.
 | `next_cursor` | `string` |  |
 | `truncated` | `bool` |  |
 
+## SessionsReconcileContextRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `source_run_id` | `string` |  |
+
+## SessionsReconcileContextResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `session_id` | `string` |  |
+| `source_run_id` | `string` |  |
+| `reconciled` | `bool` |  |
+
 ## SessionsSetTitleRequest
 
 Declared in `internal/protocol/types`.
@@ -4641,7 +4680,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
-| `external_grant` | `json.RawMessage` | optional (`omitempty`) |
+| `external_grant` | `jsontext.Value` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
 | `llm_settings` | `*types.RunLLMSettings` — see [`RunLLMSettings`](./types.md#runllmsettings) | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
@@ -4650,9 +4689,9 @@ Declared in `internal/protocol/types`.
 | `idempotency_key` | `string` | optional (`omitempty`) |
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
-| `output_schema` | `json.RawMessage` | optional (`omitempty`) |
+| `output_schema` | `jsontext.Value` | optional (`omitempty`) |
 | `agent_id` | `string` | optional (`omitempty`) |
-| `caller_memory` | `json.RawMessage` | optional (`omitempty`) |
+| `caller_memory` | `jsontext.Value` | optional (`omitempty`) |
 
 ## StartResponse
 
@@ -5035,7 +5074,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `content` | `json.RawMessage` | optional (`omitempty`) |
+| `content` | `jsontext.Value` | optional (`omitempty`) |
 | `artifact_ref` | `*types.MCPResourceArtifactRef` — see [`MCPResourceArtifactRef`](./types.md#mcpresourceartifactref) | optional (`omitempty`) |
 
 ## ToolContextRequest

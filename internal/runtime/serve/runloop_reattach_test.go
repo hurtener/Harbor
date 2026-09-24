@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
+
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -174,7 +176,7 @@ func runReattachProbe(t *testing.T, reattachErr error) (*rlLegRecorder, bool) {
 	rec := &rlLegRecorder{reattachErr: reattachErr}
 
 	probe := &rlFinishProbe{ran: make(chan struct{}, 1)}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:                     bus,
 		RunLoop:                 rl,
 		Planner:                 probe,

@@ -153,6 +153,11 @@ type CompleteRequest struct {
 	// wrapper itself enforces the concurrent-reuse contract; the validator runs once per call).
 	Validator func(CompleteResponse) error
 
+	// RebuildMessages reconstructs this request's messages after the runtime
+	// installs a context checkpoint. It is used only by request preparation,
+	// before provider work, and never serialized or retained by the driver.
+	RebuildMessages func() ([]ChatMessage, error) `json:"-"`
+
 	// Tools is the per-turn tool catalog. When
 	// nil the driver calls the provider without the tool-calling
 	// block (text-only completion — preserves non-React planner
@@ -209,11 +214,15 @@ type CompleteRequest struct {
 // driver-level completion (governance accounting is in-band synchronous,
 // not a bus subscriber).
 type CompleteResponse struct {
-	Content   string
-	ToolCalls []ToolCallStructured
-	Reasoning string
-	Cost      Cost
-	Usage     Usage
+	// FinishReason is the selected completion's provider-normalized termination
+	// reason (for example "stop" or "length"). Empty means not reported, never
+	// an inferred successful stop. Maintenance consumers reject known truncation.
+	FinishReason string
+	Content      string
+	ToolCalls    []ToolCallStructured
+	Reasoning    string
+	Cost         Cost
+	Usage        Usage
 }
 
 // ToolCallStructured is a provider-validated tool-call entry (
@@ -526,6 +535,12 @@ const (
 // intermediate retry / downgrade attempt via the per-call attempt-cost
 // tap — synchronously), not a subscriber of that event.
 type Cost struct {
+	// ReportPresent means the driver received a normalized cost object, including
+	// an explicitly zero object. False on legacy records means unknown, not free.
+	// An SDK-calculated cost is not proof of a provider's final invoice.
+	ReportPresent bool `json:",omitempty"`
+	// Estimated identifies Harbor's configured price-table backfill.
+	Estimated           bool `json:",omitempty"`
 	InputTokensCost     float64
 	OutputTokensCost    float64
 	ReasoningTokensCost float64
@@ -533,13 +548,26 @@ type Cost struct {
 	Currency            string // "USD" canonical; reserved for future multi-currency
 }
 
-// Usage is the provider-reported token usage.
+// Usage carries normalized driver token counts and optional availability flags.
+// Older drivers/records without flags have unknown provenance. Estimates never
+// become provider reports merely because their counts are nonzero.
 type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	ReasoningTokens  int
-	TotalTokens      int
-	LatencyMS        int64
+	// ReportPresent means the driver received a normalized usage object. It does
+	// not assert that every optional per-token-category field was supplied.
+	ReportPresent bool `json:",omitempty"`
+	// Estimated marks Harbor's usage backfill rather than a driver report.
+	Estimated bool `json:",omitempty"`
+	// PromptDetailsPresent and CompletionDetailsPresent record normalized detail
+	// object presence. The pinned SDK erases individual cache-field presence:
+	// a zero cache count still does not prove a measured miss, even when the
+	// prompt-details object exists (it may contain only audio/text counts).
+	PromptDetailsPresent     bool `json:",omitempty"`
+	CompletionDetailsPresent bool `json:",omitempty"`
+	PromptTokens             int
+	CompletionTokens         int
+	ReasoningTokens          int
+	TotalTokens              int
+	LatencyMS                int64
 	// CacheReadTokens is the count of PromptTokens served from the
 	// provider's prompt cache — a subset of PromptTokens, not additional
 	// tokens. Zero when the provider/response reports no cache data.

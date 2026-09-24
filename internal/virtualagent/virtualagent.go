@@ -830,9 +830,10 @@ func OverlayClampMaxSteps(parentCap int, overlay *int) int {
 }
 
 // OverlayClampTokenBudget clamps an overlay token budget against the
-// parent's resolved budget. A zero / nil parent budget means "no
-// budget" (compression off); an overlay budget then introduces a limit
-// (a narrowing), and a parent budget caps the overlay at it.
+// parent's working target. A zero parent has no explicit target; a positive
+// overlay introduces one. The request edge additionally clamps the result to
+// the effective model's input capacity, including when zero selects automatic
+// compaction. A positive parent target caps the overlay at that value.
 func OverlayClampTokenBudget(parent int, overlay *int) int {
 	if overlay == nil || *overlay <= 0 {
 		return parent

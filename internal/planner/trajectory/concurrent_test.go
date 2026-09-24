@@ -1,6 +1,7 @@
 package trajectory_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -69,8 +70,8 @@ func TestTrajectory_Serialize_ConcurrentReuse_D025(t *testing.T) {
 				atomic.AddInt64(&failures, 1)
 				return
 			}
-			gotI, _ := back.LLMContext["goroutine_id"].(float64)
-			if int(gotI) != i {
+			gotI, ok := back.LLMContext["goroutine_id"].(json.Number)
+			if !ok || gotI.String() != fmt.Sprint(i) {
 				atomic.AddInt64(&bleeds, 1)
 			}
 		}()

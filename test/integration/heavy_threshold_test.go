@@ -110,9 +110,9 @@ func newHeavyThresholdRig(t *testing.T, operatorThreshold int) htRig {
 
 	memStore, err := memoryinmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
-		Strategy:     memory.StrategyTruncation,
+		Strategy:     memory.StrategyRollingSummary,
 		BudgetTokens: 100_000_000,
-	}, memory.Deps{State: st, Bus: bus}, memoryinmem.Options{})
+	}, memory.Deps{State: st, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memoryinmem.New: %v", err)
 	}
@@ -205,12 +205,11 @@ func htSeedHeavyTurn(t *testing.T, store memory.MemoryStore, id identity.Identit
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	if err := store.AddTurn(ctx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := store.Put(ctx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage:       "how big is it?",
 		AssistantResponse: strings.Repeat("m", size),
-		Timestamp:         time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC),
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 }
 

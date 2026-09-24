@@ -34,13 +34,18 @@ func (*routePolicyProbe) Close(context.Context) error { return nil }
 
 type routeClientResolver struct {
 	selected SelectedProviderRoute
+	onSelect func()
 }
 
 type routeClientValidator struct {
 	allowed map[string]bool
+	calls   *int
 }
 
 func (v routeClientValidator) ValidateProviderRouteSelection(selected SelectedProviderRoute) error {
+	if v.calls != nil {
+		(*v.calls)++
+	}
 	if !v.allowed[selected.Provider] {
 		return ErrProviderRouteInvalid
 	}
@@ -48,11 +53,64 @@ func (v routeClientValidator) ValidateProviderRouteSelection(selected SelectedPr
 }
 
 func (r routeClientResolver) SelectProviderRoute(context.Context, ProviderRouteRequest) (SelectedProviderRoute, error) {
+	if r.onSelect != nil {
+		r.onSelect()
+	}
 	return r.selected, nil
 }
 
 func (routeClientResolver) ResolveProviderRoute(context.Context, ProviderRouteRequest) (ResolvedProviderRoute, error) {
 	panic("credential resolution belongs to the leaf attempt, not pre-policy selection")
+}
+
+func TestProviderRouteClient_RejectsSelectionExpiredDuringResolverCall(t *testing.T) {
+	requestedAt := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	now := requestedAt
+	route := ProviderRoute{
+		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
+		ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "fast",
+	}
+	selected := SelectedProviderRoute{
+		Provider: "openai", Model: "model", KeyName: "route key", RouteID: route.RouteID,
+		RouteGeneration: route.RouteGeneration, ProviderConnectionID: route.ProviderConnectionID,
+		ProviderConnectionGeneration: route.ProviderConnectionGeneration,
+		CredentialAssetGeneration:    route.CredentialAssetGeneration,
+		ModelSelector:                route.ModelSelector,
+		ExpiresAt:                    requestedAt.Add(time.Minute),
+	}
+	validatorCalls := 0
+	probe := &routePolicyProbe{}
+	client := &providerRouteClient{
+		inner: probe,
+		cfg: ProviderRouteConfig{
+			Resolver: routeClientResolver{selected: selected, onSelect: func() {
+				now = selected.ExpiresAt
+			}},
+			RuntimeID: "runtime",
+		},
+		validator: routeClientValidator{allowed: map[string]bool{"openai": true}, calls: &validatorCalls},
+		now:       func() time.Time { return now },
+	}
+	ctx, err := identity.WithRun(context.Background(), identity.Identity{
+		TenantID: "tenant", UserID: "user", SessionID: "session",
+	}, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{
+		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task",
+		Purpose: ProviderRoutePurposeRun,
+	})
+
+	if _, err := client.Complete(ctx, CompleteRequest{}); !errors.Is(err, ErrProviderRouteInvalid) {
+		t.Fatalf("selection expired on arrival error = %v, want ErrProviderRouteInvalid", err)
+	}
+	if validatorCalls != 0 {
+		t.Fatalf("validator calls = %d, want 0 for a selection expired on arrival", validatorCalls)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("inner calls = %d, want 0 for a selection expired on arrival", probe.calls)
+	}
 }
 
 func TestProviderRouteClient_SelectedModelReachesModelSensitivePolicy(t *testing.T) {

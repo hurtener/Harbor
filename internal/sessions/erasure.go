@@ -13,7 +13,6 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/memory"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
@@ -239,7 +238,6 @@ type TurnsProjectionEraser interface {
 type CascadeEraser struct {
 	registry *Registry
 	state    state.StateStore
-	memory   memory.MemoryStore
 	arts     artifacts.ArtifactStore
 	skills   skills.SkillStore
 	bus      events.EventBus
@@ -283,7 +281,6 @@ const eraseLockShards = 256
 type CascadeEraserDeps struct {
 	Registry  *Registry
 	State     state.StateStore
-	Memory    memory.MemoryStore
 	Artifacts artifacts.ArtifactStore
 	Skills    skills.SkillStore
 	Bus       events.EventBus
@@ -333,8 +330,6 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 		return nil, fmt.Errorf("%w: Registry is nil", ErrEraserMisconfigured)
 	case deps.State == nil:
 		return nil, fmt.Errorf("%w: State is nil", ErrEraserMisconfigured)
-	case deps.Memory == nil:
-		return nil, fmt.Errorf("%w: Memory is nil", ErrEraserMisconfigured)
 	case deps.Artifacts == nil:
 		return nil, fmt.Errorf("%w: Artifacts is nil", ErrEraserMisconfigured)
 	case deps.Bus == nil:
@@ -351,7 +346,6 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 	return &CascadeEraser{
 		registry: deps.Registry,
 		state:    deps.State,
-		memory:   deps.Memory,
 		arts:     deps.Artifacts,
 		skills:   deps.Skills,
 		bus:      deps.Bus,
@@ -586,14 +580,9 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, fmt.Errorf("sessions: erase ledger checkpoint (artifacts): %w", err)
 	}
 
-	// 4. Memory.
-	if err := e.memory.Flush(ctx, identity.Quadruple{Identity: id}); err != nil {
-		return zero, fmt.Errorf("sessions: erase memory: %w", err)
-	}
-	ledger.MemoryPurged = true
-	if err := e.saveLedger(ctx, id, ledger); err != nil {
-		return zero, fmt.Errorf("sessions: erase ledger checkpoint (memory): %w", err)
-	}
+	// Cumulative memory is authoritative StateStore data, already fenced by
+	// the erasure marker. It is purged by the scope deletion below, not by a
+	// competing memory-store flush. Do not report it purged before that succeeds.
 
 	// 5. Legacy SkillStore session sweep. This is deliberately exact to the
 	//    erased triple and ScopeSession: ScopeUser is a durable shared rung and
@@ -629,6 +618,7 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, fmt.Errorf("sessions: erase state: %w", err)
 	}
 	ledger.StateRecordsDeleted += stateDeleted
+	ledger.MemoryPurged = true
 	if err := e.saveLedger(ctx, id, ledger); err != nil {
 		return zero, fmt.Errorf("sessions: erase ledger checkpoint (state): %w", err)
 	}
@@ -680,6 +670,21 @@ func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Ide
 // gone but a ledger checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
+	// Scope deletion can succeed before its ledger checkpoint is saved. On
+	// convergence, repeat the idempotent clear while the pending ledger still
+	// fences writes; do not infer a successful memory purge from a missing
+	// lifecycle record alone. Checkpoint the result before terminal side effects.
+	if !ledger.MemoryPurged {
+		deleted, err := e.registry.deleteScopeSerialized(ctx, e.state, id)
+		if err != nil {
+			return zero, fmt.Errorf("sessions: converge memory scope deletion: %w", err)
+		}
+		ledger.StateRecordsDeleted += deleted
+		ledger.MemoryPurged = true
+		if err := e.saveLedger(ctx, id, ledger); err != nil {
+			return zero, fmt.Errorf("sessions: converge memory checkpoint: %w", err)
+		}
+	}
 	// A ledger written before session-skill cleanup checkpoints has no
 	// legacy_session_skills_deleted field, so JSON decoding leaves the flag
 	// false. The session record may already be absent on retry, but that absence

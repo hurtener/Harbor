@@ -27,6 +27,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
+
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -243,7 +245,7 @@ func runSelectionProbe(t *testing.T, taskAgentID string) (selObservation, []auth
 	detacher := &selRecordingDetacher{}
 
 	p := &selProbe{got: make(chan selObservation, 1)}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:                bus,
 		RunLoop:            rl,
 		Planner:            p,

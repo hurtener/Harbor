@@ -139,6 +139,26 @@ func TestBuildMux_PublicationWiring_MountsCapabilityAndSharesState(t *testing.T)
 	}
 }
 
+func TestBuildMux_PublicationWiringRefusesIncompleteAuthority(t *testing.T) {
+	deps := buildProjWiringMux(t)
+	reach := auth.NewAgentReachAuthorizer()
+	store, err := NewSkillPublicationStore(deps.in.State, "coverage-runtime", reach)
+	if err != nil {
+		t.Fatalf("NewSkillPublicationStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+
+	in := deps.in
+	in.PublicationStore = store
+	if _, err := BuildMux(in); !errors.Is(err, ErrPublicationWiringMisconfigured) {
+		t.Fatalf("missing reach authority = %v", err)
+	}
+	in.AgentReach = reach
+	if _, err := BuildMux(in); !errors.Is(err, ErrPublicationWiringMisconfigured) {
+		t.Fatalf("missing runtime identity = %v", err)
+	}
+}
+
 func TestBuildMux_PublicationWiring_ConcurrentReads(t *testing.T) {
 	deps := buildProjWiringMux(t)
 	reach := auth.NewAgentReachAuthorizer()

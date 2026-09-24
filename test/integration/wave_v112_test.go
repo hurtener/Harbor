@@ -97,7 +97,6 @@ func waveV112SessionsService(t *testing.T, stack *devstack.DevStack) *sessionspr
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry:  stack.Sessions,
 		State:     stack.State,
-		Memory:    stack.Memory,
 		Artifacts: stack.Artifacts,
 		Skills:    stack.Skills,
 		Bus:       stack.Bus,

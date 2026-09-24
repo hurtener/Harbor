@@ -213,20 +213,11 @@ distributed:
   remote_driver: loopback
 
 memory:
-  # `none` (Phase 23 default — AddTurn is a no-op) is the safest
-  # starting point. Flip to `rolling_summary` once you have a working
-  # agent and need conversation compaction; Phase 64 wires an
-  # LLM-backed Summarizer through llm/summarizer when this is set.
+  # Standard cumulative session memory. Compaction uses the configured
+  # governed LLM; select `none` explicitly for stateless runs.
   driver: inmem
-  strategy: none
-  recovery_backlog_max: 16
-  # Opt-in semantic retrieval (Phase 84d — D-191): embeds turns and
-  # serves MemoryStore.SearchTurns by cosine similarity, composing
-  # with the strategy above. Requires a top-level `embeddings:` block
-  # (provider + model + api_key — see examples/harbor.yaml); the
-  # validator fails the boot loudly without one. `skills.retrieval:
-  # semantic` opts skill_search into the same mode.
-  # retrieval: semantic
+  strategy: rolling_summary
+  recent_turns: 20
 
 # Phase 233a / D-400 — durable session-personal skills. This sample leaves
 # the block absent, so every tenant is safely read-only `dual_read`: existing

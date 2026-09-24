@@ -169,3 +169,43 @@ func TestLLMProviderInstaller_InstallThenUninstall_ClosesBinding(t *testing.T) {
 		t.Fatalf("uninstall must CLOSE the binding (zero the live key), got %q", live.Get())
 	}
 }
+
+func TestLLMProviderInstaller_RotationAndShutdownAdmission(t *testing.T) {
+	t.Setenv(instAuthEnv, instDummyToken)
+	srv := inferencebrokertest.New(t, instDummyToken, instDummyKey)
+	red := patternsAudit.New()
+	bus, err := eventsInmem.New(config.EventsConfig{
+		Driver: "inmem", MaxSubscribersPerSession: 4, SubscriberBufferSize: 16,
+		IdleTimeout: time.Second, DropWindow: 50 * time.Millisecond,
+	}, red)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	if NewLLMProviderInstaller(llm.NewLiveKey(), "openai", nil, nil, red, "runtime", nil) != nil {
+		t.Fatal("nil bus must leave the installer unavailable")
+	}
+	if NewLLMProviderInstaller(llm.NewLiveKey(), "openai", nil, bus, nil, "runtime", nil) != nil {
+		t.Fatal("nil redactor must leave the installer unavailable")
+	}
+
+	live := llm.NewLiveKey()
+	brokers := []config.InferenceBrokerConfig{{Name: "broker", CredentialURL: srv.URL(), AuthTokenEnv: instAuthEnv}}
+	inst := NewLLMProviderInstaller(live, "openai", brokers, bus, red, "runtime", nil)
+	desc := agentcfg.LLMProviderDescriptor{Name: "rotating", Provider: "openai", CredentialSource: "remote", InferenceBroker: "broker"}
+	if err := inst.InstallLLMProvider(context.Background(), "tenant", "agent", desc); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	if err := inst.InstallLLMProvider(context.Background(), "tenant", "agent", desc); err != nil {
+		t.Fatalf("rotation install: %v", err)
+	}
+	if err := inst.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := inst.InstallLLMProvider(context.Background(), "tenant", "agent", desc); !errors.Is(err, agentcfgprotocol.ErrLLMProviderInstallUnavailable) {
+		t.Fatalf("install after close = %v", err)
+	}
+	if err := inst.BootConnectPrimary(context.Background(), "broker"); !errors.Is(err, agentcfgprotocol.ErrLLMProviderInstallUnavailable) {
+		t.Fatalf("boot connect after close = %v", err)
+	}
+}

@@ -1,6 +1,7 @@
 package materializer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -88,6 +89,58 @@ func TestMaterialize_RuntimeTaskRunBindingPersistsRichTurnAcrossRestart(t *testi
 		t.Fatalf("restart changed rich turn:\nbefore: %+v\nafter:  %+v", pre, post)
 	}
 	postWire := getConversationJSON(t, proj2, h.id, "task-rich")
+	if string(postWire) != string(preWire) {
+		t.Fatalf("restart changed sessions.turns.get bytes:\nbefore: %s\nafter:  %s", preWire, postWire)
+	}
+}
+
+// TestMaterialize_NoPathFinishReasonPersistsAcrossRestartAndProtocol pins the
+// live RC failure shape end to end: a task.failed no_path event remains a
+// failed turn with an independent unclassified error class, while the closed
+// no_path finish reason survives SQLite restart and the sessions.turns.get
+// Protocol projection byte-for-byte.
+func TestMaterialize_NoPathFinishReasonPersistsAcrossRestartAndProtocol(t *testing.T) {
+	dsn := t.TempDir() + "/turns-no-path.sqlite"
+	h := newHarness(t, dsn)
+	h.src.publish(t, spawnEv(h.id, "", "task-no-path", tasks.KindForeground, ""))
+	h.src.publish(t, startedEv(h.id, "task-no-path"))
+	h.src.publish(t, failedEv(h.id, "task-no-path", "no_path"))
+
+	m1 := h.newMaterializer(t)
+	if _, err := m1.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize no_path: %v", err)
+	}
+	pre := mustGetRow(t, h, "task-no-path")
+	if !pre.Sealed || pre.Status != turns.StatusFailed ||
+		pre.FinishReason != turns.FinishNoPath ||
+		pre.ErrorClass != turns.ErrorClassUnclassified {
+		t.Fatalf("terminal = status %q sealed %v finish %q class %q", pre.Status, pre.Sealed, pre.FinishReason, pre.ErrorClass)
+	}
+	preWire := getConversationJSON(t, h.proj, h.id, "task-no-path")
+	if !bytes.Contains(preWire, []byte(`"FinishReason":"no_path"`)) {
+		t.Fatalf("sessions.turns.get omitted no_path finish reason: %s", preWire)
+	}
+
+	h.closeStore()
+	store2, err := sqlite.New(sqlite.Config{DSN: dsn})
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	proj2, err := turns.New(store2)
+	if err != nil {
+		t.Fatalf("reopen projector: %v", err)
+	}
+	defer func() { _ = proj2.Close(context.Background()) }()
+	h2 := &harness{id: h.id, store: store2, proj: proj2, src: h.src}
+	m2 := h2.newMaterializer(t)
+	if _, err := m2.Materialize(context.Background()); err != nil {
+		t.Fatalf("restart catch-up: %v", err)
+	}
+	post := mustGetRow(t, h2, "task-no-path")
+	if !reflect.DeepEqual(post, pre) {
+		t.Fatalf("restart changed no_path turn:\nbefore: %+v\nafter:  %+v", pre, post)
+	}
+	postWire := getConversationJSON(t, proj2, h.id, "task-no-path")
 	if string(postWire) != string(preWire) {
 		t.Fatalf("restart changed sessions.turns.get bytes:\nbefore: %s\nafter:  %s", preWire, postWire)
 	}

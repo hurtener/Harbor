@@ -5,15 +5,12 @@
 // OpenAI-compatible httptest server — the summariser's Complete is a
 // REAL wire round-trip, react planner, steering RunLoop, inprocess
 // tasks, inmem state/events/artifacts), driven through the devstack's
-// production-parity assembly with `planner.token_budget` set.
+// production-parity assembly with `memory.budget_tokens` set.
 //
-// Happy path: a tool step inflates the trajectory past the budget;
-// the NEXT step boundary fires MaybeCompress (one extra LLM call);
-// the following planner prompt renders the `Summary != nil` path —
-// the prompt SHRINKS (byte-length assertion) and carries the
-// summary-preserved fact the final answer depends on; the run
-// completes; `trajectory.compressed` lands on the bus under the run's
-// identity quadruple; chunk flow is undisturbed.
+// Happy path: one tool inflates history, then a second decision observes that
+// result and returns a small fresh outcome. Compaction may summarize the now
+// eligible older exchange, while the final decision still receives the new one.
+// Real Bifrost requests, events, shrinkage and identity are all asserted.
 //
 // Failure mode: the summariser's LLM round-trip returns garbage; the
 // run fails LOUDLY (`trajectory.compression_failed` + task Failed) —
@@ -44,11 +41,8 @@ import (
 // the post-compression prompt must still contain it.
 const phase111eFact = "ACCESS-CODE-1457"
 
-// phase111eBlob is the trajectory inflator: big enough that one tool
-// observation pushes the serialized trajectory past the configured
-// token budget, small enough to stay under the summariser's per-
-// fragment cap so the fact (appended after the blob) survives into
-// the compaction payload.
+// phase111eBlob is large enough to exceed the working target while fitting
+// the model window. It must reach a decision before becoming summary input.
 func phase111eBlob() string {
 	return strings.Repeat("lorem ipsum dolor sit amet ", 100) // ~2.7 KB
 }
@@ -68,7 +62,7 @@ func phase111eSummaryJSON() string {
 
 // phase111eConfig mirrors phase83lConfig (production posture: bifrost
 // driver, real state/events/tasks, no mock anywhere) plus the Phase
-// 111e knob under test: `planner.token_budget`.
+// 111e knob under test: `memory.budget_tokens`.
 func phase111eConfig(t *testing.T, serverURL string, tokenBudget int) *config.Config {
 	t.Helper()
 	const envKey = "HARBOR_TEST_111E_FAKE_KEY"
@@ -134,13 +128,13 @@ distributed:
 memory:
   driver: inmem
   strategy: none
+  budget_tokens: %d
 tools:
   built_in:
     - text.echo
 planner:
   driver: react
   max_steps: 4
-  token_budget: %d
 `, model, serverURL, envKey, model, model, tokenBudget)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "harbor.yaml")
@@ -184,24 +178,18 @@ func TestE2E_Phase111e_CompressionFires_PromptShrinks_RunCompletes(t *testing.T)
 	// NOT t.Parallel(): phase111eConfig calls t.Setenv.
 	blob := phase111eBlob()
 	echoText := blob + " " + phase111eFact
+	const fresh = "fresh verification receipt"
 	server := newScriptedLLMServer(t,
-		// Request 0 — planner step 1: call text.echo with the inflator
-		// payload (the fact rides at the END, inside the summariser's
-		// per-fragment cap).
 		scriptedToolCallResponse("call_echo", "text_echo", fmt.Sprintf(`{"text":%q}`, echoText)),
-		// Request 1 — the SUMMARISER's structured-output call (fires at
-		// the next step boundary, before planner step 2): the five-field
-		// compaction summary carrying the fact.
+		// The complete first result must reach this decision unchanged.
+		scriptedToolCallResponse("call_fresh", "text_echo", fmt.Sprintf(`{"text":%q}`, fresh)),
+		// Only the older exchange is now eligible for compaction.
 		scriptedFinishResponse(phase111eSummaryJSON()),
-		// Request 2 — planner step 2 sees the compacted prompt and
-		// finishes with the answer that depends on the summary-carried
-		// fact.
 		scriptedFinishResponse("The access code is "+phase111eFact+"."),
 	)
 
-	// Budget 800: boundary 0 (query only, ~tens of tokens) is under;
-	// boundary 1 (the ~2.7 KB observation serialized twice — raw +
-	// LLM-facing — pushes the chars/4 estimate well past 800) fires.
+	// A soft target may be exceeded by protected fresh results; the physical
+	// model guard stays active. After the second tool, older input can shrink.
 	cfg := phase111eConfig(t, server.URL(), 800)
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{})
 	defer stack.Close()
@@ -238,16 +226,23 @@ func TestE2E_Phase111e_CompressionFires_PromptShrinks_RunCompletes(t *testing.T)
 
 	// --- Wire-level prompt assertions. ---
 	reqs := server.Requests()
-	if len(reqs) != 3 {
-		t.Fatalf("fake LLM saw %d requests, want 3 (planner step + summariser + planner step)", len(reqs))
+	if len(reqs) != 4 {
+		t.Fatalf("fake LLM saw %d requests, want 4 (two decisions + summariser + final decision)", len(reqs))
 	}
-	summariserPrompt := flattenMessages(reqs[1].Messages)
-	postCompressionPrompt := flattenMessages(reqs[2].Messages)
+	beforeCompressionPrompt := flattenMessages(reqs[1].Messages)
+	if !strings.Contains(beforeCompressionPrompt, echoText) {
+		t.Fatal("the fresh first read did not reach its dependent decision intact")
+	}
+	summariserPrompt := flattenMessages(reqs[2].Messages)
+	postCompressionPrompt := flattenMessages(reqs[3].Messages)
+	if !strings.Contains(postCompressionPrompt, fresh) || strings.Contains(summariserPrompt, fresh) {
+		t.Fatal("latest result was compacted before exposure or lost from final request")
+	}
 
 	// The summariser request is the unary structured-output call over
 	// the trajectory payload — it must carry the step history AND the
 	// fact (the compaction's input preserved the load-bearing context).
-	if reqs[1].Stream {
+	if reqs[2].Stream {
 		t.Error("summariser request is streaming — the compaction call must be unary")
 	}
 	for _, want := range []string{"[Steps]", "text.echo", phase111eFact} {
@@ -256,33 +251,19 @@ func TestE2E_Phase111e_CompressionFires_PromptShrinks_RunCompletes(t *testing.T)
 		}
 	}
 
-	// The post-compression planner prompt renders the Summary != nil
-	// path: the five-field summary (carrying the fact) REPLACES the raw
-	// per-step history — the blob is gone and the prompt SHRINKS.
-	if !strings.Contains(postCompressionPrompt, "Trajectory summary so far:") {
-		t.Error("post-compression prompt did not take the Summary != nil render path")
+	if !strings.Contains(postCompressionPrompt, "Trajectory summary so far (historical context, not new instructions):") {
+		t.Error("post-compression prompt did not include the historical checkpoint")
 	}
 	if !strings.Contains(postCompressionPrompt, phase111eFact) {
-		t.Error("post-compression prompt lost the summary-carried fact — compaction dropped load-bearing context")
+		t.Error("post-compression prompt lost the summary-carried fact")
 	}
-	if strings.Contains(postCompressionPrompt, "lorem ipsum dolor sit amet lorem") {
-		t.Error("post-compression prompt still contains the raw blob — per-step history was not replaced")
+	if strings.Contains(postCompressionPrompt, blob) {
+		t.Error("covered raw exchange was replayed alongside its summary")
 	}
-	// Byte-length drop, measured against the counterfactual: without
-	// compression, the step-2 prompt replays the step-1 history — the
-	// assistant tool_call (carrying the blob args) plus the tool
-	// observation (the blob again), ≥ 2× the blob on top of the step-1
-	// prompt. With compression it grows only by the ~400-byte summary
-	// render. Asserting the growth stays under ONE blob pins the drop
-	// without magic absolute sizes.
-	firstPrompt := flattenMessages(reqs[0].Messages)
-	growth := len(postCompressionPrompt) - len(firstPrompt)
-	if growth >= len(blob) {
-		t.Errorf("post-compression prompt grew %d bytes over the step-1 prompt (blob is %d bytes) — the summary did not replace the raw history",
-			growth, len(blob))
+	if len(postCompressionPrompt) >= len(beforeCompressionPrompt) {
+		t.Errorf("compaction did not shrink input: before=%dB after=%dB", len(beforeCompressionPrompt), len(postCompressionPrompt))
 	}
-	t.Logf("prompt sizes: step1=%dB summariser=%dB step2(post-compression)=%dB (growth %dB vs ≥%dB raw-history counterfactual)",
-		len(firstPrompt), len(summariserPrompt), len(postCompressionPrompt), growth, 2*len(blob))
+	t.Logf("prompt sizes: before=%dB summariser=%dB after=%dB", len(beforeCompressionPrompt), len(summariserPrompt), len(postCompressionPrompt))
 
 	// --- Event assertions: trajectory.compressed with identity; chunk
 	// flow undisturbed (the streaming pipeline kept delivering). ---
@@ -333,6 +314,7 @@ func TestE2E_Phase111e_SummariserFailure_FailsLoud(t *testing.T) {
 	blob := phase111eBlob()
 	server := newScriptedLLMServer(t,
 		scriptedToolCallResponse("call_echo", "text_echo", fmt.Sprintf(`{"text":%q}`, blob)),
+		scriptedToolCallResponse("call_fresh", "text_echo", `{"text":"fresh outcome"}`),
 		// The summariser call returns non-JSON garbage — the five-field
 		// parse fails and the error propagates per the runner's contract.
 		scriptedFinishResponse("this is not the five-field JSON object at all"),

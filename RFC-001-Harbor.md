@@ -502,6 +502,23 @@ type Trajectory struct {
 
 **Schema repair pipeline** lives in `internal/planner/repair/` and is reusable across concretes: salvage → schema repair → graceful failure → multi-action salvage. Configurable per-concrete (`arg_fill_enabled`, `repair_attempts`, `max_consecutive_arg_failures`). (Settled.)
 
+**Portable compaction (D-462; RFC 002, phase 268).** A runtime-owned coverage
+record identifies the exact trajectory prefix replaced by a summary. ReAct
+replays the summary plus every uncovered exchange, preserving complete native
+call/result groups, a recent tail, and newly settled results not yet presented
+to a decision. Compaction may repeat; an existing summary is not a fence against
+future activity. This supersedes only the single-compression / summary-only
+projection of D-055 and D-202. Candidate generation occurs outside inspection
+locks and publication validates the source prefix; failure preserves the prior
+checkpoint. Unversioned legacy summaries never receive guessed coverage.
+
+The first increment fixes replay and standalone trajectory estimation; complete
+assembled-request capacity enforcement remains a phase 268 acceptance criterion.
+No long-term memory, provider-native compaction, public transcript expansion,
+or cold execution relaunch is introduced. See
+[RFC 002](https://github.com/hurtener/Harbor/blob/9741c6bcc204b3a7c95f939183178dd9eeb5a2f6/RFC-002-Session-Context.md) and the
+[phase 268 plan](docs/plans/phase-268-portable-compaction.md).
+
 ### 6.3 Steering and the unified pause/resume primitive
 
 **Same-run step tranches.** A configured finite tranche charges each
@@ -565,6 +582,44 @@ type Coordinator interface {
 **Steering authn/authz.** Per-event scopes. `CANCEL`, `APPROVE`, `REJECT`, `PAUSE`, `RESUME` require the originating user/admin scope. `INJECT_CONTEXT`, `USER_MESSAGE` accept the session-scoped user. `PRIORITIZE` requires admin. `REDIRECT` requires the user (the agent's owner). Cross-tenant steering requires admin. (Resolves brief 02 Q-3.)
 
 **Steering payload bounds:** depth ≤ 6, ≤ 64 keys, ≤ 50 list items, ≤ 4096 chars per string, ≤ 16 KiB total. Enforced at the Protocol edge. (Settled.)
+
+**User-message projection.** Applied `USER_MESSAGE` text reaches the next
+decision request verbatim as user input, after complete prior tool exchanges;
+it never rewrites the system prefix. The runtime also keeps the applied text
+as inert trajectory context for subsequent steps in the same run, including
+when cross-run memory is disabled. When cumulative memory is enabled, its
+existing required context checkpoint must succeed before further inference.
+Historical context cannot reapply a control or authorize an external action.
+**In-flight steering (D-479).** A verified nonempty user message interrupts
+the current planning attempt, not the run. Per-run instruction generations fence
+re-planning, terminal completion and decision admission. Discard superseded
+decisions, serial pending calls and late output; carry first-attempt inputs and
+already-applied controls into the replacement request. A saved intent that loses
+admission is settled explicitly as not executed under the existing bounded
+cleanup context. Required persistence/accounting failures are terminal, never
+masked as cancellation retries. Preserve already-started invocation outcomes.
+An instruction-generation fence also refuses queued parallel invocations and
+policy retries without cancelling active sibling calls. Superseded approval
+requests are withdrawn through the existing Coordinator as rejections, never
+approvals; required withdrawal failures terminate after settlement. Short-circuit
+parallel joins wait for cancelled siblings so a success cannot hide failed
+required cleanup. The control payload contains only a nonempty `message` string;
+attachments, extra fields and invalid messages are rejected before interrupting
+execution (`422 payload_invalid`). Live consumer acceptance remains open.
+
+**Hard Stop (D-478).** A verified `CANCEL` with `payload.hard: true` cancels
+the identity-scoped execution context immediately at inbox admission, not at
+the next planner boundary. Cancellation and terminal completion arbitrate under
+one per-run lock: an accepted Stop cannot become success through a late model
+response; a terminal decision rejects new controls. Queued dispatch checks
+cancellation, active execution receives it, and returned tool evidence remains
+evidence rather than authorization to replay an action. Cancellation bookkeeping
+uses an independent five-second context preserving identity. A control response
+acknowledges admission, not proof of upstream termination. Clients wait for the
+terminal task outcome; independently running external jobs need their own cancel
+API. Provider socket termination before and after response headers is verified
+through the governed Bifrost transport; live consumer acceptance remains tracked
+separately in PR #779.
 
 **Rejected HITL gate is terminal.** `APPROVE` and `RESUME` resolve an outstanding pause and the planner re-enters. `REJECT`, by contrast, resolves the pause via `Coordinator.Resume` with a `rejected: true` marker and **terminates the run** with `Finish{constraints_conflict}` — a rejected human-in-the-loop gate is a constraint the planner cannot resolve, not a recoverable signal. (Settled — D-071. The alternative "re-enter the planner on `REJECT` so it can replan" was considered and rejected for V1: it lets a rejected gate loop indefinitely. A planner that should replan-on-reject is a future planner-*policy* concern, not a steering-*primitive* one — it would be a separate RFC change.)
 
@@ -731,6 +786,16 @@ bounded message so the next prompt can re-read and retry.
 
 ### 6.5 LLM client layer
 
+**Prepared request diagnostics (D-476).** The mandatory leaf capacity check
+emits `llm.context.prepared` through the existing event pipeline: canonical input
+estimates by structural category, physical input/output bounds, fixed counts,
+numeric attempt coordinates and optional installed runtime replay coverage.
+No content, arbitrary identifiers or errors are copied. A capacity check is not
+provider success or billing; maintenance does not inherit parent history, and
+rejected checkpoint candidates are never reported as installed. SDK and Protocol
+expose the same owned projection. No storage, provider-native feature or new
+accounting path is introduced.
+
 ```go
 type LLMClient interface {
     // One method. Streaming is signalled via opts.Stream + callbacks.
@@ -774,7 +839,7 @@ type CompleteResponse struct {
 
 **Single architecture, no toggle.** A `use_native_llm=True/False` mode would ship two parallel implementations of the same conceptual feature. Harbor picks one architecture and bakes the per-provider correction layer in as a `SchemaSanitizer` plus message-shape normalization stack — both runtime utilities called *before* the client request, not flags on the client. (Settled — `AGENTS.md` §13.)
 
-**Default driver: `bifrost` (`github.com/maximhq/bifrost/core`) — Settled — see brief 08.** A pure-Go LLM gateway library with first-class drivers for 23 providers (OpenAI, Anthropic, Google, Vertex, Bedrock, Azure, OpenRouter, XAI, Mistral, Ollama, Groq, Cohere, Cerebras, Fireworks, Perplexity, Replicate, ElevenLabs, HuggingFace, Nebius, Parasail, SGL, vLLM, Runway). Empirically validated on 2026-05-08 against six OpenRouter-routed models: 23 of 24 gating items pass (six models × four checks: basic chat, `json_object` response_format, streaming with content callback, ctx cancellation; plus token usage and cost reporting on every model). The one cancellation FAIL is a measurement artifact for long streams, not a functional defect — Harbor's runtime can abandon the channel reader on `ctx.Done()` without consequence. Adopting bifrost requires Go 1.26+ (matching its `go.mod`); Harbor's `go.mod` is bumped accordingly. The original CGo-required candidate is rejected.
+**Default driver: `bifrost` (`github.com/maximhq/bifrost/core`) — Settled — see brief 08.** A pure-Go LLM gateway library. The original 2026-05-08 six-model OpenRouter study passed 23 of 24 gates, but its assumption that abandoning the chunk reader was sufficient cancellation is superseded by D-478: hard Stop must interrupt the provider connection. Harbor pins Bifrost core 1.9.0 for its context-aware transport, with Go 1.27.1; deterministic real-socket tests cover cancellation before headers and during streaming. This is not new live-model acceptance. Harbor's existing finite provider-route allowlist remains unchanged; new upstream providers, MCP execution, routing plugins and SDK capabilities are not enabled by the dependency update. The original CGo-required candidate remains rejected.
 
 Bifrost's `Tools` / `ToolChoice` parameters were initially not used at all; since D-167 the driver maps Harbor's `Tools` / `ToolChoice` / `ParallelToolCalls` onto them (`translate.go`) for the React planner's native tool-calling path, and omits the block entirely when `Tools` is nil. Harbor's runtime still owns tool DISPATCH (see §6.4 "Code-level tool dispatch") — bifrost carries the declaration to the provider and returns the structured call; it never decides what runs. Bifrost is the LLM-call substrate; Harbor is the orchestration layer above it.
 
@@ -841,7 +906,7 @@ logical run, effective Agent, runtime, task, and logical-call context.
 The two-stage exact-bound response chooses a provider/model, non-secret key
 display name, immutable generations, expiry, and an optional typed endpoint,
 then returns one expiring credential only for the actual attempt. Harbor boots
-a finite Bifrost v1.7.4 chat-capable route set and excludes non-chat and
+a finite chat-capable route set (unchanged from the Bifrost v1.7.4 integration) and excludes non-chat and
 advanced cloud-credential shapes. Azure, vLLM, Ollama, SGLang, and
 OpenAI-compatible endpoints use explicit typed mappings; generic endpoint or
 credential bundles are not representable. OpenAI-compatible egress uses a
@@ -1013,49 +1078,62 @@ The stub format is uniform across producers (tool result, memory turn, multimoda
 
 Memory is declared-policy, identity-scoped, and pluggable across persistence backends.
 
+**Cumulative session memory (D-477; RFC 002 amendment, release acceptance pending).**
+`memory` becomes the single short-term session-memory owner. The standard
+`rolling_summary` strategy carries one cumulative checkpoint plus a bounded
+recent execution tail; `recent_turns: 20` bounds detail, not the age of remembered
+constraints. Each compaction receives the preceding checkpoint and newly eligible
+evidence. `memory.budget_tokens` controls assembled-request compaction, with zero
+deriving the safe target from the effective model; output limits remain separate.
+Served agents can override this same target through the admin versioned
+`memory.budget_tokens` section (D-481). Omission inherits YAML; explicit zero
+selects automatic sizing. Advertise `agent_config_memory_v1` only when the
+compactor and configuration service are wired. Runs freeze the value at start.
+An operator may select a separately authorized compaction route through
+`memory.summarizer.provider_route` (D-482). It uses the existing resolver and
+governed Bifrost client under the same admitted runtime/agent/task and verified
+user/session identity. The compactor uses that model's current profile; it never
+repurposes a signed grant or silently falls back to another credential.
+There is no fixed 512 KiB execution-evidence storage ceiling (D-480). Exact
+retained evidence may exceed the working-input size; token compaction does not
+promise bounded storage bytes. Lifetime, identity and generation fences remain.
+`memory.strategy: none` explicitly disables session memory. Replace the pair-only
+summary pipeline, separate `sessions.retained_context_turns`/`WithRetainedContext`
+activation and `planner.token_budget`; no compatibility layer or second memory
+engine. Update the memory interfaces and every served/embedded consumer together.
+Administrative inspection and notes share the execution owner. They do not
+record runtime tool receipts or run an independent summary loop. External
+long-term memory and the consumer transcript remain distinct.
+
 ```go
 package memory
 
 type Strategy string
 const (
     StrategyNone           Strategy = "none"
-    StrategyTruncation     Strategy = "truncation"
     StrategyRollingSummary Strategy = "rolling_summary"
 )
 
-type Config struct {
-    Strategy           Strategy
-    Budget             Budget
-    Isolation          IsolationPolicy   // RequireExplicitKey: true (mandatory)
-    SummarizerModel    string
-    IncludeTrajectory  bool
-    RecoveryBacklogMax int
-    RetryAttempts      int
-    RetryBackoffBase   time.Duration
-    DegradedRetryEvery time.Duration
-}
-
-type Store interface {
-    AddTurn(ctx context.Context, id identity.Identity, turn ConversationTurn) error
-    GetLLMContext(ctx context.Context, id identity.Identity) (LLMContextPatch, error)
-    EstimateTokens(ctx context.Context, id identity.Identity) (int, error)
-    Flush(ctx context.Context, id identity.Identity) error
-    Health(ctx context.Context, id identity.Identity) (Health, error)
-    Snapshot(ctx context.Context, id identity.Identity) (Snapshot, error)
-    Restore(ctx context.Context, id identity.Identity, snap Snapshot) error
+type MemoryStore interface {
+    Inspect(ctx context.Context, id identity.Quadruple) (Inspection, error)
+    Put(ctx context.Context, id identity.Quadruple, note ConversationTurn) (string, error)
+    Delete(ctx context.Context, id identity.Quadruple, key string) (int, error)
+    Close(ctx context.Context) error
 }
 ```
 
 **Settled:**
 
-- Three strategies: `none` (no-op), `truncation` (recent-window + budget enforcement), `rolling_summary` (background summarization, health states `healthy → retry → degraded → recovering → healthy`).
-- Identity is **mandatory**. The predecessor's `require_explicit_key=False` knob is removed from Harbor. Missing identity = empty result + audit event. (Settled.)
+- Two strategy names: `none` (stateless) and `rolling_summary` (standard cumulative checkpoint plus recent execution evidence under D-477). `truncation` is rejected. The former pair-summary background loop and drop-oldest recovery backlog are removed, not run alongside cumulative memory.
+- Identity is **mandatory**. Missing identity returns an explicit error and an audit event, never an apparently successful empty result.
 - Three drivers ship at V1: in-memory, SQLite, Postgres. One conformance suite passes against all three.
 - `llm_context` vs `tool_context` separation is preserved: identifiers live in `tool_context` (LLM-invisible); conversation state lives in `llm_context`. The Go analogue is "identity flows via `context.Context`, never through prompt-visible state."
-- The summarizer is an injectable callable; the LLM call lives in the LLM-client subsystem; memory consumes a `Summarizer` interface.
-- **Semantic retrieval is an opt-in mode, not a strategy (D-191).** `retrieval: semantic` layers embedding-similarity search ON TOP of the configured strategy: turns are embedded at `AddTurn` and a `SearchTurns(ctx, id, query, limit)` surface ranks them by cosine, while `GetLLMContext` keeps its strategy-shaped patch unchanged — composition, never replacement. The embedder is injected as `Deps.Embedder` with the same fail-loud rule as the summarizer (semantic mode without an embedder fails at `Open`; no stub fallback). Vectors persist as identity-scoped records through the same `StateStore` floor the memory records use — all three drivers inherit vector persistence with conformance parity, brute-force cosine at V1 scale (an ANN index is post-V1 if scale demands). Vectors are derived data: snapshots/restores carry the strategy state, not the index, and an embedding-model change requires re-embedding (a dimension mismatch fails loudly). `SearchTurns` on a non-semantic store fails loudly (`ErrSemanticDisabled`), never an empty success.
+- The same trajectory compactor handles within-run and cross-turn summarization through the governed LLM client. Inspection and note mutations do not make model calls.
+- Large administrative memory values use source-bound references through bounded `artifacts.get`. Reads revalidate the exact source and scope; deletion, expiry and source replacement invalidate old references. No second artifact copy or independently presigned URL can prolong retention.
+- **Native semantic session-memory retrieval is removed (D-477 supersedes the memory portion of D-191).** Cumulative checkpoints and recent execution evidence are the short-term memory representation. There is no second vector index, `SearchTurns`, retrieval-mode setting or semantic prompt-injection path. External long-term memory remains external; semantic skill retrieval and the embedding client are unchanged. Removed configuration fails explicitly rather than silently selecting another mode.
 
-**Memory budget at very long sessions — Tentative — see §11 Q-4.** `rolling_summary` covers hours; an *episodic memory* tier (durable summaries promoted from session to user scope) is post-V1 unless V1 user feedback demands it earlier.
+Long-term or cross-session memory remains an external integration responsibility;
+cumulative checkpoints do not promote session content into another retention tier.
 
 ### 6.7 Skills subsystem
 
@@ -1321,6 +1399,67 @@ type TaskRegistry interface {
 **Retain-turn timeouts and continuation hops — Settled.** Per-session config (matching the predecessor's stance), with per-spawn override via `SpawnRequest`. (Resolves brief 05 Q-5.)
 
 ### 6.9 Sessions and SessionManager
+
+**Cumulative execution context (D-477; RFC 002).** Root runs use the single
+`memory` policy in serving and embedding through the existing StateStore,
+ArtifactStore and dispatch journal. Remove the separate retained-context switch
+and pair-only projection, not consumer turn rows or external long-term memory.
+Child tasks use explicit task context and never publish their private transcripts
+into the root memory. Restored history is inert and must satisfy current erasure
+and source-expiry checks. Required terminal persistence precedes served task
+completion. Session deletion and lifetime remain controlled by `sessions`.
+See [RFC 002](https://github.com/hurtener/Harbor/blob/126e5a917edab479a5fdaf74eedaf572c659535b/RFC-002-Session-Context.md) and the
+[phase 269 plan](docs/plans/phase-269-retained-session-context.md).
+
+**Cumulative checkpoints (D-477 supersedes D-469).** One versioned checkpoint
+has committed generation and coverage valid after covered raw detail is removed.
+Generate outside locks/persistence deadlines, then conditionally publish against
+the unchanged source prefix, generation and erasure state; preserve newer tails
+and unsettled admissions. Only successful publication authorizes raw-detail
+cleanup. Do not skip late-settling siblings or store an unbounded list of source
+IDs/checkpoints. Failure preserves committed state or stops with explicit capacity
+failure. Deletion/expiry, unlike compaction, remove information: rebuild from
+remaining authorized evidence or invalidate an affected opaque checkpoint.
+Compaction/restart never extend retention. Old private formats may be rejected
+explicitly; no compatibility layer is required. No new backend/provider state.
+
+**Explicit settled-journal reconciliation (D-470; RFC 002).** An embedded caller
+with configured retained context may seal a fully settled journal as interrupted
+evidence through `Stack.ReconcileRetainedContext`. The existing conditional
+StateStore transaction publishes evidence and fences its source admission before
+future dispatch. A pending intent remains unknown and is refused; recovery does
+not relaunch a run, call a model/tool/hook, or extend expiry. The served consumer
+is defined by D-471 below.
+
+**Served reconciliation (D-471).** `sessions.reconcile_context` accepts the
+source run ID under the caller's verified own-session identity. Admin claims do
+not widen scope. It calls the same settled-journal primitive, rejects pending
+external effects, and returns only a content-free reconciliation acknowledgement.
+The typed Go Protocol client exposes the operation. Retention must already be
+enabled; no new configuration, cold-run resume or automatic action retry is added.
+
+**Applied steering continuity (D-473).** In retained mode, accepted user-message,
+redirect and injected-context content is committed as explicitly non-executable
+journal evidence before subsequent inference. Required persistence failures stop
+dependent work. Recovery and later turns preserve the observations but never
+replay control actions or confer old authority. Current control application and
+model-step/tranche accounting remain unchanged.
+
+**Retained result retrieval (D-472).** The retained guard resolves structured
+model-facing dispatcher offload envelopes independently of narrative coverage.
+Its bounded metadata projection survives compaction; the existing `artifact_fetch`
+reads exact permitted ranges without repeating the original tool. Own-session
+reference validation runs before inference and before dependent dispatch. Missing
+or erased sources are unavailable, not retained as apparently valid evidence.
+No persistent registry, new tool, or artifact-lifetime policy is introduced.
+
+**Retained attachments (D-474):** supplied attachment IDs are associated with
+their user turn in the same context-capable journal, atomically with the admitted
+query. Retained callers reject omitted input references. Current scoped metadata
+remains available after compaction and is revalidated before inference and
+dependent dispatch. Bytes stay in the ArtifactStore; a reference does not claim
+image inspection or extend source lifetime. Existing artifact tools perform
+authorized retrieval; default non-retained input disposition is unchanged.
 
 A session is a longer-lived, multi-turn conversation that contains many runs. Identity for runtime concerns is the triple `(tenant, user, session)`; runs are scoped within sessions.
 
@@ -2430,6 +2569,12 @@ The run-completion hook is the Runtime's one run-lifecycle egress point: an oper
 
 **Cancellation bridge.** For a cancelled run the run's own context is already dead when the hook fires. The dispatch runs under a **bounded detached context** — cancellation detached from the run, context **values preserved** (the identity quadruple keeps flowing; the bridge is never a bare background context, which would drop identity), bounded by an explicit configurable timeout. This is the same documented bridge pattern the tool-auth subsystem uses for post-cancellation token work.
 
+**Hard-Stop exception (D-478 amends D-280/D-289).** An accepted hard Stop
+suppresses the external completion-hook dispatch and auto-naming trigger: Stop
+must not launch a new tool or model call during teardown. Durable internal
+settlement and completion-chunk sealing still run using bounded cleanup contexts.
+Soft cancellation and other terminal outcomes retain the firing contract above.
+
 **The transcript payload is a public contract.** The hook delivers a typed, versioned payload (`format_version: 1`, golden-pinned JSON — it leaves the process to operator servers): run metadata (the identity quadruple; the registration `agent_id` when the wiring layer knows it — metadata per §6.16, never an isolation key; outcome; timings; the true tool-invocation count) plus the **faithful ordered conversation** — the initial goal, every steering-injected `USER_MESSAGE` and `REDIRECT` in arrival order with step indices, the assistant's per-step prose and compact tool lines, and the final answer. Steering text is captured **from live run state at completion**: the run loop accumulates applied user messages per run (they are otherwise consumed per step and never durably recorded — the applied-control history deliberately drops payloads). Steering entries are bounded by the §6.3 Protocol-edge payload caps; raw tool observations are excluded (the transcript is conversation-shaped, not a trajectory dump — trace consumers use the observability surface). The payload travels only as tool arguments to the target's transport: it never traverses the LLM edge (the §6.5 context-window safety net does not apply) and never rides a bus event or log line.
 
 **Configuration: static yaml paired with the versioned agent-config surface.** The static home is `runtime.hooks.run_completion: {tool, timeout}` in the operator config; the durable, versioned home is a `hooks` section on the agent-config payload (§6.16's content surface), riding the existing revision machinery — content-hash, `set_revision` with sibling-section preservation, server-side diff, rollback, `agent.config.revised`. Resolution happens once at run start with **next-run projection** semantics (the per-run immutable snapshot, §3.5): agent-config section over yaml over no-hook; an in-flight run keeps its snapshot; an edit is invisible to it by construction. No new Protocol method ships for this: the section rides the existing agent-config verbs, and the wire impact is additive types only (the per-section wire schema plus its diff arm, kept in lockstep with the Console client mechanically). On the embed path the `WithCompletionHook` run option overrides (or explicitly disables) the resolved hook per call.
@@ -2570,7 +2715,7 @@ All three pass the same conformance suite. Designing the interface against three
 
 | Area | Decision | Status |
 |---|---|---|
-| Language | Go 1.26+ | Settled |
+| Language | Go 1.27.1+ | Settled; Bifrost context-aware transport requires Go 1.27 |
 | Module path | `github.com/hurtener/Harbor` | Settled |
 | License | **Apache-2.0** (MIT acceptable; see License subsection) | Settled |
 | Build | `CGO_ENABLED=0`, static binary, `-ldflags='-s -w'` | Settled |

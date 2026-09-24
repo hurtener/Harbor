@@ -1208,7 +1208,6 @@ var memoryDriversRequiringDSN = map[string]struct{}{
 // validation rather than later at memory.Open — fail fast.
 var allowedMemoryStrategies = map[string]struct{}{
 	"none":            {},
-	"truncation":      {},
 	"rolling_summary": {},
 }
 
@@ -1230,16 +1229,12 @@ var allowedEmbeddingsDrivers = map[string]struct{}{
 
 // validateEmbeddings validates the optional `embeddings:` block and
 // the cross-block invariant that backs the semantic-retrieval
-// modes: enabling `memory.retrieval: semantic` or
-// `skills.retrieval: semantic` REQUIRES a configured embeddings
+// mode: enabling `skills.retrieval: semantic` REQUIRES a configured embeddings
 // block. The error names the missing key and points at the example
 // config so the boot failure is actionable — a semantic mode never
 // silently degrades to non-semantic retrieval (AGENTS.md §13).
 func (c *Config) validateEmbeddings() error {
 	semanticConsumers := make([]string, 0, 2)
-	if c.Memory.Retrieval == "semantic" {
-		semanticConsumers = append(semanticConsumers, "memory.retrieval")
-	}
 	if c.Skills.Retrieval == "semantic" {
 		semanticConsumers = append(semanticConsumers, "skills.retrieval")
 	}
@@ -1307,22 +1302,24 @@ func (c *Config) validateMemory() error {
 	if c.Memory.BudgetTokens < 0 {
 		return fieldError("memory.budget_tokens", "must be >= 0")
 	}
-	if c.Memory.RecoveryBacklogMax < 0 {
-		return fieldError("memory.recovery_backlog_max", "must be >= 0")
+	if c.Memory.Summarizer.MaxTokens < 0 {
+		return fieldError("memory.summarizer.max_tokens", "must be >= 0")
+	}
+	if c.Memory.Summarizer.MaxCalls < 0 {
+		return fieldError("memory.summarizer.max_calls", "must be >= 0")
+	}
+	if route := c.Memory.Summarizer.ProviderRoute; route != nil {
+		if strings.TrimSpace(route.RouteID) == "" || strings.TrimSpace(route.ProviderConnectionID) == "" ||
+			strings.TrimSpace(route.ModelSelector) == "" || route.RouteGeneration == 0 ||
+			route.ProviderConnectionGeneration == 0 || route.CredentialAssetGeneration == 0 {
+			return fieldError("memory.summarizer.provider_route", "requires opaque route/connection IDs, positive generations and a model selector")
+		}
+		if c.Memory.Summarizer.Model != "" {
+			return fieldError("memory.summarizer.model", "must be omitted when provider_route selects the compaction model")
+		}
 	}
 	if c.Memory.RecentTurns < 0 {
-		return fieldError("memory.recent_turns", "must be >= 0")
-	}
-	if _, ok := allowedRetrievalModes[c.Memory.Retrieval]; !ok {
-		return fieldError("memory.retrieval",
-			fmt.Sprintf("must be empty or %q, got %q", "semantic", c.Memory.Retrieval))
-	}
-	if c.Memory.RetrievalTopK < 0 {
-		return fieldError("memory.retrieval_top_k", "must be >= 0")
-	}
-	if c.Memory.RetrievalMinScore < -1 || c.Memory.RetrievalMinScore > 1 {
-		return fieldError("memory.retrieval_min_score",
-			fmt.Sprintf("must be in [-1, 1], got %g", c.Memory.RetrievalMinScore))
+		return fieldError("memory.recent_turns", "must be >= 0 (zero selects 20)")
 	}
 	return nil
 }
@@ -2825,11 +2822,6 @@ func (c *Config) validatePlanner() error {
 			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 5), got %d",
 				c.Planner.MaxBatchSpawns))
 	}
-	if c.Planner.TokenBudget < 0 {
-		return fieldError("planner.token_budget",
-			fmt.Sprintf("must be >= 0 (0 = trajectory compression disabled), got %d",
-				c.Planner.TokenBudget))
-	}
 	return nil
 }
 
@@ -2997,7 +2989,9 @@ var nativeBifrostProviders = map[string]struct{}{
 	"perplexity":     {},
 	"cerebras":       {},
 	"deepseek":       {},
+	"databricks":     {},
 	"gemini":         {},
+	"github-copilot": {},
 	"openrouter":     {},
 	"elevenlabs":     {},
 	"huggingface":    {},

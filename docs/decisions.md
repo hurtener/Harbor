@@ -5085,7 +5085,7 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 
 **Date:** 2026-06-11
 
-**Status:** Settled (shipping with Phase 84d)
+**Status:** Memory retrieval superseded by D-477; embedding client and skill retrieval remain settled.
 
 **Where it lives:** `internal/embeddings/` (the `Embedder` interface + sentinel errors + `Cosine` + the registry/factory `Open(ctx, cfg, deps)` with the identity-mandatory guard wrapper + `SnapshotFromConfig`); `internal/embeddings/drivers/bifrost/` (the production driver over the gateway's embedding surface, with the `HARBOR_LIVE_LLM`-gated conformance probe); `internal/embeddings/embeddingstest/` (the deterministic test-grade embedder — never registered, never a default); `internal/memory/` (`RetrievalMode` + `Deps.Embedder` + the registry guard + `MemoryStore.SearchTurns` + `ErrSemanticDisabled`; `internal/memory/strategy/semantic.go` — the wrapper executor + the `memory.vectors` StateStore record; the conformance suite's semantic cases, passed by all three drivers); `internal/skills/` (`RetrievalMode` + `Deps.Embedder` + the registry guard + `PathSemantic`; `internal/skills/drivers/localdb/search_semantic.go`); `internal/config/` (the `embeddings` block + `memory.retrieval`/`retrieval_top_k` + `skills.retrieval` + `validateEmbeddings`'s cross-block rule); `internal/runtime/assemble/` (`Stack.Embedder` + `Options.Embedder` + the Deps threading); `internal/drivers/prod` (the driver's blank import); `sdk/embeddings` + the `sdk/memory`/`sdk/skills` additions; `docs/recipes/embed-and-retrieve.md` (+ the docs-site stub/nav); `test/integration/phase84d_semantic_retrieval_test.go`; RFC §6.5 (the D-191 contract sentence), §6.6, §6.7.
 
@@ -5110,7 +5110,7 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 
 **Date:** 2026-06-12
 
-**Status:** Settled (shipping with Phase 84e)
+**Status:** Superseded by D-477; native session-memory semantic recall is removed.
 
 **Where it lives:** `internal/runtime/runctx/memory_fetch.go` (`FetchMemoryBlocks` + `capText`); `internal/memory/from_config.go` (`RecallSettings` + `RecallFromConfig`); `internal/config/config.go` (`RetrievalMinScore` field on `MemoryConfig`); `internal/config/validate.go` (`validateMemory` range check); `cmd/harbor/cmd_dev_runloop.go` (collapsed to thin `FetchMemoryBlocks` call + `memoryRecall` field); `cmd/harbor/cmd_dev.go` (`RecallFromConfig` projection into opts); `harbortest/devstack/devstack.go` (D-094 mirror collapsed, same pattern); `internal/runtime/runctx/memory_fetch_test.go` (unit + concurrent-reuse + fail-loud suite); `test/integration/phase84e_semantic_recall_test.go` (E2E acceptance); `scripts/smoke/phase-84e.sh` (real assertions); `docs/CONFIG.md` / `examples/harbor.yaml` / `cmd/harbor/init/templates/default/harbor.yaml.tmpl` (new field documented); `docs/glossary.md` (`Semantic recall` term); `docs/skills/configure-memory-and-skills/SKILL.md` (§18 sweep).
 
@@ -15431,3 +15431,644 @@ provider-route capability validation and governance remain enforced. An empty
 reasoning value explicitly requests provider defaults; `off` disables thinking.
 The runtime advertises `run_llm_settings_v1`. Omitted bundles preserve legacy
 behavior. The Protocol version remains `0.1.0`.
+
+## D-462 — Portable compaction covers a prefix, not subsequent activity
+
+**Date:** 2026-09-18. **Scope:** RFC 002, phase 268; incremental implementation.
+
+A summary carries a runtime-owned version, generation, exclusive step boundary,
+and canonical source-prefix digest. ReAct renders that summary and the uncovered
+suffix. Complete recent exchanges and fresh queued outcomes are protected.
+Repeated compaction incorporates the previous narrative and newly eligible older
+exchanges; it does not resummarize archived raw duplicates. Failed, vacuous,
+cancelled, or stale candidates leave the previous checkpoint unchanged.
+
+This supersedes D-055/D-202 only where they prescribe one compression per run or
+suppress all step replay after a summary exists. Existing identity, artifact,
+consumer-turn, pause, and observability authority remain intact. Long-term memory
+stays external, and compaction uses the governed ordinary Bifrost-backed client.
+The phase plan records unimplemented budget/summarizer acceptance explicitly.
+
+## D-463 — Bounded chronological portable summarization
+
+Date: 2026-09-18. Status: accepted for incremental implementation in phase 268.
+
+The production trajectory summarizer processes the selected prefix in bounded
+chronological chunks, carrying prior narrative forward. It never silently skips
+earlier exchanges or byte-clips exact result metadata. An indivisible exchange
+that cannot fit needs an authorized bounded reference or fails explicitly.
+Maintenance is limited to 16 completions; each defaults to 2,048 output tokens,
+with a separate 16 KiB narrative ceiling bounded further by the input allowance.
+All completions use the existing LLM client. Native compaction remains excluded.
+
+Checkpoint coverage stays runtime-owned. Portable output is validated locally
+regardless of native JSON-schema support, and known length/non-stop completions
+are rejected even when the body parses. Bifrost choice-zero finish reasons are
+preserved for both unary and streaming output; absent metadata is not a claimed
+successful stop. Narrative validation proves shape, not semantic completeness.
+The previous checkpoint remains unchanged on any failed chunk.
+
+This supersedes phase 111e's fragment-capping and oldest-step-elision policy, not
+its governed-client, identity, or fail-loud boundaries. Full assembled-request
+capacity and authorized maintenance grant identities remain unfinished phase
+268 acceptance criteria; no durable cross-turn or RC completion is implied.
+
+## D-464 — Bounded retained execution context is an explicit opt-in
+
+**Status:** Activation and count-eviction semantics superseded by D-477;
+identity, journal and execution-safety invariants remain binding.
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Embedded `RunOnce` calls may explicitly select `WithRetainedContext(1..32)`.
+Zero/omitted retains existing memory semantics and does not authorize richer
+persistence. The first consumer replaces legacy pair-only projection for that
+invocation with a bounded private execution window in the existing StateStore.
+Long-term memory stays external; completion ingestion hooks are not changed.
+
+Admission freezes prior terminal root context and uses the existing session
+pending/tombstone fences plus generation-conditional writes. In-flight sibling
+results are not imported. Own terminal evidence is redacted before persistence;
+raw diagnostic duplicates, reasoning traces, and live tool handles are excluded.
+Exact JSON numeric values and permitted source strings remain recoverable inside
+the retained window. Imported history is inert evidence, not execution authority,
+and is excluded from recursive retention and completion-hook ingestion.
+
+The initial bounds are 32 turns, 256 own steps per turn, 512 KiB per session slot,
+32 active admissions, and 32 conditional-write attempts. TTL follows the configured
+session idle TTL (24 hours when unspecified). Whole-turn expiry/eviction produces
+a partial-history notice; an indivisible oversized turn fails, never clips.
+Freezing membership does not extend source lifetime: expiry is checked before
+inference and before accepting its action. Erasure invalidates admission and
+prevents a stale terminal callback from resurrecting its content.
+
+This is explicitly the terminal-retention increment, not the complete RFC 002
+durability contract. Required writes can fail after external effects succeeded;
+the caller must reconcile instead of retrying blindly. Abandoned admissions
+remain uncertain and bounded, not automatically declared failed. Serve wiring,
+per-action intent/settlement persistence, historical native projection/checkpoint
+reuse, artifact recovery, and complete cross-driver acceptance remain pending.
+Consumer turn rows and best-effort observability retain their separate authority.
+No new backend, public transcript, native compaction, or cold-run relaunch.
+
+## D-465 — One explicit retained-context setting for serving and embedding
+
+**Status:** Superseded by D-477. The separate configuration/SDK activation is removed.
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; terminal-retention increment.
+
+`sessions.retained_context_turns` (0..32, default zero, restart-required) selects
+the existing private StateStore window for served root conversations and embedded
+RunOnce calls. The per-call `WithRetainedContext` option overrides it, including
+zero to disable. No second retention engine or new public transcript is added.
+Both consumers share admission, redaction, exact-evidence projection, conditional
+terminal persistence and erasure/expiry checks. A required retention failure
+cannot be reported as a completed served task.
+
+Server admission follows the existing agent, route and tool-catalog resolution.
+Child tasks do not inherit root history or publish their private transcripts to
+it. In the enabled mode, legacy pair-only conversation memory is not projected or
+written a second time; explicit caller-supplied context and the trusted completion
+hook remain unchanged. The hook's terminal boundary is not a retention receipt.
+
+This extends D-464's embedded consumer; it does not declare full phase completion.
+Per-action intent/settlement durability, safely fenced interrupted-prefix reuse,
+historical native projection/checkpoint reuse, and authorized artifact recovery
+remain separate acceptance work. No automatic external-action retry is added.
+
+## D-466 — Required dispatch checkpoints for retained execution
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Retained served roots and embedded runs persist the query before inference and
+require intent/settlement at the runtime dispatch boundary. One run-scoped head
+and one bounded action frame are written atomically through existing
+`StateStore.SaveBatchIf`; preceding frames are not rewritten per tool call.
+Generation predicates include the session admission and erasure fences.
+An uncommitted outcome is unknown, not a failed external write or retry license.
+
+A required persistence failure terminates the run, never becomes planner-visible
+tool feedback inviting another action. Returned results survive cancellation
+through a bounded post-execution write before dependent inference and dispatch
+counters. Parallel branches settle as one complete exchange. The first
+increment journals dispatch boundaries, not every streamed token or thought.
+
+Terminal window publication seals the journal in the same transaction; bounded
+exact-generation cleanup removes transient run records afterward. Errors remain
+explicit. Existing opt-in/default semantics, consumer-turn privacy, external
+memory hooks, and provider-neutral compaction remain unchanged.
+
+This extends the terminal-only increments of D-464/D-465. It does not authorize
+automatic cold-run relaunch or replay of an interrupted write. Explicit
+reconciliation and safe interrupted-prefix continuation remain pending, along
+with historical native projection and large-result recovery.
+
+## D-467 — Native projection of non-executable retained exchanges
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Retain the concrete kind of a permitted completed exchange in a versioned
+historical envelope before JSON erases action types. The outer historical step
+has no dispatchable action or new-run completion-hook preamble. ReAct interprets
+the closed kind set only in a local rendering copy, reusing live native pairing,
+failure and aggregate rendering. This never authorizes historical execution.
+
+Stable source-run/ordinal/branch IDs use a shared provider-safe alphabet while
+original IDs remain in retained evidence. Exact source strings, numeric lexemes
+and completeness values survive; JSON envelope formatting may canonicalize.
+Failed arguments are removed before retention, not merely before native replay,
+so later summarization cannot reintroduce them.
+
+Retained windows use version 2. Version 1 remains readable as inert evidence;
+old readers reject version 2. The run dispatch journal keeps its own version 1.
+Unknown or malformed native history fails closed. Prior-run checkpoint reuse,
+interrupted-prefix reconciliation and authorized result recovery remain separate
+acceptance work. No long-term memory or provider-native compaction is added.
+
+## D-468 — Retained tool discovery uses current catalog authority
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+Request preparation derives at most 128 recent unique historical tool names
+from validated retained native exchanges: canonical invoked identities and
+single/parallel/batch discovery results. Current-run discovery remains separate.
+No new registry or retained schema is introduced. The existing current catalog
+projection resolves names, schemas, exclusions and scope requirements anew;
+missing names are not guessed or fuzzy-dispatched. An evicted discovery may
+require another explicit search, but its execution evidence is not deleted.
+
+`PlannerView.Resolve` enforces the same visibility predicate as List except for
+loading mode: a deferred tool can be discovered, but naming a tool never bypasses
+its required scopes. Source/agent exclusion wrappers keep their existing checks.
+Historical action decoding remains local to request preparation; discovery does
+not return a Decision, queue actions or invoke tools. Unrecognized legacy action
+shapes remain inert rather than being inferred from arbitrary tool output.
+
+This extends D-467 without changing the retained window format, external-memory
+hooks, provider requirements or default retention behavior. Cross-turn checkpoint
+reuse, interrupted-prefix reconciliation and large-result recovery remain pending.
+
+## D-469 — Reuse only source-bound retained checkpoints
+
+**Status:** Superseded by D-477. Committed cumulative coverage replaces the
+requirement to retain every covered source turn; erasure/expiry remain binding.
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+The existing bounded session window may carry one portable narrative checkpoint.
+Its coverage is translated from the live trajectory to the canonical retained
+exchange prefix, with exact admission identities and a digest of every source
+turn (including the summarizer's current query). A subsequent run verifies that
+prefix and binds coverage to its own trajectory without another model call.
+Newer exchanges and the new user request stay outside the covered range.
+
+Retained windows advance to version 3. Versions 1 and 2 without checkpoints remain
+readable; older readers reject version 3 rather than guessing coverage. Retention
+and erasure are unchanged: source expiry or eviction discards derived summaries,
+not the remaining exact evidence. Frozen views still honor their original expiry.
+A source digest mismatch or invalid checkpoint fails before a new admission.
+
+Narrative redaction uses the existing audit boundary. Changes to covered evidence
+through redaction or failed-argument scrubbing prevent checkpoint reuse. A fresh
+summary cannot claim a concurrent sibling it never observed, and transient active
+run notices are never carried forward as a generated status assertion. A valid
+existing checkpoint can still cover its original prefix with later sibling turns
+left outside it. No additional inference, store, registry, default, or provider
+API is introduced. Interrupted-prefix reconciliation and result recovery remain
+separate unfinished acceptance work.
+
+## D-470 — Explicitly reconcile settled retained journals
+
+**Date:** 2026-09-19. **Scope:** RFC 002, phase 269; incremental implementation.
+
+An explicitly authorized embedded caller may reconcile a retained run by its
+full tenant/user/session/run identity through `Stack.ReconcileRetainedContext`.
+The existing journal must be fully settled and unexpired. Its exact generation
+is sealed atomically with publication of interrupted evidence and removal of
+the old admission. Competing dispatch either commits its pending intent first,
+preventing reconciliation, or loses the admission fence and cannot invoke a tool.
+No model, tool, completion hook, or cold-run relaunch is performed by recovery.
+
+A pending intent is an unknown external outcome and returns
+`ErrRetainedContextUnsettled`; it is never converted to a failed/retryable action.
+Reconciliation requires runtime-level retained context to be enabled and never
+extends source expiry. Exact committed evidence is recovered as inert history;
+untagged journal actions do not acquire guessed native types. Missing/corrupt
+frames, erasure, changed generations, redaction failure, and inability to retain
+the selected source fail explicitly. Successfully sealed context is idempotent
+while retained; exact-generation cleanup can be retried without another action.
+A concurrent reader may receive unavailable state and retry reconciliation, not
+execution. A cleanup error does not undo the sealed outcome or admission fence.
+
+The operation does not cancel a provider request already in flight. Existing
+post-decision admission checks prevent its later dispatch after the fence.
+The first consumer is the embedding API; a served Protocol reconciliation
+operation remains separate acceptance work. No storage format, default
+retention, provider dependency, or automatic recovery behavior changes.
+
+## D-471 — Own-session Protocol context reconciliation
+
+**Scope:** RFC 002, phase 269; incremental implementation, not released.
+
+`sessions.reconcile_context` is an explicit own-session mutation backed by the
+same settled-journal reconciliation primitive as embedded runs. The verified
+identity supplies tenant, user and session; the only target selector is the
+source run ID. Admin or fleet claims do not widen this operation. Retention must
+already be enabled; the method does not enable it or extend source expiration.
+
+The response acknowledges sealed evidence, not execution success, and exposes
+no journal or tool data. Pending external effects return
+`retained_context_unsettled` (409); missing, expired, erased or invalid evidence
+returns `retained_context_unavailable` (409). Required persistence failures are
+errors. Repeated calls converge without reexecuting tools, inference or hooks.
+Existing admission checks fence subsequent dispatch from the old run; a model
+request already in flight is not cancelled by this operation.
+
+The typed Go Protocol client and generated wire/reference surfaces consume the
+method. No new recovery service, Console page, provider API, or configuration
+switch is introduced. This completes D-470's served consumer, not the remaining
+large-result, attachment/steering, Postgres or release acceptance criteria.
+
+## D-472 — Recover retained offloaded results through existing artifact reads
+
+**Scope:** RFC 002, phase 269; incremental implementation, not released.
+
+The retained-run guard resolves existing dispatcher offload envelopes into a
+bounded metadata-only reference projection on every decision. References remain
+visible even when their source exchanges are covered by a narrative checkpoint.
+The guard reads only referenced IDs in the verified tenant/user/session scope;
+no whole-session listing or new persistent reference registry is introduced.
+Only existing structured offload envelopes are recognized, not model-generated
+summary prose, tool arguments, or guessed domain fields.
+
+The existing `artifact_fetch` tool supplies bounded exact bytes through normal
+catalog authorization and dispatch. It must be enabled when an agent needs
+retrieval. Recovery never reexecutes the original operation. A reference is not
+proof of an external resource's current version or the success of a later edit.
+The projection is capped at 64 unique references and 16 KiB of metadata; scanning
+is bounded by the retained-window plus current-run byte allowance. Overflows
+fail explicitly, never silently discard references.
+
+Both embedded and served retained consumers resolve through their private
+ArtifactStore dependency. The planner receives metadata, not a new unscoped
+store. Missing/deleted references or foreign returned metadata fail before
+inference, and reference checks after inference fence dependent dispatch when
+source deletion occurred during a model call. Already in-flight requests cannot
+be retracted. Retained source expiration continues to use the existing admission
+checks; no independent artifact TTL is invented.
+
+## D-473 — Persist applied steering as non-executable execution context
+
+**Scope:** RFC 002, phase 269; incremental implementation, not released.
+
+Retained runs record accepted USER_MESSAGE, REDIRECT and INJECT_CONTEXT content
+through the same bounded run journal as dispatch intent and settlement. A
+context-only frame is tagged, settled, and contains no action. The existing
+DispatchCheckpoint seam adds RecordContext; no alternate storage or control
+subsystem is introduced. A required write precedes publication of the live
+observation and any subsequent inference. The inspector lock protects only the
+append, not persistence I/O. Context frames consume the bounded journal allowance
+but do not advance the model-step/tranche counter.
+
+The normal live control projection remains unchanged. Historical content is
+inert evidence, never an executable control, authority claim, or replacement for
+the new user's goal. Only relevant message/goal fields or injected context are
+captured; approval tokens, resume/cancel/priority actions, caller scopes, and
+unrelated payload fields are not copied. Persistence redacts content and applies
+the same private-field validation as other retained evidence. Malformed or failed
+context writes stop the run; they do not authorize a tool retry.
+
+Settled-journal reconciliation restores tagged context frames without invoking
+models, tools, or controls. An action/tag mismatch is unavailable rather than
+guessed. Old action-only frames remain readable; old readers that do not know
+the context-frame field reject it instead of dropping it. Cross-turn retention,
+source expiry, erasure, summary coverage and current-catalog rules remain those
+of the existing retained window. No configuration/default change is introduced.
+
+## D-474 — Retain attachment identity without copying input bytes
+
+**Date:** 2026-09-19. **Status:** Accepted for the RFC 002 implementation.
+
+Retained runs associate supplied input references with their user turn using one
+context-only frame in the existing journal. Query and initial attachment frame
+commit atomically before inference. The frame carries bounded IDs, never input
+bytes, provider payloads, or a claim that an image was inspected. It uses the
+explicit context-frame tag from D-473; journal version 1 and retained-window
+version 3 stay unchanged.
+
+Both retained consumers require every requested input to appear in the resolved
+view rather than silently accepting the legacy materializer's omissions. The
+non-retained best-effort policy is unchanged. Existing scoped ArtifactStore reads
+supply current metadata before inference and dependent dispatch, including for
+input entries whose bodies are covered by a checkpoint. Missing/deleted inputs,
+foreign driver metadata, malformed IDs and bounded-reference overflow are errors.
+Nested tool output and injected content are not promoted to host attachment IDs.
+
+The existing artifact tools recover permitted source bytes when needed; references
+do not prove visual understanding, freshness of an external resource, or that a
+particular model supports a MIME type. First-turn inline disposition remains with
+the existing materializer. Retention neither duplicates binary uploads nor extends
+their lifetime. Input references share the current result-reference and metadata
+bounds, session expiry, erasure handling, and exact journal cleanup.
+
+Regressions reproduced a missing attachment after compaction, a deleted input
+allowing dependent work, and an omitted missing input reaching inference. Tests
+cover actual embedded/served requests, exact artifact retrieval, in-memory/SQLite
+reconciliation, atomic start failure, no binary persistence and 128 scoped reads.
+Full provider-quality, Postgres and release acceptance remain separate gates.
+
+## D-475 — Keep usage availability distinct from zero and estimates
+
+**Scope:** RFC 002 diagnostics; incremental implementation, not released.
+
+Normalized usage/cost objects expose additive presence flags, and Harbor's optional
+backfill exposes an estimate flag. Legacy records without flags have unknown
+provenance. Present zero reports must not be replaced by estimated token/cost
+values. Existing cost events carry this metadata without a new accounting path,
+receipt format, dependency, or default configuration change.
+
+The pinned SDK discards individual cache-field presence. Prompt-detail container
+presence is not proof that a zero cache count was measured; it can represent other
+modalities only. Preserve this uncertainty rather than synthesizing cache hits,
+misses, cost savings, or a provider invoice. Sparse streaming updates retain
+previously received categories and do not sum cumulative token snapshots.
+
+## D-476 — Observe prepared request capacity without retaining prompt content
+
+**Scope:** RFC 002 diagnostics and RFC §6.5; incremental implementation, not released.
+
+The mandatory LLM leaf capacity check publishes `llm.context.prepared` through
+Harbor's existing bounded event pipeline. It reports the canonical input estimate
+partitioned into fixed structural categories, the resolved physical input/output
+bounds, message/tool counts, numeric attempt coordinates, and an optional detached
+runtime checkpoint/replay snapshot. Output reservations are not consumed input.
+The estimator is shared with admission; diagnostics do not retokenize independently
+or invent semantic section boundaries in custom prompts.
+
+The event is emitted for capacity-admissible and capacity-rejected requests after
+identity, authorization, structure, materialization and heavy-content checks.
+It is not a provider-success receipt, a billed-usage fact, or proof that any input
+was inspected. Earlier failures have no prepared event. Installed coverage is
+sampled after compaction publication; rejected candidates never become reported
+checkpoint state. Maintenance describes its own request and does not inherit the
+parent's working target or replay range.
+
+Apart from the existing scoped event identity and timestamp, payload fields are
+fixed-size counts, flags and coordinates. They include no prompt/response bytes,
+tool names/arguments/results, model/provider strings, source digests, arbitrary
+errors/extras, grants, credentials, call IDs or nonces. Existing routing and cost
+projections remain separate authorities. Best-effort diagnostics do not become
+execution persistence or a new public transcript. Provider caching remains an
+optional optimization; these estimates and structural checks claim neither cache
+hits nor billing savings. The generated Protocol event catalog exposes the same
+owned payload, with SDK aliases rather than another implementation.
+
+## D-477 — Cumulative session memory replaces bounded-window forgetting
+
+**Date:** 2026-09-23. **Scope:** RFC 002 / PR #779; accepted, implementation pending.
+**Supersedes:** D-464 activation/count-eviction semantics, D-465, D-469,
+the memory retrieval portion of D-191, and D-211's native semantic recall.
+
+The single public entry point is `memory`. Standard `rolling_summary` uses one
+cumulative checkpoint and a bounded recent execution tail (`recent_turns: 20`).
+The window limits detail, not the age of context carried by a checkpoint.
+`memory.strategy: none` explicitly disables it. Consolidate compaction under
+`memory.budget_tokens`, deriving an effective model-aware target when zero;
+output limits remain independent. Remove `sessions.retained_context_turns`,
+`WithRetainedContext`, `planner.token_budget` and the old pair-summary pipeline.
+Serving and embedding share the existing compactor, StateStore, ArtifactStore
+and dispatch journal. No compatibility layer, second memory engine or service.
+
+Native session-memory semantic indexing is removed, including `SearchTurns`,
+its SDK aliases, retrieval configuration and environment overrides. It is not
+adapted onto cumulative checkpoints or kept as a second history store. Existing
+stored vector rows are not migrated, read or deleted by this change; ordinary
+authorized session erasure remains responsible for clearing session data.
+The embedding client, semantic skill retrieval and caller-supplied external
+memory keep their separate contracts. Legacy pair-store retirement remains
+required; removing semantic retrieval alone does not finish consolidation.
+
+Freeze settled evidence, generate outside storage locks and the five-second
+persistence budget, validate, then conditionally commit against the unchanged
+generation/source/erasure state. Only that commit permits covered raw-detail
+cleanup. Committed generation/coverage replaces an ever-growing source-ID list.
+Preserve newer tails and frozen sibling admissions; no contiguous coverage may
+skip an unsettled earlier admission. Failed summarization/persistence preserves
+state; insufficient capacity fails explicitly instead of losing unsummarized work.
+Use the same compactor within runs and between turns, including grants/accounting.
+
+Session deletion, authorized erasure and retention expiry remain information
+removal. They fence active work and rebuild affected checkpoints from remaining
+authorized evidence, or explicitly invalidate them. Compaction/restart cannot
+renew retention; opaque prose cannot prove selective forgetting. Keep exact
+receipts/references in bounded runtime-owned metadata, revalidate current scope
+and lifetime, retain fresh results/errors, and never replay historical actions.
+Unknown external outcomes and required persistence failures keep their existing
+fail-closed recovery semantics. Old incompatible records are rejected, not guessed.
+
+Delivery: (1) contract plus failing real-request rollover regression; (2) atomic
+cumulative persistence and both runtime consumers; (3) complete refs/attachments,
+steering/recovery/diagnostics, legacy removal, SDK/examples and acceptance.
+The deterministic floor is 100 turns and at least five checkpoint generations,
+with a turn-1-only constraint still present after several complete windows,
+later corrections, failures, restart, concurrent siblings, erasure, expiry and
+model switches. Verify bounded storage/requests on all three StateStore drivers.
+Then test matched real UI agents across multiple windows; report summary loss
+honestly. No Stowage recall or repeated prompt may manufacture continuity.
+
+## D-478 — Hard Stop interrupts execution before the next step
+
+**Date:** 2026-09-23. **Scope:** PR #779 run control; partial implementation.
+**Amends:** D-280/D-289 terminal hook/naming behavior for accepted hard Stop only.
+
+Verified hard CANCEL owns a per-run cancellation handle published with the
+identity-scoped inbox. Admission interrupts the execution context immediately;
+one lock arbitrates cancellation against terminal completion. A late model
+success cannot resurrect an accepted cancellation. Queued tool dispatch checks
+cancellation; active tools/retries/waits receive the cancelled context. Join
+execution and preserve returned evidence, including errors and unknown outcomes.
+Use separate bounded five-second cleanup contexts for required persistence.
+
+Hard Stop does not start external completion-hook or naming calls. Other terminal
+outcomes retain their existing hook behavior. No new wire type, service or
+provider SDK. Control acknowledgement is not terminal confirmation: a client
+must await the authoritative task outcome and surface cancellation failures.
+An external side effect already completed cannot be undone; an independent job
+requires its own cancellation API.
+
+Bifrost 1.7.4 with fasthttp 1.74.0 closed established provider streams without
+the reproduced pooled-reader race, but failed the pre-response-header socket
+probe. The follow-up adopts official core 1.9.0's context-aware transport and
+Go 1.27.1: the same socket probe passes for streaming and unary requests, as does
+established-stream cancellation under the race detector. No local SDK fork,
+proxy, provider allowlist expansion or new plugin is introduced. Preserve
+Harbor's token-cost breakdown when adapting Bifrost's nested cost schema; all
+reported non-token charges remain in the authoritative total. In-flight steering,
+consumer queue lifecycle and live-provider acceptance remain pending.
+
+## D-479 — In-flight user corrections supersede the planning attempt
+
+**Date:** 2026-09-23. **Scope:** PR #779 run control; staged implementation.
+
+A verified nonempty USER_MESSAGE advances the run's instruction generation and
+interrupts its active planning attempt without cancelling the whole run. Drain
+and generation observation are atomic. A superseded decision cannot finish the
+run or enter execution; queued serial calls are invalidated before re-planning.
+Carry the current input attachments and already-applied signals across an
+interrupted attempt. Project the new correction as user input, never system
+guidance, and preserve its inert context through the existing memory owner.
+
+Decision admission and terminal completion arbitrate against corrections under
+the same per-run lock. If a durable intent was saved before admission lost the
+race, settle it as not executed rather than leaving an unknown external outcome.
+Use the existing five-second cleanup context. Preserve actual outcomes from
+already-started invocations. Required write/accounting failures, including errors
+joined with cancellation, remain terminal; steering is not a retry instruction.
+
+Reject late output from superseded attempts while preserving normal accepted
+callbacks through the existing terminal chunk seal. No new wire shape, store,
+provider SDK, system guidance, retry policy or production timeout.
+
+The first implementation fences whole-decision admission and serial pending
+calls. Complete per-invocation fencing for queued parallel branches and approval
+waits before declaring full steering acceptance. Text-only control validation
+and consumer pending/applied UX remain tracked with the live acceptance gates.
+
+**Implementation follow-through — 2026-09-23:** the existing invocation and
+tool-policy seams now carry the run generation's invalidation signal. Refuse
+queued calls and further retries, preserve earlier attempts' errors/receipts,
+and leave already-started calls running. The approval gate withdraws obsolete
+requests with a bounded independent Coordinator rejection; its wrapper checks
+again before invocation. Required withdrawal failures remain terminal after
+settlement, including inside parallel/batch decisions. First-success/N joins
+join cancelled siblings before returning and cannot hide required cleanup
+behind a successful branch. No new queue, store, provider or retry policy.
+
+**Text-only admission follow-through:** USER_MESSAGE accepts exactly one field,
+`message`, containing a nonempty string. Unsupported attachment/extra fields or
+invalid messages return the existing `payload_invalid` classification (HTTP 422)
+before queuing, cancelling a planning attempt or invalidating queued invocations.
+Valid source text is preserved exactly, including whitespace and numeric strings.
+New attachments belong on a new turn; they are never silently dropped.
+
+## D-480 — Token-governed compaction is independent of evidence storage size
+
+**Date:** 2026-09-23. **Scope:** PR #779; owner-directed correction.
+**Supersedes:** D-464's 512 KiB session-slot and journal capacity.
+
+Remove the fixed 512 KiB retained-evidence ceiling, not replace it with a larger
+hidden byte cap. Exact settled evidence, context updates, administrative notes,
+historical envelopes and authorized reference projection may exceed that size.
+The same StateStore remains authoritative; no new store or transcript is added.
+Token compaction reduces model input, not the size of preserved exact evidence.
+
+Operators choose the working-input target in `memory.budget_tokens` in YAML;
+there is no framework-specific 64,000-token constant. The effective model's
+physical capacity, protected fresh results and governed maintenance still apply.
+Keep lifetime, count, identity, redaction, generation/erasure and unknown-outcome
+fences, exact journal accounting and the five-second persistence deadlines.
+Schema/transport bounds are separate and are not removed by this decision.
+
+At this increment memory configuration is restart-required. Administrative
+Protocol memory configuration and separately authorized compaction model routing
+remain unimplemented; setting a different summarizer model on a bound external
+route must not bypass that route's authorization or silently use another key.
+
+## D-481 — Versioned next-run working-input budget
+
+**Date:** 2026-09-23. **Scope:** PR #779; operator configuration.
+**Extends:** D-480's YAML working-input budget with a served admin override.
+
+The optional agent-config `memory.budget_tokens` section projects the existing
+budget at run start. Absent inherits YAML, explicit zero selects automatic
+model sizing, positive values supply the working-input target. No fixed
+deployment token constant is added. The same revision, CAS, diff and rollback
+surface owns the value; there is no second memory engine or config store.
+
+Only runtimes with a served compactor and agent-config service advertise
+`agent_config_memory_v1`. Unsupported or negative edits fail before persistence;
+invalid stored configuration fails the next run loudly. Other section writers
+carry the budget forward. In-flight runs retain their copied budget. Embedded
+callers keep the existing YAML/configuration-object path.
+
+This supersedes only D-480's interim restart-required budget limitation.
+Independent authorized maintenance-model routing remains separate and pending.
+
+## D-482 — Independently authorized compaction model route
+
+**Date:** 2026-09-23. **Scope:** PR #779; operator configuration.
+**Extends:** D-480 and D-481 with independent maintenance routing.
+
+The optional boot YAML `memory.summarizer.provider_route` pins the existing six
+opaque selector fields, mutually exclusive with the static `summarizer.model`.
+For externally routed runs it substitutes only that selector in the trusted run
+context. Runtime, effective agent, task and verified tenant/user/session/run
+identity remain unchanged. The existing external resolver must authorize the
+new model and return a current profile. No new resolver protocol, provider SDK,
+credential store, persistence layer or consumer-specific model name is added.
+
+Preparation selects credential-free model metadata to pack each chronological
+chunk. The same governed client rechecks selection at the actual call; its
+Bifrost leaf resolves fresh credentials per attempt. Maintenance keeps its
+separate accounting invocation and cancellation. It uses the independent model's
+capacity and a clamped summary output allowance, without inheriting the driving
+model's reasoning effort or output reservation. Missing admission, missing
+profile, stale or revoked selectors and supplied signed grants fail closed.
+Static-model runs retain the existing model-profile configuration path.
+
+This extends only the earlier independent-route limitation. The route itself
+remains restart-required; the admin memory section edits only the input budget.
+
+## D-483 — Failed compaction must not prevent settled terminal persistence
+
+**Date:** 2026-09-23. **Scope:** PR #779; recovery and configurable summary output.
+**Supersedes:** D-463's fixed 16 KiB narrative capacity and count rollover as a
+precondition for committing an interrupted/cancelled, fully settled run.
+
+When maintenance fails at a full recent-detail window, preserve the interrupted
+or cancelled terminal turn and unsummarized overflow. Otherwise the failed
+terminal write leaves an active admission that blocks future checkpoint
+publication, including explicit recovery of the same fully settled journal.
+The next successful compaction must cover the preserved history before normal
+rollover resumes. No historical evidence authorizes execution, pending external
+outcomes remain unknown, and explicit recovery neither renews expiry nor bypasses
+redaction, identity, generation/erasure fences or conditional terminal writes.
+Prolonged maintenance failure may grow the interrupted tail within its existing
+lifetime; the recent-turn target is not a total storage cap in this condition.
+
+Valid summary output and persisted narratives have no additional fixed 16 KiB
+ceiling. The operator's existing completion-token allowance, governed model
+capacity and strict schema/completion validation apply. Prior narratives remain
+subject to configured byte and token admission when placed in the next request.
+This does not remove step, reference, concurrency or maintenance-call limits,
+change the public Protocol, add a store, or relax persistence deadlines.
+
+## D-484 — Keep continuity limits on their governing policies
+
+**Date:** 2026-09-23. **Scope:** PR #779; owner-approved hardcoded-limit audit.
+**Supersedes:** D-480/D-483's retained aggregate count/metadata ceilings and
+D-463's non-configurable maintenance-call allowance.
+
+Remove the 256 accumulated-evidence-entry, 64 retained-reference and 16 KiB
+reference-manifest caps. Remove the 256-step retention/journal cap: existing
+configured execution steps and continuable tranches govern work, including
+multiple continuations of one run. `memory.recent_turns` keeps its default of
+20 but no hardcoded maximum of 32. Retention does not silently delete source
+evidence to satisfy any of these former ceilings. TTL, erasure, identity,
+redaction, schema, generation, pending-outcome, recursion-depth, concurrency and
+five-second persistence guards remain. Storage/processing costs can still grow
+with retained evidence; there is no promise of infinite physical capacity.
+
+The existing assembled-request admission accounts for reference metadata as
+model input. Removing its storage/projection byte ceiling does not authorize
+over-capacity model requests, shorten source strings or create a second store.
+The separate configured heavy-content guard is preserved.
+
+`memory.summarizer.max_calls` (environment: `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS`)
+is restart-required, non-negative, with zero/omitted resolving to 16 calls per
+compaction. Positive values are operator-selected work allowances, not new retry
+budgets. Exhaustion fails before candidate publication. Maintenance identity
+derivation accepts canonical positive ordinals instead of embedding the old
+default in receipt validation; deterministic nonce, parent, identity, route and
+governance checks remain. Older receipt consumers need an upgrade before a
+deployment selects more than sixteen calls. No wire-field change is introduced.

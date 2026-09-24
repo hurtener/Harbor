@@ -33,6 +33,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
@@ -153,7 +154,7 @@ func WithInputArtifacts(ids ...string) RunOption {
 // Streaming posture (composes with WithStream): tool_dispatched and step
 // events stream exactly as today, but ALL token chunks — content AND
 // reasoning — are SUPPRESSED for a schema-constrained run: a validate-
-// and-retry loop cannot retract tokens already streamed, so the
+// and-retry loop cannot retract tokens already-streamed, so the
 // validated answer arrives once, in the envelope. This is a documented
 // behaviour choice, deliberately more conservative than raw-JSON delta
 // streaming. Each corrective retry/downgrade attempt the schema
@@ -192,7 +193,7 @@ func WithCompletionHook(spec *steering.CompletionHookSpec) RunOption {
 }
 
 // RunOnce drives goal through the assembled planner/run-loop under the
-// mandatory identity triple and returns the terminal answer envelope.
+// mandatory identity triple and returns a terminal answer envelope.
 // It BLOCKS until the run reaches a terminal Finish (or errors). One
 // call replaces the hand-built RunContext + RunSpec + RunLoop.Run +
 // envelope-extraction ceremony an embedder previously wrote per run.
@@ -225,7 +226,7 @@ func (s *Stack) RunOnce(
 	goal string,
 	id identity.Identity,
 	opts ...RunOption,
-) (planner.AnswerEnvelope, error) {
+) (answer planner.AnswerEnvelope, retErr error) {
 	// Runnable posture FIRST: a zero-value or nil-config non-runnable
 	// stack (no RunLoop / no Planner) returns the typed ErrNotRunnable —
 	// never a panic on an absent Cfg. Only a RUNNABLE stack's
@@ -254,8 +255,18 @@ func (s *Stack) RunOnce(
 	}
 
 	var cfg runOnceConfig
+	var memoryTurns int
+	if s.Cfg != nil {
+		if err := memory.ValidateStrategy(memory.Strategy(s.Cfg.Memory.Strategy)); err != nil {
+			return planner.AnswerEnvelope{}, fmt.Errorf("assemble memory: %w", err)
+		}
+		memoryTurns = s.Cfg.Memory.RecentTurnsResolved()
+	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if memoryTurns < 0 {
+		return planner.AnswerEnvelope{}, sessionmemory.ErrRetainedContextCapacity
 	}
 	// WithOutputSchema fails loud on a nil/empty schema at call time — a
 	// set-but-empty schema is a config mistake, never a silent no-op.
@@ -292,20 +303,60 @@ func (s *Stack) RunOnce(
 		skillsDir = sd
 	}
 
+	var retained *sessionmemory.RetainedRun
+	if memoryTurns > 0 {
+		ttl := s.Cfg.Sessions.IdleTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		retained, err = sessionmemory.BeginRetainedRun(runCtx, s.State, s.Redactor, q, memoryTurns, ttl, nil)
+		if err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
+	}
+	var retainedTrajectory *planner.Trajectory
+	retainedStatus, retainedAnswer := "interrupted", ""
+	defer func() {
+		if retained == nil {
+			return
+		}
+		if retainedTrajectory == nil {
+			retainedTrajectory = &planner.Trajectory{}
+		}
+		// A cancelled execution has already returned; its observed outcomes
+		// still need a bounded terminal write. No tool is retried here.
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
+		defer cancel()
+		if persistErr := retained.Finish(persistCtx, retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
+			retErr = errors.Join(retErr, persistErr)
+		}
+	}()
+
 	base, err := runctx.NewRunContext(runCtx, runctx.Sources{
-		Memory:          s.Memory,
-		MemoryRecall:    memory.RecallFromConfig(s.Cfg.Memory),
 		SkillsDirectory: skillsDir,
 		Catalog:         s.Catalog,
 		Artifacts:       s.Artifacts,
 		Bus:             s.Bus,
 		Logger:          logger,
 		GrantedScopes:   s.Cfg.Tools.GrantedScopes,
-		Budget:          planner.Budget{TokenBudget: s.Cfg.Planner.TokenBudget},
+		Budget:          planner.Budget{TokenBudget: s.Cfg.Memory.BudgetTokens},
 		OutputSchema:    cfg.outputSchema,
 	}, q, goal, runctx.WithInputArtifacts(cfg.inputArtifactIDs...))
 	if err != nil {
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce: %w", err)
+	}
+
+	retainedTrajectory = base.Trajectory
+	if retained != nil {
+		if err := sessionmemory.ValidateRetainedInputs(cfg.inputArtifactIDs, base.InputArtifacts); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
+		if err := retained.Apply(&base); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
+		if err := retained.Start(runCtx, base); err != nil {
+			return planner.AnswerEnvelope{}, err
+		}
 	}
 
 	// Streaming sink wiring. WithStream rides the SAME blocking RunOnce
@@ -356,8 +407,12 @@ func (s *Stack) RunOnce(
 		completionHook = projection.RunCompletionHookFromConfig(s.Cfg.Runtime.Hooks.RunCompletion)
 	}
 
+	runPlanner := s.Planner
+	if retained != nil {
+		runPlanner = retained.GuardPlanner(runPlanner, s.Artifacts)
+	}
 	spec := steering.RunSpec{
-		Planner:        s.Planner,
+		Planner:        runPlanner,
 		Base:           base,
 		TaskID:         tasks.TaskID(runID),
 		ToolExecutor:   s.Executor,
@@ -365,11 +420,15 @@ func (s *Stack) RunOnce(
 		Compression:    s.Compression,
 		CompletionHook: completionHook,
 	}
+	if retained != nil {
+		spec.DispatchCheckpoint = retained
+		spec.CompactBeforeFirstDecision = retained.CompactionRequired()
+	}
 	if cfg.stream != nil {
 		// One StreamToolDispatched event PER dispatched tool: a
 		// CallParallel dispatch carries count == len(Branches), so the
-		// stream reports N tool dispatches, not one (see
-		// streamDispatchHook).
+		// stream reports N tool dispatches (the count matches the branches).
+		// StreamToolDispatched callback remains the shared dispatch tap.
 		spec.OnToolDispatched = streamDispatchHook(spec.OnToolDispatched, cfg.stream)
 	}
 
@@ -417,20 +476,12 @@ func (s *Stack) RunOnce(
 		}
 	}
 
-	// Best-effort memory writeback on a goal-satisfying finish (mirrors
-	// the drivers): a writeback error does not downgrade the answer.
-	if s.Memory != nil && fin.Reason == planner.FinishGoal {
-		sessionQ := identity.Quadruple{Identity: id}
-		if wErr := s.Memory.AddTurn(runCtx, sessionQ, memory.ConversationTurn{
-			UserMessage:       goal,
-			AssistantResponse: env.Answer,
-			Timestamp:         time.Now(),
-		}); wErr != nil {
-			logger.Warn("assemble: RunOnce memory writeback failed; answer still returned",
-				"run_id", runID, "err", wErr.Error())
-		}
+	switch fin.Reason {
+	case planner.FinishGoal:
+		retainedStatus, retainedAnswer = "complete", env.Answer
+	case planner.FinishCancelled:
+		retainedStatus = "cancelled"
 	}
-
 	return env, nil
 }
 

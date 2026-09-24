@@ -236,12 +236,13 @@ func requiresCounters(f prototypes.SessionFilter, srt prototypes.SessionSort) bo
 // Service implements the `sessions.*` Protocol methods. It is a
 // safe for concurrent reuse compiled artifact — immutable after NewService.
 type Service struct {
-	projector   Projector
-	eraser      Eraser          // optional — nil ⇒ sessions.delete is unsupported (capability not wired)
-	titleSetter TitleSetter     // optional — nil ⇒ sessions.set_title is unsupported (capability not wired)
-	bus         events.EventBus // optional — nil ⇒ admin audit emit is logged only
-	redactor    audit.Redactor  // optional — defence-in-depth before the emit
-	logger      *slog.Logger
+	contextReconciler ContextReconciler
+	projector         Projector
+	eraser            Eraser          // optional — nil ⇒ sessions.delete is unsupported (capability not wired)
+	titleSetter       TitleSetter     // optional — nil ⇒ sessions.set_title is unsupported (capability not wired)
+	bus               events.EventBus // optional — nil ⇒ admin audit emit is logged only
+	redactor          audit.Redactor  // optional — defence-in-depth before the emit
+	logger            *slog.Logger
 }
 
 // Option configures NewService.

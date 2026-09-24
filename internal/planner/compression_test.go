@@ -224,29 +224,22 @@ func TestMaybeCompress_OverBudget_StampsSummary(t *testing.T) {
 	}
 }
 
-// TestMaybeCompress_AlreadyCompressed_Idempotent asserts the
-// short-circuit when tr.Summary is already non-nil.
+// A checkpoint remains unchanged when there are no newly eligible steps.
 func TestMaybeCompress_AlreadyCompressed_Idempotent(t *testing.T) {
 	t.Parallel()
 	summ := &staticSummariser{summary: cannedSummary()}
-	rec := &recordingEmit{}
 	runner := planner.NewCompressionRunner(summ)
-
-	rc := rcWith(fixedQuadruple("r3"), 10, rec.emit)
+	rc := rcWith(fixedQuadruple("r3"), 10, nil)
 	tr := bigTrajectory(5000)
-	tr.Summary = &planner.TrajectorySummary{Note: "pre-stamped"}
-
-	if err := runner.MaybeCompress(context.Background(), rc, tr); err != nil {
-		t.Fatalf("MaybeCompress: %v", err)
+	if err := runner.MaybeCompress(t.Context(), rc, tr); err != nil {
+		t.Fatal(err)
 	}
-	if tr.Summary.Note != "pre-stamped" {
-		t.Errorf("pre-stamped Summary clobbered: Note = %q", tr.Summary.Note)
+	checkpoint := tr.Summary
+	if err := runner.MaybeCompress(t.Context(), rc, tr); err != nil {
+		t.Fatal(err)
 	}
-	if summ.calls.Load() != 0 {
-		t.Errorf("summariser invoked %d times on idempotent path — want 0", summ.calls.Load())
-	}
-	if got := rec.snapshot(); len(got) != 0 {
-		t.Errorf("emitted %d events on idempotent path — want 0", len(got))
+	if tr.Summary != checkpoint || summ.calls.Load() != 1 {
+		t.Fatal("unchanged tail was summarized again")
 	}
 }
 
@@ -337,8 +330,8 @@ func TestMaybeCompress_FailLoudOnSummariserError(t *testing.T) {
 	if payload.ErrorCode != "summariser_error" {
 		t.Errorf("payload.ErrorCode = %q, want summariser_error", payload.ErrorCode)
 	}
-	if !strings.Contains(payload.ErrorMessage, "downstream LLM 500") {
-		t.Errorf("payload.ErrorMessage = %q, want substring downstream LLM 500", payload.ErrorMessage)
+	if payload.ErrorMessage != "trajectory compaction failed; previous checkpoint retained" {
+		t.Errorf("payload.ErrorMessage = %q, want content-free failure description", payload.ErrorMessage)
 	}
 }
 
@@ -554,13 +547,11 @@ func TestMaybeCompress_NilEmit_DoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestTruncateErrorMessage_Boundary asserts the truncation helper
-// short-circuits on short messages and adds ellipsis on long. Tested
-// through the runner's failure-emit path — the message-cap is
-// internal but the visible effect is the payload.ErrorMessage shape.
-func TestTruncateErrorMessage_Boundary(t *testing.T) {
+// TestCompressionErrorMessage_ContentFreeBounded verifies that even an arbitrarily
+// long extension error cannot copy source fragments into safe observability.
+func TestCompressionErrorMessage_ContentFreeBounded(t *testing.T) {
 	t.Parallel()
-	// Use a very long error to exercise the truncation.
+	// A byte cap alone would still leak the beginning of this error.
 	longMsg := strings.Repeat("a", 1024)
 	summ := &errSummariser{err: errors.New(longMsg)}
 	rec := &recordingEmit{}
@@ -578,7 +569,7 @@ func TestTruncateErrorMessage_Boundary(t *testing.T) {
 	if len(payload.ErrorMessage) > 256 {
 		t.Errorf("payload.ErrorMessage length = %d, want ≤ 256", len(payload.ErrorMessage))
 	}
-	if !strings.HasSuffix(payload.ErrorMessage, "...") {
-		t.Errorf("payload.ErrorMessage does not end with ellipsis after truncation")
+	if strings.Contains(payload.ErrorMessage, longMsg[:8]) || payload.ErrorMessage == "" {
+		t.Error("failure description is empty or contains original error content")
 	}
 }

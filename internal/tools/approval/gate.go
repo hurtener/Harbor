@@ -3,14 +3,17 @@ package approval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // GateDeps bundles the collaborators an ApprovalGate needs. The
@@ -189,7 +192,7 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 	if g.closed.Load() {
 		return nil, ErrGateClosed
 	}
-	if err := ctx.Err(); err != nil {
+	if err := tools.CheckInvocationFence(ctx); err != nil {
 		return nil, fmt.Errorf("approval: RunGuarded cancelled: %w", err)
 	}
 	if err := req.Validate(); err != nil {
@@ -303,6 +306,17 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 			g.removePending(pause.Token)
 			return nil, fmt.Errorf("%w: %q", ErrInvalidDecision, res.decision)
 		}
+	case <-tools.InvocationInvalidated(ctx):
+		g.removePending(pause.Token)
+		// Withdraw this run's obsolete request, never approve it. Required
+		// persistence uses a bounded independent context; a failed withdrawal
+		// remains terminal and cannot become an instruction to retry the action.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := g.coordinator.Resume(cleanupCtx, pause.Token, pauseresume.DecisionReject, map[string]any{"reason": "plan_superseded"}); err != nil && !errors.Is(err, pauseresume.ErrAlreadyResumed) {
+			return nil, fmt.Errorf("%w: %w: %w", tools.ErrInvocationSuperseded, tools.ErrInvocationCleanupFailed, err)
+		}
+		return nil, tools.ErrInvocationSuperseded
 	case <-ctx.Done():
 		// Caller's ctx died before resolution. Drop the in-process
 		// entry; the Coordinator's pause record stays parked. An

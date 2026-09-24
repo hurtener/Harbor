@@ -308,7 +308,7 @@ func TestE2E_Phase110c_IdentityIsolation_ThroughProjectionOpenedStores(t *testin
 	}
 	// Drive BOTH projection-opened stores from cfg: memory
 	// (memory.SnapshotFromConfig) + skills (skills.SnapshotFromConfig).
-	cfg.Memory = config.MemoryConfig{Driver: "inmem", Strategy: "truncation", BudgetTokens: 4096}
+	cfg.Memory = config.MemoryConfig{Driver: "inmem", Strategy: "rolling_summary", BudgetTokens: 4096}
 	cfg.Skills = config.SkillsConfig{Driver: "localdb", DSN: filepath.Join(t.TempDir(), "skills.db")}
 
 	llmSnap := llm.ConfigSnapshot{
@@ -356,8 +356,8 @@ func TestE2E_Phase110c_IdentityIsolation_ThroughProjectionOpenedStores(t *testin
 				UserMessage:       fmt.Sprintf("question-%d", i),
 				AssistantResponse: fmt.Sprintf("answer-%d", i),
 			}
-			if err := stack.Memory.AddTurn(ctx, quad(i), turn); err != nil {
-				errCh <- fmt.Errorf("AddTurn(%d): %w", i, err)
+			if _, err := stack.Memory.Put(ctx, quad(i), turn); err != nil {
+				errCh <- fmt.Errorf("Put(%d): %w", i, err)
 			}
 		}(i)
 	}
@@ -369,23 +369,23 @@ func TestE2E_Phase110c_IdentityIsolation_ThroughProjectionOpenedStores(t *testin
 
 	// Each identity reads back ONLY its own content.
 	for i := range n {
-		patch, gErr := stack.Memory.GetLLMContext(ctx, quad(i))
+		patch, gErr := stack.Memory.Inspect(ctx, quad(i))
 		if gErr != nil {
-			t.Fatalf("GetLLMContext(%d): %v", i, gErr)
+			t.Fatalf("Inspect(%d): %v", i, gErr)
 		}
-		if len(patch.RecentTurns) != 1 {
-			t.Fatalf("identity %d sees %d turns, want exactly its own 1 (cross-identity bleed)", i, len(patch.RecentTurns))
+		if len(patch.Items) != 1 {
+			t.Fatalf("identity %d sees %d turns, want exactly its own 1 (cross-identity bleed)", i, len(patch.Items))
 		}
-		if patch.RecentTurns[0].UserMessage != fmt.Sprintf("question-%d", i) {
-			t.Errorf("identity %d sees %q — cross-identity bleed", i, patch.RecentTurns[0].UserMessage)
+		if wave7aNoteQuery(t, patch.Items[0]) != fmt.Sprintf("question-%d", i) {
+			t.Errorf("identity %d sees %q — cross-identity bleed", i, wave7aNoteQuery(t, patch.Items[0]))
 		}
 	}
 
 	// Identity-mandatory: a quadruple with an empty session is
 	// rejected loudly (CLAUDE.md §6 rule 9 — fail closed).
 	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}}
-	if err := stack.Memory.AddTurn(ctx, bad, memory.ConversationTurn{UserMessage: "x"}); err == nil {
-		t.Error("AddTurn accepted an identity with an empty session — identity must be mandatory")
+	if _, err := stack.Memory.Put(ctx, bad, memory.ConversationTurn{UserMessage: "x"}); err == nil {
+		t.Error("Put accepted an identity with an empty session — identity must be mandatory")
 	} else if !errors.Is(err, memory.ErrIdentityRequired) {
 		t.Errorf("err = %v, want errors.Is(_, memory.ErrIdentityRequired)", err)
 	}

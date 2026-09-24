@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: unit-tests
 #
-# Phase 84d — Embedding client (`Embedder`) + semantic memory & skill
+# Phase 84d — Embedding client (`Embedder`) + semantic skill
 # retrieval (D-191).
 #
 # What this asserts (per §4.2 every check SKIPs on a pre-84d build):
 #
 #   1. Static: the §4.4 seam exists (interface + factory + registry in
 #      internal/embeddings), the bifrost driver registers via the
-#      D-196 prod aggregator, both consumers carry the opt-in mode +
+#      D-196 prod aggregator, the skill consumer carries the opt-in mode +
 #      fail-loud guards, and the à-la-carte recipe + docs-site stub
 #      ship.
 #   2. Fail-loud boot validation (built binary): a config enabling
-#      `memory.retrieval: semantic` WITHOUT an `embeddings` block
+#      `skills.retrieval: semantic` WITHOUT an `embeddings` block
 #      exits 1 naming the missing key; adding the block flips it to
 #      exit 0.
 #   3. One embed + retrieval round-trip end-to-end: the Phase 84d
-#      integration test (real state/memory/skills drivers + the
+#      integration test (real state/skills drivers + the
 #      deterministic test embedder) runs under -race.
 #
 # §4.3 note (recorded in the phase plan): the plan's smoke sketch
@@ -73,18 +73,6 @@ assert_or_skip 'type EmbeddingsConfig struct' \
     "internal/config/config.go" \
     "static: the embeddings config block exists"
 
-assert_or_skip 'SearchTurns\(ctx context.Context' \
-    "internal/memory/memory.go" \
-    "static: MemoryStore.SearchTurns is the semantic memory retrieval surface"
-
-assert_or_skip 'ErrSemanticDisabled' \
-    "internal/memory/memory.go" \
-    "static: a disabled-mode SearchTurns fails loudly (ErrSemanticDisabled)"
-
-assert_or_skip 'Deps.Embedder is required for retrieval mode' \
-    "internal/memory/registry.go" \
-    "static: the memory registry carries the fail-loud Deps.Embedder guard"
-
 assert_or_skip 'Deps.Embedder is required for retrieval mode' \
     "internal/skills/skills.go" \
     "static: the skills registry carries the fail-loud Deps.Embedder guard"
@@ -130,8 +118,9 @@ else
     cat "${FIXTURE}" > "${TMPDIR_84D}/semantic-no-embeddings.yaml"
     cat >> "${TMPDIR_84D}/semantic-no-embeddings.yaml" <<'YAML'
 
-memory:
-  driver: inmem
+skills:
+  driver: localdb
+  dsn: ':memory:'
   retrieval: semantic
 YAML
     set +e
@@ -142,20 +131,20 @@ YAML
         fail "validate: semantic mode without embeddings block expected exit 1; got ${rc}"
     elif ! printf '%s' "${body}" | grep -q 'embeddings'; then
         fail "validate: fail-loud body did not name the embeddings block: ${body}"
-    elif ! printf '%s' "${body}" | grep -q 'memory.retrieval'; then
+    elif ! printf '%s' "${body}" | grep -q 'skills.retrieval'; then
         fail "validate: fail-loud body did not name the enabling mode: ${body}"
     else
-        ok "validate: memory.retrieval=semantic without an embeddings block fails loudly naming the missing key (no stub fallback)"
+        ok "validate: skills.retrieval=semantic without an embeddings block fails loudly naming the missing key (no stub fallback)"
     fi
 
     # Same config WITH the embeddings block → exit 0.
     cat "${FIXTURE}" > "${TMPDIR_84D}/semantic-with-embeddings.yaml"
     cat >> "${TMPDIR_84D}/semantic-with-embeddings.yaml" <<'YAML'
 
-memory:
-  driver: inmem
+skills:
+  driver: localdb
+  dsn: ':memory:'
   retrieval: semantic
-  retrieval_top_k: 5
 
 embeddings:
   provider: openai
@@ -176,9 +165,9 @@ fi
 if [ ! -f "test/integration/phase84d_semantic_retrieval_test.go" ]; then
     skip "round-trip: integration test absent (Phase 84d not yet implemented)"
 elif go test -race -count=1 -timeout 300s \
-    -run 'TestE2E_Phase84d_(SemanticMemory_PersistsAndIsolates|SemanticSkills_RankAndIsolate|FailureMode_SemanticWithoutEmbedder)' \
+    -run 'TestE2E_Phase84d_(SemanticSkills_RankAndIsolate|FailureMode_SemanticWithoutEmbedder)' \
     ./test/integration/ >/dev/null 2>&1; then
-    ok "round-trip: embed → persist → SearchTurns / semantic skill Search pass under -race (memory + skills consumers end-to-end)"
+    ok "round-trip: embed → semantic skill Search pass under -race (skill consumer end-to-end)"
 else
     fail "round-trip: Phase 84d integration tests failed (run: go test -race -run TestE2E_Phase84d ./test/integration/)"
 fi

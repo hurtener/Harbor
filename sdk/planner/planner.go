@@ -16,6 +16,8 @@ type (
 	// Planner is the swappable reasoning-policy interface (CLAUDE.md
 	// §1 property 3). Concretes implement Next(ctx, rc) (Decision, error).
 	Planner = internal.Planner
+	// RequestContextPlanner opts into assembled-request context preparation.
+	RequestContextPlanner = internal.RequestContextPlanner
 	// RunContext is the per-step view the runtime projects for the
 	// planner (identity, goal, trajectory, catalog, memory, skills).
 	RunContext = internal.RunContext
@@ -53,8 +55,12 @@ type (
 	Trajectory = internal.Trajectory
 	// Step is one trajectory step.
 	Step = internal.Step
+	// HistoricalStep carries non-executable, versioned prior execution.
+	HistoricalStep = internal.HistoricalStep
 	// Summary is the compaction artefact of a compressed trajectory.
 	Summary = internal.Summary
+	// SummaryCoverage identifies the exact summarized prefix.
+	SummaryCoverage = internal.SummaryCoverage
 	// Source records a step's provenance.
 	Source = internal.Source
 	// StreamChunk is one chunked-output fragment on the trajectory.

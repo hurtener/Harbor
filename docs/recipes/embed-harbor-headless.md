@@ -110,6 +110,64 @@ Register your own in-process tools before assembling via
 `assemble.Options.PreRegisterTools`, or after assembling via
 `stack.Catalog.Register(...)`.
 
+## Retain recent execution evidence across embedded calls
+
+On the incremental portable-context branch, choose `memory.strategy: rolling_summary`
+and `memory.recent_turns: 20` before assembly, for both serving and embedded calls.
+There is no separate per-call activation option. Reuse the same identity triple and configured
+StateStore; SQLite or Postgres is needed to retain content across process exits.
+
+```go
+env, err := stack.RunOnce(ctx, "Edit the document from the previous turn.", id)
+if err != nil {
+    // A terminal write may fail after external effects succeeded.
+    // Reconcile through the owning service; do not repeat the run blindly.
+    return err
+}
+```
+
+`memory.strategy: none` selects a stateless stack. A zero `recent_turns` selects
+twenty detailed turns; it does not disable memory. Cumulative memory replaces
+pair-only history projection, not caller-supplied external memory or trusted completion-hook capture.
+Historical tool actions are supplied as inert evidence, never dispatched.
+
+Retained mode commits admitted input, dispatch intent, and settlement before the
+next dependent decision. Hard interruption may still leave an unknown external
+outcome. No historical write is retried automatically. The window is limited to 32 turns, 256 own steps per turn,
+and 512 KiB, with the session idle TTL (24 hours when unspecified). Covered detail
+leaves only after checkpoint publication; expiry invalidates derived context.
+An oversized indivisible turn fails explicitly.
+See the [phase 269 plan](../plans/phase-269-retained-session-context.md).
+
+### Reconcile a fully settled interrupted run
+
+For an explicitly selected source run, an embedder can recover its committed
+evidence without relaunching execution. Enable `memory.strategy: rolling_summary`
+on the stack; a recovery call does not change that policy.
+Use the same tenant/user/session identity and the original run ID.
+
+```go
+err := stack.ReconcileRetainedContext(ctx, id, sourceRunID)
+if errors.Is(err, assemble.ErrRetainedContextUnsettled) {
+    // The external operation may have succeeded or still be running.
+    // Check the owning service; do not retry the write or the whole run.
+    return err
+}
+if err != nil {
+    return err
+}
+// A new RunOnce can now receive the recovered interrupted evidence.
+// This is a new run, not a cold resume or a replay of sourceRunID.
+```
+
+Import `errors` from the standard library for the sentinel check above. Recovery
+atomically fences the source admission, preserves its original expiry, and
+records interrupted status rather than invented completion. It performs no model
+request, tool call, or completion ingestion. A provider call already in progress
+is not cancelled, but its later dispatch must pass the admission fence. Missing,
+expired, or corrupt evidence fails explicitly. A cleanup failure can be retried
+through this same method; it is never a reason to repeat external actions.
+
 ## 4. Run one goal
 
 Identity is mandatory (§6): every run carries the
@@ -456,3 +514,43 @@ Three things distinguish the serving path from the headless one:
   a custom-provider LLM entry (loopback BaseURL, env-var dummy key)
   plus `assemble.Options.PlannerOverride` with the deterministic
   planner — real drivers, no network.
+
+### Reconcile from a served client
+
+With `memory.strategy: rolling_summary` already enabled, a typed Protocol client
+may call `SessionsReconcileContext` with `SourceRunID`. The client's verified
+identity supplies the session; this operation has no cross-session admin mode.
+The HTTP equivalent is `POST /v1/sessions/reconcile_context` with
+`{"source_run_id":"the-source-run"}` under the normal authenticated connection.
+A success seals context only; it does not rerun the source task. A 409
+`retained_context_unsettled` means the external outcome is still unknown.
+Resolve it with the owning service instead of repeating the write. A 409
+`retained_context_unavailable` does not permit inventing missing history.
+
+### Retrieve an earlier offloaded result
+
+For agents that need source recovery, enable the existing `artifact_fetch`
+builtin in the tool catalog. Retained runs surface the authorized reference and
+current stored metadata even after its earlier exchange is summarized. Read a
+bounded `Ref`/`Offset`/`MaxBytes` window through that tool; do not rerun the
+original write or read simply to recover an already retained receipt.
+
+The reference belongs to this session, not a global resource namespace. Missing
+or deleted source invalidates dependent continuation, while normal source-turn
+retention still applies. The source service remains authoritative for current
+external versions. Oversized reference projections fail explicitly; no separate
+retention toggle, artifact TTL, or long-term-memory integration is added.
+
+### Retained attachment and steering context
+
+With retained context enabled, applied user messages, redirects and injected
+context are recorded before dependent work. Supplied attachment IDs are committed
+with the admitted query, without copying binary contents. Their current scoped
+references remain available after compaction; configure the appropriate artifact
+tools (such as `artifact_fetch` for bounded text) for content recovery.
+
+Retained runs reject missing inputs rather than silently dropping them. Deleting
+a referenced source blocks subsequent inference or dependent dispatch. A retained
+reference does not mean that a model inspected an image or can process its MIME
+type. Normal first-turn input disposition and non-retained behavior are unchanged.
+Neither continuity mechanism repeats historical tools or completion ingestion.

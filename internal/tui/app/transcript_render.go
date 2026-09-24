@@ -243,13 +243,9 @@ func (m Model) proseOps(text string, width, indent, dy0 int, role ui.Role) ([]dr
 	for i, line := range spans {
 		dx := 0
 		for _, span := range line {
-			// Blank spans are skipped so the pre-filled canvas shows through
-			// (drawing them would repaint the background), unless the span owns
-			// a background of its own — a code block's fill is design, not
-			// incidental padding.
-			if strings.TrimSpace(span.Text) != "" || span.Style.GetBackground() != nil {
-				ops = append(ops, drawOp{dx: dx, dy: dy0 + i, text: span.Text, style: span.Style})
-			}
+			// Preserve every styled span, including code-block background fill.
+			// GetBackground returns a non-nil color even for an unset background.
+			ops = append(ops, drawOp{dx: dx, dy: dy0 + i, text: span.Text, style: span.Style})
 			dx += span.Width
 		}
 	}

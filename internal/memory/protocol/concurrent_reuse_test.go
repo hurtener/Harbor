@@ -29,7 +29,7 @@ import (
 func TestConcurrentReuse_MemoryListUnderRace(t *testing.T) {
 	const goroutines = 128
 
-	h := newMemHarness(t, memory.StrategyTruncation, 1_000_000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 1_000_000)
 	agg := newAggregator(t, h)
 
 	// Two distinct identities under the SAME tenant — both seeded with
@@ -102,7 +102,7 @@ func TestConcurrentReuse_MemoryListUnderRace(t *testing.T) {
 // one List call's ctx does not affect a concurrent call against the
 // same shared store (D-025 cancellation cross-talk).
 func TestConcurrentReuse_CancellationDoesNotCrossTalk(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, 1_000_000)
+	h := newMemHarness(t, memory.StrategyRollingSummary, 1_000_000)
 	id := testIdentity()
 	seedTurns(t, h, id, 5)
 	deps := memprotocol.ListDeps{Store: h.store, DriverName: "inmem"}

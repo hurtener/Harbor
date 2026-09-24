@@ -152,10 +152,11 @@ var requestSurfaces = map[string]Surface{
 	"RunSetOverridesRequest": SurfaceRuns,
 
 	// sessions.
-	"SessionsDeleteRequest":   SurfaceSessions,
-	"SessionsInspectRequest":  SurfaceSessions,
-	"SessionsListRequest":     SurfaceSessions,
-	"SessionsSetTitleRequest": SurfaceSessions,
+	"SessionsDeleteRequest":           SurfaceSessions,
+	"SessionsInspectRequest":          SurfaceSessions,
+	"SessionsListRequest":             SurfaceSessions,
+	"SessionsSetTitleRequest":         SurfaceSessions,
+	"SessionsReconcileContextRequest": SurfaceSessions,
 	// session-turns — the turn-projection read pair (routes pinned
 	// explicitly; the body triple stays the caller's own).
 	"SessionTurnsListRequest": SurfaceSessions,

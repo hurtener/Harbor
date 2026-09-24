@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
+
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -83,7 +85,7 @@ func runProviderRouteProbe(t *testing.T) providerRouteObservation {
 	}
 	const agentID = "agent-provider-route"
 	const runtimeID = "runtime-provider-route"
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus: bus, RunLoop: rl, Planner: p, Tasks: reg,
 		AgentConfigID: agentID, AgentReachAdmissions: authority,
 		ProviderRouteRuntimeID: runtimeID,
@@ -140,7 +142,7 @@ func runProvenanceProbe(t *testing.T, agentConfigID string) string {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &provenanceProbePlanner{got: make(chan string, 1), effective: make(chan string, 1)}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:           bus,
 		RunLoop:       rl,
 		Planner:       p,
@@ -186,7 +188,7 @@ func runEffectiveAgentConfigProbe(t *testing.T, agentConfigID string, admitted b
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{Bus: bus, RunLoop: rl, Planner: p, Tasks: reg, AgentConfigID: agentConfigID, AgentReachAdmissions: authority})
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"}, Bus: bus, RunLoop: rl, Planner: p, Tasks: reg, AgentConfigID: agentConfigID, AgentReachAdmissions: authority})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)
 	}
@@ -269,7 +271,7 @@ func TestPerTaskRunLoopDriver_RejectsProviderRouteWithoutReachRestore(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus: bus, RunLoop: rl, Planner: p, Tasks: reg,
 		AgentConfigID: "agent-provider-route", AgentReachAdmissions: authority,
 		ProviderRouteRuntimeID: "runtime-provider-route",

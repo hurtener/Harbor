@@ -1682,6 +1682,7 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		errors.Is(err, agentcfgprotocol.ErrInvalidLLMParams),
 		errors.Is(err, agentcfgprotocol.ErrInvalidHooks),
 		errors.Is(err, agentcfgprotocol.ErrInvalidNaming),
+		errors.Is(err, agentcfgprotocol.ErrInvalidMemory),
 		errors.Is(err, agentcfgprotocol.ErrInvalidExtraSystemBlocks):
 		// A pinned model with no configured ModelProfile, an out-of-range
 		// sampling value, an invalid hooks section (negative timeout), or an

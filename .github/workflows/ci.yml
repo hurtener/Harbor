@@ -49,11 +49,16 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Vet
         run: make vet
       - name: Test
+        # Each package already exercises 128-way runtime concurrency. Avoid
+        # multiplying independent stress suites on the same shared runner;
+        # retain every test, the race detector, and production deadlines.
+        env:
+          GOFLAGS: '-p=1'
         run: make test
       - name: Build
         env:
@@ -67,20 +72,21 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       # Install golangci-lint so the lint gate actually RUNS — before
       # Phase 80 the binary was never installed in CI, so `make lint`'s
       # `command -v` guard silently skipped and the gate was a no-op.
       # Installed via `go install` (NOT a prebuilt release download):
-      # golangci-lint refuses to load a config whose target Go (1.26)
+      # golangci-lint refuses to load a config whose target Go (1.27)
       # is newer than its own build-Go, so compiling it here with the
-      # runner's go1.26 toolchain keeps build-Go == target-Go. The v2
-      # module path is `.../v2/cmd/golangci-lint` (the config is v2 —
+      # runner's go1.27 toolchain keeps build-Go == target-Go. The
+      # 2.13 series also updates analyzer internals for Go 1.27 syntax.
+      # The v2 module path is `.../v2/cmd/golangci-lint` (the config is v2 —
       # see .golangci.yml `version: "2"`, migrated 2026-05-28).
       - name: Install golangci-lint
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # The full golangci-lint gate (every linter in .golangci.yml,
       # including the `revive` doc-hygiene rules). The Wave 14 lint
@@ -97,7 +103,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       # Phase 80 (D-138): the `examples/` tree must build and its
       # worked-example tests must pass end-to-end. A drift in a public
@@ -190,7 +196,7 @@ jobs:
       - uses: actions/setup-go@v6
         if: steps.detect.outputs.present == 'true'
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - uses: actions/setup-node@v6
         if: steps.detect.outputs.present == 'true'
@@ -245,7 +251,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Run preflight
         run: make preflight
@@ -284,7 +290,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: perf-regression gate (base-vs-PR, same runner)
         env:
@@ -332,7 +338,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Run state/postgres tests against postgres:16
         # Note: CGO_ENABLED is intentionally NOT set here — `go test
@@ -502,7 +508,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Run memory/postgres tests against postgres:16
         # CGO_ENABLED intentionally unset (same rationale as the
@@ -538,7 +544,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Run Phase 233a two-instance Postgres race contract
         # This test also has a local SQLite leg, but only this service job can
@@ -593,7 +599,7 @@ jobs:
     # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
     # against in CI. We launch it via `docker run` rather than a
     # GitHub Actions service container because the official
-    # `minio/minio` image needs `server /data` as the entrypoint args
+    # `quay.io/minio/minio` image needs `server /data` as the entrypoint args
     # (services blocks can't pass command args cleanly), and Bitnami's
     # alternative dropped its `latest` tag. Credentials are documented
     # dummy values per AGENTS.md §7 #2 — no real secrets cross this
@@ -602,7 +608,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Start MinIO and create harbor-test bucket
         env:
@@ -612,10 +618,10 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name harbor-minio \
-            -p 9000:9000 \
+            -p 127.0.0.1:9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2024-12-18T13-15-44Z \
+            quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z \
             server /data
           # Poll for liveness; create the bucket once MinIO answers.
           for i in $(seq 1 30); do
@@ -665,7 +671,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       # Phase 76: the master cross-tenant + cross-session isolation
       # gate. Runs the every-PR fast soak window (~3 s, 100 concurrent
@@ -691,7 +697,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Run the goroutine-leak conformance harness (-race)
         run: go test -race -count=1 -timeout 300s -run TestE2E_Phase77_GoroutineLeakConformance ./test/integration/...
@@ -713,7 +719,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.27.1'
           check-latest: true
       - name: Run the chaos / fault-injection harness (-race)
         run: go test -race -count=1 -timeout 300s -run TestE2E_Phase78_ChaosFaultInjection ./test/integration/...

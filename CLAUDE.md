@@ -245,7 +245,7 @@ The Console lives in `web/console/` and is its own product. The matching rejecti
 
 ### Language and tooling
 
-- **Go 1.26+.** No earlier. (Bumped from 1.22 in 2026-05-08 to match the bifrost dependency floor.)
+- **Go 1.27.1+.** No earlier. The pinned Bifrost transport cancellation fix requires Go 1.27.
 - **Module path:** `github.com/hurtener/Harbor`.
 - **CGo is forbidden.** `CGO_ENABLED=0` is enforced in CI build. SQLite uses `modernc.org/sqlite`.
 - **Static binary.** `go build -ldflags='-s -w'`. Verified by CI on Linux.

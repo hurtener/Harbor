@@ -183,7 +183,14 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		if d.providerRoute.Resolver == nil {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteResolverUnavailable
 		}
-		if !selectedOK || !selected.ExpiresAt.After(time.Now()) || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
+		// Selection expiry is validated by the outer route wrapper when it
+		// receives the credential-free decision. An upstream wrapper may then
+		// spend longer than that selection lifetime before reaching this leaf.
+		// The leaf must not treat the old receipt as credential authority: it
+		// resolves a fresh attempt-bound credential below, validates its current
+		// expiry/generations, and exact-matches every non-expiry field back to the
+		// admitted selection.
+		if !selectedOK || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
 		}
 		var scope *llm.AttemptScope
@@ -275,14 +282,10 @@ func (d *Driver) unaryComplete(
 // route to `req.OnContent`; reasoning deltas route to `req.OnReasoning`;
 // the assembled content is concatenated into `CompleteResponse.Content`.
 //
-// Cancellation: a `select` on `ctx.Done()` lets the driver abandon
-// the bifrost chunk reader as soon as the caller cancels — the
-// runtime never blocks waiting for upstream to drain (a design premise:
-// §"Cancellation caveat"). Bifrost's worker goroutine continues
-// draining the upstream HTTP body until completion, but Harbor is no
-// longer reading from the channel; the goroutine exits when the
-// channel closes, and the runtime's goroutine-leak test asserts
-// baseline restoration.
+// Cancellation propagates through BifrostContext to Bifrost's context-aware
+// transport, which interrupts the upstream socket before headers or during
+// streaming. Harbor also stops consuming queued chunks on cancellation;
+// it does not wait for another provider delta to return ctx.Err().
 func (d *Driver) streamComplete(
 	client bifrostClient,
 	ctx context.Context,
@@ -301,6 +304,7 @@ func (d *Driver) streamComplete(
 		finalToolCalls []llm.ToolCallStructured
 		finalUsage     llm.Usage
 		finalCost      llm.Cost
+		finishReason   string
 		streamErr      error
 		gotAnyChunk    bool
 	)
@@ -309,13 +313,17 @@ readLoop:
 	for {
 		select {
 		case <-ctx.Done():
-			// Abandon the reader. Bifrost's goroutine drains
-			// upstream on its own; we never block waiting for it.
-			// The caller receives `ctx.Err()` (Canceled or
-			// DeadlineExceeded).
+			// The transport receives this same cancellation. Do not wait
+			// for its stream channel to close before returning to the caller.
 			streamErr = ctx.Err()
 			break readLoop
 		case chunk, ok := <-ch:
+			// A ready chunk and cancellation can win select in either order.
+			// Never publish a queued late delta after observing cancellation.
+			if err := ctx.Err(); err != nil {
+				streamErr = err
+				break readLoop
+			}
 			if !ok {
 				// Channel closed — stream terminated cleanly.
 				break readLoop
@@ -329,6 +337,11 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
+				for _, choice := range chunk.BifrostChatResponse.Choices {
+					if choice.Index == 0 && choice.FinishReason != nil {
+						finishReason = *choice.FinishReason
+					}
+				}
 				processStreamChunk(chunk.BifrostChatResponse, &contentB, reasoning, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
 			}
 		}
@@ -353,11 +366,12 @@ readLoop:
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: stream returned no chunks")
 	}
 	out := llm.CompleteResponse{
-		Content:   contentB.String(),
-		ToolCalls: finalToolCalls,
-		Reasoning: reasoning.result(),
-		Usage:     finalUsage,
-		Cost:      finalCost,
+		FinishReason: finishReason,
+		Content:      contentB.String(),
+		ToolCalls:    finalToolCalls,
+		Reasoning:    reasoning.result(),
+		Usage:        finalUsage,
+		Cost:         finalCost,
 	}
 	return out, nil
 }
@@ -438,18 +452,7 @@ func processStreamChunk(
 			})
 		}
 	}
-	// Backfill usage / cost when bifrost reports it (typically on
-	// the terminal chunk).
-	if resp.Usage != nil {
-		if u, c := extractUsageAndCost(resp); u.TotalTokens > 0 || c.TotalCost > 0 || u.PromptTokens > 0 {
-			*usage = u
-			// Preserve a non-zero cost across earlier chunks (some
-			// providers send usage on chunk N-1 and cost on chunk N).
-			if c.TotalCost > 0 {
-				*cost = c
-			}
-		}
-	}
+	mergeStreamAccounting(resp, usage, cost)
 }
 
 // Close releases the underlying bifrost instance. Bifrost owns its

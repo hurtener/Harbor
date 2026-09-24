@@ -61,8 +61,7 @@ type Config struct {
 	// Embeddings is the embedding-client block — the model/provider
 	// pair Harbor turns text into vectors with, configured separately
 	// from the chat `llm` block. Optional; REQUIRED (validated) when
-	// any semantic-retrieval mode is enabled (`memory.retrieval` /
-	// `skills.retrieval` = `semantic`).
+	// `skills.retrieval` = `semantic` is enabled.
 	Embeddings EmbeddingsConfig `yaml:"embeddings,omitempty"`
 
 	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by the pause/resume subsystem
@@ -202,8 +201,7 @@ type StateConfig struct {
 //
 // The whole block is optional. It becomes REQUIRED (enforced by
 // `validateEmbeddings`) the moment an embedding-consuming mode is
-// enabled — `memory.retrieval: semantic` or `skills.retrieval:
-// semantic` — so a semantic mode can never silently degrade to
+// enabled — `skills.retrieval: semantic` — so a semantic mode can never silently degrade to
 // non-semantic behaviour (AGENTS.md §13).
 //
 //   - `Driver` selects the registered embeddings driver. Empty
@@ -717,76 +715,47 @@ type RuntimeNamingConfig struct {
 // string for Postgres). `secret:"true"` redacts the value in
 // audit-redacted logs.
 //
-// `Strategy` selects the memory shape: `"none"`, or
-// `"truncation"` / `"rolling_summary"`. Default `none`.
+// `Strategy` selects disabled (`"none"`) or cumulative (`"rolling_summary"`)
+// session memory. Empty selects the default `rolling_summary`.
 // `memory.Open` rejects strategies the configured driver does not
 // implement with `ErrStrategyNotImplemented`.
 //
-// `BudgetTokens` is the truncation / rolling-summary budget cap
-// (token estimate). Zero means "no budget" — appending is
-// unbounded.
+// `BudgetTokens` is the working-input compaction target. A positive value
+// builds the within-run compactor even for stateless execution. With
+// rolling_summary, zero derives a safe target from each effective model's
+// input capacity and output reservation; it does not disable compaction.
+// Model completion/output limits remain independent.
 //
-// `RecoveryBacklogMax` is the bounded queue size for the
-// `rolling_summary` strategy's recovery loop. Default 16
-// (applied by the loader when the section is omitted). Overflow
-// drops oldest and emits `memory.recovery_dropped` on the bus.
-// Ignored by the `none` and `truncation` strategies.
-//
-// `RecentTurns` is the number of most-recent conversation turns the
-// `rolling_summary` strategy keeps verbatim before older turns spill
-// into the rolling summary. Zero selects the strategy default
-// (`strategy.FullZoneTurns`, currently 4). Ignored by the `none`
-// strategy; the `truncation` strategy keeps every turn that fits the
-// budget so it does not consult this knob.
+// `RecentTurns` bounds the detailed execution window for cumulative
+// `rolling_summary` memory. Zero selects twenty turns; there is no fixed upper bound.
+// It does not bound the age of meaning in the checkpoint. Ignored by the `none`
+// strategy.
 //
 // Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
-	Driver             string          `yaml:"driver"`
-	DSN                string          `yaml:"dsn,omitempty" secret:"true"`
-	MigrationMode      sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
-	Strategy           string          `yaml:"strategy,omitempty"`
-	BudgetTokens       int             `yaml:"budget_tokens,omitempty"`
-	RecoveryBacklogMax int             `yaml:"recovery_backlog_max,omitempty"`
-	// RecentTurns is the verbatim recent-window size for the
-	// `rolling_summary` strategy. 0 → strategy default (FullZoneTurns).
+	Driver        string          `yaml:"driver"`
+	DSN           string          `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
+	Strategy      string          `yaml:"strategy,omitempty"`
+	BudgetTokens  int             `yaml:"budget_tokens,omitempty"`
+	// RecentTurns bounds recent execution detail; zero selects twenty turns.
 	RecentTurns int `yaml:"recent_turns,omitempty"`
 
-	// Summarizer tunes the `rolling_summary` compaction LLM: a
-	// switchable model and an append-only prompt extension. Ignored by
-	// the `none` and `truncation` strategies (which run no summariser).
+	// Summarizer tunes cumulative and within-run compaction. It is used
+	// when rolling_summary or a positive working-input budget is enabled.
 	Summarizer MemorySummarizerConfig `yaml:"summarizer,omitempty"`
-
-	// Retrieval is the opt-in retrieval mode. Empty (the default)
-	// keeps the strategy-shaped retrieval unchanged; `"semantic"`
-	// additionally embeds turns and serves similarity search
-	// (`MemoryStore.SearchTurns`), COMPOSING with the configured
-	// strategy — it never replaces `rolling_summary`. Requires the
-	// `embeddings` block (validated; no stub fallback).
-	Retrieval string `yaml:"retrieval,omitempty"`
-	// RetrievalTopK caps how many scored turns a semantic
-	// `SearchTurns` returns when the caller passes no limit. 0 uses
-	// the memory subsystem default (5). Ignored unless
-	// `retrieval: semantic`.
-	RetrievalTopK int `yaml:"retrieval_top_k,omitempty"`
-	// RetrievalMinScore is the cosine-similarity floor for semantic
-	// recall: a scored turn must meet or exceed this value to be
-	// injected into the prompt. Valid range [-1, 1]. Default 0.0
-	// (turns with negative similarity, i.e. anti-correlated with the
-	// query, are filtered out while marginally-similar turns are
-	// admitted). Ignored unless `retrieval: semantic`.
-	RetrievalMinScore float64 `yaml:"retrieval_min_score,omitempty"`
 }
 
-// MemorySummarizerConfig tunes the `rolling_summary` strategy's
-// compaction LLM. Both fields are optional and apply only when
-// `memory.strategy: rolling_summary`.
+// MemorySummarizerConfig tunes the compaction LLM. All fields are optional.
 //
 // `Model`, when set, pins the model the compaction summariser requests
 // (routed through the summariser's model override) so operators can run
 // compaction on a cheaper/faster model independent of the planner's
-// model. Empty selects the main LLM's default model — today's behavior.
+// model for locally configured inference. Empty inherits the run's model.
 // A model with no matching `model_profiles` entry fails at runtime the
 // same way any unsupported model does; it is not rejected at load time.
+// Externally routed inference instead needs ProviderRoute to authorize a
+// different model; it is mutually exclusive with Model.
 //
 // `Prompt`, when set, is APPENDED to the baseline summariser system
 // prompt behind an explicit "extend, do not override" separator — it
@@ -796,6 +765,28 @@ type MemoryConfig struct {
 type MemorySummarizerConfig struct {
 	Model  string `yaml:"model,omitempty"`  // "" → main LLM default model
 	Prompt string `yaml:"prompt,omitempty"` // "" → baseline only; else appended to the baseline summariser prompt
+	// MaxTokens reserves completion tokens for each compaction call, including
+	// provider reasoning where applicable. Zero keeps the 2048-token default;
+	// positive values remain subject to the selected model's capacity.
+	MaxTokens int `yaml:"max_tokens,omitempty"`
+	// MaxCalls bounds chronological maintenance calls per compaction. Zero
+	// selects sixteen; each call retains its ordinary governed retry allowance.
+	MaxCalls int `yaml:"max_calls,omitempty"`
+	// ProviderRoute selects a separately authorized route for compaction on
+	// externally routed runs. It uses the existing llm.provider_route resolver,
+	// never embeds credentials, and cannot choose the run's identity.
+	ProviderRoute *MemorySummarizerProviderRoute `yaml:"provider_route,omitempty"`
+}
+
+// MemorySummarizerProviderRoute is an operator-pinned opaque route selector.
+// Its generations must remain current at the existing external resolver.
+type MemorySummarizerProviderRoute struct {
+	RouteID                      string `yaml:"route_id"`
+	RouteGeneration              uint64 `yaml:"route_generation"`
+	ProviderConnectionID         string `yaml:"provider_connection_id"`
+	ProviderConnectionGeneration uint64 `yaml:"provider_connection_generation"`
+	CredentialAssetGeneration    uint64 `yaml:"credential_asset_generation"`
+	ModelSelector                string `yaml:"model_selector"`
 }
 
 // SkillsConfig is owned by the skills subsystem phases.
@@ -1011,10 +1002,22 @@ type DistributedConfig struct {
 	BusPollInterval time.Duration `yaml:"bus_poll_interval,omitempty"`
 }
 
-// SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
-// match RFC §6.9: idle TTL 24h, hard cap 30 days, sweep every 15 min.
-// Fields are not hot-reloadable in V1 (changing GC cadence at runtime
-// would race with the sweeper goroutine).
+// RecentTurnsResolved returns the cumulative memory window. Zero recent_turns
+// selects twenty detailed turns. Other strategies do not use this projection.
+func (c MemoryConfig) RecentTurnsResolved() int {
+	if c.Strategy == "none" {
+		return 0
+	}
+	if c.RecentTurns == 0 {
+		return 20
+	}
+	return c.RecentTurns
+}
+
+// SessionsConfig configures the SessionRegistry's GC sweeper and optional
+// session lifetime. Defaults match RFC §6.9: idle TTL 24h,
+// hard cap 30 days and sweep every 15 min. Memory activation belongs to memory.
+// Fields are not hot-reloadable; changing them requires a restart.
 type SessionsConfig struct {
 	IdleTTL       time.Duration `yaml:"idle_ttl"`
 	HardCap       time.Duration `yaml:"hard_cap"`
@@ -2439,19 +2442,6 @@ const (
 // `Budget`) remain reachable via a custom planner Option, not via
 // `harbor.yaml`. The block is omitted entirely when empty.
 //
-// `TokenBudget` is the trajectory-compression threshold.
-// When > 0 the per-task run loop projects it onto
-// `RunSpec.Base.Budget.TokenBudget` and the runtime assembly
-// constructs the trajectory compression runner (the LLM-backed
-// `TrajectorySummariser` over the configured LLM client); the
-// steering RunLoop then invokes `MaybeCompress` at each step
-// boundary, compacting an over-budget trajectory into
-// `Trajectory.Summary` (one compression per run at V1.1.x). Zero (the
-// default) disables compression entirely — today's behaviour. The
-// validator rejects negative values loudly pre-boot. Requires a
-// configured `llm` block when non-zero (the summariser needs a real
-// client; fail-loud at assembly).
-//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -2470,7 +2460,6 @@ type PlannerConfig struct {
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
 	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
 	MaxBatchSpawns         int                     `yaml:"max_batch_spawns,omitempty"`
-	TokenBudget            int                     `yaml:"token_budget,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
 }

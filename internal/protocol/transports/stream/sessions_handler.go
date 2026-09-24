@@ -139,6 +139,8 @@ func (h *SessionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveDelete(w, r, body, wireID)
 	case "set_title":
 		h.serveSetTitle(w, r, body, wireID)
+	case "reconcile_context":
+		h.serveReconcileContext(w, r, body, wireID)
 	default:
 		writeSessionsError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
 			"unknown sessions method route")
@@ -249,7 +251,14 @@ func decodeSessionsBody(body []byte, req any) error {
 	}
 	dec := json.NewDecoder(bytesReader(body))
 	dec.DisallowUnknownFields()
-	return dec.Decode(req)
+	if err := dec.Decode(req); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return errors.New("trailing session request content")
+	}
+	return nil
 }
 
 // writeServiceError maps a sessions/protocol.Service error onto a
@@ -271,6 +280,12 @@ func (h *SessionsHandler) writeServiceError(w http.ResponseWriter, r *http.Reque
 func classifySessionsError(method methods.Method, err error) (protoerrors.Code, int, string) {
 	m := string(method)
 	switch {
+	case errors.Is(err, sessionsprotocol.ErrContextReconcileUnsupported):
+		return protoerrors.CodeUnknownMethod, http.StatusNotFound, m + ": retained context is not enabled"
+	case errors.Is(err, sessionsprotocol.ErrContextUnsettled):
+		return protoerrors.CodeRetainedContextUnsettled, http.StatusConflict, m + ": external outcome is unknown; reconcile with the owning service, do not repeat the action"
+	case errors.Is(err, sessionsprotocol.ErrContextUnavailable):
+		return protoerrors.CodeRetainedContextUnavailable, http.StatusConflict, m + ": retained evidence is missing, expired, erased or invalid"
 	case errors.Is(err, sessionsprotocol.ErrIdentityRequired):
 		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			m + ": identity scope incomplete"

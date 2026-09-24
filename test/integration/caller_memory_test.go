@@ -18,9 +18,8 @@
 //     conversation tier;
 //   - COMPOSITION: the runtime's own conversation-memory producer and
 //     the caller's External key both survive on one run, and (through
-//     the production FetchMemoryBlocks → ComposeCallerMemory sequence
-//     with semantic recall ON) `recalled_turns` and `caller_supplied`
-//     coexist in one tier with neither altering the other;
+//     the real served execution path) historical evidence and caller data
+//     occupy separate messages without changing the stored source note;
 //   - the admission event carries a SIZE and never CONTENT;
 //   - FAILURE MODE 1: an over-cap payload is refused 400 naming the
 //     field, and NO task is created;
@@ -48,17 +47,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
-	patternsAudit "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
-	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
-	stateInmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
@@ -147,8 +142,8 @@ func newCMStack(t *testing.T, llmFailure error) *cmStack {
 	// The dev fixture ships `strategy: none`, which projects no
 	// conversation tier at all. The composition assertion needs the
 	// runtime's OWN producer to write one, so this stack runs the
-	// truncation strategy — a real shipped strategy, not a fixture.
-	cfg.Memory.Strategy = "truncation"
+	// cumulative strategy used by normal runtime execution.
+	cfg.Memory.Strategy = "rolling_summary"
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		LLMConfigSnapshot: phase110bLLMSnapshot(cfg),
 		PlannerOverride:   react.New(rec),
@@ -302,12 +297,11 @@ func TestE2E_CallerMemory_ReachesTheExternalTierAndNothingElse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	if err := s.stack.Memory.AddTurn(idCtx, identity.Quadruple{Identity: devID}, memory.ConversationTurn{
+	if _, err := s.stack.Memory.Put(idCtx, identity.Quadruple{Identity: devID}, memory.ConversationTurn{
 		UserMessage:       "what is the refund window?",
 		AssistantResponse: "thirty days",
-		Timestamp:         time.Now(),
 	}); err != nil {
-		t.Fatalf("memory.AddTurn: %v", err)
+		t.Fatalf("memory.Put: %v", err)
 	}
 
 	status, body := s.postStart(t,
@@ -359,7 +353,7 @@ func TestE2E_CallerMemory_ReachesTheExternalTierAndNothingElse(t *testing.T) {
 	// caller's write, in its own message.
 	var sawConversation bool
 	for _, m := range msgs {
-		if strings.Contains(m.Text, "<read_only_conversation_memory>") {
+		if strings.Contains(m.Text, "historical_user_request") {
 			sawConversation = true
 			if strings.Contains(m.Text, cmMarker) {
 				t.Fatal("the caller's marker leaked into the conversation tier — that tier is runtime-only")
@@ -401,129 +395,55 @@ func TestE2E_CallerMemory_ReachesTheExternalTierAndNothingElse(t *testing.T) {
 	}
 }
 
-// TestE2E_CallerMemory_ComposesWithSemanticRecall drives the PRODUCTION
-// fetch→compose sequence the run loop executes, with semantic recall ON,
-// over a real inmem memory driver and its real semantic executor.
-//
-// It is wired here rather than through devstack because devstack exposes
-// no Embedder seam and `memory.Open` refuses a semantic config without
-// one (fail-loud, never a stub). The Embedder is an explicit injection
-// point on `memory.Deps` — the deterministic one below is a fixture on a
-// declared seam, not a re-implementation of a subsystem.
-func TestE2E_CallerMemory_ComposesWithSemanticRecall(t *testing.T) {
-	red := patternsAudit.New()
-	bus, err := eventsInmem.New(config.EventsConfig{
-		Driver:                   "inmem",
-		MaxSubscribersPerSession: 16,
-		SubscriberBufferSize:     256,
-		IdleTimeout:              time.Minute,
-		DropWindow:               time.Second,
-	}, red)
+// TestE2E_CallerMemory_ComposesWithConversation preserves external caller data
+// separately from the runtime-owned conversation projection.
+func TestE2E_CallerMemory_ComposesWithConversation(t *testing.T) {
+	s := newCMStack(t, nil)
+	id := identity.Identity{TenantID: devstack.DefaultDevTenant, UserID: devstack.DefaultDevUser, SessionID: devstack.DefaultDevSession}
+	q := identity.Quadruple{Identity: id}
+	key, err := s.stack.Memory.Put(t.Context(), q, memory.ConversationTurn{
+		UserMessage: "refund window question", AssistantResponse: "thirty days",
+	})
 	if err != nil {
-		t.Fatalf("events inmem: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-
-	st, err := stateInmem.New(config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state inmem: %v", err)
+	before, err := s.stack.Memory.Inspect(t.Context(), q)
+	if err != nil || len(before.Items) != 1 {
+		t.Fatalf("Inspect before: %+v, %v", before, err)
 	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
-
-	// The production factory, not the driver constructor: the registry is
-	// what threads Deps.Embedder into the strategy executor, and going
-	// round it would test a wiring production does not use.
-	// Strategy `none` deliberately: FetchMemoryBlocks dedupes a recalled
-	// turn that is ALREADY in the patch's recent window, so a strategy
-	// that replays recent turns would suppress the very recall this leg
-	// exists to compose against.
-	store, err := memory.Open(context.Background(), memory.ConfigSnapshot{
-		Driver:    "inmem",
-		Strategy:  memory.StrategyNone,
-		Retrieval: memory.RetrievalSemantic,
-	}, memory.Deps{State: st, Bus: bus, Embedder: cmEmbedder{}})
-	if err != nil {
-		t.Fatalf("memory inmem: %v", err)
+	status, body := s.postStart(t, cmStartBody(id, "continue refund work", map[string]any{"note": cmMarker}), id, true)
+	if status != http.StatusOK {
+		t.Fatalf("start: %d %s", status, body)
 	}
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-
-	id := identity.Quadruple{Identity: identity.Identity{
-		TenantID: "tenant-compose", UserID: "alice", SessionID: "s-compose",
-	}}
-	ctx, err := identity.With(context.Background(), id.Identity)
-	if err != nil {
-		t.Fatalf("identity.With: %v", err)
-	}
-	// A stored turn the recall will retrieve.
-	if err := store.AddTurn(ctx, id, memory.ConversationTurn{
-		UserMessage:       "refund window question",
-		AssistantResponse: "thirty days",
-		Timestamp:         time.Now(),
-	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
-	}
-
-	mb, err := runctx.FetchMemoryBlocks(ctx, store, id, "refund window question",
-		memory.RecallSettings{Enabled: true, TopK: 5, MinScore: -1}, nil)
-	if err != nil {
-		t.Fatalf("FetchMemoryBlocks: %v", err)
-	}
-	ext, ok := mb.External.(map[string]any)
-	if !ok {
-		t.Fatalf("precondition: semantic recall wrote no External tier (%T) — the composition leg would be vacuous", mb.External)
-	}
-	recalledBefore, err := json.Marshal(ext["recalled_turns"])
-	if err != nil {
-		t.Fatalf("marshal recalled_turns: %v", err)
-	}
-
-	composed, err := runctx.ComposeCallerMemory(mb, json.RawMessage(fmt.Sprintf(`{"note":%q}`, cmMarker)))
-	if err != nil {
-		t.Fatalf("ComposeCallerMemory: %v", err)
-	}
-	composedExt, ok := composed.External.(map[string]any)
-	if !ok {
-		t.Fatalf("composed External is %T, want map[string]any", composed.External)
-	}
-	if _, present := composedExt["recalled_turns"]; !present {
-		t.Fatal("the runtime's recalled_turns key was displaced by the caller's write")
-	}
-	if _, present := composedExt[runctx.CallerSuppliedKey]; !present {
-		t.Fatalf("the caller's %q key is absent from the composed tier", runctx.CallerSuppliedKey)
-	}
-	recalledAfter, err := json.Marshal(composedExt["recalled_turns"])
-	if err != nil {
-		t.Fatalf("marshal recalled_turns (after): %v", err)
-	}
-	if !bytes.Equal(recalledBefore, recalledAfter) {
-		t.Fatalf("the runtime producer's value changed:\nbefore=%s\n after=%s", recalledBefore, recalledAfter)
-	}
-	if strings.Contains(string(recalledAfter), cmMarker) {
-		t.Fatal("the caller's content bled into the runtime's recalled_turns value")
-	}
-}
-
-// cmEmbedder is a deterministic fixture on the declared
-// `memory.Deps.Embedder` seam: a stable per-text vector so cosine
-// similarity is reproducible and the recall path is exercised for real.
-type cmEmbedder struct{}
-
-func (cmEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	for i, txt := range texts {
-		v := make([]float32, 8)
-		for j := range v {
-			var acc float32
-			for k, r := range txt {
-				if k%8 == j {
-					acc += float32(r%17) / 17
-				}
-			}
-			v[j] = acc + 0.1
+	req := s.cmAwaitRequest(t)
+	var external, historical bool
+	for _, msg := range cmMessageTexts(req) {
+		if strings.Contains(msg.Text, "<read_only_external_memory>") && strings.Contains(msg.Text, cmMarker) {
+			external = true
 		}
-		out[i] = v
+		if strings.Contains(msg.Text, "thirty days") {
+			historical = true
+			if strings.Contains(msg.Text, cmMarker) {
+				t.Fatal("external caller data merged into historical evidence")
+			}
+		}
 	}
-	return out, nil
+	if !external || !historical {
+		t.Fatalf("composition missing: external=%v historical=%v", external, historical)
+	}
+	after, err := s.stack.Memory.Inspect(t.Context(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range after.Items {
+		if item.Key == key {
+			if !bytes.Equal(item.Value, before.Items[0].Value) {
+				t.Fatal("caller memory changed the stored source note")
+			}
+			return
+		}
+	}
+	t.Fatal("caller memory displaced the stored source note")
 }
 
 // TestE2E_CallerMemory_OverCapRefusedAndNoTaskCreated is failure mode 1.

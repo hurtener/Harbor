@@ -14,6 +14,8 @@ type (
 	StateStore = internal.StateStore
 	// StateRecord is one stored state record.
 	StateRecord = internal.StateRecord
+	// SlotExpectation names an ordinary state slot and its expected generation.
+	SlotExpectation = internal.SlotExpectation
 	// EventID identifies one appended state event.
 	EventID = internal.EventID
 	// ListScope is the explicit scope claim StateStore.ListKind
@@ -41,6 +43,8 @@ var (
 	ErrReservedKind = internal.ErrReservedKind
 	// ErrReservedIdentity — an ordinary caller targeted Harbor's coordination principal.
 	ErrReservedIdentity = internal.ErrReservedIdentity
+	// ErrConditionFailed — a conditional write observed a different generation.
+	ErrConditionFailed = internal.ErrConditionFailed
 	// ErrCommitOutcomeUnknown — a transaction commit acknowledgement was ambiguous.
 	ErrCommitOutcomeUnknown = internal.ErrCommitOutcomeUnknown
 	// ErrUnknownDriver — the named state driver is not registered.

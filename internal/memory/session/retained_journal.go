@@ -1,0 +1,405 @@
+package session
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"time"
+
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/trajectory"
+	"github.com/hurtener/Harbor/internal/state"
+)
+
+const (
+	retainedJournalKind    = state.InternalKindPrefix + "session-execution-journal"
+	retainedJournalVersion = 1
+)
+
+type retainedJournal struct {
+	Version   int               `json:"version"`
+	Admission retainedAdmission `json:"admission"`
+	Query     string            `json:"query"`
+	Count     int               `json:"count"`
+	Bytes     int               `json:"bytes"`
+	Pending   bool              `json:"pending"`
+	Terminal  string            `json:"terminal,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+type retainedFrame struct {
+	Version   int               `json:"version"`
+	Admission retainedAdmission `json:"admission"`
+	Index     int               `json:"index"`
+	Settled   bool              `json:"settled"`
+	Context   bool              `json:"context,omitempty"`
+	Step      json.RawMessage   `json:"step"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+func retainedFrameKind(index int) string {
+	return fmt.Sprintf("%s/action/%03d", retainedJournalKind, index)
+}
+
+// Start commits the admitted query before model or tool work. It creates a
+// private run-local journal, not another public transcript. Each later dispatch
+// writes only one bounded frame plus this small head through SaveBatchIf.
+func (r *RetainedRun) Start(ctx context.Context, base planner.RunContext) (err error) {
+	defer func() { r.rememberJournalFailure(err) }()
+	if base.Quadruple != r.q || base.Trajectory == nil || r.finished || r.journalID != "" {
+		return ErrRetainedContextUnavailable
+	}
+	query, err := r.redactJournalValue(ctx, base.Query)
+	if err != nil {
+		return err
+	}
+	var safeQuery string
+	if err := decodeRetained(query, &safeQuery); err != nil {
+		return err
+	}
+	head := retainedJournal{
+		Version: retainedJournalVersion, Admission: r.admission,
+		Query: safeQuery, Bytes: len(query), ExpiresAt: r.now().Add(r.ttl),
+	}
+	var frame []byte
+	if r.initialContext != nil {
+		frame, _, err = r.makeFrame(ctx, 0, true, *r.initialContext, head.ExpiresAt)
+		if err != nil {
+			return err
+		}
+		head.Count = 1
+		head.Bytes += len(frame)
+	}
+	// Query and initial references commit atomically. Recovery cannot observe
+	// a query-only head after supplied attachments were already admitted.
+	return r.commitJournal(ctx, head, frame, "")
+}
+
+// BeforeDispatch commits intent before any external invocation. A frame without
+// a settlement means outcome unknown, not failed. A parallel decision is one
+// complete exchange: partial branch execution remains unknown after a crash.
+func (r *RetainedRun) BeforeDispatch(ctx context.Context, rc planner.RunContext, step planner.Step) (err error) {
+	defer func() { r.rememberJournalFailure(err) }()
+	if err := r.checkJournal(rc); err != nil {
+		return err
+	}
+	if r.journal.Pending || step.Action == nil {
+		return ErrRetainedContextUnavailable
+	}
+	// Execution's configured step/tranche budget owns work admission. The
+	// persistence journal must not add another lifetime cap across continuations.
+	frame, _, err := r.makeFrame(ctx, r.journal.Count, false, step, r.journal.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	head := r.journal
+	head.Count++
+	head.Pending = true
+	head.Bytes += len(frame)
+	return r.commitJournal(ctx, head, frame, "")
+}
+
+// AfterDispatch commits the entire permitted result/error before a dependent
+// model decision. Its context may be a bounded post-cancellation persistence
+// context, but it can never start or retry an external action.
+func (r *RetainedRun) AfterDispatch(ctx context.Context, rc planner.RunContext, step planner.Step) (err error) {
+	defer func() { r.rememberJournalFailure(err) }()
+	if err := r.checkJournal(rc); err != nil {
+		return err
+	}
+	if !r.journal.Pending || len(r.frameIDs) != r.journal.Count {
+		return ErrRetainedContextUnavailable
+	}
+	index := r.journal.Count - 1
+	old, err := r.store.Load(ctx, r.q, retainedFrameKind(index))
+	if err != nil {
+		return fmt.Errorf("%w: load dispatch intent: %w", ErrRetainedContextUnavailable, err)
+	}
+	if old.ID != r.frameIDs[index] || old.Identity != r.q || old.Kind != retainedFrameKind(index) {
+		return ErrRetainedContextUnavailable
+	}
+	frame, settledAction, err := r.makeFrame(ctx, index, true, step, r.journal.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	var before retainedFrame
+	if err := decodeRetained(old.Bytes, &before); err != nil {
+		return err
+	}
+	var intentStep planner.Step
+	if err := decodeRetained(before.Step, &intentStep); err != nil {
+		return err
+	}
+	intentAction, intentErr := json.Marshal(intentStep.Action)
+	if intentErr != nil || before.Version != retainedJournalVersion ||
+		before.Admission != r.admission || before.Index != index || before.Settled || before.Context ||
+		!before.ExpiresAt.Equal(r.journal.ExpiresAt) ||
+		!bytes.Equal(intentAction, settledAction) {
+		return ErrRetainedContextUnavailable
+	}
+	head := r.journal
+	head.Pending = false
+	head.Bytes += len(frame) - len(old.Bytes)
+	return r.commitJournal(ctx, head, frame, old.ID)
+}
+
+// RecordContext commits one applied, non-executable context update. It shares
+// the ordered bounded journal with dispatches; a failed write cannot be repaired
+// by continuing with forgotten instructions. The caller appends the same step
+// to the live trajectory only after this write succeeds.
+func (r *RetainedRun) RecordContext(ctx context.Context, rc planner.RunContext, step planner.Step) (err error) {
+	defer func() { r.rememberJournalFailure(err) }()
+	if err := r.checkJournal(rc); err != nil {
+		return err
+	}
+	if r.journal.Pending || step.Action != nil || step.LLMObservation == nil || step.Historical != nil ||
+		step.Observation != nil || step.ReasoningTrace != "" || step.AssistantPreamble != "" || step.Streams != nil || step.Failure != nil || step.Error != "" {
+		return ErrRetainedContextUnavailable
+	}
+	frame, _, err := r.makeFrame(ctx, r.journal.Count, true, step, r.journal.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	head := r.journal
+	head.Count++
+	head.Bytes += len(frame)
+	return r.commitJournal(ctx, head, frame, "")
+}
+
+func (r *RetainedRun) checkJournal(rc planner.RunContext) error {
+	if rc.Quadruple != r.q || r.finished || r.journalID == "" || r.journalFailure != nil {
+		return ErrRetainedContextUnavailable
+	}
+	return nil
+}
+
+func (r *RetainedRun) rememberJournalFailure(err error) {
+	if err != nil && r.journalFailure == nil {
+		r.journalFailure = err
+	}
+}
+
+// makeFrame validates the redactor's result before constructing host metadata.
+// Return the checked action bytes as well: settlement compares them with the
+// stored intent without decoding the just-built frame and its receipt again.
+// This is a call-local value, not cached authority or a skipped storage check.
+func (r *RetainedRun) makeFrame(ctx context.Context, index int, settled bool, step planner.Step, expiresAt time.Time) ([]byte, []byte, error) {
+	evidence, err := r.redactJournalValue(ctx, trajectory.ModelStep(step))
+	if err != nil {
+		return nil, nil, err
+	}
+	// ReadHistoricalStep validates permitted top-level fields and semantics;
+	// also retain strict nested typed host checks before accepting custom
+	// redactor JSON. Opaque tool-result fields remain data.
+	if err := validateRetainedShape(evidence, reflect.TypeFor[planner.Step]()); err != nil {
+		return nil, nil, err
+	}
+	checked, err := planner.ReadHistoricalStep(planner.Step{Historical: &planner.HistoricalStep{
+		Version: 1, SourceRun: r.q.RunID, Index: index, Kind: "context", Body: evidence,
+	}})
+	if err != nil {
+		return nil, nil, ErrRetainedContextUnavailable
+	}
+	if (checked.Action == nil) != (step.Action == nil) ||
+		(checked.Action != nil && !sameRetainedActionIdentity(step.Action, checked.Action)) ||
+		(checked.Action == nil && (!settled || checked.LLMObservation == nil)) {
+		return nil, nil, ErrRetainedContextUnavailable
+	}
+	action, err := json.Marshal(checked.Action)
+	if err != nil {
+		return nil, nil, ErrRetainedContextUnavailable
+	}
+	frame, err := json.Marshal(retainedFrame{
+		Version: retainedJournalVersion, Admission: r.admission, Index: index,
+		Settled: settled, Context: checked.Action == nil, Step: evidence, ExpiresAt: expiresAt,
+	})
+	return frame, action, err
+}
+
+// sameRetainedActionIdentity permits a custom redactor to rewrite content-bearing
+// arguments and descriptions, but never the operation shape, target, call ID or
+// authority-bearing controls. The executor receives the original action; allowing
+// those coordinates to change in the journal would persist evidence for a
+// different operation than the one about to run.
+func sameRetainedActionIdentity(original, redacted any) bool {
+	want, err := retainedActionIdentity(original)
+	if err != nil {
+		return false
+	}
+	got, err := retainedActionIdentity(redacted)
+	return err == nil && reflect.DeepEqual(want, got)
+}
+
+func retainedActionIdentity(action any) (any, error) {
+	encoded, err := json.Marshal(action)
+	if err != nil {
+		return nil, err
+	}
+	var identity any
+	if err := decodeRetained(encoded, &identity); err != nil {
+		return nil, err
+	}
+	stripRetainedActionContent(identity)
+	return identity, nil
+}
+
+func stripRetainedActionContent(value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			switch key {
+			case "Args", "Description", "Query", "Reason", "Directive", "Payload", "Metadata", "Phase", "Message", "Tags":
+				delete(value, key)
+			default:
+				stripRetainedActionContent(child)
+			}
+		}
+	case []any:
+		for _, child := range value {
+			stripRetainedActionContent(child)
+		}
+	}
+}
+
+func (r *RetainedRun) redactJournalValue(ctx context.Context, value any) ([]byte, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, ErrRetainedContextUnavailable
+	}
+	var tree any
+	if err := decodeRetained(encoded, &tree); err != nil {
+		return nil, err
+	}
+	safe, err := r.redactor.Redact(ctx, tree)
+	if err != nil {
+		return nil, fmt.Errorf("%w: dispatch redaction: %w", ErrRetainedContextUnavailable, err)
+	}
+	if safe == nil {
+		return nil, ErrRetainedContextUnavailable
+	}
+	encoded, err = json.Marshal(safe)
+	if err != nil {
+		return nil, ErrRetainedContextUnavailable
+	}
+	return encoded, nil
+}
+
+func (r *RetainedRun) commitJournal(ctx context.Context, head retainedJournal, frame []byte, previousFrame state.EventID) error {
+	body, err := json.Marshal(head)
+	if err != nil || head.Bytes < 0 {
+		return ErrRetainedContextUnavailable
+	}
+	next := state.NewInternalRecord(state.NewEventID(), r.q, retainedJournalKind, body)
+	var nextFrame state.StateRecord
+	if frame != nil {
+		nextFrame = state.NewInternalRecord(state.NewEventID(), r.q, retainedFrameKind(head.Count-1), frame)
+	}
+	for range retainedContextAttempts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !r.prefixExpiresAt.IsZero() && !r.prefixExpiresAt.After(r.now()) {
+			return ErrRetainedContextUnavailable
+		}
+		window, windowID, err := r.load(ctx)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, active := range window.Active {
+			if active == r.admission {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrRetainedContextUnavailable
+		}
+		predicates, err := r.erasurePredicates()
+		if err != nil {
+			return err
+		}
+		predicates = append(predicates,
+			state.InternalSlotExpectation(identity.Quadruple{Identity: r.q.Identity}, retainedContextKind, windowID),
+			state.InternalSlotExpectation(r.q, retainedJournalKind, r.journalID))
+		writes := []state.StateRecord{next}
+		if frame != nil {
+			predicates = append(predicates, state.InternalSlotExpectation(r.q, nextFrame.Kind, previousFrame))
+			writes = append(writes, nextFrame)
+		}
+		if err := r.store.SaveBatchIf(ctx, predicates, writes); errors.Is(err, state.ErrConditionFailed) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("%w: commit dispatch checkpoint: %w", ErrRetainedContextUnavailable, err)
+		}
+		r.journal, r.journalID = head, next.ID
+		if frame != nil {
+			if previousFrame == "" {
+				r.frameIDs = append(r.frameIDs, nextFrame.ID)
+			} else {
+				r.frameIDs[head.Count-1] = nextFrame.ID
+			}
+		}
+		return nil
+	}
+	return ErrRetainedContextUnavailable
+}
+
+// Seal the journal and publish the terminal window in one transaction. Never
+// acknowledge a terminal turn over a pending or uncommitted dispatch outcome.
+func (r *RetainedRun) saveTerminal(ctx context.Context, previous state.EventID, window retainedWindow, status string) error {
+	if r.journalID == "" {
+		return r.save(ctx, previous, window)
+	}
+	data, err := json.Marshal(window)
+	if err != nil {
+		return ErrRetainedContextUnavailable
+	}
+	head := r.journal
+	head.Terminal = status
+	body, err := json.Marshal(head)
+	if err != nil {
+		return ErrRetainedContextUnavailable
+	}
+	predicates, err := r.erasurePredicates()
+	if err != nil {
+		return err
+	}
+	q := identity.Quadruple{Identity: r.q.Identity}
+	predicates = append(predicates,
+		state.InternalSlotExpectation(q, retainedContextKind, previous),
+		state.InternalSlotExpectation(r.q, retainedJournalKind, r.journalID))
+	next := state.NewInternalRecord(state.NewEventID(), r.q, retainedJournalKind, body)
+	if err := r.store.SaveBatchIf(ctx, predicates, []state.StateRecord{
+		state.NewInternalRecord(state.NewEventID(), q, retainedContextKind, data), next,
+	}); err != nil {
+		return err
+	}
+	r.journal, r.journalID = head, next.ID
+	return nil
+}
+
+// Committed terminal evidence now lives in the bounded session window. Remove
+// transient frames by exact generation; erasure is allowed to have removed them
+// already. A cleanup error is explicit and never permission to replay actions.
+func (r *RetainedRun) cleanupJournal(ctx context.Context) error {
+	if r.journalID == "" {
+		return nil
+	}
+	for i, id := range r.frameIDs {
+		if id == "" {
+			continue // an idempotent reconciliation observed prior cleanup
+		}
+		if _, err := r.store.DeleteIf(ctx, state.InternalSlotExpectation(r.q, retainedFrameKind(i), id)); err != nil {
+			return fmt.Errorf("%w: cleanup dispatch frame: %w", ErrRetainedContextUnavailable, err)
+		}
+	}
+	if _, err := r.store.DeleteIf(ctx, state.InternalSlotExpectation(r.q, retainedJournalKind, r.journalID)); err != nil {
+		return fmt.Errorf("%w: cleanup dispatch head: %w", ErrRetainedContextUnavailable, err)
+	}
+	return nil
+}

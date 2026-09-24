@@ -372,6 +372,11 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "SessionsDeleteRequest", Response: "SessionsDeleteResponse",
 			Auth: "Own-session-only — a caller erases solely their own verified `(tenant, user, session)`; a body identity mismatching the verified identity is rejected `identity_required`. No admin / cross-tenant path.",
 		},
+		methods.MethodSessionsReconcileContext: {
+			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsReconcileContext), Mutates: true,
+			Request: "SessionsReconcileContextRequest", Response: "SessionsReconcileContextResponse",
+			Auth: "Own-session only; verified tenant/user/session is authoritative, including for admin callers. Requires retained context enabled. Seals only fully settled evidence; pending effects return retained_context_unsettled (409). Does not resume, dispatch, or return private content.",
+		},
 		methods.MethodSessionsSetTitle: {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsSetTitle), Mutates: true,
 			Request: "SessionsSetTitleRequest", Response: "SessionsSetTitleResponse",

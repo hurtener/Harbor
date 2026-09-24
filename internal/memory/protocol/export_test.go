@@ -9,9 +9,6 @@ package protocol
 // inline, so the leak branch is unreachable through Get).
 
 import (
-	"context"
-
-	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
@@ -22,7 +19,7 @@ import (
 // that would let a heavy value reach the inline path; buildDetail MUST
 // fail loudly with ErrContextLeak (D-026). Returns the buildDetail
 // error so the test can assert errors.Is(err, ErrContextLeak).
-func BuildDetailLeakProbe(ctx context.Context, store artifacts.ArtifactStore, threshold int, heavyValue []byte, id identity.Quadruple) error {
+func BuildDetailLeakProbe(threshold int, heavyValue []byte, id identity.Quadruple) error {
 	row := projectedTurn{
 		item: prototypes.MemoryItem{
 			Key:          "mem_leakprobe",
@@ -33,8 +30,7 @@ func BuildDetailLeakProbe(ctx context.Context, store artifacts.ArtifactStore, th
 		},
 		value: heavyValue,
 	}
-	_, err := buildDetail(ctx, GetDeps{
-		Artifacts:      store,
+	_, err := buildDetail(GetDeps{
 		HeavyThreshold: threshold,
 	}, row, id)
 	return err

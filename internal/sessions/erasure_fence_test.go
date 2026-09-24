@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -252,10 +253,10 @@ func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.
 	if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := f.mem.Put(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 	if _, err := f.arts.PutBytes(ctx, scope, []byte("blob"), artifacts.PutOpts{Namespace: "test"}); err != nil {
@@ -271,7 +272,7 @@ func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.
 	flaky := &flakyFencerBus{EventBus: f.bus, fencer: realFencer, fail: &fail}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills, Bus: flaky,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -286,12 +287,11 @@ func TestCascadeEraser_FenceError_FailsLoud_NothingDeleted_RetrySafe(t *testing.
 	if _, lerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); lerr != nil {
 		t.Errorf("fence failure deleted the session record: %v", lerr)
 	}
-	patch, gerr := f.mem.GetLLMContext(ctx, identity.Quadruple{Identity: id})
-	if gerr != nil {
-		t.Fatalf("GetLLMContext: %v", gerr)
+	if _, gerr := f.mem.Inspect(ctx, identity.Quadruple{Identity: id}); !errors.Is(gerr, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("pending erasure must fence memory even when the event fence fails: %v", gerr)
 	}
-	if len(patch.RecentTurns) == 0 {
-		t.Error("fence failure purged memory before any destructive step ran")
+	if _, gerr := f.store.Load(ctx, identity.Quadruple{Identity: id}, state.InternalKindPrefix+"session-execution-context"); gerr != nil {
+		t.Fatalf("fence failure purged memory before any destructive step ran: %v", gerr)
 	}
 	refs, lerr := f.arts.List(ctx, scope)
 	if lerr != nil {
@@ -369,7 +369,7 @@ func TestCascadeEraser_NonFencerBus_Erase_Succeeds_WarnOnly(t *testing.T) {
 	}
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills,
 		Bus: &nonFencerBus{inner: f.bus},
 	})
 	if err != nil {

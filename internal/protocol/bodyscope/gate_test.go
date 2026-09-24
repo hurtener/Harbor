@@ -55,7 +55,6 @@ var elevationSiteAllowList = map[string]string{
 	// claim and recorded before these run.
 	filepath.Join("internal", "sessions", "protocol", "enricher.go"):                "a fleet session listing rolls up each row's counters under that row's own identity; the mint re-checks the admin-tier claim itself rather than inheriting the listing's check",
 	filepath.Join("internal", "search", "tasks", "index.go"):                        "a fleet task search reads each hit under the identity of the session that matched; the mint re-checks the admin-tier claim itself rather than inheriting the fan-in's check",
-	filepath.Join("internal", "memory", "strategy", "semantic.go"):                  "an embedding call is attributed to the identity the stored vectors are scoped under, so provenance follows the record rather than the reader",
 	filepath.Join("internal", "skills", "drivers", "localdb", "search_semantic.go"): "an embedding call is attributed to the identity the stored skill is scoped under, so provenance follows the record rather than the reader",
 	filepath.Join("internal", "skills", "drivers", "postgres", "search.go"):         "an embedding call is attributed to the identity the stored skill is scoped under, so provenance follows the record rather than the reader",
 	filepath.Join("internal", "skills", "snapshot_candidate_searcher.go"):           "a frozen, already-authorized run snapshot attributes semantic embedding to its bound candidate identity; cross-tenant attribution uses the same reviewed path as the configured store drivers",

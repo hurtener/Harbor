@@ -119,6 +119,9 @@ func TestOpenTurnsStore_DispatchMatrix(t *testing.T) {
 	if _, err := openTurnsStore(config.TurnsConfig{Driver: "sqlite"}); err == nil {
 		t.Fatal("openTurnsStore (sqlite, no dsn) must fail loud")
 	}
+	if _, err := openTurnsStore(config.TurnsConfig{Driver: "postgres"}); err == nil {
+		t.Fatal("openTurnsStore (postgres, no dsn) must fail loud")
+	}
 	s, err := openTurnsStore(config.TurnsConfig{Driver: "sqlite", DSN: ":memory:", Retention: 5})
 	if err != nil {
 		t.Fatalf("openTurnsStore (sqlite, dsn): %v", err)
@@ -148,6 +151,9 @@ func TestOpenRollupsStore_DispatchMatrix(t *testing.T) {
 	}
 	if _, err := openRollupsStore(config.RollupsConfig{Driver: "sqlite"}); err == nil {
 		t.Fatal("openRollupsStore (sqlite, no dsn) must fail loud")
+	}
+	if _, err := openRollupsStore(config.RollupsConfig{Driver: "postgres"}); err == nil {
+		t.Fatal("openRollupsStore (postgres, no dsn) must fail loud")
 	}
 	if _, err := openRollupsStore(config.RollupsConfig{Driver: "sqlite", DSN: ":memory:"}); err != nil {
 		t.Fatalf("openRollupsStore (sqlite, dsn): %v", err)

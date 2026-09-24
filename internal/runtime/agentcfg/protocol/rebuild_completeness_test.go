@@ -71,6 +71,7 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 			AuthorityIssuer: "seed-issuer", AuthorityKeyID: "seed-kid", AuthorityJTIHash: "seed-jti-hash",
 		},
 		SignedOAuthMCPPairs: &pairs,
+		Memory:              &agentcfg.MemorySection{BudgetTokens: 64000},
 		LLMParams: &agentcfg.LLMParams{
 			Model:           strPtr("seed-model"),
 			Temperature:     f64(0.42),

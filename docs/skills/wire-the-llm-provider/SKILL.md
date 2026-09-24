@@ -242,7 +242,7 @@ embeddings:
   # dimensions: 256                # optional reduced output dimension
 ```
 
-You only need it when something consumes embeddings — the opt-in semantic retrieval modes (`memory.retrieval: semantic` / `skills.retrieval: semantic`; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md)) or your own à-la-carte retrieval (`docs/recipes/embed-and-retrieve.md`). Enabling a semantic mode without the block fails validation loudly naming the missing keys; there is no mock embeddings driver and no fallback to the chat provider.
+You only need it when something consumes embeddings — semantic skill retrieval (`skills.retrieval: semantic`; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md)) or your own à-la-carte retrieval (`docs/recipes/embed-and-retrieve.md`). Enabling a semantic mode without the block fails validation loudly naming the missing keys; there is no mock embeddings driver and no fallback to the chat provider.
 
 ## Common failure modes
 

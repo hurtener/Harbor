@@ -364,3 +364,18 @@ var EnsureGrantAttemptScope = internal.EnsureGrantAttemptScope
 
 // WithAttemptCoordinates derives retry/downgrade/fallback coordinates.
 var WithAttemptCoordinates = internal.WithAttemptCoordinates
+
+// RequestTokenSections contains the canonical structural input estimates.
+type RequestTokenSections = internal.RequestTokenSections
+
+// ContextPreparedPayload is the content-free request preparation event payload.
+type ContextPreparedPayload = internal.ContextPreparedPayload
+
+// ContextHistory is the runtime-owned checkpoint and replay-range snapshot.
+type ContextHistory = internal.ContextHistory
+
+// EventTypeContextPrepared identifies the existing-event-stream diagnostics.
+const EventTypeContextPrepared = internal.EventTypeContextPrepared
+
+// EstimateRequestTokenSections partitions the same estimate used for admission.
+var EstimateRequestTokenSections = internal.EstimateRequestTokenSections

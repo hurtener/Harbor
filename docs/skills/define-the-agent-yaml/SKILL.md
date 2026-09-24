@@ -65,10 +65,6 @@ planner:
     Voice/tone rules. Hard negatives. Safety notes.
     Operator-supplied; injected into the planner's system prompt.
   reasoning_replay: never                      # or `text` to round-trip the trace into the next turn
-  token_budget: 0                              # 0 (default) = trajectory compression OFF; > 0 = once the
-                                               # trajectory's token estimate exceeds it, the runtime
-                                               # compacts step history into a summary (one compression
-                                               # per run; needs the llm block)
 ```
 
 `max_steps` is a **continuable tranche**, not a termination knob. When a tranche of planner steps is consumed without a terminal Finish, the run is **parked** through the unified pause primitive — a typed `constraints_conflict` pause carrying `{cause: max_steps_exceeded, max_steps, steps_observed}` — instead of being forced to finalise. An authorised RESUME continues the SAME run with a fresh tranche (the tranche counter resets; the cumulative trajectory is untouched), so long-running work spans repeated cycles as ONE run (D-418); a fresh process cannot resume a parked run and answers the typed `ErrRestartUnavailable` (D-417). Zero (the default) resolves to the driver default (12) and never means unbounded; the planner-side per-tranche breaker ends the cycle with the typed `NoPath` Finish (`max_steps_exceeded`), and the runtime's outer `ErrMaxStepsExceeded` guard (default 64) remains the runaway backstop when tranche pausing is unavailable. See `docs/CONFIG.md` › `planner.max_steps`.
@@ -85,15 +81,45 @@ for the trust tiers, replacement behavior, and validation limits.
 
 ### `memory`
 
-Multi-turn context. Default strategy is `none` (no memory across runs in a session); flip to `rolling_summary` for chatbot agents that need it.
+Multi-turn execution context. The default is cumulative `rolling_summary`;
+choose `none` explicitly for stateless agents. All adapters share the execution
+owner, and the `state` configuration below determines durability.
 
 ```yaml
 memory:
-  driver: sqlite                               # or `inmem` (dev default) / `postgres`
-  dsn: ./my-agent-memory.sqlite                # MOVE outside the project dir to avoid the WAL trap
-  strategy: rolling_summary                    # or `truncation` / `none`
-  budget_tokens: 8000                          # max tokens replayed per turn
+  driver: inmem                                # administrative adapter; persistence uses state
+  strategy: rolling_summary                    # or explicit `none`
+  recent_turns: 20                              # detailed tail, not checkpoint history
+  budget_tokens: 8000                          # working-input target, NOT an output limit
 ```
+
+The working-input compaction target is configured with `memory.budget_tokens`; the removed
+`planner.token_budget` is rejected, not silently translated. With
+`rolling_summary`, zero derives the target from the effective model's input
+capacity and output reservation. A positive target also enables within-run
+compaction for stateless agents. Fresh results remain protected, so this is a
+soft working target, not permission to truncate evidence to fit.
+
+Separately, `memory.summarizer.max_tokens` sets the compaction call's completion
+allowance (including provider reasoning), not the driving model's output limit.
+Omitted/zero preserves 2048; a positive deployment-specific value remains subject
+to governed model capacity. YAML or `HARBOR_MEMORY_SUMMARIZER_MAX_TOKENS` changes
+require a restart. See [the reference](../../CONFIG.md#memorysummarizermax_tokens).
+
+`memory.summarizer.max_calls` separately limits chronological calls per compaction
+(zero/omitted: 16); `HARBOR_MEMORY_SUMMARIZER_MAX_CALLS` is its environment override.
+It is restart-required and never authorizes extra tool work or a partial summary.
+Increasing it can increase time and spend. `recent_turns` remains configurable
+with a default of 20 and no hardcoded 32-turn maximum. See
+[the maintenance allowance](../../CONFIG.md#memorysummarizermax_calls).
+
+On the PR #779 cumulative-memory branch, `rolling_summary` also enables the
+shared served/embedded execution-context path. `recent_turns: 20` (or zero)
+bounds detailed history, not checkpoint age. The separate
+`sessions.retained_context_turns` and SDK activation option are removed.
+Omitted settings and newly scaffolded agents select this behavior. The old
+pair-summary engine is removed; `truncation` and `memory.recovery_backlog_max`
+are rejected rather than enabling a second pipeline.
 
 The WAL trap: `dsn: ./...` inside the project directory triggers `harbor dev`'s fsnotify watcher and reboots the runtime in a loop. Default-drop the DSN at `/tmp/harbor-validation/my-agent-memory.sqlite` or `~/.harbor/my-agent-memory.sqlite`. See [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) §3.
 
@@ -249,7 +275,7 @@ Failure modes the validator catches:
 
 - **Required field missing** — `llm.driver`, `llm.provider`, `llm.model`, `identity.issuer`, etc.
 - **Type mismatches** — `memory.budget_tokens: "8000"` (string instead of int).
-- **Enum violations** — `memory.strategy: "summary"` (not one of `none` / `truncation` / `rolling_summary`).
+- **Enum violations** — `memory.strategy: "summary"` (not one of `none` / `rolling_summary`).
 - **Bound violations** — `governance.identity_tiers.free.budget_ceiling_usd: -1` (negative).
 - **Cross-field constraints** — `memory.driver: sqlite` without `memory.dsn`.
 

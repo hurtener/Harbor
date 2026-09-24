@@ -75,6 +75,10 @@ const (
 	// CodeRestartUnavailable marks a persisted tranche pause that has no
 	// live in-process run loop capable of continuing it.
 	CodeRestartUnavailable Code = "restart_unavailable"
+	// CodeRetainedContextUnsettled refuses recovery of an unknown external outcome.
+	CodeRetainedContextUnsettled Code = "retained_context_unsettled"
+	// CodeRetainedContextUnavailable rejects missing, expired or invalid context.
+	CodeRetainedContextUnavailable Code = "retained_context_unavailable"
 	// CodeRuntimeError — a runtime-side failure the surface could not
 	// classify into a more specific code. The catch-all; a transport
 	// adapter maps it to a 500.
@@ -318,6 +322,8 @@ var canonicalCodes = map[Code]struct{}{
 	CodeUnknownMethod:                    {},
 	CodeNotFound:                         {},
 	CodeRestartUnavailable:               {},
+	CodeRetainedContextUnsettled:         {},
+	CodeRetainedContextUnavailable:       {},
 	CodeRuntimeError:                     {},
 	CodeAuthRejected:                     {},
 	CodeIdentityScopeRequired:            {},

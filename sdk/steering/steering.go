@@ -20,6 +20,8 @@ type (
 	RunSpec = internal.RunSpec
 	// ToolExecutor dispatches the planner's non-Finish decisions.
 	ToolExecutor = internal.ToolExecutor
+	// DispatchCheckpoint persists intent and settlement at dispatch boundaries.
+	DispatchCheckpoint = internal.DispatchCheckpoint
 	// Registry is the per-run steering inbox registry.
 	Registry = internal.Registry
 	// Option customises NewRegistry.

@@ -52,10 +52,12 @@ var runLoopDriverTestID = identity.Identity{
 
 func mkDriverTestBus(t *testing.T, red audit.Redactor) events.EventBus {
 	t.Helper()
+	// Match the production queue capacity: shared-driver tests issue 128
+	// accepted tasks before a consumer is guaranteed a scheduling turn.
 	cfg := config.EventsConfig{
 		Driver:                   "inmem",
 		MaxSubscribersPerSession: 16,
-		SubscriberBufferSize:     64,
+		SubscriberBufferSize:     config.Defaults().Events.SubscriberBufferSize,
 		IdleTimeout:              500 * time.Millisecond,
 		DropWindow:               50 * time.Millisecond,
 	}
@@ -199,7 +201,7 @@ func (p *driverTestPlanner) Next(_ context.Context, rc planner.RunContext) (plan
 // TestPerTaskRunLoopDriver_FailsLoud_NilBus — the driver constructor
 // rejects a nil bus. Sanity for the §13 fail-loudly contract.
 func TestPerTaskRunLoopDriver_FailsLoud_NilBus(t *testing.T) {
-	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		RunLoop: &steering.RunLoop{},
 		Planner: &driverTestPlanner{},
 		Tasks:   stubTaskRegistry{},
@@ -213,7 +215,7 @@ func TestPerTaskRunLoopDriver_FailsLoud_NilBus(t *testing.T) {
 func TestPerTaskRunLoopDriver_FailsLoud_NilRunLoop(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		Planner: &driverTestPlanner{},
 		Tasks:   stubTaskRegistry{},
@@ -227,7 +229,7 @@ func TestPerTaskRunLoopDriver_FailsLoud_NilRunLoop(t *testing.T) {
 func TestPerTaskRunLoopDriver_FailsLoud_NilPlanner(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: &steering.RunLoop{},
 		Tasks:   stubTaskRegistry{},
@@ -243,7 +245,7 @@ func TestPerTaskRunLoopDriver_FailsLoud_NilPlanner(t *testing.T) {
 func TestPerTaskRunLoopDriver_FailsLoud_NilTasks(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	_, err := NewRunLoopDriver(RunLoopDriverOptions{
+	_, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: &steering.RunLoop{},
 		Planner: &driverTestPlanner{},
@@ -283,7 +285,7 @@ func TestPerTaskRunLoopDriver_PicksUpTaskSpawned_DrivesRunLoop(t *testing.T) {
 		pauseReason: planner.PauseApprovalRequired,
 		stepsCh:     stepsCh,
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -329,7 +331,7 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksComplete(t *testing.T) {
 	}
 	// Planner finishes immediately with FinishGoal (no pause).
 	p := &driverTestPlanner{finishGoalImmediately: true}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -369,7 +371,7 @@ func TestPerTaskRunLoop_FinishGoal_PopulatesTaskResult(t *testing.T) {
 		finishGoalImmediately: true,
 		finishPayload:         map[string]any{"answer": "hello world"},
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -432,7 +434,7 @@ func TestPerTaskRunLoop_FinishGoal_EmptyAnswer_StillPopulatesShape(t *testing.T)
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &driverTestPlanner{finishGoalImmediately: true} // nil finishPayload
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -509,7 +511,7 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksFailed_OnPlannerError(t *testing.T)
 	}
 	// Planner that errors on Next.
 	p := &driverTestPlanner{errOnNext: errors.New("planner exploded")}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -565,7 +567,7 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksFailed_OnCtxCancel(t *testing.T) {
 		pauseReason: planner.PauseApprovalRequired,
 		stepsCh:     stepsCh,
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -632,7 +634,7 @@ func TestPerTaskRunLoopDriver_SkipsBackgroundTasks(t *testing.T) {
 	}
 	stepsCh := make(chan int, 4)
 	p := &driverTestPlanner{stepsCh: stepsCh}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -685,7 +687,7 @@ func TestPerTaskRunLoopDriver_DrivesBackgroundTasks_WhenEnabled(t *testing.T) {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "bg done"}}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:             bus,
 		RunLoop:         rl,
 		Planner:         p,
@@ -741,7 +743,7 @@ func TestPerTaskRunLoopDriver_Close_DrainsRunningRuns(t *testing.T) {
 		pauseReason: planner.PauseApprovalRequired,
 		stepsCh:     stepsCh,
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -795,7 +797,7 @@ func TestPerTaskRunLoopDriver_IdempotentStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: &driverTestPlanner{},
@@ -837,7 +839,7 @@ func TestPerTaskRunLoopDriver_ConcurrentReuse_NoRaceUnderLoad(t *testing.T) {
 	// RunLoop returns quickly and the FSM bridge transitions Pending
 	// → Running → Complete under stress.
 	p := &driverTestPlanner{finishGoalImmediately: true}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -907,7 +909,7 @@ func TestTrajectoryByTaskID_ConcurrentReads(t *testing.T) {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
 	p := &driverTestPlanner{finishGoalImmediately: true}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -1056,16 +1058,16 @@ func TestResolveLLMOverrides_ProjectsSpec(t *testing.T) {
 		t.Fatalf("model not projected: %+v", ov)
 	}
 	if ov.ExtraInstructions == nil || *ov.ExtraInstructions != "be terse" {
-		t.Errorf("extra not projected: %+v", ov.ExtraInstructions)
+		t.Errorf("extra not projected: %+v", ov)
 	}
 	if ov.Temperature == nil || *ov.Temperature != 0.5 {
-		t.Errorf("temp not projected: %+v", ov.Temperature)
+		t.Errorf("temp not projected: %+v", ov)
 	}
 	if ov.MaxTokens == nil || *ov.MaxTokens != 2048 {
-		t.Errorf("max_tokens not projected: %+v", ov.MaxTokens)
+		t.Errorf("max_tokens not projected: %+v", ov)
 	}
 	if ov.ReasoningEffort == nil || *ov.ReasoningEffort != "high" {
-		t.Errorf("reasoning_effort not projected: %+v", ov.ReasoningEffort)
+		t.Errorf("reasoning_effort not projected: %+v", ov)
 	}
 }
 
@@ -1109,7 +1111,7 @@ func TestPerTaskRunLoopDriver_AppliesTenantOverride_ToRunContext(t *testing.T) {
 			}
 		},
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     bus,
 		RunLoop: rl,
 		Planner: p,
@@ -1176,7 +1178,7 @@ func TestPerTaskRunLoopDriver_TenantOverrideResolutionError_MarksFailed(t *testi
 			}
 		},
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:             bus,
 		RunLoop:         rl,
 		Planner:         p,
@@ -1314,7 +1316,7 @@ func TestPerTaskRunLoopDriver_AppliesSessionOverride_ToRunContext(t *testing.T) 
 			}
 		},
 	}
-	driver, err := NewRunLoopDriver(RunLoopDriverOptions{
+	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:              bus,
 		RunLoop:          rl,
 		Planner:          p,

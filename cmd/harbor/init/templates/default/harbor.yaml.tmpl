@@ -106,7 +106,8 @@ llm:
 # docs/recipes/repair-legacy-durable-heads.md for direct-5432 apply and verify.
 
 # memory — multi-turn context across runs in a session.
-# Strategies: none (default), truncation, rolling_summary.
+# Default: rolling_summary with 20 detailed turns and a cumulative checkpoint.
+# Explicit strategy: none disables memory. Governed compaction may call the LLM.
 # Backends: inmem (default), sqlite, postgres (need `dsn:`).
 #
 # memory:
@@ -116,11 +117,8 @@ llm:
 #   # pool only after that apply succeeds.
 #   # migration_mode: apply
 #   strategy: rolling_summary
+#   recent_turns: 20
 #   budget_tokens: 8000
-#   # Semantic recall (requires embeddings block):
-#   # retrieval: semantic
-#   # retrieval_top_k: 5
-#   # retrieval_min_score: 0.0
 
 # state — durable run / task / session state.
 # Default `inmem` is process-local (lost on restart). Flip to sqlite for

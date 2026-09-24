@@ -357,6 +357,13 @@ func TestE2E_MCPIsErrorClassificationReplaysIntoNextPrompt(t *testing.T) {
 		// (invalid_argument), so exactly one attempt is made — the
 		// assertion is about bounding, not retries.
 		cfg := mcpFailureConfig(t, server.URL(), binPath, nil)
+		// This fixture tests the existing bounded error/result projection, not
+		// a tiny context window. The complete request also includes the MCP
+		// catalog and native history, now counted by admission. Leave all
+		// production byte bounds and the physical capacity guard enabled.
+		profile := cfg.LLM.ModelProfiles[scriptedModel]
+		profile.ContextWindowTokens = 32768
+		cfg.LLM.ModelProfiles[scriptedModel] = profile
 		stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{})
 		defer stack.Close()
 		if stack.Tasks == nil || stack.RunLoopDriver == nil {

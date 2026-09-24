@@ -104,8 +104,8 @@ func newReopenStack(t *testing.T, opts ...sessions.Option) *reopenStack {
 	t.Cleanup(func() { _ = bus.Close(ctx) })
 
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 4000,
-	}, memory.Deps{State: store, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 4000,
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -131,7 +131,7 @@ func newReopenStack(t *testing.T, opts ...sessions.Option) *reopenStack {
 	t.Cleanup(func() { _ = reg.CloseRegistry(ctx) })
 
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
+		Registry: reg, State: store, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: red,
 	})
 	if err != nil {
 		t.Fatalf("NewCascadeEraser: %v", err)
@@ -171,10 +171,10 @@ func TestE2E_SessionReopen_HistoryIntact_Durable(t *testing.T) {
 			t.Fatalf("Touch: %v", terr)
 		}
 	}
-	if aerr := st.mem.AddTurn(ctx, q, memory.ConversationTurn{
+	if _, aerr := st.mem.Put(ctx, q, memory.ConversationTurn{
 		UserMessage: "what is the capital of France?", AssistantResponse: "Paris.",
 	}); aerr != nil {
-		t.Fatalf("AddTurn: %v", aerr)
+		t.Fatalf("Put: %v", aerr)
 	}
 	beforeEvents, err := hr.Window(ctx, 0, 100, filter)
 	if err != nil {
@@ -183,9 +183,9 @@ func TestE2E_SessionReopen_HistoryIntact_Durable(t *testing.T) {
 	if len(beforeEvents) == 0 {
 		t.Fatal("no durable history before close — test cannot prove intactness")
 	}
-	beforeMem, err := st.mem.GetLLMContext(ctx, q)
+	beforeMem, err := st.mem.Inspect(ctx, q)
 	if err != nil {
-		t.Fatalf("GetLLMContext (before): %v", err)
+		t.Fatalf("Inspect (before): %v", err)
 	}
 
 	// Close, then reopen via EnsureOpen.
@@ -207,14 +207,14 @@ func TestE2E_SessionReopen_HistoryIntact_Durable(t *testing.T) {
 	}
 	assertHistorySuperset(t, beforeEvents, afterEvents)
 	// Memory survived intact.
-	afterMem, err := st.mem.GetLLMContext(ctx, q)
+	afterMem, err := st.mem.Inspect(ctx, q)
 	if err != nil {
-		t.Fatalf("GetLLMContext (after): %v", err)
+		t.Fatalf("Inspect (after): %v", err)
 	}
-	if len(afterMem.RecentTurns) != len(beforeMem.RecentTurns) || afterMem.Tokens != beforeMem.Tokens {
+	if len(afterMem.Items) != len(beforeMem.Items) || afterMem.EstimatedTokens != beforeMem.EstimatedTokens {
 		t.Fatalf("memory changed across reopen: before=%+v after=%+v", beforeMem, afterMem)
 	}
-	if len(afterMem.RecentTurns) == 0 {
+	if len(afterMem.Items) == 0 {
 		t.Fatal("memory empty after reopen — history not intact")
 	}
 

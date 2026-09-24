@@ -43,8 +43,8 @@ const RunCompletionPayloadFormatVersion = 1
 
 // CompletionHookSpec is the per-run run-completion hook configuration on
 // [RunSpec.CompletionHook]. When set, [RunLoop.Run] fires the hook exactly
-// once at its terminal boundary — every terminal outcome, never mid-run or
-// on pause — dispatching the run's [RunCompletionPayload] to the named
+// once at its terminal boundary — every terminal outcome except accepted hard
+// Stop, never mid-run or on pause — dispatching [RunCompletionPayload] to the named
 // catalog tool through the run's [ToolExecutor]. A hook failure never
 // alters the run outcome.
 //

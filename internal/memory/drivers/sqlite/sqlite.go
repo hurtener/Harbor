@@ -1,63 +1,5 @@
-// Package sqlite is Harbor's SQLite-backed `memory.MemoryStore`
-// driver. It is the second leg of the memory persistence triad
-// (in-memory floor, SQLite, Postgres) defined by RFC §6.6 + §9.
-//
-// The driver is built on `modernc.org/sqlite` — a CGo-free SQLite
-// engine (AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
-//
-// # Strategy delegation
-//
-// All three memory strategies (`none`, `truncation`,
-// `rolling_summary`) are implemented by the driver-agnostic
-// `internal/memory/strategy` executor package; this driver is a thin
-// shell that owns the boundary (identity validation + the
-// `memory.identity_rejected` emit + the `closed` flag) and delegates
-// every `MemoryStore` method to a `strategy.StrategyExecutor`. The
-// executor persists state through the injected `state.StateStore`
-// (typed wrapper, `Kind = "memory.state"`). When that
-// StateStore is itself SQLite-backed (the operator's
-// `state.driver: sqlite`), the memory strategies persist durably to
-// disk — which is what makes `truncation` / `rolling_summary` survive
-// a restart. No strategy algorithm is reimplemented in SQL here; the
-// SQLite + Postgres memory drivers gain all three strategies through
-// the same executor the InMem driver uses.
-//
-// The driver still opens its own `*sql.DB` against `cfg.DSN`. The
-// connection + the embedded `memory_state` migration are retained so
-// the driver fails loudly on a misconfigured DSN at boot (and so the
-// schema exists for any out-of-band tooling), but the live read/write
-// path rides entirely on the executor's `state.StateStore` writes.
-// The driver's own `memory_state` table is vestigial under
-// delegation; it is kept (never edited — migrations are forward-only,
-// AGENTS.md §9 / §13) for back-compat with rows written by the
-// pre-25a strategy=none path.
-//
-// Operating model for the retained connection:
-//
-//   - Database opened against `cfg.DSN`. Bare file paths and the
-//     special `:memory:` sentinel are supported. URI-form DSNs
-//     (`file:foo.db?...`) pass through with `_pragma` + `_txlock`
-//     query params layered on top so per-connection PRAGMAs survive
-//     `database/sql`'s connection lifecycle.
-//   - WAL journal mode is pinned at open.
-//   - `busy_timeout=5000` (5 s) absorbs `SQLITE_BUSY` retries.
-//   - `db.SetMaxOpenConns(1)` pins the pool to a single connection.
-//   - The schema is applied via embedded `migrations/*.sql` files
-//     (forward-only, AGENTS.md §13). The runner is idempotent.
-//
-// The driver self-registers under `"sqlite"` from its `init()`. The
-// production binary picks it up via blank import in
-// `cmd/harbor/main.go`; tests may call `New` directly to skip the
-// registry.
-//
-// Concurrency contract:
-//
-//   - The driver struct holds the strategy executor (internally
-//     synchronised per-key), a `*sql.DB` (an internally-synchronised
-//     pool), and an `atomic.Bool` close flag. All are safe for N
-//     concurrent goroutines without external locking.
-//   - Per-call state lives on the call stack / supplied `ctx`. Nothing
-//     mutable on the driver ever crosses run boundaries.
+// Package sqlite provides the sqlite driver for cumulative session-memory access.
+// The injected StateStore remains the authoritative memory owner.
 package sqlite
 
 import (
@@ -81,7 +23,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
 )
 
 // driverName is the name under which this driver self-registers with
@@ -97,13 +38,9 @@ const busyTimeoutMs = 5000
 // `cfg.DSN`. Production callers go through `memory.Open`; tests may
 // call `New` directly to skip the registry.
 //
-// The configured strategy is resolved by the shared
-// `strategy.StrategyExecutor`: `none`,
-// `truncation`, and `rolling_summary` all delegate to the executor,
-// which persists through `deps.State`. `rolling_summary` requires a
-// non-nil `deps.Summarizer`; the executor's `New` rejects a nil
-// summariser for that strategy with a wrapped error — fail loudly,
-// never a stub fallback (AGENTS.md §13).
+// Cumulative memory uses the injected StateStore owner. This adapter has no
+// summary engine, private transcript or recovery goroutine. Note writes use
+// the same redactor as execution.
 //
 // DSN handling mirrors the SQLite StateStore + ArtifactStore drivers:
 // bare file paths and the special `:memory:` sentinel are supported;
@@ -113,7 +50,7 @@ const busyTimeoutMs = 5000
 //
 // `deps.Bus` is required (for the fail-closed identity-rejection emit
 // path). `deps.State` is required — it is the persistence floor the
-// strategy executor writes through.
+// cumulative owner writes through.
 func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("memory/sqlite: deps.Bus is required")
@@ -125,9 +62,8 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		return nil, errors.New(`memory/sqlite: empty DSN; expected file path or "sqlite:" URI`)
 	}
 
-	strategyName := cfg.Strategy
-	if strategyName == "" {
-		strategyName = memory.StrategyNone
+	if err := memory.ValidateStrategy(cfg.Strategy); err != nil {
+		return nil, err
 	}
 
 	dsn, err := augmentDSNForPragmas(cfg.DSN)
@@ -160,30 +96,10 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		return nil, fmt.Errorf("memory/sqlite: migrate: %w", err)
 	}
 
-	// Build the strategy executor. Persistence rides on deps.State
-	// (typically the SQLite StateStore), giving truncation +
-	// rolling_summary durable, restart-surviving state.
-	exec, err := strategy.New(strategyName, strategy.Deps{
-		State:              deps.State,
-		Bus:                deps.Bus,
-		Summarizer:         deps.Summarizer,
-		BudgetTokens:       cfg.BudgetTokens,
-		RecoveryBacklogMax: cfg.RecoveryBacklogMax,
-		RecentTurns:        cfg.RecentTurns,
-		Embedder:           deps.Embedder,
-		Retrieval:          cfg.Retrieval,
-		RetrievalTopK:      cfg.RetrievalTopK,
-	})
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
 	return &driver{
-		strategy: strategyName,
-		db:       db,
-		bus:      deps.Bus,
-		exec:     exec,
+		access: memory.NewAccess(cfg, deps),
+		db:     db,
+		bus:    deps.Bus,
 	}, nil
 }
 
@@ -193,15 +109,13 @@ func init() {
 
 // driver is the SQLite-backed MemoryStore. It is safe for concurrent
 // use by N goroutines; mutable state is the `atomic.Bool` close flag
-// (load-then-act pattern), the strategy executor (internally
-// synchronised), plus the underlying `*sql.DB` (internally
+// (load-then-act pattern), plus the underlying `*sql.DB` (internally
 // synchronized by database/sql). Nothing per-run lives on
 // the driver — every method reads identity from its arguments.
 type driver struct {
-	strategy memory.Strategy
-	db       *sql.DB
-	bus      events.EventBus
-	exec     strategy.StrategyExecutor
+	access *memory.Access
+	db     *sql.DB
+	bus    events.EventBus
 
 	// mu serialises Close itself so it idempotently observes
 	// "already closed" rather than racing on the write. The atomic
@@ -210,122 +124,58 @@ type driver struct {
 	closed atomic.Bool
 }
 
-// Compile-time assertion that *driver satisfies memory.MemoryStore.
-var _ memory.MemoryStore = (*driver)(nil)
-
-// AddTurn implements memory.MemoryStore. Identity validated at the
-// boundary; missing triple → fail-closed with bus emit. The strategy
-// executor owns turn-handling.
-func (d *driver) AddTurn(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) error {
+// Inspect implements memory.MemoryStore using the execution-memory owner.
+func (d *driver) Inspect(ctx context.Context, id identity.Quadruple) (memory.Inspection, error) {
 	if d.closed.Load() {
-		return memory.ErrStoreClosed
+		return memory.Inspection{}, memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
-		return memory.EmitIdentityRejected(ctx, d.bus, id, "AddTurn")
+		return memory.Inspection{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Inspect")
 	}
-	return d.exec.AddTurn(ctx, id, turn)
+	return d.access.Inspect(ctx, id)
 }
 
-// GetLLMContext implements memory.MemoryStore.
-func (d *driver) GetLLMContext(ctx context.Context, id identity.Quadruple) (memory.LLMContextPatch, error) {
-	if d.closed.Load() {
-		return memory.LLMContextPatch{}, memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return memory.LLMContextPatch{}, memory.EmitIdentityRejected(ctx, d.bus, id, "GetLLMContext")
-	}
-	return d.exec.GetLLMContext(ctx, id)
-}
-
-// EstimateTokens implements memory.MemoryStore.
-func (d *driver) EstimateTokens(ctx context.Context, id identity.Quadruple) (int, error) {
-	if d.closed.Load() {
-		return 0, memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return 0, memory.EmitIdentityRejected(ctx, d.bus, id, "EstimateTokens")
-	}
-	return d.exec.EstimateTokens(ctx, id)
-}
-
-// Flush implements memory.MemoryStore.
-func (d *driver) Flush(ctx context.Context, id identity.Quadruple) error {
-	if d.closed.Load() {
-		return memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return memory.EmitIdentityRejected(ctx, d.bus, id, "Flush")
-	}
-	return d.exec.Flush(ctx, id)
-}
-
-// Health implements memory.MemoryStore.
-func (d *driver) Health(ctx context.Context, id identity.Quadruple) (memory.Health, error) {
+// Put implements memory.MemoryStore and returns a committed item identity.
+func (d *driver) Put(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) (string, error) {
 	if d.closed.Load() {
 		return "", memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
-		return "", memory.EmitIdentityRejected(ctx, d.bus, id, "Health")
+		return "", memory.EmitIdentityRejected(ctx, d.bus, id, "Put")
 	}
-	return d.exec.Health(ctx, id)
+	return d.access.Put(ctx, id, turn)
 }
 
-// Snapshot implements memory.MemoryStore.
-func (d *driver) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Snapshot, error) {
+// Delete implements memory.MemoryStore through its conditional owner mutation.
+func (d *driver) Delete(ctx context.Context, id identity.Quadruple, key string) (int, error) {
 	if d.closed.Load() {
-		return memory.Snapshot{}, memory.ErrStoreClosed
+		return 0, memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
-		return memory.Snapshot{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Snapshot")
+		return 0, memory.EmitIdentityRejected(ctx, d.bus, id, "Delete")
 	}
-	return d.exec.Snapshot(ctx, id)
+	return d.access.Delete(ctx, id, key)
 }
 
-// SearchTurns implements memory.MemoryStore. Identity validated at
-// the boundary; the strategy executor (semantic wrapper when the
-// mode is on) owns the similarity search.
-func (d *driver) SearchTurns(ctx context.Context, id identity.Quadruple, query string, limit int) ([]memory.ScoredTurn, error) {
-	if d.closed.Load() {
-		return nil, memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return nil, memory.EmitIdentityRejected(ctx, d.bus, id, "SearchTurns")
-	}
-	return d.exec.SearchTurns(ctx, id, query, limit)
-}
-
-// Restore implements memory.MemoryStore.
-func (d *driver) Restore(ctx context.Context, id identity.Quadruple, snap memory.Snapshot) error {
-	if d.closed.Load() {
-		return memory.ErrStoreClosed
-	}
-	if memory.ValidateIdentity(id) != nil {
-		return memory.EmitIdentityRejected(ctx, d.bus, id, "Restore")
-	}
-	return d.exec.Restore(ctx, id, snap)
-}
+// Compile-time assertion that *driver satisfies memory.MemoryStore.
+var _ memory.MemoryStore = (*driver)(nil)
 
 // Close implements memory.MemoryStore. Setting the atomic flag BEFORE
-// tearing down the executor + closing `db` ensures concurrent
-// in-flight callers observe `ErrStoreClosed` rather than racing into a
-// half-closed pool. Close is idempotent and joins the strategy
-// executor's per-strategy resources (the rolling_summary recovery
-// loop goroutine) so the goroutine baseline is restored (AC-9).
+// closing `db` rejects new operations before pool teardown. Already admitted
+// operations use the separately owned StateStore; this adapter does not close
+// that shared owner. Close is idempotent.
 func (d *driver) Close(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	execErr := d.exec.Close(ctx)
 	dbErr := d.db.Close()
 	if dbErr != nil {
 		dbErr = fmt.Errorf("memory/sqlite: close: %w", dbErr)
 	}
-	if execErr != nil {
-		execErr = fmt.Errorf("memory/sqlite: executor close: %w", execErr)
-	}
-	return errors.Join(dbErr, execErr)
+
+	return dbErr
 }
 
 // augmentDSNForPragmas appends the open-time PRAGMA + transaction

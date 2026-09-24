@@ -21,6 +21,10 @@ harbor scaffold --name <name>      # materialise the Go project
 
 The flow is deliberately bounded — `harbor init` does not assume what LLM you have keys for or what tools you need. It drops a *tiered* `harbor.yaml` (REQUIRED → COMMON → ADVANCED sections) plus three companion files (AGENTS.md / CLAUDE.md / README.md) that document the project for human contributors and AI coding agents alike. You edit the yaml, validate it, then scaffold a Go project around it.
 
+Building Harbor or its generated projects requires Go 1.27.1 or newer. Install
+that toolchain before running the build steps below; prebuilt Harbor binaries
+do not require Go on the operator's machine.
+
 ## 1. Drop the tiered yaml
 
 ```bash

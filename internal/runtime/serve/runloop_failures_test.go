@@ -27,7 +27,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
@@ -39,6 +38,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
 var errInjected = errors.New("runloop failure-injection sentinel")
@@ -62,15 +62,14 @@ func TestRunSnapshotAdmissionTaskError_OnlyClosedGateMeansRetired(t *testing.T) 
 	}
 }
 
-// failingMemoryStore wraps a real MemoryStore and errors on GetLLMContext
-// (the run-start memory fetch) — every other method delegates to the real
-// driver.
-type failingMemoryStore struct {
-	memory.MemoryStore
-}
+// failingMemoryState fails reads of the cumulative execution record only.
+type failingMemoryState struct{ state.StateStore }
 
-func (failingMemoryStore) GetLLMContext(context.Context, identity.Quadruple) (memory.LLMContextPatch, error) {
-	return memory.LLMContextPatch{}, errInjected
+func (s failingMemoryState) Load(ctx context.Context, id identity.Quadruple, kind string) (state.StateRecord, error) {
+	if kind == serverRetainedKind {
+		return state.StateRecord{}, errInjected
+	}
+	return s.StateStore.Load(ctx, id, kind)
 }
 
 // countingFailRegistry is an agentcfg.Registry whose Active errors on the
@@ -137,11 +136,12 @@ func newFailDriverEnv(t *testing.T) failDriverEnv {
 func startFailDriver(t *testing.T, env failDriverEnv, mutate func(*RunLoopDriverOptions)) *RunLoopDriver {
 	t.Helper()
 	opts := RunLoopDriverOptions{
-		Bus:     env.bus,
-		RunLoop: env.rl,
-		Planner: &driverTestPlanner{finishGoalImmediately: true},
-		Tasks:   env.reg,
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SessionMemory: config.MemoryConfig{Strategy: "none"},
+		Bus:           env.bus,
+		RunLoop:       env.rl,
+		Planner:       &driverTestPlanner{finishGoalImmediately: true},
+		Tasks:         env.reg,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -192,6 +192,180 @@ func spawnAndAwaitFailure(t *testing.T, reg tasks.TaskRegistry, schema json.RawM
 	}
 }
 
+func spawnRequestAndAwaitFailure(t *testing.T, reg tasks.TaskRegistry, req tasks.SpawnRequest, wantCode, wantMsg string) {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), runLoopDriverTestID)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	req.Identity = identity.Quadruple{Identity: runLoopDriverTestID}
+	req.Kind = tasks.KindForeground
+	if req.Query == "" {
+		req.Query = "authority-boundary goal"
+	}
+	h, err := reg.Spawn(ctx, req)
+	if err != nil {
+		t.Fatalf("reg.Spawn: %v", err)
+	}
+	if status := waitForTaskStatus(t, reg, h.ID, tasks.StatusFailed, 5*time.Second); status != tasks.StatusFailed {
+		t.Fatalf("task status = %q, want %q", status, tasks.StatusFailed)
+	}
+	got, err := reg.Get(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("reg.Get: %v", err)
+	}
+	if got.Error == nil || got.Error.Code != wantCode || !strings.Contains(got.Error.Message, wantMsg) {
+		t.Fatalf("TaskError = %+v, want code %q containing %q", got.Error, wantCode, wantMsg)
+	}
+}
+
+func TestRunOne_PersistedExternalAuthoritiesFailClosedBeforePlanner(t *testing.T) {
+	t.Run("provider route without verified agent reach", func(t *testing.T) {
+		env := newFailDriverEnv(t)
+		startFailDriver(t, env, nil)
+		spawnRequestAndAwaitFailure(t, env.reg, tasks.SpawnRequest{ProviderRoute: &llm.ProviderRoute{
+			RouteID: "route-a", RouteGeneration: 1, ProviderConnectionID: "provider-a",
+			ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "model-a",
+		}}, "provider_route_unauthorized", "verified Agent reach")
+	})
+
+	t.Run("virtual profile without verified agent reach", func(t *testing.T) {
+		env := newFailDriverEnv(t)
+		ctx, err := identity.With(context.Background(), runLoopDriverTestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent, err := env.reg.Spawn(ctx, tasks.SpawnRequest{
+			Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground, Query: "parent",
+		})
+		if err != nil {
+			t.Fatalf("spawn parent: %v", err)
+		}
+		if err := env.reg.MarkRunning(ctx, parent.ID); err != nil {
+			t.Fatalf("mark parent running: %v", err)
+		}
+		if err := env.reg.MarkComplete(ctx, parent.ID, tasks.TaskResult{}); err != nil {
+			t.Fatalf("mark parent complete: %v", err)
+		}
+		startFailDriver(t, env, nil)
+		profile := virtualagent.Profile{Key: "reviewer", Parent: "agent-a"}
+		frozen, err := virtualagent.NewFrozenMap(virtualagent.Map{Owner: "agent-a", Profiles: []virtualagent.Profile{profile}},
+			"revision-a", strings.Repeat("a", 64), nil)
+		if err != nil {
+			t.Fatalf("NewFrozenMap: %v", err)
+		}
+		binding, err := frozen.Bind(profile)
+		if err != nil {
+			t.Fatalf("Bind: %v", err)
+		}
+		spawnRequestAndAwaitFailure(t, env.reg, tasks.SpawnRequest{
+			AgentID: "agent-a", ParentTaskID: &parent.ID, VirtualAgent: &binding,
+		}, "virtual_profile_unavailable", "verified agent reach")
+	})
+}
+
+func TestRunOne_VerifiedExternalAuthoritiesStillRequireRuntimeAndLifecycle(t *testing.T) {
+	newAuthority := func(t *testing.T) *tasks.AgentReachAdmissionAuthority {
+		t.Helper()
+		sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+		if err != nil {
+			t.Fatal(err)
+		}
+		authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return authority
+	}
+	admittedContext := func(t *testing.T, authority *tasks.AgentReachAdmissionAuthority, agentID string) context.Context {
+		t.Helper()
+		ctx, err := identity.With(context.Background(), runLoopDriverTestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, err = authority.Admit(ctx, runLoopDriverTestID, agentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	await := func(t *testing.T, reg tasks.TaskRegistry, ctx context.Context, req tasks.SpawnRequest, code string) {
+		t.Helper()
+		req.Identity = identity.Quadruple{Identity: runLoopDriverTestID}
+		req.Kind = tasks.KindForeground
+		h, err := reg.Spawn(ctx, req)
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		if got := waitForTaskStatus(t, reg, h.ID, tasks.StatusFailed, 5*time.Second); got != tasks.StatusFailed {
+			t.Fatalf("status = %q", got)
+		}
+		stored, err := reg.Get(ctx, h.ID)
+		if err != nil || stored.Error == nil || stored.Error.Code != code {
+			t.Fatalf("stored task=%+v err=%v, want code %q", stored, err, code)
+		}
+	}
+
+	t.Run("provider route needs configured runtime binding", func(t *testing.T) {
+		env := newFailDriverEnv(t)
+		authority := newAuthority(t)
+		startFailDriver(t, env, func(o *RunLoopDriverOptions) {
+			o.AgentConfigID = "agent-a"
+			o.AgentReachAdmissions = authority
+		})
+		await(t, env.reg, admittedContext(t, authority, "agent-a"), tasks.SpawnRequest{
+			AgentID: "agent-a", Query: "route",
+			ProviderRoute: &llm.ProviderRoute{RouteID: "route-a", RouteGeneration: 1,
+				ProviderConnectionID: "provider-a", ProviderConnectionGeneration: 1,
+				CredentialAssetGeneration: 1, ModelSelector: "model-a"},
+		}, "provider_route_unavailable")
+	})
+
+	for _, withRegistry := range []bool{false, true} {
+		name := "without agent config registry"
+		if withRegistry {
+			name = "without active parent lifecycle"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := newFailDriverEnv(t)
+			authority := newAuthority(t)
+			ctx := admittedContext(t, authority, "agent-a")
+			parent, err := env.reg.Spawn(ctx, tasks.SpawnRequest{
+				Identity: identity.Quadruple{Identity: runLoopDriverTestID}, Kind: tasks.KindForeground,
+				Query: "parent", AgentID: "agent-a",
+			})
+			if err != nil {
+				t.Fatalf("spawn parent: %v", err)
+			}
+			if err := env.reg.MarkRunning(ctx, parent.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.reg.MarkComplete(ctx, parent.ID, tasks.TaskResult{}); err != nil {
+				t.Fatal(err)
+			}
+			startFailDriver(t, env, func(o *RunLoopDriverOptions) {
+				o.AgentConfigID = "agent-a"
+				o.AgentReachAdmissions = authority
+				if withRegistry {
+					o.AgentConfig = &countingFailRegistry{}
+				}
+			})
+			profile := virtualagent.Profile{Key: "reviewer", Parent: "agent-a"}
+			frozen, err := virtualagent.NewFrozenMap(virtualagent.Map{Owner: "agent-a", Profiles: []virtualagent.Profile{profile}},
+				"revision-a", strings.Repeat("a", 64), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, err := frozen.Bind(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			await(t, env.reg, ctx, tasks.SpawnRequest{AgentID: "agent-a", ParentTaskID: &parent.ID, VirtualAgent: &binding},
+				"virtual_profile_unavailable")
+		})
+	}
+}
+
 // TestRunOne_OutputSchemaCompileError_MarksOutputInvalid — a task carrying a
 // malformed output schema fails LOUD with the output_invalid terminal code;
 // the planner is never called.
@@ -203,24 +377,16 @@ func TestRunOne_OutputSchemaCompileError_MarksOutputInvalid(t *testing.T) {
 		planner.TaskErrorCodeOutputInvalid, "output-schema compile failed")
 }
 
-// TestRunOne_MemoryFetchError_MarksRuntimeFetchError — a memory store whose
-// GetLLMContext errors fails the run LOUD (runtime_fetch_error), never a
-// silent no-memory degradation.
+// A required cumulative-memory read must fail before inference, not degrade
+// to a run without its history.
 func TestRunOne_MemoryFetchError_MarksRuntimeFetchError(t *testing.T) {
-	env := newFailDriverEnv(t)
-	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	realMem, err := memoryOpen(t, env.bus, st)
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
-	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.Memory = failingMemoryStore{MemoryStore: realMem}
+	env, client, calls := retainedServerHarness(t, func(o *RunLoopDriverOptions) {
+		o.StateStore = failingMemoryState{StateStore: o.StateStore}
 	})
-	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "FetchMemoryBlocks")
+	task := retainedServerTurn(t, env, runLoopDriverTestID, "first root", nil)
+	if task.Status != tasks.StatusFailed || client.body(task.ID) != "" || calls.Load() != 0 {
+		t.Fatalf("failed memory read reached inference or tools: %+v", task)
+	}
 }
 
 // TestRunOne_SkillsProjectionError_FailsRun — an agent-config registry that
@@ -283,20 +449,19 @@ func TestRunOne_PromptLayersProjectionError_FailsRun(t *testing.T) {
 }
 
 // TestRunOne_HookProjectionError_FailsRun — the run-completion-hook read (the
-// FIFTH Active read: LLM overrides, then the prompt-layer projection's agent
-// + user scopes, then the additive-prompt-blocks read that rides the same
-// seam, then the hook) fails the run LOUD.
+// seventh Active read on this fixture, after the working-input budget
+// projection) fails the run LOUD.
 func TestRunOne_HookProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 6}
+		o.AgentConfig = &countingFailRegistry{failAt: 7}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "run-completion-hook projection failed")
 }
 
 // TestRunOne_NamingProjectionError_FailsRun — the naming-policy read (the
-// SIXTH Active read, reached only when the naming deps are wired) fails the
+// eighth Active read, reached only when the naming deps are wired) fails the
 // run LOUD.
 func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
@@ -313,7 +478,7 @@ func TestRunOne_NamingProjectionError_FailsRun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sessReg.CloseRegistry(context.Background()) })
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 7}
+		o.AgentConfig = &countingFailRegistry{failAt: 8}
 		o.AgentConfigID = "fail-agent"
 		o.SessionTitler = sessReg
 		o.NamingLLM = namingCompleterFunc(func(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -331,7 +496,7 @@ func TestRunOne_FinishNoPath_MarksFailed(t *testing.T) {
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
 		o.Planner = &noPathPlanner{}
 	})
-	spawnAndAwaitFailure(t, env.reg, nil, "", "")
+	spawnAndAwaitFailure(t, env.reg, nil, string(planner.FinishNoPath), "RunLoop finished without satisfying goal: no_path")
 }
 
 // noPathPlanner immediately finishes with FinishNoPath.
@@ -354,7 +519,7 @@ func TestRunOne_MarkRunningFails_SkipsRun(t *testing.T) {
 // TestRunLoopDriver_Close_BeforeStart_NoOp — Close on a never-started driver
 // is a clean no-op.
 func TestRunLoopDriver_Close_BeforeStart_NoOp(t *testing.T) {
-	d, err := NewRunLoopDriver(RunLoopDriverOptions{
+	d, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     mkDriverTestBus(t, auditpatterns.New()),
 		RunLoop: newTestRunLoop(t, steering.NewRegistry(), mkDriverTestBus(t, auditpatterns.New())),
 		Planner: &driverTestPlanner{},
@@ -380,7 +545,7 @@ func (failSubscribeBus) Subscribe(context.Context, events.Filter) (events.Subscr
 // errors fails Start loud (and cancels the sub ctx).
 func TestRunLoopDriver_Start_SubscribeError_FailsLoud(t *testing.T) {
 	env := newFailDriverEnv(t)
-	d, err := NewRunLoopDriver(RunLoopDriverOptions{
+	d, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus:     failSubscribeBus{EventBus: env.bus},
 		RunLoop: env.rl,
 		Planner: &driverTestPlanner{},
@@ -525,33 +690,16 @@ func TestRunOne_TerminalSchemaValidationFails_MarksOutputInvalid(t *testing.T) {
 		planner.TaskErrorCodeOutputInvalid, "terminal output failed schema validation")
 }
 
-// failingAddTurnStore wraps a real MemoryStore and errors on AddTurn only —
-// the best-effort memory-writeback warn (the run still completes).
-type failingAddTurnStore struct{ memory.MemoryStore }
-
-func (failingAddTurnStore) AddTurn(context.Context, identity.Quadruple, memory.ConversationTurn) error {
-	return errInjected
-}
-
-// TestRunOne_MemoryWritebackError_RunStillCompletes — an AddTurn failure is
-// best-effort: logged loud, run still Complete.
-func TestRunOne_MemoryWritebackError_RunStillCompletes(t *testing.T) {
-	env := newFailDriverEnv(t)
-	st, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	realMem, err := memoryOpen(t, env.bus, st)
-	if err != nil {
-		t.Fatalf("memory.Open: %v", err)
-	}
-	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.Memory = failingAddTurnStore{MemoryStore: realMem}
+// Required cumulative-memory commit failure cannot report a successful run.
+func TestRunOne_MemoryWritebackError_FailsRun(t *testing.T) {
+	env, client, calls := retainedServerHarness(t, func(o *RunLoopDriverOptions) {
+		s := &retainedServerFailStore{StateStore: o.StateStore}
+		s.remaining.Store(2) // admission succeeds; terminal commit fails
+		o.StateStore = s
 	})
-	id := spawnOn(t, env.reg, nil)
-	if status := waitForTaskStatus(t, env.reg, id, tasks.StatusComplete, 5*time.Second); status != tasks.StatusComplete {
-		t.Fatalf("AddTurn failure must not downgrade the run, got %q", status)
+	task := retainedServerTurn(t, env, runLoopDriverTestID, "finish without tools", nil)
+	if task.Status != tasks.StatusFailed || client.body(task.ID) == "" || calls.Load() != 0 {
+		t.Fatalf("required commit failure was not terminal: %+v", task)
 	}
 }
 

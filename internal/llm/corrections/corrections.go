@@ -314,8 +314,8 @@ func translateResponseFormatShape(rf llm.ResponseFormat, shape llm.ResponseForma
 
 // backfillUsage substitutes a synthetic `Usage` (and, if a
 // `CostOverrides` table is configured, a synthetic `Cost`) when the
-// driver returned all-zero usage. Some streaming proxies report
-// `0/0` despite returning content; this lets the operator quantify
+// driver returned unknown all-zero usage. A present report is never replaced.
+// Some streaming proxies omit accounting despite returning content; this lets the operator quantify
 // activity even when the upstream pricing surface is silent.
 //
 // The estimator is the byte-length-based one from the safety pass
@@ -323,16 +323,18 @@ func translateResponseFormatShape(rf llm.ResponseFormat, shape llm.ResponseForma
 // dashboards see the same numbers across the safety net and the
 // backfill.
 func backfillUsage(resp llm.CompleteResponse, req llm.CompleteRequest, profile llm.ModelProfile) llm.CompleteResponse {
-	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 || resp.Usage.TotalTokens > 0 {
+	if resp.Usage.ReportPresent || resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 || resp.Usage.TotalTokens > 0 {
 		return resp
 	}
 	prompt := estimateRequestTokens(req)
 	completion := estimateStringTokens(resp.Content)
 	total := prompt + completion
+	resp.Usage.Estimated = true
 	resp.Usage.PromptTokens = prompt
 	resp.Usage.CompletionTokens = completion
 	resp.Usage.TotalTokens = total
-	if profile.CostOverrides != nil && resp.Cost.TotalCost == 0 {
+	if profile.CostOverrides != nil && !resp.Cost.ReportPresent && resp.Cost.TotalCost == 0 {
+		resp.Cost.Estimated = true
 		const million = 1_000_000.0
 		resp.Cost.InputTokensCost = float64(prompt) / million * profile.CostOverrides.InputPer1M
 		resp.Cost.OutputTokensCost = float64(completion) / million * profile.CostOverrides.OutputPer1M

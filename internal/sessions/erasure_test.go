@@ -17,6 +17,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/drivers/localdb"
@@ -71,8 +72,8 @@ func newErasureFixture(t *testing.T, probe sessions.RunningProbe) erasureFixture
 	t.Cleanup(func() { _ = bus.Close(ctx) })
 
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: store, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: store, Bus: bus, Redactor: red})
 	if err != nil {
 		t.Fatalf("memory.Open: %v", err)
 	}
@@ -105,7 +106,6 @@ func newErasureFixture(t *testing.T, probe sessions.RunningProbe) erasureFixture
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 		Registry:  reg,
 		State:     store,
-		Memory:    mem,
 		Artifacts: arts,
 		Skills:    skillStore,
 		Bus:       bus,
@@ -147,10 +147,10 @@ func TestCascadeEraser_FullErasure_CascadesAndAudits(t *testing.T) {
 		t.Fatalf("pre-erasure title = %q/%q, want \"My conversation\"/manual", snap.Title, snap.TitleSource)
 	}
 	// A memory turn.
-	if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+	if _, err := f.mem.Put(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 		UserMessage: "hello", AssistantResponse: "world",
 	}); err != nil {
-		t.Fatalf("AddTurn: %v", err)
+		t.Fatalf("Put: %v", err)
 	}
 	// An artifact under the session scope.
 	scope := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
@@ -189,12 +189,11 @@ func TestCascadeEraser_FullErasure_CascadesAndAudits(t *testing.T) {
 		t.Errorf("artifacts survived erasure: %d", len(refs))
 	}
 	// Memory clean.
-	patch, err := f.mem.GetLLMContext(ctx, identity.Quadruple{Identity: id})
-	if err != nil {
-		t.Fatalf("GetLLMContext: %v", err)
+	if _, err := f.mem.Inspect(ctx, identity.Quadruple{Identity: id}); !errors.Is(err, sessionmemory.ErrRetainedContextUnavailable) {
+		t.Fatalf("erased memory must remain fenced: %v", err)
 	}
-	if len(patch.RecentTurns) != 0 {
-		t.Errorf("memory survived erasure: %d turns", len(patch.RecentTurns))
+	if _, err := f.store.Load(ctx, identity.Quadruple{Identity: id}, state.InternalKindPrefix+"session-execution-context"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("cumulative memory survived erasure: %v", err)
 	}
 	// The session-lifecycle record is hard-deleted.
 	if _, err := f.store.Load(ctx, identity.Quadruple{Identity: id}, "session.lifecycle"); !errors.Is(err, state.ErrNotFound) {
@@ -372,7 +371,7 @@ func TestCascadeEraser_MidCascadeError_LoudAndRetrySafe(t *testing.T) {
 	fail.Store(true)
 	flaky := &flakyArts{ArtifactStore: f.arts, fail: &fail}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: flaky,
+		Registry: f.reg, State: f.store, Artifacts: flaky,
 		Skills: f.skills, Bus: busOf(t, f),
 	})
 	if err != nil {
@@ -410,12 +409,11 @@ func TestNewCascadeEraser_Misconfigured_FailsLoud(t *testing.T) {
 	f := newErasureFixture(t, nil)
 	bus := busOf(t, f)
 	full := sessions.CascadeEraserDeps{
-		Registry: f.reg, State: f.store, Memory: f.mem, Artifacts: f.arts, Skills: f.skills, Bus: bus,
+		Registry: f.reg, State: f.store, Artifacts: f.arts, Skills: f.skills, Bus: bus,
 	}
 	cases := map[string]func(d *sessions.CascadeEraserDeps){
 		"nil registry":  func(d *sessions.CascadeEraserDeps) { d.Registry = nil },
 		"nil state":     func(d *sessions.CascadeEraserDeps) { d.State = nil },
-		"nil memory":    func(d *sessions.CascadeEraserDeps) { d.Memory = nil },
 		"nil artifacts": func(d *sessions.CascadeEraserDeps) { d.Artifacts = nil },
 		"nil bus":       func(d *sessions.CascadeEraserDeps) { d.Bus = nil },
 	}
@@ -466,10 +464,10 @@ func TestCascadeEraser_Concurrent_DistinctSessions_NoCrossTalk(t *testing.T) {
 		if _, err := f.reg.Open(ictx, id.SessionID, id); err != nil {
 			t.Fatalf("open %s: %v", id.SessionID, err)
 		}
-		if err := f.mem.AddTurn(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
+		if _, err := f.mem.Put(ictx, identity.Quadruple{Identity: id}, memory.ConversationTurn{
 			UserMessage: "u", AssistantResponse: "a",
 		}); err != nil {
-			t.Fatalf("AddTurn %s: %v", id.SessionID, err)
+			t.Fatalf("Put %s: %v", id.SessionID, err)
 		}
 		sc := artifacts.ArtifactScope{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID}
 		if _, err := f.arts.PutBytes(ctx, sc, []byte(id.SessionID), artifacts.PutOpts{Namespace: "k"}); err != nil {

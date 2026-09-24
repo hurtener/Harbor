@@ -324,7 +324,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	// the cascade deletes is present; the same condition gates the capability
 	// advertisement so it is honest about the route.
 	sessionLifecycleAvailable := in.Sessions != nil && in.State != nil &&
-		in.Memory != nil && in.Artifacts != nil
+		in.Artifacts != nil
 
 	// The per-tool annotator (OAuth / approval / metrics / content-stats /
 	// last-used) is wired when the catalog + its state-backed approval-policy
@@ -387,6 +387,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		ExternalGrant:                   in.ExternalGrantReadiness,
 		TopologyAvailable:               in.TopologyAvailable,
 		AgentConfigAvailable:            in.AgentConfig != nil,
+		MemoryBudgetAvailable:           in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
 		StateSnapshotsAvailable:         stateSnapshotsAvailable,
 		SessionLifecycleAvailable:       sessionLifecycleAvailable,
 		ToolAnnotationsAvailable:        toolAnnotationsAvailable,
@@ -475,7 +476,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			in.Coordinator, in.Artifacts, config.DefaultConsoleInlinePayloadBytes))
 	}
 	if in.Memory != nil {
-		muxOpts = append(muxOpts, transports.WithMemory(in.Memory, cfg.Memory.Driver))
+		driver := cfg.Memory.Driver
+		if cfg.Memory.RecentTurnsResolved() > 0 {
+			driver = cfg.State.Driver
+		}
+		muxOpts = append(muxOpts, transports.WithMemory(in.Memory, driver))
 	}
 	if in.Artifacts != nil {
 		muxOpts = append(muxOpts, transports.WithStateHistory(bus, in.Artifacts))
@@ -711,7 +716,6 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			eraser, eErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 				Registry:  in.Sessions,
 				State:     in.State,
-				Memory:    in.Memory,
 				Artifacts: in.Artifacts,
 				Skills:    in.Skills,
 				Bus:       bus,
@@ -730,6 +734,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			}
 			sessionsOpts = append(sessionsOpts, sessionsprotocol.WithEraser(eraser))
 		}
+		if cfg.Memory.RecentTurnsResolved() > 0 && in.State != nil && red != nil {
+			sessionsOpts = append(sessionsOpts, sessionsprotocol.WithContextReconciler(retainedContextReconciler{
+				store: in.State, redactor: red, turns: cfg.Memory.RecentTurnsResolved(),
+			}))
+		}
 		sessionsService, sErr := sessionsprotocol.NewService(sessionsProjector, sessionsOpts...)
 		if sErr != nil {
 			return nil, wrapErr("sessions/protocol service", sErr)
@@ -744,6 +753,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		}
 		artifactsSurface, asErr := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
 			Store:        in.Artifacts,
+			Memory:       in.Memory,
 			Redactor:     red,
 			Bus:          bus,
 			Clock:        time.Now,
@@ -847,6 +857,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 
 	if in.AgentConfig != nil {
 		agentConfigOpts := []agentcfgprotocol.Option{
+			agentcfgprotocol.WithMemoryBudget(in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil),
 			agentcfgprotocol.WithLogger(logger),
 			agentcfgprotocol.WithSkillStore(in.Skills),
 			agentcfgprotocol.WithBus(bus),

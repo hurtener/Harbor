@@ -31,7 +31,6 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -47,12 +46,6 @@ import (
 // assemble.Stack.RunOnce populates Sources from the assembled stack; a
 // headless embedder constructing its own RunSpec populates it by hand.
 type Sources struct {
-	// Memory is the session-scoped memory store. When non-nil, the
-	// session's rolling-summary + recent turns are projected into
-	// RunContext.MemoryBlocks; semantic recall fires when MemoryRecall
-	// is enabled.
-	Memory       memory.MemoryStore
-	MemoryRecall memory.RecallSettings
 
 	// SkillsDirectory is the bounded, capability-filtered browse window
 	// projected into RunContext.SkillsContext. When non-nil its View is
@@ -226,23 +219,12 @@ func NewRunContext(
 	// Session-scoped quadruple (RunID zeroed): memory + skills span runs
 	// within a session, so the projection reads the session's
 	// accumulated state rather than only this (empty) run's slice.
-	sessionQ := identity.Quadruple{Identity: q.Identity}
 
 	filter := tools.CatalogFilter{
 		TenantID:      q.TenantID,
 		UserID:        q.UserID,
 		SessionID:     q.SessionID,
 		GrantedScopes: src.GrantedScopes,
-	}
-
-	// Memory projection — the SAME helper the drivers call.
-	var memBlocks *planner.MemoryBlocks
-	if src.Memory != nil {
-		mb, err := FetchMemoryBlocks(projCtx, src.Memory, sessionQ, goal, src.MemoryRecall, logger)
-		if err != nil {
-			return planner.RunContext{}, fmt.Errorf("runctx: memory projection: %w", err)
-		}
-		memBlocks = mb
 	}
 
 	// Catalog view — the promoted planner-facing projection under the
@@ -299,7 +281,6 @@ func NewRunContext(
 		Query:                goal,
 		Goal:                 goal, // initial goal = the request; runtime REDIRECT may mutate
 		LLMOverrides:         src.LLMOverrides,
-		MemoryBlocks:         memBlocks,
 		SkillsContext:        skillsCtx,
 		RepairCounters:       &planner.RepairCounters{},
 		PlanningHints:        src.PlanningHints,

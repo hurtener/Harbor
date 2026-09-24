@@ -2,7 +2,6 @@ package protocol_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ import (
 const traceBudget = 1 << 20
 
 func TestStrategyTrace_ProjectsLiveStrategyState(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, traceBudget)
+	h := newMemHarness(t, memory.StrategyRollingSummary, traceBudget)
 	id := testIdentity()
 	seedTurns(t, h, id, 3)
 
@@ -29,7 +28,7 @@ func TestStrategyTrace_ProjectsLiveStrategyState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StrategyTrace: %v", err)
 	}
-	if resp.Trace.Strategy != string(memory.StrategyTruncation) {
+	if resp.Trace.Strategy != string(memory.StrategyRollingSummary) {
 		t.Errorf("Strategy = %q, want truncation", resp.Trace.Strategy)
 	}
 	if resp.Trace.RecentTurnCount != 3 {
@@ -47,7 +46,7 @@ func TestStrategyTrace_ProjectsLiveStrategyState(t *testing.T) {
 }
 
 func TestStrategyTrace_FailsLoudlyOnIncompleteIdentity(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, traceBudget)
+	h := newMemHarness(t, memory.StrategyRollingSummary, traceBudget)
 	_, err := memprotocol.StrategyTrace(context.Background(),
 		memprotocol.StrategyTraceDeps{Store: h.store},
 		identity.Quadruple{Identity: identity.Identity{UserID: "u", SessionID: "s"}})
@@ -57,7 +56,7 @@ func TestStrategyTrace_FailsLoudlyOnIncompleteIdentity(t *testing.T) {
 }
 
 func TestPut_AppendsTurnReturnsResolvableKeyAndAudits(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, traceBudget)
+	h := newMemHarness(t, memory.StrategyRollingSummary, traceBudget)
 	id := testIdentity()
 
 	// Subscribe BEFORE the mutation so the audit event is observed.
@@ -87,7 +86,7 @@ func TestPut_AppendsTurnReturnsResolvableKeyAndAudits(t *testing.T) {
 
 	// The returned key resolves to the appended turn via memory.get.
 	got, err := memprotocol.Get(context.Background(),
-		memprotocol.GetDeps{Store: h.store, Artifacts: h.artifacts, DriverName: "inmem", HeavyThreshold: 1 << 20},
+		memprotocol.GetDeps{Store: h.store, DriverName: "inmem", HeavyThreshold: 1 << 20},
 		prototypes.MemoryGetRequest{Key: resp.Key}, id)
 	if err != nil {
 		t.Fatalf("Get(put key): %v", err)
@@ -115,7 +114,7 @@ func TestPut_AppendsTurnReturnsResolvableKeyAndAudits(t *testing.T) {
 }
 
 func TestDelete_EvictsTurnByKeyAndAudits(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, traceBudget)
+	h := newMemHarness(t, memory.StrategyRollingSummary, traceBudget)
 	id := testIdentity()
 	seedTurns(t, h, id, 4)
 
@@ -178,7 +177,7 @@ func TestDelete_EvictsTurnByKeyAndAudits(t *testing.T) {
 }
 
 func TestDelete_NotFoundOnUnknownKey(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, traceBudget)
+	h := newMemHarness(t, memory.StrategyRollingSummary, traceBudget)
 	id := testIdentity()
 	seedTurns(t, h, id, 2)
 
@@ -190,49 +189,8 @@ func TestDelete_NotFoundOnUnknownKey(t *testing.T) {
 	}
 }
 
-// TestRecord_SummaryRoundTrips proves the Phase 108n (D-186) fix: the
-// `memory.Record.Summary` field round-trips through a JSON marshal /
-// unmarshal so the `memory.delete` read-modify-write (Snapshot → decode →
-// drop turn → re-marshal → Restore) preserves the rolling-summary text
-// LOSSLESSLY rather than dropping it. Before 108n, `memory.Record` had no
-// Summary field, so re-marshalling a decoded snapshot would silently lose it.
-func TestRecord_SummaryRoundTrips(t *testing.T) {
-	orig := memory.Record{
-		Strategy: memory.StrategyRollingSummary,
-		Turns: []memory.ConversationTurn{
-			{UserMessage: "u1", AssistantResponse: "a1", Timestamp: time.Unix(1, 0).UTC()},
-			{UserMessage: "u2", AssistantResponse: "a2", Timestamp: time.Unix(2, 0).UTC()},
-		},
-		Summary: "ROLLING-SUMMARY-PRESERVED",
-	}
-	bytes, err := json.Marshal(orig)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	// Drop the first turn (the delete read-modify-write shape).
-	var rec memory.Record
-	if err := json.Unmarshal(bytes, &rec); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	rec.Turns = rec.Turns[1:]
-	out, err := json.Marshal(rec)
-	if err != nil {
-		t.Fatalf("re-marshal: %v", err)
-	}
-	var got memory.Record
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("decode result: %v", err)
-	}
-	if got.Summary != "ROLLING-SUMMARY-PRESERVED" {
-		t.Errorf("Summary = %q, want it preserved across the delete round-trip", got.Summary)
-	}
-	if len(got.Turns) != 1 || got.Turns[0].UserMessage != "u2" {
-		t.Errorf("Turns = %+v, want only the second turn surviving", got.Turns)
-	}
-}
-
 func TestPutDelete_FailLoudlyOnIncompleteIdentity(t *testing.T) {
-	h := newMemHarness(t, memory.StrategyTruncation, traceBudget)
+	h := newMemHarness(t, memory.StrategyRollingSummary, traceBudget)
 	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", SessionID: "s"}} // user empty
 
 	if _, err := memprotocol.Put(context.Background(),

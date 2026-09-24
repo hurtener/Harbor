@@ -33,6 +33,27 @@ What differs per trigger is WHO calls `Resume` and what has to happen
 first. Never build a second pause path — CLAUDE.md §13 rejects it on
 sight.
 
+## Correct a running model attempt
+
+Send `POST /v1/control/user_message` with the live run identity and
+`payload: {"message": "Use amber accents; preserve the existing layout."}`.
+The verified correction interrupts the active planning attempt, not the run,
+and reaches the next model request as user input. Superseded decisions and the
+old serial tool-call tail are discarded. Already-started external actions keep
+their actual outcomes; the correction cannot undo them. A required persistence
+failure stops execution rather than silently retrying.
+
+The HTTP acknowledgement confirms admission. Observe `control.applied` and the
+following run events to distinguish pending steering from an applied correction.
+This control accepts only a nonempty `message` string; new artifact attachments
+belong on `start`. Extra fields, attachments and invalid messages return
+`422 payload_invalid` before interrupting the active attempt.
+Queued parallel invocations and policy retries are refused after correction;
+obsolete approval requests are withdrawn as rejections. Already-started calls
+retain their outcomes, and failed required cleanup terminates the run.
+Live client acceptance remains an explicit release gate; see the
+[tracker](../notes/portable-context-tracker.md).
+
 ## Trigger 1 — HITL approval
 
 Declare an approval gate on a tool in `harbor.yaml`:

@@ -2,172 +2,118 @@ package benchmarks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/hurtener/Harbor/internal/audit"
-	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
-	"github.com/hurtener/Harbor/internal/events"
-	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 	"github.com/hurtener/Harbor/internal/identity"
-	"github.com/hurtener/Harbor/internal/memory"
-	"github.com/hurtener/Harbor/internal/memory/strategy"
+	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/state"
-	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
-// memBenchDeps assembles the strategy.Deps the memory benchmarks
-// run against: a real `inmem` StateStore (the persistence floor),
-// a real `inmem` EventBus, a real `audit` redactor, and the
-// EchoSummarizer for the rolling-summary path. EchoSummarizer is a
-// test-grade Summarizer (CLAUDE.md §13) — using it here is correct
-// because this file is `_test.go` and the LLM-backed Summarizer
-// (Phase 32+) is not part of the benchmarked memory subsystem.
-func memBenchDeps(b *testing.B) strategy.Deps {
+// A deterministic provider measures framework work, not network/model latency.
+// Compaction still uses the production governed client and trajectory summarizer.
+type memoryBenchDriver struct{ summaries atomic.Int64 }
+
+func (d *memoryBenchDriver) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	for _, msg := range req.Messages {
+		if msg.Content.Text != nil && strings.Contains(*msg.Content.Text, "You summarize historical agent execution") {
+			d.summaries.Add(1)
+			return llm.CompleteResponse{Content: `{"goals":["Iterate layout"],"facts":["Use the existing layout"],"pending":["Next edit"],"last_output_digest":"Done","note":""}`, FinishReason: "stop"}, nil
+		}
+	}
+	return llm.CompleteResponse{Content: "Layout updated.", FinishReason: "stop"}, nil
+}
+func (*memoryBenchDriver) Close(context.Context) error { return nil }
+
+func memoryBenchStack(b *testing.B) (*assemble.Stack, *memoryBenchDriver) {
 	b.Helper()
-	red, err := audit.Open(context.Background(), config.AuditConfig{})
+	driver := &memoryBenchDriver{}
+	name := "cumulative-benchmark-" + string(state.NewEventID())
+	llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
+	cfg := config.Defaults()
+	cfg.LLM.Driver = name
+	cfg.LLM.Model = "fixture"
+	cfg.Memory.RecentTurns = 4
+	cfg.Memory.BudgetTokens = 10000
+	snapshot := llm.ConfigSnapshot{
+		Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
+		ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100000}},
+		DisableCorrections: true, DisableRetry: true, DisableDowngrade: true,
+	}
+	stack, err := assemble.Assemble(b.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
 	if err != nil {
-		b.Fatalf("audit.Open: %v", err)
+		if stack != nil {
+			_ = stack.Close(context.Background())
+		}
+		b.Fatal(err)
 	}
-	bus, err := events.Open(context.Background(), config.EventsConfig{
-		Driver:                   "inmem",
-		MaxSubscribersPerSession: 16,
-		SubscriberBufferSize:     256,
-		IdleTimeout:              60 * time.Second,
-		DropWindow:               time.Second,
-	}, red)
-	if err != nil {
-		b.Fatalf("events.Open: %v", err)
-	}
-	b.Cleanup(func() { _ = bus.Close(context.Background()) })
-
-	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
-	if err != nil {
-		b.Fatalf("state.Open: %v", err)
-	}
-	b.Cleanup(func() { _ = store.Close(context.Background()) })
-
-	return strategy.Deps{
-		State:      store,
-		Bus:        bus,
-		Summarizer: strategy.EchoSummarizer{},
-	}
+	b.Cleanup(func() { _ = stack.Close(context.Background()) })
+	return stack, driver
 }
 
-func memBenchTurn(i int) memory.ConversationTurn {
-	return memory.ConversationTurn{
-		UserMessage:       fmt.Sprintf("user message %d with some representative length", i),
-		AssistantResponse: fmt.Sprintf("assistant response %d, also of representative length", i),
-		Timestamp:         time.Unix(int64(i), 0),
-	}
+func memoryBenchID() identity.Identity {
+	return identity.Identity{TenantID: "bench-tenant", UserID: "bench-user", SessionID: "bench-session"}
 }
 
-// BenchmarkMemoryStrategy measures memory-strategy AddTurn latency
-// for the `truncation` and `rolling_summary` executors — the
-// master-plan's "memory-strategy latency (truncation vs
-// rolling_summary)" axis. Each sub-benchmark drives AddTurn against
-// a real strategy executor wired with real drivers; the
-// rolling-summary path additionally exercises the EchoSummarizer
-// fold-into-summary edge once turns spill past FullZoneTurns.
-//
-// Identity is propagated end-to-end: every AddTurn call carries an
-// identity.Quadruple, and the executor scopes its per-key state by
-// the triple — the §17 identity-propagation obligation discharged
-// inside the benchmark.
-func BenchmarkMemoryStrategy(b *testing.B) {
-	cases := []struct {
-		name     string
-		strategy memory.Strategy
-	}{
-		{"truncation", memory.StrategyTruncation},
-		{"rolling_summary", memory.StrategyRollingSummary},
+// BenchmarkCumulativeSessionRun replaces the retired pair-executor comparison.
+// It times real repeated runs, including cumulative rollover. Values are not
+// comparable to the old AddTurn-only benchmark and need their own baseline.
+func BenchmarkCumulativeSessionRun(b *testing.B) {
+	stack, driver := memoryBenchStack(b)
+	id := memoryBenchID()
+	query := "Edit the existing layout. " + strings.Repeat("Keep the established typography. ", 16)
+	for i := range 12 {
+		if _, err := stack.RunOnce(b.Context(), query, id, assemble.WithRunID(fmt.Sprintf("warmup-%d", i))); err != nil {
+			b.Fatal(err)
+		}
 	}
-
-	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
-			deps := memBenchDeps(b)
-			// A small per-key budget so truncation actually evicts
-			// and rolling_summary actually summarises — the
-			// benchmark must hit the hot path, not the trivial
-			// "buffer not yet full" path.
-			deps.BudgetTokens = 64
-			exec, err := strategy.New(tc.strategy, deps)
-			if err != nil {
-				b.Fatalf("strategy.New(%s): %v", tc.strategy, err)
-			}
-			b.Cleanup(func() { _ = exec.Close(context.Background()) })
-
-			id := identity.Quadruple{
-				Identity: identity.Identity{
-					TenantID:  "bench-tenant",
-					UserID:    "bench-user",
-					SessionID: "bench-session",
-				},
-				RunID: "bench-run",
-			}
-
-			b.ResetTimer()
-			for i := range b.N {
-				if err := exec.AddTurn(context.Background(), id, memBenchTurn(i)); err != nil {
-					b.Fatalf("AddTurn: %v", err)
-				}
-			}
-			b.StopTimer()
-
-			secs := b.Elapsed().Seconds()
-			if secs > 0 {
-				b.ReportMetric(float64(b.N)/secs, "turns/sec")
-			}
-		})
+	if driver.summaries.Load() == 0 {
+		b.Fatal("warmup did not exercise cumulative rollover")
 	}
+	before := driver.summaries.Load()
+	b.ResetTimer()
+	for i := range b.N {
+		if _, err := stack.RunOnce(b.Context(), query, id, assemble.WithRunID(fmt.Sprintf("bench-%d", i))); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(driver.summaries.Load()-before)/float64(b.N), "compactions/op")
 }
 
-// BenchmarkMemoryGetLLMContext measures the read path —
-// GetLLMContext — for both strategies. A planner runtime calls this
-// once per LLM round-trip, so its latency is on the agent's hot
-// path. The benchmark pre-loads a window of turns, then times the
-// context-patch construction.
-func BenchmarkMemoryGetLLMContext(b *testing.B) {
-	cases := []struct {
-		name     string
-		strategy memory.Strategy
-	}{
-		{"truncation", memory.StrategyTruncation},
-		{"rolling_summary", memory.StrategyRollingSummary},
+// BenchmarkMemoryInspection times the real administrative projection of a
+// populated cumulative checkpoint and its recent tail, without an alternate
+// transcript or a synthetic legacy context patch.
+func BenchmarkMemoryInspection(b *testing.B) {
+	stack, driver := memoryBenchStack(b)
+	id := memoryBenchID()
+	for i := range 12 {
+		if _, err := stack.RunOnce(b.Context(), "Continue editing the layout", id, assemble.WithRunID(fmt.Sprintf("seed-%d", i))); err != nil {
+			b.Fatal(err)
+		}
 	}
-
-	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
-			deps := memBenchDeps(b)
-			deps.BudgetTokens = 64
-			exec, err := strategy.New(tc.strategy, deps)
-			if err != nil {
-				b.Fatalf("strategy.New(%s): %v", tc.strategy, err)
-			}
-			b.Cleanup(func() { _ = exec.Close(context.Background()) })
-
-			id := identity.Quadruple{
-				Identity: identity.Identity{
-					TenantID:  "bench-tenant",
-					UserID:    "bench-user",
-					SessionID: "bench-session",
-				},
-				RunID: "bench-run",
-			}
-			for i := range 16 {
-				if err := exec.AddTurn(context.Background(), id, memBenchTurn(i)); err != nil {
-					b.Fatalf("AddTurn(setup): %v", err)
-				}
-			}
-
-			b.ResetTimer()
-			for range b.N {
-				if _, err := exec.GetLLMContext(context.Background(), id); err != nil {
-					b.Fatalf("GetLLMContext: %v", err)
-				}
-			}
-		})
+	if driver.summaries.Load() == 0 {
+		b.Fatal("fixture has no cumulative checkpoint")
+	}
+	q := identity.Quadruple{Identity: id}
+	view, err := stack.Memory.Inspect(b.Context(), q)
+	if err != nil || view.Summary == "" {
+		b.Fatalf("inspection lacks checkpoint: %+v, %v", view, err)
+	}
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(view.Summary), &summary); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := stack.Memory.Inspect(b.Context(), q); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

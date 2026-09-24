@@ -272,11 +272,6 @@ func TestValidate_TableDriven(t *testing.T) {
 			"memory.dsn",
 		},
 		{
-			"negative memory recovery backlog max",
-			func(c *config.Config) { c.Memory.RecoveryBacklogMax = -1 },
-			"memory.recovery_backlog_max",
-		},
-		{
 			"negative memory recent turns",
 			func(c *config.Config) { c.Memory.RecentTurns = -1 },
 			"memory.recent_turns",
@@ -1966,27 +1961,25 @@ func TestValidate_Planner_RejectsNegativeMaxSteps(t *testing.T) {
 	}
 }
 
-// TestValidate_Planner_TokenBudget — Phase 111e (D-202): negative
-// rejected loudly with the field path; zero (compression off, the
-// default) and positive both accepted.
-func TestValidate_Planner_TokenBudget(t *testing.T) {
+// Memory owns the working-input budget; output limits are independent.
+func TestValidate_Memory_BudgetTokens(t *testing.T) {
 	t.Parallel()
 	cfg := mustLoadValid(t)
-	cfg.Planner = config.PlannerConfig{Driver: "react", TokenBudget: -1}
+	cfg.Memory.BudgetTokens = -1
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("Validate(planner.token_budget=-1) returned nil, want error")
+		t.Fatal("Validate(memory.budget_tokens=-1) returned nil, want error")
 	}
-	if !strings.Contains(err.Error(), "planner.token_budget") {
-		t.Fatalf("Validate err = %q, want it to name planner.token_budget", err.Error())
+	if !strings.Contains(err.Error(), "memory.budget_tokens") {
+		t.Fatalf("Validate err = %q, want it to name memory.budget_tokens", err.Error())
 	}
-	cfg.Planner.TokenBudget = 0
+	cfg.Memory.BudgetTokens = 0
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate(planner.token_budget=0) rejected the compression-off default: %v", err)
+		t.Fatalf("Validate(memory.budget_tokens=0) rejected the automatic target: %v", err)
 	}
-	cfg.Planner.TokenBudget = 4096
+	cfg.Memory.BudgetTokens = 4096
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate(planner.token_budget=4096): %v", err)
+		t.Fatalf("Validate(memory.budget_tokens=4096): %v", err)
 	}
 }
 

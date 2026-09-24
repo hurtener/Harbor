@@ -605,8 +605,8 @@ func newWaveV126PostgresEraser(t *testing.T, dsn string) (*sessions.CascadeErase
 		t.Fatal(err)
 	}
 	mem, err := memory.Open(ctx, memory.ConfigSnapshot{
-		Driver: "inmem", Strategy: memory.StrategyTruncation, BudgetTokens: 1000,
-	}, memory.Deps{State: store, Bus: bus})
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 1000,
+	}, memory.Deps{State: store, Bus: bus, Redactor: redactor})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +623,7 @@ func newWaveV126PostgresEraser(t *testing.T, dsn string) (*sessions.CascadeErase
 		t.Fatal(err)
 	}
 	eraser, err := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-		Registry: reg, State: store, Memory: mem, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: redactor,
+		Registry: reg, State: store, Artifacts: arts, Skills: skillStore, Bus: bus, Redactor: redactor,
 	})
 	if err != nil {
 		t.Fatal(err)
