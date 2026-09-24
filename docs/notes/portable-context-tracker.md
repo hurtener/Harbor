@@ -1,5 +1,71 @@
 # Portable session context implementation tracker
 
+## Owner coverage ruling and terminal-control verification — 2026-09-24
+
+The owner explicitly relaxed numerical coverage acceptance for this release:
+remaining percentage gaps are documented debt, not standalone release blockers.
+This supersedes older blocker wording below; it does not weaken behavioral,
+failure-path, isolation, race, workload or persistence-deadline requirements.
+Do not pad tests solely to reach a percentage, lower repository-wide targets,
+exclude production files or relabel missing execution as coverage. Latest
+canonical measurements remain config 85.1% (stricter validation target 90%),
+core LLM 85.1% (target 85%), summarizer 96.0% (target 90%), session memory
+85.1% (target 92%), served runtime 86.3% (target 85%) and Bifrost 82.3%
+(target 90%). Their original revision-specific evidence remains below.
+
+A new served-driver regression on parent `d7380aa5` reproduces the live
+`MarkFailed after Run error failed` warning using the real event bus, task
+registry, steering inbox and RunLoop. Hard Stop interrupts the active planner;
+both cancellation-error and late-success returns leave the task cancelled,
+without Error or Result, and remove its steering inbox. The rejected second
+terminal update is a nonblocking diagnostic, not task resurrection. The test
+also runs alongside the existing shutdown regression, which must still yield
+failed/cancelled when no explicit task cancellation was accepted. No production
+change is made merely to suppress this warning.
+
+Go 1.27.1 darwin-arm64, `GOFLAGS=-p=1`, `-race -count=1`: served cancellation
+and shutdown selection passes (2.180s). The hard-cancel steering, actual HTTP
+owner/foreign control endpoint, in-flight steering prompt-consumption and
+Bifrost upstream-connection cancellation selections pass in their packages
+(1.720s, 2.273s and 1.751s respectively). Scoped served vet and golangci-lint
+2.13.2 pass, zero issues. These are focused functional checks, not new
+whole-package coverage measurements or live-provider transport traces.
+
+The live RC11 sample's existing Cedar session also shows Stopping followed by
+an explicit stopped response. A queued text-only marker remains paused with
+Resume queued messages, and is admitted only after that explicit action.
+No tool call, project edit, prompt change or deployment was requested by this
+control check. Resumed completion and live steering remain to be verified.
+
+Subsequent live verification completes that control check on unchanged RC11:
+the resumed marker returns `QUEUE-A-OK`; in-flight steering replaces the long
+checklist's final answer with `STEER-APPLIED-OK`; queued markers B and C then
+return `QUEUE-B-OK` and `QUEUE-C-OK` automatically, once each and in order.
+Read-only durable task metadata confirms zero tool calls on all five runs:
+
+| Test | Task | Terminal state / UTC time |
+| --- | --- | --- |
+| Stop | `01M38HGK68KMEEC67VW4B1GM59` | cancelled / 01:47:29.501 |
+| Explicit queue resume | `01M38HHVSZS6EQ4R026QHC3QH8` | complete / 01:48:18.821 |
+| In-flight steering | `01M38HKT7PRNRPXMYD9TCC0R3Z` | complete / 01:51:46.614 |
+| FIFO B | `01M38HSBHTWQ8N4TEME5WE2JEX` | complete / 01:52:30.211 |
+| FIFO C | `01M38HTP6JBQDMN76XWDFFSFM0` | complete / 01:53:07.326 |
+
+B's creation follows steering completion and C's creation follows B completion;
+there is no overlapping task admission in this sequence. Steering confirmation
+was delayed while prior streamed output remained visible. Its durable applied
+event is at 01:51:31.426, before the corrected final answer. Do not claim an
+instantaneous user-visible steering response, or infer its latency's cause
+without a request-timing trace. The consumer's five focused control/lifecycle
+test files also pass (178 tests, 8.52s) on its unchanged published revision.
+The served terminal regression passes three further race-instrumented repeats
+(2.123s total). No runtime fix or new RC was needed for this closure.
+
+Parent `d7380aa5` CI `35943782359` has thirteen successful jobs while Linux
+and macOS Go remain running at this checkpoint. No run was restarted. Latest
+test publication still needs its own hosted result. Harbor preflight remains
+owner-waived, not green; no stable tag or merge is authorized.
+
 ## Model admission and route-boundary coverage — 2026-09-24
 
 Test-only hardening on parent `7865c3ef` raises canonical full-package race
