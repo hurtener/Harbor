@@ -32,11 +32,12 @@ type budgetDecision struct {
 	tokens int
 }
 type budgetDriver struct {
-	mu             sync.Mutex
-	decisions      map[string]budgetDecision
-	summaries      []string
-	summaryPadding string
-	failSummary    atomic.Bool
+	mu              sync.Mutex
+	decisions       map[string]budgetDecision
+	summaries       []string
+	summaryPadding  string
+	failSummary     atomic.Bool
+	truncateSummary atomic.Bool
 }
 
 func (d *budgetDriver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -73,7 +74,11 @@ func (d *budgetDriver) Complete(ctx context.Context, req llm.CompleteRequest) (l
 			"goals": []string{"Iterate the layout"}, "facts": facts, "pending": []string{"Next edit"},
 			"last_output_digest": "Layout updated", "note": d.summaryPadding,
 		})
-		return llm.CompleteResponse{Content: string(encoded), FinishReason: "stop"}, err
+		finishReason := "stop"
+		if d.truncateSummary.Load() {
+			finishReason = "length"
+		}
+		return llm.CompleteResponse{Content: string(encoded), FinishReason: finishReason}, err
 	}
 	d.decisions[q.RunID] = budgetDecision{body: text, tokens: llm.EstimateRequestTokens(req, llm.ModelProfile{TokenEstimator: "chars_div_4"})}
 	return llm.CompleteResponse{Content: strings.Repeat("a", 2000), FinishReason: "stop"}, nil
@@ -164,11 +169,12 @@ func TestE2E_Phase123_MemoryLLMBudget_StaysRunnable(t *testing.T) {
 	}
 }
 
-// Summary generation has its own bounded allowance. A provider that exceeds
-// that allowance must not evict the unsummarized sources to make room.
-func TestE2E_Phase123_MemoryLLMBudget_OversizedSummaryPreservesSources(t *testing.T) {
+// Summary generation has a configured output-token allowance, not a separate
+// byte ceiling. Even syntactically valid JSON must not replace its sources when
+// the provider reports that generation exhausted that allowance.
+func TestE2E_Phase123_MemoryLLMBudget_TruncatedSummaryPreservesSources(t *testing.T) {
 	seam := newBudgetSeam(t, 100000, 128*1024)
-	seam.driver.summaryPadding = strings.Repeat("Synthetic summary detail. ", 1500)
+	seam.driver.truncateSummary.Store(true)
 	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "summary-failure"}
 	for i := range 20 {
 		query := fmt.Sprintf("edit %d", i)
@@ -183,20 +189,38 @@ func TestE2E_Phase123_MemoryLLMBudget_OversizedSummaryPreservesSources(t *testin
 		t.Fatal(err)
 	}
 	_, err = seam.stack.RunOnce(t.Context(), "next edit", id, assemble.WithRunID("summary-failure"))
-	if !errors.Is(err, summarizer.ErrTrajectorySummaryCapacity) {
-		t.Fatalf("oversized summary: %v", err)
+	if !errors.Is(err, summarizer.ErrTrajectorySummaryIncomplete) {
+		t.Fatalf("truncated summary: %v", err)
 	}
 	after, err := seam.mem.Inspect(t.Context(), q)
-	if err != nil || len(after.Items) != len(before.Items) || after.Summary != before.Summary {
-		t.Fatalf("failed summary changed committed history: %+v, %v", after, err)
+	if err != nil || len(after.Items) != len(before.Items)+1 || after.Summary != before.Summary {
+		t.Fatalf("failed summary must retain sources and append the interrupted turn: before=%d after=%d summary_changed=%t err=%v",
+			len(before.Items), len(after.Items), after.Summary != before.Summary, err)
 	}
-	for i, item := range after.Items {
+	for i, item := range after.Items[:len(before.Items)] {
 		if item.Key != before.Items[i].Key || string(item.Value) != string(before.Items[i].Value) {
 			t.Fatalf("failed summary changed source %d", i)
 		}
 	}
+	var interrupted struct {
+		Status string `json:"status"`
+		Query  string `json:"query"`
+	}
+	if err := json.Unmarshal(after.Items[len(before.Items)].Value, &interrupted); err != nil || interrupted.Status != "interrupted" || interrupted.Query != "next edit" {
+		t.Fatalf("failed attempt was not retained as interrupted: %+v, %v", interrupted, err)
+	}
 	if seam.driver.decision("summary-failure").body != "" {
 		t.Fatal("decision ran after failed required compaction")
+	}
+	seam.driver.truncateSummary.Store(false)
+	recovered := budgetTurn(t, seam, id, "summary-recovered", "Continue editing")
+	if !strings.Contains(recovered.body, budgetConstraint) {
+		t.Fatal("successful recovery lost the original constraint")
+	}
+	compacted, err := seam.mem.Inspect(t.Context(), q)
+	if err != nil || !strings.Contains(compacted.Summary, budgetConstraint) || compacted.RecentTurns > before.RecentTurns {
+		t.Fatalf("healthy recovery did not compact preserved overflow: turns=%d summary_has_constraint=%t err=%v",
+			compacted.RecentTurns, strings.Contains(compacted.Summary, budgetConstraint), err)
 	}
 }
 

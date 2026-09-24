@@ -8,8 +8,11 @@ The native release checksum, GitHub provenance attestation and version stamp
 verify. The isolated sample deployed its exact RC11 pin at 23:35:16 UTC;
 health and readiness both returned HTTP 200. Startup confirms real PostgreSQL,
 durable events, rolling-summary memory and the Bifrost driver, with no mock.
-Implementation CI `35933443466` remains running on Linux/macOS; thirteen other
-jobs and separate docs run `35933443429` passed. This is not final CI acceptance.
+Implementation CI `35933443466` finished red on Linux/macOS; thirteen other
+jobs and separate docs run `35933443429` passed. Both platforms found the stale
+integration assertion for the removed summary byte ceiling. macOS also repeated
+the two embedded N=128 journal-cleanup deadline failures. Downstream Playwright
+was skipped, not passed. No deadline, workload or coverage gate was relaxed.
 
 An unchanged no-tool recall in the original pre-RC11 session still failed:
 task `01M38A69QSM8Z92DAC8YW9F5AF` ended at 23:39:56 UTC with retained-context
@@ -40,6 +43,49 @@ and arguments but uses scripted responses, so it does not assign the live loop
 to model choice or transport corruption. No prompt/tool guidance was changed.
 Fresh-session compaction acceptance remains pending, separately from these
 consumer/tool-use failures. No baseline inference was started in this check.
+
+Follow-up inspection corrected the disabled-Send attribution: the configured
+High authoring tier explicitly reported `limit_reached`. Its existing allowance
+is forty messages per user per UTC calendar day, resetting at midnight; no
+allowance was raised or bypassed. This is not evidence of a Stop/composer bug.
+The empty replay and repeated Create observations remain separate. RC1 and RC11
+have no diff in model-visible tool-name projection/resolution or the native
+decision projector, so no guidance or mapping change is justified by those
+observations alone. An identical stable-baseline challenge was prepared but
+not admitted while the shared High allowance was exhausted.
+
+After the natural UTC midnight reset, stable `v1.31.9` accepted the identical
+Cedar Dispatch challenge in `sess-e31e661a-8ff3-447f-8593-17b43b14d314`, task
+`01M38BDYV2PZC4D0NAVAT68WMF`. It also repeated Create: eighteen calls, fifteen
+successful and three missing-title errors, followed by one List. Stop reached
+cancelled at 00:04:07 UTC on September 24; the UI exited its active state.
+No baseline steering was submitted. The shared initial-build failure is not
+proof of an RC11-specific regression or of the model/transport root cause.
+
+The fresh candidate's turns endpoint initially returned HTTP 200 with an empty
+page, but a later reload restored its stopped turn and correct agent. Read-only
+inspection confirmed one sealed turn, version 67, checkpoint 18142. The cause
+of that temporary empty response is not established; no database was changed.
+Fresh-session no-tool recall then completed at 00:12:32 UTC, task
+`01M38C2H6JA0FT177Y93QSDQ0E`, preserving the project path, exact receipt
+`9007199254740993127`, pipe-delimited export without operator names, and
+`Request cover` rather than `Dispatch now`. This proves that bounded recall,
+not yet a completed multi-turn compaction comparison. The small edit/show turn
+`01M38C4BMZHVRY3VWGD3NKE22D` completed Read and Edit, reporting version 2,
+but its presentation phase dispatched five Creates and another Read. Hard Stop
+cancelled it at 00:14:53 UTC; the UI confirms stopped. No capacity refusal was
+logged. Editing continuity and the unresolved presentation loop remain separate.
+Old-session backward repair remains explicitly waived.
+
+The obsolete integration rejection now exercises provider-reported output-token
+truncation (`finish_reason=length`) instead of the removed 16 KiB ceiling. It
+preserves every previous source byte and checkpoint, retains the new interrupted
+attempt, prevents the decision call, then verifies healthy compaction recovery.
+This is a test correction to the approved behavior, not a production change.
+All six `TestE2E_Phase123_MemoryLLMBudget_` integration roots pass together
+under Go 1.27.1 race (`GOFLAGS=-p=1`, uncached, 35.267s), using the real SQLite
+assembly seam. Focused vet/lint and changed Markdown pass. This narrow local
+repair does not relabel the earlier hosted run or resolve macOS cleanup timing.
 
 ## Remove independent retention ceilings — 2026-09-23
 
