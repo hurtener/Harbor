@@ -336,6 +336,17 @@ func (c *Config) validateTelemetry() error {
 }
 
 func (c *Config) validateState() error {
+	if s := c.ConfigurationState; s != (StateConfig{}) {
+		if _, ok := allowedDrivers[s.Driver]; !ok {
+			return fieldError("configuration_state.driver", "must be inmem, sqlite or postgres")
+		}
+		if s.Driver != "inmem" && strings.TrimSpace(s.DSN) == "" {
+			return fieldError("configuration_state.dsn", "must be set for a persistent driver")
+		}
+		if err := validatePostgresMigrationMode("configuration_state.migration_mode", s.Driver, s.MigrationMode); err != nil {
+			return err
+		}
+	}
 	if _, ok := allowedDrivers[c.State.Driver]; !ok {
 		return fieldError("state.driver",
 			fmt.Sprintf("must be one of %s, got %q",

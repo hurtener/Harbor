@@ -16072,3 +16072,29 @@ derivation accepts canonical positive ordinals instead of embedding the old
 default in receipt validation; deterministic nonce, parent, identity, route and
 governance checks remain. Older receipt consumers need an upgrade before a
 deployment selects more than sixteen calls. No wire-field change is introduced.
+
+## D-485 — Separate configuration persistence from execution history
+
+**Date:** 2026-09-24. **Scope:** v1.32.1 opt-in persistence hotfix.
+
+An ephemeral conversation deployment must not lose its administered agent
+configuration on restart. Add optional `configuration_state` using the existing
+StateStore driver/DSN/migration-mode shape. Omission aliases `state`, preserving
+existing deployments. Explicit selection is restart-required and uses the same
+driver factory, schema and runtime-owned PostgreSQL pool management.
+
+Agent registrations, revisions, lifecycle/retirement fences, configuration
+operation journals and session-specific settings share the configuration
+handle. This preserves atomic conditional writes between lifecycle authority
+and personal settings. Execution state, cumulative context, tasks, events and
+artifacts retain their existing handles. No conversation copy or automatic
+configuration migration is introduced. Explicitly saved personal instructions
+are configuration and can therefore persist; this is not a claim that every
+user-authored byte is ephemeral.
+
+Session erasure fences then clears its configuration scope too, failing loudly
+on either operation and retaining the permanent content-free fence against late
+writes. Agent-wide settings and sibling session/tenant settings are preserved.
+The existing configuration Protocol is unchanged. Selecting the new store does
+not recover old in-memory revisions; operators must explicitly restore approved
+settings through the existing authenticated configuration surface.

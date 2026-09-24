@@ -47,6 +47,13 @@ state:
   # and set verify: startup reads the ledger only and fails if it is stale.
   # migration_mode: verify
 
+# Optional: durable agent settings without persisting conversation state.
+# Omission reuses state. This uses the existing StateStore driver/schema.
+# configuration_state:
+#   driver: postgres
+#   # Set HARBOR_CONFIGURATION_STATE_DSN in the secret environment.
+#   migration_mode: verify # After a separate direct-endpoint apply.
+
 llm:
   # `bifrost` (Phase 33 — pure-Go gateway against OpenAI / Anthropic /
   # Google / OpenRouter / etc.) is the production default Phase 64

@@ -1793,6 +1793,17 @@ shape or a remote capability, and resolved bytes remain dispatch-local.
 
 ### 6.11 StateStore
 
+**Separate configuration persistence (D-485).** Runtime assembly may select an
+optional `configuration_state` driver/DSN independently of execution `state`.
+Omission aliases the existing state handle. The separate handle owns agent
+registrations, versioned agent/user configuration, lifecycle fences,
+configuration operation journals and session-specific settings; execution
+records, cumulative context, tasks and events continue using their existing
+stores. Agent lifecycle and personal-setting conditional writes stay on one
+store. Session erasure also fences and clears session-scoped configuration.
+This reuses the StateStore interface, driver triad and PostgreSQL schema/pool;
+it creates neither a second transcript nor automatic migration of old settings.
+
 ```go
 // EventID is a ULID supplied by the caller; the store keys idempotency on it.
 type EventID string

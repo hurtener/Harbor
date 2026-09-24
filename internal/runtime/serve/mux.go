@@ -115,7 +115,10 @@ type MuxInput struct {
 	// registry and AgentConfig for compatibility with direct callers.
 	SourceAuthorizer *mcpconsole.SourceAuthorizer
 	State            state.StateStore
-	Skills           skills.SkillStore
+	// ConfigurationState is the agent configuration store. Nil reuses State
+	// only when no explicit configuration_state is selected in Cfg.
+	ConfigurationState state.StateStore
+	Skills             skills.SkillStore
 	// AgentPackLLM is the configured model client used by governed pack
 	// authoring. BuildMux wraps it in the production proposer seam.
 	AgentPackLLM llm.LLMClient
@@ -301,6 +304,9 @@ func sessionWindowFunc(reg *sessions.Registry) sessionsprotocol.SessionWindowFun
 // the handle→transport-option mapping shared by cmd/harbor and the test kit.
 func BuildMux(in MuxInput) (*BuiltMux, error) {
 	cfg := in.Cfg
+	if cfg != nil && cfg.ConfigurationState.Driver != "" && in.ConfigurationState == nil {
+		return nil, fmt.Errorf("configuration_state selected but its store is not wired")
+	}
 	bus := in.Bus
 	red := in.Redactor
 	logger := in.Logger
@@ -713,14 +719,20 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			sessionsprotocol.WithTitleSetter(in.Sessions),
 		}
 		if sessionLifecycleAvailable {
+			var separateConfigurationState state.StateStore
+			if cfg.ConfigurationState.Driver != "" &&
+				(cfg.ConfigurationState.Driver != cfg.State.Driver || cfg.ConfigurationState.DSN != cfg.State.DSN) {
+				separateConfigurationState = in.ConfigurationState
+			}
 			eraser, eErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
-				Registry:  in.Sessions,
-				State:     in.State,
-				Artifacts: in.Artifacts,
-				Skills:    in.Skills,
-				Bus:       bus,
-				Redactor:  red,
-				Logger:    logger,
+				ConfigurationState: separateConfigurationState,
+				Registry:           in.Sessions,
+				State:              in.State,
+				Artifacts:          in.Artifacts,
+				Skills:             in.Skills,
+				Bus:                bus,
+				Redactor:           red,
+				Logger:             logger,
 				// The HA-64 / HA-65 durable projection fences: the
 				// cascade erases + permanently fences their rows BEFORE
 				// any destructive step, so no late event can resurrect an
@@ -856,6 +868,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	if in.AgentConfig != nil {
+		configurationState := in.ConfigurationState
+		if configurationState == nil {
+			configurationState = in.State
+		}
 		agentConfigOpts := []agentcfgprotocol.Option{
 			agentcfgprotocol.WithMemoryBudget(in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil),
 			agentcfgprotocol.WithLogger(logger),
@@ -873,10 +889,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithAllowWireOAuthDescriptor(in.AllowWireOAuthDescriptor),
 			agentcfgprotocol.WithAllowWireInjection(in.AllowWireInjection),
 			agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(in.SignedOAuthMCPCapabilityAuthorities),
-			agentcfgprotocol.WithSignedOAuthMCPOperationState(in.State),
+			agentcfgprotocol.WithSignedOAuthMCPOperationState(configurationState),
 			agentcfgprotocol.WithSignedOAuthMCPUserReconciler(in.SignedOAuthMCPUserReconciler),
-			agentcfgprotocol.WithAgentPackProposalState(in.State),
-			agentcfgprotocol.WithAgentPackCopyState(in.State),
+			agentcfgprotocol.WithAgentPackProposalState(configurationState),
+			agentcfgprotocol.WithAgentPackCopyState(configurationState),
 			agentcfgprotocol.WithBootPackReader(in.BootPackReader),
 			agentcfgprotocol.WithAgentPackCatalog(in.Catalog),
 			agentcfgprotocol.WithAgentPackGrantedScopes(append([]string(nil), cfg.Tools.GrantedScopes...)),

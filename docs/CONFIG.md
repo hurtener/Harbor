@@ -344,6 +344,52 @@ completed. Restart-required.
 
 ---
 
+## Separate configuration persistence
+
+### configuration_state.driver
+
+Optional restart-required store for agent registrations, versioned agent/user
+configuration, lifecycle/retirement records, configuration operation journals
+and session-specific settings. Omitted: reuse `state` exactly as before.
+When present, `driver` must be `inmem`, `sqlite` or `postgres`; a persistent
+driver requires `dsn`. DSNs are secrets. PostgreSQL `migration_mode` follows
+the same apply/verify contract as `state.migration_mode` and uses the existing
+StateStore schema and runtime-managed pool.
+
+This does **not** redirect messages, cumulative summaries, tool evidence, runs,
+tasks, event history or artifacts. For ephemeral conversations, keep `state`,
+events, artifacts and task storage ephemeral; configuring this store alone
+does not turn off any independently enabled durable capability. Explicitly
+saved user instructions and personal configuration are settings, not chat
+history, and do persist here. Session deletion fences and removes its settings
+from both stores without deleting agent-wide settings.
+
+```yaml
+state:
+  driver: inmem
+configuration_state:
+  driver: postgres
+  # Supply HARBOR_CONFIGURATION_STATE_DSN through your secret environment.
+  migration_mode: verify # Only after a direct-endpoint apply has succeeded.
+```
+
+All three fields accept `HARBOR_CONFIGURATION_STATE_*` environment overrides.
+Changing this store does not copy old configuration or recover already lost
+in-memory revisions. Preserve/export existing settings before switching stores
+and explicitly restore them through the authenticated configuration API.
+
+### configuration_state.dsn
+
+Connection string for the separate configuration store. Required for `sqlite`
+and `postgres`; omitted with `inmem`. Secret and redacted like `state.dsn`.
+Restart-required. Environment: `HARBOR_CONFIGURATION_STATE_DSN`.
+
+### configuration_state.migration_mode
+
+PostgreSQL only: `apply` (default) or `verify`, with exactly the same endpoint,
+schema and migration guarantees as `state.migration_mode`. Restart-required.
+Environment: `HARBOR_CONFIGURATION_STATE_MIGRATION_MODE`.
+
 ## LLM
 
 ### llm.driver
