@@ -77,7 +77,7 @@ func newPostureLLM() *llm.PostureProvider {
 // newPostureFixture builds a PostureSurface wired with deterministic
 // seams. bootedAt is one hour before the fixed clock so uptime is a
 // stable 3600s.
-func newPostureFixture(t *testing.T) *protocol.PostureSurface {
+func newPostureFixture(t *testing.T, options ...func(*protocol.PostureDeps)) *protocol.PostureSurface {
 	t.Helper()
 	deps := protocol.PostureDeps{
 		Build: types.RuntimeInfo{
@@ -129,6 +129,9 @@ func newPostureFixture(t *testing.T) *protocol.PostureSurface {
 		Bus:         newPostureBus(t),
 		DisplayName: "harbor-test",
 		InstanceID:  "inst-test-001",
+	}
+	for _, option := range options {
+		option(&deps)
 	}
 	s, err := protocol.NewPostureSurface(deps)
 	if err != nil {

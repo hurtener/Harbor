@@ -320,6 +320,7 @@ var CanonicalWireTypes = map[string]string{
 	// runtime-posture wire types — all live in
 	// internal/protocol/types (internal/protocol/types/posture.go).
 	"RuntimeInfoRequest":       "types",
+	"EffectiveRunCompletionHook": "types",
 	"LLMProviderRouteSelector": "types",
 	"RunLLMSettings":           "types",
 	"RuntimeInfo":              "types",
