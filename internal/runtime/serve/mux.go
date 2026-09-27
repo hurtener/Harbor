@@ -380,11 +380,25 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
-		Metrics:                         runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                      governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
-		LLM:                             llm.NewPostureProvider(in.LLMSnapshot),
-		ProviderCatalog:                 in.ProviderCatalog,
-		AgentReach:                      in.AgentReach,
+		Metrics:         runtimeposture.MetricsProvider(in.Metrics, logger),
+		Governance:      governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
+		LLM:             llm.NewPostureProvider(in.LLMSnapshot),
+		ProviderCatalog: in.ProviderCatalog,
+		AgentReach:      in.AgentReach,
+		AgentResolver:   in.AgentResolver,
+		EffectiveRunCompletion: func(ctx context.Context, agentID string, id identity.Identity) (types.EffectiveRunCompletionHook, error) {
+			if in.AgentConfig == nil || agentID == "" {
+				return types.EffectiveRunCompletionHook{}, fmt.Errorf("effective run hook projection unavailable")
+			}
+			spec, active, err := projection.ActiveRunCompletionHook(ctx, in.AgentConfig, agentID, identity.Quadruple{Identity: id}, projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion))
+			if err != nil {
+				return types.EffectiveRunCompletionHook{}, err
+			}
+			if !active || spec == nil {
+				return types.EffectiveRunCompletionHook{AgentID: agentID, State: "off"}, nil
+			}
+			return types.EffectiveRunCompletionHook{AgentID: agentID, State: "active", Tool: spec.Tool, TimeoutMS: spec.Timeout.Milliseconds()}, nil
+		},
 		ProviderRouteRuntimeID:          in.ProviderRouteRuntimeID,
 		Redactor:                        red,
 		Bus:                             bus,

@@ -33,6 +33,9 @@ type RuntimeInfoRequest struct {
 	// validates the triple and gates cross-tenant reads on the admin
 	// scope claim.
 	Identity IdentityScope `json:"identity"`
+	// EffectiveAgentID requests the protected run-time hook projection for one
+	// reach-admitted Agent. Empty preserves the ordinary global runtime.info.
+	EffectiveAgentID string `json:"effective_agent_id,omitempty"`
 	// ProviderOperation requests the protected runtime-origin provider
 	// catalog operation over the booted runtime. It is intentionally carried
 	// by the existing posture envelope so older transports remain compatible;
@@ -123,6 +126,19 @@ type RuntimeInfo struct {
 	// credential, organization, or identity value. It is absent on runtimes
 	// built before the readiness projection was introduced.
 	ExternalGrant *ExternalGrantReadiness `json:"external_grant,omitempty"`
+	// EffectiveRunCompletion is present only for an explicit, admin-scoped
+	// effective_agent_id query. State is active or off; off is an explicit
+	// answer and must not be confused with a missing projection.
+	EffectiveRunCompletion *EffectiveRunCompletionHook `json:"effective_run_completion,omitempty"`
+}
+
+// EffectiveRunCompletionHook is the same per-Agent-over-boot projection used
+// at run start. It exposes configuration metadata, never tool arguments.
+type EffectiveRunCompletionHook struct {
+	AgentID   string `json:"agent_id"`
+	State     string `json:"state"`
+	Tool      string `json:"tool,omitempty"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
 }
 
 // ExternalGrantReadiness distinguishes compile-time support, configured

@@ -93,6 +93,8 @@ type PostureSurface struct {
 	llm                    *llm.PostureProvider
 	providerCatalog        provider.CatalogSurface
 	agentReach             auth.AgentReachAuthorizer
+	agentResolver          AgentResolver
+	effectiveRunCompletion func(context.Context, string, identity.Identity) (types.EffectiveRunCompletionHook, error)
 	providerRouteRuntimeID string
 	redactor               audit.Redactor
 	bus                    events.EventBus
@@ -117,6 +119,12 @@ type PostureSurface struct {
 // LLM-Provider cards — read the resulting Protocol methods, never the
 // seams directly).
 type PostureDeps struct {
+	// AgentResolver and EffectiveRunCompletion provide the exact read-only
+	// projection used by runtime Start. Both are required for an agent-specific
+	// posture request; a missing seam refuses instead of guessing from a
+	// partial active Agent revision.
+	AgentResolver          AgentResolver
+	EffectiveRunCompletion func(context.Context, string, identity.Identity) (types.EffectiveRunCompletionHook, error)
 	// Build carries the static build identity (BuildVersion /
 	// BuildCommit / BuildDate / BuildGoVersion) plus the static
 	// deployment-declared MCPAppDisplayModes (the host's renderable MCP
@@ -313,6 +321,8 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		llm:                    deps.LLM,
 		providerCatalog:        deps.ProviderCatalog,
 		agentReach:             deps.AgentReach,
+		agentResolver:          deps.AgentResolver,
+		effectiveRunCompletion: deps.EffectiveRunCompletion,
 		providerRouteRuntimeID: deps.ProviderRouteRuntimeID,
 		redactor:               deps.Redactor,
 		bus:                    deps.Bus,
@@ -459,7 +469,23 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 
 	switch method {
 	case methods.MethodRuntimeInfo:
-		return s.handleInfo(), nil
+		if pr.EffectiveAgentID == "" {
+			return s.handleInfo(), nil
+		}
+		if !auth.HasScope(ctx, auth.ScopeAdmin) || s.agentResolver == nil || s.agentReach == nil || s.effectiveRunCompletion == nil {
+			return nil, protoerrors.Newf(protoerrors.CodeIdentityScopeRequired, "effective runtime posture requires admin agent reach")
+		}
+		effectiveID, err := AdmitEffectiveAgent(ctx, string(method), id, pr.EffectiveAgentID, s.agentResolver, s.agentReach)
+		if err != nil || effectiveID == "" {
+			return nil, protoerrors.Newf(protoerrors.CodeIdentityScopeRequired, "effective runtime posture agent unavailable")
+		}
+		hook, err := s.effectiveRunCompletion(ctx, effectiveID, id)
+		if err != nil || hook.AgentID != effectiveID || hook.State != "active" && hook.State != "off" || hook.State == "active" && hook.Tool == "" || hook.State == "off" && (hook.Tool != "" || hook.TimeoutMS != 0) {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError, "effective runtime posture unavailable")
+		}
+		info := s.handleInfo()
+		info.EffectiveRunCompletion = &hook
+		return info, nil
 	case methods.MethodRuntimeHealth:
 		return s.handleHealth(ctx, method, id, actor, widened)
 	case methods.MethodRuntimeCounters:
