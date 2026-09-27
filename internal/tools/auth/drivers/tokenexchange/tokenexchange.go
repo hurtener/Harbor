@@ -606,8 +606,8 @@ type provider struct {
 	// held across the broker HTTP round-trip.
 	cacheMu sync.Mutex
 	cache   map[string]cachedToken
-	// gens is the per-key revocation generation counter. Revoke bumps
-	// the key's generation; an exchange that was in flight when the
+	// gens is the per-identity revocation generation counter. Revoke bumps
+	// the identity's generation; an exchange that was in flight when the
 	// Revoke landed observes the bump and declines to (re)populate the
 	// cache — closing the "revoke racing an in-flight exchange is
 	// silently lost" window.
@@ -798,7 +798,8 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 			return
 		}
 	}
-	gen := p.gens[key]
+	baseKey := p.cacheKey(id, "")
+	gen := p.gens[baseKey]
 	p.cacheMu.Unlock()
 
 	tok, meta, err := p.exchange(ctx, id)
@@ -821,11 +822,11 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 	}
 
 	p.cacheMu.Lock()
-	// A Revoke that raced this exchange bumped the key's generation —
+	// A Revoke that raced this exchange bumped the identity's generation —
 	// honour it by NOT caching. The collapsed callers still receive the
 	// freshly minted token (the broker really issued it, and the audit
 	// event fired); the next Token() call re-exchanges.
-	if p.gens[key] == gen {
+	if p.gens[baseKey] == gen {
 		p.cache[key] = cachedToken{
 			token:       tok,
 			serveUntil:  p.serveUntil(tok.ExpiresAt),
@@ -1223,9 +1224,9 @@ func (p *provider) PendingFlow(_ context.Context, _ string) (auth.PendingFlowInf
 	return auth.PendingFlowInfo{}, false, nil
 }
 
-// Revoke implements auth.OAuthProvider.Revoke by clearing the local
-// cache entry for (ctx identity, source) and bumping the key's
-// revocation generation, so an exchange that was already in flight
+// Revoke implements auth.OAuthProvider.Revoke by clearing all local
+// cache entries for (ctx identity, source), across execution operations,
+// and bumping the identity's revocation generation, so an exchange in flight
 // when the Revoke landed declines to repopulate the cache. Idempotent
 // — no error when nothing is cached. Broker-side custody is untouched
 // (revocation there is the broker's concern; the serve horizon bounds
@@ -1246,11 +1247,15 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
 		return err
 	}
-	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
-	key := p.cacheKey(id, operationID)
+	baseKey := p.cacheKey(id, "")
+	operationPrefix := baseKey + ";"
 	p.cacheMu.Lock()
-	p.gens[key]++
-	delete(p.cache, key)
+	p.gens[baseKey]++
+	for key := range p.cache {
+		if key == baseKey || strings.HasPrefix(key, operationPrefix) {
+			delete(p.cache, key)
+		}
+	}
 	p.cacheMu.Unlock()
 	return p.credSource.Invalidate(ctx)
 }
