@@ -492,6 +492,9 @@ func (s *ArtifactsSurface) projectRows(refs []artifacts.ArtifactRef, req *types.
 // call below.
 func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPutRequest) (any, error) {
 	m := string(methods.MethodArtifactsPut)
+	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && (grant.Mode != "write" || req.Scope.Task != "" || int64(len(req.Bytes)) > grant.MaxBytes || req.Opts.Source != "" && req.Opts.Source != types.ArtifactSourceUserUpload) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: signed artifact transfer bound exceeded", m)
+	}
 
 	scope := artifacts.ArtifactScope{
 		TenantID:  req.Scope.Tenant,
@@ -648,6 +651,9 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 // serve a window incrementally is made here or in the interface godoc.
 func (s *ArtifactsSurface) handleGet(ctx context.Context, req *types.ArtifactsGetRequest) (any, error) {
 	m := string(methods.MethodArtifactsGet)
+	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && (grant.Mode != "read" || grant.ID != req.ID) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: signed artifact ref mismatch", m)
+	}
 
 	scope := artifacts.ArtifactScope{
 		TenantID:  req.Scope.Tenant,
@@ -688,6 +694,9 @@ func (s *ArtifactsSurface) handleGet(ctx context.Context, req *types.ArtifactsGe
 	ref, blob, err := s.readArtifact(ctx, scope, req.ID)
 	if err != nil {
 		return nil, err
+	}
+	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && (ref.SizeBytes > grant.MaxBytes || int64(len(blob)) > grant.MaxBytes) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: signed artifact size bound exceeded", m)
 	}
 
 	window, truncated := boundedWindow(blob, req.Offset, s.effectiveMaxBytes(req.MaxBytes))
@@ -820,6 +829,9 @@ func boundedWindow(blob []byte, offset, maxBytes int64) (window []byte, truncate
 // so the elevation is not one to add by analogy.
 func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.ArtifactsGetRefRequest) (any, error) {
 	m := string(methods.MethodArtifactsGetRef)
+	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && (grant.Mode != "read" || grant.ID != req.ID) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: signed artifact ref mismatch", m)
+	}
 
 	scope := artifacts.ArtifactScope{
 		TenantID:  req.Scope.Tenant,
@@ -871,6 +883,9 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 	if !found || ref == nil {
 		return nil, protoerrors.Newf(protoerrors.CodeNotFound,
 			"method %q: artifact %q not found in scope", m, req.ID)
+	}
+	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && ref.SizeBytes > grant.MaxBytes {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: signed artifact size bound exceeded", m)
 	}
 
 	// Type-assert the store to Presigner. A driver without the

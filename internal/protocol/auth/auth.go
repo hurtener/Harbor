@@ -175,6 +175,8 @@ type KeySet interface {
 
 // Verified is the result of a successful Validate call.
 type Verified struct {
+	// ArtifactTransfer is a method-restricted signed browser transfer grant.
+	ArtifactTransfer *ArtifactTransferProof
 	// ExecutionStartProof is verified, optional Start correlation.
 	ExecutionStartProof ExecutionStartProof
 	// Identity is the (tenant, user, session) triple extracted from the
@@ -492,6 +494,15 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	}
 
 	scopes := extractScopes(claims["scopes"])
+	var artifactTransfer *ArtifactTransferProof
+	if raw, present := claims[ArtifactTransferClaim]; present {
+		parsed, parseErr := parseArtifactTransfer(raw)
+		if parseErr != nil || len(scopes) != 0 {
+			v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
+			return Verified{}, ErrArtifactTransferMalformed
+		}
+		artifactTransfer = &parsed
+	}
 	var executionProof ExecutionStartProof
 	_, hasOperation := claims[ExecutionOperationClaim]
 	_, hasKey := claims[ExecutionIdempotencyClaim]
@@ -527,8 +538,13 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 			return Verified{}, sessionReachErr
 		}
 	}
+	if artifactTransfer != nil && (len(sessionReach) != 1 || sessionReach[0] != id.SessionID || len(reach) != 0) {
+		v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
+		return Verified{}, ErrArtifactTransferMalformed
+	}
 
 	return Verified{
+		ArtifactTransfer:    artifactTransfer,
 		ExecutionStartProof: executionProof,
 		Identity:            id,
 		Scopes:              scopes,
