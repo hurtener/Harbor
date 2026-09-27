@@ -211,6 +211,10 @@ type Task struct {
 	PropagateOnCancel string
 	NotifyOnComplete  bool
 	IdempotencyKey    string
+	// VerifiedExecutionOperationID was checked against a signed Start bearer
+	// and its idempotency key at the Protocol edge. It is persisted so the
+	// runtime can prove operation identity during tool exchange after restart.
+	VerifiedExecutionOperationID string `json:",omitempty"`
 	// ExternalGrant is the opaque signed inference grant carried from
 	// Protocol start to the run's LLM edge. It contains no credential bytes;
 	// the verifier, not the task record, establishes authority.
@@ -368,16 +372,19 @@ type Task struct {
 // new task as a member. Empty `GroupID` is the default — most
 // foreground turns aren't group members.
 type SpawnRequest struct {
-	Identity          identity.Quadruple
-	Kind              TaskKind
-	ParentTaskID      *TaskID
-	Description       string
-	Query             string
-	Priority          int
-	IdempotencyKey    string
-	PropagateOnCancel string
-	NotifyOnComplete  bool
-	GroupID           TaskGroupID
+	Identity       identity.Quadruple
+	Kind           TaskKind
+	ParentTaskID   *TaskID
+	Description    string
+	Query          string
+	Priority       int
+	IdempotencyKey string
+	// VerifiedExecutionOperationID is trusted edge context, not a tool or
+	// request-body argument. Ordinary spawns leave it empty.
+	VerifiedExecutionOperationID string
+	PropagateOnCancel            string
+	NotifyOnComplete             bool
+	GroupID                      TaskGroupID
 	// ExternalGrant carries the signed, content-free runtime grant through
 	// task persistence to the run loop. It is included in idempotency identity.
 	ExternalGrant json.RawMessage

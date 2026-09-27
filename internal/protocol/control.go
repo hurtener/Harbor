@@ -583,6 +583,11 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err := validateExternalGrant(string(method), sr.ExternalGrant); err != nil {
 		return nil, err
 	}
+	operation, hasOperation := auth.ExecutionOperationFrom(ctx)
+	if hasOperation && sr.IdempotencyKey != operation.IdempotencyKey {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: signed execution operation does not match start idempotency key", string(method))
+	}
 	if sr.ProviderRoute != nil {
 		providerRoute := providerRouteFromWire(sr.ProviderRoute)
 		if err := llm.ValidateProviderRoute(*providerRoute); err != nil || providerRoute.RouteID == "" {
@@ -605,20 +610,21 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 	handle, err := s.tasks.Spawn(spawnCtx, tasks.SpawnRequest{
-		Identity:                  identity.Quadruple{Identity: id},
-		Kind:                      tasks.KindForeground,
-		Description:               sr.Description,
-		Query:                     sr.Query,
-		Priority:                  sr.Priority,
-		IdempotencyKey:            sr.IdempotencyKey,
-		InputArtifactIDs:          sr.InputArtifactIDs,
-		InputArtifactDispositions: sr.InputArtifactDispositions,
-		OutputSchema:              sr.OutputSchema,
-		AgentID:                   sr.AgentID,
-		CallerMemory:              sr.CallerMemory,
-		ExternalGrant:             append([]byte(nil), sr.ExternalGrant...),
-		ProviderRoute:             providerRouteFromWire(sr.ProviderRoute),
-		LLMSettings:               settings,
+		Identity:                     identity.Quadruple{Identity: id},
+		Kind:                         tasks.KindForeground,
+		Description:                  sr.Description,
+		Query:                        sr.Query,
+		Priority:                     sr.Priority,
+		IdempotencyKey:               sr.IdempotencyKey,
+		VerifiedExecutionOperationID: operation.OperationID,
+		InputArtifactIDs:             sr.InputArtifactIDs,
+		InputArtifactDispositions:    sr.InputArtifactDispositions,
+		OutputSchema:                 sr.OutputSchema,
+		AgentID:                      sr.AgentID,
+		CallerMemory:                 sr.CallerMemory,
+		ExternalGrant:                append([]byte(nil), sr.ExternalGrant...),
+		ProviderRoute:                providerRouteFromWire(sr.ProviderRoute),
+		LLMSettings:                  settings,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

@@ -686,7 +686,8 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
 		return auth.Token{}, err
 	}
-	key := p.cacheKey(id)
+	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
+	key := p.cacheKey(id, operationID)
 
 	// Hot path: fresh cache hit → return immediately, emit nothing.
 	p.cacheMu.Lock()
@@ -909,7 +910,8 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientSecret, p.name)
 	}
 
-	subjectToken, err := encodeSubjectToken(id)
+	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
+	subjectToken, err := encodeSubjectTokenWithOperation(id, operationID)
 	if err != nil {
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
 	}
@@ -1244,7 +1246,8 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
 		return err
 	}
-	key := p.cacheKey(id)
+	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
+	key := p.cacheKey(id, operationID)
 	p.cacheMu.Lock()
 	p.gens[key]++
 	delete(p.cache, key)
@@ -1372,11 +1375,16 @@ func (p *provider) identityFromCtx(ctx context.Context) (identity.Identity, erro
 // base64url(JSON) — the subject_token the broker interprets under the
 // Harbor-defined subject_token_type URN.
 func encodeSubjectToken(id identity.Identity) (string, error) {
+	return encodeSubjectTokenWithOperation(id, "")
+}
+
+func encodeSubjectTokenWithOperation(id identity.Identity, operationID string) (string, error) {
 	b, err := json.Marshal(struct {
-		TenantID  string `json:"tenant_id"`
-		UserID    string `json:"user_id"`
-		SessionID string `json:"session_id"`
-	}{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID})
+		TenantID    string `json:"tenant_id"`
+		UserID      string `json:"user_id"`
+		SessionID   string `json:"session_id"`
+		OperationID string `json:"execution_operation_id,omitempty"`
+	}{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, OperationID: operationID})
 	if err != nil {
 		return "", err
 	}
@@ -1390,7 +1398,11 @@ func encodeSubjectToken(id identity.Identity) (string, error) {
 // length-prefixed so external-input IDs containing separator bytes
 // cannot collide two keys (tenant "a;1" + user "b" vs tenant "a" +
 // user "1;b").
-func (p *provider) cacheKey(id identity.Identity) string {
+func (p *provider) cacheKey(id identity.Identity, operationID string) string {
+	if operationID != "" {
+		base := p.cacheKey(id, "")
+		return fmt.Sprintf("%s;%d:%s", base, len(operationID), operationID)
+	}
 	if p.signedBinding != nil {
 		scope := string(auth.ScopeUser)
 		src := string(p.source)
