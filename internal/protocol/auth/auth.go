@@ -508,10 +508,11 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	_, hasKey := claims[ExecutionIdempotencyClaim]
 	_, hasDigest := claims[ExecutionStartDigestClaim]
 	if hasOperation || hasKey || hasDigest {
-		executionProof.OperationID, _ = claims[ExecutionOperationClaim].(string)
-		executionProof.IdempotencyKey, _ = claims[ExecutionIdempotencyClaim].(string)
-		executionProof.BodySHA256, _ = claims[ExecutionStartDigestClaim].(string)
-		if !validExecutionProof(executionProof) {
+		operationID, operationIsString := claims[ExecutionOperationClaim].(string)
+		idempotencyKey, keyIsString := claims[ExecutionIdempotencyClaim].(string)
+		bodySHA256, digestIsString := claims[ExecutionStartDigestClaim].(string)
+		executionProof = ExecutionStartProof{OperationID: operationID, IdempotencyKey: idempotencyKey, BodySHA256: bodySHA256}
+		if !operationIsString || !keyIsString || !digestIsString || !validExecutionProof(executionProof) {
 			v.audit(ctx, kidSeen, iss, sub, ErrExecutionOperationMalformed)
 			return Verified{}, ErrExecutionOperationMalformed
 		}

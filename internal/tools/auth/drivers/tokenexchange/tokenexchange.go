@@ -911,7 +911,7 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	}
 
 	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
-	subjectToken, err := encodeSubjectTokenWithOperation(id, operationID)
+	subjectToken, err := encodeSubjectToken(id, operationID)
 	if err != nil {
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
 	}
@@ -1374,11 +1374,7 @@ func (p *provider) identityFromCtx(ctx context.Context) (identity.Identity, erro
 // encodeSubjectToken serialises the verified identity triple as
 // base64url(JSON) — the subject_token the broker interprets under the
 // Harbor-defined subject_token_type URN.
-func encodeSubjectToken(id identity.Identity) (string, error) {
-	return encodeSubjectTokenWithOperation(id, "")
-}
-
-func encodeSubjectTokenWithOperation(id identity.Identity, operationID string) (string, error) {
+func encodeSubjectToken(id identity.Identity, operationID string) (string, error) {
 	b, err := json.Marshal(struct {
 		TenantID    string `json:"tenant_id"`
 		UserID      string `json:"user_id"`

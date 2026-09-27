@@ -68,8 +68,10 @@ func validArtifactTransfer(p ArtifactTransferProof) bool {
 			return false
 		}
 		for _, c := range p.ID {
-			if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
-				(c >= 'a' && c <= 'z') || c == '_' || c == '-') {
+			switch {
+			case c >= '0' && c <= '9', c >= 'A' && c <= 'Z',
+				c >= 'a' && c <= 'z', c == '_', c == '-':
+			default:
 				return false
 			}
 		}
