@@ -177,6 +177,8 @@ type KeySet interface {
 type Verified struct {
 	// RuntimeID is the verified top-level runtime_id claim, when present.
 	RuntimeID string
+	// ExecutionStartProof is verified, optional Start correlation.
+	ExecutionStartProof ExecutionStartProof
 	// Identity is the (tenant, user, session) triple extracted from the
 	// JWT's mandatory claims. Validates clean against identity.Validate
 	// — the Validator already ran that check.
@@ -492,6 +494,19 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	}
 
 	scopes := extractScopes(claims["scopes"])
+	var executionProof ExecutionStartProof
+	_, hasOperation := claims[ExecutionOperationClaim]
+	_, hasKey := claims[ExecutionIdempotencyClaim]
+	_, hasDigest := claims[ExecutionStartDigestClaim]
+	if hasOperation || hasKey || hasDigest {
+		executionProof.OperationID, _ = claims[ExecutionOperationClaim].(string)
+		executionProof.IdempotencyKey, _ = claims[ExecutionIdempotencyClaim].(string)
+		executionProof.BodySHA256, _ = claims[ExecutionStartDigestClaim].(string)
+		if !validExecutionProof(executionProof) {
+			v.audit(ctx, kidSeen, iss, sub, ErrExecutionOperationMalformed)
+			return Verified{}, ErrExecutionOperationMalformed
+		}
+	}
 	reach, reachErr := ParseAgentReach(claims[AgentReachClaim])
 	if reachErr != nil {
 		v.audit(ctx, kidSeen, iss, sub, ErrAgentReachMalformed)
@@ -521,13 +536,14 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		runtimeID = ""
 	}
 	return Verified{
-		RuntimeID:    runtimeID,
-		Identity:     id,
-		Scopes:       scopes,
-		AgentReach:   reach,
-		SessionReach: sessionReach,
-		Subject:      sub,
-		Issuer:       iss,
+		RuntimeID:           runtimeID,
+		ExecutionStartProof: executionProof,
+		Identity:            id,
+		Scopes:              scopes,
+		AgentReach:          reach,
+		SessionReach:        sessionReach,
+		Subject:             sub,
+		Issuer:              iss,
 	}, nil
 }
 

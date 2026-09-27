@@ -181,9 +181,32 @@ func (b *fakeBroker) brokerExpiresIn() int {
 }
 
 type subjectTriple struct {
-	TenantID  string `json:"tenant_id"`
-	UserID    string `json:"user_id"`
-	SessionID string `json:"session_id"`
+	TenantID    string `json:"tenant_id"`
+	UserID      string `json:"user_id"`
+	SessionID   string `json:"session_id"`
+	OperationID string `json:"execution_operation_id,omitempty"`
+}
+
+func TestToken_VerifiedOperationSeparatesExchangeCache(t *testing.T) {
+	broker := newFakeBroker(t)
+	prov, _, _ := mkProvider(t, broker)
+	first := tools.WithVerifiedExecutionOperation(mkCtx(t, aliceID()), "op-one")
+	if _, err := prov.Token(first, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeSubject(broker.form().Get("subject_token")).OperationID; got != "op-one" {
+		t.Fatalf("first operation = %q", got)
+	}
+	second := tools.WithVerifiedExecutionOperation(mkCtx(t, aliceID()), "op-two")
+	if _, err := prov.Token(second, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeSubject(broker.form().Get("subject_token")).OperationID; got != "op-two" {
+		t.Fatalf("second operation = %q", got)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("operation cache crossed runs: %d calls", broker.calls())
+	}
 }
 
 func decodeSubject(s string) subjectTriple {

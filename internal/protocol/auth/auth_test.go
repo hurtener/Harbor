@@ -7,7 +7,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -325,6 +327,35 @@ func TestValidate_HappyPath_RS256_ReturnsVerified(t *testing.T) {
 	}
 	if verified.Issuer != "https://idp.test" || verified.Subject != "user-12345" {
 		t.Errorf("iss/sub: %+v", verified)
+	}
+}
+
+func TestValidate_ExecutionOperationSignedAndBounded(t *testing.T) {
+	v, priv := newRSValidator(t, fixedNow)
+	claims := validClaims(fixedNow)
+	claims[auth.ExecutionOperationClaim] = "admission-123"
+	claims[auth.ExecutionIdempotencyClaim] = "start-key"
+	claims[auth.ExecutionStartDigestClaim] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	verified, err := v.Validate(context.Background(), signRS256(t, priv, claims, "k1"))
+	if err != nil || verified.ExecutionStartProof.OperationID != "admission-123" {
+		t.Fatalf("signed operation: %+v %v", verified, err)
+	}
+	claims[auth.ExecutionOperationClaim] = "op with spaces"
+	if _, err := v.Validate(context.Background(), signRS256(t, priv, claims, "k1")); !errors.Is(err, auth.ErrExecutionOperationMalformed) {
+		t.Fatalf("malformed operation: %v", err)
+	}
+}
+
+func TestExecutionStartBodyProofRejectsSubstitution(t *testing.T) {
+	body := []byte(`{"identity":{"tenant":"tenant","user":"owner","session":"thread"},"query":"approved","idempotency_key":"start-key"}`)
+	sum := sha256.Sum256(body)
+	proof := auth.ExecutionStartProof{OperationID: "admission-123", IdempotencyKey: "start-key", BodySHA256: hex.EncodeToString(sum[:])}
+	if !auth.MatchesExecutionStartBody(proof, body) {
+		t.Fatal("exact Start rejected")
+	}
+	other := []byte(`{"identity":{"tenant":"tenant","user":"owner","session":"thread"},"query":"substituted","idempotency_key":"start-key"}`)
+	if auth.MatchesExecutionStartBody(proof, other) {
+		t.Fatal("substituted Start accepted")
 	}
 }
 
