@@ -138,4 +138,11 @@ else
     tail -40 "${embed_log}" | sed 's/^/    /'
 fi
 
+if go test -race -count=1 -timeout 120s -run 'TestRuntimeInfoEffectiveHookRequiresAdminAndExactAgentReach' ./internal/protocol/ >"${TMPDIR}/effective-posture-test.log" 2>&1; then
+    ok 'phase 150: effective hook posture requires admin and exact signed Agent reach'
+else
+    fail 'phase 150: effective hook posture gate failed under -race'
+    tail -40 "${TMPDIR}/effective-posture-test.log" | sed 's/^/    /'
+fi
+
 smoke_summary

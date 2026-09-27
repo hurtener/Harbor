@@ -168,6 +168,7 @@ type Client interface {
 // the native TUI. Narrow projection consumers continue to depend on Client.
 type RuntimeClient interface {
 	Client
+	RuntimeInfoForAgent(context.Context, string) (types.RuntimeInfo, error)
 	ArtifactsGet(context.Context, types.ArtifactsGetRequest) (types.ArtifactsGetResponse, error)
 	ArtifactsGetRef(context.Context, types.ArtifactsGetRefRequest) (types.ArtifactsGetRefResponse, error)
 	ArtifactsDelete(context.Context, types.ArtifactsDeleteRequest) (types.ArtifactsDeleteResponse, error)
@@ -416,8 +417,21 @@ func (c *client) scope() types.IdentityScope { return cloneIdentity(c.identity) 
 
 // RuntimeInfo reads and validates the Runtime handshake.
 func (c *client) RuntimeInfo(ctx context.Context) (types.RuntimeInfo, error) {
+	return c.runtimeInfo(ctx, "")
+}
+
+// RuntimeInfoForAgent reads the protected effective completion-hook posture
+// for one Agent. The runtime verifies admin scope and signed Agent reach.
+func (c *client) RuntimeInfoForAgent(ctx context.Context, agentID string) (types.RuntimeInfo, error) {
+	if agentID == "" {
+		return types.RuntimeInfo{}, fmt.Errorf("runtime info: effective agent ID required")
+	}
+	return c.runtimeInfo(ctx, agentID)
+}
+
+func (c *client) runtimeInfo(ctx context.Context, agentID string) (types.RuntimeInfo, error) {
 	var out types.RuntimeInfo
-	err := c.callMethod(ctx, methods.MethodRuntimeInfo, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	err := c.callMethod(ctx, methods.MethodRuntimeInfo, types.RuntimeInfoRequest{Identity: c.scope(), EffectiveAgentID: agentID}, &out)
 	if err != nil {
 		return types.RuntimeInfo{}, err
 	}

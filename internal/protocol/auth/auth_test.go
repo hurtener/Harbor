@@ -336,10 +336,20 @@ func TestValidate_ExecutionOperationSignedAndBounded(t *testing.T) {
 	claims[auth.ExecutionOperationClaim] = "admission-123"
 	claims[auth.ExecutionIdempotencyClaim] = "start-key"
 	claims[auth.ExecutionStartDigestClaim] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	claims[auth.SessionReachClaim] = []string{"sess-01HX0000000000000000000000"}
 	verified, err := v.Validate(context.Background(), signRS256(t, priv, claims, "k1"))
 	if err != nil || verified.ExecutionStartProof.OperationID != "admission-123" {
 		t.Fatalf("signed operation: %+v %v", verified, err)
 	}
+	delete(claims, auth.SessionReachClaim)
+	if _, err := v.Validate(context.Background(), signRS256(t, priv, claims, "k1")); !errors.Is(err, auth.ErrExecutionOperationMalformed) {
+		t.Fatalf("unbounded operation session: %v", err)
+	}
+	claims[auth.SessionReachClaim] = []string{"another-session"}
+	if _, err := v.Validate(context.Background(), signRS256(t, priv, claims, "k1")); !errors.Is(err, auth.ErrExecutionOperationMalformed) {
+		t.Fatalf("foreign operation session: %v", err)
+	}
+	claims[auth.SessionReachClaim] = []string{"sess-01HX0000000000000000000000"}
 	claims[auth.ExecutionOperationClaim] = "op with spaces"
 	if _, err := v.Validate(context.Background(), signRS256(t, priv, claims, "k1")); !errors.Is(err, auth.ErrExecutionOperationMalformed) {
 		t.Fatalf("malformed operation: %v", err)
