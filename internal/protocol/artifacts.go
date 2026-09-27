@@ -492,7 +492,8 @@ func (s *ArtifactsSurface) projectRows(refs []artifacts.ArtifactRef, req *types.
 // call below.
 func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPutRequest) (any, error) {
 	m := string(methods.MethodArtifactsPut)
-	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && (grant.Mode != "write" || req.Scope.Task != "" || int64(len(req.Bytes)) > grant.MaxBytes || req.Opts.Source != "" && req.Opts.Source != types.ArtifactSourceUserUpload) {
+	if grant, ok := auth.ArtifactTransferFrom(ctx); ok && (grant.Mode != "write" || req.Scope.Task != "" || int64(len(req.Bytes)) > grant.MaxBytes ||
+		req.Opts.Namespace != grant.ID || req.Opts.Source != types.ArtifactSourceUserUpload) {
 		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: signed artifact transfer bound exceeded", m)
 	}
 

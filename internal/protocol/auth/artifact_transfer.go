@@ -7,7 +7,8 @@ import (
 )
 
 // ArtifactTransferClaim is a signed, method-restricted browser transfer grant.
-// A read names one immutable ref; a write has no ref until put completes.
+// A read names one immutable ref; a write names one exact destination namespace
+// before put completes. Neither token can invoke another Protocol method.
 const ArtifactTransferClaim = "artifact_transfer"
 
 // ErrArtifactTransferMalformed rejects a present but incomplete or widened grant.
@@ -63,7 +64,7 @@ func validArtifactTransfer(p ArtifactTransferProof) bool {
 	case "read":
 		return len(p.ID) > 0 && len(p.ID) <= 128 && !strings.ContainsAny(p.ID, "* /\\\t\r\n")
 	case "write":
-		return p.ID == ""
+		return len(p.ID) > 0 && len(p.ID) <= 128 && !strings.ContainsAny(p.ID, "* /\\\t\r\n")
 	default:
 		return false
 	}

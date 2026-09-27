@@ -25,14 +25,20 @@ func TestArtifactTransferEnforcesExactRefAndUploadBoundsAtSurface(t *testing.T) 
 	if _, err := s.Dispatch(tooSmall, methods.MethodArtifactsGet, &types.ArtifactsGetRequest{Scope: scope, ID: first.ID}); asProtoError(t, err) != "scope_mismatch" {
 		t.Fatal("oversize artifact read accepted")
 	}
-	write := auth.WithArtifactTransfer(context.Background(), auth.ArtifactTransferProof{Mode: "write", MaxBytes: 4})
-	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: scope, Bytes: []byte("abcd")}); err != nil {
+	write := auth.WithArtifactTransfer(context.Background(), auth.ArtifactTransferProof{Mode: "write", ID: "upload-operation", MaxBytes: 4})
+	put := types.ArtifactsPutOpts{Namespace: "upload-operation", Source: types.ArtifactSourceUserUpload}
+	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: scope, Bytes: []byte("abcd"), Opts: put}); err != nil {
 		t.Fatal("bounded upload refused", err)
 	}
-	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: scope, Bytes: []byte("abcde")}); asProtoError(t, err) != "scope_mismatch" {
+	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: scope, Bytes: []byte("abcde"), Opts: put}); asProtoError(t, err) != "scope_mismatch" {
 		t.Fatal("oversize upload accepted")
 	}
-	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: types.ArtifactScope{Tenant: scope.Tenant, User: scope.User, Session: scope.Session, Task: "other-task"}, Bytes: []byte("ab")}); asProtoError(t, err) != "scope_mismatch" {
+	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: types.ArtifactScope{Tenant: scope.Tenant, User: scope.User, Session: scope.Session, Task: "other-task"}, Bytes: []byte("ab"), Opts: put}); asProtoError(t, err) != "scope_mismatch" {
 		t.Fatal("task-attributed browser upload accepted")
+	}
+	wrongNamespace := put
+	wrongNamespace.Namespace = "another-operation"
+	if _, err := s.Dispatch(write, methods.MethodArtifactsPut, &types.ArtifactsPutRequest{Scope: scope, Bytes: []byte("ab"), Opts: wrongNamespace}); asProtoError(t, err) != "scope_mismatch" {
+		t.Fatal("cross-operation browser upload accepted")
 	}
 }

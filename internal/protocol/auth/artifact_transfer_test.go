@@ -36,7 +36,7 @@ func TestSignedArtifactTransferRejectsWideningAndOtherMethods(t *testing.T) {
 			c[auth.ArtifactTransferClaim] = map[string]any{"mode": "read", "id": "*", "max_bytes": 4096}
 		},
 		func(c jwt.MapClaims) {
-			c[auth.ArtifactTransferClaim] = map[string]any{"mode": "write", "id": "named", "max_bytes": 4096}
+			c[auth.ArtifactTransferClaim] = map[string]any{"mode": "write", "id": "", "max_bytes": 4096}
 		},
 	} {
 		claims := artifactClaims("read", "upload_0123456789ab", 4096)
@@ -75,5 +75,24 @@ func TestSignedArtifactTransferRejectsWideningAndOtherMethods(t *testing.T) {
 	handler.ServeHTTP(w, wrongSession)
 	if called || w.Code != http.StatusForbidden {
 		t.Fatalf("artifact transfer crossed session: status=%d called=%t", w.Code, called)
+	}
+	write := artifactClaims("write", "upload-operation", 4096)
+	for _, path := range []string{"/v1/control/start", "/v1/control/tasks.get", "/v1/control/artifacts.list", "/v1/control/artifacts.get", "/v1/tools/list"} {
+		called = false
+		r := httptest.NewRequest(http.MethodPost, path, nil)
+		r.Header.Set("Authorization", "Bearer "+signRS256(t, key, write, "k1"))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if called || w.Code != http.StatusForbidden {
+			t.Fatalf("artifact upload token accessed %s: status=%d called=%t", path, w.Code, called)
+		}
+	}
+	called = false
+	put := httptest.NewRequest(http.MethodPost, "/v1/control/artifacts.put", nil)
+	put.Header.Set("Authorization", "Bearer "+signRS256(t, key, write, "k1"))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, put)
+	if !called || w.Code != http.StatusNoContent {
+		t.Fatalf("artifact upload token refused put: status=%d called=%t", w.Code, called)
 	}
 }
