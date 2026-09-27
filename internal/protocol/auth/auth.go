@@ -542,6 +542,10 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
 		return Verified{}, ErrArtifactTransferMalformed
 	}
+	if executionProof.OperationID != "" && (len(sessionReach) != 1 || sessionReach[0] != id.SessionID) {
+		v.audit(ctx, kidSeen, iss, sub, ErrExecutionOperationMalformed)
+		return Verified{}, ErrExecutionOperationMalformed
+	}
 
 	return Verified{
 		ArtifactTransfer:    artifactTransfer,

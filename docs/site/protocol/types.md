@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 461 canonical Harbor Protocol wire types, generated from the single-source
+The 462 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2126,6 +2126,17 @@ Declared in `internal/protocol/types`.
 | `replacement` | `string` | optional (`omitempty`) |
 | `note` | `string` | optional (`omitempty`) |
 
+## EffectiveRunCompletionHook
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `agent_id` | `string` |  |
+| `state` | `string` |  |
+| `tool` | `string` | optional (`omitempty`) |
+| `timeout_ms` | `int64` | optional (`omitempty`) |
+
 ## Error
 
 Declared in `internal/protocol/errors`.
@@ -3826,6 +3837,7 @@ Declared in `internal/protocol/types`.
 | `mcp_app_display_modes` | `[]string` | optional (`omitempty`) |
 | `wire_surface_digest` | `string` |  |
 | `external_grant` | `*types.ExternalGrantReadiness` — see [`ExternalGrantReadiness`](./types.md#externalgrantreadiness) | optional (`omitempty`) |
+| `effective_run_completion` | `*types.EffectiveRunCompletionHook` — see [`EffectiveRunCompletionHook`](./types.md#effectiveruncompletionhook) | optional (`omitempty`) |
 
 ## RuntimeInfoRequest
 
@@ -3834,6 +3846,7 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `effective_agent_id` | `string` | optional (`omitempty`) |
 | `provider_operation` | `string` | optional (`omitempty`) |
 | `provider_id` | `string` | optional (`omitempty`) |
 | `provider_page_size` | `int` | optional (`omitempty`) |

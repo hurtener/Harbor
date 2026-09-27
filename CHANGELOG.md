@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- A signed Start operation can bind its exact request body, retry key, and
+  session to durable task provenance and the downstream tool-token exchange.
+- Session-pinned artifact transfer bearers can read one exact reference or
+  upload within one exact namespace and byte limit. Agent-specific
+  `runtime.info` can report the effective completion-hook state to an admin
+  with signed reach to that agent.
+
 ## [1.32.1] — 2026-09-24
 
 ### Fixed

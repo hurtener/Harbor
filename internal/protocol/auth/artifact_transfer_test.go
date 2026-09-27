@@ -38,6 +38,9 @@ func TestSignedArtifactTransferRejectsWideningAndOtherMethods(t *testing.T) {
 		func(c jwt.MapClaims) {
 			c[auth.ArtifactTransferClaim] = map[string]any{"mode": "write", "id": "", "max_bytes": 4096}
 		},
+		func(c jwt.MapClaims) {
+			c[auth.ArtifactTransferClaim] = map[string]any{"mode": "write", "id": "..", "max_bytes": 4096}
+		},
 	} {
 		claims := artifactClaims("read", "upload_0123456789ab", 4096)
 		change(claims)

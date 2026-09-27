@@ -58,6 +58,7 @@ import (
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/search"
 	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
 	searchevents "github.com/hurtener/Harbor/internal/search/events"
@@ -397,7 +398,11 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			if !active || spec == nil {
 				return types.EffectiveRunCompletionHook{AgentID: agentID, State: "off"}, nil
 			}
-			return types.EffectiveRunCompletionHook{AgentID: agentID, State: "active", Tool: spec.Tool, TimeoutMS: spec.Timeout.Milliseconds()}, nil
+			timeout := spec.Timeout
+			if timeout <= 0 {
+				timeout = steering.DefaultCompletionHookTimeout
+			}
+			return types.EffectiveRunCompletionHook{AgentID: agentID, State: "active", Tool: spec.Tool, TimeoutMS: timeout.Milliseconds()}, nil
 		},
 		ProviderRouteRuntimeID:          in.ProviderRouteRuntimeID,
 		Redactor:                        red,

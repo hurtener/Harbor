@@ -71,6 +71,8 @@ ever consulted. The verified claims:
 | `session` | default only — used iff `X-Harbor-Session` is absent |
 | `scopes` | the connection's elevated scopes (may be empty) |
 | `session_reach` | optional — the bounded set of session IDs the bearer may select per request; absent = dynamic selection, present = member-only (see above) |
+| `execution_operation_id`, `execution_idempotency_key`, `execution_start_sha256` | optional signed Start correlation; all three must be present, bounded, and accompanied by one exact `session_reach` matching the token's session. The raw Start body digest and retry key must match before the operation ID reaches durable task provenance and tool-token exchange. |
+| `artifact_transfer` | optional method-restricted transfer object: `mode` (`read` or `write`), exact `id` (ref or upload namespace), and `max_bytes`. Requires empty elevated scopes and agent reach plus one exact session reach. The bearer can only POST to the corresponding artifact method. |
 | `iss` / `aud` / `exp` / `nbf` / `kid` | standard JWT validation against the Runtime's `identity:` config |
 
 The body of a request may also carry an `identity` object

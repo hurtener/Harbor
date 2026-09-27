@@ -64,7 +64,16 @@ func validArtifactTransfer(p ArtifactTransferProof) bool {
 	case "read":
 		return len(p.ID) > 0 && len(p.ID) <= 128 && !strings.ContainsAny(p.ID, "* /\\\t\r\n")
 	case "write":
-		return len(p.ID) > 0 && len(p.ID) <= 128 && !strings.ContainsAny(p.ID, "* /\\\t\r\n")
+		if len(p.ID) == 0 || len(p.ID) > 128 {
+			return false
+		}
+		for _, c := range p.ID {
+			if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+				(c >= 'a' && c <= 'z') || c == '_' || c == '-') {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}
