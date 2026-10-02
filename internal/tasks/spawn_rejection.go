@@ -20,7 +20,7 @@ func (e *spawnRejection) Unwrap() error { return e.cause }
 // sentinel by itself is insufficient, and a joined unknown outcome prevents
 // treating the whole result as a refusal before acceptance.
 func IsRejectedBeforeSpawn(err error) bool {
-	switch failure := err.(type) {
+	switch failure := err.(type) { //nolint:errorlint // Inspect every unwrap edge so a joined unknown outcome cannot be hidden.
 	case *spawnRejection:
 		return true
 	case interface{ Unwrap() []error }:

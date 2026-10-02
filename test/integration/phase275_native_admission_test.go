@@ -265,7 +265,7 @@ func TestSessionAdmission_AppOAuthHandoffAndRepeatedCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	callback := toolauth.CallbackHandler(map[string]toolauth.OAuthProvider{"native": f.env.provider})
-	for n := 0; n < 2; n++ {
+	for n := range 2 {
 		req := httptest.NewRequest(http.MethodGet, toolauth.CallbackPath+"?state="+required.State+"&code="+code, nil)
 		req = req.WithContext(sessionadmission.WithGate(req.Context(), f.gate))
 		rec := httptest.NewRecorder()

@@ -1142,9 +1142,9 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 			if err != nil {
 				return tools.ToolResult{}, err
 			}
-			run := tools.Invocation(func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+			run := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
 				return tools.RunWithPolicy(ctx, args, remote, nil, nil, tool.Policy)
-			})
+			}
 			return tools.InvokeAtBoundary(admittedCtx, tool.Name, run, args)
 
 		}

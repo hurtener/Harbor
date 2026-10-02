@@ -74,7 +74,6 @@ func TestOutputWitness_SharedExecutorParallel100(t *testing.T) {
 	reg := mkSpawnAwaitTestTaskRegistry(t, mkSpawnAwaitTestBus(t))
 	cat := tools.NewCatalog()
 	for _, name := range []string{"a", "b"} {
-		name := name
 		if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: name}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 			return tools.ToolResult{Value: dispatchContentResult{Data: []byte(name)}}, nil
 		}}); err != nil {
@@ -84,7 +83,7 @@ func TestOutputWitness_SharedExecutorParallel100(t *testing.T) {
 	store := newTestArtifactStore(t)
 	exec := NewToolExecutor(cat, store, reg)
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

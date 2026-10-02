@@ -218,7 +218,7 @@ func TestAdmission_IndependentActorsSerializeAbsentPolicy(t *testing.T) {
 			}
 			// Race absent policy creation through two independent store actors. Hold a
 			// winning mutation reservation until enrollment has returned.
-			for n := 0; n < 32; n++ {
+			for n := range 32 {
 				target := id
 				target.SessionID = fmt.Sprintf("absent-%d", n)
 				start := make(chan struct{})
@@ -258,7 +258,7 @@ func TestAdmission_RestartRetainsUnresolvedAcceptance(t *testing.T) {
 			}
 			reopened := gate(t, p.reopen())
 			admin := principal(t, reopened, id, true)
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				if _, err := reopened.Enroll(admin, id, 0, 1); !errors.Is(err, sessionadmission.ErrBusy) {
 					t.Fatalf("uncertain reservation expired: %v", err)
 				}
@@ -277,7 +277,7 @@ func TestAdmission_ConcurrentReuseIsolation(t *testing.T) {
 	var wg sync.WaitGroup
 	var accepted atomic.Int64
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -320,10 +320,10 @@ func TestAdmission_NativeOAuthAuthorityIsNarrow(t *testing.T) {
 	ctx := auth.WithMethodReach(principal(t, g, id, false), nil)
 	_, err := sessionadmission.RunNativeResume(ctx, id, func(accepted context.Context) (bool, error) {
 		if _, _, err := sessionadmission.Begin(accepted, id, methods.MethodUserMessage); !errors.Is(err, auth.ErrMethodReachDenied) {
-			return false, fmt.Errorf("native resume widened user input: %v", err)
+			return false, fmt.Errorf("native resume widened user input: %w", err)
 		}
 		if _, err := g.Enroll(admin, id, 1, 2); !errors.Is(err, sessionadmission.ErrBusy) {
-			return false, fmt.Errorf("native callback crossed enrollment: %v", err)
+			return false, fmt.Errorf("native callback crossed enrollment: %w", err)
 		}
 		return true, nil
 	})

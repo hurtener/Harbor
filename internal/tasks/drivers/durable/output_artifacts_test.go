@@ -41,7 +41,7 @@ func TestDurable_OutputWitnessRestartStorageTriad(t *testing.T) {
 			ids := []tasks.TaskID{}
 			intents := []tasks.OutputInvocationIntent{}
 			hash := ""
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground})
 				if err != nil {
 					t.Fatal(err)

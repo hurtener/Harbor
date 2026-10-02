@@ -171,7 +171,10 @@ func Begin(ctx context.Context, target identity.Identity, method methods.Method)
 		return ctx, &Acceptance{noop: true}, nil // trusted legacy embedder; no enrollment capability
 	}
 
-	replay, _ := ctx.Value(replayKey{}).(string)
+	replay, hasReplay := ctx.Value(replayKey{}).(string)
+	if !hasReplay {
+		replay = ""
+	}
 	waitUntil := time.Now().Add(5 * time.Second)
 	for attempt := 0; attempt < 8; attempt++ {
 		r, event, kind, err := gate.load(ctx, target)
@@ -272,7 +275,7 @@ func (e *rejectedError) Error() string { return e.cause.Error() }
 func (e *rejectedError) Unwrap() error { return e.cause }
 
 func isRejected(err error) bool {
-	switch failure := err.(type) {
+	switch failure := err.(type) { //nolint:errorlint // Inspect every unwrap edge so a joined unknown outcome cannot be hidden.
 	case *rejectedError:
 		return true
 	case *protoerrors.Error:
@@ -552,18 +555,24 @@ func (g *Gate) PolicyFor(ctx context.Context, target identity.Identity) (Policy,
 	return r.Policy, err
 }
 
-func slot(target identity.Identity) string {
+func slot(target identity.Identity) (string, error) {
 	// Freeze the key encoding independently of Identity's field tags/schema.
-	b, _ := json.Marshal([3]string{target.TenantID, target.UserID, target.SessionID})
+	b, err := json.Marshal([3]string{target.TenantID, target.UserID, target.SessionID})
+	if err != nil {
+		return "", fmt.Errorf("session admission: encode slot: %w", err)
+	}
 	digest := sha256.Sum256(b)
-	return kindPrefix + hex.EncodeToString(digest[:])
+	return kindPrefix + hex.EncodeToString(digest[:]), nil
 }
 
 func (g *Gate) load(ctx context.Context, target identity.Identity) (record, state.EventID, string, error) {
 	if err := identity.Validate(target); err != nil {
 		return record{}, "", "", ErrDenied
 	}
-	kind := slot(target)
+	kind, err := slot(target)
+	if err != nil {
+		return record{}, "", "", err
+	}
 	stored, err := g.store.Load(ctx, identity.InternalCoordinationQuadruple(), kind)
 	if errors.Is(err, state.ErrNotFound) {
 		return record{Schema: 1, Policy: Policy{Identity: target}}, "", kind, nil

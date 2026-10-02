@@ -175,7 +175,23 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	stack := devstack.Assemble(t, runtimePostureConfig(t), devstack.AssembleOpts{})
 	defer stack.Close()
 	var failNextStart atomic.Bool
+	var holdReconnect atomic.Bool
+	reconnectWaiting := make(chan struct{}, 1)
+	releaseReconnect := make(chan struct{})
+	var releaseReconnectOnce sync.Once
+	defer releaseReconnectOnce.Do(func() { close(releaseReconnect) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/events" && holdReconnect.Load() {
+			select {
+			case reconnectWaiting <- struct{}{}:
+			default:
+			}
+			select {
+			case <-releaseReconnect:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if r.URL.Path == "/v1/control/start" && failNextStart.Swap(false) {
 			http.Error(w, "forced follow-up failure", http.StatusServiceUnavailable)
 			return
@@ -346,8 +362,20 @@ func TestE2E_TUIConversationPTY_KeyDrivenAuthenticatedWorkflow(t *testing.T) {
 	session.key(t, '\r', 1)
 	session.waitContainsAfter(t, mark, "live")
 	mark = len(session.snapshot())
+	// Hold the next actual SSE connection until the intermediate lifecycle
+	// state is rendered. Under load a fast reconnect can otherwise finish
+	// before Bubble Tea emits a frame, legitimately coalescing the transient
+	// text even though the controller preserved every lifecycle update.
+	holdReconnect.Store(true)
 	server.CloseClientConnections()
+	select {
+	case <-reconnectWaiting:
+	case <-time.After(ptyWaitTimeout):
+		t.Fatal("the terminal did not attempt its replacement SSE connection")
+	}
 	session.waitContainsAfter(t, mark, "reconnecting")
+	releaseReconnectOnce.Do(func() { close(releaseReconnect) })
+	holdReconnect.Store(false)
 	session.waitContainsAfter(t, mark, "live")
 
 	for _, route := range []struct {

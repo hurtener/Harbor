@@ -40,11 +40,11 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 		if !native || steering.IsTrustedCompletionHook(ctx) {
 			return desc.Invoke(ctx, args)
 		}
-		fail := func(err error) (tools.ToolResult, error) {
-			return tools.ToolResult{}, fmt.Errorf("%w: output provenance: %w", tools.ErrInvocationCleanupFailed, err)
+		fail := func(err error) error {
+			return fmt.Errorf("%w: output provenance: %w", tools.ErrInvocationCleanupFailed, err)
 		}
 		if e.tasks == nil || rc.Trajectory == nil {
-			return fail(tasks.ErrOutputProvenance)
+			return tools.ToolResult{}, fail(tasks.ErrOutputProvenance)
 		}
 		scope := artifacts.ArtifactScope{TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID, SessionID: rc.Quadruple.SessionID, TaskID: rc.Quadruple.RunID}
 		var mu sync.Mutex
@@ -58,7 +58,7 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 				if attempted {
 					admissionErr = tasks.ErrOutputInvocationUnknown
 					mu.Unlock()
-					return fail(tasks.ErrOutputInvocationUnknown)
+					return tools.ToolResult{}, fail(tasks.ErrOutputInvocationUnknown)
 				}
 				attempted = true
 				admit := func() error {
@@ -96,7 +96,7 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 					if errors.Is(err, tools.ErrInvocationSuperseded) || errors.Is(err, context.Canceled) {
 						return tools.ToolResult{}, err
 					}
-					return fail(err)
+					return tools.ToolResult{}, fail(err)
 				}
 				bound := invocationCtx
 				mu.Unlock()
@@ -118,17 +118,17 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 			if errors.Is(admitFailure, tools.ErrInvocationSuperseded) || errors.Is(admitFailure, context.Canceled) {
 				return tools.ToolResult{}, admitFailure
 			}
-			return fail(admitFailure)
+			return tools.ToolResult{}, fail(admitFailure)
 		}
 		if admittedID == "" {
 			return result, invokeErr
 		}
 		if !completed {
-			return fail(tasks.ErrOutputInvocationUnknown)
+			return tools.ToolResult{}, fail(tasks.ErrOutputInvocationUnknown)
 		}
 		for _, err := range []error{innerFailure, invokeErr} {
 			if errors.Is(err, tools.ErrToolResultMaterialization) || errors.Is(err, tools.ErrInvocationCleanupFailed) {
-				return fail(err)
+				return tools.ToolResult{}, fail(err)
 			}
 		}
 		successful := invokeErr == nil && innerFailure == nil
@@ -136,7 +136,7 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 		if successful {
 			value, witness, err := artifactcontent.MaterializeWithWitness(bound, e.artifacts, scope, result.Value, desc.Tool.Name)
 			if err != nil {
-				return fail(err)
+				return tools.ToolResult{}, fail(err)
 			}
 			result.Value = value
 			if !witness.Present() {
@@ -147,7 +147,7 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 			if witness.Present() {
 				verified, err := witness.References(bound)
 				if err != nil {
-					return fail(err)
+					return tools.ToolResult{}, fail(err)
 				}
 				for _, ref := range verified {
 					refs = append(refs, tasks.ProducedArtifact{ID: ref.ID, SHA256: ref.SHA256, MIMEType: ref.MIMEType, SizeBytes: ref.SizeBytes, InvocationID: admittedID, ContentIndex: ref.ContentIndex})
@@ -157,7 +157,7 @@ func (e *toolExecutor) withOutputInvocation(rc planner.RunContext, branch int, d
 		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(bound), 5*time.Second)
 		defer cancel()
 		if err := e.tasks.FinishOutputInvocation(settleCtx, taskID, admittedID, refs, successful); err != nil {
-			return fail(err)
+			return tools.ToolResult{}, fail(err)
 		}
 		return result, invokeErr
 	}

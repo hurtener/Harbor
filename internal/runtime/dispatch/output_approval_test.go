@@ -70,7 +70,7 @@ func TestOutputWitness_ApprovalAndOAuthResumeBeforeAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sub.Cancel()
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		if attempt == 1 {
 			oauth.ready.Store(true)
 		}

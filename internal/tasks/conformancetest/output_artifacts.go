@@ -3,7 +3,6 @@ package conformancetest
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,8 +17,14 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		reg, close := factory()
 		defer close()
 		q := identity.Quadruple{Identity: identity.Identity{TenantID: "outputs-t", UserID: "outputs-u", SessionID: "outputs-s"}, RunID: "parent-run"}
-		ctx, _ := identity.With(context.Background(), q.Identity)
-		ctx, _ = identity.WithRun(ctx, q.Identity, q.RunID)
+		ctx, err := identity.With(context.Background(), q.Identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground, AgentID: "agent"})
 		if err != nil {
 			t.Fatal(err)
@@ -33,7 +38,7 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		var invocation string
 		var mu sync.Mutex
 		var wg sync.WaitGroup
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -70,8 +75,14 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		if _, err = reg.BeginOutputInvocation(ctx, h.ID, intent); !errors.Is(err, tasks.ErrOutputInvocationSettled) {
 			t.Fatalf("settled replay: %v", err)
 		}
-		wrong, _ := identity.With(context.Background(), identity.Identity{TenantID: "wrong", UserID: q.UserID, SessionID: q.SessionID})
-		wrong, _ = identity.WithRun(wrong, identity.Identity{TenantID: "wrong", UserID: q.UserID, SessionID: q.SessionID}, "run")
+		wrong, err := identity.With(context.Background(), identity.Identity{TenantID: "wrong", UserID: q.UserID, SessionID: q.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrong, err = identity.WithRun(wrong, identity.Identity{TenantID: "wrong", UserID: q.UserID, SessionID: q.SessionID}, "run")
+		if err != nil {
+			t.Fatal(err)
+		}
 		wrong = tasks.WithOutputTask(wrong, h.ID)
 		if _, err = reg.BeginOutputInvocation(wrong, h.ID, intent); !errors.Is(err, tasks.ErrNotFound) {
 			t.Fatalf("owner fence: %v", err)
@@ -89,7 +100,10 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		digest := task.OutputManifest.SHA256
 		task.OutputManifest.Artifacts[0].ID = "mutated"
 		task.OutputManifest.Invocations[0].ID = "mutated"
-		again, _ := reg.Get(ctx, h.ID)
+		again, err := reg.Get(ctx, h.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if again.OutputManifest.SHA256 != digest || tasks.ValidateOutputManifest(again) != nil {
 			t.Fatal("retained read mutated manifest")
 		}
@@ -101,8 +115,14 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		reg, close := factory()
 		defer close()
 		q := identity.Quadruple{Identity: identity.Identity{TenantID: "ot", UserID: "ou", SessionID: "os"}, RunID: "run"}
-		ctx, _ := identity.With(context.Background(), q.Identity)
-		ctx, _ = identity.WithRun(ctx, q.Identity, q.RunID)
+		ctx, err := identity.With(context.Background(), q.Identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground})
 		if err != nil {
 			t.Fatal(err)
@@ -111,7 +131,7 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		if err = reg.MarkRunning(ctx, h.ID); err != nil {
 			t.Fatal(err)
 		}
-		for step := 0; step < 100; step++ {
+		for step := range 100 {
 			intent := tasks.OutputInvocationIntent{Position: int64(step), ToolName: "plain", RequestSHA256: strings.Repeat("a", 64)}
 			id, err := reg.BeginOutputInvocation(ctx, h.ID, intent)
 			if err != nil {
@@ -124,9 +144,12 @@ func runOutputArtifacts(t *testing.T, factory Factory) {
 		if err = reg.MarkComplete(ctx, h.ID, tasks.TaskResult{}); err != nil {
 			t.Fatal(err)
 		}
-		task, _ := reg.Get(ctx, h.ID)
+		task, err := reg.Get(ctx, h.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if task.OutputManifest == nil || !task.OutputManifest.Sealed || len(task.OutputManifest.Artifacts) != 0 || len(task.OutputManifest.Invocations) != 1 {
-			t.Fatal(fmt.Sprintf("unbounded or unknown empty: %+v", task.OutputManifest))
+			t.Fatalf("unbounded or unknown empty: %+v", task.OutputManifest)
 		}
 	})
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/hurtener/Harbor/internal/artifacts"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -18,7 +20,6 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 	"github.com/hurtener/Harbor/internal/tools"
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // The official MCP server/client transports and native dispatcher are real;
@@ -71,7 +72,7 @@ func TestNativeMCPBinaryOutputWitness_FirstConsumer(t *testing.T) {
 	defer func() { _ = reg.Close(ctx) }()
 	executor := dispatch.NewToolExecutor(cat, arts, reg)
 	var firstID string
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if i == 1 {
 			q.RunID = "different-current-run"
 			ctx, _ = identity.WithRun(ctx, id, q.RunID)
