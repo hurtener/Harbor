@@ -140,3 +140,55 @@ The original `TestRunOnce_RetainedContextConcurrentReuse` and
 receipt bytes, assertions and test timeouts unchanged. The drift audit passes
 1,604 checks with no warnings or failures, including repository Markdown lint.
 This qualification is not a full repository or hosted macOS pass.
+
+## Immutable payload copies outside the state lock
+
+The later hosted macOS job 110735369460 (run 36974526980, `b81d1691`)
+still failed the unchanged served 128-scope test at dispatch-head cleanup.
+Terminal evidence was sealed and correctly available to the next turn. The
+separate D-492 budgets did not remove contention inside the state driver.
+
+The fixture uses an in-memory StateStore, not a SQL pool. Its global map mutex
+covered defensive payload allocation and copying, including ordinary missing-
+record error formatting. Those operations do not need the map lock, but their
+race-instrumented work and scheduling could hold up unrelated identity scopes.
+Point reads now capture one record generation under the lock and copy its
+immutable payload afterward. Writes detach payloads before acquiring the lock;
+batch preparation also detaches the caller's slice headers. Stored payloads are
+never changed in place. Predicate, EventID/idempotency checks, atomic multi-slot
+publication, timestamps and deletion still use the existing critical section.
+No StateStore API, storage format, deadline, peer count or cleanup policy changes.
+
+Paired local Go 1.27.1 Linux runs use the original served test with 128 scopes,
+`-race`, `GOMAXPROCS=2`, and CPU, mutex, blocking and scheduler traces. Completed
+lock waits in the in-memory write paths change as follows:
+
+| Operation | Total blocked time, baseline → corrected | Maximum wait, baseline → corrected |
+| --- | --- | --- |
+| `DeleteIf` | 53.317 s → 0.0176 s | 881.0 ms → 8.9 ms |
+| `SaveBatchIf` | 154.630 s → 0.0208 s | 885.2 ms → 17.2 ms |
+| `SaveIf` | 41.956 s → 0.0104 s | 871.5 ms → 10.4 ms |
+
+Totals sum waits across goroutines and can exceed wall time. Overall package
+times remain close (7.899 and 7.966 seconds): CPU work and the existing task
+registry queues remain. These measurements support removing the state-lock
+convoy from required persistence, not a general runtime speedup or a claim that
+hosted macOS acceptance has passed.
+
+The in-memory conformance suite and new 128-scope snapshot/batch-ownership race
+checks pass three repetitions (2.024 seconds). They preserve input and returned-byte ownership, exact generations,
+conditional cleanup and immutable snapshots across replacement. The predecessor
+retained preparation, deadline, erasure, cleanup-failure and recovery contracts
+remain unchanged: the complete `TestRetained*` session race group passes in
+131.414 seconds. The original 128-scope assembly and served tests pass three
+race repetitions each, in 20.251 and 19.881 seconds respectively. Counts, receipt
+bytes, assertions and deadlines are unchanged; hosted macOS is still a separate
+acceptance gate.
+
+Three 3,000-operation samples of the journal-shaped state benchmark measure
+median 66.1 microseconds per operation before and 53.8 after. Each batch now
+allocates one small detached record-header slice (about 320 bytes for the
+two-record fixture) so it cannot mutate the caller's headers. Payloads are
+copied once per write as before; no extra payload cache or persistent state is
+introduced. This modest allocation tradeoff keeps payload work outside the
+shared critical section.
