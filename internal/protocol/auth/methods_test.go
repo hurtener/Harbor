@@ -23,7 +23,7 @@ func TestParseMethodReach_StrictCanonicalArray(t *testing.T) {
 		{"null", nil},
 		{"typed nil", []any(nil)},
 		{"scalar", string(methods.MethodStart)},
-		{"object", map[string]any{"start": true}},
+		{"object", map[string]any{string(methods.MethodStart): true}},
 		{"boolean", true},
 		{"number", float64(1)},
 		{"nonstring element", []any{float64(1)}},
