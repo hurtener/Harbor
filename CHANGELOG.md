@@ -48,6 +48,9 @@ Two versions move independently in Harbor (RFC §5.3):
   bound violation instead of overflowing counters or refunding capacity.
 - Input receipt restore/projection/consumption retain the engine task identity
   across execution-run redrive instead of confusing those distinct IDs.
+- Headless `RunOnce` keeps ordinary tool execution without inventing a durable
+  task or inheriting another task's output authority; registry-backed execution
+  binds the canonical task explicitly at its owning driver.
 - Retained terminal preparation has a separate bounded five-second stage before
   the unchanged five-second publication/cleanup budget. Earlier caller deadlines,
   explicit cleanup failures and exact-generation recovery remain enforced.

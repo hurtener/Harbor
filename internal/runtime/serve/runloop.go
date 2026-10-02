@@ -1999,6 +1999,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Continue from taskCtx, not the pre-restoration admissionCtx: taskCtx now
 	// carries both the verified reach context and the run-scoped quadruple.
 	runCtx := tools.WithInvokingAgent(taskCtx, d.agentConfigID)
+	// Only this registry-backed driver can bind canonical task-output authority.
+	// A bare steering RunSpec also serves headless runs with correlation IDs.
+	runCtx = tasks.WithOutputTask(runCtx, taskID)
 	if frozenProfiles != nil {
 		runCtx = virtualagent.WithFrozenMap(runCtx, frozenProfiles)
 	}

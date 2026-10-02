@@ -31,6 +31,7 @@ None.
 
 - An artifact first written by another task can still be proven as a current task output only after its bytes were natively materialized in a successful current invocation.
 - JSON-shaped references, helper results, sibling session artifacts and failed tool results never create membership.
+- Headless `RunOnce` retains ordinary tool behavior but owns no registry-backed task output manifest. Its correlation ID and an inherited caller context cannot create task-output authority; the served task driver binds its exact accepted task.
 - Pending or settled invocation slots cannot be blindly reissued after a missing observation.
 - Legacy unknown and new sealed empty output sets remain distinct. A modern completed task with an explicitly empty result projects a definite empty answer, permitting outputs-only completion without inventing legacy data.
 

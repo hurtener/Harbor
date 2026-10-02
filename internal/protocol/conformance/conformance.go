@@ -767,10 +767,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 159 methods; keep the explicit
+	// The canonical list currently contains 160 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 159 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 159 (including explicit session-context reconciliation)", len(got))
+	if len(got) != 160 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 160 (including scoped session admission)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodControlReceipt:          {},
@@ -871,6 +871,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSessionsDelete:           {},
 		methods.MethodSessionsSetTitle:         {},
 		methods.MethodSessionsReconcileContext: {},
+		methods.MethodSessionsSetAdmission:     {},
 
 		methods.MethodRunsSetOverrides: {},
 
@@ -2003,15 +2004,9 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	// task-control + streaming-events + runtime-posture + topology-snapshot +
-	// state-snapshots + agent-config + session-lifecycle + tool annotations +
-	// caller memory + skill publications + provider catalog + provider route +
-	// tenant-scoped broker credentials + tools configuration view + provider
-	// route model profiles + atomic run LLM settings
-	// + agent memory budget = 17 canonical capabilities at Protocol 0.1.0. (The capability
-	// constants live in
-	// internal/protocol/types/version.go; a new capability is a new
-	// constant + a new entry in canonicalCapabilities. A checkpoint fix
+	// The explicit 22-capability contract stays in lockstep with the canonical
+	// constants in internal/protocol/types/version.go. A new capability requires
+	// a new constant and a corresponding conformance entry. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
 	// advertisement is conditional via `PostureDeps.TopologyAvailable`.
 	// `state_snapshots` is the windowed event-replay surface; `agent_config`
@@ -2019,11 +2014,12 @@ func runVersionHandshake(t *testing.T) {
 	// `PostureDeps.AgentConfigAvailable`); `session_lifecycle` advertises the
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
-	// ProtocolVersion bump.)
-	if len(caps) != 21 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 21 (including durable runtime contracts) at Protocol 0.1.0", len(caps))
+	// ProtocolVersion bump.
+	if len(caps) != 22 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 22 (including scoped session admission) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
+		types.CapScopedSessionAdmission:        {},
 		types.CapArtifactTransfer:              {},
 		types.CapDurableArtifactTransfer:       {},
 		types.CapDurableTaskInputReceipts:      {},

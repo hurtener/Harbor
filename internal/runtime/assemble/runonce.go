@@ -253,6 +253,10 @@ func (s *Stack) RunOnce(
 	if err := identity.Validate(id); err != nil {
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce identity: %w", err)
 	}
+	// This headless entry point owns no TaskRegistry task. A caller may invoke
+	// it from another task's context, but that task's output authority must not
+	// leak into this independent run or turn a correlation ID into provenance.
+	ctx = tasks.WithOutputTask(ctx, "")
 
 	var cfg runOnceConfig
 	var memoryTurns int

@@ -590,6 +590,15 @@ func (f *pagedClient) SessionsSetTitle(context.Context, types.SessionsSetTitleRe
 func (f *pagedClient) SessionsReconcileContext(context.Context, types.SessionsReconcileContextRequest) (types.SessionsReconcileContextResponse, error) {
 	return types.SessionsReconcileContextResponse{}, errors.New("unused")
 }
+func (f *pagedClient) SessionsSetAdmission(context.Context, types.SessionsSetAdmissionRequest) (types.SessionsSetAdmissionResponse, error) {
+	return types.SessionsSetAdmissionResponse{}, errors.New("unused")
+}
+func (f *pagedClient) SessionTurnsList(context.Context, types.SessionTurnsListRequest) (types.SessionTurnsListResponse, error) {
+	return types.SessionTurnsListResponse{}, errors.New("unused")
+}
+func (f *pagedClient) SessionTurnsGet(context.Context, types.SessionTurnsGetRequest) (types.SessionTurnsGetResponse, error) {
+	return types.SessionTurnsGetResponse{}, errors.New("unused")
+}
 func (f *pagedClient) SessionsDelete(context.Context) (types.SessionsDeleteResponse, error) {
 	return types.SessionsDeleteResponse{}, nil
 }

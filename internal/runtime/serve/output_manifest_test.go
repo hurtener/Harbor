@@ -2,13 +2,58 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
+
+type nativeOutputAuthorityPlanner struct{ observed chan tasks.TaskID }
+
+func (p nativeOutputAuthorityPlanner) Next(ctx context.Context, _ planner.RunContext) (planner.Decision, error) {
+	id, ok := tasks.OutputTaskFromContext(ctx)
+	if !ok {
+		return nil, errors.New("native task output authority is absent")
+	}
+	p.observed <- id
+	return planner.Finish{Reason: planner.FinishGoal}, nil
+}
+
+func TestRunOne_BindsExactNativeOutputAuthority(t *testing.T) {
+	env := newFailDriverEnv(t)
+	observed := make(chan tasks.TaskID, 1)
+	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
+		o.Planner = nativeOutputAuthorityPlanner{observed: observed}
+	})
+	ctx, err := identity.With(t.Context(), runLoopDriverTestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := env.reg.Spawn(ctx, tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: runLoopDriverTestID},
+		Kind:     tasks.KindForeground,
+		Query:    "native task output boundary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := waitForTaskStatus(t, env.reg, h.ID, tasks.StatusComplete, 5*time.Second); status != tasks.StatusComplete {
+		t.Fatalf("native task status = %q", status)
+	}
+	select {
+	case id := <-observed:
+		if id != h.ID {
+			t.Fatalf("output task = %q, want %q", id, h.ID)
+		}
+	default:
+		t.Fatal("native planner did not observe task authority")
+	}
+}
 
 func TestTaskSnapshotOutputManifest_OnlySealedExactTask(t *testing.T) {
 	deps := buildProjWiringMux(t)

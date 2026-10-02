@@ -530,7 +530,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 	}
 
-	ctx = tasks.WithOutputTask(ctx, spec.TaskID)
 	ctx, cancelExecution := context.WithCancel(ctx)
 	defer cancelExecution()
 	inbox, err := rl.registry.open(q, cancelExecution, spec.TaskID)
