@@ -2329,6 +2329,16 @@ while unproven work retains the full money hold. Neither is actual spend.
 Incomplete/mismatched tariffs and unsupported physical request shapes fail before
 transport. Provider-reported pricing and post-call floats remain insufficient.
 
+**Allocation finality (D-493).** Task terminality alone is not a spending fence.
+An irreversible allocation close serializes with every provider reservation and
+preserves accepted envelopes for settlement. Built-in engines close only after
+the funding root and all accepted same-owner descendants are terminal; late
+helpers cannot reopen funding. Canonical snapshots expose `closed`, negotiated
+through `task_inference_allocation_finality_v1`. Only closed, non-breached,
+fully-settled accounting establishes final conservative capacity, not actual
+spend. Versioned totals fence pre-extension writers; rollout requires draining
+older writers and forbids downgrading an active funded store.
+
 Governance is Harbor's middleware between the Runtime and the `LLMClient` driver. It owns identity-scoped policies — cost accumulators + ceilings, rate limits, per-call token budgets, and (post-V1) key rotation, model swap, failover chains, circuit breakers — that the LLM-call substrate (bifrost) doesn't and shouldn't know about, because it doesn't know Harbor's identity triple.
 
 ```go

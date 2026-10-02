@@ -127,3 +127,52 @@ source compatibility is not universal. Custom allocation stores must also
 implement the atomic `ReserveMonetary` extension; standard stores do so. Restart guarantees require durable tasks
 and SQLite/PostgreSQL state. Volatile storage does not become durable merely by
 advertising an allocation mechanism.
+
+## Allocation finality follow-on (D-493)
+
+The next local source extends the allocation snapshot with negotiated irreversible
+closure. Task terminality alone never releases an application reservation.
+Built-in engines wait for the root and every accepted descendant, then fence new
+provider reservations before the last terminal write. Existing and unknown
+provider liability remains held; exact settlement is still permitted.
+
+The accounting records use versioned envelopes in the protected coordination
+namespace, partitioned by tenant and full-owner/root digests. Session erasure
+cannot remove closed or outstanding funding. An older reader rejects the legacy
+slot marker, and a writer that loaded the prior generation loses its CAS. This requires an old-writer drain
+before rollout and no downgrade of an active funded store. No credentials,
+pricing catalogs, grants or production configuration are changed by the patch.
+
+The finality follow-on passed 38 full allocation-accounting race test events
+with 84.7% package coverage and 424 full task-engine, in-process, durable-driver
+and Protocol-projector race test events. The accounting run used real PostgreSQL
+17 in addition to in-memory and SQLite storage, with no skipped tests. It covers
+100-way close/reserve contention, late settlement, erased-session helpers,
+legacy migration and its read interleaving, and old loaded-writer CAS loss.
+The native served and assembled finality paths passed their focused regressions;
+the canonical generators and TypeScript lockstep also passed. A local CGo-free
+binary was built from that source. Hosted PostgreSQL CI now requires the exact
+token, monetary and close/erasure test cases to pass without skips.
+
+A real stock-Bifrost consumer reached irreversible closure while correctly
+retaining unreported retry liability. Its successful final response reports only
+the visible attempt's usage; the bounded transport can also make hidden retries.
+Therefore `closed: true` alone is not proof of settled funding, and this route
+does not currently prove that unused retry capacity can be released. A separate
+single-attempt test-provider integration is still being qualified; it will not
+be described as stock-Bifrost release evidence.
+
+Full finality static analysis subsequently passed with zero findings. Its one
+decoder-style finding was corrected without changing branch order, then the
+38-event accounting race package passed again with all three stores and a new
+CGo-free binary was built. The complete consumer acceptance, hosted integration
+and independent integrated review remain open.
+
+Subsequent pinned-SDK inspection found a separate provider-bound blocker:
+Bifrost's logical retry count omits the fasthttp stale-connection retry layer.
+That transport can write a POST and retry after a response-header failure on a
+reused socket. The current `MaxRetries+2` bound does not include all such sends.
+Logical attempt metadata therefore cannot establish exact settlement, and
+stock Bifrost hard-cap qualification is blocked until the physical bound and
+its regression proof are corrected. No release or production-enablement claim
+is made from the storage/finality tests above.

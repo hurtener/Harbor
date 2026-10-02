@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:9f3ecc107110c73ff6e6eceb338392417c22016003c5495a0689ce6b38d362ae";
+export const WIRE_SURFACE_DIGEST = "sha256:191acb4daead08c13bcb683de3d04b2929602b6555ac50fc65334cd3fc12a6c4";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2186,6 +2186,7 @@ export interface InferenceAllocationReceipt {
 }
 
 export interface InferenceAllocationSnapshot {
+  closed: boolean;
   max_cost_micro_usd?: number;
   charged_cost_micro_usd: number;
   reserved_cost_micro_usd: number;

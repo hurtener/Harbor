@@ -135,6 +135,17 @@ func (e *Engine) RecoverInterruptedTasks(ctx context.Context) (int, error) {
 	if rerr := e.reconcileGroupsLocked(ctx); rerr != nil {
 		errs = append(errs, rerr)
 	}
+	// Older records, or a crash between terminal persistence and historical
+	// accounting, may already be terminal without a funding barrier. Reconcile
+	// each root once; unresolved provider envelopes stay reserved after closure.
+	for _, task := range e.tasks {
+		if task.InferenceAllocation == nil || task.AllocationTaskID != "" || !isTerminal(task.Status) {
+			continue
+		}
+		if err := e.closeTerminalAllocationLocked(ctx, task); err != nil {
+			errs = append(errs, fmt.Errorf("recover allocation finality %q: %w", task.ID, err))
+		}
+	}
 
 	if len(errs) > 0 {
 		return recovered, errors.Join(errs...)

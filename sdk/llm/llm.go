@@ -416,6 +416,9 @@ type AllocationBoundedDriver = internal.AllocationBoundedDriver
 // ErrAllocationExhausted refuses a provider envelope that exceeds remaining funding.
 var ErrAllocationExhausted = internal.ErrAllocationExhausted
 
+// ErrAllocationClosed rejects a call after its canonical funding root closed.
+var ErrAllocationClosed = internal.ErrAllocationClosed
+
 // ErrAllocationInvalid refuses changed or malformed immutable funding.
 var ErrAllocationInvalid = internal.ErrAllocationInvalid
 

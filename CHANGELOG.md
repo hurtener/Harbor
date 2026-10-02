@@ -27,6 +27,9 @@ Two versions move independently in Harbor (RFC §5.3):
 - Immutable cumulative task inference allocations shared with same-owner child
   tasks. Atomic reservations cover bounded provider attempts and runtime helpers;
   cancellation, unmeasured attempts and restart retain unknown liability.
+- Irreversible allocation closure fences late provider reservations after the
+  accepted task family is terminal, while preserving in-flight and unknown
+  liability. Canonical snapshots advertise finality separately from lifecycle.
 - Trusted task monetary ceilings through immutable operator pricing manifests,
   exact model/version/endpoint bindings and atomic integer reservations. Initial
   support covers bounded static OpenAI/Anthropic text requests; unpriced paths
@@ -59,8 +62,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Action required
 
-- Custom Go Protocol `Client` and `TaskRegistry` implementations must implement
-  the new methods. Wire fields and methods are additive; Protocol stays `0.1.0`.
+- Custom Go Protocol `Client`, `TaskRegistry` and `llm.AllocationStore`
+  implementations must implement the new methods. Wire fields and methods are additive; Protocol stays `0.1.0`.
 - Restart-safe task receipts and allocations require the durable task driver
   with SQLite or PostgreSQL state. One runtime owns an active task registry;
   shared active registry ownership is unsupported.
@@ -72,6 +75,9 @@ Two versions move independently in Harbor (RFC §5.3):
   attempts return `inference_allocation_pricing_unavailable`. Unknown holds never
   expire into refunds; charged capacity is not measured provider spend. Allocation
   acceptance grants neither credentials nor permission to spend.
+- Allocation finality upgrades totals to a versioned envelope. Drain older
+  writers first and do not downgrade an active funded store; older accounting
+  implementations deliberately refuse those upgraded records.
 - Scoped admission requires durable SQLite/PostgreSQL state, an explicitly
   distinct audience, drained older writers and downgrade prevention. Enrollment
   does not revoke previously accepted work; consumers must quiesce/reconcile it.

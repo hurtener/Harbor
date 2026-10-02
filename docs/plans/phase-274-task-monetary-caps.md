@@ -187,3 +187,13 @@ by final combined qualification and independent adversarial review.
 - [x] Glossary and D-490 integrated
 - [ ] Independent adversarial review findings fixed
 - [ ] Documentation site current, built, deployed and verified at final release
+
+## Finality of conservative charged capacity
+
+D-493 extends the shared Phase 272 store with an irreversible reservation close.
+Closed monetary allocations can still contain reserved/unknown envelopes; those
+amounts are never refundable. Once the negotiated closed snapshot has no
+unresolved token or monetary liability and no bound breach, its conservative
+charged ceiling is final. That observation still does not supply an actual
+provider spending receipt. See Phase 272's finality extension for lifecycle,
+record-upgrade and qualification requirements.

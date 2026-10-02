@@ -370,6 +370,8 @@ const (
 	CapDurableTaskInputReceipts Capability = "durable_task_input_receipts_v1"
 	// CapTaskInferenceAllocation exposes immutable cumulative task token funding.
 	CapTaskInferenceAllocation Capability = "task_inference_allocation_v1"
+	// CapTaskInferenceAllocationFinality exposes irreversible reservation closure.
+	CapTaskInferenceAllocationFinality Capability = "task_inference_allocation_finality_v1"
 	// CapArtifactTransfer is the opt-in two-sided recipient-admitted copy surface.
 	CapArtifactTransfer Capability = "artifact_transfer_v1"
 	// CapDurableArtifactTransfer requires persistent StateStore and fenced blob drivers.
@@ -520,28 +522,29 @@ const (
 // `topology_snapshot` is in the canonical set, but only runtimes
 // hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
-	CapDurableTaskInputReceipts:      {},
-	CapTaskInferenceAllocation:       {},
-	CapDurableArtifactTransfer:       {},
-	CapArtifactTransfer:              {},
-	CapTaskControl:                   {},
-	CapEventsSubscribe:               {},
-	CapRuntimePosture:                {},
-	CapTenantScopedBrokerCredentials: {},
-	CapTopologySnapshot:              {},
-	CapStateSnapshots:                {},
-	CapAgentConfig:                   {},
-	CapAgentConfigMemory:             {},
-	CapSessionLifecycle:              {},
-	CapScopedSessionAdmission:        {},
-	CapToolAnnotations:               {},
-	CapToolsConfigurationView:        {},
-	CapCallerMemory:                  {},
-	CapSkillPublications:             {},
-	CapLLMProviderCatalog:            {},
-	CapLLMProviderRoute:              {},
-	CapLLMProviderRouteModelProfile:  {},
-	CapRunLLMSettings:                {},
+	CapDurableTaskInputReceipts:        {},
+	CapTaskInferenceAllocation:         {},
+	CapTaskInferenceAllocationFinality: {},
+	CapDurableArtifactTransfer:         {},
+	CapArtifactTransfer:                {},
+	CapTaskControl:                     {},
+	CapEventsSubscribe:                 {},
+	CapRuntimePosture:                  {},
+	CapTenantScopedBrokerCredentials:   {},
+	CapTopologySnapshot:                {},
+	CapStateSnapshots:                  {},
+	CapAgentConfig:                     {},
+	CapAgentConfigMemory:               {},
+	CapSessionLifecycle:                {},
+	CapScopedSessionAdmission:          {},
+	CapToolAnnotations:                 {},
+	CapToolsConfigurationView:          {},
+	CapCallerMemory:                    {},
+	CapSkillPublications:               {},
+	CapLLMProviderCatalog:              {},
+	CapLLMProviderRoute:                {},
+	CapLLMProviderRouteModelProfile:    {},
+	CapRunLLMSettings:                  {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

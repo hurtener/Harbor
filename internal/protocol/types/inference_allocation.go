@@ -15,6 +15,9 @@ type InferenceAllocation struct {
 // InferenceAllocationSnapshot is content-free durable provider accounting.
 // Reserved tokens include crash/transport uncertainty and do not expire.
 type InferenceAllocationSnapshot struct {
+	// Closed is an irreversible barrier to new provider reservations. Existing
+	// reserved/unknown attempts remain liability even after this becomes true.
+	Closed          bool   `json:"closed"`
 	MaxCostMicroUSD *int64 `json:"max_cost_micro_usd,omitempty"`
 	// ChargedCostMicroUSD is consumed conservative ceiling capacity, not actual spend.
 	ChargedCostMicroUSD int64 `json:"charged_cost_micro_usd"`

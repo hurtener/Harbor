@@ -30,6 +30,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hurtener/Harbor/internal/llm/allocation"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tasks/engine"
 )
@@ -51,7 +52,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 				"configure a durable store via state.driver (sqlite or postgres — see examples/) " +
 				"and ensure it is passed to tasks.Open")
 	}
-	eng, err := engine.New(deps.Bus, deps.Redactor, &backend{store: deps.Store}, engine.WithPricingCatalog(deps.PricingCatalog))
+	eng, err := engine.New(deps.Bus, deps.Redactor, &backend{store: deps.Store}, engine.WithPricingCatalog(deps.PricingCatalog), engine.WithAllocations(allocation.New(deps.Store)))
 	if err != nil {
 		return nil, fmt.Errorf("tasks/durable: %w", err)
 	}

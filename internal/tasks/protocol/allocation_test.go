@@ -48,6 +48,13 @@ func TestAllocation_TaskProjectionIsScopedAndContentFree(t *testing.T) {
 	if got == nil || got.ReservedTokens != 40 || got.UnknownTokens != 40 || got.Guarantee != "tokens" || got.PricingStatus != "unavailable" || len(got.Receipts) != 1 {
 		t.Fatalf("snapshot %+v", got)
 	}
+	if err = mgr.Close(ctx, q, a); err != nil {
+		t.Fatal(err)
+	}
+	detail, err = p.GetTask(ctx, id, string(h.ID))
+	if err != nil || !detail.InferenceAllocation.Closed || detail.InferenceAllocation.UnknownTokens != 40 {
+		t.Fatalf("closed projection: %+v %v", detail, err)
+	}
 	foreign := id
 	foreign.UserID = "foreign"
 	if _, err = p.GetTask(ctx, foreign, string(h.ID)); !errors.Is(err, taskprotocol.ErrTaskNotFound) {

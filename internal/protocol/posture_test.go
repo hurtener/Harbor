@@ -952,3 +952,30 @@ func TestPostureSurface_Info_ToolsConfigurationCapability(t *testing.T) {
 		}
 	}
 }
+
+func TestPostureDispatch_AllocationFinalityRequiresBothSeams(t *testing.T) {
+	for _, tc := range []struct{ allocation, finality, want bool }{{false, false, false}, {false, true, false}, {true, false, false}, {true, true, true}} {
+		deps := protocol.PostureDeps{Clock: fixedClock, Health: func(context.Context) []types.SubsystemHealth { return nil }, Counters: func(context.Context, identity.Identity) types.RuntimeCounters { return types.RuntimeCounters{} }, Drivers: func() []types.SubsystemDriver { return nil }, Metrics: func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} }, Governance: newPostureGovernance(), LLM: newPostureLLM(), Redactor: patterns.New(), Bus: newPostureBus(t), InstanceID: "finality-fixture", TaskInferenceAllocationAvailable: tc.allocation, TaskInferenceAllocationFinalityAvailable: tc.finality}
+		surface, err := protocol.NewPostureSurface(deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := surface.Dispatch(t.Context(), methods.MethodRuntimeInfo, validRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, ok := out.(*types.RuntimeInfo)
+		if !ok {
+			t.Fatalf("runtime info: %T", out)
+		}
+		found := false
+		for _, capability := range info.Capabilities {
+			if capability == types.CapTaskInferenceAllocationFinality {
+				found = true
+			}
+		}
+		if found != tc.want {
+			t.Fatalf("allocation=%v finality=%v advertised=%v", tc.allocation, tc.finality, found)
+		}
+	}
+}

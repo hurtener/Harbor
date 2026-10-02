@@ -223,10 +223,13 @@ func TestMonetaryAllocation_LostAcknowledgmentsDoNotRefund(t *testing.T) {
 	}
 	defer func() { _ = raw.Close(context.Background()) }()
 	st := &lostAcknowledgment{StateStore: raw}
-	st.lose.Store(true)
 	mgr := allocation.New(st)
 	a, _ := monetaryAllocation(t, 10)
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "task"}
+	if err = mgr.Ensure(t.Context(), q, a); err != nil {
+		t.Fatal(err)
+	}
+	st.lose.Store(true)
 	if err = mgr.ReserveMonetary(t.Context(), q, a, "one", 100, 10); err == nil {
 		t.Fatal("expected committed lost acknowledgment")
 	}

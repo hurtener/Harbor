@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,12 +34,16 @@ func (*allocatedProvider) ProviderAttemptBound(context.Context, llm.CompleteRequ
 func TestAllocation_AcceptedTaskReachesDurableProviderAccounting(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
-	reg := mkDriverTestTaskRegistry(t, bus, red)
 	st, err := inmem.New(config.StateConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close(context.Background()) }()
+	reg, err := tasks.Open(t.Context(), tasks.Dependencies{Store: st, Bus: bus, Redactor: red})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reg.Close(context.Background()) }()
 	mgr := allocation.New(st)
 	art, err := artifactmem.New(config.ArtifactsConfig{})
 	if err != nil {
@@ -80,8 +85,12 @@ func TestAllocation_AcceptedTaskReachesDurableProviderAccounting(t *testing.T) {
 		}
 		if task.Status == tasks.StatusComplete {
 			got, err := mgr.Snapshot(ctx, identity.Quadruple{Identity: id, RunID: string(h.ID)}, a)
-			if err != nil || got.SettledTokens != 7 || got.AttemptCount != 1 {
+			if err != nil || !got.Closed || got.SettledTokens != 7 || got.AttemptCount != 1 {
 				t.Fatalf("accounting %+v %v", got, err)
+			}
+			lateCtx := llm.WithInferenceAllocationTask(ctx, &a, string(h.ID))
+			if _, err = client.Complete(lateCtx, llm.CompleteRequest{Model: "model", MaxTokens: &max, Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: new("late helper")}}}}); !errors.Is(err, llm.ErrAllocationClosed) {
+				t.Fatalf("late helper escaped finality: %v", err)
 			}
 			return
 		}
@@ -157,8 +166,12 @@ func TestMonetaryAllocation_AcceptedTaskReachesDurableProviderAccounting(t *test
 		}
 		if task.Status == tasks.StatusComplete {
 			got, err := mgr.Snapshot(ctx, identity.Quadruple{Identity: id, RunID: string(h.ID)}, a)
-			if err != nil || got.SettledTokens != 7 || got.AttemptCount != 1 || got.ChargedCostMicroUSD != 4 || got.Guarantee != "tokens_and_cost_micro_usd" {
+			if err != nil || !got.Closed || got.SettledTokens != 7 || got.AttemptCount != 1 || got.ChargedCostMicroUSD != 4 || got.Guarantee != "tokens_and_cost_micro_usd" {
 				t.Fatalf("accounting %+v %v", got, err)
+			}
+			lateCtx := llm.WithInferenceAllocationTask(ctx, &a, string(h.ID))
+			if _, err = client.Complete(lateCtx, llm.CompleteRequest{Model: "model", MaxTokens: &max, Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: new("late helper")}}}}); !errors.Is(err, llm.ErrAllocationClosed) {
+				t.Fatalf("late helper escaped finality: %v", err)
 			}
 			return
 		}

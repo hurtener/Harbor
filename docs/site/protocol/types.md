@@ -2799,6 +2799,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `closed` | `bool` |  |
 | `max_cost_micro_usd` | `*int64` | optional (`omitempty`) |
 | `charged_cost_micro_usd` | `int64` |  |
 | `reserved_cost_micro_usd` | `int64` |  |

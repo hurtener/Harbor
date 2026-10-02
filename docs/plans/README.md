@@ -416,28 +416,28 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 
 ### Phase 270 — Recipient-admitted artifact transfer
 
-- **Status:** In progress; local integration candidate, unpublished
+- **Status:** In progress; draft integration candidate in PR781; release qualification open
 - **RFC:** §6.10, §6.11. **Decision:** D-486. **Plan:** `docs/plans/phase-270-recipient-artifact-transfer.md`
 - **Contract:** Exact two-owner grants, direct pinned-peer delivery, durable replay and atomic erasure fences; final-answer materialization preserves sealed provenance
 - **Boundaries:** FS/S3 transfer fails closed; receipt proves past delivery, not continuing read permission
 
 ### Phase 271 — Durable exact-task input receipts
 
-- **Status:** In progress; local integration candidate, unpublished
+- **Status:** In progress; draft integration candidate in PR781; release qualification open
 - **RFC:** §6.3, §6.8. **Decision:** D-487. **Plan:** `docs/plans/phase-271-task-input-receipts.md`
 - **Contract:** Exact text input keys, optional accepted-revision precondition, retained outcome lookup and sealed incorporated revision
 - **Boundaries:** One active task-registry owner; durable restart does not establish concurrent multi-runtime admission or automatically relaunch work
 
 ### Phase 272 — Cumulative task inference allocation
 
-- **Status:** In progress; token-only local integration candidate, unpublished
+- **Status:** In progress; token-only checkpoint in draft PR781; finality extension under qualification
 - **RFC:** §6.5, §6.15. **Decision:** D-488. **Plan:** `docs/plans/phase-272-task-inference-allocation.md`
-- **Contract:** Immutable cumulative token funding, same-identity inheritance, atomic multi-manager reservations and retained unknown liability
+- **Contract:** Immutable cumulative token funding, same-identity inheritance, atomic multi-manager reservations and retained unknown liability; D-493 adds irreversible close after the accepted task family is terminal
 - **Boundaries:** Token-only checkpoint; Phase 274 adds explicitly installed inclusive monetary tariffs without treating token estimates as money
 
 ### Phase 274 — Trusted inclusive task monetary caps
 
-- **Status:** In progress; local integration candidate, unpublished
+- **Status:** In progress; draft integration candidate in PR781; release qualification open
 - **RFC:** §6.5, §6.11, §6.15. **Decision:** D-490. **Plan:** `docs/plans/phase-274-task-monetary-caps.md`
 - **Contract:** Immutable operator catalog, exact accepted reference/hash, atomic token/money reservation and durable conservative unknown liability
 - **Boundaries:** Initial static OpenAI/Anthropic text consumer only; unmatched/incomplete tariffs, external routes and unbounded charge shapes refuse. Charged capacity is not actual spend. Final release/review/deployed-docs gates remain open

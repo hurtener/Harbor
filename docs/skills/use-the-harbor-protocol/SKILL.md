@@ -1148,6 +1148,19 @@ helpers, retries and resumes share the durable allowance. Inspect
 and cannot be assumed refundable after cancellation. Token-only tasks retain
 `guarantee: tokens` and `pricing_status: unavailable`.
 
+Before returning unused funding, also negotiate
+`task_inference_allocation_finality_v1`. Require `closed: true`, zero
+`reserved_tokens`, `unknown_tokens`, `reserved_cost_micro_usd` and
+`unknown_cost_micro_usd`, and `bound_breached: false` on the exact accepted
+allocation ID/revision/caps/pricing reference. Closed with outstanding liability
+stays held. The resulting charge is conservative capacity, not actual spending.
+The runtime waits for all accepted descendants before closing; delayed helpers
+cannot reserve afterward. Drain old writers before the one-way versioned
+allocation-record upgrade; do not downgrade an active funded store. Session
+erasure retains content-free funding fingerprints, accounting and closure
+barriers. Tenant/account storage decommission requires revoked/drained writers
+and explicit protected-partition removal; there is no online purge API.
+
 For a monetary task, an operator must first install a complete immutable
 `llm.pricing_manifests` catalog. Supply `max_cost_micro_usd` together with its
 exact `pricing_manifest_id`, `pricing_manifest_revision` and full lowercase

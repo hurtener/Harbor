@@ -132,3 +132,56 @@ Focused race qualification passed with real PostgreSQL and synthetic provider tr
 - [ ] N≥100 concurrent reservation and cancellation isolation passes under race detection
 - [ ] Real runtime/provider integration gate passes
 - [ ] Glossary and D-488 are integrated by the release owner
+
+## Irreversible finality extension (D-493)
+
+Task lifecycle and current counters do not establish final accounting. Negotiate
+`task_inference_allocation_finality_v1` and inspect the additive `closed` field.
+The allocation store serializes Close with all reservations using the same CAS
+slot. Close never releases unresolved attempts; settlement after Close remains
+permitted. When closed, zero token/money reserved and unknown totals plus no
+bound breach establish the final conservative charge for that allocation.
+An older field omission is unknown, not closed.
+
+Built-in task engines close before the last terminal member is published, after
+the root and every accepted descendant are terminal. Accepted background work is
+not cut off merely by its parent's completion. Pending/paused members retain
+funding. A late new child is refused; exact accepted retries retain their task.
+Durable recovery also closes fully terminal legacy families. A failed close
+keeps the last task transition retryable; a failed task write after a successful
+close cannot reopen funding. The existing single active registry rule remains.
+
+Funding is pinned before native task acceptance and during recovered-root
+hydration. Totals and attempts migrate atomically to an explicit version-2
+protected coordination partition keyed by tenant and full-owner/root digests.
+Only an immutable funding fingerprint, counters and opaque attempt receipts
+remain outside ordinary session data. Session erasure neither recreates funding
+nor removes a close barrier or outstanding liability. Legacy slots receive an
+invalid-for-old-readers marker, and loaded old writers lose their CAS. Histories
+of 1,000 or more legacy attempts require quiesced migration maintenance; partial
+migration never starts. Unknown formats fail closed.
+
+Drain older writers before upgrade and never downgrade an active funded store.
+Legacy markers are not a boot-time downgrade detector; mixed-version writers
+after session erasure are unsupported because old binaries ignore the new
+protected namespace.
+No expiration or task-state inference refunds liability. There is no online
+tenant/account delete API: explicit storage decommission must revoke/drain all
+writers before removing the corresponding protected accounting partition and
+legacy markers. This change adds no purge, retention timer or production action.
+
+Required extension qualification: all three state drivers with 100 concurrent
+reservations/close, late settlement and unknown holds, lost close acknowledgment,
+SQLite reopen, old-reader/loaded-writer refusal, session erasure/late settlement,
+protected metadata minimization, background descendant lifecycle,
+terminal-write failure, native recovery, canonical projection and capability
+negotiation. The full accounting and task package gates passed locally, together
+with full static analysis and generated-wire joins. Complete consumer and
+hosted integration checks remain open; see the candidate validation record.
+
+The pinned Bifrost SDK has a further transport-level stale-connection retry loop
+below its logical attempt counter. The current driver bound does not yet count
+all physical sends through that loop. Stock-provider hard-cap qualification is
+blocked on a conservative bound repair and actual loopback transport regression;
+the storage/finality results do not waive this requirement. Logical attempt
+metadata and a successful final response cannot prove an unseen attempt free.

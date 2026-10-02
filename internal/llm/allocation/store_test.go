@@ -144,10 +144,13 @@ func TestAllocation_CommitLossCannotRefundOrRepeat(t *testing.T) {
 	}
 	defer func() { _ = raw.Close(context.Background()) }()
 	st := &lostAcknowledgment{StateStore: raw}
-	st.lose.Store(true)
 	mgr := allocation.New(st)
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "task"}
 	a := llm.InferenceAllocation{AllocationID: "a", Revision: 1, MaxTotalTokens: 100}
+	if err = mgr.Ensure(t.Context(), q, a); err != nil {
+		t.Fatal(err)
+	}
+	st.lose.Store(true)
 	if err = mgr.Reserve(t.Context(), q, a, "one", 100); err == nil {
 		t.Fatal("expected lost acknowledgment")
 	}

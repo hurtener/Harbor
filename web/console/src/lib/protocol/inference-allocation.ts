@@ -22,6 +22,8 @@ export interface InferenceAllocationReceipt {
 }
 /** Reserved/unknown tokens remain held; elapsed time is never a refund. */
 export interface InferenceAllocationSnapshot {
+  /** Irreversible reservation barrier; unknown/in-flight liability remains held. */
+  closed: boolean;
   max_cost_micro_usd?: number;
   charged_cost_micro_usd: number;
   reserved_cost_micro_usd: number;

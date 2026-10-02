@@ -16318,3 +16318,68 @@ first state read. The call-local identity optimization reduces repeated receipt
 decoding, but does not by itself establish resolution of hosted contention.
 The budget correction follows RFC 002's separation of validation and persistence;
 the unchanged 128-scope hosted tests remain the platform acceptance gate.
+
+## D-493 — Irreversible task allocation closure
+
+**Status:** Accepted design; implementation qualification pending.
+**Date:** 2026-10-02. **Scope:** Phase 272/274 funding finality, RFC §6.15.
+
+A terminal root task and zero currently unknown counters do not prove that an
+inherited helper cannot reserve another provider envelope. Consumers therefore
+must not return unused funding based on lifecycle or counter observations alone.
+
+The canonical allocation store adds an irreversible `Close` barrier in the same
+protected conditional total slot as `Reserve` and `ReserveMonetary`. A close never refunds
+an accepted envelope. Attempts admitted before the barrier can still settle;
+unknown liability stays held. `tasks.get.inference_allocation.closed` is read in
+the same snapshot as its cumulative accounting. Consumers negotiate
+`task_inference_allocation_finality_v1`; an omitted field or older capability is
+unknown finality. Closed plus zero reserved/unknown counters and no bound breach
+is a final conservative capacity charge, never a provider spending receipt.
+
+The built-in task engines close a funding root only when that root and every
+already-accepted same-owner descendant are terminal. The engine lock serializes
+new descendant acceptance with this decision; a late new descendant cannot reopen
+closed funding. Existing idempotent task retries retain their canonical handle.
+The barrier precedes the last terminal task write. A failed or lost close reply
+leaves that lifecycle transition retryable; a failed later task write leaves the
+allocation conservatively closed. Durable recovery reconciles older terminal
+families without releasing their outstanding envelopes. Paused and pending
+accepted descendants continue to hold funding. Unregistered delayed helpers are
+refused once all accepted tasks have become terminal.
+
+Accounting is pinned before native task acceptance and migrated during durable
+root hydration. Version-2 totals and attempts live in the existing reserved
+coordination namespace, partitioned by tenant digest and a length-framed full
+owner/session/canonical-task digest. No raw scope strings or caller funding ID
+are retained there; immutable funding is verified by fingerprint. Payloads contain
+only cumulative counters and bounded opaque attempt receipts, with no prompts,
+artifact contents or credentials. Ordinary session erasure cannot remove the
+barrier, recreate funding, discard unknown liability or prevent late settlement.
+
+Legacy totals and their attempt records migrate in one conditional batch. The
+legacy total becomes a marker without its former funding identity, so an older
+reader refuses it and an already-loaded old writer loses its CAS. Migration is
+bounded to fewer than 1,000 legacy attempt records; an over-limit or inconsistent
+history fails closed and requires explicitly quiesced maintenance. Unknown
+versions and legacy-compatible close envelopes are rejected. Drain older writers
+before rollout and never downgrade an active funded store. The marker fences
+legacy access while it exists; after session erasure an older binary does not
+understand the protected namespace. This is not a boot-time downgrade detector or
+a mixed-version erasure guarantee. The generic StateStore schema and
+session-erasure behavior remain unchanged.
+
+There is no online tenant/account deletion surface in this runtime. Session
+erasure is not tenant/account decommission: content-free funding records persist
+without a timer so stale helpers cannot regain authority. An explicit operator
+storage-decommission workflow must revoke and drain all writers before removing
+that tenant's protected accounting partition, along with its legacy markers.
+This patch supplies no purge API, background retention cleanup or production
+maintenance action. Whole-store decommission has the same writer-quiescence
+precondition. Counters are not credentials or session contents.
+
+Allocation scope remains the full owner triple and runtime-derived root task ID.
+A coordinator must bind each external funding slice to one canonical task; a new
+root task is a new admission and cannot reuse an already-refunded slice. Runtime
+closure does not authorize grants, purchase inference, settle unknown attempts,
+or replace the application-wide budget ledger.

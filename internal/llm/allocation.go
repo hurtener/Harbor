@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm/pricing"
@@ -29,6 +30,8 @@ var (
 	ErrAllocationInvalid = errors.New("llm: inference allocation invalid")
 	// ErrAllocationExhausted means no conservative provider reservation fits.
 	ErrAllocationExhausted = errors.New("llm: inference allocation exhausted")
+	// ErrAllocationClosed means the canonical funding root cannot admit new calls.
+	ErrAllocationClosed = errors.New("llm: inference allocation closed")
 	// ErrAllocationUnavailable means the durable allocation seam is absent.
 	ErrAllocationUnavailable = errors.New("llm: inference allocation unavailable")
 	// ErrAllocationPricingUnavailable rejects an unsupported hard monetary cap.
@@ -44,7 +47,9 @@ func ValidateInferenceAllocation(a *InferenceAllocation) error {
 	if a == nil {
 		return nil
 	}
-	if strings.TrimSpace(a.AllocationID) != a.AllocationID || a.AllocationID == "" || strings.ContainsAny(a.AllocationID, "\x00\r\n\t") || len(a.AllocationID) > 128 || a.Revision == 0 || a.MaxTotalTokens <= 0 {
+	// Fingerprints use the canonical JSON form; malformed UTF-8 must not be
+	// normalized into replacement characters that alias another funding ID.
+	if !utf8.ValidString(a.AllocationID) || !utf8.ValidString(a.PricingManifestID) || strings.TrimSpace(a.AllocationID) != a.AllocationID || a.AllocationID == "" || strings.ContainsAny(a.AllocationID, "\x00\r\n\t") || len(a.AllocationID) > 128 || a.Revision == 0 || a.MaxTotalTokens <= 0 {
 		return ErrAllocationInvalid
 	}
 	if a.MaxCostMicroUSD != nil {
@@ -125,6 +130,9 @@ func InferenceAllocationFrom(ctx context.Context) *InferenceAllocation {
 // AllocationSnapshot contains content-free cumulative accounting. Reserved
 // includes unresolved provider liability and never expires on a wall clock.
 type AllocationSnapshot struct {
+	// Closed irreversibly fences new provider reservations, including late helpers.
+	// Existing reserved/unknown liability remains held until authoritative settlement.
+	Closed          bool   `json:"closed"`
 	MaxCostMicroUSD *int64 `json:"max_cost_micro_usd,omitempty"`
 	// ChargedCostMicroUSD is consumed conservative ceiling capacity, not actual spend.
 	ChargedCostMicroUSD int64 `json:"charged_cost_micro_usd"`
@@ -152,6 +160,10 @@ type AllocationSnapshot struct {
 // AllocationStore is the mandatory durable accounting seam for allocated calls.
 // Every method is identity+canonical-task scoped and safe across processes.
 type AllocationStore interface {
+	// Ensure pins funding before task acceptance and migrates legacy accounting.
+	Ensure(context.Context, identity.Quadruple, InferenceAllocation) error
+	// Close irreversibly rejects future reservations. Existing attempts can settle.
+	Close(context.Context, identity.Quadruple, InferenceAllocation) error
 	Reserve(context.Context, identity.Quadruple, InferenceAllocation, string, int64) error
 	// ReserveMonetary atomically reserves token and inclusive monetary envelopes.
 	ReserveMonetary(context.Context, identity.Quadruple, InferenceAllocation, string, int64, int64) error

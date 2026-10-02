@@ -83,29 +83,30 @@ func newProviderOperationID() string {
 // Runtime wires at boot; PostureSurface translates their output into
 // the wire shape and returns it.
 type PostureSurface struct {
-	scopedSessionAdmissionAvailable   bool
-	durableTaskInputReceiptsAvailable bool
-	taskInferenceAllocationAvailable  bool
-	artifactTransferAvailable         bool
-	durableArtifactTransferAvailable  bool
-	build                             types.RuntimeInfo
-	clock                             func() time.Time
-	health                            func(ctx context.Context) []types.SubsystemHealth
-	retention                         func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
-	counters                          func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
-	drivers                           func() []types.SubsystemDriver
-	metrics                           func(ctx context.Context) types.MetricsSnapshot
-	governance                        *governance.PostureProvider
-	llm                               *llm.PostureProvider
-	providerCatalog                   provider.CatalogSurface
-	agentReach                        auth.AgentReachAuthorizer
-	providerRouteRuntimeID            string
-	redactor                          audit.Redactor
-	bus                               events.EventBus
-	bootedAt                          time.Time
-	displayName                       string
-	instanceID                        string
-	externalGrant                     func() types.ExternalGrantReadiness
+	scopedSessionAdmissionAvailable          bool
+	durableTaskInputReceiptsAvailable        bool
+	taskInferenceAllocationAvailable         bool
+	taskInferenceAllocationFinalityAvailable bool
+	artifactTransferAvailable                bool
+	durableArtifactTransferAvailable         bool
+	build                                    types.RuntimeInfo
+	clock                                    func() time.Time
+	health                                   func(ctx context.Context) []types.SubsystemHealth
+	retention                                func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
+	counters                                 func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
+	drivers                                  func() []types.SubsystemDriver
+	metrics                                  func(ctx context.Context) types.MetricsSnapshot
+	governance                               *governance.PostureProvider
+	llm                                      *llm.PostureProvider
+	providerCatalog                          provider.CatalogSurface
+	agentReach                               auth.AgentReachAuthorizer
+	providerRouteRuntimeID                   string
+	redactor                                 audit.Redactor
+	bus                                      events.EventBus
+	bootedAt                                 time.Time
+	displayName                              string
+	instanceID                               string
+	externalGrant                            func() types.ExternalGrantReadiness
 	// wiredCaps is the per-instance subset of canonical Protocol
 	// capabilities this Runtime actually wires.
 	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
@@ -129,6 +130,8 @@ type PostureDeps struct {
 	DurableTaskInputReceiptsAvailable bool
 	// TaskInferenceAllocationAvailable requires the cumulative runtime accounting seam.
 	TaskInferenceAllocationAvailable bool
+	// TaskInferenceAllocationFinalityAvailable requires the built-in close barrier.
+	TaskInferenceAllocationFinalityAvailable bool
 	// DurableArtifactTransferAvailable requires persistent receipt and blob drivers.
 	DurableArtifactTransferAvailable bool
 	// ArtifactTransferAvailable advertises only a wired two-sided transfer service.
@@ -318,30 +321,31 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt = deps.Clock()
 	}
 	return &PostureSurface{
-		scopedSessionAdmissionAvailable:   deps.ScopedSessionAdmissionAvailable,
-		durableTaskInputReceiptsAvailable: deps.DurableTaskInputReceiptsAvailable,
-		taskInferenceAllocationAvailable:  deps.TaskInferenceAllocationAvailable,
-		artifactTransferAvailable:         deps.ArtifactTransferAvailable,
-		durableArtifactTransferAvailable:  deps.DurableArtifactTransferAvailable,
-		build:                             deps.Build,
-		clock:                             deps.Clock,
-		health:                            deps.Health,
-		retention:                         deps.Retention,
-		counters:                          deps.Counters,
-		drivers:                           deps.Drivers,
-		metrics:                           deps.Metrics,
-		governance:                        deps.Governance,
-		llm:                               deps.LLM,
-		providerCatalog:                   deps.ProviderCatalog,
-		agentReach:                        deps.AgentReach,
-		providerRouteRuntimeID:            deps.ProviderRouteRuntimeID,
-		redactor:                          deps.Redactor,
-		bus:                               deps.Bus,
-		bootedAt:                          bootedAt,
-		displayName:                       deps.DisplayName,
-		instanceID:                        deps.InstanceID,
-		externalGrant:                     deps.ExternalGrant,
-		wiredCaps:                         wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != "", deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable),
+		scopedSessionAdmissionAvailable:          deps.ScopedSessionAdmissionAvailable,
+		durableTaskInputReceiptsAvailable:        deps.DurableTaskInputReceiptsAvailable,
+		taskInferenceAllocationAvailable:         deps.TaskInferenceAllocationAvailable,
+		taskInferenceAllocationFinalityAvailable: deps.TaskInferenceAllocationFinalityAvailable,
+		artifactTransferAvailable:                deps.ArtifactTransferAvailable,
+		durableArtifactTransferAvailable:         deps.DurableArtifactTransferAvailable,
+		build:                                    deps.Build,
+		clock:                                    deps.Clock,
+		health:                                   deps.Health,
+		retention:                                deps.Retention,
+		counters:                                 deps.Counters,
+		drivers:                                  deps.Drivers,
+		metrics:                                  deps.Metrics,
+		governance:                               deps.Governance,
+		llm:                                      deps.LLM,
+		providerCatalog:                          deps.ProviderCatalog,
+		agentReach:                               deps.AgentReach,
+		providerRouteRuntimeID:                   deps.ProviderRouteRuntimeID,
+		redactor:                                 deps.Redactor,
+		bus:                                      deps.Bus,
+		bootedAt:                                 bootedAt,
+		displayName:                              deps.DisplayName,
+		instanceID:                               deps.InstanceID,
+		externalGrant:                            deps.ExternalGrant,
+		wiredCaps:                                wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != "", deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable),
 	}, nil
 }
 
@@ -537,6 +541,9 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	}
 	if s.taskInferenceAllocationAvailable {
 		out.Capabilities = append(out.Capabilities, types.CapTaskInferenceAllocation)
+	}
+	if s.taskInferenceAllocationAvailable && s.taskInferenceAllocationFinalityAvailable {
+		out.Capabilities = append(out.Capabilities, types.CapTaskInferenceAllocationFinality)
 	}
 	if s.durableArtifactTransferAvailable {
 		out.Capabilities = append(out.Capabilities, types.CapDurableArtifactTransfer)

@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm/allocation"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tasks/engine"
@@ -34,7 +35,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("tasks/inprocess: New requires a non-nil StateStore")
 	}
-	return engine.New(deps.Bus, deps.Redactor, ephemeralBackend{store: deps.Store}, engine.WithPricingCatalog(deps.PricingCatalog))
+	return engine.New(deps.Bus, deps.Redactor, ephemeralBackend{store: deps.Store}, engine.WithPricingCatalog(deps.PricingCatalog), engine.WithAllocations(allocation.New(deps.Store)))
 }
 
 func init() {

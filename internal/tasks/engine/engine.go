@@ -121,6 +121,20 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...
 	if err := e.hydrate(context.Background()); err != nil {
 		return nil, err
 	}
+	// Pin every recovered root before serving erasure or descendant work. Legacy
+	// session-local records must not vanish before their accounting is protected.
+	if e.allocations != nil {
+		for _, task := range e.tasks {
+			if task.InferenceAllocation == nil || task.AllocationTaskID != "" {
+				continue
+			}
+			q := task.Identity
+			q.RunID = string(task.ID)
+			if err := e.allocations.Ensure(context.Background(), q, *task.InferenceAllocation); err != nil {
+				return nil, fmt.Errorf("recover protected allocation: %w", err)
+			}
+		}
+	}
 	return e, nil
 }
 
@@ -133,6 +147,13 @@ type Option func(*Engine)
 // WithPricingCatalog installs operator-authorized immutable tariff references.
 func WithPricingCatalog(catalog *pricing.Catalog) Option {
 	return func(e *Engine) { e.pricingCatalog = catalog }
+}
+
+// WithAllocations binds terminal funding closure to the same durable accounting
+// store used by provider admission. Embeddings without this seam cannot claim
+// finality even when their task lifecycle reports a terminal state.
+func WithAllocations(allocations llm.AllocationStore) Option {
+	return func(e *Engine) { e.allocations = allocations }
 }
 
 // WithProgressPolicy replaces the default ReportProgress
@@ -234,6 +255,7 @@ type idempotencyRecord struct {
 }
 
 type Engine struct {
+	allocations    llm.AllocationStore
 	pricingCatalog *pricing.Catalog
 	backend        Backend
 	bus            events.EventBus
@@ -365,6 +387,20 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		}
 	}
 
+	// A new descendant cannot reopen funding after the last accepted member
+	// closed it. Idempotent retries above still return their canonical handle.
+	if allocationTaskID != "" && e.allocations != nil {
+		q := req.Identity
+		q.RunID = allocationTaskID
+		snapshot, err := e.allocations.Snapshot(ctx, q, *req.InferenceAllocation)
+		if err != nil {
+			return tasks.TaskHandle{}, err
+		}
+		if snapshot.Closed {
+			return tasks.TaskHandle{}, tasks.RejectBeforeSpawn(llm.ErrAllocationClosed)
+		}
+	}
+
 	// New task: assign ULID, persist, emit task.spawned.
 	id := tasks.TaskID(ulid.MustNew(ulid.Now(), e.ulidEntropy).String())
 	now := time.Now().UnixNano()
@@ -481,6 +517,13 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		memberGroup = g
 	}
 
+	if t.InferenceAllocation != nil && t.AllocationTaskID == "" && e.allocations != nil {
+		q := t.Identity
+		q.RunID = string(t.ID)
+		if err := e.allocations.Ensure(ctx, q, *t.InferenceAllocation); err != nil {
+			return tasks.TaskHandle{}, fmt.Errorf("pin accepted allocation: %w", err)
+		}
+	}
 	if err := e.persistTaskLocked(ctx, t, contentHash); err != nil {
 		return tasks.TaskHandle{}, err
 	}
@@ -1238,6 +1281,13 @@ func (e *Engine) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 	}
 	if isTerminal(to) && t.PendingProgress != nil {
 		if err := e.publishPendingProgressLocked(ctx, t); err != nil {
+			return err
+		}
+	}
+	if isTerminal(to) {
+		// Close before publishing the last terminal member. A failed or unknown
+		// closure leaves lifecycle retryable and never announces final funding.
+		if err := e.closeTerminalAllocationLocked(ctx, t); err != nil {
 			return err
 		}
 	}

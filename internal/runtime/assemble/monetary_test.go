@@ -80,6 +80,19 @@ func TestMonetaryAllocation_AssemblyWiresTrustedPricingAndTaskProjection(t *test
 	if err != nil || detail.InferenceAllocation == nil || detail.InferenceAllocation.UnknownCostMicroUSD != 12 || detail.InferenceAllocation.PricingManifestSHA256 != ref.SHA256 {
 		t.Fatal(detail, err)
 	}
+	if err = stack.Tasks.MarkRunning(ctx, h.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = stack.Tasks.MarkComplete(ctx, h.ID, tasks.TaskResult{}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err = projector.GetTask(ctx, id, string(h.ID))
+	if err != nil || !detail.InferenceAllocation.Closed || detail.InferenceAllocation.UnknownCostMicroUSD != 12 {
+		t.Fatalf("closed unknown liability: %+v %v", detail, err)
+	}
+	if _, err = stack.LLM.Complete(callCtx, req); !errors.Is(err, llm.ErrAllocationClosed) || hits.Load() != 1 {
+		t.Fatal("late transport escaped closed allocation", err, hits.Load())
+	}
 	if err = stack.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -2396,3 +2396,8 @@ identity and immutable verified issuer/coordinator. D-491.
 One bounded durable pending reservation whose accepting operation has not
 returned a proved completion. It blocks enrollment and further mutations and
 never expires merely with time or process loss. D-491.
+
+- **Allocation closure:** An irreversible barrier against new provider reservations
+  for one canonical task funding root. Accepted envelopes can settle afterward;
+  unresolved liability remains held. Closed and fully settled accounting proves
+  final conservative capacity, not actual provider spending (D-493).

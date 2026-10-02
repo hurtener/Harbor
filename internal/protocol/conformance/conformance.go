@@ -2004,7 +2004,7 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	// The explicit 22-capability contract stays in lockstep with the canonical
+	// The explicit 23-capability contract stays in lockstep with the canonical
 	// constants in internal/protocol/types/version.go. A new capability requires
 	// a new constant and a corresponding conformance entry. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
@@ -2015,32 +2015,33 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.
-	if len(caps) != 22 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 22 (including scoped session admission) at Protocol 0.1.0", len(caps))
+	if len(caps) != 23 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 23 (including allocation finality) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
-		types.CapScopedSessionAdmission:        {},
-		types.CapArtifactTransfer:              {},
-		types.CapDurableArtifactTransfer:       {},
-		types.CapDurableTaskInputReceipts:      {},
-		types.CapTaskInferenceAllocation:       {},
-		types.CapTaskControl:                   {},
-		types.CapEventsSubscribe:               {},
-		types.CapRuntimePosture:                {},
-		types.CapTopologySnapshot:              {},
-		types.CapStateSnapshots:                {},
-		types.CapAgentConfig:                   {},
-		types.CapSessionLifecycle:              {},
-		types.CapToolAnnotations:               {},
-		types.CapToolsConfigurationView:        {},
-		types.CapCallerMemory:                  {},
-		types.CapSkillPublications:             {},
-		types.CapLLMProviderCatalog:            {},
-		types.CapLLMProviderRoute:              {},
-		types.CapRunLLMSettings:                {},
-		types.CapAgentConfigMemory:             {},
-		types.CapLLMProviderRouteModelProfile:  {},
-		types.CapTenantScopedBrokerCredentials: {},
+		types.CapScopedSessionAdmission:          {},
+		types.CapArtifactTransfer:                {},
+		types.CapDurableArtifactTransfer:         {},
+		types.CapDurableTaskInputReceipts:        {},
+		types.CapTaskInferenceAllocation:         {},
+		types.CapTaskInferenceAllocationFinality: {},
+		types.CapTaskControl:                     {},
+		types.CapEventsSubscribe:                 {},
+		types.CapRuntimePosture:                  {},
+		types.CapTopologySnapshot:                {},
+		types.CapStateSnapshots:                  {},
+		types.CapAgentConfig:                     {},
+		types.CapSessionLifecycle:                {},
+		types.CapToolAnnotations:                 {},
+		types.CapToolsConfigurationView:          {},
+		types.CapCallerMemory:                    {},
+		types.CapSkillPublications:               {},
+		types.CapLLMProviderCatalog:              {},
+		types.CapLLMProviderRoute:                {},
+		types.CapRunLLMSettings:                  {},
+		types.CapAgentConfigMemory:               {},
+		types.CapLLMProviderRouteModelProfile:    {},
+		types.CapTenantScopedBrokerCredentials:   {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

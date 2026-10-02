@@ -412,30 +412,31 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
-		Metrics:                           runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                        governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
-		LLM:                               llm.NewPostureProvider(in.LLMSnapshot),
-		ProviderCatalog:                   in.ProviderCatalog,
-		AgentReach:                        in.AgentReach,
-		ProviderRouteRuntimeID:            in.ProviderRouteRuntimeID,
-		Redactor:                          red,
-		Bus:                               bus,
-		DisplayName:                       in.DisplayName,
-		InstanceID:                        in.InstanceID,
-		ExternalGrant:                     in.ExternalGrantReadiness,
-		TopologyAvailable:                 in.TopologyAvailable,
-		AgentConfigAvailable:              in.AgentConfig != nil,
-		DurableTaskInputReceiptsAvailable: in.Tasks != nil && cfg.Tasks.Driver == "durable" && (cfg.State.Driver == "sqlite" || cfg.State.Driver == "postgres"),
-		TaskInferenceAllocationAvailable:  in.RunLoopDriver != nil && in.State != nil,
-		DurableArtifactTransferAvailable:  in.Cfg.Artifacts.Transfer != nil && (in.Cfg.State.Driver == "sqlite" || in.Cfg.State.Driver == "postgres") && (in.Cfg.Artifacts.Driver == "sqlite" || in.Cfg.Artifacts.Driver == "postgres"),
-		ArtifactTransferAvailable:         in.Cfg.Artifacts.Transfer != nil,
-		MemoryBudgetAvailable:             in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
-		StateSnapshotsAvailable:           stateSnapshotsAvailable,
-		SessionLifecycleAvailable:         sessionLifecycleAvailable,
-		ToolAnnotationsAvailable:          toolAnnotationsAvailable,
-		ToolsConfigurationViewAvailable:   in.Catalog != nil && in.AgentConfig != nil && in.MCPRegistry != nil && in.AgentResolver != nil && in.AgentReach != nil,
-		SkillPublicationsAvailable:        publicationAvailable,
-		ProviderCatalogAvailable:          in.ProviderCatalog != nil,
+		Metrics:                                  runtimeposture.MetricsProvider(in.Metrics, logger),
+		Governance:                               governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
+		LLM:                                      llm.NewPostureProvider(in.LLMSnapshot),
+		ProviderCatalog:                          in.ProviderCatalog,
+		AgentReach:                               in.AgentReach,
+		ProviderRouteRuntimeID:                   in.ProviderRouteRuntimeID,
+		Redactor:                                 red,
+		Bus:                                      bus,
+		DisplayName:                              in.DisplayName,
+		InstanceID:                               in.InstanceID,
+		ExternalGrant:                            in.ExternalGrantReadiness,
+		TopologyAvailable:                        in.TopologyAvailable,
+		AgentConfigAvailable:                     in.AgentConfig != nil,
+		DurableTaskInputReceiptsAvailable:        in.Tasks != nil && cfg.Tasks.Driver == "durable" && (cfg.State.Driver == "sqlite" || cfg.State.Driver == "postgres"),
+		TaskInferenceAllocationAvailable:         in.RunLoopDriver != nil && in.State != nil,
+		TaskInferenceAllocationFinalityAvailable: inferenceAllocationFinalityAvailable(in.Tasks),
+		DurableArtifactTransferAvailable:         in.Cfg.Artifacts.Transfer != nil && (in.Cfg.State.Driver == "sqlite" || in.Cfg.State.Driver == "postgres") && (in.Cfg.Artifacts.Driver == "sqlite" || in.Cfg.Artifacts.Driver == "postgres"),
+		ArtifactTransferAvailable:                in.Cfg.Artifacts.Transfer != nil,
+		MemoryBudgetAvailable:                    in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
+		StateSnapshotsAvailable:                  stateSnapshotsAvailable,
+		SessionLifecycleAvailable:                sessionLifecycleAvailable,
+		ToolAnnotationsAvailable:                 toolAnnotationsAvailable,
+		ToolsConfigurationViewAvailable:          in.Catalog != nil && in.AgentConfig != nil && in.MCPRegistry != nil && in.AgentResolver != nil && in.AgentReach != nil,
+		SkillPublicationsAvailable:               publicationAvailable,
+		ProviderCatalogAvailable:                 in.ProviderCatalog != nil,
 	})
 	if err != nil {
 		return nil, wrapErr("posture surface", err)
@@ -1091,4 +1092,10 @@ func bootOwnershipMux(owner agentcfgprotocol.BootOwnership, next http.Handler) h
 // identically.
 func wrapErr(ctx string, err error) error {
 	return fmt.Errorf("%s: %w", ctx, err)
+}
+
+// inferenceAllocationFinalityAvailable never infers a custom registry guarantee.
+func inferenceAllocationFinalityAvailable(registry tasks.TaskRegistry) bool {
+	finalizer, ok := registry.(interface{ InferenceAllocationFinality() bool })
+	return ok && finalizer.InferenceAllocationFinality()
 }
