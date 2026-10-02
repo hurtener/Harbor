@@ -341,6 +341,8 @@ export default defineConfig({
             { text: "Glossary", link: "/reference/glossary" },
             { text: "Decisions log", link: "/reference/decisions" },
             { text: "Master phase plan", link: "/reference/master-plan" },
+            { text: "Native output provenance plan", link: "/reference/phase-273-native-output-provenance" },
+            { text: "Scoped session admission plan", link: "/reference/phase-275-scoped-session-admission" },
             { text: "Productionization playbook", link: "/reference/productionization-playbook" },
             { text: "Changelog", link: "/reference/changelog" },
           ],
