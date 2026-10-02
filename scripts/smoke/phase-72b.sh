@@ -100,7 +100,9 @@ assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONT
 # CodeRestartUnavailable (a persisted tranche pause with no live in-process run
 # loop capable of exact restart redrive — the run fails closed rather than
 # pretending to continue as a new task, D-417), plus the same-runtime agent-pack
-# copy surface's collision and idempotency-conflict outcomes (D-456). Pin the
+# copy surface's collision and idempotency-conflict outcomes (D-456), followed
+# by durable input receipts, recipient transfer, inference allocation and
+# retained-context refusal codes. Pin the
 # EXACT closed set by
 # identifier, not a raw declaration count: a count alone accepts a missing old
 # code paired with an unrelated replacement.
@@ -143,6 +145,14 @@ CANONICAL_ERROR_CODES=(
     CodeSkillPublicationRetired
     CodeSkillPublicationRuntimeMismatch
     CodeSkillPublicationIdempotencyConflict
+    CodeControlReceiptConflict
+    CodeArtifactTransferConflict
+    CodeArtifactTransferExpired
+    CodeArtifactTransferRevoked
+    CodeArtifactTransferInProgress
+    CodeInferenceAllocationPricingUnavailable
+    CodeRetainedContextUnsettled
+    CodeRetainedContextUnavailable
 )
 for code in "${CANONICAL_ERROR_CODES[@]}"; do
     assert_grep_present "^[[:space:]]*${code}[[:space:]]+Code[[:space:]]*=" \

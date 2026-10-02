@@ -413,6 +413,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |270 | Recipient-admitted artifact transfer | artifacts / Protocol | §6.10, §6.11 | 18, 54, 269 | 80% | In progress |
 |271 | Durable exact-task input receipts | tasks / steering | §6.3, §6.8 | 269 | 80% | In progress |
 |272 | Cumulative task inference allocation | llm / tasks | §6.5, §6.15 | 261, 269 | 80% | In progress |
+|275 | Scoped session admission: signed exact method reach, isolated audience and durable session mutation acceptance (D-491) | protocol + sessionadmission | §5.5, §6.11, §6.3 | 16, 30, 50, 271 | sessionadmission 85%; changed auth branches 90% (final qualification pending) | In progress |
 
 ### Phase 270 — Recipient-admitted artifact transfer
 
@@ -6067,6 +6068,6 @@ phase is not RC-ready.
 
 ### Phase 275 — Scoped session admission
 
-| Phase | Status | Scope | Plan |
-| --- | --- | --- | --- |
-| 275 | In progress | Signed exact method reach, isolated audience and durable session mutation acceptance (D-491); final qualification pending | [Scoped session admission](phase-275-scoped-session-admission.md) |
+- **Status:** In progress; final qualification pending
+- **Scope:** Signed exact method reach, isolated audience and durable session mutation acceptance (D-491)
+- **Plan:** [Scoped session admission](phase-275-scoped-session-admission.md)

@@ -257,12 +257,14 @@ fi
 # arrives; this source guard pins that semantic requirement to the real removal
 # implementation and its sentinel.
 if awk '
-    /^func \(s \*Service\) RemoveOAuthMCPCapability\(/ { inside = 1 }
-    inside && /^func / && !/RemoveOAuthMCPCapability\(/ { exit }
+    /^func \(s \*Service\) RemoveOAuthMCPCapability\(/ { public = 1 }
+    public && /return s\.removeOAuthMCPCapabilityAuthorized\(ctx, req\)/ { delegated = 1 }
+    /^func \(s \*Service\) removeOAuthMCPCapabilityAuthorized\(/ { public = 0; inside = 1 }
+    inside && /^func / && !/removeOAuthMCPCapabilityAuthorized\(/ { exit }
     inside && /expectedContentHash := strings\.TrimSpace\(req\.ExpectedContentHash\)/ { trimmed = 1 }
     inside && /expectedContentHash == ""/ { empty = 1 }
     inside && /agentcfg\.ErrRevisionConflict/ { conflict = 1 }
-    END { exit !(trimmed && empty && conflict) }
+    END { exit !(delegated && trimmed && empty && conflict) }
 ' "${REMOVE_OAUTH_GO}"; then
     ok 'phase 221: signed OAuth MCP removal rejects an empty trimmed hash with ErrRevisionConflict (wire field remains optional for additive decoding)'
 else

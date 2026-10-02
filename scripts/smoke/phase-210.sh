@@ -192,7 +192,7 @@ assert_grep_absent 'may[[:space:]]+rewrite or refuse' "${ARTIFACTS_SRC}" \
 # places (the surface godoc, handlePut's godoc, and the Redact call
 # site), and losing any ONE of them re-opens the reading that a stored
 # artifact is a redacted artifact.
-assert_grep_count '(ADMISSION|admission) ?(GATE|gate)?' "${ARTIFACTS_SRC}" 3 \
+assert_grep_count '(ADMISSION GATE|admission gate)' "${ARTIFACTS_SRC}" 3 \
     "phase 210: the redactor is named an admission gate at all three sites"
 assert_grep_present 'PutBytes\(ctx, scope, req\.Bytes, opts\)' "${ARTIFACTS_SRC}" \
     "phase 210: the stored bytes are the ones the author supplied"

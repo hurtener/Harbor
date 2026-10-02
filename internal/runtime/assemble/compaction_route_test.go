@@ -108,6 +108,10 @@ func testAssembleIndependentCompactionRoute(t *testing.T, configured, expected i
 	cfg.Memory.BudgetTokens, cfg.Memory.Summarizer.ProviderRoute = 100, route
 	cfg.Memory.Summarizer.MaxTokens = configured
 	cfg.LLM.Driver, cfg.LLM.Provider, cfg.LLM.Model = "bifrost", "fixture-route", "driving-model"
+	// The two requests are sequential. Avoid allocating Bifrost's production
+	// 1000-worker default for each race-instrumented route fixture.
+	cfg.LLM.NetworkDefaults.Concurrency = 2
+	cfg.LLM.NetworkDefaults.BufferSize = 4
 	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{{Name: "fixture-route", BaseURL: provider.URL,
 		APIKeyEnvVar: env, Models: []string{"driving-model", "compact-model"}, Timeout: 5 * time.Second}}
 	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{"driving-model": {ContextWindowTokens: 1000000, TokenEstimator: "chars_div_4"}}

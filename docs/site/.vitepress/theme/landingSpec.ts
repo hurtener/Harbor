@@ -277,7 +277,7 @@ export const rigor = {
   stats: [
     { value: "1", label: "static CGo-free binary" },
     { value: "11", label: "CLI subcommands" },
-    { value: "110", label: "canonical Protocol methods" },
+    { value: String(release.methodCount), label: "canonical Protocol methods" },
     { value: "3", label: "conformance-equal stores" },
     { value: "2", label: "planners on one interface" },
     { value: "0.1.0", label: "Protocol, versioned apart" },

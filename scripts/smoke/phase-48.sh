@@ -58,8 +58,9 @@ fi
 # §13 import-graph guard — the deterministic planner has no LLM
 # dependency by construction (the LLM-edge composition belongs to
 # ReAct; a deterministic planner that imported `internal/llm` would
-# be a §13 two-parallel-implementations smell).
-if grep -rIn --include='*.go' '"github.com/hurtener/Harbor/internal/llm"' internal/planner/deterministic/ 2>/dev/null | grep -q .; then
+# be a §13 two-parallel-implementations smell). External test fixtures may
+# use LLM allocation context to verify task funding; they are not planner imports.
+if grep -rIn --include='*.go' --exclude='*_test.go' '"github.com/hurtener/Harbor/internal/llm"' internal/planner/deterministic/ 2>/dev/null | grep -q .; then
     fail 'phase 48: internal/planner/deterministic/ imports internal/llm — the deterministic planner has no LLM dependency by construction (§13)'
 else
     ok 'phase 48: internal/planner/deterministic/ does not import internal/llm (deterministic planner is LLM-free by construction)'

@@ -50,7 +50,7 @@ func testAssembledMonetaryPhysicalEnvelope(t *testing.T, tokenCap, moneyCap int6
 	}
 	ref := catalog.References()[0]
 	cfg := minimalCfg(t)
-	cfg.LLM = config.LLMConfig{Driver: "bifrost", Provider: "openai", Model: "fixture-version-1", BaseURL: server.URL + "/v1", APIKey: "test-only-not-a-real-key", Timeout: 5 * time.Second, PricingManifests: []pricing.Manifest{m}, ModelProfiles: map[string]config.LLMModelProfileConfig{"fixture-version-1": {ContextWindowTokens: 1000}}, NetworkDefaults: config.LLMNetworkDefaults{MaxRetries: 1}}
+	cfg.LLM = config.LLMConfig{Driver: "bifrost", Provider: "openai", Model: "fixture-version-1", BaseURL: server.URL + "/v1", APIKey: "test-only-not-a-real-key", Timeout: 5 * time.Second, PricingManifests: []pricing.Manifest{m}, ModelProfiles: map[string]config.LLMModelProfileConfig{"fixture-version-1": {ContextWindowTokens: 1000}}, NetworkDefaults: config.LLMNetworkDefaults{MaxRetries: 1, Concurrency: 2, BufferSize: 4}}
 	cfg.State = config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "state.db")}
 	cfg.Tasks.Driver = "durable"
 	if err = cfg.Validate(); err != nil {

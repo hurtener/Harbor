@@ -515,9 +515,9 @@ fi
 assert_grep_present 'TestRunOnce_ConcurrentReuse_NoBleedNoLeak' \
     "${ROOT}/internal/runtime/assemble/runonce_test.go" \
     'phase 132: N>=100 concurrent-reuse RunOnce -race test exists'
-assert_grep_present 'TestNewRunContext_MemoryParity' \
+assert_grep_present 'TestNewRunContext_NoParallelMemoryProjection' \
     "${ROOT}/internal/runtime/runctx/newruncontext_test.go" \
-    'phase 132: NewRunContext projection-parity test exists'
+    'phase 132: NewRunContext prevents a parallel execution-memory projection'
 
 runonce_test_log="${TMPDIR}/runonce-test.log"
 if elapsed=$(run_bounded "${runonce_test_log}" "${ROOT}" sh -c 'go test -race -run "TestRunOnce|TestNewRunContext" ./internal/runtime/assemble/ ./internal/runtime/runctx/'); then
