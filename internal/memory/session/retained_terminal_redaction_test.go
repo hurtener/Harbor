@@ -57,6 +57,22 @@ func (r terminalShapeRedactor) Redact(_ context.Context, value any) (any, error)
 		delete(body, "action")
 	case "invalid body":
 		body["reasoning_trace"] = "PRIVATE-TRACE"
+	case "duplicate body field", "aliased body field":
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		field := `,"action":null}`
+		if r.shape == "aliased body field" {
+			field = `,"Action":null}`
+		}
+		historical["body"] = json.RawMessage(string(encoded[:len(encoded)-1]) + field)
+	case "duplicate envelope field":
+		encoded, err := json.Marshal(historical)
+		if err != nil {
+			return nil, err
+		}
+		outer["historical"] = json.RawMessage(string(encoded[:len(encoded)-1]) + `,"source_run":"source"}`)
 	case "parallel branches":
 		branches, _ := action["Branches"].([]any)
 		action["Branches"] = branches[:1]
@@ -105,6 +121,9 @@ func TestRetainedContext_TerminalRedactorCannotChangeActionIdentity(t *testing.T
 		{name: "missing-historical", shape: "missing historical", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
 		{name: "missing-action", shape: "missing action", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
 		{name: "invalid-body", shape: "invalid body", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{"secret":"value"}`)}},
+		{name: "duplicate-body", shape: "duplicate body field", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{}`)}},
+		{name: "aliased-body", shape: "aliased body field", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{}`)}},
+		{name: "duplicate-envelope", shape: "duplicate envelope field", action: planner.CallTool{Tool: "read", CallID: "call-exact", Args: json.RawMessage(`{}`)}},
 		{name: "parallel-branches", shape: "parallel branches", action: parallel},
 		{name: "batch-branches", shape: "batch branches", action: batch},
 		{name: "control-authority", shape: "control authority", action: planner.CancelTask{TaskID: "owned-task", Reason: "no longer needed"}},
@@ -140,6 +159,42 @@ func TestRetainedContext_TerminalRedactorCannotChangeActionIdentity(t *testing.T
 				}
 			})
 		}
+	}
+}
+
+// Prepared identity must describe the final permitted exchange: failed argument
+// removal can change an unfamiliar action's shape, and context has no action.
+func TestRetainedContext_PreparedTerminalIdentityUsesPermittedAction(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step planner.Step
+	}{
+		{name: "context", step: planner.Step{LLMObservation: "applied correction"}},
+		{name: "failed tool", step: planner.Step{Action: planner.CallTool{Tool: "read", CallID: "call", Args: json.RawMessage(`{"input":"PRIVATE-ARG"}`)}, Error: "refused"}},
+		{name: "failed unfamiliar action", step: planner.Step{Action: map[string]any{"operation": "unfamiliar", "input": "PRIVATE-ARG"}, Error: "refused"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, redactor, _ := retainedStore(t, "inmem")
+			base := retainedBase("source", tc.name)
+			run, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 2, time.Hour, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = run.Apply(&base); err != nil {
+				t.Fatal(err)
+			}
+			base.Trajectory.Steps = append(base.Trajectory.Steps, tc.step)
+			if err = run.Finish(t.Context(), base.Trajectory, base.Query, "", "interrupted"); err != nil {
+				t.Fatalf("permitted action was rejected: %v", err)
+			}
+			record, err := store.Load(t.Context(), identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(record.Bytes, []byte("PRIVATE-ARG")) {
+				t.Fatal("failed arguments reappeared in terminal evidence")
+			}
+		})
 	}
 }
 
