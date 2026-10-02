@@ -221,3 +221,30 @@ func StaticToken(token string, principal IdentityScope) TokenSource {
 
 // WithHTTPClient supplies the HTTP client used for REST and SSE calls.
 func WithHTTPClient(client *http.Client) Option { return internal.WithHTTPClient(client) }
+
+// SessionTurnsListRequest selects canonical retained turns for an owned session.
+type SessionTurnsListRequest = types.SessionTurnsListRequest
+
+// SessionTurnsListResponse contains the canonical retained-turn projection.
+type SessionTurnsListResponse = types.SessionTurnsListResponse
+
+// SessionTurnsGetRequest selects one exact canonical task turn.
+type SessionTurnsGetRequest = types.SessionTurnsGetRequest
+
+// SessionTurnsGetResponse contains one exact canonical retained-turn projection.
+type SessionTurnsGetResponse = types.SessionTurnsGetResponse
+
+// SessionTurnRow carries canonical conversation-turn metadata.
+type SessionTurnRow = types.SessionTurnRow
+
+// SessionTurnAttachment identifies one canonical artifact attachment.
+type SessionTurnAttachment = types.SessionTurnAttachment
+
+// SessionTurnOutputManifest carries the immutable native-output seal and revision.
+type SessionTurnOutputManifest = types.SessionTurnOutputManifest
+
+// SessionsSetAdmissionRequest is the canonical exact session epoch transition.
+type SessionsSetAdmissionRequest = types.SessionsSetAdmissionRequest
+
+// SessionsSetAdmissionResponse is the installed epoch, not an execution completion proof.
+type SessionsSetAdmissionResponse = types.SessionsSetAdmissionResponse

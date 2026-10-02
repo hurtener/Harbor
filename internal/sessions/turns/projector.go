@@ -2,7 +2,9 @@ package turns
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -403,9 +405,26 @@ func (p *Projector) Update(ctx context.Context, id identity.Identity, turnID Tur
 	if u.Inputs != nil {
 		merged.Inputs = inputs
 	}
+
+	if current.OutputManifest.Version != 0 {
+		if u.OutputManifest != nil && *u.OutputManifest != current.OutputManifest || u.Outputs != nil && !slices.Equal(outputs, current.Outputs) {
+			return TurnRow{}, fmt.Errorf("%w: sealed output manifest changed", ErrInvalidInput)
+		}
+	}
+	if u.OutputManifest != nil {
+		seal := *u.OutputManifest
+		if seal.Version != 1 || len(seal.SHA256) != 64 || strings.ToLower(seal.SHA256) != seal.SHA256 || u.Outputs == nil || len(outputs) > MaxAttachmentsPerSide {
+			return TurnRow{}, fmt.Errorf("%w: invalid output manifest", ErrInvalidInput)
+		}
+		if _, err := hex.DecodeString(seal.SHA256); err != nil {
+			return TurnRow{}, fmt.Errorf("%w: invalid output manifest digest", ErrInvalidInput)
+		}
+		merged.OutputManifest = seal
+	}
 	if u.Outputs != nil {
 		merged.Outputs = outputs
 	}
+
 	if u.Pause != nil {
 		merged.Pause = pause
 	}

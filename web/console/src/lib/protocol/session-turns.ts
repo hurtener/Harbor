@@ -269,6 +269,12 @@ export interface SessionTurnAppRef {
 }
 
 /** One consumer conversation turn — the durable, consumer-safe read model. */
+export interface SessionTurnOutputManifest {
+	version: number;
+	sha256?: string;
+	input_revision: number;
+}
+
 export interface SessionTurnRow {
 	turn_id: string;
 	task_id: string;
@@ -296,6 +302,7 @@ export interface SessionTurnRow {
 	pause: SessionTurnPause;
 	inputs?: SessionTurnAttachment[];
 	outputs?: SessionTurnAttachment[];
+	output_manifest: SessionTurnOutputManifest;
 	usage: SessionTurnUsage;
 	reasoning: SessionTurnReasoning;
 	activity: SessionTurnActivity;

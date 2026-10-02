@@ -47,10 +47,10 @@ func (in *Inbox) EnqueueInput(ctx context.Context, registry tasks.TaskRegistry, 
 	var record tasks.InputRecord
 	var err error
 	if in.closed || in.executionFinished || in.hardCancellation != nil {
-		record, err = registry.RefuseInput(ctx, tasks.TaskID(ev.Identity.RunID), ev.EventID, message, "run_not_active", expected...)
+		record, err = registry.RefuseInput(ctx, in.taskID, ev.EventID, message, "run_not_active", expected...)
 		return record.Receipt, err
 	}
-	record, err = registry.AcceptInput(ctx, tasks.TaskID(ev.Identity.RunID), ev.EventID, message, expected...)
+	record, err = registry.AcceptInput(ctx, in.taskID, ev.EventID, message, expected...)
 	if err != nil {
 		return tasks.InputReceipt{}, err
 	}
@@ -64,6 +64,7 @@ func (in *Inbox) EnqueueInput(ctx context.Context, registry tasks.TaskRegistry, 
 		return record.Receipt, nil
 	}
 	ev.InputRevision = record.Receipt.Revision
+	ev.inputTaskID = record.Receipt.TaskID
 	ev.Payload = map[string]any{"message": record.Message}
 	if err := in.enqueueLocked(ev); err != nil {
 		return tasks.InputReceipt{}, err
@@ -92,7 +93,10 @@ func (rl *RunLoop) restoreInputs(ctx context.Context, spec *RunSpec, inbox *Inbo
 	if err != nil {
 		return out, err
 	}
-	if string(task.ID) != spec.Base.Quadruple.RunID || task.Identity.Identity != spec.Base.Quadruple.Identity {
+	// Task ownership is bound by the explicit registry handle and full owner
+	// identity. A planner execution's run ID is a separate correlation key and
+	// can change when the same task is driven or resumed by an embedder.
+	if task.ID != spec.TaskID || task.Identity.Identity != spec.Base.Quadruple.Identity {
 		return out, tasks.ErrNotFound
 	}
 	for _, record := range task.InputReceipts {
@@ -100,7 +104,7 @@ func (rl *RunLoop) restoreInputs(ctx context.Context, spec *RunSpec, inbox *Inbo
 		if r.TaskID != task.ID || r.EventID == "" || r.Revision > task.InputRevision {
 			return out, tasks.ErrInvalidRequest
 		}
-		ev := ControlEvent{Type: ControlUserMessage, Identity: spec.Base.Quadruple, CallerScope: ScopeOwnerUser, CallerTenant: spec.Base.Quadruple.TenantID, EventID: r.EventID, InputRevision: r.Revision, Payload: map[string]any{"message": record.Message}}
+		ev := ControlEvent{Type: ControlUserMessage, Identity: spec.Base.Quadruple, CallerScope: ScopeOwnerUser, CallerTenant: spec.Base.Quadruple.TenantID, EventID: r.EventID, InputRevision: r.Revision, inputTaskID: task.ID, Payload: map[string]any{"message": record.Message}}
 		if (r.Status == tasks.InputAccepted || r.Status == tasks.InputApplied) && (r.Revision == 0 || record.Message == "") {
 			return out, tasks.ErrInvalidRequest
 		}
@@ -109,7 +113,7 @@ func (rl *RunLoop) restoreInputs(ctx context.Context, spec *RunSpec, inbox *Inbo
 			if spec.Base.Trajectory == nil {
 				spec.Base.Trajectory = &planner.Trajectory{}
 			}
-			if !hasInputProjection(spec.Base.Trajectory, spec.Base.Quadruple.RunID, r.EventID) {
+			if !hasInputProjection(spec.Base.Trajectory, string(task.ID), r.EventID) {
 				step, err := steeringContextStep(ev)
 				if err != nil {
 					return out, err

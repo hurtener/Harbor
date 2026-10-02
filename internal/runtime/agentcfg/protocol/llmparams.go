@@ -5,7 +5,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // llmparams.go — the agent-config per-agent LLM-parameter control method:
@@ -35,6 +37,9 @@ import (
 // connection + hooks sections of the active revision are carried forward
 // unchanged.
 func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSetLLMParamsRequest) (prototypes.AgentConfigSetLLMParamsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetLLMParams); err != nil {
+		return prototypes.AgentConfigSetLLMParamsResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetLLMParamsResponse{}, err
 	}

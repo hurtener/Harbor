@@ -530,9 +530,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 	}
 
+	ctx = tasks.WithOutputTask(ctx, spec.TaskID)
 	ctx, cancelExecution := context.WithCancel(ctx)
 	defer cancelExecution()
-	inbox, err := rl.registry.open(q, cancelExecution)
+	inbox, err := rl.registry.open(q, cancelExecution, spec.TaskID)
 	if err != nil {
 		return planner.Finish{}, fmt.Errorf("steering: opening run inbox: %w", err)
 	}
@@ -1079,7 +1080,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		currentAttempt := inbox.endAttempt(generation)
 		if nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision) {
-			if inputErr := inputs.consumed(runCtx, rl.applier.taskRegistry, tasks.TaskID(q.RunID)); inputErr != nil {
+			if inputErr := inputs.consumed(runCtx, rl.applier.taskRegistry, spec.TaskID); inputErr != nil {
 				cancelAttempt()
 				return planner.Finish{}, fmt.Errorf("steering: commit consumed task input: %w", inputErr)
 			}

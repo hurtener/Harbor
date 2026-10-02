@@ -454,6 +454,8 @@ const (
 	// is backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapSessionLifecycle Capability = "session_lifecycle"
+	// CapScopedSessionAdmission requires scoped audience validation and durable acceptance fencing.
+	CapScopedSessionAdmission Capability = "scoped_session_admission_v1"
 	// CapToolAnnotations — the per-tool annotation surface (OAuth binding
 	// status / approval policy / last-used / metrics / content-stats /
 	// display-modes) the Tools page's OAuth + approval facets and the
@@ -531,6 +533,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapAgentConfig:                   {},
 	CapAgentConfigMemory:             {},
 	CapSessionLifecycle:              {},
+	CapScopedSessionAdmission:        {},
 	CapToolAnnotations:               {},
 	CapToolsConfigurationView:        {},
 	CapCallerMemory:                  {},

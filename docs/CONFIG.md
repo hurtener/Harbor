@@ -200,6 +200,25 @@ OIDC issuer URL. Default: none. Validation: non-empty.
 
 OIDC audience claim. Default: none. Validation: non-empty.
 
+### identity.scoped_token_audience
+
+Optional exact audience for signed method-restricted credentials and session
+mutation admission. Default: empty (disabled). Served opt-in requires SQLite
+or PostgreSQL state; volatile production state is refused. When set, it must differ from
+`identity.audience`; a restricted token must carry only this one audience.
+Every older reachable verifier must enforce the distinct legacy audience before
+these credentials are issued. A claim alone cannot restrict an unaware server.
+An aware runtime refuses to disable this feature over recorded admission state.
+
+### identity.session_admission_legacy_writers_drained
+
+Default: `false`. Must be explicitly true when `scoped_token_audience` is set.
+This is an operator acknowledgment that old writers have stopped, all legacy
+verifiers enforce their distinct audience, and downgrade is prevented. It does
+not discover or attest a fleet. Reconcile already accepted controls/tasks and
+independent transfer/native admissions before coordinated continuation. No live
+settings or grants are changed by this documented code-only opt-in.
+
 ### identity.jwks_url
 
 URL the JWT verifier fetches the JWKS document from. Default:
@@ -410,6 +429,53 @@ of a native bifrost provider.
 Canonical model identifier. Default: empty. Validation: required
 when `driver != "mock"`. Must have a matching `model_profiles[name]`
 entry for the safety-net token-budget guard.
+
+### llm.pricing_manifests
+
+Optional immutable operator-installed USD ceiling catalog. Default: empty;
+restart-required. This is trusted boot configuration, never a task, model or
+Protocol tariff submission. Existing floating-point `cost_overrides` and provider
+pricing metadata do not satisfy this contract.
+
+Each manifest requires `id`, positive `revision`, `currency: USD` and nonempty
+`tariffs`. Each tariff requires:
+
+- Exact `provider`, `model`, and identical immutable `model_version` selector
+- `immutable_model_version: true` and `includes_all_charges: true`
+- `endpoint_binding: provider_default` for the driver's default endpoint, or
+  `sha256:` followed by the lowercase SHA-256 of the exact configured base URL
+- Explicit nonnegative integer `input_micro_usd_per_million`,
+  `output_micro_usd_per_million`, `cache_read_micro_usd_per_million`,
+  `cache_write_micro_usd_per_million` and `reasoning_micro_usd_per_million`
+- Explicit nonnegative integer `request_micro_usd` and `ancillary_micro_usd`
+
+Omitted charge dimensions are rejected; verified zero must be written as zero.
+The ancillary ceiling must bound every charge not covered by the listed rates.
+Rates are ceilings in micro-USD per million tokens, not USD floats. The runtime
+adds all input/cache categories and output/reasoning categories, rounds each
+upward, adds fixed charges and multiplies by the maximum physical attempts with
+checked arithmetic. This intentionally over-reserves when categories overlap.
+
+Operators attest pricing completeness and immutable selector meaning. Harbor
+cannot independently prove a provider's tariff or invoice. Static OpenAI and
+Anthropic text transports are the initial admitted consumers. OpenRouter,
+external routes, custom-provider IDs, multimedia/native file work and arbitrary
+passthrough remain unpriced. An endpoint override needs its own exact binding.
+
+`NewPricingCatalog` returns an immutable detached catalog; `References()` returns
+accepted ID/revision/hash references. SDK hosts also call `BindPricingCatalog`
+with their StateStore and inject that catalog into both task and LLM dependencies.
+Standard assembly performs all three steps. Runtime state permanently pins the
+first hash for each manifest ID/revision and refuses changed contents on boot.
+Adding a tariff or changing its order/ceiling requires a new revision. Removed
+versions cannot reprice accepted tasks and do not release their held capacity.
+
+Start's allocation pins `pricing_manifest_id`, `pricing_manifest_revision` and
+`pricing_manifest_sha256` beside `max_cost_micro_usd`. Durable accepted intent and
+same-identity descendants retain them unchanged. Money and token reservation are
+atomic. Snapshots expose charged ceiling capacity and reserved/unknown capacity;
+none is actual spend. A final success cannot refund unproven hidden attempts.
+Full restart continuity still requires durable tasks with SQLite/PostgreSQL.
 
 ### llm.api_key
 

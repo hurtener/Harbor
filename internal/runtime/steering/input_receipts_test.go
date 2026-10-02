@@ -61,6 +61,8 @@ func inputEvent(q identity.Quadruple, id, text string) ControlEvent {
 
 func TestRun_InputReceipts_LostACKConcurrentReplayAndSealedRevision(t *testing.T) {
 	loop, registry, tr, q, ctx := inputRunFixture(t)
+	taskID := tasks.TaskID(q.RunID)
+	q.RunID = "execution-" + q.RunID
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	first, second, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -84,7 +86,7 @@ func TestRun_InputReceipts_LostACKConcurrentReplayAndSealedRevision(t *testing.T
 		return planner.Finish{Reason: planner.FinishGoal, Payload: "new answer", IncorporatedInputRevision: 999}, nil
 	})
 	spec := runSpecFor(q, p)
-	spec.TaskID = tasks.TaskID(q.RunID)
+	spec.TaskID = taskID
 	spec.Base.Trajectory = &planner.Trajectory{}
 	var late tasks.InputReceipt
 	spec.Base.SealCompletionChunks = func(context.Context) error {
@@ -132,7 +134,7 @@ func TestRun_InputReceipts_LostACKConcurrentReplayAndSealedRevision(t *testing.T
 		}()
 	}
 	wg.Wait()
-	before, err := tr.GetInputReceipt(ctx, tasks.TaskID(q.RunID), "event")
+	before, err := tr.GetInputReceipt(ctx, taskID, "event")
 	if err != nil || before.Status != tasks.InputAccepted {
 		t.Fatalf("unconsumed receipt=%+v err=%v", before, err)
 	}
@@ -144,15 +146,46 @@ func TestRun_InputReceipts_LostACKConcurrentReplayAndSealedRevision(t *testing.T
 	if late.Status != tasks.InputDeclined || late.Revision != 0 {
 		t.Fatalf("late input changed sealed revision=%+v", late)
 	}
-	after, err := tr.GetInputReceipt(ctx, tasks.TaskID(q.RunID), "event")
+	after, err := tr.GetInputReceipt(ctx, taskID, "event")
 	if err != nil || after.Status != tasks.InputApplied {
 		t.Fatalf("consumed receipt=%+v err=%v", after, err)
 	}
 	if len(spec.Base.Trajectory.Steps) != 1 {
 		t.Fatalf("duplicate context projections=%d", len(spec.Base.Trajectory.Steps))
 	}
-	if err := tr.MarkComplete(ctx, tasks.TaskID(q.RunID), tasks.TaskResult{Value: []byte(`"sealed"`), IncorporatedInputRevision: got.fin.IncorporatedInputRevision}); err != nil {
+	if err := tr.MarkComplete(ctx, taskID, tasks.TaskResult{Value: []byte(`"sealed"`), IncorporatedInputRevision: got.fin.IncorporatedInputRevision}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRun_InputReceipts_RedriveKeepsTaskWitness(t *testing.T) {
+	loop, _, registry, q, ctx := inputRunFixture(t)
+	taskID := tasks.TaskID(q.RunID)
+	record, err := registry.AcceptInput(ctx, taskID, "accepted-before-redrive", "prior clarification")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.MarkInputApplied(ctx, taskID, record.Receipt.EventID, record.Receipt.Revision); err != nil {
+		t.Fatal(err)
+	}
+	ev := inputEvent(q, record.Receipt.EventID, record.Message)
+	ev.InputRevision, ev.inputTaskID = record.Receipt.Revision, taskID
+	step, err := steeringContextStep(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trajectory := &planner.Trajectory{Steps: []planner.Step{step}}
+	q.RunID = "new-execution-" + q.RunID
+	spec := runSpecFor(q, interruptPlanner(func(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
+		if len(rc.Trajectory.Steps) != 1 || !hasInputProjection(rc.Trajectory, string(taskID), record.Receipt.EventID) {
+			return nil, errors.New("redrive duplicated or rebound an applied task input")
+		}
+		return planner.Finish{Reason: planner.FinishGoal, Payload: "done"}, nil
+	}))
+	spec.TaskID, spec.Base.Trajectory = taskID, trajectory
+	finish, err := loop.Run(ctx, spec)
+	if err != nil || finish.IncorporatedInputRevision != record.Receipt.Revision || len(trajectory.Steps) != 1 {
+		t.Fatalf("redrive=%+v steps=%d err=%v", finish, len(trajectory.Steps), err)
 	}
 }
 

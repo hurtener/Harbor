@@ -243,6 +243,7 @@ var CanonicalMethods = map[string]struct{}{
 	"sessions.delete":            {},
 	"sessions.reconcile_context": {},
 	"sessions.set_title":         {},
+	"sessions.set_admission":     {},
 	// Session-turns read pair — the turn-projection surface (routes are
 	// pinned explicitly; never derived generically).
 	"sessions.turns.list": {},
@@ -779,6 +780,8 @@ var CanonicalWireTypes = map[string]string{
 	"SessionsDeleteResponse":           "types",
 	"SessionsReconcileContextRequest":  "types",
 	"SessionsReconcileContextResponse": "types",
+	"SessionsSetAdmissionRequest":      "types",
+	"SessionsSetAdmissionResponse":     "types",
 	"SessionsSetTitleRequest":          "types",
 	"SessionsSetTitleResponse":         "types",
 	// Session-turns wire types (HA-63/64) — the turn-projection read
@@ -789,6 +792,7 @@ var CanonicalWireTypes = map[string]string{
 	"SessionTurnsGetRequest":    "types",
 	"SessionTurnsGetResponse":   "types",
 	"SessionUsageTurnRow":       "types",
+	"SessionTurnOutputManifest": "types",
 	"SessionTurnRow":            "types",
 	"SessionTurnAgent":          "types",
 	"SessionTurnQuery":          "types",

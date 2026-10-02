@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // Registry is the process-wide owner of per-run steering inboxes.
@@ -68,12 +69,12 @@ func NewRegistry(opts ...Option) *Registry {
 // The returned Inbox is owned by the Registry; retire it with
 // Retire when the run ends.
 func (r *Registry) Open(q identity.Quadruple) (*Inbox, error) {
-	return r.open(q, nil)
+	return r.open(q, nil, tasks.TaskID(q.RunID))
 }
 
 // open atomically publishes the execution cancellation handle with its inbox.
 // The plain SDK inbox remains usable without an executing RunLoop.
-func (r *Registry) open(q identity.Quadruple, cancel context.CancelFunc) (*Inbox, error) {
+func (r *Registry) open(q identity.Quadruple, cancel context.CancelFunc, taskID tasks.TaskID) (*Inbox, error) {
 	if err := validateQuadruple(q); err != nil {
 		return nil, err
 	}
@@ -84,6 +85,7 @@ func (r *Registry) open(q identity.Quadruple, cancel context.CancelFunc) (*Inbox
 	}
 	in := &Inbox{
 		identity:        q,
+		taskID:          taskID,
 		clock:           r.clock,
 		notify:          make(chan struct{}, 1),
 		cancelExecution: cancel,

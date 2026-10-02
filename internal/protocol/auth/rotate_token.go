@@ -84,6 +84,9 @@ var (
 	// disagreed with the verified-JWT identity. Maps onto
 	// CodeIdentityRequired (HTTP 401) — defence-in-depth.
 	ErrRotateIdentityMismatch = stderrors.New("auth: rotate-token body identity disagrees with the verified token")
+	// ErrRotateRestricted prevents a legacy TokenIssuer from dropping signed
+	// method or session admission restrictions when minting a fresh token.
+	ErrRotateRestricted = stderrors.New("auth: restricted tokens cannot be rotated by this issuer")
 	// ErrRotateIssueFailed — the TokenIssuer failed to mint a token.
 	// Maps onto CodeRuntimeError (HTTP 500).
 	ErrRotateIssueFailed = stderrors.New("auth: rotate-token issuer failed to mint a token")
@@ -178,6 +181,14 @@ type AuthRotateTokenPayload struct {
 // sentinels on failure — the wire handler maps each onto a canonical
 // Protocol Code.
 func (s *RotateSurface) Rotate(ctx context.Context, verified Verified, req types.AuthRotateTokenRequest) (*types.AuthRotateTokenResponse, error) {
+	// TokenIssuer receives only identity and scopes, so it cannot preserve
+	// method reach, dedicated audience, or the original admission authority.
+	// Deny even when the restricted bearer lists auth.rotate_token explicitly.
+	_, restricted := MethodReachFrom(ctx)
+	_, admitted := SessionAdmissionFrom(ctx)
+	if restricted || admitted || verified.MethodReach != nil || verified.SessionAdmission != nil {
+		return nil, ErrRotateRestricted
+	}
 	// Identity is mandatory at the Protocol edge (RFC §5.5, CLAUDE.md
 	// §6 rule 9). The verified identity already validated clean against
 	// identity.Validate — defend anyway in case a non-middleware path

@@ -45,7 +45,9 @@ import (
 	"net/http"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // CallbackPath is the documented default mount path for the OAuth
@@ -228,7 +230,9 @@ func (h *callbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// of hanging to flow-TTL.
 	if upstreamErr := q.Get("error"); upstreamErr != "" {
 		denialClass := classifyOAuthDenial(upstreamErr)
-		if derr := prov.DenyFlow(ctx, state, string(denialClass)); derr != nil {
+		if _, derr := sessionadmission.RunNativeResume(ctx, info.Identity, func(accepted context.Context) (struct{}, error) {
+			return struct{}{}, prov.DenyFlow(accepted, state, string(denialClass))
+		}); derr != nil {
 			h.writeFlowError(w, logger, derr)
 			return
 		}
@@ -245,7 +249,10 @@ func (h *callbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, cerr := prov.CompleteFlow(ctx, state, code); cerr != nil {
+	if _, cerr := sessionadmission.RunNativeResume(ctx, info.Identity, func(accepted context.Context) (struct{}, error) {
+		_, err := prov.CompleteFlow(accepted, state, code)
+		return struct{}{}, err
+	}); cerr != nil {
 		h.writeFlowError(w, logger, cerr)
 		return
 	}
@@ -284,6 +291,18 @@ func (h *callbackHandler) writeFlowError(w http.ResponseWriter, logger *slog.Log
 		code   string
 		detail string
 	)
+	var admissionError *protoerrors.Error
+	if errors.As(err, &admissionError) {
+		status = http.StatusServiceUnavailable
+		if admissionError.Code == protoerrors.CodeRevisionConflict {
+			status = http.StatusConflict
+		}
+		if admissionError.Code == protoerrors.CodeScopeMismatch {
+			status = http.StatusForbidden
+		}
+		h.writeError(w, status, string(admissionError.Code), "OAuth completion admission requires reconciliation before retry")
+		return
+	}
 	switch {
 	case errors.Is(err, ErrFlowNotFound):
 		status, code = http.StatusNotFound, "flow_not_found"

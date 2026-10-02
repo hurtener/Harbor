@@ -571,22 +571,23 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 			t.Fatalf("runtime.info Capabilities %v must advertise skill_publications", info.Capabilities)
 		}
 		// The conformance universe is internally consistent: every
-		// advertised capability is canonical, and the canonical set is 17
+		// advertised capability is canonical, and the canonical set is 21
 		// (Phase 177 / D-313 added tool_annotations; D-374 added
 		// caller_memory; HA-68 added skill_publications; the provider
-		// catalog, route, atomic run settings and memory budget are additive).
+		// catalog, route, atomic run settings, memory budget and durable runtime
+		// contracts are additive).
 		for _, c := range info.Capabilities {
 			if !prototypes.IsValidCapability(c) {
 				t.Errorf("advertised capability %q is not in the canonical universe", c)
 			}
 		}
-		for _, capability := range []prototypes.Capability{"tenant_scoped_broker_credentials_v1", "tools_configuration_view_v1", "run_llm_settings_v1", prototypes.CapAgentConfigMemory} {
+		for _, capability := range []prototypes.Capability{"tenant_scoped_broker_credentials_v1", "tools_configuration_view_v1", "run_llm_settings_v1", prototypes.CapAgentConfigMemory, prototypes.CapArtifactTransfer, prototypes.CapDurableArtifactTransfer, prototypes.CapDurableTaskInputReceipts, prototypes.CapTaskInferenceAllocation, prototypes.CapScopedSessionAdmission} {
 			if !prototypes.IsValidCapability(capability) {
 				t.Fatalf("missing canonical capability %s", capability)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 17 {
-			t.Errorf("canonical capability universe has %d entries, want 17", n)
+		if n := len(prototypes.Capabilities()); n != 22 {
+			t.Errorf("canonical capability universe has %d entries, want 22", n)
 		}
 	})
 

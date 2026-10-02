@@ -433,7 +433,14 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 - **Status:** In progress; token-only local integration candidate, unpublished
 - **RFC:** §6.5, §6.15. **Decision:** D-488. **Plan:** `docs/plans/phase-272-task-inference-allocation.md`
 - **Contract:** Immutable cumulative token funding, same-identity inheritance, atomic multi-manager reservations and retained unknown liability
-- **Boundaries:** Trusted monetary pricing is unavailable; hard cost requests are explicitly refused rather than treated as token estimates
+- **Boundaries:** Token-only checkpoint; Phase 274 adds explicitly installed inclusive monetary tariffs without treating token estimates as money
+
+### Phase 274 — Trusted inclusive task monetary caps
+
+- **Status:** In progress; local integration candidate, unpublished
+- **RFC:** §6.5, §6.11, §6.15. **Decision:** D-490. **Plan:** `docs/plans/phase-274-task-monetary-caps.md`
+- **Contract:** Immutable operator catalog, exact accepted reference/hash, atomic token/money reservation and durable conservative unknown liability
+- **Boundaries:** Initial static OpenAI/Anthropic text consumer only; unmatched/incomplete tariffs, external routes and unbounded charge shapes refuse. Charged capacity is not actual spend. Final release/review/deployed-docs gates remain open
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -6055,3 +6062,11 @@ client now use D-470's settled-journal primitive (D-471). Subsequent increments
 add large-result retrieval and attachment/steering continuity. Final persistence
 conformance is now complete. Final exact-head release gates remain pending; the
 phase is not RC-ready.
+
+- [Phase 273 — Native output provenance](phase-273-native-output-provenance.md) — planned/in qualification; immutable task-owned native artifact membership (D-489).
+
+### Phase 275 — Scoped session admission
+
+| Phase | Status | Scope | Plan |
+| --- | --- | --- | --- |
+| 275 | In progress | Signed exact method reach, isolated audience and durable session mutation acceptance (D-491); final qualification pending | [Scoped session admission](phase-275-scoped-session-admission.md) |

@@ -74,6 +74,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -792,7 +793,16 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// resolved. Otherwise a runtime without an OAuth provider would capture a
 	// nil admission authority here even though the same boot later wires the
 	// run-loop authority, making every route-bearing start unverifiable.
+	var sessionAdmissionGate *sessionadmission.Gate
+	if cfg.Identity.ScopedTokenAudience != "" {
+		sessionAdmissionGate, err = sessionadmission.New(stack.State)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("session admission: %w", err)
+		}
+	}
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
+		protocol.WithSessionAdmissionGate(sessionAdmissionGate),
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
 		protocol.WithAgentResolver(agentResolver),
 		protocol.WithAgentReachAuthorizer(agentReach),
@@ -1383,7 +1393,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// Console static build). The tool-OAuth callback is a SHARED surface and
 	// stays mounted here regardless of caller.
 	router.Handle(toolauth.CallbackRoutePattern,
-		toolauth.CallbackHandler(oauthProviders, toolauth.WithCallbackLogger(opts.Logger)))
+		sessionAdmissionMux(sessionAdmissionGate, toolauth.CallbackHandler(oauthProviders, toolauth.WithCallbackLogger(opts.Logger))))
 
 	if opts.ExtraRoutes != nil {
 		extra, xErr := opts.ExtraRoutes(ctx, RouteMount{

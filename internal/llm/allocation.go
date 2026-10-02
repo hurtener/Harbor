@@ -8,15 +8,20 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 )
 
-// InferenceAllocation is an immutable, task-scoped cumulative token allowance.
-// It does not authorize provider credentials or assert a monetary guarantee.
+// InferenceAllocation is immutable cumulative task token and optional monetary funding.
+// It does not authorize provider credentials. Monetary mode requires an exact
+// operator-installed all-charges pricing manifest, never caller-supplied tariffs.
 type InferenceAllocation struct {
-	AllocationID    string `json:"allocation_id"`
-	Revision        uint64 `json:"revision"`
-	MaxTotalTokens  int64  `json:"max_total_tokens"`
-	MaxCostMicroUSD *int64 `json:"max_cost_micro_usd,omitempty"`
+	AllocationID            string `json:"allocation_id"`
+	Revision                uint64 `json:"revision"`
+	MaxTotalTokens          int64  `json:"max_total_tokens"`
+	MaxCostMicroUSD         *int64 `json:"max_cost_micro_usd,omitempty"`
+	PricingManifestID       string `json:"pricing_manifest_id,omitempty"`
+	PricingManifestRevision uint64 `json:"pricing_manifest_revision,omitempty"`
+	PricingManifestSHA256   string `json:"pricing_manifest_sha256,omitempty"`
 }
 
 var (
@@ -27,7 +32,7 @@ var (
 	// ErrAllocationUnavailable means the durable allocation seam is absent.
 	ErrAllocationUnavailable = errors.New("llm: inference allocation unavailable")
 	// ErrAllocationPricingUnavailable rejects an unsupported hard monetary cap.
-	ErrAllocationPricingUnavailable = errors.New("llm: trusted allocation pricing unavailable")
+	ErrAllocationPricingUnavailable = pricing.ErrUnavailable
 	// ErrAllocationBoundUnavailable rejects a call without a finite trusted bound.
 	ErrAllocationBoundUnavailable = errors.New("llm: inference allocation token bound unavailable")
 	// ErrAllocationBoundViolated reports measured usage above the trusted envelope.
@@ -43,7 +48,40 @@ func ValidateInferenceAllocation(a *InferenceAllocation) error {
 		return ErrAllocationInvalid
 	}
 	if a.MaxCostMicroUSD != nil {
-		return ErrAllocationPricingUnavailable
+		if *a.MaxCostMicroUSD < 0 {
+			return ErrAllocationInvalid
+		}
+		if !pricing.ValidReference(a.PricingReference()) {
+			return ErrAllocationPricingUnavailable
+		}
+	} else if a.PricingManifestID != "" || a.PricingManifestRevision != 0 || a.PricingManifestSHA256 != "" {
+		return ErrAllocationInvalid
+	}
+	return nil
+}
+
+// PricingReference returns the exact operator manifest identity pinned in the task.
+func (a InferenceAllocation) PricingReference() pricing.Reference {
+	return pricing.Reference{ID: a.PricingManifestID, Revision: a.PricingManifestRevision, SHA256: a.PricingManifestSHA256}
+}
+
+// EqualInferenceAllocation compares immutable values, not pointer addresses.
+func EqualInferenceAllocation(a, b *InferenceAllocation) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	aa, bb := *a, *b
+	aa.MaxCostMicroUSD, bb.MaxCostMicroUSD = nil, nil
+	return aa == bb && (a.MaxCostMicroUSD == nil && b.MaxCostMicroUSD == nil || a.MaxCostMicroUSD != nil && b.MaxCostMicroUSD != nil && *a.MaxCostMicroUSD == *b.MaxCostMicroUSD)
+}
+
+// ValidateInferenceAllocationPricing establishes operator authority at acceptance.
+func ValidateInferenceAllocationPricing(a *InferenceAllocation, catalog *pricing.Catalog) error {
+	if err := ValidateInferenceAllocation(a); err != nil {
+		return err
+	}
+	if a != nil && a.MaxCostMicroUSD != nil {
+		return catalog.ValidateReference(a.PricingReference())
 	}
 	return nil
 }
@@ -87,24 +125,36 @@ func InferenceAllocationFrom(ctx context.Context) *InferenceAllocation {
 // AllocationSnapshot contains content-free cumulative accounting. Reserved
 // includes unresolved provider liability and never expires on a wall clock.
 type AllocationSnapshot struct {
-	Receipts          []AllocationReceipt `json:"receipts"`
-	ReceiptsTruncated bool                `json:"receipts_truncated"`
-	BoundBreached     bool                `json:"bound_breached"`
-	AllocationID      string              `json:"allocation_id"`
-	Revision          uint64              `json:"revision"`
-	MaxTotalTokens    int64               `json:"max_total_tokens"`
-	SettledTokens     int64               `json:"settled_tokens"`
-	ReservedTokens    int64               `json:"reserved_tokens"`
-	UnknownTokens     int64               `json:"unknown_tokens"`
-	AttemptCount      int64               `json:"attempt_count"`
-	Guarantee         string              `json:"guarantee"`
-	PricingStatus     string              `json:"pricing_status"`
+	MaxCostMicroUSD *int64 `json:"max_cost_micro_usd,omitempty"`
+	// ChargedCostMicroUSD is consumed conservative ceiling capacity, not actual spend.
+	ChargedCostMicroUSD int64 `json:"charged_cost_micro_usd"`
+	// ReservedCostMicroUSD includes unresolved provider liability and never expires.
+	ReservedCostMicroUSD int64 `json:"reserved_cost_micro_usd"`
+	// UnknownCostMicroUSD is the unproven portion of reserved monetary capacity.
+	UnknownCostMicroUSD     int64               `json:"unknown_cost_micro_usd"`
+	PricingManifestID       string              `json:"pricing_manifest_id,omitempty"`
+	PricingManifestRevision uint64              `json:"pricing_manifest_revision,omitempty"`
+	PricingManifestSHA256   string              `json:"pricing_manifest_sha256,omitempty"`
+	Receipts                []AllocationReceipt `json:"receipts"`
+	ReceiptsTruncated       bool                `json:"receipts_truncated"`
+	BoundBreached           bool                `json:"bound_breached"`
+	AllocationID            string              `json:"allocation_id"`
+	Revision                uint64              `json:"revision"`
+	MaxTotalTokens          int64               `json:"max_total_tokens"`
+	SettledTokens           int64               `json:"settled_tokens"`
+	ReservedTokens          int64               `json:"reserved_tokens"`
+	UnknownTokens           int64               `json:"unknown_tokens"`
+	AttemptCount            int64               `json:"attempt_count"`
+	Guarantee               string              `json:"guarantee"`
+	PricingStatus           string              `json:"pricing_status"`
 }
 
 // AllocationStore is the mandatory durable accounting seam for allocated calls.
 // Every method is identity+canonical-task scoped and safe across processes.
 type AllocationStore interface {
 	Reserve(context.Context, identity.Quadruple, InferenceAllocation, string, int64) error
+	// ReserveMonetary atomically reserves token and inclusive monetary envelopes.
+	ReserveMonetary(context.Context, identity.Quadruple, InferenceAllocation, string, int64, int64) error
 	Settle(context.Context, identity.Quadruple, InferenceAllocation, string, *int64, bool) error
 	// ReportBoundViolation retains the attempt envelope and permanently closes the allocation.
 	ReportBoundViolation(context.Context, identity.Quadruple, InferenceAllocation, string) error
@@ -151,7 +201,28 @@ func (c *safetyClient) completeAllocated(ctx context.Context, req CompleteReques
 		return CompleteResponse{}, fmt.Errorf("allocation attempt identity: %w", err)
 	}
 	attempt := scope.CallID
-	if err = c.deps.Allocations.Reserve(ctx, q, *a, attempt, units); err != nil {
+	if a.MaxCostMicroUSD != nil {
+		priced, ok := c.driver.(MonetaryBoundedDriver)
+		if !ok {
+			return CompleteResponse{}, ErrAllocationPricingUnavailable
+		}
+		target, targetErr := priced.MonetaryTarget(ctx, req, profile)
+		if targetErr != nil {
+			return CompleteResponse{}, targetErr
+		}
+		if target.InputTokens < int64(profile.ContextWindowTokens) || target.OutputTokens < int64(*req.MaxTokens) || target.InputTokens > 1<<31 || target.OutputTokens > 1<<31 {
+			return CompleteResponse{}, ErrAllocationBoundUnavailable
+		}
+		units = (target.InputTokens + target.OutputTokens) * int64(attempts)
+		cost, quoteErr := c.deps.PricingCatalog.Quote(a.PricingReference(), target.Provider, target.Model, target.EndpointBinding, target.InputTokens, target.OutputTokens, int64(attempts))
+		if quoteErr != nil {
+			return CompleteResponse{}, quoteErr
+		}
+		err = c.deps.Allocations.ReserveMonetary(ctx, q, *a, attempt, units, cost)
+	} else {
+		err = c.deps.Allocations.Reserve(ctx, q, *a, attempt, units)
+	}
+	if err != nil {
 		return CompleteResponse{}, err
 	}
 	if err = ctx.Err(); err != nil {
@@ -205,9 +276,33 @@ type AllocationBoundedDriver interface {
 // AllocationReceipt is a content-free terminal provider-envelope accounting receipt.
 // Unknown tokens remain held; settled usage never implies unknown work is free.
 type AllocationReceipt struct {
+	// ReservedCostMicroUSD includes unresolved provider liability and never expires.
+	ReservedCostMicroUSD int64 `json:"reserved_cost_micro_usd"`
+	// ChargedCostMicroUSD is consumed conservative ceiling capacity, not actual spend.
+	ChargedCostMicroUSD int64 `json:"charged_cost_micro_usd"`
+	// UnknownCostMicroUSD is the unproven portion of reserved monetary capacity.
+	UnknownCostMicroUSD int64 `json:"unknown_cost_micro_usd"`
+	// MonetaryStatus is charged_ceiling, unknown, or released_before_dispatch.
+	MonetaryStatus string `json:"monetary_status,omitempty"`
 	AttemptID      string `json:"attempt_id"`
 	ReservedTokens int64  `json:"reserved_tokens"`
 	SettledTokens  int64  `json:"settled_tokens"`
 	UnknownTokens  int64  `json:"unknown_tokens"`
 	Status         string `json:"status"`
+}
+
+// MonetaryTarget is the trusted driver's actual immutable request selector and
+// full physical input/output bounds, including provider-specific reasoning.
+type MonetaryTarget struct {
+	EndpointBinding string
+	Provider        string
+	Model           string
+	InputTokens     int64
+	OutputTokens    int64
+}
+
+// MonetaryBoundedDriver attests that this request has no unbounded auxiliary I/O,
+// fallback model or route. Unsupported request shapes must fail before dispatch.
+type MonetaryBoundedDriver interface {
+	MonetaryTarget(context.Context, CompleteRequest, ModelProfile) (MonetaryTarget, error)
 }

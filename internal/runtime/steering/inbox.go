@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // ControlEvent is the canonical steering record (RFC §6.3
@@ -41,6 +42,9 @@ type ControlEvent struct {
 	EventID string
 	// InputRevision is runtime-owned durable text-input admission, never wire authority.
 	InputRevision uint64
+	// inputTaskID is bound by the runtime's accepted receipt, independently of
+	// the inbox's execution run ID. It cannot be supplied over the wire.
+	inputTaskID tasks.TaskID
 	// EnqueuedAt is stamped by Inbox.Enqueue from the Inbox's Clock.
 	// Callers MUST NOT pre-fill it; a non-zero value is rejected so
 	// the Inbox owns the timeline (mirrors events.Event.Sequence).
@@ -70,6 +74,7 @@ type Inbox struct {
 	hardCancellation      *ControlEvent
 	executionFinished     bool
 	identity              identity.Quadruple
+	taskID                tasks.TaskID
 	clock                 Clock
 
 	mu          sync.Mutex

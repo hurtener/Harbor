@@ -8,12 +8,26 @@ package llm
 
 import (
 	internal "github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/allocation"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 )
 
 // Client + request/response vocabulary — aliases of the internal types.
 type (
 	// InferenceAllocation is immutable cumulative task token funding.
 	InferenceAllocation = internal.InferenceAllocation
+	// PricingManifest is operator-only boot configuration, never model data.
+	PricingManifest = pricing.Manifest
+	// PricingTariff declares all charge ceilings for an immutable model selector.
+	PricingTariff = pricing.Tariff
+	// PricingCatalog is an immutable validated operator pricing catalog.
+	PricingCatalog = pricing.Catalog
+	// PricingReference pins a manifest by ID, revision and full content hash.
+	PricingReference = pricing.Reference
+	// MonetaryTarget bounds one driver's actual selected physical request.
+	MonetaryTarget = internal.MonetaryTarget
+	// MonetaryBoundedDriver opts in only for bounded request shapes.
+	MonetaryBoundedDriver = internal.MonetaryBoundedDriver
 	// AllocationSnapshot exposes content-free cumulative liabilities.
 	AllocationSnapshot = internal.AllocationSnapshot
 	// AllocationStore is the durable provider-attempt accounting seam.
@@ -413,3 +427,12 @@ var ErrAllocationBoundUnavailable = internal.ErrAllocationBoundUnavailable
 
 // ErrAllocationBoundViolated reports observed usage exceeding its reserved bound.
 var ErrAllocationBoundViolated = internal.ErrAllocationBoundViolated
+
+// NewPricingCatalog validates and detaches explicitly trusted operator manifests.
+var NewPricingCatalog = pricing.New
+
+// PricingEndpointBinding fingerprints the exact configured provider base URL.
+var PricingEndpointBinding = pricing.EndpointBinding
+
+// BindPricingCatalog durably pins catalog revisions at a trusted host's boot.
+var BindPricingCatalog = allocation.BindPricingCatalog

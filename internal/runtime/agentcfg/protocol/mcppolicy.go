@@ -7,7 +7,9 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // mcppolicy.go — the agent-config MCP-exposure / per-tool-policy control
@@ -33,6 +35,9 @@ import (
 // revision are carried forward unchanged — every sibling section survives a
 // tool-exposure edit.
 func (s *Service) SetToolExposure(ctx context.Context, req prototypes.AgentConfigSetToolExposureRequest) (prototypes.AgentConfigSetToolExposureResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetToolExposure); err != nil {
+		return prototypes.AgentConfigSetToolExposureResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetToolExposureResponse{}, err
 	}

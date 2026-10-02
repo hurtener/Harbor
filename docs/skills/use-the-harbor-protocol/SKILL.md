@@ -1145,10 +1145,25 @@ the runtime driver posture. An in-memory store only retains its own lifetime. Su
 `max_total_tokens`. Exact Start retries reuse the task and cap. Descendants,
 helpers, retries and resumes share the durable allowance. Inspect
 `tasks.get.inference_allocation`; reserved capacity includes unknown liability
-and cannot be assumed refundable after cancellation. `guarantee: tokens` and
-`pricing_status: unavailable` are deliberate. A hard `max_cost_micro_usd` is
-refused until trusted inclusive pricing is installed through a supported future
-contract; token capacity is not a dollar guarantee.
+and cannot be assumed refundable after cancellation. Token-only tasks retain
+`guarantee: tokens` and `pricing_status: unavailable`.
+
+For a monetary task, an operator must first install a complete immutable
+`llm.pricing_manifests` catalog. Supply `max_cost_micro_usd` together with its
+exact `pricing_manifest_id`, `pricing_manifest_revision` and full lowercase
+`pricing_manifest_sha256`. References do not install tariff contents. Inspect
+`charged_cost_micro_usd`, `reserved_cost_micro_usd`, `unknown_cost_micro_usd`
+and per-receipt `monetary_status`; charged values are conservative consumed
+capacity, not provider spend. Missing complete usage and possible hidden retries
+retain the whole monetary hold. Only pre-dispatch cancellation can refund it.
+
+The initial consumer supports bounded static OpenAI/Anthropic text requests.
+OpenRouter, external routes, custom-provider IDs, multimodal/native files and
+unbounded passthrough remain unpriced. Exact model versions and endpoint bindings
+must match on every call. A mismatch or missing tariff returns
+`inference_allocation_pricing_unavailable`; do not retry with fabricated prices
+or interpret the existing allocation capability as universal monetary coverage.
+See `docs/CONFIG.md#llmpricing_manifests` for the operator contract.
 
 For active text clarification, read `tasks.get.input_revision` (absence means
 zero), then send it as `expected_input_revision` alongside the keyed
@@ -1156,3 +1171,47 @@ zero), then send it as `expected_input_revision` alongside the keyed
 the inbox. Refresh before constructing a new intent; never change an existing
 event key's payload or expectation. Receipts remain scoped to the one runtime
 owning the active task; simultaneous task-registry writers are unsupported.
+
+### Native task output provenance
+
+A completed sealed consumer turn may carry `output_manifest.version = 1`, its
+immutable SHA-256 seal, and the incorporated input revision. `outputs` then names
+only successful verified direct-native callable-tool binary materializations, sorted by
+artifact ID; an empty list with version one is a known empty set. Version zero
+means legacy/unknown. Do not infer task output membership from `artifacts.list`
+or a blob's first-writer task annotation, and do not inherit helper/sibling
+outputs. Before a later copy, re-read the exact task and sealed turn under the
+owner and effective agent, compare the seal and exact metadata, and recheck
+current artifact availability/authorization. Historical provenance grants no
+new visibility or publication authority.
+
+## Restrict methods and enroll session mutation authority
+
+Require `scoped_session_admission_v1` and follow the fleet-adoption preconditions
+in the [compatibility guide](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility#scoped-session-admission).
+A signed `method_reach` is an exact canonical array: absent preserves legacy,
+empty denies all, and aliases/duplicates/unknown names are refused. Keep read
+methods (history, events, pause status, artifact bytes) separate from explicitly
+permitted mutations. Neither a scope label nor removing agent reach makes an
+old broad bearer read-only.
+
+An authenticated owner/admin calls `sessions.set_admission` with an exact
+expected epoch and its successor. The Runtime binds the JWT issuer/subject
+immutably. Current mutation tokens carry the original exact owner identity,
+explicit method reach, signed epoch and coordinator. Existing broad bearers are
+then denied new session mutations. The supported client method is
+`SessionsSetAdmission`; preserve exact request identity and epoch on retries.
+
+Scoped tokens need the configured distinct singleton audience. Every legacy
+verifier must reject that audience, old writers must be stopped, and downgrade
+must be prevented before enrollment. Configuring the local opt-in is not fleet
+proof. Do not modify production audiences, issuers, registrations or grants
+implicitly. Already accepted work must be reconciled/quiesced separately.
+Unresolved acceptance is a durable attention condition with no lease expiry;
+inspect exact task/control receipts instead of creating a new operation key.
+Native approve/reject/resume and OAuth flow completion remain explicit native
+paths. Restricted-token rotation fails closed rather than losing restrictions.
+
+Served scoped admission requires SQLite or PostgreSQL StateStore persistence;
+volatile state is refused at configuration/assembly. The in-memory gate remains
+the reference/testing seam and does not promise enrollment across process loss.

@@ -84,6 +84,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 )
 
 // AllowedAlgorithms is the asymmetric-algorithm allowlist Harbor
@@ -196,6 +197,12 @@ type Verified struct {
 	// member sessions. It is bearer authority only — never a storage
 	// filter and never part of the isolation tuple.
 	SessionReach []string
+	// MethodReach is an optional signed restriction to exact canonical methods.
+	// Nil means absent; a non-nil empty slice denies every canonical method.
+	MethodReach []methods.Method
+	// SessionAdmission binds an epoch and coordinator to the original signed
+	// identity, before the request selects an effective session.
+	SessionAdmission *SessionAdmissionAuthority
 	// Subject is the JWT's `sub` claim, if present. Audited; never used
 	// as an isolation principal (the triple is the isolation key).
 	Subject string
@@ -206,12 +213,13 @@ type Verified struct {
 // validatorConfig holds the optional knobs NewValidator threads into
 // the Validator. Set once at construction; never mutated after.
 type validatorConfig struct {
-	issuer   string
-	audience string
-	now      func() time.Time
-	logger   *slog.Logger
-	redactor audit.Redactor
-	bus      events.EventBus
+	issuer         string
+	audience       string
+	scopedAudience string
+	now            func() time.Time
+	logger         *slog.Logger
+	redactor       audit.Redactor
+	bus            events.EventBus
 }
 
 // Option configures NewValidator.
@@ -229,6 +237,19 @@ func WithIssuer(iss string) Option {
 // ErrAudienceMismatch. An empty configured audience disables the check.
 func WithAudience(aud string) Option {
 	return func(c *validatorConfig) { c.audience = aud }
+}
+
+// WithScopedTokenAudience enables signed method restrictions and session
+// admission for a dedicated audience. WithAudience must also name a distinct,
+// nonempty legacy audience. Restricted tokens must carry only the scoped
+// audience; they can never include the legacy audience as a second entry.
+//
+// Before issuing these tokens, every reachable legacy verifier MUST enforce
+// the distinct legacy audience. A verifier with no audience check ignores new
+// claims and remains unsafe. Deployments must also drain old writers and
+// prevent downgrade before enrolling sessions; the claim is not a fleet fence.
+func WithScopedTokenAudience(audience string) Option {
+	return func(c *validatorConfig) { c.scopedAudience = audience }
 }
 
 // WithClock overrides the validator's clock — used by tests to drive
@@ -302,14 +323,15 @@ type Validator interface {
 // golang-jwt/jwt/v5. All fields are immutable after NewValidator
 // returns.
 type jwtValidator struct {
-	keys     KeySet
-	parser   *jwt.Parser
-	issuer   string
-	audience string
-	now      func() time.Time
-	logger   *slog.Logger
-	redactor audit.Redactor
-	bus      events.EventBus // nil ⇒ slog-only audit emit
+	keys           KeySet
+	parser         *jwt.Parser
+	issuer         string
+	audience       string
+	scopedAudience string
+	now            func() time.Time
+	logger         *slog.Logger
+	redactor       audit.Redactor
+	bus            events.EventBus // nil ⇒ slog-only audit emit
 }
 
 // NewValidator builds a JWT Validator over the supplied KeySet.
@@ -345,6 +367,11 @@ func NewValidator(keys KeySet, opts ...Option) (Validator, error) {
 		return nil, fmt.Errorf("%w: WithRedactor is required (CLAUDE.md §7 rule 6 — every payload goes through audit.Redactor)", ErrMisconfigured)
 	}
 
+	if cfg.scopedAudience != "" && (!canonicalAuthorityName(cfg.scopedAudience, 2048) ||
+		!canonicalAuthorityName(cfg.audience, 2048) || cfg.scopedAudience == cfg.audience) {
+		return nil, fmt.Errorf("%w: scoped token audience requires a distinct nonempty legacy audience", ErrMisconfigured)
+	}
+
 	// jwt.WithValidMethods is the load-bearing parser-level allowlist:
 	// it rejects HS* and `none` BEFORE the Keyfunc is consulted, so the
 	// classical algorithm-confusion CVE family is structurally
@@ -359,14 +386,15 @@ func NewValidator(keys KeySet, opts ...Option) (Validator, error) {
 	)
 
 	return &jwtValidator{
-		keys:     keys,
-		parser:   parser,
-		issuer:   cfg.issuer,
-		audience: cfg.audience,
-		now:      cfg.now,
-		logger:   cfg.logger,
-		redactor: cfg.redactor,
-		bus:      cfg.bus,
+		keys:           keys,
+		parser:         parser,
+		issuer:         cfg.issuer,
+		audience:       cfg.audience,
+		scopedAudience: cfg.scopedAudience,
+		now:            cfg.now,
+		logger:         cfg.logger,
+		redactor:       cfg.redactor,
+		bus:            cfg.bus,
 	}, nil
 }
 
@@ -381,6 +409,12 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	if strings.TrimSpace(rawToken) == "" {
 		v.audit(ctx, "", "", "", ErrTokenMissing)
 		return Verified{}, ErrTokenMissing
+	}
+
+	rawClaims, rawClaimsErr := strictJWTClaims(rawToken)
+	if rawClaimsErr != nil {
+		v.audit(ctx, "", "", "", rawClaimsErr)
+		return Verified{}, rawClaimsErr
 	}
 
 	// keyfunc resolves the kid → public key. The parser has already
@@ -446,13 +480,22 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	iss, _ := claims["iss"].(string) //nolint:errcheck // a missing/non-string iss is deliberately tolerated as empty — the issuer check below treats empty as "no claim".
 	sub, _ := claims["sub"].(string) //nolint:errcheck // a missing/non-string sub is deliberately tolerated as empty.
 
-	// Issuer / audience checks. Both are optional (empty configured
-	// value disables the check). When set, a mismatch fails loud.
+	// Issuer and legacy-audience checks preserve the existing optional
+	// posture. Restricted tokens always require the dedicated audience;
+	// claim presence, including null or malformed values, selects that gate.
 	if v.issuer != "" && iss != v.issuer {
 		v.audit(ctx, kidSeen, iss, sub, ErrIssuerMismatch)
 		return Verified{}, fmt.Errorf("%w: expected %q, got %q", ErrIssuerMismatch, v.issuer, iss)
 	}
-	if v.audience != "" && !audienceContains(claims["aud"], v.audience) {
+	_, hasMethodReach := rawClaims[MethodReachClaim]
+	_, hasAdmissionEpoch := rawClaims[SessionAdmissionEpochClaim]
+	_, hasAdmissionCoordinator := rawClaims[SessionAdmissionCoordinatorClaim]
+	if hasMethodReach || hasAdmissionEpoch || hasAdmissionCoordinator {
+		if v.scopedAudience == "" || !exactAudience(claims["aud"], v.scopedAudience) {
+			v.audit(ctx, kidSeen, iss, sub, ErrAudienceMismatch)
+			return Verified{}, fmt.Errorf("%w: restricted token requires its dedicated audience", ErrAudienceMismatch)
+		}
+	} else if v.audience != "" && !audienceContains(claims["aud"], v.audience) {
 		v.audit(ctx, kidSeen, iss, sub, ErrAudienceMismatch)
 		return Verified{}, fmt.Errorf("%w: expected %q", ErrAudienceMismatch, v.audience)
 	}
@@ -513,13 +556,30 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		}
 	}
 
+	var methodReach []methods.Method
+	if rawReach, present := claims[MethodReachClaim]; present {
+		var methodReachErr error
+		methodReach, methodReachErr = ParseMethodReach(rawReach)
+		if methodReachErr != nil {
+			v.audit(ctx, kidSeen, iss, sub, ErrMethodReachMalformed)
+			return Verified{}, methodReachErr
+		}
+	}
+	admission, admissionErr := parseSessionAdmission(rawClaims, id, iss, methodReach)
+	if admissionErr != nil {
+		v.audit(ctx, kidSeen, iss, sub, ErrSessionAdmissionMalformed)
+		return Verified{}, admissionErr
+	}
+
 	return Verified{
-		Identity:     id,
-		Scopes:       scopes,
-		AgentReach:   reach,
-		SessionReach: sessionReach,
-		Subject:      sub,
-		Issuer:       iss,
+		Identity:         id,
+		Scopes:           scopes,
+		AgentReach:       reach,
+		SessionReach:     sessionReach,
+		MethodReach:      methodReach,
+		SessionAdmission: admission,
+		Subject:          sub,
+		Issuer:           iss,
 	}, nil
 }
 

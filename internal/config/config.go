@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 )
 
@@ -124,11 +125,17 @@ type ServerConfig struct {
 // IdentityConfig configures JWT validation. Per AGENTS.md §7 the
 // algorithm allowlist must contain only asymmetric algorithms.
 type IdentityConfig struct {
-	JWTAlgorithms []string `yaml:"jwt_algorithms"`
-	Issuer        string   `yaml:"issuer"`
-	Audience      string   `yaml:"audience"`
-	JWKSURL       string   `yaml:"jwks_url,omitempty"`
-	JWKSFile      string   `yaml:"jwks_file,omitempty"`
+	// ScopedTokenAudience enables method-scoped tokens and session admission.
+	// It must differ from Audience; old fleet validators must enforce Audience.
+	ScopedTokenAudience string `yaml:"scoped_token_audience,omitempty"`
+	// SessionAdmissionLegacyWritersDrained acknowledges that all older writers
+	// are stopped and every legacy verifier enforces the distinct legacy audience.
+	SessionAdmissionLegacyWritersDrained bool     `yaml:"session_admission_legacy_writers_drained,omitempty"`
+	JWTAlgorithms                        []string `yaml:"jwt_algorithms"`
+	Issuer                               string   `yaml:"issuer"`
+	Audience                             string   `yaml:"audience"`
+	JWKSURL                              string   `yaml:"jwks_url,omitempty"`
+	JWKSFile                             string   `yaml:"jwks_file,omitempty"`
 	// JWKSMaxStale bounds how long a cached JWKS key snapshot is honored
 	// without a successful refresh. Past this age the validator fails
 	// closed (rejects tokens with a distinct staleness reason) rather
@@ -238,6 +245,9 @@ func (e EmbeddingsConfig) IsZero() bool {
 }
 
 type LLMConfig struct {
+	// PricingManifests are trusted operator-installed inclusive USD ceilings.
+	// Restart-required; never accepted from Protocol requests or model output.
+	PricingManifests     []pricing.Manifest               `yaml:"pricing_manifests,omitempty"`
 	Driver               string                           `yaml:"driver"`
 	Provider             string                           `yaml:"provider"`
 	Model                string                           `yaml:"model"`

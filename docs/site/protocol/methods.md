@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 159 canonical Harbor Protocol methods, generated from the single-source registry
+The 160 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -52,6 +52,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `sessions.inspect` | `POST /v1/sessions/inspect` | sessions (read-only) | [`SessionsInspectRequest`](./types.md#sessionsinspectrequest) | [`SessionsInspectResponse`](./types.md#sessionsinspectresponse) | read-only |
 | `sessions.list` | `POST /v1/sessions/list` | sessions (read-only) | [`SessionsListRequest`](./types.md#sessionslistrequest) | [`SessionsListResponse`](./types.md#sessionslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `sessions.reconcile_context` | `POST /v1/sessions/reconcile_context` | sessions (read-only) | [`SessionsReconcileContextRequest`](./types.md#sessionsreconcilecontextrequest) | [`SessionsReconcileContextResponse`](./types.md#sessionsreconcilecontextresponse) | mutating; Own-session only; verified tenant/user/session is authoritative, including for admin callers. Requires retained context enabled. Seals only fully settled evidence; pending effects return retained_context_unsettled (409). Does not resume, dispatch, or return private content. |
+| `sessions.set_admission` | `POST /v1/sessions/set_admission` | sessions (read-only) | [`SessionsSetAdmissionRequest`](./types.md#sessionssetadmissionrequest) | [`SessionsSetAdmissionResponse`](./types.md#sessionssetadmissionresponse) | mutating; Verified admin; target tenant/user must match the authenticated owner. Enrollment binds the verified JWT issuer and subject immutably to the session. Epoch changes compare the expected durable epoch. No cross-tenant path; enrollment does not attest that earlier accepted work has drained. |
 | `sessions.set_title` | `POST /v1/sessions/set_title` | sessions (read-only) | [`SessionsSetTitleRequest`](./types.md#sessionssettitlerequest) | [`SessionsSetTitleResponse`](./types.md#sessionssettitleresponse) | mutating; Owning-(tenant, user)-scoped, not own-session-only — the body `Identity`'s tenant/user MUST equal the verified identity, but the target `session_id` (a dedicated request field) MAY name a sibling session of the same owner. Always writes `manual` provenance; no admin / cross-tenant path. |
 
 ## Session turns

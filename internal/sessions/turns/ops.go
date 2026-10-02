@@ -53,7 +53,7 @@ import "time"
 // so their shapes stay deliberate.
 var opsFieldSet = map[string][]string{
 	"Append":         {"TurnID", "TaskID", "RunID", "Query", "QueryAt", "AgentID", "AgentName", "AgentBindingSource", "Status", "StartedAt", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
-	"Update":         {"Status", "Answer", "Usage", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
+	"Update":         {"Status", "Answer", "Usage", "Activity", "Inputs", "Outputs", "OutputManifest", "Pause", "EventSeq"},
 	"Seal":           {"Status", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "FinishedAt", "EventSeq"},
 	"ReasoningInput": {"Steps", "EventSeq"},
 	"AppRefInput":    {"Refs", "EventSeq"},
@@ -72,7 +72,7 @@ var opsFieldSet = map[string][]string{
 	"Query":          {"Text", "At", "Complete"},
 	"AnswerRef":      {"ID", "MimeType", "SizeBytes", "Filename", "SHA256"},
 	"Pause":          {"Class", "Reason", "Lifecycle", "Availability"},
-	"TurnRow":        {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "LastAppliedEventSeq", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "Agent", "Query", "Answer", "Pause", "Inputs", "Outputs", "Usage", "Reasoning", "Activity", "Apps"},
+	"TurnRow":        {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "LastAppliedEventSeq", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "Agent", "Query", "Answer", "Pause", "Inputs", "Outputs", "OutputManifest", "Usage", "Reasoning", "Activity", "Apps"},
 	"OpsTurnRow":     {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "AgentID", "AgentName", "AgentBindingSource", "Usage", "Activity", "ReasoningSteps", "Inputs", "Outputs", "Apps", "Pause", "LastAppliedEventSeq"},
 	"AppOpsRef":      {"EffectiveAgentID", "ServerID", "ToolName", "Availability"},
 }
@@ -179,6 +179,8 @@ type Update struct {
 	// Outputs replaces the output attachment list when non-nil (an
 	// empty non-nil slice clears).
 	Outputs []Attachment
+	// OutputManifest seals the exact output list; nil leaves provenance unknown/unchanged.
+	OutputManifest *OutputManifestSeal
 	// Pause replaces the pause component when non-nil (class / reason /
 	// lifecycle / availability — never a token).
 	Pause *Pause

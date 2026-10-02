@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/llm"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -69,6 +70,8 @@ func TestMapTaskError_AllBranches(t *testing.T) {
 		{"not found", fmt.Errorf("wrap: %w", tasks.ErrNotFound), protoerrors.CodeNotFound},
 		{"idempotency conflict", fmt.Errorf("wrap: %w", tasks.ErrIdempotencyConflict), protoerrors.CodeInvalidRequest},
 		{"invalid request", fmt.Errorf("wrap: %w", tasks.ErrInvalidRequest), protoerrors.CodeInvalidRequest},
+		{"unpriced monetary cap", fmt.Errorf("wrap: %w", llm.ErrAllocationPricingUnavailable), protoerrors.CodeInferenceAllocationPricingUnavailable},
+		{"invalid allocation", fmt.Errorf("wrap: %w", llm.ErrAllocationInvalid), protoerrors.CodeInvalidRequest},
 		{"unclassified", stderrors.New("some other task failure"), protoerrors.CodeRuntimeError},
 	}
 	for _, tc := range cases {

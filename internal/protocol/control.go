@@ -16,6 +16,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -69,9 +70,16 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 // everything from ctx + req. One ControlSurface serves N
 // concurrent Dispatch goroutines safely.
 func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
+	if s.admission != nil {
+		ctx = sessionadmission.WithGate(ctx, s.admission)
+	}
 	if !methods.IsValidMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol method", string(method))
+	}
+
+	if err := auth.AuthorizeMethod(ctx, method); err != nil {
+		return nil, sessionadmission.ProtocolError(err)
 	}
 
 	if method == methods.MethodControlReceipt {
@@ -484,6 +492,17 @@ func AdmitEffectiveAgent(ctx context.Context, method string, id identity.Identit
 // literal anywhere under internal/protocol/ outside the methods package
 // (CLAUDE.md §8).
 func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.StartResponse, error) {
+	r, ok := req.(*types.StartRequest)
+	if !ok || r == nil {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid admission request")
+	}
+	target := identity.Identity{TenantID: r.Identity.Tenant, UserID: r.Identity.User, SessionID: r.Identity.Session}
+	return sessionadmission.Run(sessionadmission.WithReplayKey(ctx, r.IdempotencyKey), target, methods.MethodStart, func(accepted context.Context) (*types.StartResponse, error) {
+		return s.dispatchStartAccepted(accepted, req)
+	})
+}
+
+func (s *ControlSurface) dispatchStartAccepted(ctx context.Context, req any) (*types.StartResponse, error) {
 	method := methods.MethodStart
 
 	sr, ok := req.(*types.StartRequest)
@@ -597,7 +616,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	allocation := allocationFromWire(sr.InferenceAllocation)
 	if err := llm.ValidateInferenceAllocation(allocation); err != nil {
 		if errors.Is(err, llm.ErrAllocationPricingUnavailable) {
-			return nil, protoerrors.Newf(protoerrors.CodeInferenceAllocationPricingUnavailable, "%v", err)
+			return nil, sessionadmission.Rejected(protoerrors.Newf(protoerrors.CodeInferenceAllocationPricingUnavailable, "%v", err))
 		}
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "%v", err)
 	}
@@ -632,7 +651,11 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		InferenceAllocation:       allocation,
 	})
 	if err != nil {
-		return nil, mapTaskError(string(method), err)
+		mapped := mapTaskError(string(method), err)
+		if tasks.IsRejectedBeforeSpawn(err) {
+			return nil, sessionadmission.Rejected(mapped)
+		}
+		return nil, mapped
 	}
 
 	return &types.StartResponse{
@@ -680,6 +703,20 @@ func providerRouteFromWire(route *types.LLMProviderRouteSelector) *llm.ProviderR
 // the steering control plane (a privilege escalation); failing closed on
 // a missing verified identity is the CLAUDE.md §7 + §13 posture.
 func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Method, req any) (*types.ControlResponse, error) {
+	r, ok := req.(*types.ControlRequest)
+	if !ok || r == nil {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid admission request")
+	}
+	target := identity.Identity{TenantID: r.Identity.Tenant, UserID: r.Identity.User, SessionID: r.Identity.Session}
+	if method == methods.MethodUserMessage && r.EventID != "" {
+		ctx = sessionadmission.WithReplayKey(ctx, fmt.Sprintf("%d:%s%s", len(r.Identity.Run), r.Identity.Run, r.EventID))
+	}
+	return sessionadmission.Run(ctx, target, method, func(accepted context.Context) (*types.ControlResponse, error) {
+		return s.dispatchControlAccepted(accepted, method, req)
+	})
+}
+
+func (s *ControlSurface) dispatchControlAccepted(ctx context.Context, method methods.Method, req any) (*types.ControlResponse, error) {
 	cr, ok := req.(*types.ControlRequest)
 	if !ok || cr == nil {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
@@ -901,5 +938,5 @@ func allocationFromWire(a *types.InferenceAllocation) *llm.InferenceAllocation {
 	if a == nil {
 		return nil
 	}
-	return llm.CloneInferenceAllocation(&llm.InferenceAllocation{AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, MaxCostMicroUSD: a.MaxCostMicroUSD})
+	return llm.CloneInferenceAllocation(&llm.InferenceAllocation{AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, MaxCostMicroUSD: a.MaxCostMicroUSD, PricingManifestID: a.PricingManifestID, PricingManifestRevision: a.PricingManifestRevision, PricingManifestSHA256: a.PricingManifestSHA256})
 }

@@ -85,6 +85,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -174,6 +175,8 @@ type VirtualAgent = virtualagent.Binding
 // intentionally narrow at so the PR adds those
 // fields against a stable shape.
 type Task struct {
+	// OutputManifest is runtime-produced provenance; nil denotes legacy unknown.
+	OutputManifest *OutputManifest `json:",omitempty"`
 	// Input revisions and receipts belong to this exact task. Their bounded
 	// idempotency history survives terminal state and durable driver recovery.
 	InputRevision        uint64        `json:",omitempty"`
@@ -811,6 +814,10 @@ func DefaultProgressPolicy() ProgressPolicy {
 // runtime engine; Cancel / Prioritize are caller-initiated (planner,
 // steering, Console).
 type TaskRegistry interface {
+	// BeginOutputInvocation persists a current-task dispatch fence before a tool call.
+	BeginOutputInvocation(context.Context, TaskID, OutputInvocationIntent) (string, error)
+	// FinishOutputInvocation commits only the exact successful native binary refs.
+	FinishOutputInvocation(context.Context, TaskID, string, []ProducedArtifact, bool) error
 	// AcceptInput persists immutable caller-keyed text for the exact task.
 	// The runtime calls it inside the live inbox/terminal-admission fence.
 	// An optional expectedRevision rejects stale new intent; exact retries
@@ -1210,6 +1217,8 @@ type Factory func(deps Dependencies) (TaskRegistry, error)
 // config are passed through verbatim. Wiring lives in `cmd/harbor`
 // (or test helpers); the registry never reaches into ctx for these.
 type Dependencies struct {
+	// PricingCatalog is the operator-installed catalog used at acceptance.
+	PricingCatalog *pricing.Catalog
 	// Store is the StateStore used to persist task lifecycle records
 	// (typed-wrapper-over-generic). Required.
 	Store state.StateStore

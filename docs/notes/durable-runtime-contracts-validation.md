@@ -21,9 +21,11 @@ of this qualification.
 - Inference reservations use cross-manager storage CAS. Unknown physical-attempt
   liability survives cancellation and restart. Oversized provider counters hold
   the entire envelope and latch a breach instead of wrapping arithmetic.
-- Monetary caps are explicitly unavailable. The existing pricing seams lack a
-  trusted versioned inclusive pre-dispatch tariff. Token accounting is not proof
-  of a monetary budget. See the allocation plan's pricing extension contract.
+- Phase 272's frozen token-only checkpoint explicitly refused money. Phase 274
+  extends the candidate with operator-installed immutable inclusive tariffs and
+  conservative monetary reservations for bounded static OpenAI/Anthropic text.
+  Unsupported routes and missing/mismatched tariffs still refuse; charged/held
+  capacity is not actual spend. See the Phase 274 plan and its local evidence.
 
 ## Verified focused evidence
 
@@ -52,6 +54,36 @@ passed against that binary with real PostgreSQL available: respectively 8, 2 and
 2 positive assertions, zero failures and zero skips. Their focused race tests
 also passed, including production final-answer wiring and receipt restart.
 
+## Integrated follow-on checkpoint
+
+The local follow-on integrates native task-output provenance, conservative
+monetary allocations and scoped session admission. It also repairs input-receipt
+identity when the durable task ID differs from the physical execution run ID.
+The generated joins now contain 477 types, 160 methods, 46 errors and 150 events;
+the three generators and Console TypeScript lockstep checks passed together.
+
+Seven focused pricing-refusal test events passed under race. Pure pre-spawn
+pricing validation now releases the session acceptance reservation through an
+explicit registry proof. An arbitrary pricing error, including a joined error
+after task acceptance, cannot manufacture that proof or refund unknown work.
+Eighteen integration events covering the earlier event-surface, assembled
+surface, concurrent-run and version-handshake failures also passed.
+
+The composed native approval, OAuth, invocation boundary and MCP binary-output
+gate passed 14 test events across four packages. It exercises the real runtime
+wrapper chain: native pauses park acceptance only at the supported boundary,
+resumption reacquires the original admission, and successful binary output keeps
+its task provenance. A CGo-free local binary was then built from the integrated
+source. These are focused results, not full integrated qualification.
+
+Scoped admission requires an explicitly configured isolated audience, durable
+state, and a coordinated drain of old writers. Durable task/input recovery also
+requires the durable task driver and its separate advertised capability. A
+process loss between a domain commit and acceptance finalization can leave a
+durable pending reservation; there is no automatic expiry or administrative
+refund. A canonical receipt-based reconciliation path remains open, so normal
+lost-transport-ack recovery must not be described as proof of this crash case.
+
 ## Aggregate qualification remains open
 
 An initial whole-repository race run was incomplete. It exposed corrected
@@ -64,11 +96,20 @@ The aggregate also terminated the assemble and serve test processes under memory
 pressure. A fresh full serve run reproduced termination in the retained-context
 128-session test at approximately 5.7 GiB peak RSS. The same unchanged test passes
 alone with race detection at under 1 GiB. The cumulative-history and concurrent
-tests pass together, as do all preceding tests together; this is not yet a passing
-whole-package result. Lowering the Go heap soft limit did not resolve it.
+tests pass together, as do all preceding tests together. Lowering the Go heap
+soft limit did not resolve that initial aggregate result.
+
+The retained-finalization correction subsequently separates bounded preparation
+from bounded publication/cleanup while preserving earlier caller deadlines.
+Its full retained-context race selection passed in 128.364 seconds; the original
+128-owner assemble and served tests each passed three repetitions. New deadline
+regressions fail against the earlier implementation. This closes the targeted
+local failure; full integrated package and hosted macOS results are still needed.
 
 Full aggregate race tests, release preflight and hosted CI must be separately
-established. These focused results do not authorize a stable-release claim.
+established. The required independent integrated review is incomplete and
+remains a release gate. These focused results do not authorize a stable-release
+claim.
 
 Canonical preflight passed its drift audit (1,604 checks, no warnings or failures)
 before its static batch exposed two stale checks already present at the base
@@ -82,6 +123,7 @@ not recorded as passed. The draft does not create an RC or waive release gates.
 
 Wire fields and methods are additive and Protocol remains `0.1.0`. Custom Go
 Protocol Client and TaskRegistry implementations must implement the new methods;
-source compatibility is not universal. Restart guarantees require durable tasks
+source compatibility is not universal. Custom allocation stores must also
+implement the atomic `ReserveMonetary` extension; standard stores do so. Restart guarantees require durable tasks
 and SQLite/PostgreSQL state. Volatile storage does not become durable merely by
 advertising an allocation mechanism.

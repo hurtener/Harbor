@@ -2356,10 +2356,43 @@ is not inferred from enqueue success. D-487.
 
 ## Task inference allocation
 
-An immutable cumulative token allowance shared by a task and its same-identity
-spawned descendants. Its durable reservations precede provider transport. D-488.
+An immutable cumulative token allowance and optional trusted monetary ceiling
+shared by a task and its same-identity spawned descendants. Its durable
+reservations precede provider transport. D-488, D-490.
 
 ## Unknown inference liability
 
 Reserved capacity for provider work whose complete usage is unproven. It
 survives cancellation and restart and has no expiry-based refund. D-488.
+
+## Trusted pricing manifest
+
+An operator/coordinator-installed immutable ID/revision/hash containing exact
+provider/model/version and endpoint bindings with explicit inclusive integer USD
+ceilings. It is not inferred from model output or provider cost telemetry. D-490.
+
+## Charged monetary capacity
+
+Conservative task funding consumed at the full trusted envelope after proven
+complete single-attempt work. It is an upper bound, not measured provider spend.
+Unproven envelopes remain reserved unknown liability without expiry. D-490.
+
+- **Native output manifest** — bounded immutable metadata for successful verified direct-native binary outputs owned by one engine task (D-489).
+- **Output invocation fence** — persisted exact decision/branch admission preventing blind replay after uncertain provenance or missing observation (D-489).
+
+## Signed method reach
+
+Optional JWT `method_reach` restricting a bearer to exact canonical Protocol
+methods. Absence preserves legacy behavior; an empty set denies every method.
+It does not grant identity, scopes or other reach. D-491.
+
+## Session admission epoch
+
+Monotonic Runtime-owned session mutation generation bound to the full owner
+identity and immutable verified issuer/coordinator. D-491.
+
+## Unresolved session acceptance
+
+One bounded durable pending reservation whose accepting operation has not
+returned a proved completion. It blocks enrollment and further mutations and
+never expires merely with time or process loss. D-491.

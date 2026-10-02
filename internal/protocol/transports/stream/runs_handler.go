@@ -191,6 +191,10 @@ func (h *RunsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, 
 // Code + HTTP status. The mapping is the single place the Runs wire
 // surface translates a Go error into a Protocol error.
 func classifyRunsError(method methods.Method, err error) (protoerrors.Code, int, string) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		return perr.Code, bodyScopeStatus(perr.Code), perr.Message
+	}
 	m := string(method)
 	switch {
 	case errors.Is(err, runsprotocol.ErrIdentityRequired):

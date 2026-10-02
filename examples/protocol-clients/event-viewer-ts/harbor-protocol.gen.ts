@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:c0bca445d3a4d344dcf3f2436ec1834b29a7961c4197131c511ce5d7c3ec92f7";
+export const WIRE_SURFACE_DIGEST = "sha256:9f3ecc107110c73ff6e6eceb338392417c22016003c5495a0689ce6b38d362ae";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -154,6 +154,7 @@ export type HarborMethod =
   | "sessions.inspect"
   | "sessions.list"
   | "sessions.reconcile_context"
+  | "sessions.set_admission"
   | "sessions.set_title"
   | "sessions.turns.get"
   | "sessions.turns.list"
@@ -2167,9 +2168,16 @@ export interface InferenceAllocation {
   revision: number;
   max_total_tokens: number;
   max_cost_micro_usd?: number;
+  pricing_manifest_id?: string;
+  pricing_manifest_revision?: number;
+  pricing_manifest_sha256?: string;
 }
 
 export interface InferenceAllocationReceipt {
+  reserved_cost_micro_usd: number;
+  charged_cost_micro_usd: number;
+  unknown_cost_micro_usd: number;
+  monetary_status?: string;
   attempt_id: string;
   reserved_tokens: number;
   settled_tokens: number;
@@ -2178,6 +2186,13 @@ export interface InferenceAllocationReceipt {
 }
 
 export interface InferenceAllocationSnapshot {
+  max_cost_micro_usd?: number;
+  charged_cost_micro_usd: number;
+  reserved_cost_micro_usd: number;
+  unknown_cost_micro_usd: number;
+  pricing_manifest_id?: string;
+  pricing_manifest_revision?: number;
+  pricing_manifest_sha256?: string;
   receipts: InferenceAllocationReceipt[];
   receipts_truncated: boolean;
   bound_breached: boolean;
@@ -3184,6 +3199,12 @@ export interface SessionTurnHeader {
   as_of: string;
 }
 
+export interface SessionTurnOutputManifest {
+  version: number;
+  sha256?: string;
+  input_revision: number;
+}
+
 export interface SessionTurnPause {
   class?: string;
   reason?: string;
@@ -3233,6 +3254,7 @@ export interface SessionTurnRow {
   pause: SessionTurnPause;
   inputs?: SessionTurnAttachment[];
   outputs?: SessionTurnAttachment[];
+  output_manifest: SessionTurnOutputManifest;
   usage: SessionTurnUsage;
   reasoning: SessionTurnReasoning;
   activity: SessionTurnActivity;
@@ -3356,6 +3378,17 @@ export interface SessionsReconcileContextResponse {
   session_id: string;
   source_run_id: string;
   reconciled: boolean;
+}
+
+export interface SessionsSetAdmissionRequest {
+  identity: IdentityScope;
+  expected_epoch: number;
+  epoch: number;
+}
+
+export interface SessionsSetAdmissionResponse {
+  epoch: number;
+  protocol_version: string;
 }
 
 export interface SessionsSetTitleRequest {

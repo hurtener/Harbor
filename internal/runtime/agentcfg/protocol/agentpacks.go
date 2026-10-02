@@ -45,8 +45,10 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -429,6 +431,9 @@ func cloneStringMapCopy(in map[string]string) map[string]string {
 // now-boot-owned name does appear (until removed), exactly like any other
 // revisioned item.
 func (s *Service) AgentPacksList(ctx context.Context, req prototypes.AgentConfigAgentPacksListRequest) (prototypes.AgentConfigAgentPacksListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksList); err != nil {
+		return prototypes.AgentConfigAgentPacksListResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAgentPacksListResponse{}, err
 	}
@@ -462,6 +467,9 @@ func (s *Service) AgentPacksList(ctx context.Context, req prototypes.AgentConfig
 // origin_ref is server-stamped, and the composed pack must stay within
 // skills.MaxAgentPackItems. Sibling config sections are preserved.
 func (s *Service) AgentPacksUpsert(ctx context.Context, req prototypes.AgentConfigAgentPacksUpsertRequest) (prototypes.AgentConfigAgentPacksUpsertResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksUpsert); err != nil {
+		return prototypes.AgentConfigAgentPacksUpsertResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAgentPacksUpsertResponse{}, err
 	}
@@ -543,6 +551,9 @@ func (s *Service) AgentPacksUpsert(ctx context.Context, req prototypes.AgentConf
 // name fails loud with ErrAgentPackNotFound (a stale remove can never
 // silently no-op). Sibling config sections are preserved.
 func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConfigAgentPacksRemoveRequest) (prototypes.AgentConfigAgentPacksRemoveResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksRemove); err != nil {
+		return prototypes.AgentConfigAgentPacksRemoveResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAgentPacksRemoveResponse{}, err
 	}
@@ -615,6 +626,9 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 // reviews), capability warnings, and the deterministic provenance stamp the
 // commit must echo.
 func (s *Service) AgentPacksPropose(ctx context.Context, req prototypes.AgentConfigAgentPacksProposeRequest) (prototypes.AgentConfigAgentPacksProposeResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksPropose); err != nil {
+		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAgentPacksProposeResponse{}, err
 	}
@@ -741,6 +755,9 @@ func (s *Service) agentPackConfiguredModel(ctx context.Context, q identity.Quadr
 // deterministic proposal stamp, and the expected-revision token must still
 // match (the cross-write CAS half).
 func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConfigAgentPacksCommitRequest) (prototypes.AgentConfigAgentPacksCommitResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksCommit); err != nil {
+		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, err
 	}

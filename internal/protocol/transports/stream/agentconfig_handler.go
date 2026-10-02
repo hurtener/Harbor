@@ -51,13 +51,12 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
-	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
-
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/bodyscope"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -1561,6 +1560,10 @@ func agentPacksErrorStatus(code protoerrors.Code) int {
 // the canonical Protocol Code + HTTP status — the single place the
 // agent-config wire surface translates a Go error into a Protocol error.
 func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Code, int, string) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		return perr.Code, bodyScopeStatus(perr.Code), perr.Message
+	}
 	m := string(method)
 	switch {
 	case errors.Is(err, agentcfg.ErrAgentRetired):

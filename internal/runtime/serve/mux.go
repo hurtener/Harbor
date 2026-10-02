@@ -59,6 +59,7 @@ import (
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/search"
 	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
 	searchevents "github.com/hurtener/Harbor/internal/search/events"
@@ -304,6 +305,26 @@ func sessionWindowFunc(reg *sessions.Registry) sessionsprotocol.SessionWindowFun
 // imply and returns the mounted transports mux. It is the single source of
 // the handle→transport-option mapping shared by cmd/harbor and the test kit.
 func BuildMux(in MuxInput) (*BuiltMux, error) {
+	admissionEnabled := in.Cfg != nil && in.Cfg.Identity.ScopedTokenAudience != ""
+	if admissionEnabled && in.Cfg.State.Driver != "sqlite" && in.Cfg.State.Driver != "postgres" {
+		return nil, fmt.Errorf("session admission requires persistent sqlite or postgres state")
+	}
+
+	if err := sessionadmission.RequireEnabled(context.Background(), in.State, admissionEnabled); err != nil {
+		return nil, err
+	}
+	if admissionEnabled && (in.Validator == nil || !in.Cfg.Identity.SessionAdmissionLegacyWritersDrained) {
+		return nil, fmt.Errorf("session admission requires verified authentication and drained legacy writers")
+	}
+	var admissionGate *sessionadmission.Gate
+	if in.Cfg != nil && in.Cfg.Identity.ScopedTokenAudience != "" {
+		var admissionErr error
+		admissionGate, admissionErr = sessionadmission.New(in.State)
+		if admissionErr != nil {
+			return nil, fmt.Errorf("session admission: %w", admissionErr)
+		}
+	}
+
 	cfg := in.Cfg
 	if cfg != nil && cfg.ConfigurationState.Driver != "" && in.ConfigurationState == nil {
 		return nil, fmt.Errorf("configuration_state selected but its store is not wired")
@@ -372,6 +393,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
+		ScopedSessionAdmissionAvailable: admissionGate != nil && in.Validator != nil && in.Sessions != nil,
 		Build: types.RuntimeInfo{
 			BuildVersion:       in.BuildVersion,
 			BuildCommit:        in.BuildCommit,
@@ -1040,6 +1062,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	mounted := artifactTransferMux(transferService, mux)
 	if in.BootOwnership != nil {
 		mounted = bootOwnershipMux(in.BootOwnership, mounted)
+	}
+	if admissionGate != nil {
+		mounted = sessionAdmissionMux(admissionGate, mounted)
 	}
 	return &BuiltMux{Mux: mounted, FlowRegistry: flowRegistry}, nil
 }

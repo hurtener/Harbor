@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -25,6 +26,9 @@ func New(st state.StateStore) *Store { return &Store{state: st} }
 var _ llm.AllocationStore = (*Store)(nil)
 
 type total struct {
+	ChargedCost       int64                   `json:"charged_cost_micro_usd"`
+	ReservedCost      int64                   `json:"reserved_cost_micro_usd"`
+	UnknownCost       int64                   `json:"unknown_cost_micro_usd"`
 	Receipts          []llm.AllocationReceipt `json:"receipts"`
 	ReceiptsTruncated bool                    `json:"receipts_truncated"`
 	BoundBreached     bool                    `json:"bound_breached"`
@@ -35,9 +39,12 @@ type total struct {
 	Attempts          int64                   `json:"attempts"`
 }
 type attempt struct {
-	Units  int64  `json:"units"`
-	Status string `json:"status"`
-	Used   int64  `json:"used"`
+	Cost            int64  `json:"cost_micro_usd"`
+	MonetaryStatus  string `json:"monetary_status,omitempty"`
+	RetainRemainder bool   `json:"retain_remainder"`
+	Units           int64  `json:"units"`
+	Status          string `json:"status"`
+	Used            int64  `json:"used"`
 }
 
 func validate(q identity.Quadruple, a llm.InferenceAllocation) error {
@@ -64,7 +71,10 @@ func (s *Store) load(ctx context.Context, q identity.Quadruple, a llm.InferenceA
 	if err = json.Unmarshal(rec.Bytes, &t); err != nil {
 		return rec, t, fmt.Errorf("decode allocation: %w", err)
 	}
-	if t.Allocation.AllocationID != a.AllocationID || t.Allocation.Revision != a.Revision || t.Allocation.MaxTotalTokens != a.MaxTotalTokens || t.Allocation.MaxCostMicroUSD != nil || t.Settled < 0 || t.Reserved < 0 || t.Unknown < 0 || t.Unknown > t.Reserved {
+	if !llm.EqualInferenceAllocation(&t.Allocation, &a) || t.Settled < 0 || t.Reserved < 0 || t.Unknown < 0 || t.Unknown > t.Reserved || t.ChargedCost < 0 || t.ReservedCost < 0 || t.UnknownCost < 0 || t.UnknownCost > t.ReservedCost {
+		return rec, t, llm.ErrAllocationInvalid
+	}
+	if a.MaxCostMicroUSD == nil && (t.ChargedCost != 0 || t.ReservedCost != 0 || t.UnknownCost != 0) || a.MaxCostMicroUSD != nil && (t.ChargedCost > *a.MaxCostMicroUSD || t.ReservedCost > *a.MaxCostMicroUSD-t.ChargedCost) {
 		return rec, t, llm.ErrAllocationInvalid
 	}
 	return rec, t, nil
@@ -80,6 +90,22 @@ func record(q identity.Quadruple, kind string, v any) (state.StateRecord, error)
 // Reserve holds a conservative complete provider-attempt liability before I/O.
 // Existing attempt identities are never authorizations to repeat provider I/O.
 func (s *Store) Reserve(ctx context.Context, q identity.Quadruple, a llm.InferenceAllocation, id string, units int64) error {
+	if a.MaxCostMicroUSD != nil {
+		return llm.ErrAllocationPricingUnavailable
+	}
+	return s.reserve(ctx, q, a, id, units, 0)
+}
+
+// ReserveMonetary atomically holds both resource ceilings. Only the trusted
+// provider edge computes cost; task text and provider cost floats cannot do so.
+func (s *Store) ReserveMonetary(ctx context.Context, q identity.Quadruple, a llm.InferenceAllocation, id string, units, cost int64) error {
+	if a.MaxCostMicroUSD == nil || cost < 0 {
+		return llm.ErrAllocationInvalid
+	}
+	return s.reserve(ctx, q, a, id, units, cost)
+}
+
+func (s *Store) reserve(ctx context.Context, q identity.Quadruple, a llm.InferenceAllocation, id string, units, cost int64) error {
 	if err := validate(q, a); err != nil {
 		return err
 	}
@@ -94,13 +120,17 @@ func (s *Store) Reserve(ctx context.Context, q identity.Quadruple, a llm.Inferen
 		if t.BoundBreached || t.Settled > a.MaxTotalTokens || t.Reserved > a.MaxTotalTokens-t.Settled || units > a.MaxTotalTokens-t.Settled-t.Reserved {
 			return llm.ErrAllocationExhausted
 		}
+		if t.Attempts == math.MaxInt64 || a.MaxCostMicroUSD != nil && cost > *a.MaxCostMicroUSD-t.ChargedCost-t.ReservedCost {
+			return llm.ErrAllocationExhausted
+		}
 		t.Reserved += units
+		t.ReservedCost += cost
 		t.Attempts++
 		next, err := record(q, totalKind, t)
 		if err != nil {
 			return err
 		}
-		ar, err := record(q, attemptPrefix+id, attempt{Units: units, Status: "reserved"})
+		ar, err := record(q, attemptPrefix+id, attempt{Units: units, Cost: cost, Status: "reserved"})
 		if err != nil {
 			return err
 		}
@@ -160,15 +190,16 @@ func (s *Store) settle(ctx context.Context, q identity.Quadruple, a llm.Inferenc
 			status = "settled"
 		}
 		if at.Status != "reserved" {
-			if at.Status == status && (used == nil || at.Used == *used) {
+			if at.Status == status && at.RetainRemainder == retainRemainder && (used == nil || at.Used == *used) {
 				return nil
 			}
 			return llm.ErrAllocationInvalid
 		}
-		if at.Units <= 0 || at.Units > t.Reserved {
+		if at.Units <= 0 || at.Units > t.Reserved || at.Cost < 0 || at.Cost > t.ReservedCost {
 			return llm.ErrAllocationInvalid
 		}
 		at.Status = status
+		at.RetainRemainder = retainRemainder
 		if breached {
 			t.BoundBreached = true
 		}
@@ -189,7 +220,27 @@ func (s *Store) settle(ctx context.Context, q identity.Quadruple, a llm.Inferenc
 				t.Unknown += at.Units - *used
 			}
 		}
-		receipt := llm.AllocationReceipt{AttemptID: id, ReservedTokens: at.Units, Status: status}
+		receipt := llm.AllocationReceipt{AttemptID: id, ReservedTokens: at.Units, Status: status, ReservedCostMicroUSD: at.Cost}
+		if a.MaxCostMicroUSD != nil {
+			switch {
+			case used != nil && *used == 0 && !retainRemainder && !breached:
+				// The safety edge proves cancellation before driver entry.
+				t.ReservedCost -= at.Cost
+				at.MonetaryStatus = "released_before_dispatch"
+			case used != nil && !retainRemainder && !breached && *used <= at.Units:
+				// This is charged CAPACITY at the trusted full envelope, not
+				// observed provider spend. No provider cost number is accepted.
+				t.ReservedCost -= at.Cost
+				t.ChargedCost += at.Cost
+				receipt.ChargedCostMicroUSD = at.Cost
+				at.MonetaryStatus = "charged_ceiling"
+			default:
+				t.UnknownCost += at.Cost
+				receipt.UnknownCostMicroUSD = at.Cost
+				at.MonetaryStatus = "unknown"
+			}
+			receipt.MonetaryStatus = at.MonetaryStatus
+		}
 		if used == nil {
 			receipt.UnknownTokens = at.Units
 		} else {
@@ -235,5 +286,13 @@ func (s *Store) Snapshot(ctx context.Context, q identity.Quadruple, a llm.Infere
 	if t.Receipts == nil {
 		t.Receipts = []llm.AllocationReceipt{}
 	}
-	return llm.AllocationSnapshot{Receipts: t.Receipts, ReceiptsTruncated: t.ReceiptsTruncated, BoundBreached: t.BoundBreached, AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, SettledTokens: t.Settled, ReservedTokens: t.Reserved, UnknownTokens: t.Unknown, AttemptCount: t.Attempts, Guarantee: "tokens", PricingStatus: "unavailable"}, nil
+	snap := llm.AllocationSnapshot{Receipts: t.Receipts, ReceiptsTruncated: t.ReceiptsTruncated, BoundBreached: t.BoundBreached, AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, SettledTokens: t.Settled, ReservedTokens: t.Reserved, UnknownTokens: t.Unknown, AttemptCount: t.Attempts, Guarantee: "tokens", PricingStatus: "unavailable"}
+	if a.MaxCostMicroUSD != nil {
+		cap := *a.MaxCostMicroUSD
+		snap.MaxCostMicroUSD = &cap
+		snap.ChargedCostMicroUSD, snap.ReservedCostMicroUSD, snap.UnknownCostMicroUSD = t.ChargedCost, t.ReservedCost, t.UnknownCost
+		snap.PricingManifestID, snap.PricingManifestRevision, snap.PricingManifestSHA256 = a.PricingManifestID, a.PricingManifestRevision, a.PricingManifestSHA256
+		snap.Guarantee, snap.PricingStatus = "tokens_and_cost_micro_usd", "trusted_inclusive_ceiling"
+	}
+	return snap, nil
 }

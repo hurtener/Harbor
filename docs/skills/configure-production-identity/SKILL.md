@@ -302,3 +302,33 @@ co-launch lifecycle.
   production checklist.
 - [`examples/serve.yaml`](../../../examples/serve.yaml) — the annotated
   production `serve` config.
+
+## Method-restricted bearers and enrolled sessions
+
+The existing scope list does not make a bearer read-only. Issuers adopting
+`scoped_session_admission_v1` sign the exact canonical `method_reach` array and,
+for an enrolled session's mutations, the matching
+`session_admission_epoch` / `session_admission_coordinator`. An explicit empty
+method array denies all methods; claim absence is legacy behavior. The runtime
+binds admission to the original JWT owner triple, never a later session header.
+
+Configure a distinct singleton `identity.scoped_token_audience` only after every
+old verifier enforces `identity.audience`, old writers are drained, previously
+accepted work is reconciled and downgrade is prevented. The required
+`identity.session_admission_legacy_writers_drained` flag acknowledges those
+operator-owned steps; it does not perform or verify them. Use the existing
+issuer's signed-claim machinery. Do not assume that an arbitrary new scope,
+unknown claim, capability bit or legacy `harbor token` output establishes this
+restriction on an old server. Restricted `auth.rotate_token` is refused because
+its issuer contract cannot preserve these constraints.
+
+Enrollment is the authenticated admin `sessions.set_admission` operation. Its
+immutable issuer/coordinator is derived from verified issuer/subject, and epochs
+advance exactly one at a time. See the
+[adoption and uncertainty contract](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility#scoped-session-admission)
+before granting browser or coordinator mutation authority. This documentation
+does not authorize live registration, grant, trust-key or issuer changes.
+
+Served scoped admission requires SQLite or PostgreSQL StateStore persistence;
+volatile state is refused at configuration/assembly. The in-memory gate remains
+the reference/testing seam and does not promise enrollment across process loss.

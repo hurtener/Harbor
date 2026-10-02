@@ -16,6 +16,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 const (
@@ -142,6 +143,9 @@ func (s *AgentPacksSurface) Dispatch(ctx context.Context, method methods.Method,
 	if !methods.IsAgentConfigAgentPacksMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not an Agent pack inspection/copy method", string(method))
+	}
+	if err := sessionadmission.CheckMethod(ctx, method); err != nil {
+		return nil, err
 	}
 	// Check the verified admin entitlement before inspecting any caller-owned
 	// request data. The HTTP transport performs the same gate before decoding;

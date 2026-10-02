@@ -2036,7 +2036,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		switch {
 		case errors.Is(err, llm.ErrAllocationExhausted):
 			code = planner.TaskErrorCodeInferenceAllocationExhausted
-		case errors.Is(err, llm.ErrAllocationInvalid) || errors.Is(err, llm.ErrAllocationUnavailable) || errors.Is(err, llm.ErrAllocationBoundUnavailable) || errors.Is(err, llm.ErrAllocationBoundViolated):
+		case errors.Is(err, llm.ErrAllocationInvalid) || errors.Is(err, llm.ErrAllocationUnavailable) || errors.Is(err, llm.ErrAllocationPricingUnavailable) || errors.Is(err, llm.ErrAllocationBoundUnavailable) || errors.Is(err, llm.ErrAllocationBoundViolated):
 			code = planner.TaskErrorCodeInferenceAllocationUnavailable
 		case errors.Is(err, context.Canceled):
 			code = planner.TaskErrorCodeCancelled

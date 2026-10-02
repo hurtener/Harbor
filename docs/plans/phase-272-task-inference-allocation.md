@@ -102,6 +102,10 @@ The accepted allocation is a runtime limit, not a credentials grant or financial
 
 ## Trusted pricing extension contract
 
+Phase 274 implements the extension below with explicit operator installation and
+bounded initial transports. The token-only checkpoint and its historical
+qualification remain the evidence for this phase; see D-490 for the extension.
+
 The future trusted pricing manifest must define manifest ID and positive immutable revision, exact provider/model/model-version, USD currency, integer input/output micro-USD ceilings per million tokens, and an explicit includes-all-charges assertion. The trusted operator or coordinator, never task text or model output, supplies it. A monetary implementation must persist its hash with task acceptance, match the selected provider/model/version on every attempt, round reservations upward with checked arithmetic, and reserve any cache, reasoning, multimodal, per-request or ancillary charge at a declared ceiling. An unmatched, incomplete or changing tariff is unpriced and must refuse a hard cost guarantee. Missing usage retains the full monetary reservation; reported token usage without adequate price provenance does not settle money. This release specifies the manifest contract here without exporting an unused primitive, activating monetary mode or installing tariffs.
 
 ## Rollout / compatibility

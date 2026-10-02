@@ -17,6 +17,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // ArtifactsSurface is the transport-agnostic
@@ -274,6 +275,45 @@ type ArtifactUploadedPayload struct {
 //
 // Dispatch holds no per-call state on the surface.
 func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
+	if !methods.IsArtifactsMethod(method) {
+		return nil, protoerrors.New(protoerrors.CodeUnknownMethod, "unknown method")
+	}
+	if err := auth.AuthorizeMethod(ctx, method); err != nil {
+		return nil, sessionadmission.ProtocolError(err)
+	}
+	var scope *types.ArtifactScope
+	switch method {
+	case methods.MethodArtifactsPut:
+		if r, ok := req.(*types.ArtifactsPutRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsDelete:
+		if r, ok := req.(*types.ArtifactsDeleteRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsExportAnswer:
+		if r, ok := req.(*types.ArtifactsExportAnswerRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsPrepareImport, methods.MethodArtifactsTransfer:
+		if r, ok := req.(*types.ArtifactsTransferRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsRevokeTransfer:
+		if r, ok := req.(*types.ArtifactsTransferStatusRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	default:
+		return s.dispatchAccepted(ctx, method, req)
+	}
+	if scope == nil {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid artifact mutation request")
+	}
+	target := identity.Identity{TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session}
+	return sessionadmission.Run(ctx, target, method, func(accepted context.Context) (any, error) { return s.dispatchAccepted(accepted, method, req) })
+}
+
+func (s *ArtifactsSurface) dispatchAccepted(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsArtifactsMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol artifacts method", string(method))

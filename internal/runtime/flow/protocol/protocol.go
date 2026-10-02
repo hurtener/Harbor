@@ -60,7 +60,9 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // Sentinel errors the Surface returns. Transport adapters map each onto
@@ -163,6 +165,9 @@ func NewSurface(catalog Catalog, invoker Invoker) (*Surface, error) {
 // filter on the admin scope, dispatches to the Catalog, and paginates +
 // sorts the result deterministically (by flow ID).
 func (s *Surface) List(ctx context.Context, req prototypes.FlowListRequest, adminScoped bool) (prototypes.FlowListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodFlowsList); err != nil {
+		return prototypes.FlowListResponse{}, err
+	}
 	id, err := toIdentity(req.Identity)
 	if err != nil {
 		return prototypes.FlowListResponse{}, err
@@ -194,6 +199,9 @@ func (s *Surface) List(ctx context.Context, req prototypes.FlowListRequest, admi
 // id, dispatches to the Catalog, and sorts the projection
 // deterministically (nodes by ID, edges by From/To).
 func (s *Surface) Describe(ctx context.Context, req prototypes.FlowDescribeRequest, adminScoped bool) (prototypes.FlowDescription, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodFlowsDescribe); err != nil {
+		return prototypes.FlowDescription{}, err
+	}
 	id, err := toIdentity(req.Identity)
 	if err != nil {
 		return prototypes.FlowDescription{}, err
@@ -213,6 +221,9 @@ func (s *Surface) Describe(ctx context.Context, req prototypes.FlowDescribeReque
 // id, gates a cross-tenant filter on the admin scope, dispatches to the
 // Catalog, and paginates + sorts the runs (newest first).
 func (s *Surface) RunsList(ctx context.Context, req prototypes.FlowRunsListRequest, adminScoped bool) (prototypes.FlowRunsListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodFlowsRunsList); err != nil {
+		return prototypes.FlowRunsListResponse{}, err
+	}
 	id, err := toIdentity(req.Identity)
 	if err != nil {
 		return prototypes.FlowRunsListResponse{}, err
@@ -254,6 +265,9 @@ func (s *Surface) RunsList(ctx context.Context, req prototypes.FlowRunsListReque
 // the run id and dispatches to the Catalog. Heavy outputs are routed
 // by-reference by the Catalog.
 func (s *Surface) RunsDescribe(ctx context.Context, req prototypes.FlowRunDescribeRequest, adminScoped bool) (prototypes.FlowRunDescription, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodFlowsRunsDescribe); err != nil {
+		return prototypes.FlowRunDescription{}, err
+	}
 	id, err := toIdentity(req.Identity)
 	if err != nil {
 		return prototypes.FlowRunDescription{}, err
@@ -273,6 +287,23 @@ func (s *Surface) RunsDescribe(ctx context.Context, req prototypes.FlowRunDescri
 // and dispatches to the Invoker. A request without the claim
 // fails closed with ErrRunScopeRequired.
 func (s *Surface) Run(ctx context.Context, req prototypes.FlowRunRequest, adminScoped bool) (prototypes.FlowRunResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodFlowsRun); err != nil {
+		return prototypes.FlowRunResponse{}, err
+	}
+	id, err := toIdentity(req.Identity)
+	if err != nil {
+		return prototypes.FlowRunResponse{}, err
+	}
+	return sessionadmission.Run(ctx, id, methods.MethodFlowsRun, func(accepted context.Context) (prototypes.FlowRunResponse, error) {
+		out, err := s.runAccepted(accepted, req, adminScoped)
+		if errors.Is(err, ErrIdentityRequired) || errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrRunScopeRequired) {
+			err = sessionadmission.Rejected(err)
+		}
+		return out, err
+	})
+}
+
+func (s *Surface) runAccepted(ctx context.Context, req prototypes.FlowRunRequest, adminScoped bool) (prototypes.FlowRunResponse, error) {
 	id, err := toIdentity(req.Identity)
 	if err != nil {
 		return prototypes.FlowRunResponse{}, err
@@ -293,6 +324,9 @@ func (s *Surface) Run(ctx context.Context, req prototypes.FlowRunRequest, adminS
 // Metrics handles `flows.metrics`. It validates identity + the flow id
 // and dispatches to the Catalog with the resolved window / bucket.
 func (s *Surface) Metrics(ctx context.Context, req prototypes.FlowMetricsRequest, adminScoped bool) (prototypes.FlowMetrics, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodFlowsMetrics); err != nil {
+		return prototypes.FlowMetrics{}, err
+	}
 	id, err := toIdentity(req.Identity)
 	if err != nil {
 		return prototypes.FlowMetrics{}, err

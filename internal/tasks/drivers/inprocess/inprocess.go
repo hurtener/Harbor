@@ -34,7 +34,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("tasks/inprocess: New requires a non-nil StateStore")
 	}
-	return engine.New(deps.Bus, deps.Redactor, ephemeralBackend{store: deps.Store})
+	return engine.New(deps.Bus, deps.Redactor, ephemeralBackend{store: deps.Store}, engine.WithPricingCatalog(deps.PricingCatalog))
 }
 
 func init() {

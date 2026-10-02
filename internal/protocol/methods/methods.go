@@ -1125,6 +1125,8 @@ const (
 	// Sessions handler. Identity-mandatory. The wire-transport route is
 	// `POST /v1/sessions/delete`.
 	MethodSessionsDelete Method = "sessions.delete"
+	// MethodSessionsSetAdmission enrolls or advances exact session mutation authority.
+	MethodSessionsSetAdmission Method = "sessions.set_admission"
 	// MethodSessionsSetTitle — sets or clears a session's human-readable
 	// title. The write scope is the owning `(tenant, user)` —
 	// the same scope `sessions.list` reads at — NOT own-session-only:
@@ -1369,6 +1371,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSessionsList:             {},
 	MethodSessionsInspect:          {},
 	MethodSessionsDelete:           {},
+	MethodSessionsSetAdmission:     {},
 	MethodSessionsSetTitle:         {},
 	MethodSessionsReconcileContext: {},
 
@@ -1982,6 +1985,7 @@ var canonicalSessionsMethods = map[Method]struct{}{
 	MethodSessionsList:             {},
 	MethodSessionsInspect:          {},
 	MethodSessionsDelete:           {},
+	MethodSessionsSetAdmission:     {},
 	MethodSessionsSetTitle:         {},
 	MethodSessionsReconcileContext: {},
 }

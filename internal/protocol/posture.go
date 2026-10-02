@@ -20,6 +20,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/protocol/wiresurface"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 func newProviderOperationID() string {
@@ -82,6 +83,7 @@ func newProviderOperationID() string {
 // Runtime wires at boot; PostureSurface translates their output into
 // the wire shape and returns it.
 type PostureSurface struct {
+	scopedSessionAdmissionAvailable   bool
 	durableTaskInputReceiptsAvailable bool
 	taskInferenceAllocationAvailable  bool
 	artifactTransferAvailable         bool
@@ -121,6 +123,8 @@ type PostureSurface struct {
 // LLM-Provider cards — read the resulting Protocol methods, never the
 // seams directly).
 type PostureDeps struct {
+	// ScopedSessionAdmissionAvailable requires configured isolated scoped audience and durable gate.
+	ScopedSessionAdmissionAvailable bool
 	// DurableTaskInputReceiptsAvailable requires the persistent exact-task receipt path.
 	DurableTaskInputReceiptsAvailable bool
 	// TaskInferenceAllocationAvailable requires the cumulative runtime accounting seam.
@@ -314,6 +318,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt = deps.Clock()
 	}
 	return &PostureSurface{
+		scopedSessionAdmissionAvailable:   deps.ScopedSessionAdmissionAvailable,
 		durableTaskInputReceiptsAvailable: deps.DurableTaskInputReceiptsAvailable,
 		taskInferenceAllocationAvailable:  deps.TaskInferenceAllocationAvailable,
 		artifactTransferAvailable:         deps.ArtifactTransferAvailable,
@@ -423,6 +428,9 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol posture method", string(method))
 	}
+	if err := sessionadmission.CheckMethod(ctx, method); err != nil {
+		return nil, err
+	}
 
 	pr, ok := req.(*types.RuntimeInfoRequest)
 	if !ok || pr == nil {
@@ -523,6 +531,9 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	out.Capabilities = append([]types.Capability(nil), s.wiredCaps...)
 	if s.durableTaskInputReceiptsAvailable {
 		out.Capabilities = append(out.Capabilities, types.CapDurableTaskInputReceipts)
+	}
+	if s.scopedSessionAdmissionAvailable {
+		out.Capabilities = append(out.Capabilities, types.CapScopedSessionAdmission)
 	}
 	if s.taskInferenceAllocationAvailable {
 		out.Capabilities = append(out.Capabilities, types.CapTaskInferenceAllocation)

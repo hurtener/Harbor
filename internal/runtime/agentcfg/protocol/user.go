@@ -5,7 +5,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // user.go — the user-tier `agent_config.user.*` verb family: the middle tier
@@ -68,6 +70,9 @@ func validateUserToolExposureLoading(p prototypes.AgentConfigUserPayload) error 
 
 // UserGet reads the caller's own durable config variant active revision.
 func (s *Service) UserGet(ctx context.Context, req prototypes.AgentConfigUserGetRequest) (prototypes.AgentConfigUserGetResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserGet); err != nil {
+		return prototypes.AgentConfigUserGetResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserGetResponse{}, err
 	}
@@ -92,6 +97,9 @@ func (s *Service) UserGet(ctx context.Context, req prototypes.AgentConfigUserGet
 // pointer. Serialised per-owner (scope, tenant, real-user, agent) so distinct
 // users never contend.
 func (s *Service) UserSetRevision(ctx context.Context, req prototypes.AgentConfigUserSetRevisionRequest) (prototypes.AgentConfigUserSetRevisionResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserSetRevision); err != nil {
+		return prototypes.AgentConfigUserSetRevisionResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserSetRevisionResponse{}, err
 	}
@@ -130,6 +138,9 @@ func (s *Service) UserSetRevision(ctx context.Context, req prototypes.AgentConfi
 // UserListRevisions returns the caller's own variant revision chain,
 // newest-first.
 func (s *Service) UserListRevisions(ctx context.Context, req prototypes.AgentConfigUserListRevisionsRequest) (prototypes.AgentConfigUserListRevisionsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserListRevisions); err != nil {
+		return prototypes.AgentConfigUserListRevisionsResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserListRevisionsResponse{}, err
 	}
@@ -154,6 +165,9 @@ func (s *Service) UserListRevisions(ctx context.Context, req prototypes.AgentCon
 // UserDiff returns the server-side compare of two existing revisions of the
 // caller's own variant.
 func (s *Service) UserDiff(ctx context.Context, req prototypes.AgentConfigUserDiffRequest) (prototypes.AgentConfigUserDiffResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserDiff); err != nil {
+		return prototypes.AgentConfigUserDiffResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserDiffResponse{}, err
 	}
@@ -174,6 +188,9 @@ func (s *Service) UserDiff(ctx context.Context, req prototypes.AgentConfigUserDi
 // UserRollback repoints the caller's own variant active pointer to an
 // existing revision WITHOUT mutating any revision. Serialised per-owner.
 func (s *Service) UserRollback(ctx context.Context, req prototypes.AgentConfigUserRollbackRequest) (prototypes.AgentConfigUserRollbackResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserRollback); err != nil {
+		return prototypes.AgentConfigUserRollbackResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserRollbackResponse{}, err
 	}

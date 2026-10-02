@@ -161,6 +161,7 @@ var requestSurfaces = map[string]Surface{
 	"SessionsListRequest":             SurfaceSessions,
 	"SessionsSetTitleRequest":         SurfaceSessions,
 	"SessionsReconcileContextRequest": SurfaceSessions,
+	"SessionsSetAdmissionRequest":     SurfaceSessions,
 	// session-turns — the turn-projection read pair (routes pinned
 	// explicitly; the body triple stays the caller's own).
 	"SessionTurnsListRequest": SurfaceSessions,

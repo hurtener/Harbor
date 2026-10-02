@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 474 canonical Harbor Protocol wire types, generated from the single-source
+The 477 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2773,6 +2773,9 @@ Declared in `internal/protocol/types`.
 | `revision` | `uint64` |  |
 | `max_total_tokens` | `int64` |  |
 | `max_cost_micro_usd` | `*int64` | optional (`omitempty`) |
+| `pricing_manifest_id` | `string` | optional (`omitempty`) |
+| `pricing_manifest_revision` | `uint64` | optional (`omitempty`) |
+| `pricing_manifest_sha256` | `string` | optional (`omitempty`) |
 
 ## InferenceAllocationReceipt
 
@@ -2780,6 +2783,10 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `reserved_cost_micro_usd` | `int64` |  |
+| `charged_cost_micro_usd` | `int64` |  |
+| `unknown_cost_micro_usd` | `int64` |  |
+| `monetary_status` | `string` | optional (`omitempty`) |
 | `attempt_id` | `string` |  |
 | `reserved_tokens` | `int64` |  |
 | `settled_tokens` | `int64` |  |
@@ -2792,6 +2799,13 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `max_cost_micro_usd` | `*int64` | optional (`omitempty`) |
+| `charged_cost_micro_usd` | `int64` |  |
+| `reserved_cost_micro_usd` | `int64` |  |
+| `unknown_cost_micro_usd` | `int64` |  |
+| `pricing_manifest_id` | `string` | optional (`omitempty`) |
+| `pricing_manifest_revision` | `uint64` | optional (`omitempty`) |
+| `pricing_manifest_sha256` | `string` | optional (`omitempty`) |
 | `receipts` | `[]types.InferenceAllocationReceipt` — see [`InferenceAllocationReceipt`](./types.md#inferenceallocationreceipt) |  |
 | `receipts_truncated` | `bool` |  |
 | `bound_breached` | `bool` |  |
@@ -4305,6 +4319,16 @@ Declared in `internal/protocol/types`.
 | `snapshot_id` | `uint64` |  |
 | `as_of` | `time.Time` |  |
 
+## SessionTurnOutputManifest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `version` | `int` |  |
+| `sha256` | `string` | optional (`omitempty`) |
+| `input_revision` | `uint64` |  |
+
 ## SessionTurnPause
 
 Declared in `internal/protocol/types`.
@@ -4375,6 +4399,7 @@ Declared in `internal/protocol/types`.
 | `pause` | `types.SessionTurnPause` — see [`SessionTurnPause`](./types.md#sessionturnpause) |  |
 | `inputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |
 | `outputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |
+| `output_manifest` | `types.SessionTurnOutputManifest` — see [`SessionTurnOutputManifest`](./types.md#sessionturnoutputmanifest) |  |
 | `usage` | `types.SessionTurnUsage` — see [`SessionTurnUsage`](./types.md#sessionturnusage) |  |
 | `reasoning` | `types.SessionTurnReasoning` — see [`SessionTurnReasoning`](./types.md#sessionturnreasoning) |  |
 | `activity` | `types.SessionTurnActivity` — see [`SessionTurnActivity`](./types.md#sessionturnactivity) |  |
@@ -4558,6 +4583,25 @@ Declared in `internal/protocol/types`.
 | `session_id` | `string` |  |
 | `source_run_id` | `string` |  |
 | `reconciled` | `bool` |  |
+
+## SessionsSetAdmissionRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `expected_epoch` | `uint64` |  |
+| `epoch` | `uint64` |  |
+
+## SessionsSetAdmissionResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `epoch` | `uint64` |  |
+| `protocol_version` | `string` |  |
 
 ## SessionsSetTitleRequest
 

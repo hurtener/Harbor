@@ -106,6 +106,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsDelete,
 	methods.MethodSessionsSetTitle,
 	methods.MethodSessionsReconcileContext,
+	methods.MethodSessionsSetAdmission,
 	methods.MethodRunsSetOverrides,
 	methods.MethodStateHistory,
 	methods.MethodEventsList,
@@ -232,8 +233,8 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// observability administrative read (observability.query) = 139, plus
 	// HA-68 same-runtime skill publications ten = 151, plus the user live
 	// profile reconciliation verb = 152.
-	if len(got) != 159 {
-		t.Fatalf("Methods() returned %d methods, want 159", len(got))
+	if len(got) != 160 {
+		t.Fatalf("Methods() returned %d methods, want 160", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -339,6 +340,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodSessionsDelete:           "sessions.delete",
 		methods.MethodSessionsSetTitle:         "sessions.set_title",
 		methods.MethodSessionsReconcileContext: "sessions.reconcile_context",
+		methods.MethodSessionsSetAdmission:     "sessions.set_admission",
 
 		methods.MethodSessionTurnsList: "sessions.turns.list",
 		methods.MethodSessionTurnsGet:  "sessions.turns.get",
@@ -483,7 +485,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// through the Sessions-page handler, NOT the steering inbox.
 	for _, m := range []methods.Method{
 		methods.MethodSessionsList, methods.MethodSessionsInspect,
-		methods.MethodSessionsDelete, methods.MethodSessionsSetTitle, methods.MethodSessionsReconcileContext,
+		methods.MethodSessionsDelete, methods.MethodSessionsSetTitle, methods.MethodSessionsReconcileContext, methods.MethodSessionsSetAdmission,
 	} {
 		if methods.IsControlMethod(m) {
 			t.Errorf("IsControlMethod(%q) = true, want false — sessions.* methods route through the Sessions handler, not the steering inbox", m)

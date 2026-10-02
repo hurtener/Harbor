@@ -5,7 +5,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // promptlayers.go — the agent-config layered-system-prompt control method:
@@ -35,6 +37,9 @@ import (
 // llm-params + hooks sections of the active revision are carried forward
 // unchanged.
 func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfigSetPromptLayersRequest) (prototypes.AgentConfigSetPromptLayersResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetPromptLayers); err != nil {
+		return prototypes.AgentConfigSetPromptLayersResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}

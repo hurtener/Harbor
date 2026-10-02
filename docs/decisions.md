@@ -16176,3 +16176,145 @@ an immutable trusted provider/model/version tariff covering input, output,
 reasoning, cache, per-request and ancillary charges, checked integer arithmetic,
 and reservation/settlement provenance for every attempt. No guessed price or
 provider-returned cost establishes that guarantee.
+
+## D-489 — Task-owned native output manifests
+
+**Date:** 2026-10-01. **Scope:** Phase 273.
+
+A session artifact catalog and a blob's first-writer TaskID never prove that a
+later task produced an artifact. Native dispatch first persists a deterministic
+invocation fence over the owner triple, engine task identity, append-only
+trajectory position and branch slot. The fence follows approval, credential and
+local argument admission and surrounds the ordinary retry policy; an approval
+or OAuth wait creates no pending invocation. It separately binds exact tool input by
+hash. Pending and settled slots refuse re-invocation when observation recovery
+is missing; persistence uncertainty terminates planning through the existing
+required-cleanup path. Ordinary known tool errors retain their error semantics.
+
+Only successful direct native results carrying opaque verified materialization
+evidence contribute metadata. JSON-shaped refs, failed results, helper/sibling
+outputs and resource links confer no provenance. The bounded manifest is sealed
+under the task lock before successful completion and cannot be changed by late
+usage or projection events. Version-zero legacy absence is unknown; version-one
+sealed empty is known empty. Existing session-turn Protocol reads expose the
+seal and stable artifact-ID-ordered exact refs. Fresh task/turn visibility,
+effective-agent reach and current artifact authorization remain necessary for
+any later use. Historical provenance grants neither access nor publication.
+
+Durable task-row writes and compensation deletes now compare the exact
+StateStore EventID loaded by that backend instance. An overlapping recovery
+retains invocation evidence while terminally failing interrupted work; the old
+writer cannot overwrite that newer generation or seal a successful result.
+This is a stale-writer fence, not multi-runtime scheduling ownership: opening a
+second registry is a recovery takeover, never permission to operate two active
+runtimes over one task store. Uncertain CAS outcomes remain fenced until reopen.
+
+## D-490 — Immutable inclusive task monetary ceilings
+
+**Date:** 2026-10-02. **Scope:** Phase 274, extending D-488; unreleased candidate.
+
+Only an operator/coordinator-installed catalog can supply pricing authority.
+Accepted task intent carries an immutable manifest ID, revision and full content
+hash. Runtime startup pins every ID/revision in reserved StateStore coordination
+records, refusing changed contents across restart. Task text, returned provider
+floats, cost overrides and credentials grants cannot install or replace tariffs.
+
+Every exact provider/model/version and configured endpoint needs explicit integer
+USD ceilings for input, output, cache reads, cache writes, reasoning, per-request
+and ancillary charges, plus an all-charges assertion and immutable-version
+attestation. Checked arithmetic rounds each category upward for every possible
+physical attempt. Token and money reservation commit in one conditional batch.
+Retries, helpers, resumed calls and same-owner descendants retain the root's
+funding identity; accepted caps and tariff hashes cannot change.
+
+Successful complete single-attempt work consumes the full monetary envelope as
+`charged_cost_micro_usd`, a conservative capacity charge, never measured spend.
+Missing usage, partial/errored output, hidden attempts and crash uncertainty hold
+money indefinitely. Cancellation only refunds a provider envelope when driver
+entry was proven not to occur. Observed token-bound violations latch refusal.
+
+The initial Bifrost monetary consumer proves static OpenAI/Anthropic text shapes.
+OpenRouter, external provider routes, custom-provider IDs, unbounded passthrough
+and multimedia/native file operations remain explicitly unpriced. The guarantee
+is conditional on truthful operator inclusive ceilings and provider compliance;
+it does not prove an invoice or authorize credentials. No production prices are
+bundled. This decision does not certify a stable release or deployed docs.
+
+**Cross-references:** RFC §6.5, §6.11, §6.15; D-488; briefs 03, 05, 07, 08;
+`docs/plans/phase-274-task-monetary-caps.md`.
+
+## D-491 — Signed methods and durable session acceptance
+
+**Date:** 2026-10-02. **Scope:** Phase 275.
+
+A signed `method_reach` is an optional exact closed set: absent means legacy,
+empty means deny all. Unknown values, aliases, duplicate names/claims, malformed
+arrays and partial admission authority are rejected. It only narrows existing
+identity, scopes, agent reach and session reach. Restricted credentials require
+a separate exact singleton audience; auth rotation cannot turn them into broad
+credentials. Legacy audience enforcement, drained older writers and downgrade
+prevention are explicit fleet-adoption prerequisites, not inferred from a
+capability bit. No production grants or authentication settings change here.
+
+The Runtime stores one protected bounded acceptance slot per full session
+identity. Enrollment derives immutable issuer/coordinator from authenticated
+admin authority; mutation requires the current signed epoch, exact original JWT
+identity and explicit method. Legacy acceptance also CAS-reserves the same slot
+before enrollment, closing absent-policy check-then-act. Enrollment refuses a
+pending acceptance. Domain acceptance stays in existing task, steering,
+override, session, artifact, App and native OAuth paths, outside DB callback
+locks because these paths use StateStore themselves. There is no second
+executor, distributed task ownership claim, permit ledger or blind lease expiry.
+
+Process loss or uncertain acquisition retains the slot if its commit reached
+the store; no domain operation is invoked after an uncertain acquire. Existing
+readable task/input evidence remains the reconciliation source, and lack of
+proof keeps the session blocked. Release uncertainty cannot prove that the
+mutation failed. Enrollment does not revoke already accepted queued controls
+or task execution; consumers must reconcile/quiesce these before coordinated
+continuation. Native OAuth retains its verified flow-state/owner/pause authority,
+with only its completion acceptance serialized. Separate tenant/admin and
+user-wide configuration privileges are not revoked by session enrollment.
+
+The App callback boundary includes a native lifecycle handoff within its existing
+catalog descriptor chain. The approval owner parks acceptance only after its
+pause exists, and successful approval must reacquire original method/owner
+claims against the current durable epoch before descriptor execution. OAuth
+handoff is limited to established pre-invocation credential challenges; arbitrary
+tool failures cannot release uncertainty. A concrete MCP dispatch marks possible
+effects, preventing a later challenge from discarding an earlier attempted
+write. Context reuse is not an admission bypass: each additional mutation
+reserves the durable slot, and repeated native reentry is idempotent only for the
+same still-active invocation.
+
+Served opt-in requires SQLite or PostgreSQL state. In-memory gates remain
+reference/test artifacts; production assembly must not revive old broad tokens
+by forgetting enrollment on restart.
+
+## D-492 — Separate bounded terminal preparation from persistence
+
+**Date:** 2026-10-02. **Scope:** RFC 002, phase 269 finalization correction.
+
+Retained terminal preparation gets a five-second context before the unchanged
+five-second conditional publication and exact journal-cleanup context begins.
+Both derive from the supplied parent: cancellation and an earlier deadline
+remain binding. Served and embedded consumers keep their existing detachment
+from an already-finished execution's cancellation, and delegate both bounds to
+the shared retained owner. Their finalization can therefore take up to ten
+seconds in total; a caller-provided earlier deadline is never extended.
+
+Preparation performs no store operations. Redaction, host/action validation and
+serialization failures cannot publish or clean anything. Conditional publication
+still rechecks the live admission, generation, source lifetime and erasure fences.
+It seals the journal and writes terminal evidence atomically before cleanup.
+Cleanup failure remains explicit and leaves the sealed admission fenced; only
+exact-generation reconciliation may retry deletion. No action is replayed and
+no background cleanup, new store API, authority cache or dependency is added.
+
+Hosted macOS race failures occurred during cleanup after terminal evidence had
+already committed. On the unchanged 14,660-byte fixture, local Go 1.27.1 race
+measurements put approximately 97% of terminal time in preparation before the
+first state read. The call-local identity optimization reduces repeated receipt
+decoding, but does not by itself establish resolution of hosted contention.
+The budget correction follows RFC 002's separation of validation and persistence;
+the unchanged 128-scope hosted tests remain the platform acceptance gate.

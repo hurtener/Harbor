@@ -15,6 +15,10 @@
 // RECORDS. It recovers the record, not execution: a task left Running
 // by a crash is transitioned to a terminal failed state, not re-driven
 // (auto-re-drive of recovered work is a separate, deferred concern).
+// Task-row writes use the exact loaded StateStore EventID as a CAS fence.
+// Opening another registry is recovery takeover: stale live writers cannot
+// overwrite its task generations. This does not provide multi-writer task
+// scheduling or spawn idempotency; only one active runtime may own the store.
 // Cross-process durability requires a durable StateStore
 // (state.driver: sqlite | postgres); paired with an in-memory state
 // store the records survive only an in-process driver reopen, not a
@@ -47,7 +51,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 				"configure a durable store via state.driver (sqlite or postgres — see examples/) " +
 				"and ensure it is passed to tasks.Open")
 	}
-	eng, err := engine.New(deps.Bus, deps.Redactor, &backend{store: deps.Store})
+	eng, err := engine.New(deps.Bus, deps.Redactor, &backend{store: deps.Store}, engine.WithPricingCatalog(deps.PricingCatalog))
 	if err != nil {
 		return nil, fmt.Errorf("tasks/durable: %w", err)
 	}

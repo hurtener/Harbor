@@ -407,9 +407,14 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapAgentConfigMemory) {
 		t.Fatal("versioned memory budget must appear in the canonical capability set")
 	}
+	for _, capability := range []types.Capability{types.CapArtifactTransfer, types.CapDurableArtifactTransfer, types.CapDurableTaskInputReceipts, types.CapTaskInferenceAllocation, types.CapScopedSessionAdmission} {
+		if !h.Accepts(capability) {
+			t.Fatalf("missing canonical durable runtime capability %s", capability)
+		}
+	}
 	caps := h.Capabilities
-	if len(caps) != 17 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly 17 canonical capabilities including memory budget configuration", caps)
+	if len(caps) != 22 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly 22 canonical capabilities including durable runtime contracts", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

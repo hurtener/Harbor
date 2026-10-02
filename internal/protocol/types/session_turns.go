@@ -258,6 +258,8 @@ type SessionTurnRow struct {
 	// (never bytes).
 	Inputs  []SessionTurnAttachment `json:"inputs,omitempty"`
 	Outputs []SessionTurnAttachment `json:"outputs,omitempty"`
+	// OutputManifest is immutable direct-native provenance; version zero is unknown.
+	OutputManifest SessionTurnOutputManifest `json:"output_manifest"`
 	// Usage is the cumulative per-measure honest token/cost/latency
 	// rollup (cost is exact integer micro-units of USD).
 	Usage SessionTurnUsage `json:"usage"`
@@ -633,4 +635,13 @@ type SessionOpsAppRef struct {
 	ToolName string `json:"tool_name,omitempty"`
 	// Availability is the component availability.
 	Availability string `json:"availability,omitempty"`
+}
+
+// SessionTurnOutputManifest seals a bounded task-owned output set. The enclosing
+// completed sealed turn and a current authorized artifact lookup are required
+// before using an output; historical provenance is never an access grant.
+type SessionTurnOutputManifest struct {
+	Version       int    `json:"version"`
+	SHA256        string `json:"sha256,omitempty"`
+	InputRevision uint64 `json:"input_revision"`
 }

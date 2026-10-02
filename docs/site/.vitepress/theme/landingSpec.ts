@@ -15,15 +15,24 @@ export interface CTA {
   kind: "primary" | "secondary";
 }
 
+// Injected by the docs build from CHANGELOG.md and the canonical wire manifest.
+declare const __HARBOR_DOCS_RELEASE__: {
+  version: string;
+  date: string;
+  highlights: { title: string; body: string }[];
+  methodCount: number;
+};
+const release = __HARBOR_DOCS_RELEASE__;
+
 export const GITHUB = "https://github.com/hurtener/Harbor";
 export const LICENSE_URL = `${GITHUB}/blob/main/LICENSE`;
 
 export const hero = {
-  eyebrow: "Go-native agent runtime · v1.28",
+  eyebrow: `Go-native agent runtime · ${release.version}`,
   name: "Harbor",
   tagline: "Durable, steerable, event-driven AI agents in Go.",
   lead:
-    "Most agent loops live in a goroutine and die with it. Harbor persists run state, so a paused run survives a process restart. Multi-isolation is mandatory from the first line — one user can hold many concurrent, isolated sessions. The Planner is swappable; the Runtime owns the mechanism. It all ships as one CGo-free static binary.",
+    "Harbor brings tasks, tools, session history and execution evidence into one Go runtime. Durable stores preserve the configured state; interrupted work stays subject to explicit recovery and uncertainty rules. Tenant, user and session isolation are part of the runtime contract. Choose a planner and run it through one CGo-free static binary.",
   install: "go install github.com/hurtener/Harbor/cmd/harbor@latest",
   ctas: [
     { label: "Get started", link: "/get-started", kind: "primary" },
@@ -44,7 +53,7 @@ export const hero = {
 };
 
 export const announcement = {
-  text: "v1.28 just shipped — governed skill import, drafting, and boot packs; lifecycle and durable turn projections; observability rollups; and fresh MCP App render admission",
+  text: `Documentation for ${release.version} · Read the current release notes and compatibility requirements`,
   link: "/reference/changelog",
 };
 
@@ -188,7 +197,7 @@ export const durable = {
 export const protocol = {
   eyebrow: "The Harbor Protocol",
   headline: "A versioned wire contract, not an internal function call",
-  sub: "The seam most agent frameworks never draw: a canonical, versioned contract between the Runtime and anything observing or controlling it — 110 canonical methods, over SSE + REST.",
+  sub: `A canonical, versioned contract between the Runtime and its clients: ${release.methodCount} canonical methods over SSE and REST. Per-runtime capability discovery identifies the configured supported surfaces.`,
   families: [
     { name: "Task control", detail: "start · cancel · pause · resume · redirect · inject_context · approve · reject · prioritize" },
     { name: "events.subscribe", detail: "identity-scoped streaming event subscription" },
@@ -285,27 +294,10 @@ export const rigor = {
 
 /* ── What's new ─────────────────────────────────────────────────────────── */
 export const whatsNew = {
-  eyebrow: "Recently shipped",
-  headline: "v1.16.0 — parallel intent + task management",
-  date: "2026-07-18",
-  bullets: [
-    {
-      title: "Parallel intent — the Batch decision",
-      body: "A single planner step can now dispatch multiple tools and spawn multiple background tasks at once; two or more spawns auto-group so they can be awaited as a unit. The old one-action-per-turn limit from the native-tool-calling migration is gone.",
-    },
-    {
-      title: "Task management with a real cancel hierarchy",
-      body: "Reserved _task_status / _cancel_task controls let a run inspect and cancel the tasks it spawned — descendant-scoped, so a run can never touch a sibling's tasks. Cancellation is operator > agent (own descendants) > cascade: there is no uncancellable task, and a human always has the last word.",
-    },
-    {
-      title: "Background-wake notifications + turn-failure honesty",
-      body: "Background resolution mirrors onto the conversation surface, and a failed foreground turn now shows a prominent × Turn failed line instead of going silently idle — on both the native TUI and the Console.",
-    },
-    {
-      title: "OAuth broker legs + prompt-cache telemetry",
-      body: "An insufficient-scope step-up becomes structured data instead of a retry storm, resource-bound token exchange and per-tool OAuth binding land, and provider cache read/write tokens now flow through the cost surface. All additive — the Harbor Protocol holds at 0.1.0.",
-    },
-  ],
+  eyebrow: "Release reference",
+  headline: `${release.version} — release notes`,
+  date: release.date,
+  bullets: release.highlights,
   cta: { label: "Read the full changelog", link: "/reference/changelog" },
 };
 

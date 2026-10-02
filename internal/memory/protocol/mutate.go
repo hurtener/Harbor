@@ -11,7 +11,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // StrategyTraceDeps carries the StrategyTrace dependencies.
@@ -52,6 +54,12 @@ type PutDeps struct {
 
 // Put records an operator note and returns its committed, resolvable key.
 func Put(ctx context.Context, deps PutDeps, req prototypes.MemoryPutRequest, id identity.Quadruple) (prototypes.MemoryPutResponse, error) {
+	return sessionadmission.Run(ctx, id.Identity, methods.MethodMemoryPut, func(accepted context.Context) (prototypes.MemoryPutResponse, error) {
+		return putAccepted(accepted, deps, req, id)
+	})
+}
+
+func putAccepted(ctx context.Context, deps PutDeps, req prototypes.MemoryPutRequest, id identity.Quadruple) (prototypes.MemoryPutResponse, error) {
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryPutResponse{}, err
 	}
@@ -79,6 +87,12 @@ type DeleteDeps struct {
 // invalidates an affected checkpoint and fences frozen admissions; it never
 // blindly restores a stale snapshot or claims selective summary forgetting.
 func Delete(ctx context.Context, deps DeleteDeps, req prototypes.MemoryDeleteRequest, id identity.Quadruple) (prototypes.MemoryDeleteResponse, error) {
+	return sessionadmission.Run(ctx, id.Identity, methods.MethodMemoryDelete, func(accepted context.Context) (prototypes.MemoryDeleteResponse, error) {
+		return deleteAccepted(accepted, deps, req, id)
+	})
+}
+
+func deleteAccepted(ctx context.Context, deps DeleteDeps, req prototypes.MemoryDeleteRequest, id identity.Quadruple) (prototypes.MemoryDeleteResponse, error) {
 	if err := memory.ValidateIdentity(id); err != nil {
 		return prototypes.MemoryDeleteResponse{}, err
 	}

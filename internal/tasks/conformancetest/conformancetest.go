@@ -107,6 +107,7 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Group_CrossSession_Isolation
 //   - Group_Concurrent_AddRemoveSeal_NoRace
 func Run(t *testing.T, factory Factory) {
+	runOutputArtifacts(t, factory)
 	t.Helper()
 	runInputReceipts(t, factory)
 

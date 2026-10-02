@@ -9,7 +9,9 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // removeoauthprovider.go — the admin-scoped `agent_config.remove_oauth_provider`
@@ -44,6 +46,9 @@ import (
 // RemoveOAuthProvider uninstalls a Protocol-installed OAuth provider by name.
 // See the file doc for the full contract.
 func (s *Service) RemoveOAuthProvider(ctx context.Context, req prototypes.AgentConfigRemoveOAuthProviderRequest) (prototypes.AgentConfigRemoveOAuthProviderResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigRemoveOAuthProvider); err != nil {
+		return prototypes.AgentConfigRemoveOAuthProviderResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRemoveOAuthProviderResponse{}, err
 	}

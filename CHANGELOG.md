@@ -27,6 +27,17 @@ Two versions move independently in Harbor (RFC §5.3):
 - Immutable cumulative task inference allocations shared with same-owner child
   tasks. Atomic reservations cover bounded provider attempts and runtime helpers;
   cancellation, unmeasured attempts and restart retain unknown liability.
+- Trusted task monetary ceilings through immutable operator pricing manifests,
+  exact model/version/endpoint bindings and atomic integer reservations. Initial
+  support covers bounded static OpenAI/Anthropic text requests; unpriced paths
+  fail closed. Charged/held capacity is explicitly distinguished from actual spend.
+
+- Task-owned native output manifests bind verified binary materializations to
+  the exact invocation, input revision and sealed task. Existing canonical turn
+  reads expose immutable provenance without inferring it from a session catalog.
+- Signed exact method reach, separate scoped audience and durable session
+  acceptance epochs reject stale broad credentials after explicit enrollment.
+  Native approval/OAuth use their existing pause owners with exact reacquisition.
 
 ### Fixed
 
@@ -35,6 +46,13 @@ Two versions move independently in Harbor (RFC §5.3):
   tenant/user/session identity, including after another owner's step resolves.
 - Unrepresentable provider usage retains the reserved envelope and latches a
   bound violation instead of overflowing counters or refunding capacity.
+- Input receipt restore/projection/consumption retain the engine task identity
+  across execution-run redrive instead of confusing those distinct IDs.
+- Retained terminal preparation has a separate bounded five-second stage before
+  the unchanged five-second publication/cleanup budget. Earlier caller deadlines,
+  explicit cleanup failures and exact-generation recovery remain enforced.
+- The docs landing page derives its version and release notes from the changelog
+  and its method count from the generated Protocol manifest.
 
 ### Action required
 
@@ -46,10 +64,15 @@ Two versions move independently in Harbor (RFC §5.3):
 - Artifact transfer is opt-in and requires explicit coordinator and peer trust
   plus a fence-capable artifact store. A completed transfer receipt proves past
   delivery, not current access after deletion or policy changes.
-- Allocations currently guarantee tokens only. Hard monetary caps are refused
-  with `inference_allocation_pricing_unavailable` until trusted inclusive tariff
-  ceilings can bound every provider attempt. Unknown holds never expire into a
-  refund. Allocation acceptance does not grant credentials or authorize spending.
+- Monetary caps require an explicit immutable inclusive pricing catalog for the
+  exact supported provider/model/version/endpoint. Unsupported or unpriced
+  attempts return `inference_allocation_pricing_unavailable`. Unknown holds never
+  expire into refunds; charged capacity is not measured provider spend. Allocation
+  acceptance grants neither credentials nor permission to spend.
+- Scoped admission requires durable SQLite/PostgreSQL state, an explicitly
+  distinct audience, drained older writers and downgrade prevention. Enrollment
+  does not revoke previously accepted work; consumers must quiesce/reconcile it.
+  No production trust, audience, registration or permission is changed implicitly.
 
 ## [1.32.1] — 2026-09-24
 

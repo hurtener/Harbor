@@ -295,6 +295,10 @@ func (h *GovernanceHandler) writeServiceError(w http.ResponseWriter, r *http.Req
 // Protocol Code + HTTP status. The single place the governance wire
 // surface translates a Go error into a Protocol error.
 func classifyGovernanceError(method methods.Method, err error) (protoerrors.Code, int, string) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		return perr.Code, bodyScopeStatus(perr.Code), perr.Message
+	}
 	m := string(method)
 	switch {
 	case errors.Is(err, governanceprotocol.ErrIdentityRequired), errors.Is(err, governance.ErrIdentityRequired):

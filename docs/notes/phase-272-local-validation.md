@@ -41,3 +41,10 @@ trusted pricing extension still needs immutable operator provenance, exact
 provider/model/version matching, inclusive integer charge ceilings, checked
 round-up arithmetic, and atomic monetary reserve/settle coverage for every
 physical attempt. This candidate rejects every hard monetary allocation request.
+
+## Subsequent extension
+
+Phase 274 implements the trusted monetary contract for explicitly installed
+inclusive tariffs and bounded initial transports. The evidence above describes
+the frozen token-only checkpoint; it does not qualify the later monetary code.
+See `docs/plans/phase-274-task-monetary-caps.md` and its separate validation note.

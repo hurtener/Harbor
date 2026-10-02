@@ -201,3 +201,25 @@ var MustFrom = internal.MustFrom
 
 // ErrInputRevisionConflict indicates stale expected task input state.
 var ErrInputRevisionConflict = internal.ErrInputRevisionConflict
+
+// Native output metadata is immutable after successful completion. These types
+// let external registry implementations satisfy the mandatory bookkeeping seam;
+// runtime invocation authority itself is never constructible from Protocol JSON.
+type ProducedArtifact = internal.ProducedArtifact
+type OutputInvocationIntent = internal.OutputInvocationIntent
+type OutputInvocation = internal.OutputInvocation
+type OutputManifest = internal.OutputManifest
+
+const MaxProducedArtifacts = internal.MaxProducedArtifacts
+const MaxOutputInvocationBranches = internal.MaxOutputInvocationBranches
+
+var ErrOutputProvenance = internal.ErrOutputProvenance
+var ErrOutputInvocationUnknown = internal.ErrOutputInvocationUnknown
+var ErrOutputInvocationSettled = internal.ErrOutputInvocationSettled
+
+// RejectBeforeSpawn marks a registry validation refusal proved before acceptance.
+// Never use it for an unknown persistence or already-accepted task outcome.
+var RejectBeforeSpawn = internal.RejectBeforeSpawn
+
+// IsRejectedBeforeSpawn recognizes explicit proof without hiding joined unknowns.
+var IsRejectedBeforeSpawn = internal.IsRejectedBeforeSpawn

@@ -268,9 +268,9 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 		}
 		receipts := make([]prototypes.InferenceAllocationReceipt, len(a.Receipts))
 		for i, r := range a.Receipts {
-			receipts[i] = prototypes.InferenceAllocationReceipt{AttemptID: r.AttemptID, ReservedTokens: r.ReservedTokens, SettledTokens: r.SettledTokens, UnknownTokens: r.UnknownTokens, Status: r.Status}
+			receipts[i] = prototypes.InferenceAllocationReceipt{AttemptID: r.AttemptID, ReservedTokens: r.ReservedTokens, SettledTokens: r.SettledTokens, UnknownTokens: r.UnknownTokens, Status: r.Status, ReservedCostMicroUSD: r.ReservedCostMicroUSD, ChargedCostMicroUSD: r.ChargedCostMicroUSD, UnknownCostMicroUSD: r.UnknownCostMicroUSD, MonetaryStatus: r.MonetaryStatus}
 		}
-		detail.InferenceAllocation = &prototypes.InferenceAllocationSnapshot{Receipts: receipts, ReceiptsTruncated: a.ReceiptsTruncated, BoundBreached: a.BoundBreached, AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, SettledTokens: a.SettledTokens, ReservedTokens: a.ReservedTokens, UnknownTokens: a.UnknownTokens, AttemptCount: a.AttemptCount, Guarantee: a.Guarantee, PricingStatus: a.PricingStatus}
+		detail.InferenceAllocation = &prototypes.InferenceAllocationSnapshot{Receipts: receipts, ReceiptsTruncated: a.ReceiptsTruncated, BoundBreached: a.BoundBreached, AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, SettledTokens: a.SettledTokens, ReservedTokens: a.ReservedTokens, UnknownTokens: a.UnknownTokens, AttemptCount: a.AttemptCount, Guarantee: a.Guarantee, PricingStatus: a.PricingStatus, MaxCostMicroUSD: a.MaxCostMicroUSD, ChargedCostMicroUSD: a.ChargedCostMicroUSD, ReservedCostMicroUSD: a.ReservedCostMicroUSD, UnknownCostMicroUSD: a.UnknownCostMicroUSD, PricingManifestID: a.PricingManifestID, PricingManifestRevision: a.PricingManifestRevision, PricingManifestSHA256: a.PricingManifestSHA256}
 	}
 
 	// The parent-session card always carries the session ID from the task
