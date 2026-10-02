@@ -175,6 +175,7 @@ func Begin(ctx context.Context, target identity.Identity, method methods.Method)
 	if !hasReplay {
 		replay = ""
 	}
+	waitForReplay := (method == methods.MethodStart || method == methods.MethodUserMessage) && replay != ""
 	waitUntil := time.Now().Add(5 * time.Second)
 	for attempt := 0; attempt < 8; attempt++ {
 		r, event, kind, err := gate.load(ctx, target)
@@ -187,13 +188,9 @@ func Begin(ctx context.Context, target identity.Identity, method methods.Method)
 			}
 		}
 		if r.Pending != "" {
-			if (method == methods.MethodStart || method == methods.MethodUserMessage) && replay != "" && r.Method == method && r.ReplayKey == replay && time.Now().Before(waitUntil) {
-				timer := time.NewTimer(10 * time.Millisecond)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return ctx, nil, ctx.Err()
-				case <-timer.C:
+			if waitForReplay && r.Method == method && r.ReplayKey == replay && time.Now().Before(waitUntil) {
+				if err := waitReplayContention(ctx); err != nil {
+					return ctx, nil, err
 				}
 				attempt--
 				continue
@@ -206,6 +203,17 @@ func Begin(ctx context.Context, target identity.Identity, method methods.Method)
 		next := state.NewEventID()
 		if err := gate.save(ctx, kind, event, next, r); err != nil {
 			if errors.Is(err, state.ErrConditionFailed) {
+				// A definitive CAS loss accepted no effect. Exact keyed retries
+				// use the same bounded wait for a raced reservation as for an
+				// observed pending one; eight fast races must not exhaust replay
+				// while its original acceptance is making progress. Every retry
+				// reloads and reauthorizes; unknown commits never enter this path.
+				if waitForReplay && time.Now().Before(waitUntil) {
+					if err := waitReplayContention(ctx); err != nil {
+						return ctx, nil, err
+					}
+					attempt--
+				}
 				continue
 			}
 			return ctx, nil, err
@@ -218,6 +226,17 @@ func Begin(ctx context.Context, target identity.Identity, method methods.Method)
 		return accepted, a, nil
 	}
 	return ctx, nil, ErrConflict
+}
+
+func waitReplayContention(ctx context.Context) error {
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // Run keeps the durable reservation until the existing synchronous acceptance

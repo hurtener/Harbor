@@ -215,3 +215,34 @@ configuration/assembly gate also proved volatile production state is refused.
 In-memory remains the reference/test seam; served opt-in requires SQLite or
 PostgreSQL. These focused passes do not replace full existing suites, measured
 coverage, generated joins, preflight or independent final integrated review.
+
+### Keyed replay contention repair candidate
+
+A native consumer's 100 concurrent exact keyed retries exposed a second
+admission-level `revision_conflict` even when its accepted task-input receipt
+remained intact. `Begin` waited up to five seconds when it observed the same
+pending key, but exhausted only eight definitive CAS losses when concurrent
+retries raced between load and reservation. A deterministic twelve-loss
+regression fails the original source for both keyed Start and user-message.
+
+The repair uses the existing cancellation-aware five-second replay window for
+those definitive CAS losses as well. Every attempt reloads and reauthorizes the
+current enrollment; unrelated pending keys/methods still refuse immediately.
+Unknown commits never retry, pending reservations never expire or get cleared
+by waiters, and unkeyed admission retains its eight-attempt bound. No schema,
+capability, endpoint, authority, or wire type changes. The window is a contention
+retry bound, not a new I/O deadline or reservation lease.
+
+Focused race tests passed initially across in-memory and SQLite stores, including
+100 same-key callers through independent gate actors. That proves admission
+serialization; task/input receipt idempotency remains the domain service's job.
+The full admission package now passes under race with real PostgreSQL, followed
+by five repetitions of the new regressions on all three stores. Explicit
+cancellation, unknown-commit retention and the unchanged unkeyed bound also
+pass; scoped golangci-lint reports zero issues. An added epoch-change-after-CAS
+regression passes ten race repetitions. Five complete two-runtime native
+consumer reruns also pass, each including 100 exact input replays after lost
+acknowledgement, restart, retained receipt provenance and downstream completion.
+The binary is the unchanged base source with only this admission fix overlaid;
+no receipt expectations or funding constraints were relaxed. These focused gates
+do not close full preflight or release.
