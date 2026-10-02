@@ -217,6 +217,10 @@ func (d *driver) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, da
 		}
 	}()
 
+	if err := scopeOpenTx(ctx, tx, scope); err != nil {
+		return artifacts.ArtifactRef{}, err
+	}
+
 	// Pre-insert HEAD check. Read existing row; if the scope+namespace+id
 	// already holds a row, return that ref unchanged.
 	existing, found, err := selectRefTx(ctx, tx, scope, id)
@@ -298,7 +302,7 @@ func (d *driver) Get(ctx context.Context, scope artifacts.ArtifactScope, id stri
 
 	const sel = `
 		SELECT bytes FROM artifacts_blobs
-		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4
+		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4 AND NOT EXISTS (SELECT 1 FROM artifact_scope_fences f WHERE f.tenant=artifacts_blobs.tenant AND f."user"=artifacts_blobs."user" AND f.session=artifacts_blobs.session AND f.fenced=TRUE)
 	`
 	row := d.db.QueryRowContext(ctx, sel,
 		scope.TenantID, scope.UserID, scope.SessionID, id)
@@ -351,7 +355,7 @@ func (d *driver) Exists(ctx context.Context, scope artifacts.ArtifactScope, id s
 
 	const sel = `
 		SELECT 1 FROM artifacts_blobs
-		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4
+		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4 AND NOT EXISTS (SELECT 1 FROM artifact_scope_fences f WHERE f.tenant=artifacts_blobs.tenant AND f."user"=artifacts_blobs."user" AND f.session=artifacts_blobs.session AND f.fenced=TRUE)
 		LIMIT 1
 	`
 	row := d.db.QueryRowContext(ctx, sel,
@@ -523,7 +527,7 @@ func selectRef(ctx context.Context, db *sql.DB, scope artifacts.ArtifactScope, i
 		SELECT tenant, "user", session, task, namespace, id,
 			   mime_type, size_bytes, filename, sha256, source_json
 		FROM artifacts_blobs
-		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4
+		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4 AND NOT EXISTS (SELECT 1 FROM artifact_scope_fences f WHERE f.tenant=artifacts_blobs.tenant AND f."user"=artifacts_blobs."user" AND f.session=artifacts_blobs.session AND f.fenced=TRUE)
 	`
 	row := db.QueryRowContext(ctx, sel,
 		scope.TenantID, scope.UserID, scope.SessionID, id)
@@ -543,7 +547,7 @@ func selectRefTx(ctx context.Context, tx *sql.Tx, scope artifacts.ArtifactScope,
 		SELECT tenant, "user", session, task, namespace, id,
 			   mime_type, size_bytes, filename, sha256, source_json
 		FROM artifacts_blobs
-		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4
+		WHERE tenant = $1 AND "user" = $2 AND session = $3 AND id = $4 AND NOT EXISTS (SELECT 1 FROM artifact_scope_fences f WHERE f.tenant=artifacts_blobs.tenant AND f."user"=artifacts_blobs."user" AND f.session=artifacts_blobs.session AND f.fenced=TRUE)
 	`
 	row := tx.QueryRowContext(ctx, sel,
 		scope.TenantID, scope.UserID, scope.SessionID, id)

@@ -108,6 +108,7 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Group_Concurrent_AddRemoveSeal_NoRace
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
+	runInputReceipts(t, factory)
 
 	t.Run("Spawn_AssignsTaskID", func(t *testing.T) {
 		r, cleanup := factory()

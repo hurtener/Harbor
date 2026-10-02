@@ -19,6 +19,19 @@ import (
 )
 
 var typeInstanceIndex = map[string]reflect.Type{
+	"ControlReceipt":                                    reflect.TypeOf(types.ControlReceipt{}),
+	"ControlReceiptRequest":                             reflect.TypeOf(types.ControlReceiptRequest{}),
+	"ControlReceiptResponse":                            reflect.TypeOf(types.ControlReceiptResponse{}),
+	"ArtifactTransferEndpoint":                          reflect.TypeOf(types.ArtifactTransferEndpoint{}),
+	"ArtifactTransferGrant":                             reflect.TypeOf(types.ArtifactTransferGrant{}),
+	"ArtifactTransferReceipt":                           reflect.TypeOf(types.ArtifactTransferReceipt{}),
+	"ArtifactsTransferRequest":                          reflect.TypeOf(types.ArtifactsTransferRequest{}),
+	"ArtifactsTransferStatusRequest":                    reflect.TypeOf(types.ArtifactsTransferStatusRequest{}),
+	"ArtifactsExportAnswerRequest":                      reflect.TypeOf(types.ArtifactsExportAnswerRequest{}),
+	"ArtifactsExportAnswerResponse":                     reflect.TypeOf(types.ArtifactsExportAnswerResponse{}),
+	"InferenceAllocation":                               reflect.TypeOf(types.InferenceAllocation{}),
+	"InferenceAllocationReceipt":                        reflect.TypeOf(types.InferenceAllocationReceipt{}),
+	"InferenceAllocationSnapshot":                       reflect.TypeOf(types.InferenceAllocationSnapshot{}),
 	"Agent":                                             reflect.TypeOf(types.Agent{}),
 	"AgentAggregates":                                   reflect.TypeOf(types.AgentAggregates{}),
 	"AgentConfig":                                       reflect.TypeOf(types.AgentConfig{}),

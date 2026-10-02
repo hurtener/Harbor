@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 148 canonical event types a Harbor Runtime can publish, read from the live
+The 150 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -221,6 +221,16 @@ Payload `RetirementEventPayload` — safe payload (delivered typed, verbatim).
 | `Generation` | `uint64` |  |
 | `OccurredAt` | `time.Time` |  |
 
+## `artifacts.answer_export`
+
+Payload `AnswerExportEvent` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `request_id` | `string` |  |
+| `selector_sha256` | `string` |  |
+| `state` | `string` |  |
+
 ## `artifacts.deleted`
 
 Payload `ArtifactDeletedPayload` — safe payload (delivered typed, verbatim).
@@ -228,6 +238,16 @@ Payload `ArtifactDeletedPayload` — safe payload (delivered typed, verbatim).
 | Wire key | Go type | Notes |
 |---|---|---|
 | `artifact_id` | `string` |  |
+
+## `artifacts.transfer`
+
+Payload `ArtifactTransferEvent` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `transfer_id` | `string` |  |
+| `grant_sha256` | `string` |  |
+| `state` | `string` |  |
 
 ## `artifacts.uploaded`
 

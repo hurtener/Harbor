@@ -85,18 +85,22 @@ var requestSurfaces = map[string]Surface{
 	// hand over the same thing over different transports, so the posture
 	// that refuses one refuses the other, and it is one row rather than
 	// two copies of one reason.
-	"ArtifactsDeleteRequest": SurfaceArtifactsDelete,
-	"ArtifactsGetRequest":    SurfaceArtifactsRef,
-	"ArtifactsGetRefRequest": SurfaceArtifactsRef,
-	"ArtifactsListRequest":   SurfaceArtifacts,
-	"ArtifactsPutRequest":    SurfaceArtifactsPut,
+	"ArtifactsDeleteRequest":         SurfaceArtifactsDelete,
+	"ArtifactsGetRequest":            SurfaceArtifactsRef,
+	"ArtifactsGetRefRequest":         SurfaceArtifactsRef,
+	"ArtifactsListRequest":           SurfaceArtifacts,
+	"ArtifactsPutRequest":            SurfaceArtifactsPut,
+	"ArtifactsTransferRequest":       SurfaceArtifactsRef,
+	"ArtifactsTransferStatusRequest": SurfaceArtifactsRef,
+	"ArtifactsExportAnswerRequest":   SurfaceArtifactsRef,
 
 	// auth.
 	"AuthRotateTokenRequest": SurfaceAuth,
 
 	// task — start and the steering controls.
-	"ControlRequest": SurfaceControlTask,
-	"StartRequest":   SurfaceControlTask,
+	"ControlRequest":        SurfaceControlTask,
+	"ControlReceiptRequest": SurfaceControlTask,
+	"StartRequest":          SurfaceControlTask,
 
 	// events.
 	"EventAggregateRequest": SurfaceEvents,

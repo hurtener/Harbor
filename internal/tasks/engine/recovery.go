@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -94,6 +95,33 @@ func (e *Engine) RecoverInterruptedTasks(ctx context.Context) (int, error) {
 			continue
 		}
 		recovered++
+	}
+
+	// A persisted pause has no trusted restart/relaunch boundary. Preserve its
+	// lifecycle, but do not leave an unconsumed input promising live delivery.
+	for _, task := range e.tasks {
+		if task.Status != tasks.StatusPaused {
+			continue
+		}
+		prior := task.InputReceipts
+		next := append([]tasks.InputRecord(nil), prior...)
+		changed := false
+		for i := range next {
+			if next[i].Receipt.Status == tasks.InputAccepted {
+				next[i].Receipt.Status = tasks.InputTerminal
+				next[i].Receipt.Reason = RecoveryErrorCode
+				next[i].Receipt.TerminalAt = time.Now().UnixNano()
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		task.InputReceipts = next
+		if err := e.persistTaskLocked(ctx, task, e.contentHashLocked(task)); err != nil {
+			task.InputReceipts = prior
+			errs = append(errs, fmt.Errorf("recover task inputs %q: %w", task.ID, err))
+		}
 	}
 
 	// Reconcile group resolution from member terminality. This heals a

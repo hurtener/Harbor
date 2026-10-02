@@ -596,6 +596,24 @@ func (f *pagedClient) SessionsDelete(context.Context) (types.SessionsDeleteRespo
 func (f *pagedClient) Control(context.Context, methods.Method, types.ControlRequest) (types.ControlResponse, error) {
 	return types.ControlResponse{}, nil
 }
+func (f *pagedClient) ArtifactsExportAnswer(context.Context, types.ArtifactsExportAnswerRequest) (types.ArtifactsExportAnswerResponse, error) {
+	return types.ArtifactsExportAnswerResponse{}, errors.New("unused")
+}
+func (f *pagedClient) ArtifactsPrepareImport(context.Context, types.ArtifactsTransferRequest) (types.ArtifactTransferReceipt, error) {
+	return types.ArtifactTransferReceipt{}, errors.New("unused")
+}
+func (f *pagedClient) ArtifactsTransfer(context.Context, types.ArtifactsTransferRequest) (types.ArtifactTransferReceipt, error) {
+	return types.ArtifactTransferReceipt{}, errors.New("unused")
+}
+func (f *pagedClient) ArtifactsTransferStatus(context.Context, types.ArtifactsTransferStatusRequest) (types.ArtifactTransferReceipt, error) {
+	return types.ArtifactTransferReceipt{}, errors.New("unused")
+}
+func (f *pagedClient) ArtifactsRevokeTransfer(context.Context, types.ArtifactsTransferStatusRequest) (types.ArtifactTransferReceipt, error) {
+	return types.ArtifactTransferReceipt{}, errors.New("unused")
+}
+func (f *pagedClient) ControlReceipt(context.Context, types.ControlReceiptRequest) (types.ControlReceiptResponse, error) {
+	return types.ControlReceiptResponse{}, errors.New("unused")
+}
 func (f *pagedClient) ArtifactsPut(context.Context, types.ArtifactsPutRequest) (types.ArtifactsPutResponse, error) {
 	return types.ArtifactsPutResponse{}, nil
 }

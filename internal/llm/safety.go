@@ -156,7 +156,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		defer cancel()
 	}
 
-	resp, err := c.driver.Complete(ctx, materialized)
+	resp, err := c.completeAllocated(ctx, materialized, profile)
 	if err != nil {
 		// Pass the driver's response through UNCHANGED alongside the
 		// error — an errored attempt still carries a provider-reported

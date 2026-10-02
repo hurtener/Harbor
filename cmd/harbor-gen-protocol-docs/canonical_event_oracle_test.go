@@ -27,7 +27,9 @@ agent_config.oauth_provider.removed
 agent_config.retirement.completed
 agent_config.retirement.progress
 agent_config.retirement.started
+artifacts.answer_export
 artifacts.deleted
+artifacts.transfer
 artifacts.uploaded
 audit.admin_scope_used
 audit.redaction_failed

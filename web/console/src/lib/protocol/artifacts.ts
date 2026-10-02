@@ -177,3 +177,74 @@ export interface ArtifactsDeleteResponse {
   deleted: boolean;
   protocol_version: string;
 }
+
+/** Exact-content copy authority. Keep signed grants out of model context/logs. */
+export interface ArtifactTransferEndpoint {
+  audience: string;
+  tenant: string;
+  user: string;
+  session: string;
+  epoch: number;
+}
+export interface ArtifactTransferGrant {
+  version: number;
+  key_id: string;
+  transfer_id: string;
+  purpose: string;
+  source: ArtifactTransferEndpoint;
+  destination: ArtifactTransferEndpoint;
+  artifact_id: string;
+  sha256: string;
+  mime_type: string;
+  size_bytes: number;
+  issued_at: string;
+  expires_at: string;
+  signature: string;
+}
+/** Historical delivery evidence, not continuing permission to read the copy. */
+export interface ArtifactTransferReceipt {
+  transfer_id: string;
+  grant_sha256: string;
+  state: string;
+  source: ArtifactTransferEndpoint;
+  destination: ArtifactTransferEndpoint;
+  source_artifact_id: string;
+  destination_artifact_id?: string;
+  sha256: string;
+  mime_type: string;
+  size_bytes: number;
+  expires_at: string;
+}
+export interface ArtifactsTransferRequest {
+  scope: ArtifactScope;
+  grant: ArtifactTransferGrant;
+}
+export interface ArtifactsTransferStatusRequest {
+  scope: ArtifactScope;
+  transfer_id: string;
+  direction: string;
+}
+
+/** Select one exact sealed final answer, never a transcript. */
+export interface ArtifactsExportAnswerRequest {
+  scope: ArtifactScope;
+  request_id: string;
+  task_id: string;
+  turn_id: string;
+  turn_version: number;
+  answer_sequence: number;
+  sha256: string;
+  size_bytes: number;
+}
+export interface ArtifactsExportAnswerResponse {
+  request_id: string;
+  artifact_id: string;
+  sha256: string;
+  mime_type: string;
+  size_bytes: number;
+  task_id: string;
+  turn_id: string;
+  turn_version: number;
+  answer_sequence: number;
+  incorporated_input_revision: number;
+}

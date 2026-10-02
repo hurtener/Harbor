@@ -2702,3 +2702,42 @@ uncached pull, within the configured TTL; this is not an instantaneous push chan
 `runtime.info.capabilities` advertises `tenant_scoped_broker_credentials_v1` when
 the agent-config surface is wired. Consumers require this capability before relying
 on shared-runtime tenant isolation; a build-version guess is not equivalent evidence.
+
+## Direct recipient-admitted artifact transfer
+
+### artifacts.transfer
+
+`artifacts.transfer` is absent by default. Enabling it requires an artifact
+store with atomic owner-scope fencing: `inmem`, `sqlite` or `postgres` blob
+storage. FS and S3 currently fail configuration rather than claiming safe
+cross-runtime erasure. Restart guarantees require persistent artifact and
+StateStore drivers and durable storage volumes. New SQL artifact migration
+0003 installs the permanent scope tombstone; apply migrations before using
+migration verification mode.
+
+Set `legacy_writers_drained: true` only after every writer sharing these
+artifact/state stores has upgraded to the fence-aware version or stopped.
+Enabling transfer without that explicit acknowledgement fails closed; an old
+binary that ignores the new tombstone cannot be declared safe.
+
+Set `audience`, a positive `epoch`, base64 Ed25519 `public_keys`, `max_bytes`
+(1 through 67108864), and `timeout` (positive, at most one minute). `peers` maps
+recipient audience names to exact HTTPS origins; requests cannot supply URLs.
+`allow_loopback_http: true` is only for explicit local fixtures with literal
+loopback IPs. Every redirect is refused. Only public verification keys live in
+this config; the coordinator retains its signing key outside the runtime.
+
+A signed transfer is a narrow capability, not harmless display metadata. Keep
+it out of model context and normal logs. Its purpose label alone grants no
+reach. The recipient first ratifies the exact signed grant under its own
+Protocol identity; the source owner then calls `artifacts.transfer`. Only the
+source and recipient runtimes handle the bytes. Grants expire within fifteen
+minutes and bind both owner triples, audiences, epochs, full content SHA-256,
+MIME and size. Changing an epoch rejects old unexecuted authority. A receipt
+proves past delivery, not continuing read access, and does not independently
+prove network sender identity.
+
+Session deletion permanently fences all late writes in the artifact store
+before its sweep. Import/export already in progress cannot be described as
+rolled back; inspect the durable receipt. Receipt recovery after expiry can
+seal only an exact blob already persisted, never re-export or recreate bytes.

@@ -1,0 +1,57 @@
+package engine_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tasks/engine"
+)
+
+func TestEngine_AllocationImmutableAndInherited(t *testing.T) {
+	bus := mkBus(t)
+	defer func() { _ = bus.Close(context.Background()) }()
+	e, err := engine.New(bus, auditpatterns.New(), &memBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close(context.Background()) }()
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	ctx, _ := identity.With(t.Context(), id)
+	a := &llm.InferenceAllocation{AllocationID: "fund", Revision: 1, MaxTotalTokens: 1000}
+	req := tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: tasks.KindForeground, Query: "work", IdempotencyKey: "same", InferenceAllocation: a}
+	root, err := e.Spawn(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.MaxTotalTokens = 2000
+	if _, err = e.Spawn(ctx, req); !errors.Is(err, tasks.ErrIdempotencyConflict) {
+		t.Fatalf("mutated retry: %v", err)
+	}
+	childReq := tasks.SpawnRequest{Identity: req.Identity, Kind: tasks.KindBackground, Query: "helper", ParentTaskID: &root.ID}
+	child, err := e.Spawn(ctx, childReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, err := e.Get(ctx, child.ID)
+	if err != nil || ct.InferenceAllocation == nil || ct.InferenceAllocation.MaxTotalTokens != 1000 || ct.AllocationTaskID != string(root.ID) {
+		t.Fatalf("child %+v %v", ct, err)
+	}
+	childReq.ParentTaskID = &child.ID
+	grand, err := e.Spawn(ctx, childReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt, _ := e.Get(ctx, grand.ID)
+	if gt.AllocationTaskID != string(root.ID) {
+		t.Fatalf("grandchild root %s", gt.AllocationTaskID)
+	}
+	childReq.InferenceAllocation = a
+	if _, err = e.Spawn(ctx, childReq); !errors.Is(err, llm.ErrAllocationInvalid) {
+		t.Fatalf("child replacement %v", err)
+	}
+}

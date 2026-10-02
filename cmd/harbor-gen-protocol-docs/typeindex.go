@@ -17,6 +17,10 @@ import (
 // mechanism TestSingleSource_CanonicalMethodsInLockstep uses for the
 // method set).
 var typeInstanceIndex = map[string]reflect.Type{
+	"ControlReceipt":         reflect.TypeOf(types.ControlReceipt{}),
+	"ControlReceiptRequest":  reflect.TypeOf(types.ControlReceiptRequest{}),
+	"ControlReceiptResponse": reflect.TypeOf(types.ControlReceiptResponse{}),
+
 	"Agent":                                             reflect.TypeOf(types.Agent{}),
 	"AgentAggregates":                                   reflect.TypeOf(types.AgentAggregates{}),
 	"AgentConfig":                                       reflect.TypeOf(types.AgentConfig{}),
@@ -200,6 +204,16 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"ArtifactsListRequest":                              reflect.TypeOf(types.ArtifactsListRequest{}),
 	"ArtifactsListResponse":                             reflect.TypeOf(types.ArtifactsListResponse{}),
 	"ArtifactsPutOpts":                                  reflect.TypeOf(types.ArtifactsPutOpts{}),
+	"ArtifactTransferEndpoint":                          reflect.TypeOf(types.ArtifactTransferEndpoint{}),
+	"ArtifactTransferGrant":                             reflect.TypeOf(types.ArtifactTransferGrant{}),
+	"ArtifactTransferReceipt":                           reflect.TypeOf(types.ArtifactTransferReceipt{}),
+	"ArtifactsTransferRequest":                          reflect.TypeOf(types.ArtifactsTransferRequest{}),
+	"ArtifactsTransferStatusRequest":                    reflect.TypeOf(types.ArtifactsTransferStatusRequest{}),
+	"ArtifactsExportAnswerRequest":                      reflect.TypeOf(types.ArtifactsExportAnswerRequest{}),
+	"ArtifactsExportAnswerResponse":                     reflect.TypeOf(types.ArtifactsExportAnswerResponse{}),
+	"InferenceAllocation":                               reflect.TypeOf(types.InferenceAllocation{}),
+	"InferenceAllocationReceipt":                        reflect.TypeOf(types.InferenceAllocationReceipt{}),
+	"InferenceAllocationSnapshot":                       reflect.TypeOf(types.InferenceAllocationSnapshot{}),
 	"ArtifactsPutRequest":                               reflect.TypeOf(types.ArtifactsPutRequest{}),
 	"ArtifactsPutResponse":                              reflect.TypeOf(types.ArtifactsPutResponse{}),
 	"AuthRotateTokenRequest":                            reflect.TypeOf(types.AuthRotateTokenRequest{}),

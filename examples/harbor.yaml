@@ -400,6 +400,20 @@ events:
   #   legacy_writers_drained: true
 
 artifacts:
+  # Optional exact two-owner transfer; disabled unless this block is configured.
+  # Requires inmem/sqlite/postgres artifacts and all shared writers fence-aware.
+  # Persistent guarantees require SQLite/PostgreSQL state AND artifact stores.
+  # transfer:
+  #   legacy_writers_drained: true
+  #   audience: runtime-a
+  #   epoch: 1
+  #   public_keys:
+  #     coordinator: "<base64 Ed25519 PUBLIC key>"
+  #   peers:
+  #     runtime-b: https://runtime-b.example.com
+  #   max_bytes: 67108864
+  #   timeout: 30s
+  #   allow_loopback_http: false
   # `inmem` (per-process, dev/embedded floor), `fs` (single-binary
   # production target), `sqlite` (Phase 18 — durable, single-node),
   # `postgres` (Phase 18 — durable, multi-replica safe), or `s3`

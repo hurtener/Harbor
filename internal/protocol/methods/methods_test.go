@@ -15,6 +15,7 @@ import (
 // is the test's independent source of truth; if methods.go drifts from
 // the canonical set, the exhaustiveness test below fails.
 var wantMethods = []methods.Method{
+	methods.MethodControlReceipt,
 	methods.MethodStart,
 	methods.MethodCancel,
 	methods.MethodPause,
@@ -42,6 +43,11 @@ var wantMethods = []methods.Method{
 	methods.MethodPauseList,
 	methods.MethodTopologySnapshot,
 	methods.MethodArtifactsList,
+	methods.MethodArtifactsPrepareImport,
+	methods.MethodArtifactsTransfer,
+	methods.MethodArtifactsTransferStatus,
+	methods.MethodArtifactsRevokeTransfer,
+	methods.MethodArtifactsExportAnswer,
 	methods.MethodArtifactsPut,
 	methods.MethodArtifactsGet,
 	methods.MethodArtifactsGetRef,
@@ -226,8 +232,8 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// observability administrative read (observability.query) = 139, plus
 	// HA-68 same-runtime skill publications ten = 151, plus the user live
 	// profile reconciliation verb = 152.
-	if len(got) != 153 {
-		t.Fatalf("Methods() returned %d methods, want 153", len(got))
+	if len(got) != 159 {
+		t.Fatalf("Methods() returned %d methods, want 159", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -260,43 +266,49 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// `search.<index>` shape — both match the canonical event-type
 	// naming convention (`tool.failed`, `runtime.error`, etc.).
 	wireStrings := map[methods.Method]string{
-		methods.MethodStart:               "start",
-		methods.MethodCancel:              "cancel",
-		methods.MethodPause:               "pause",
-		methods.MethodResume:              "resume",
-		methods.MethodRedirect:            "redirect",
-		methods.MethodInjectContext:       "inject_context",
-		methods.MethodApprove:             "approve",
-		methods.MethodReject:              "reject",
-		methods.MethodPrioritize:          "prioritize",
-		methods.MethodUserMessage:         "user_message",
-		methods.MethodEventsSubscribe:     "events.subscribe",
-		methods.MethodEventsAggregate:     "events.aggregate",
-		methods.MethodSearchQuery:         "search.query",
-		methods.MethodSearchSessions:      "search.sessions",
-		methods.MethodSearchTasks:         "search.tasks",
-		methods.MethodSearchEvents:        "search.events",
-		methods.MethodSearchArtifacts:     "search.artifacts",
-		methods.MethodRuntimeInfo:         "runtime.info",
-		methods.MethodRuntimeHealth:       "runtime.health",
-		methods.MethodRuntimeCounters:     "runtime.counters",
-		methods.MethodRuntimeDrivers:      "runtime.drivers",
-		methods.MethodMetricsSnapshot:     "metrics.snapshot",
-		methods.MethodGovernancePosture:   "governance.posture",
-		methods.MethodLLMPosture:          "llm.posture",
-		methods.MethodPauseList:           "pause.list",
-		methods.MethodTopologySnapshot:    "topology.snapshot",
-		methods.MethodArtifactsList:       "artifacts.list",
-		methods.MethodArtifactsPut:        "artifacts.put",
-		methods.MethodArtifactsGet:        "artifacts.get",
-		methods.MethodArtifactsGetRef:     "artifacts.get_ref",
-		methods.MethodArtifactsDelete:     "artifacts.delete",
-		methods.MethodMemoryList:          "memory.list",
-		methods.MethodMemoryGet:           "memory.get",
-		methods.MethodMemoryHealth:        "memory.health",
-		methods.MethodMemoryStrategyTrace: "memory.strategy_trace",
-		methods.MethodMemoryPut:           "memory.put",
-		methods.MethodMemoryDelete:        "memory.delete",
+		methods.MethodStart:                   "start",
+		methods.MethodCancel:                  "cancel",
+		methods.MethodPause:                   "pause",
+		methods.MethodResume:                  "resume",
+		methods.MethodRedirect:                "redirect",
+		methods.MethodInjectContext:           "inject_context",
+		methods.MethodApprove:                 "approve",
+		methods.MethodReject:                  "reject",
+		methods.MethodPrioritize:              "prioritize",
+		methods.MethodUserMessage:             "user_message",
+		methods.MethodEventsSubscribe:         "events.subscribe",
+		methods.MethodEventsAggregate:         "events.aggregate",
+		methods.MethodSearchQuery:             "search.query",
+		methods.MethodSearchSessions:          "search.sessions",
+		methods.MethodSearchTasks:             "search.tasks",
+		methods.MethodSearchEvents:            "search.events",
+		methods.MethodSearchArtifacts:         "search.artifacts",
+		methods.MethodRuntimeInfo:             "runtime.info",
+		methods.MethodRuntimeHealth:           "runtime.health",
+		methods.MethodRuntimeCounters:         "runtime.counters",
+		methods.MethodRuntimeDrivers:          "runtime.drivers",
+		methods.MethodMetricsSnapshot:         "metrics.snapshot",
+		methods.MethodGovernancePosture:       "governance.posture",
+		methods.MethodLLMPosture:              "llm.posture",
+		methods.MethodPauseList:               "pause.list",
+		methods.MethodTopologySnapshot:        "topology.snapshot",
+		methods.MethodArtifactsList:           "artifacts.list",
+		methods.MethodArtifactsPrepareImport:  "artifacts.prepare_import",
+		methods.MethodArtifactsTransfer:       "artifacts.transfer",
+		methods.MethodArtifactsTransferStatus: "artifacts.transfer_status",
+		methods.MethodArtifactsRevokeTransfer: "artifacts.revoke_transfer",
+		methods.MethodArtifactsExportAnswer:   "artifacts.export_answer",
+		methods.MethodArtifactsPut:            "artifacts.put",
+		methods.MethodArtifactsGet:            "artifacts.get",
+		methods.MethodArtifactsGetRef:         "artifacts.get_ref",
+		methods.MethodArtifactsDelete:         "artifacts.delete",
+		methods.MethodMemoryList:              "memory.list",
+		methods.MethodMemoryGet:               "memory.get",
+		methods.MethodMemoryHealth:            "memory.health",
+		methods.MethodMemoryStrategyTrace:     "memory.strategy_trace",
+		methods.MethodMemoryPut:               "memory.put",
+		methods.MethodMemoryDelete:            "memory.delete",
+		methods.MethodControlReceipt:          "control.receipt",
 
 		methods.MethodMCPServersList:             "mcp.servers.list",
 		methods.MethodMCPServersGet:              "mcp.servers.get",
@@ -508,12 +520,15 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsAuthMethod(methods.Method("bogus")) {
 		t.Error("IsAuthMethod(bogus) = true, want false")
 	}
-	// Every non-start, non-streaming, non-search, non-posture, non-pause,
+	if methods.IsControlMethod(methods.MethodControlReceipt) {
+		t.Error("control.receipt is a read, never a steering inbox mutation")
+	}
+	// Every non-start, non-receipt, non-streaming, non-search, non-posture, non-pause,
 	// non-topology, non-artifacts, non-memory, non-mcp, non-tools,
 	// non-tasks, non-flows, non-agents, non-sessions canonical method
 	// IS a control method.
 	for _, m := range methods.Methods() {
-		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
+		if m == methods.MethodStart || m == methods.MethodControlReceipt || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
 		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) ||

@@ -20,9 +20,10 @@ var migrationsFS embed.FS
 func runMigrations(ctx context.Context, db *sql.DB, dsn string, mode sqlmigrate.Mode) error {
 	return sqlmigrate.RunPostgresNamed(ctx, db, migrationsFS, sqlmigrate.PostgresMigrationSpec{
 		Subsystem:      "artifacts",
-		RequiredTables: []string{"artifacts_blobs"},
+		RequiredTables: []string{"artifacts_blobs", "artifact_scope_fences"},
 		RequiredColumns: map[string][]string{
-			"artifacts_blobs": {"tenant", "user", "session", "task", "namespace", "id", "mime_type", "size_bytes", "filename", "sha256", "source_json", "bytes"},
+			"artifact_scope_fences": {"tenant", "user", "session", "fenced"},
+			"artifacts_blobs":       {"tenant", "user", "session", "task", "namespace", "id", "mime_type", "size_bytes", "filename", "sha256", "source_json", "bytes"},
 		},
 	}, "artifacts/postgres", "harbor-artifacts-migrations", dsn, mode)
 }

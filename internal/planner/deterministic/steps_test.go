@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/deterministic"
 	statedriver "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -765,5 +767,131 @@ func TestWatchGroupStep_MissingGroupErrors(t *testing.T) {
 	}
 	if !errors.Is(err, planner.ErrDeterministicStep) {
 		t.Errorf("err = %v, want errors.Is planner.ErrDeterministicStep", err)
+	}
+}
+
+func TestSpawnAndAwaitStep_AllocatedParentSharesCumulativeFunding(t *testing.T) {
+	deps := mustStepsDeps(t)
+	q := validQuadruple()
+	ctx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	funding := llm.InferenceAllocation{AllocationID: "deterministic-root", Revision: 1, MaxTotalTokens: 10000}
+	parent, err := deps.registry.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground, InferenceAllocation: &funding})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = deps.registry.MarkRunning(ctx, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	q.RunID = string(parent.ID)
+	ctx = llm.WithInferenceAllocationTask(ctx, &funding, string(parent.ID))
+	step := &deterministic.SpawnAndAwaitStep{StepID: "funded-child", Kind: tasks.KindBackground, SpecBuilder: func(planner.RunContext) (planner.SpawnSpec, error) {
+		return planner.SpawnSpec{Description: "funded background work", Query: "work"}, nil
+	}, OnResolved: func(planner.RunContext, []tasks.MemberOutcome) (planner.Decision, error) {
+		return planner.Finish{Reason: planner.FinishGoal}, nil
+	}}
+	p, err := deterministic.NewDeterministicPlanner(deterministic.WithSteps(step), deterministic.WithRegistry(deps.registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := p.Next(ctx, planner.RunContext{Quadruple: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decision.(planner.SpawnTask); !ok {
+		t.Fatalf("first decision=%T", decision)
+	}
+	summaries, err := deps.registry.List(ctx, q.Identity, tasks.TaskFilter{})
+	if err != nil || len(summaries) != 2 {
+		t.Fatalf("tasks=%+v err=%v", summaries, err)
+	}
+	for _, summary := range summaries {
+		if summary.ID == parent.ID {
+			continue
+		}
+		child, e := deps.registry.Get(ctx, summary.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if child.ParentTaskID == nil || *child.ParentTaskID != parent.ID || child.AllocationTaskID != string(parent.ID) || child.InferenceAllocation == nil || *child.InferenceAllocation != funding {
+			t.Fatalf("child lost canonical funding lineage: %+v", child)
+		}
+	}
+	decision, err = p.Next(ctx, planner.RunContext{Quadruple: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decision.(planner.AwaitTask); !ok {
+		t.Fatalf("second decision=%T", decision)
+	}
+}
+
+func TestSpawnAndAwaitStep_SameSessionLabelIsolatesEveryOwner(t *testing.T) {
+	for _, resolved := range []bool{false, true} {
+		t.Run(fmt.Sprintf("resolved=%t", resolved), func(t *testing.T) {
+			deps := mustStepsDeps(t)
+			step := &deterministic.SpawnAndAwaitStep{StepID: "shared-step", Kind: tasks.KindBackground, SpecBuilder: func(planner.RunContext) (planner.SpawnSpec, error) {
+				return planner.SpawnSpec{Description: "required owner work"}, nil
+			}, OnResolved: func(planner.RunContext, []tasks.MemberOutcome) (planner.Decision, error) {
+				return planner.Finish{Reason: planner.FinishGoal}, nil
+			}}
+			p, err := deterministic.NewDeterministicPlanner(deterministic.WithSteps(step, &deterministic.FinishStep{Reason: planner.FinishGoal}), deterministic.WithRegistry(deps.registry))
+			if err != nil {
+				t.Fatal(err)
+			}
+			owners := []identity.Identity{{TenantID: "t1", UserID: "u1", SessionID: "shared"}, {TenantID: "t1", UserID: "u2", SessionID: "shared"}, {TenantID: "t2", UserID: "u1", SessionID: "shared"}}
+			seen := map[tasks.TaskGroupID]bool{}
+			for i, id := range owners {
+				ctx, e := identity.With(t.Context(), id)
+				if e != nil {
+					t.Fatal(e)
+				}
+				rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: "owning-run"}}
+				first, e := p.Next(ctx, rc)
+				if e != nil {
+					t.Fatal(e)
+				}
+				spawn, ok := first.(planner.SpawnTask)
+				if !ok || seen[spawn.GroupID] {
+					t.Fatalf("owner %d inherited prior owner's state: %T %+v", i, first, first)
+				}
+				seen[spawn.GroupID] = true
+				second, e := p.Next(ctx, rc)
+				if e != nil {
+					t.Fatal(e)
+				}
+				await, ok := second.(planner.AwaitTask)
+				if !ok {
+					t.Fatalf("owner %d next=%T", i, second)
+				}
+				child, e := deps.registry.Get(ctx, await.TaskID)
+				if e != nil || child.Identity.Identity != id {
+					t.Fatalf("owner %d child=%+v err=%v", i, child, e)
+				}
+				if i == 0 && resolved {
+					if e = deps.registry.MarkRunning(ctx, await.TaskID); e != nil {
+						t.Fatal(e)
+					}
+					if e = deps.registry.MarkComplete(ctx, await.TaskID, tasks.TaskResult{Value: json.RawMessage(`"done"`)}); e != nil {
+						t.Fatal(e)
+					}
+					if _, e = p.Next(ctx, rc); e != nil {
+						t.Fatal(e)
+					}
+				} else if i == 0 {
+					rc.Quadruple.RunID = "next-run-same-session"
+					continued, e := p.Next(ctx, rc)
+					if e != nil {
+						t.Fatal(e)
+					}
+					same, ok := continued.(planner.AwaitTask)
+					if !ok || same.TaskID != await.TaskID {
+						t.Fatalf("same owner/session lost continuation: %T %+v", continued, continued)
+					}
+				}
+			}
+		})
 	}
 }

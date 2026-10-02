@@ -100,6 +100,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateSessions,
 		c.validatePauseResume,
 		c.validateArtifacts,
+		c.validateArtifactTransfer,
 		c.validateTasks,
 		c.validateDistributed,
 		c.validateMemory,

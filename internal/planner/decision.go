@@ -490,9 +490,12 @@ func (RequestPause) isDecision() {}
 // json.RawMessage or []byte payload is captured verbatim, bytes
 // unchanged.
 type Finish struct {
-	Reason   FinishReason
-	Payload  any
-	Metadata map[string]any
+	// IncorporatedInputRevision is stamped by the runtime after terminal
+	// admission. Planner-supplied values are never trusted.
+	IncorporatedInputRevision uint64
+	Reason                    FinishReason
+	Payload                   any
+	Metadata                  map[string]any
 }
 
 func (Finish) isDecision() {}

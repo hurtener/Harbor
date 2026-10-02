@@ -343,3 +343,6 @@ owner. See the
 [serving example](examples/serve.yaml), and
 [implementation status](docs/plans/phase-269-retained-session-context.md).
 Final coverage, release gates and matched live RC acceptance remain unfinished.
+
+Recipient-admitted runtime artifact copies, exact final-answer export, and
+content-free transfer receipts are documented in [Protocol operations](docs/skills/use-the-harbor-protocol/SKILL.md).

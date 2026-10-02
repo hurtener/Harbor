@@ -310,7 +310,7 @@ type SpawnAndAwaitStep struct {
 
 	// Internal fields. The registry is bound by the planner's
 	// constructor via bindRegistry. The state map is keyed by
-	// `(SessionID, StepID)`; values are *spawnState.
+	// `(tenant, user, session, StepID)`; values are *spawnState.
 	mu       sync.Mutex
 	registry tasks.TaskRegistry
 	states   sync.Map
@@ -334,8 +334,13 @@ func (s *SpawnAndAwaitStep) stateKey(q identity.Quadruple) string {
 	return q.SessionID + "::" + s.stepID()
 }
 
+type spawnStateKey struct {
+	identity identity.Identity
+	stepID   string
+}
+
 func (s *SpawnAndAwaitStep) getState(q identity.Quadruple) *spawnState {
-	key := s.stateKey(q)
+	key := spawnStateKey{identity: q.Identity, stepID: s.stepID()}
 	if existing, ok := s.states.Load(key); ok {
 		st, _ := existing.(*spawnState) //nolint:errcheck // states map values are always *spawnState by construction
 		return st
@@ -364,10 +369,10 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 
 	state := s.getState(rc.Quadruple)
 
-	// Per-`(SessionID, StepID)` state transitions forward only:
+	// Per-owner-session step state transitions forward only:
 	//   empty → spawned → resolved.
-	// Concurrent reuse across runs uses distinct map keys (the
-	// `(SessionID, StepID)` tuple) → distinct *spawnState values.
+	// Different owner sessions use distinct map keys (the full identity
+	// triple plus StepID). Runs in one owner session continue the same step.
 	// state.mu serialises concurrent invocations that DO share a
 	// key, so the field reads/writes below are race-free under the
 	// contract regardless of how callers key their runs.
@@ -403,7 +408,12 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 		}
 		groupID = group.ID
 
+		// The runtime-owned run is also the group's owner. Preserve that
+		// parent on the canonical child so funding and cancellation lineage
+		// cannot disappear at this planner's direct registry seam.
+		parentTaskID := tasks.TaskID(rc.Quadruple.RunID)
 		spawnReq := tasks.SpawnRequest{
+			ParentTaskID:   &parentTaskID,
 			Identity:       rc.Quadruple,
 			Kind:           s.kindOrBackground(),
 			Description:    spec.Description,

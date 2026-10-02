@@ -44,10 +44,24 @@ function okFetch() {
 }
 
 const SCOPE = { tenant: 't1', user: 'u1', session: 's1' };
+const GRANT = {
+ version: 1, key_id: 'fixture', transfer_id: 'copy', purpose: 'fixture',
+ source: { audience: 'source', ...SCOPE, epoch: 1 },
+ destination: { audience: 'target', ...SCOPE, epoch: 1 },
+ artifact_id: 'artifact', sha256: 'a'.repeat(64), mime_type: 'text/plain', size_bytes: 1,
+ issued_at: '2026-10-01T00:00:00Z', expires_at: '2026-10-01T00:01:00Z', signature: 'fixture-only'
+};
+
 
 describe('identity-less request types do not receive the body identity fold (D-374)', () => {
 	for (const [name, invoke] of [
 		['artifacts.list', (c: HarborClient) => c.artifacts.list({ scope: SCOPE })],
+ ['artifacts.prepare_import', (c: HarborClient) => c.artifacts.prepareImport({ scope: SCOPE, grant: GRANT })],
+ ['artifacts.transfer', (c: HarborClient) => c.artifacts.transfer({ scope: SCOPE, grant: GRANT })],
+ ['artifacts.transfer_status', (c: HarborClient) => c.artifacts.transferStatus({ scope: SCOPE, transfer_id: 'copy', direction: 'import' })],
+ ['artifacts.revoke_transfer', (c: HarborClient) => c.artifacts.revokeTransfer({ scope: SCOPE, transfer_id: 'copy', direction: 'import' })],
+ ['artifacts.export_answer', (c: HarborClient) => c.artifacts.exportAnswer({ scope: SCOPE, request_id: 'answer', task_id: 'task', turn_id: 'turn', turn_version: 1, answer_sequence: 1, sha256: 'a'.repeat(64), size_bytes: 1 })],
+
 		[
 			'artifacts.put',
 			(c: HarborClient) => c.artifacts.put({ scope: SCOPE, bytes: '', opts: {} })

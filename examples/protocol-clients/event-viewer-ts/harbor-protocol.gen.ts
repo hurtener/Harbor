@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:2c19281e5885298d23b29e047cda27ecbd587b58c3602e36ace16c349355e8d1";
+export const WIRE_SURFACE_DIGEST = "sha256:c0bca445d3a4d344dcf3f2436ec1834b29a7961c4197131c511ce5d7c3ec92f7";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -83,12 +83,18 @@ export type HarborMethod =
   | "agents.tools"
   | "approve"
   | "artifacts.delete"
+  | "artifacts.export_answer"
   | "artifacts.get"
   | "artifacts.get_ref"
   | "artifacts.list"
+  | "artifacts.prepare_import"
   | "artifacts.put"
+  | "artifacts.revoke_transfer"
+  | "artifacts.transfer"
+  | "artifacts.transfer_status"
   | "auth.rotate_token"
   | "cancel"
+  | "control.receipt"
   | "events.aggregate"
   | "events.list"
   | "events.subscribe"
@@ -181,9 +187,15 @@ export type HarborErrorCode =
   | "agent_pack_copy_idempotency_conflict"
   | "agent_retired"
   | "agent_retirement_conflict"
+  | "artifact_transfer_conflict"
+  | "artifact_transfer_expired"
+  | "artifact_transfer_in_progress"
+  | "artifact_transfer_revoked"
   | "auth_rejected"
+  | "control_receipt_conflict"
   | "identity_required"
   | "identity_scope_required"
+  | "inference_allocation_pricing_unavailable"
   | "invalid_cursor"
   | "invalid_request"
   | "not_found"
@@ -236,7 +248,9 @@ export type HarborEventType =
   | "agent_config.retirement.completed"
   | "agent_config.retirement.progress"
   | "agent_config.retirement.started"
+  | "artifacts.answer_export"
   | "artifacts.deleted"
+  | "artifacts.transfer"
   | "artifacts.uploaded"
   | "audit.admin_scope_used"
   | "audit.redaction_failed"
@@ -1622,6 +1636,44 @@ export interface ArtifactScope {
   task?: string;
 }
 
+export interface ArtifactTransferEndpoint {
+  audience: string;
+  tenant: string;
+  user: string;
+  session: string;
+  epoch: number;
+}
+
+export interface ArtifactTransferGrant {
+  version: number;
+  key_id: string;
+  transfer_id: string;
+  purpose: string;
+  source: ArtifactTransferEndpoint;
+  destination: ArtifactTransferEndpoint;
+  artifact_id: string;
+  sha256: string;
+  mime_type: string;
+  size_bytes: number;
+  issued_at: string;
+  expires_at: string;
+  signature: string;
+}
+
+export interface ArtifactTransferReceipt {
+  transfer_id: string;
+  grant_sha256: string;
+  state: string;
+  source: ArtifactTransferEndpoint;
+  destination: ArtifactTransferEndpoint;
+  source_artifact_id: string;
+  destination_artifact_id?: string;
+  sha256: string;
+  mime_type: string;
+  size_bytes: number;
+  expires_at: string;
+}
+
 export interface ArtifactsDeleteRequest {
   scope: ArtifactScope;
   id: string;
@@ -1630,6 +1682,30 @@ export interface ArtifactsDeleteRequest {
 export interface ArtifactsDeleteResponse {
   deleted: boolean;
   protocol_version: string;
+}
+
+export interface ArtifactsExportAnswerRequest {
+  scope: ArtifactScope;
+  request_id: string;
+  task_id: string;
+  turn_id: string;
+  turn_version: number;
+  answer_sequence: number;
+  sha256: string;
+  size_bytes: number;
+}
+
+export interface ArtifactsExportAnswerResponse {
+  request_id: string;
+  artifact_id: string;
+  sha256: string;
+  mime_type: string;
+  size_bytes: number;
+  task_id: string;
+  turn_id: string;
+  turn_version: number;
+  answer_sequence: number;
+  incorporated_input_revision: number;
 }
 
 export interface ArtifactsGetRefRequest {
@@ -1697,6 +1773,17 @@ export interface ArtifactsPutResponse {
   protocol_version: string;
 }
 
+export interface ArtifactsTransferRequest {
+  scope: ArtifactScope;
+  grant: ArtifactTransferGrant;
+}
+
+export interface ArtifactsTransferStatusRequest {
+  scope: ArtifactScope;
+  transfer_id: string;
+  direction: string;
+}
+
 export interface AuthRotateTokenRequest {
   identity: IdentityScope;
 }
@@ -1706,13 +1793,36 @@ export interface AuthRotateTokenResponse {
   expires_at: string;
 }
 
+export interface ControlReceipt {
+  event_id: string;
+  task_id: string;
+  input_revision: number;
+  status: string;
+  reason?: string;
+  accepted_at?: number;
+  applied_at?: number;
+  terminal_at?: number;
+}
+
+export interface ControlReceiptRequest {
+  identity: IdentityScope;
+  event_id: string;
+}
+
+export interface ControlReceiptResponse {
+  receipt: ControlReceipt;
+  protocol_version: string;
+}
+
 export interface ControlRequest {
+  expected_input_revision?: number;
   identity: IdentityScope;
   payload?: Record<string, unknown>;
   event_id?: string;
 }
 
 export interface ControlResponse {
+  receipt?: ControlReceipt;
   accepted: boolean;
   method: string;
   protocol_version: string;
@@ -2050,6 +2160,36 @@ export interface IdentityTierView {
   budget_ceiling_usd: number;
   rate_limit: RateLimitView;
   max_tokens: number;
+}
+
+export interface InferenceAllocation {
+  allocation_id: string;
+  revision: number;
+  max_total_tokens: number;
+  max_cost_micro_usd?: number;
+}
+
+export interface InferenceAllocationReceipt {
+  attempt_id: string;
+  reserved_tokens: number;
+  settled_tokens: number;
+  unknown_tokens: number;
+  status: string;
+}
+
+export interface InferenceAllocationSnapshot {
+  receipts: InferenceAllocationReceipt[];
+  receipts_truncated: boolean;
+  bound_breached: boolean;
+  allocation_id: string;
+  revision: number;
+  max_total_tokens: number;
+  settled_tokens: number;
+  reserved_tokens: number;
+  unknown_tokens: number;
+  attempt_count: number;
+  guarantee: string;
+  pricing_status: string;
 }
 
 export interface InterventionSummary {
@@ -3407,6 +3547,7 @@ export interface StartRequest {
   external_grant?: unknown;
   provider_route?: LLMProviderRouteSelector;
   llm_settings?: RunLLMSettings;
+  inference_allocation?: InferenceAllocation;
   query?: string;
   description?: string;
   priority?: number;
@@ -3488,6 +3629,9 @@ export interface TaskCostStep {
 }
 
 export interface TaskDetail {
+  input_revision?: number;
+  inference_allocation?: InferenceAllocationSnapshot;
+  incorporated_input_revision?: number;
   task: TaskRow;
   parent_session: TaskParentSessionRef;
   parent_task?: TaskParentTaskRef;

@@ -29,6 +29,9 @@ import "encoding/json"
 // import `internal/planner`; homing it in `internal/tasks` would force
 // a new tasks→planner import edge (tasks is planner-free today).
 type AnswerEnvelope struct {
+	// IncorporatedInputRevision identifies the exact accepted task input
+	// context used by this sealed answer; omitted for historical/plain runs.
+	IncorporatedInputRevision uint64 `json:"incorporated_input_revision,omitempty"`
 	// Answer is the assistant's final answer text extracted from the
 	// Finish payload.
 	Answer string `json:"answer"`
@@ -73,6 +76,10 @@ const (
 	// TaskErrorCodeRunLoopError marks a run whose RunLoop.Run returned
 	// a non-cancellation error.
 	TaskErrorCodeRunLoopError = "runloop_error"
+	// TaskErrorCodeInferenceAllocationExhausted means no funded provider envelope fits.
+	TaskErrorCodeInferenceAllocationExhausted = "inference_allocation_exhausted"
+	// TaskErrorCodeInferenceAllocationUnavailable means the allocation guarantee cannot be established.
+	TaskErrorCodeInferenceAllocationUnavailable = "inference_allocation_unavailable"
 	// TaskErrorCodeCancelled marks a run whose RunLoop.Run surfaced
 	// context.Canceled. The FSM has no auto-cancelled status (Cancel
 	// is the external-caller surface and requires a reason); Failed

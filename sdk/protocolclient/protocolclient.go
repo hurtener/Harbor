@@ -10,6 +10,28 @@ import (
 )
 
 type (
+	// InferenceAllocation is immutable task funding in integer token units.
+	InferenceAllocation = types.InferenceAllocation
+	// InferenceAllocationReceipt is content-free provider-envelope settlement evidence.
+	InferenceAllocationReceipt = types.InferenceAllocationReceipt
+	// InferenceAllocationSnapshot retains cumulative uncertain liability.
+	InferenceAllocationSnapshot = types.InferenceAllocationSnapshot
+
+	// ArtifactsExportAnswerRequest selects exact final-answer bytes without carrying them.
+	ArtifactsExportAnswerRequest = types.ArtifactsExportAnswerRequest
+	// ArtifactsExportAnswerResponse is an immutable source artifact receipt.
+	ArtifactsExportAnswerResponse = types.ArtifactsExportAnswerResponse
+	// ArtifactTransferGrant is signed exact-copy authority.
+	ArtifactTransferGrant = types.ArtifactTransferGrant
+	// ArtifactTransferEndpoint binds the runtime audience and owner.
+	ArtifactTransferEndpoint = types.ArtifactTransferEndpoint
+	// ArtifactTransferReceipt is content-free durable transfer evidence.
+	ArtifactTransferReceipt = types.ArtifactTransferReceipt
+	// ArtifactsTransferRequest selects one signed transfer.
+	ArtifactsTransferRequest = types.ArtifactsTransferRequest
+	// ArtifactsTransferStatusRequest selects an owner-scoped receipt.
+	ArtifactsTransferStatusRequest = types.ArtifactsTransferStatusRequest
+
 	// Client is the curated concurrent-safe REST/SSE Protocol client interface.
 	Client = internal.Client
 	// RuntimeClient is the additive Runtime inspection/control client,
@@ -88,7 +110,10 @@ type (
 	// PauseListResponse is the pause.list response.
 	PauseListResponse = types.PauseListResponse
 	// ControlRequest is the shared steering-control request.
-	ControlRequest = types.ControlRequest
+	ControlRequest         = types.ControlRequest
+	ControlReceipt         = types.ControlReceipt
+	ControlReceiptRequest  = types.ControlReceiptRequest
+	ControlReceiptResponse = types.ControlReceiptResponse
 	// ControlResponse is the shared steering-control response.
 	ControlResponse = types.ControlResponse
 	// ArtifactsPutRequest is the artifacts.put request.
@@ -151,6 +176,8 @@ const (
 	MethodPrioritize = methods.MethodPrioritize
 	// MethodUserMessage injects a user message.
 	MethodUserMessage = methods.MethodUserMessage
+	// MethodControlReceipt reads an exact retained input receipt.
+	MethodControlReceipt = methods.MethodControlReceipt
 )
 
 var (

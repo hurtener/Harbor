@@ -11,7 +11,6 @@
     "AgentToolsRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "AuthRotateTokenRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "ControlRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
-    "ControlResponse": "response narrowed inline at the call site; not declared as a named TS interface",
     "Deprecation": "version-handshake / deprecation meta surface not rendered by the Console as a named TS interface",
     "Error": "Protocol error wire type surfaced through the client error path (src/lib/protocol/errors.ts ProtocolError), not as a raw wire interface",
     "GovernanceRotateKeyRequest": "admin governance key-rotation request body sent inline via the generic HarborClient namespace; carries a SECRET (key) — not declared as a named TS interface to keep the secret off typed surfaces",

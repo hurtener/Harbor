@@ -10,6 +10,33 @@ metadata:
 
 # Use the Harbor Protocol
 
+## Exact-task text clarification receipts
+
+Send a text-only `user_message` with an exact `identity.run` and a nonempty
+`event_id` (at most 128 bytes) to obtain an input receipt. The payload must be
+exactly `{"message":"..."}` and keeps the normal 4096-character control limit.
+Do not use this contract for attachments, approval, cancellation, or other
+control verbs.
+
+Persist the caller event ID before submission. After a lost response, read
+`POST /v1/control/control.receipt` with the same identity and event ID, or retry
+the identical `user_message`. A changed payload under the same key receives
+HTTP 409 / `control_receipt_conflict`. Each task retains at most 256 receipts;
+old keys are never evicted to admit new ones.
+
+Read the receipt status rather than interpreting enqueue or stream events as
+consumption. `accepted` means recorded for delivery; `applied` means a planning
+invocation consumed it; `declined` and `terminal` mean it will not newly apply.
+A task result's `incorporated_input_revision` identifies the context used for
+its sealed answer. An applied receipt alone does not prove successful output.
+
+Negotiate `durable_task_input_receipts_v1` for cross-process guarantees. It is
+advertised only with `tasks.driver: durable` and persistent SQLite/Postgres
+state. The in-process driver provides process-lifetime idempotency only.
+Runtime restart does not relaunch a task: interrupted running work fails, and
+pending inputs on an unavailable paused run become terminal receipts. Receipt
+lookup never resumes or creates execution.
+
 ## MCP source ownership
 
 Use returned MCP source/tool IDs for new calls. Boot-configured infrastructure
@@ -1081,3 +1108,51 @@ key conflicts. A present bundle skips the legacy next-message slot. Omitted
 fields use runtime/agent defaults, an empty reasoning value requests provider
 defaults, and `off` disables thinking. No preference is saved and no restart is
 needed. Governance and selected-model support remain authoritative.
+
+## Recipient-admitted artifact copies
+
+Check runtime.info for artifact_transfer_v1; require durable_artifact_transfer_v1
+when restart persistence matters. Transfer currently requires inmem, SQLite-blob
+or Postgres-blob artifact storage, plus explicitly acknowledged fence-aware
+shared-store writers. FS/S3 fail closed. New SQL artifact migration 0003 must be
+applied before verify-mode boot. Do not enable trust keys or change production
+configuration as an implicit side effect of using this guide.
+
+The coordinator signs an exact content-free grant binding both runtime audiences,
+owner triples, policy epochs, source artifact ID/full SHA-256, MIME, byte size
+and expiry. Keep signed grants out of model context and normal logs. The
+recipient owner first calls artifacts.prepare_import; the source owner then
+calls artifacts.transfer. Bytes go directly to a boot-pinned recipient endpoint.
+No caller URL, redirect, broad bearer, download/reupload or provider ingestion is
+part of this flow. Use artifacts.transfer_status for durable evidence and
+artifacts.revoke_transfer only before dispatch. A completed receipt is past
+delivery evidence, not continuing read permission or independently observed
+network sender identity.
+
+For a sealed inline final answer, artifacts.export_answer accepts an exact
+owner/task/turn/version/answer-sequence selector with the UTF-8 answer's digest
+and byte length. The runtime materializes only that final answer into an
+immutable source artifact, preserves incorporated-input revision and returns
+metadata. Never create this artifact by copying a transcript or reading bytes
+through the coordinator. A stale source or conflicting request ID is refused.
+
+## Cumulative task allocations
+
+Negotiate `task_inference_allocation_v1` before sending `inference_allocation`
+with Start. For process-restart continuity, also require durable tasks and
+SQLite/Postgres state, verifiable through `durable_task_input_receipts_v1` or
+the runtime driver posture. An in-memory store only retains its own lifetime. Supply an immutable allocation ID, positive revision and positive
+`max_total_tokens`. Exact Start retries reuse the task and cap. Descendants,
+helpers, retries and resumes share the durable allowance. Inspect
+`tasks.get.inference_allocation`; reserved capacity includes unknown liability
+and cannot be assumed refundable after cancellation. `guarantee: tokens` and
+`pricing_status: unavailable` are deliberate. A hard `max_cost_micro_usd` is
+refused until trusted inclusive pricing is installed through a supported future
+contract; token capacity is not a dollar guarantee.
+
+For active text clarification, read `tasks.get.input_revision` (absence means
+zero), then send it as `expected_input_revision` alongside the keyed
+`user_message`. A stale new request returns `revision_conflict` before changing
+the inbox. Refresh before constructing a new intent; never change an existing
+event key's payload or expectation. Receipts remain scoped to the one runtime
+owning the active task; simultaneous task-registry writers are unsupported.

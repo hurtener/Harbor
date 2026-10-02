@@ -16098,3 +16098,81 @@ writes. Agent-wide settings and sibling session/tenant settings are preserved.
 The existing configuration Protocol is unchanged. Selecting the new store does
 not recover old in-memory revisions; operators must explicitly restore approved
 settings through the existing authenticated configuration surface.
+
+## D-486 — Exact-content recipient-admitted artifact copies
+
+**Date:** 2026-10-01. **Scope:** Phase 270.
+
+Cross-runtime copies preserve the source artifact isolation key. A coordinator
+signs one content-free intent binding both runtime audiences and owner triples,
+exact source artifact ID and full SHA-256 version identity, MIME, byte length,
+purpose, policy epochs and a short expiry. The recipient independently ratifies
+that exact intent through its owner-authenticated Protocol before any bytes move.
+The source owner then requests direct delivery to an operator-pinned peer. No
+caller-controlled URL, redirect, public link, credential or coordinator byte
+proxy is introduced. The import-only edge checks the signature and durable
+recipient admission; these authorize exact content import, not independent
+network-sender identity. Source lineage is the signed authorization claim.
+
+Durable conditional records preserve exact idempotency. Importing/exporting
+states mean movement may have begun: revocation refuses to claim rollback.
+Completed receipts bind both scoped artifact IDs and the immutable digest, but
+do not replace fresh read authorization. A deterministic destination namespace
+allows crash recovery after blob storage without duplicate bytes. Expiry blocks
+new movement; a currently authenticated recipient may seal the receipt for a
+previously stored exact blob. Epoch changes reject prior unexecuted authority.
+The mechanism reuses the StateStore persistence triad. Transfer admission
+requires the explicit atomic artifact-scope-fence capability, implemented by
+in-memory, SQLite-blob and Postgres-blob drivers. FS/S3 do not yet supply that
+proof and fail closed when transfer is enabled. Each supported byte store
+serializes every Put with a permanent owner tombstone inside its own lock or
+transaction. Session deletion fences before its sweep, so a paused writer
+cannot resurrect bytes after successful erasure; no cross-store transaction,
+process-local lease, or expiry-based release of unknown delivery is used.
+Enablement requires explicit acknowledgement that all shared-store writers
+honor the fence or have stopped. The erasure hook remains wired whenever the
+artifact driver supports it, independent of the transfer feature toggle or
+current trust keys.
+
+## D-487 — Exact-task text input receipts and sealed provenance
+
+**Date:** 2026-10-01. **Scope:** Phase 271.
+
+Caller-keyed text-only user messages use the canonical task record as their
+bounded receipt ledger. An exact retry returns the retained content-free
+receipt; changing its text or expected accepted-input revision conflicts.
+Optional `expected_input_revision` is checked at admission under the owning
+runtime's task lock before the inbox is interrupted. `tasks.get.input_revision`
+is the accepted counter; `incorporated_input_revision` names only the planning
+invocation admitted as the sealed result. Neither accepted nor applied receipt
+status alone promises successful final output.
+
+Runtime steering remains the only executor. Consumption is persisted after the
+planner observes the projected input and before its decision executes. Terminal
+transitions atomically resolve unconsumed receipts. Restart retains evidence,
+never automatically relaunches work. The existing durable TaskRegistry is a
+single-active-runtime store: its cached rows and restart recovery are not a
+multi-writer active-task service. Cross-process durability means restart
+reconstruction, not simultaneous task ownership. Capabilities require durable
+tasks over SQLite or PostgreSQL state. Unkeyed controls remain process-local.
+
+## D-488 — Cumulative token allocation with conservative liability
+
+**Date:** 2026-10-01. **Scope:** Phase 272.
+
+An immutable allocation binds accepted task intent and is inherited unchanged
+by same-identity descendants. A StateStore conditional batch reserves a bounded
+provider envelope before transport. Helpers, retry and resume calls consume the
+same allocation. Missing authoritative usage, interrupted transport or process
+loss retains the unknown liability; elapsed time never refunds it. Measured
+usage above the bound latches a breach and blocks further attempts.
+
+The current guarantee is integer tokens only. A hard monetary request is
+explicitly refused with `inference_allocation_pricing_unavailable`. The provider
+catalog exposes pricing availability/provenance rather than a versioned tariff;
+model cost overrides and returned receipts provide post-call estimates or
+settlement data, not inclusive pre-dispatch ceilings. Monetary support requires
+an immutable trusted provider/model/version tariff covering input, output,
+reasoning, cache, per-request and ancillary charges, checked integer arithmetic,
+and reservation/settlement provenance for every attempt. No guessed price or
+provider-returned cost establishes that guarantee.

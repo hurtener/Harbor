@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/artifacts/transfer"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -257,6 +258,7 @@ type CascadeEraser struct {
 	turnsProjection    TurnsProjectionEraser
 	rollupsProjection  ProjectionFencer
 	configurationState state.StateStore
+	artifactTransfers  ArtifactTransferFencer
 
 	// eraseLocks stripes a fixed-size array of mutexes over the
 	// (tenant, user, session) key so concurrent Erase calls for the SAME
@@ -279,15 +281,23 @@ const eraseLockShards = 256
 // State, Memory, Artifacts, and Bus are mandatory; Skills is optional when a
 // runtime has no configured legacy SkillStore. Redactor, Clock, and Logger are
 // optional.
+// ArtifactTransferFencer closes new and in-flight byte writes before erasure.
+// Implementations must fence atomically in the artifact storage transaction.
+type ArtifactTransferFencer interface {
+	FenceSession(context.Context, identity.Identity) error
+}
+
 type CascadeEraserDeps struct {
-	Registry  *Registry
-	State     state.StateStore
-	Artifacts artifacts.ArtifactStore
-	Skills    skills.SkillStore
-	Bus       events.EventBus
-	Redactor  audit.Redactor
-	Clock     Clock
-	Logger    *slog.Logger
+	// ArtifactTransfers is configured only with the explicit transfer capability.
+	ArtifactTransfers ArtifactTransferFencer
+	Registry          *Registry
+	State             state.StateStore
+	Artifacts         artifacts.ArtifactStore
+	Skills            skills.SkillStore
+	Bus               events.EventBus
+	Redactor          audit.Redactor
+	Clock             Clock
+	Logger            *slog.Logger
 
 	// TurnsProjection / RollupsProjection are the OPTIONAL HA-64 / HA-65
 	// durable projection erasure seams. When wired the cascade fences
@@ -348,6 +358,18 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// A store that can fence byte commits must keep doing so even if the
+	// transfer feature is disabled later or on another replica. Otherwise a
+	// previously admitted writer could outlive this instance's deletion sweep.
+	if deps.ArtifactTransfers == nil {
+		if _, ok := deps.Artifacts.(artifacts.ScopeFencer); ok {
+			fence, err := transfer.NewErasureFence(deps.State, deps.Artifacts)
+			if err != nil {
+				return nil, fmt.Errorf("sessions: artifact erasure fence: %w", err)
+			}
+			deps.ArtifactTransfers = fence
+		}
+	}
 	return &CascadeEraser{
 		registry: deps.Registry,
 		state:    deps.State,
@@ -361,6 +383,7 @@ func NewCascadeEraser(deps CascadeEraserDeps) (*CascadeEraser, error) {
 		turnsProjection:    deps.TurnsProjection,
 		rollupsProjection:  deps.RollupsProjection,
 		configurationState: deps.ConfigurationState,
+		artifactTransfers:  deps.ArtifactTransfers,
 	}, nil
 }
 
@@ -578,6 +601,12 @@ func (e *CascadeEraser) Erase(ctx context.Context, id identity.Identity) (protot
 		return zero, err
 	}
 
+	if e.artifactTransfers != nil {
+		if err := e.artifactTransfers.FenceSession(ctx, id); err != nil {
+			return zero, err
+		}
+	}
+
 	// 3. Artifacts — checkpoint immediately so an interruption before the
 	//    next step never loses this attempt's contribution (#410).
 	artifactsDeleted, err := e.eraseArtifacts(ctx, id)
@@ -679,6 +708,11 @@ func (e *CascadeEraser) convergeStaleLedger(ctx context.Context, id identity.Ide
 // gone but a ledger checkpoint still pending).
 func (e *CascadeEraser) completeErasure(ctx context.Context, id identity.Identity, ledger erasureLedgerRecord) (prototypes.SessionsDeleteResponse, error) {
 	var zero prototypes.SessionsDeleteResponse
+	if e.artifactTransfers != nil {
+		if err := e.artifactTransfers.FenceSession(ctx, id); err != nil {
+			return zero, err
+		}
+	}
 	if err := e.eraseConfiguration(ctx, id); err != nil {
 		return zero, err
 	}

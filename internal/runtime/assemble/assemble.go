@@ -59,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/allocation"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
@@ -646,6 +647,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		liveKey := llm.NewLiveKey()
 		llmClient, llmErr := llm.Open(ctx, llmCfg, llm.Deps{
 			Artifacts:     artStore,
+			Allocations:   allocation.New(stateStore),
 			Bus:           bus,
 			LiveKey:       liveKey,
 			ExternalGrant: externalGrant,

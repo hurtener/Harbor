@@ -12,6 +12,13 @@ import (
 
 // Client + request/response vocabulary — aliases of the internal types.
 type (
+	// InferenceAllocation is immutable cumulative task token funding.
+	InferenceAllocation = internal.InferenceAllocation
+	// AllocationSnapshot exposes content-free cumulative liabilities.
+	AllocationSnapshot = internal.AllocationSnapshot
+	// AllocationStore is the durable provider-attempt accounting seam.
+	AllocationStore = internal.AllocationStore
+
 	// LLMClient is the provider-corrected completion client interface.
 	LLMClient = internal.LLMClient
 	// ConfigSnapshot is the resolved LLM configuration a client opens with.
@@ -379,3 +386,30 @@ const EventTypeContextPrepared = internal.EventTypeContextPrepared
 
 // EstimateRequestTokenSections partitions the same estimate used for admission.
 var EstimateRequestTokenSections = internal.EstimateRequestTokenSections
+
+// WithInferenceAllocation attaches explicitly accepted funding to a stable run context.
+var WithInferenceAllocation = internal.WithInferenceAllocation
+
+// ValidateInferenceAllocation validates finite task funding and refuses unpriced cost.
+var ValidateInferenceAllocation = internal.ValidateInferenceAllocation
+
+// AllocationReceipt is a bounded content-free settlement witness.
+type AllocationReceipt = internal.AllocationReceipt
+
+// AllocationBoundedDriver declares a finite physical provider-attempt envelope.
+type AllocationBoundedDriver = internal.AllocationBoundedDriver
+
+// ErrAllocationExhausted refuses a provider envelope that exceeds remaining funding.
+var ErrAllocationExhausted = internal.ErrAllocationExhausted
+
+// ErrAllocationInvalid refuses changed or malformed immutable funding.
+var ErrAllocationInvalid = internal.ErrAllocationInvalid
+
+// ErrAllocationPricingUnavailable refuses unconfigured hard monetary guarantees.
+var ErrAllocationPricingUnavailable = internal.ErrAllocationPricingUnavailable
+
+// ErrAllocationBoundUnavailable refuses a provider without a trusted finite bound.
+var ErrAllocationBoundUnavailable = internal.ErrAllocationBoundUnavailable
+
+// ErrAllocationBoundViolated reports observed usage exceeding its reserved bound.
+var ErrAllocationBoundViolated = internal.ErrAllocationBoundViolated

@@ -521,6 +521,16 @@ or cold execution relaunch is introduced. See
 
 ### 6.3 Steering and the unified pause/resume primitive
 
+**Exact-task input receipts (D-487).** A caller-keyed text `user_message` may
+include an expected accepted-input revision. Admission checks that precondition
+under the owning runtime's task lock, persists the immutable request identity,
+and returns content-free evidence. Exact retries recover the same receipt;
+changed text or expectation conflicts. Applied means a planner invocation
+consumed the projected input before its resulting decision executes. Sealed
+answers carry that invocation's incorporated input revision. Restart preserves
+evidence, never automatically resumes execution. This uses the existing
+single-active-runtime TaskRegistry; concurrent runtime ownership is not implied.
+
 **Same-run step tranches.** A configured finite tranche charges each
 completed nonterminal planner decision exactly once, including control and
 task decisions, tool-dispatch failures, and unavailable executor paths.
@@ -1636,6 +1646,20 @@ does any identity, task-id, or run-id disagreement.
 
 ### 6.10 Artifacts
 
+**Recipient-admitted direct copies (D-486).** Cross-runtime artifact transfer is
+an explicit two-owner operation. It uses coordinator-signed exact-content
+authority and a durable recipient admission, then moves bytes directly from
+the authenticated source runtime to a boot-trusted recipient. The signed
+identity, audience, SHA-256 version, MIME, size, expiry and policy epochs are
+immutable. No coordinator byte proxy or implicit knowledge ingestion is used.
+Receipt replay and crash recovery reuse StateStore conditional writes. A signed
+import capability authenticates permitted content and destination, not the
+network sender; a completed receipt is evidence of past delivery, not current
+read access. Revocation cannot undo an already dispatched copy. Transfer
+enablement requires atomic same-store owner-scope fencing (inmem, SQLite-blob
+and Postgres-blob); FS/S3 fail closed. Session erasure fences every late byte
+write before its artifact sweep, without cross-store transaction callbacks.
+
 **MCP App callback and tool-context contracts (settled).** MCP discovery
 preserves provider-authored `_meta.ui.visibility` declarations containing
 `app` in an internal per-server callback catalog alongside the planner
@@ -2251,6 +2275,14 @@ Slog + OpenTelemetry from t=0. The Runtime emits events; the events drive both s
 ---
 
 ### 6.15 Governance subsystem
+
+**Cumulative task allocation (D-488).** Accepted immutable task funding bounds
+all provider calls, helper calls, retries, resumes and same-identity descendants.
+StateStore conditional batches reserve a conservative physical-request envelope
+before transport; unknown work stays reserved through cancellation and restart.
+The current public guarantee is tokens only. Hard monetary limits fail closed
+until immutable trusted tariffs can bound every applicable charge before a
+request. Provider-reported pricing and post-call cost estimates are insufficient.
 
 Governance is Harbor's middleware between the Runtime and the `LLMClient` driver. It owns identity-scoped policies — cost accumulators + ceilings, rate limits, per-call token budgets, and (post-V1) key rotation, model swap, failover chains, circuit breakers — that the LLM-call substrate (bifrost) doesn't and shouldn't know about, because it doesn't know Harbor's identity triple.
 

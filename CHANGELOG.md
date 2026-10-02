@@ -17,6 +17,40 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Recipient-admitted direct artifact transfer between boot-pinned runtimes,
+  with exact signed content authority, durable content-free receipts, erasure
+  fences, and immutable export of a canonical sealed final answer.
+- Durable caller-keyed text-input receipts for active tasks, optimistic accepted
+  input revisions, exact retry recovery, and sealed incorporated-input provenance.
+- Immutable cumulative task inference allocations shared with same-owner child
+  tasks. Atomic reservations cover bounded provider attempts and runtime helpers;
+  cancellation, unmeasured attempts and restart retain unknown liability.
+
+### Fixed
+
+- Deterministic spawned tasks preserve their runtime-owned parent and inherited
+  allocation. Shared deterministic steps isolate continuation state by the full
+  tenant/user/session identity, including after another owner's step resolves.
+- Unrepresentable provider usage retains the reserved envelope and latches a
+  bound violation instead of overflowing counters or refunding capacity.
+
+### Action required
+
+- Custom Go Protocol `Client` and `TaskRegistry` implementations must implement
+  the new methods. Wire fields and methods are additive; Protocol stays `0.1.0`.
+- Restart-safe task receipts and allocations require the durable task driver
+  with SQLite or PostgreSQL state. One runtime owns an active task registry;
+  shared active registry ownership is unsupported.
+- Artifact transfer is opt-in and requires explicit coordinator and peer trust
+  plus a fence-capable artifact store. A completed transfer receipt proves past
+  delivery, not current access after deletion or policy changes.
+- Allocations currently guarantee tokens only. Hard monetary caps are refused
+  with `inference_allocation_pricing_unavailable` until trusted inclusive tariff
+  ceilings can bound every provider attempt. Unknown holds never expire into a
+  refund. Allocation acceptance does not grant credentials or authorize spending.
+
 ## [1.32.1] — 2026-09-24
 
 ### Fixed

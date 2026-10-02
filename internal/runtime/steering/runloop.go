@@ -588,6 +588,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	// (called from applyEvent) and Coordinator.Request (called below)
 	// see the run's triple + run on their identity.From(ctx) pathway.
 	runCtx := ctxWithIdentity(ctx, q)
+	inputs, inputErr := rl.restoreInputs(runCtx, &spec, inbox)
+	if inputErr != nil {
+		return planner.Finish{}, fmt.Errorf("steering: restore task inputs: %w", inputErr)
+	}
 
 	// Per-run run-completion-hook state — all stack-local (the
 	// concurrent-reuse contract: per-run state on the run goroutine, never on
@@ -726,6 +730,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			carryEvents = nil
 		}
 
+		orderInputEvents(drained)
 		// --- APPLY: each drained control event's side effect. ---
 		sc := &stepControl{}
 		for _, ev := range drained {
@@ -735,6 +740,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			}
 		}
 		for _, ev := range drained {
+			if ev.InputRevision != 0 {
+				if _, exists := inputs.projected[ev.EventID]; exists {
+					continue
+				}
+			}
 			if ev.Type == ControlCancel && boolFromPayload(ev.Payload, "hard") {
 				// Already interrupted at admission; the terminal arbiter records
 				// this control once, after joining execution and before sealing.
@@ -754,6 +764,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 					spec.Base.Trajectory = &planner.Trajectory{}
 				}
 				applyErr = checkpointSteeringContext(runCtx, spec, ev)
+			}
+			if applyErr == nil && ev.InputRevision != 0 {
+				inputs.projected[ev.EventID] = struct{}{}
+				inputs.revision = max(inputs.revision, ev.InputRevision)
+				inputs.pending = append(inputs.pending, ev)
 			}
 			rl.history.record(q.SessionID, AppliedControl{
 				Type:      ev.Type,
@@ -1063,6 +1078,12 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 
 		decision, nerr := spec.Planner.Next(plannerCtx, rc)
 		currentAttempt := inbox.endAttempt(generation)
+		if nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision) {
+			if inputErr := inputs.consumed(runCtx, rl.applier.taskRegistry, tasks.TaskID(q.RunID)); inputErr != nil {
+				cancelAttempt()
+				return planner.Finish{}, fmt.Errorf("steering: commit consumed task input: %w", inputErr)
+			}
+		}
 		cancelAttempt()
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, err
@@ -1168,6 +1189,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				carryInterruptedAttempt(&spec.Base, rc)
 				continue
 			}
+			d.IncorporatedInputRevision = inputs.revision
 			return d, nil
 
 		case planner.RequestPause:

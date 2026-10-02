@@ -43,6 +43,8 @@ type Code string
 
 // The task-control surface error codes.
 const (
+	// CodeControlReceiptConflict rejects a caller event reused with different text.
+	CodeControlReceiptConflict Code = "control_receipt_conflict"
 	// CodeInvalidRequest — the request was structurally malformed: a
 	// wrong wire type for the method, a nil request, a request body the
 	// surface could not decode into the method's expected shape.
@@ -72,6 +74,17 @@ const (
 	// already ended), a `start` referencing a nonexistent parent task.
 	// Maps from steering.ErrInboxNotFound / tasks.ErrNotFound.
 	CodeNotFound Code = "not_found"
+	// CodeArtifactTransferConflict rejects changed transfer bindings.
+	CodeArtifactTransferConflict Code = "artifact_transfer_conflict"
+	// CodeArtifactTransferExpired rejects expired new movement.
+	CodeArtifactTransferExpired Code = "artifact_transfer_expired"
+	// CodeArtifactTransferRevoked identifies a revoked admission.
+	CodeArtifactTransferRevoked Code = "artifact_transfer_revoked"
+	// CodeArtifactTransferInProgress rejects rollback of dispatched bytes.
+	CodeArtifactTransferInProgress Code = "artifact_transfer_in_progress"
+	// CodeInferenceAllocationPricingUnavailable rejects an unprovable money cap.
+	CodeInferenceAllocationPricingUnavailable Code = "inference_allocation_pricing_unavailable"
+
 	// CodeRestartUnavailable marks a persisted tranche pause that has no
 	// live in-process run loop capable of continuing it.
 	CodeRestartUnavailable Code = "restart_unavailable"
@@ -315,41 +328,47 @@ const (
 // new Protocol error code is a new phase that declares a constant +
 // extends this map; there is no registration escape hatch.
 var canonicalCodes = map[Code]struct{}{
-	CodeInvalidRequest:                   {},
-	CodeIdentityRequired:                 {},
-	CodeScopeMismatch:                    {},
-	CodePayloadInvalid:                   {},
-	CodeUnknownMethod:                    {},
-	CodeNotFound:                         {},
-	CodeRestartUnavailable:               {},
-	CodeRetainedContextUnsettled:         {},
-	CodeRetainedContextUnavailable:       {},
-	CodeRuntimeError:                     {},
-	CodeAuthRejected:                     {},
-	CodeIdentityScopeRequired:            {},
-	CodePresignUnsupported:               {},
-	CodeRequestTooLarge:                  {},
-	CodeSessionRunning:                   {},
-	CodeSessionErased:                    {},
-	CodeRevisionConflict:                 {},
-	CodeAgentPackCopyConflict:            {},
-	CodeAgentPackCopyIdempotencyConflict: {},
-	CodeSessionSkillCutoverPending:       {},
-	CodeSessionSkillReadUnstable:         {},
-	CodeAgentRetired:                     {},
-	CodeAgentRetirementConflict:          {},
-	CodeRenderAdmissionMissing:           {},
-	CodeRenderAdmissionUnavailable:       {},
-	CodeRenderAdmissionInvalid:           {},
-	CodeRenderAdmissionExpired:           {},
-	CodeRenderAdmissionMismatch:          {},
-	CodeRenderAuthorityAmbiguous:         {},
-	CodeSkillImportProposalInvalid:       {},
-	CodeSkillImportProposalExpired:       {},
-	CodeSkillImportPackageInvalid:        {},
-	CodeSkillImportReplaceRequired:       {},
-	CodeQueryBudgetExceeded:              {},
-	CodeInvalidCursor:                    {},
+	CodeInvalidRequest:                        {},
+	CodeIdentityRequired:                      {},
+	CodeScopeMismatch:                         {},
+	CodePayloadInvalid:                        {},
+	CodeUnknownMethod:                         {},
+	CodeNotFound:                              {},
+	CodeArtifactTransferConflict:              {},
+	CodeArtifactTransferExpired:               {},
+	CodeArtifactTransferRevoked:               {},
+	CodeArtifactTransferInProgress:            {},
+	CodeInferenceAllocationPricingUnavailable: {},
+	CodeRestartUnavailable:                    {},
+	CodeRetainedContextUnsettled:              {},
+	CodeRetainedContextUnavailable:            {},
+	CodeRuntimeError:                          {},
+	CodeAuthRejected:                          {},
+	CodeIdentityScopeRequired:                 {},
+	CodePresignUnsupported:                    {},
+	CodeRequestTooLarge:                       {},
+	CodeSessionRunning:                        {},
+	CodeSessionErased:                         {},
+	CodeRevisionConflict:                      {},
+	CodeAgentPackCopyConflict:                 {},
+	CodeAgentPackCopyIdempotencyConflict:      {},
+	CodeSessionSkillCutoverPending:            {},
+	CodeSessionSkillReadUnstable:              {},
+	CodeAgentRetired:                          {},
+	CodeAgentRetirementConflict:               {},
+	CodeRenderAdmissionMissing:                {},
+	CodeRenderAdmissionUnavailable:            {},
+	CodeRenderAdmissionInvalid:                {},
+	CodeRenderAdmissionExpired:                {},
+	CodeRenderAdmissionMismatch:               {},
+	CodeRenderAuthorityAmbiguous:              {},
+	CodeSkillImportProposalInvalid:            {},
+	CodeSkillImportProposalExpired:            {},
+	CodeSkillImportPackageInvalid:             {},
+	CodeSkillImportReplaceRequired:            {},
+	CodeQueryBudgetExceeded:                   {},
+	CodeInvalidCursor:                         {},
+	CodeControlReceiptConflict:                {},
 
 	CodeSkillPublicationConflict:            {},
 	CodeSkillPublicationNotFound:            {},

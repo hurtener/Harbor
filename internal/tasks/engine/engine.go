@@ -287,6 +287,32 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	allocationTaskID := ""
+	if accepted := llm.InferenceAllocationFrom(ctx); accepted != nil {
+		if req.ParentTaskID == nil {
+			return tasks.TaskHandle{}, llm.ErrAllocationInvalid
+		}
+		parent, ok := e.tasks[*req.ParentTaskID]
+		if !ok || parent.InferenceAllocation == nil || *parent.InferenceAllocation != *accepted {
+			return tasks.TaskHandle{}, llm.ErrAllocationInvalid
+		}
+	}
+	if req.ParentTaskID != nil {
+		parent, ok := e.tasks[*req.ParentTaskID]
+		if ok && parent.InferenceAllocation != nil {
+			if !identitiesEqual(parent.Identity.Identity, req.Identity.Identity) {
+				return tasks.TaskHandle{}, tasks.ErrInvalidRequest
+			}
+			if req.InferenceAllocation != nil && *req.InferenceAllocation != *parent.InferenceAllocation {
+				return tasks.TaskHandle{}, llm.ErrAllocationInvalid
+			}
+			req.InferenceAllocation = llm.CloneInferenceAllocation(parent.InferenceAllocation)
+			allocationTaskID = parent.AllocationTaskID
+			if allocationTaskID == "" {
+				allocationTaskID = string(parent.ID)
+			}
+		}
+	}
 	if req.VirtualAgent != nil {
 		parentID := *req.ParentTaskID
 		parent, ok := e.tasks[parentID]
@@ -389,23 +415,25 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		return tasks.TaskHandle{}, err
 	}
 	t := &tasks.Task{
-		ID:                id,
-		Identity:          req.Identity,
-		Kind:              req.Kind,
-		Status:            tasks.StatusPending,
-		Priority:          req.Priority,
-		ParentTaskID:      req.ParentTaskID,
-		Description:       redactedDesc,
-		Query:             redactedQuery,
-		PropagateOnCancel: propagate,
-		NotifyOnComplete:  req.NotifyOnComplete,
-		IdempotencyKey:    req.IdempotencyKey,
-		ExternalGrant:     append([]byte(nil), req.ExternalGrant...),
-		ProviderRoute:     cloneProviderRoute(req.ProviderRoute),
-		LLMSettings:       llm.CloneRunSettings(req.LLMSettings),
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		InputArtifactIDs:  inputArtifactIDs,
+		ID:                  id,
+		Identity:            req.Identity,
+		Kind:                req.Kind,
+		Status:              tasks.StatusPending,
+		Priority:            req.Priority,
+		ParentTaskID:        req.ParentTaskID,
+		Description:         redactedDesc,
+		Query:               redactedQuery,
+		PropagateOnCancel:   propagate,
+		NotifyOnComplete:    req.NotifyOnComplete,
+		IdempotencyKey:      req.IdempotencyKey,
+		ExternalGrant:       append([]byte(nil), req.ExternalGrant...),
+		ProviderRoute:       cloneProviderRoute(req.ProviderRoute),
+		LLMSettings:         llm.CloneRunSettings(req.LLMSettings),
+		InferenceAllocation: llm.CloneInferenceAllocation(req.InferenceAllocation),
+		AllocationTaskID:    allocationTaskID,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		InputArtifactIDs:    inputArtifactIDs,
 		// per-attachment disposition hints.
 		InputArtifactDispositions: inputArtifactDispositions,
 		// per-request output schema (raw JSON-Schema bytes).
@@ -561,9 +589,11 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		return nil, fmt.Errorf("%w: id=%q", tasks.ErrNotFound, id)
 	}
 	cp := *t
+	cp.InputReceipts = append([]tasks.InputRecord(nil), t.InputReceipts...)
 	cp.ExternalGrant = append([]byte(nil), t.ExternalGrant...)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
+	cp.InferenceAllocation = llm.CloneInferenceAllocation(t.InferenceAllocation)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -741,8 +771,10 @@ func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 // in-place after Spawn).
 func copyTask(t *tasks.Task) *tasks.Task {
 	cp := *t
+	cp.InputReceipts = append([]tasks.InputRecord(nil), t.InputReceipts...)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
+	cp.InferenceAllocation = llm.CloneInferenceAllocation(t.InferenceAllocation)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1016,7 +1048,10 @@ func (e *Engine) MarkComplete(ctx context.Context, id tasks.TaskID, result tasks
 		return fmt.Errorf("tasks/engine: redact result: %w", err)
 	}
 	priorResult := t.Result
-	t.Result = &tasks.TaskResult{Value: redactedValue}
+	if result.IncorporatedInputRevision != t.AppliedInputRevision {
+		return fmt.Errorf("%w: result input revision does not match consumed task input", tasks.ErrInvalidRequest)
+	}
+	t.Result = &tasks.TaskResult{Value: redactedValue, IncorporatedInputRevision: result.IncorporatedInputRevision}
 	if err := e.transitionLocked(ctx, t, tasks.StatusComplete); err != nil {
 		// transitionLocked already rolled back status on a persist
 		// failure; restore the result it doesn't know about so the
@@ -1173,11 +1208,16 @@ func (e *Engine) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 	// and a restart would recover a divergent state.
 	priorStatus := t.Status
 	priorUpdated := t.UpdatedAt
+	priorInputs := t.InputReceipts
 	t.Status = to
 	t.UpdatedAt = time.Now().UnixNano()
+	if isTerminal(to) {
+		t.InputReceipts = terminalInputReceipts(t.InputReceipts, to, t.UpdatedAt)
+	}
 	if err := e.persistTaskLocked(ctx, t, e.contentHashLocked(t)); err != nil {
 		t.Status = priorStatus
 		t.UpdatedAt = priorUpdated
+		t.InputReceipts = priorInputs
 		return err
 	}
 	if isTerminal(to) {
@@ -1576,6 +1616,14 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 			req.ProviderRoute.ProviderConnectionGeneration,
 			req.ProviderRoute.CredentialAssetGeneration,
 			req.ProviderRoute.ModelSelector)
+	}
+	if req.InferenceAllocation != nil {
+		allocation, err := json.Marshal(req.InferenceAllocation)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("allocation fingerprint: %w", err)
+		}
+		h.Write([]byte("\x1finference_allocation\x1f"))
+		h.Write(allocation)
 	}
 	if req.LLMSettings != nil {
 		// JSON preserves nil versus explicit zero/empty scalar semantics.

@@ -366,6 +366,14 @@ const (
 	// control" row): the `start` method plus the nine steering-control
 	// methods.
 	CapTaskControl Capability = "task_control"
+	// CapDurableTaskInputReceipts requires durable tasks and persistent state.
+	CapDurableTaskInputReceipts Capability = "durable_task_input_receipts_v1"
+	// CapTaskInferenceAllocation exposes immutable cumulative task token funding.
+	CapTaskInferenceAllocation Capability = "task_inference_allocation_v1"
+	// CapArtifactTransfer is the opt-in two-sided recipient-admitted copy surface.
+	CapArtifactTransfer Capability = "artifact_transfer_v1"
+	// CapDurableArtifactTransfer requires persistent StateStore and fenced blob drivers.
+	CapDurableArtifactTransfer Capability = "durable_artifact_transfer_v1"
 	// CapEventsSubscribe — the streaming-events surface (RFC §5.2
 	// "Streaming events" row): the `events.subscribe` method and the
 	// `events.aggregate` time-bucket method. Shipped in.
@@ -510,6 +518,10 @@ const (
 // `topology_snapshot` is in the canonical set, but only runtimes
 // hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
+	CapDurableTaskInputReceipts:      {},
+	CapTaskInferenceAllocation:       {},
+	CapDurableArtifactTransfer:       {},
+	CapArtifactTransfer:              {},
 	CapTaskControl:                   {},
 	CapEventsSubscribe:               {},
 	CapRuntimePosture:                {},

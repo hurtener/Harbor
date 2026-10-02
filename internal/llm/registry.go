@@ -29,8 +29,10 @@ import (
 // The package does NOT depend on `state.StateStore` — the LLM client
 // is stateless across calls.
 type Deps struct {
-	Artifacts artifacts.ArtifactStore
-	Bus       events.EventBus
+	// Allocations durably accounts task-scoped cumulative provider attempts.
+	Allocations AllocationStore
+	Artifacts   artifacts.ArtifactStore
+	Bus         events.EventBus
 	// LiveKey is the shared, atomically-swappable primary-key holder for
 	// Console-driven key rotation. OPTIONAL: when non-nil, the driver
 	// seeds it with the boot-resolved key and reads through it on every

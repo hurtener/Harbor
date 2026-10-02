@@ -12,6 +12,10 @@ import (
 
 // Registry + task vocabulary — aliases of the internal types.
 type (
+	InputReceipt = internal.InputReceipt
+	InputRecord  = internal.InputRecord
+	InputStatus  = internal.InputStatus
+
 	// TaskRegistry is the identity-mandatory task registry interface.
 	TaskRegistry = internal.TaskRegistry
 	// Dependencies carries the registry's construction dependencies.
@@ -68,6 +72,15 @@ type (
 // DefaultDriver is the driver name Open resolves when the config
 // names none.
 const DefaultDriver = internal.DefaultDriver
+
+// Task-input receipt outcomes and retention bound.
+const (
+	InputAccepted    = internal.InputAccepted
+	InputApplied     = internal.InputApplied
+	InputDeclined    = internal.InputDeclined
+	InputTerminal    = internal.InputTerminal
+	MaxInputReceipts = internal.MaxInputReceipts
+)
 
 // TaskKind values.
 const (
@@ -132,6 +145,8 @@ const (
 
 // Re-exported sentinel errors callers compare via errors.Is.
 var (
+	ErrInputReceiptNotFound = internal.ErrInputReceiptNotFound
+	ErrInputReceiptCapacity = internal.ErrInputReceiptCapacity
 	// ErrNotFound — no task under that ID.
 	ErrNotFound = internal.ErrNotFound
 	// ErrInvalidTransition — an illegal lifecycle transition.
@@ -183,3 +198,6 @@ var From = internal.From
 
 // MustFrom extracts the registry from ctx, panicking when absent.
 var MustFrom = internal.MustFrom
+
+// ErrInputRevisionConflict indicates stale expected task input state.
+var ErrInputRevisionConflict = internal.ErrInputRevisionConflict

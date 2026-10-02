@@ -466,6 +466,13 @@ type TaskInputArtifact struct {
 // payload content is referenced via ArtifactRef — `tasks.get`
 // MUST NOT inline bytes that exceed the heavy-content threshold.
 type TaskDetail struct {
+	// InputRevision is the latest accepted input, used for admission preconditions.
+	InputRevision uint64 `json:"input_revision,omitempty"`
+	// InferenceAllocation is present only for an explicitly funded task.
+	InferenceAllocation *InferenceAllocationSnapshot `json:"inference_allocation,omitempty"`
+	// IncorporatedInputRevision is sealed output provenance, not the latest
+	// accepted input. Zero denotes no durable clarification in this output.
+	IncorporatedInputRevision uint64 `json:"incorporated_input_revision,omitempty"`
 	// Task is the compact row projection (same shape `tasks.list`
 	// returns).
 	Task TaskRow `json:"task"`

@@ -470,6 +470,13 @@ func signAlgNone(t *testing.T, claims jwt.MapClaims) string {
 // status.go; this table mirrors it so a future status reshuffle would
 // surface as a conformance failure rather than landing silently.
 var expectedHTTPStatus = map[protoerrors.Code]int{
+	protoerrors.CodeArtifactTransferConflict:              http.StatusConflict,
+	protoerrors.CodeArtifactTransferExpired:               http.StatusGone,
+	protoerrors.CodeArtifactTransferRevoked:               http.StatusForbidden,
+	protoerrors.CodeArtifactTransferInProgress:            http.StatusConflict,
+	protoerrors.CodeInferenceAllocationPricingUnavailable: http.StatusBadRequest,
+
+	protoerrors.CodeControlReceiptConflict:              http.StatusConflict,
 	protoerrors.CodeInvalidRequest:                      http.StatusBadRequest,
 	protoerrors.CodeIdentityRequired:                    http.StatusUnauthorized,
 	protoerrors.CodeScopeMismatch:                       http.StatusForbidden,
@@ -518,6 +525,12 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 // assertErrorCodeMatrixExhaustive runs at the top of RunSuite — a new
 // error code without a scenario fails the suite at boot.
 var errorCodeMatrix = []protoerrors.Code{
+	protoerrors.CodeArtifactTransferConflict,
+	protoerrors.CodeArtifactTransferExpired,
+	protoerrors.CodeArtifactTransferRevoked,
+	protoerrors.CodeArtifactTransferInProgress,
+	protoerrors.CodeInferenceAllocationPricingUnavailable,
+
 	protoerrors.CodeInvalidRequest,
 	protoerrors.CodeIdentityRequired,
 	protoerrors.CodeScopeMismatch,
@@ -553,6 +566,7 @@ var errorCodeMatrix = []protoerrors.Code{
 	// Explicit session-context reconciliation refuses pending external effects
 	// and missing/expired evidence. The served recovery suite exercises both
 	// end-to-end through the actual runtime port and HTTP authorization boundary.
+	protoerrors.CodeControlReceiptConflict,
 	protoerrors.CodeRetainedContextUnsettled,
 	protoerrors.CodeRetainedContextUnavailable,
 	// agent-config surface — `CodeRevisionConflict` (a durable config write
@@ -753,49 +767,55 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 153 methods; keep the explicit
+	// The canonical list currently contains 159 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 153 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 153 (including explicit session-context reconciliation)", len(got))
+	if len(got) != 159 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 159 (including explicit session-context reconciliation)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
-		methods.MethodStart:               {},
-		methods.MethodCancel:              {},
-		methods.MethodPause:               {},
-		methods.MethodResume:              {},
-		methods.MethodRedirect:            {},
-		methods.MethodInjectContext:       {},
-		methods.MethodApprove:             {},
-		methods.MethodReject:              {},
-		methods.MethodPrioritize:          {},
-		methods.MethodUserMessage:         {},
-		methods.MethodEventsSubscribe:     {},
-		methods.MethodEventsAggregate:     {},
-		methods.MethodSearchQuery:         {},
-		methods.MethodSearchSessions:      {},
-		methods.MethodSearchTasks:         {},
-		methods.MethodSearchEvents:        {},
-		methods.MethodSearchArtifacts:     {},
-		methods.MethodRuntimeInfo:         {},
-		methods.MethodRuntimeHealth:       {},
-		methods.MethodRuntimeCounters:     {},
-		methods.MethodRuntimeDrivers:      {},
-		methods.MethodMetricsSnapshot:     {},
-		methods.MethodGovernancePosture:   {},
-		methods.MethodLLMPosture:          {},
-		methods.MethodPauseList:           {},
-		methods.MethodTopologySnapshot:    {},
-		methods.MethodArtifactsList:       {},
-		methods.MethodArtifactsPut:        {},
-		methods.MethodArtifactsGet:        {},
-		methods.MethodArtifactsGetRef:     {},
-		methods.MethodArtifactsDelete:     {},
-		methods.MethodMemoryList:          {},
-		methods.MethodMemoryGet:           {},
-		methods.MethodMemoryHealth:        {},
-		methods.MethodMemoryStrategyTrace: {},
-		methods.MethodMemoryPut:           {},
-		methods.MethodMemoryDelete:        {},
+		methods.MethodControlReceipt:          {},
+		methods.MethodStart:                   {},
+		methods.MethodCancel:                  {},
+		methods.MethodPause:                   {},
+		methods.MethodResume:                  {},
+		methods.MethodRedirect:                {},
+		methods.MethodInjectContext:           {},
+		methods.MethodApprove:                 {},
+		methods.MethodReject:                  {},
+		methods.MethodPrioritize:              {},
+		methods.MethodUserMessage:             {},
+		methods.MethodEventsSubscribe:         {},
+		methods.MethodEventsAggregate:         {},
+		methods.MethodSearchQuery:             {},
+		methods.MethodSearchSessions:          {},
+		methods.MethodSearchTasks:             {},
+		methods.MethodSearchEvents:            {},
+		methods.MethodSearchArtifacts:         {},
+		methods.MethodRuntimeInfo:             {},
+		methods.MethodRuntimeHealth:           {},
+		methods.MethodRuntimeCounters:         {},
+		methods.MethodRuntimeDrivers:          {},
+		methods.MethodMetricsSnapshot:         {},
+		methods.MethodGovernancePosture:       {},
+		methods.MethodLLMPosture:              {},
+		methods.MethodPauseList:               {},
+		methods.MethodTopologySnapshot:        {},
+		methods.MethodArtifactsPrepareImport:  {},
+		methods.MethodArtifactsTransfer:       {},
+		methods.MethodArtifactsTransferStatus: {},
+		methods.MethodArtifactsRevokeTransfer: {},
+		methods.MethodArtifactsExportAnswer:   {},
+		methods.MethodArtifactsList:           {},
+		methods.MethodArtifactsPut:            {},
+		methods.MethodArtifactsGet:            {},
+		methods.MethodArtifactsGetRef:         {},
+		methods.MethodArtifactsDelete:         {},
+		methods.MethodMemoryList:              {},
+		methods.MethodMemoryGet:               {},
+		methods.MethodMemoryHealth:            {},
+		methods.MethodMemoryStrategyTrace:     {},
+		methods.MethodMemoryPut:               {},
+		methods.MethodMemoryDelete:            {},
 
 		methods.MethodMCPServersList:             {},
 		methods.MethodMCPServersGet:              {},
@@ -990,6 +1010,45 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 	t.Helper()
 
 	for _, m := range methods.Methods() {
+		if m == methods.MethodControlReceipt {
+			t.Run(string(m), func(t *testing.T) {
+				st := factory(t)
+				defer st.Cleanup()
+				q := runIdentity("receipt-conformance", "exact")
+				ctx := callerCtx(t, q.Identity, auth.ScopeAdmin)
+				h, err := st.Tasks.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = st.Tasks.MarkRunning(ctx, h.ID); err != nil {
+					t.Fatal(err)
+				}
+				accepted, err := st.Tasks.AcceptInput(ctx, h.ID, "caller-event", "clarification")
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := types.ControlReceiptRequest{Identity: types.IdentityScope{Tenant: q.TenantID, User: q.UserID, Session: q.SessionID, Run: string(h.ID)}, EventID: "caller-event"}
+				response, err := st.Surface.Dispatch(ctx, m, &request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, ok := response.(*types.ControlReceiptResponse)
+				if !ok || got.Receipt.InputRevision != accepted.Receipt.Revision {
+					t.Fatalf("receipt=%+v", response)
+				}
+				srv := httptest.NewServer(st.Mux)
+				defer srv.Close()
+				status, body := postControl(t, srv.URL, m, mustJSON(t, request), st.SignToken(t, q.Identity, []auth.Scope{auth.ScopeAdmin}))
+				if status != http.StatusOK {
+					t.Fatalf("receipt status=%d body=%s", status, body)
+				}
+				var wire types.ControlReceiptResponse
+				if err = json.Unmarshal(body, &wire); err != nil || wire.Receipt != got.Receipt {
+					t.Fatalf("receipt wire=%+v err=%v", wire, err)
+				}
+			})
+			continue
+		}
 
 		if methods.IsStreamingEventsMethod(m) {
 			// Streaming-events methods — covered by
@@ -1961,10 +2020,14 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 17 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 17 (including agent memory budget) at Protocol 0.1.0", len(caps))
+	if len(caps) != 21 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 21 (including durable runtime contracts) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
+		types.CapArtifactTransfer:              {},
+		types.CapDurableArtifactTransfer:       {},
+		types.CapDurableTaskInputReceipts:      {},
+		types.CapTaskInferenceAllocation:       {},
 		types.CapTaskControl:                   {},
 		types.CapEventsSubscribe:               {},
 		types.CapRuntimePosture:                {},

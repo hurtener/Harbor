@@ -63,10 +63,11 @@ func FinishAnswerEnvelope(fin planner.Finish, traj *planner.Trajectory, schema *
 	}
 
 	return planner.AnswerEnvelope{
-		Answer:        answer,
-		FinishReason:  string(fin.Reason),
-		ToolCallsSeen: planner.CountToolInvocations(traj),
-		AnswerPayload: answerPayload,
+		IncorporatedInputRevision: fin.IncorporatedInputRevision,
+		Answer:                    answer,
+		FinishReason:              string(fin.Reason),
+		ToolCallsSeen:             planner.CountToolInvocations(traj),
+		AnswerPayload:             answerPayload,
 	}, nil
 }
 

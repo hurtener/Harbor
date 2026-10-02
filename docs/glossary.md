@@ -2323,3 +2323,43 @@ sum to admission's estimate; output headroom is separate. Numeric attempt and
 optional installed runtime replay coordinates describe selected context, not
 provider delivery, source inspection or billed usage. Maintenance does not inherit
 parent history. Existing event/Protocol ownership applies. RFC §6.5, D-476.
+
+## Recipient-admitted artifact transfer
+
+An exact immutable artifact copy whose source owner and destination owner
+independently authorize a signed transfer. Bytes travel directly between
+boot-trusted runtime endpoints. The signed capability does not independently
+authenticate the network sender. See D-486.
+
+## Transfer receipt
+
+Content-free durable evidence tying a transfer ID and grant digest to both
+owner-scoped artifact references and the shared SHA-256 content version. It
+records delivery, not lasting read authority.
+
+## Transfer policy epoch
+
+A boot-controlled generation required by signed artifact authority. Changing
+it invalidates old unexecuted admissions without broadening any owner reach.
+
+## Task input receipt
+
+Content-free outcome evidence for one caller-keyed text input on an exact task.
+Accepted input revisions increase monotonically; an optional expected revision
+refuses stale new intent. Exact retries recover the retained outcome. D-487.
+
+## Incorporated input revision
+
+The accepted-input revision consumed by the planning invocation whose result
+became the sealed task answer. It is independent of later accepted inputs and
+is not inferred from enqueue success. D-487.
+
+## Task inference allocation
+
+An immutable cumulative token allowance shared by a task and its same-identity
+spawned descendants. Its durable reservations precede provider transport. D-488.
+
+## Unknown inference liability
+
+Reserved capacity for provider work whose complete usage is unproven. It
+survives cancellation and restart and has no expiry-based refund. D-488.

@@ -1164,20 +1164,22 @@ type PauseResumeConfig struct {
 // (AWS_*, IRSA, instance metadata, etc.). `S3UsePathStyle` defaults
 // to false (AWS native); flip on for MinIO / older R2 endpoints.
 type ArtifactsConfig struct {
-	Driver                    string          `yaml:"driver"`
-	FSRoot                    string          `yaml:"fs_root,omitempty"`
-	DSN                       string          `yaml:"dsn,omitempty" secret:"true"`
-	MigrationMode             sqlmigrate.Mode `yaml:"migration_mode,omitempty"`
-	HeavyOutputThresholdBytes int             `yaml:"heavy_output_threshold_bytes,omitempty"`
-	FetchDefaultMaxBytes      int             `yaml:"fetch_default_max_bytes,omitempty"`
-	FetchHardMaxBytes         int             `yaml:"fetch_hard_max_bytes,omitempty"`
-	S3Bucket                  string          `yaml:"s3_bucket,omitempty"`
-	S3Endpoint                string          `yaml:"s3_endpoint,omitempty"`
-	S3Region                  string          `yaml:"s3_region,omitempty"`
-	S3Prefix                  string          `yaml:"s3_prefix,omitempty"`
-	S3AccessKeyID             string          `yaml:"s3_access_key_id,omitempty" secret:"true"`
-	S3SecretAccessKey         string          `yaml:"s3_secret_access_key,omitempty" secret:"true"`
-	S3UsePathStyle            bool            `yaml:"s3_use_path_style,omitempty"`
+	// Transfer opts into exact, recipient-admitted runtime copies. Nil is disabled.
+	Transfer                  *ArtifactTransferConfig `yaml:"transfer,omitempty"`
+	Driver                    string                  `yaml:"driver"`
+	FSRoot                    string                  `yaml:"fs_root,omitempty"`
+	DSN                       string                  `yaml:"dsn,omitempty" secret:"true"`
+	MigrationMode             sqlmigrate.Mode         `yaml:"migration_mode,omitempty"`
+	HeavyOutputThresholdBytes int                     `yaml:"heavy_output_threshold_bytes,omitempty"`
+	FetchDefaultMaxBytes      int                     `yaml:"fetch_default_max_bytes,omitempty"`
+	FetchHardMaxBytes         int                     `yaml:"fetch_hard_max_bytes,omitempty"`
+	S3Bucket                  string                  `yaml:"s3_bucket,omitempty"`
+	S3Endpoint                string                  `yaml:"s3_endpoint,omitempty"`
+	S3Region                  string                  `yaml:"s3_region,omitempty"`
+	S3Prefix                  string                  `yaml:"s3_prefix,omitempty"`
+	S3AccessKeyID             string                  `yaml:"s3_access_key_id,omitempty" secret:"true"`
+	S3SecretAccessKey         string                  `yaml:"s3_secret_access_key,omitempty" secret:"true"`
+	S3UsePathStyle            bool                    `yaml:"s3_use_path_style,omitempty"`
 }
 
 // EventsConfig configures the event bus driver and its in-process

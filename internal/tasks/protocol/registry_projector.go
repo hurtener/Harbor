@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -45,9 +46,10 @@ import (
 // the registry + enricher references. The registry is itself safe for concurrent reuse;
 // the projector adds no mutable state.
 type RegistryProjector struct {
-	registry  tasks.TaskRegistry
-	enricher  Enricher
-	approvals ApprovalChecker
+	allocations llm.AllocationStore
+	registry    tasks.TaskRegistry
+	enricher    Enricher
+	approvals   ApprovalChecker
 }
 
 // ApprovalChecker is the optional list-time seam RegistryProjector reads
@@ -94,6 +96,11 @@ type Enricher interface {
 
 // RegistryProjectorOption configures NewRegistryProjector.
 type RegistryProjectorOption func(*RegistryProjector)
+
+// WithAllocations wires the mandatory accounting reader for funded tasks.
+func WithAllocations(a llm.AllocationStore) RegistryProjectorOption {
+	return func(p *RegistryProjector) { p.allocations = a }
+}
 
 // WithEnricher wires the per-task enrichment backend. A nil enricher is
 // treated as "WithEnricher not supplied" — `tasks.get` returns
@@ -243,8 +250,29 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 	}
 
 	detail := prototypes.TaskDetail{
-		Task: projectRow(task),
+		InputRevision: task.InputRevision,
+		Task:          projectRow(task),
 	}
+	if task.InferenceAllocation != nil {
+		if p.allocations == nil {
+			return prototypes.TaskDetail{}, llm.ErrAllocationUnavailable
+		}
+		q := task.Identity
+		q.RunID = string(task.ID)
+		if task.AllocationTaskID != "" {
+			q.RunID = task.AllocationTaskID
+		}
+		a, err := p.allocations.Snapshot(ctx, q, *task.InferenceAllocation)
+		if err != nil {
+			return prototypes.TaskDetail{}, fmt.Errorf("task allocation snapshot: %w", err)
+		}
+		receipts := make([]prototypes.InferenceAllocationReceipt, len(a.Receipts))
+		for i, r := range a.Receipts {
+			receipts[i] = prototypes.InferenceAllocationReceipt{AttemptID: r.AttemptID, ReservedTokens: r.ReservedTokens, SettledTokens: r.SettledTokens, UnknownTokens: r.UnknownTokens, Status: r.Status}
+		}
+		detail.InferenceAllocation = &prototypes.InferenceAllocationSnapshot{Receipts: receipts, ReceiptsTruncated: a.ReceiptsTruncated, BoundBreached: a.BoundBreached, AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, SettledTokens: a.SettledTokens, ReservedTokens: a.ReservedTokens, UnknownTokens: a.UnknownTokens, AttemptCount: a.AttemptCount, Guarantee: a.Guarantee, PricingStatus: a.PricingStatus}
+	}
+
 	// The parent-session card always carries the session ID from the task
 	// identity — it is the one field that is always known regardless of
 	// whether an enricher is wired. The enricher overlays AgentName +
@@ -280,6 +308,9 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 	// per-step rows yet," not "null."
 	if detail.Cost.PerStep == nil {
 		detail.Cost.PerStep = []prototypes.TaskCostStep{}
+	}
+	if task.Result != nil {
+		detail.IncorporatedInputRevision = task.Result.IncorporatedInputRevision
 	}
 	if task.Result != nil && len(task.Result.Value) > 0 {
 		detail.ResultInline = string(task.Result.Value)

@@ -74,6 +74,9 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 			"method %q is not a canonical Protocol method", string(method))
 	}
 
+	if method == methods.MethodControlReceipt {
+		return s.dispatchControlReceipt(ctx, req)
+	}
 	if method == methods.MethodStart {
 		return s.dispatchStart(ctx, req)
 	}
@@ -591,6 +594,13 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
+	allocation := allocationFromWire(sr.InferenceAllocation)
+	if err := llm.ValidateInferenceAllocation(allocation); err != nil {
+		if errors.Is(err, llm.ErrAllocationPricingUnavailable) {
+			return nil, protoerrors.Newf(protoerrors.CodeInferenceAllocationPricingUnavailable, "%v", err)
+		}
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "%v", err)
+	}
 	settings := runSettingsFromWire(sr.LLMSettings)
 	if err := llm.ValidateRunSettings(settings, providerRouteFromWire(sr.ProviderRoute)); err != nil {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %v", string(method), err)
@@ -619,6 +629,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		ExternalGrant:             append([]byte(nil), sr.ExternalGrant...),
 		ProviderRoute:             providerRouteFromWire(sr.ProviderRoute),
 		LLMSettings:               settings,
+		InferenceAllocation:       allocation,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)
@@ -741,6 +752,13 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	// any caller that reaches the inbox by another path.
 	if err := steering.CheckScope(ctrlType, scope, caller.TenantID, q); err != nil {
 		return nil, mapSteeringError(string(method), err)
+	}
+
+	if cr.ExpectedInputRevision != nil && (method != methods.MethodUserMessage || cr.EventID == "") {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "expected input revision requires a keyed text input")
+	}
+	if method == methods.MethodUserMessage && cr.EventID != "" {
+		return s.dispatchInput(ctx, q, scope, caller, cr)
 	}
 
 	// Look up the run's live inbox. A run with no inbox (never started,
@@ -877,4 +895,11 @@ func init() {
 			panic(fmt.Sprintf("protocol: steering-control method %q has no steering.ControlType mapping — methodToControlType is out of sync with internal/protocol/methods", m))
 		}
 	}
+}
+
+func allocationFromWire(a *types.InferenceAllocation) *llm.InferenceAllocation {
+	if a == nil {
+		return nil
+	}
+	return llm.CloneInferenceAllocation(&llm.InferenceAllocation{AllocationID: a.AllocationID, Revision: a.Revision, MaxTotalTokens: a.MaxTotalTokens, MaxCostMicroUSD: a.MaxCostMicroUSD})
 }

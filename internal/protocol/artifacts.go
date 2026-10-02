@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/artifacts/transfer"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -97,6 +98,8 @@ import (
 // the redactor governs: not an event payload, not a trajectory entry,
 // not a log line.
 type ArtifactsSurface struct {
+	finalAnswer  FinalAnswerSelector
+	transfer     *transfer.Service
 	store        artifacts.ArtifactStore
 	memory       memory.MemoryStore
 	redactor     audit.Redactor
@@ -115,6 +118,10 @@ type ArtifactsSurface struct {
 // ArtifactsDeps bundles the runtime-side seams an ArtifactsSurface reads
 // through. The Runtime wires these at boot.
 type ArtifactsDeps struct {
+	// FinalAnswer reads only an exact owner-authorized sealed final answer.
+	FinalAnswer FinalAnswerSelector
+	// Transfer is the opt-in two-sided recipient-admitted copy service.
+	Transfer *transfer.Service
 	// Store is the runtime's content-addressed artifact store — the
 	// shipped ArtifactStore. Mandatory.
 	Store artifacts.ArtifactStore
@@ -192,6 +199,8 @@ func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 			ErrArtifactsMisconfigured, deps.FetchDefaultMaxBytes, deps.FetchHardMaxBytes)
 	}
 	return &ArtifactsSurface{
+		finalAnswer:          deps.FinalAnswer,
+		transfer:             deps.Transfer,
 		store:                deps.Store,
 		memory:               deps.Memory,
 		redactor:             deps.Redactor,
@@ -270,6 +279,10 @@ func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, 
 			"method %q is not a canonical Protocol artifacts method", string(method))
 	}
 	switch method {
+	case methods.MethodArtifactsExportAnswer:
+		return s.handleExportAnswer(ctx, req)
+	case methods.MethodArtifactsPrepareImport, methods.MethodArtifactsTransfer, methods.MethodArtifactsTransferStatus, methods.MethodArtifactsRevokeTransfer:
+		return s.handleTransfer(ctx, method, req)
 	case methods.MethodArtifactsList:
 		lr, ok := req.(*types.ArtifactsListRequest)
 		if !ok || lr == nil {
