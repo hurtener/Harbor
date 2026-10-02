@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Retained terminal evidence preparation now has a separate bounded five-second
+  stage before the existing publication/cleanup budget. Earlier caller deadlines,
+  cleanup failures and exact-generation recovery remain enforced under concurrent
+  session finalization.
+
 ## [1.32.1] — 2026-09-24
 
 ### Fixed

@@ -596,16 +596,33 @@ jobs:
   artifacts-s3:
     name: artifacts/s3 conformance (MinIO)
     runs-on: ubuntu-latest
-    # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
-    # against in CI. We launch it via `docker run` rather than a
-    # GitHub Actions service container because the official
-    # `quay.io/minio/minio` image needs `server /data` as the entrypoint args
-    # (services blocks can't pass command args cleanly), and Bitnami's
-    # alternative dropped its `latest` tag. Credentials are documented
-    # dummy values per AGENTS.md §7 #2 — no real secrets cross this
-    # boundary.
+    # Build the pinned official MinIO source as the S3 conformance fixture.
+    # Its API and Console bind only to loopback; credentials are documented
+    # dummy values per AGENTS.md §7 #2. No production object store is involved.
     steps:
       - uses: actions/checkout@v6
+      # MinIO's community distribution is source-only. Build the same release
+      # used by the former container fixture from its verified upstream commit.
+      - uses: actions/checkout@v6
+        with:
+          repository: minio/minio
+          ref: 16f8cf1c52f0a77eeb8f7565aaf7f7df12454583 # RELEASE.2024-12-18T13-15-44Z
+          path: .minio-source
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23.4'
+          cache: false
+      - name: Build pinned MinIO fixture
+        working-directory: .minio-source
+        env:
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+          GOMAXPROCS: '2'
+          GOMEMLIMIT: 2GiB
+        run: |
+          mkdir -p "$RUNNER_TEMP/harbor-minio"
+          go build -p 2 -trimpath -o "$RUNNER_TEMP/harbor-minio/minio" .
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.1'
@@ -617,12 +634,13 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
         run: |
           set -euo pipefail
-          docker run -d --name harbor-minio \
-            -p 127.0.0.1:9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z \
-            server /data
+          mkdir -p "$RUNNER_TEMP/harbor-minio/data"
+          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            "$RUNNER_TEMP/harbor-minio/minio" server \
+            --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 \
+            "$RUNNER_TEMP/harbor-minio/data" \
+            > "$RUNNER_TEMP/harbor-minio/server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/harbor-minio/server.pid"
           # Poll for liveness; create the bucket once MinIO answers.
           for i in $(seq 1 30); do
             if curl -fsS -o /dev/null http://localhost:9000/minio/health/live; then
@@ -661,8 +679,10 @@ jobs:
       - name: Tear down MinIO
         if: always()
         run: |
-          docker logs harbor-minio || true
-          docker rm -f harbor-minio || true
+          cat "$RUNNER_TEMP/harbor-minio/server.log" || true
+          if test -f "$RUNNER_TEMP/harbor-minio/server.pid"; then
+            kill "$(cat "$RUNNER_TEMP/harbor-minio/server.pid")" || true
+          fi
 
   isolation:
     name: cross-tenant isolation conformance harness

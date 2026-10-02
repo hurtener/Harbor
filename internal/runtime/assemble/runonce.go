@@ -324,10 +324,9 @@ func (s *Stack) RunOnce(
 			retainedTrajectory = &planner.Trajectory{}
 		}
 		// A cancelled execution has already returned; its observed outcomes
-		// still need a bounded terminal write. No tool is retried here.
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
-		defer cancel()
-		if persistErr := retained.Finish(persistCtx, retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
+		// still need terminal retention. Finish separately bounds preparation
+		// and persistence, so CPU work cannot consume the store's budget.
+		if persistErr := retained.Finish(context.WithoutCancel(runCtx), retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
 			retErr = errors.Join(retErr, persistErr)
 		}
 	}()

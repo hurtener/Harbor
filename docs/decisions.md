@@ -16098,3 +16098,31 @@ writes. Agent-wide settings and sibling session/tenant settings are preserved.
 The existing configuration Protocol is unchanged. Selecting the new store does
 not recover old in-memory revisions; operators must explicitly restore approved
 settings through the existing authenticated configuration surface.
+
+## D-492 — Separate bounded terminal preparation from persistence
+
+**Date:** 2026-10-02. **Scope:** RFC 002, phase 269 finalization correction.
+
+Retained terminal preparation gets a five-second context before the unchanged
+five-second conditional publication and exact journal-cleanup context begins.
+Both derive from the supplied parent: cancellation and an earlier deadline
+remain binding. Served and embedded consumers keep their existing detachment
+from an already-finished execution's cancellation, and delegate both bounds to
+the shared retained owner. Their finalization can therefore take up to ten
+seconds in total; a caller-provided earlier deadline is never extended.
+
+Preparation performs no store operations. Redaction, host/action validation and
+serialization failures cannot publish or clean anything. Conditional publication
+still rechecks the live admission, generation, source lifetime and erasure fences.
+It seals the journal and writes terminal evidence atomically before cleanup.
+Cleanup failure remains explicit and leaves the sealed admission fenced; only
+exact-generation reconciliation may retry deletion. No action is replayed and
+no background cleanup, new store API, authority cache or dependency is added.
+
+Hosted macOS race failures occurred during cleanup after terminal evidence had
+already committed. On the unchanged 14,660-byte fixture, local Go 1.27.1 race
+measurements put approximately 97% of terminal time in preparation before the
+first state read. The call-local identity optimization reduces repeated receipt
+decoding, but does not by itself establish resolution of hosted contention.
+The budget correction follows RFC 002's separation of validation and persistence;
+the unchanged 128-scope hosted tests remain the platform acceptance gate.
