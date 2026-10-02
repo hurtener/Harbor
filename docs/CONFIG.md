@@ -430,6 +430,30 @@ Canonical model identifier. Default: empty. Validation: required
 when `driver != "mock"`. Must have a matching `model_profiles[name]`
 entry for the safety-net token-budget guard.
 
+### Hard task allocation transport bounds
+
+For the pinned Bifrost v1.9.0 / fasthttp v1.74.0 text Chat transport, the
+reservation multiplies the complete physical-send cap (five) by configured
+`max_retries + 2`. The second logical allowance covers the SDK's single guarded
+encrypted-reasoning repair. Transport retries can resend a fully consumed POST
+after response-header loss; logical retry metadata does not prove zero work.
+Request-specific output caps and exact pricing references remain binding.
+
+Hard token allocations admit only native OpenAI/Anthropic text, declared custom
+OpenAI-compatible text, and selected OpenAI/Anthropic text routes using those
+same bounded factories. Other provider families, unproved route selections,
+opaque request parameters, images, audio, files and provider-native uploads
+return `inference_allocation_bound_unavailable` before provider entry. Ordinary
+unallocated calls keep their existing provider compatibility. The monetary
+allowlist remains narrower, as described below.
+
+Final-only usage cannot settle unseen physical attempts. Their conservative
+remainder stays reserved indefinitely, even after the allocation closes; this
+can retain most of an allocation after successful work. The larger reservation
+can refuse an existing cap, and never increases an accepted cap automatically.
+Pre-repair executions with smaller envelopes cannot gain a retroactive hard-cap
+claim from this correction. Existing unknown liabilities remain retained.
+
 ### llm.pricing_manifests
 
 Optional immutable operator-installed USD ceiling catalog. Default: empty;

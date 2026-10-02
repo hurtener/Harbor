@@ -168,11 +168,21 @@ decoder-style finding was corrected without changing branch order, then the
 CGo-free binary was built. The complete consumer acceptance, hosted integration
 and independent integrated review remain open.
 
-Subsequent pinned-SDK inspection found a separate provider-bound blocker:
+Subsequent pinned-SDK inspection found a separate provider-bound defect:
 Bifrost's logical retry count omits the fasthttp stale-connection retry layer.
 That transport can write a POST and retry after a response-header failure on a
-reused socket. The current `MaxRetries+2` bound does not include all such sends.
-Logical attempt metadata therefore cannot establish exact settlement, and
-stock Bifrost hard-cap qualification is blocked until the physical bound and
-its regression proof are corrected. No release or production-enablement claim
-is made from the storage/finality tests above.
+reused socket. A loopback reproduction consumed four complete requests where
+the earlier `MaxRetries+2` bound declared three. The corrected driver composes
+the logical envelope with fasthttp's five-send outer cap, admits only audited
+OpenAI/Anthropic text factories and exact OpenAI-compatible custom paths, and
+refuses unproved families or opaque/media/file work before dispatch.
+
+The full Bifrost driver race suite passed 241 test events, with only three
+explicitly disabled paid probes skipped. Scoped lint passed with zero findings
+and canonical Markdown passed 611 files. Native factory regressions consumed
+four and six POSTs across nested retry paths, settled only the final 35 reported
+tokens, and retained the remaining 16,465 tokens as unknown. The bound is not an
+actual-attempt receipt and cannot certify work admitted under the old smaller
+envelope. See [physical-attempt qualification](bifrost-physical-attempt-validation.md).
+Combined binary/consumer, hosted and independent-review release gates remain
+open; no production-enablement claim follows from these local tests.

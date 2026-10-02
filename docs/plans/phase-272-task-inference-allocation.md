@@ -179,9 +179,18 @@ negotiation. The full accounting and task package gates passed locally, together
 with full static analysis and generated-wire joins. Complete consumer and
 hosted integration checks remain open; see the candidate validation record.
 
-The pinned Bifrost SDK has a further transport-level stale-connection retry loop
-below its logical attempt counter. The current driver bound does not yet count
-all physical sends through that loop. Stock-provider hard-cap qualification is
-blocked on a conservative bound repair and actual loopback transport regression;
-the storage/finality results do not waive this requirement. Logical attempt
-metadata and a successful final response cannot prove an unseen attempt free.
+The pinned Bifrost SDK has a transport-level stale-connection retry loop below
+its logical counter. A loopback regression against the prior source confirmed
+four fully consumed POSTs while the driver declared only three attempts. The
+candidate correction multiplies `MaxRetries + 2` by fasthttp's outer five-send
+cap for each audited OpenAI/Anthropic text factory. Custom OpenAI-compatible and
+exact-selected OpenAI/Anthropic routes use the same audited transport for token
+funding; other families and opaque/media/file request shapes fail closed. Harbor
+emits no alternate-provider fallback list or raw body. Bound multiplication does
+not establish actual settlement: final-only usage retains unreported physical
+liability. Existing pre-repair executions cannot be retroactively certified.
+
+The corrected bound and composed native-provider regression require their own
+qualification; storage/finality results do not waive that gate. See
+`docs/notes/bifrost-physical-attempt-validation.md` for the exact evidence and
+remaining release limits.

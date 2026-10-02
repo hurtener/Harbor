@@ -45,7 +45,7 @@ func TestAllocation_HiddenTransportRetriesRemainFunded(t *testing.T) {
 	defer func() { _ = client.Close(context.Background()) }()
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "task"}
 	ctx, _ := identity.WithRun(t.Context(), q.Identity, q.RunID)
-	a := llm.InferenceAllocation{AllocationID: "f", Revision: 1, MaxTotalTokens: 3300}
+	a := llm.InferenceAllocation{AllocationID: "f", Revision: 1, MaxTotalTokens: 16500}
 	ctx = llm.WithInferenceAllocation(ctx, &a)
 	max := 100
 	req := llm.CompleteRequest{Model: "model", MaxTokens: &max, Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: new("hello")}}}}
@@ -56,7 +56,7 @@ func TestAllocation_HiddenTransportRetriesRemainFunded(t *testing.T) {
 		t.Fatalf("physical requests=%d want2", hits.Load())
 	}
 	snap, err := mgr.Snapshot(ctx, q, a)
-	if err != nil || snap.ReservedTokens != 3300 || snap.UnknownTokens != 3300 {
+	if err != nil || snap.ReservedTokens != 16500 || snap.UnknownTokens != 16500 {
 		t.Fatalf("snapshot %+v %v", snap, err)
 	}
 	if _, err = client.Complete(ctx, req); !errors.Is(err, llm.ErrAllocationExhausted) {
@@ -101,7 +101,7 @@ func TestMonetaryAllocation_BifrostPhysicalRetriesStayReserved(t *testing.T) {
 	defer func() { _ = client.Close(context.Background()) }()
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, RunID: "money"}
 	ctx, _ := identity.WithRun(t.Context(), q.Identity, q.RunID)
-	a := llm.InferenceAllocation{AllocationID: "fund", Revision: 1, MaxTotalTokens: 3300, MaxCostMicroUSD: new(int64(21)), PricingManifestID: ref.ID, PricingManifestRevision: ref.Revision, PricingManifestSHA256: ref.SHA256}
+	a := llm.InferenceAllocation{AllocationID: "fund", Revision: 1, MaxTotalTokens: 16500, MaxCostMicroUSD: new(int64(105)), PricingManifestID: ref.ID, PricingManifestRevision: ref.Revision, PricingManifestSHA256: ref.SHA256}
 	ctx = llm.WithInferenceAllocation(ctx, &a)
 	req := llm.CompleteRequest{Model: model, MaxTokens: new(100), Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: new("hello")}}}}
 	if _, err = client.Complete(ctx, req); err == nil {
@@ -111,7 +111,7 @@ func TestMonetaryAllocation_BifrostPhysicalRetriesStayReserved(t *testing.T) {
 		t.Fatalf("physical attempts=%d want2", hits.Load())
 	}
 	snap, err := mgr.Snapshot(ctx, q, a)
-	if err != nil || snap.ReservedCostMicroUSD != 21 || snap.UnknownCostMicroUSD != 21 || snap.ChargedCostMicroUSD != 0 {
+	if err != nil || snap.ReservedCostMicroUSD != 105 || snap.UnknownCostMicroUSD != 105 || snap.ChargedCostMicroUSD != 0 {
 		t.Fatalf("%+v %v", snap, err)
 	}
 	if _, err = client.Complete(ctx, req); !errors.Is(err, llm.ErrAllocationExhausted) || hits.Load() != 2 {

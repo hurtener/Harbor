@@ -149,7 +149,9 @@ The initial Bifrost monetary consumer admits only static OpenAI/Anthropic text
 requests, with a hashed exact configured endpoint (or explicit provider default).
 Externally resolved routes, custom-provider IDs, OpenRouter, multimodal/native
 file operations and arbitrary passthrough require additional independent bounds
-and are refused. This does not reduce ordinary token-only task compatibility.
+and are refused. Ordinary unallocated calls retain their compatibility; hard
+token allocations also require the independently audited transport families and
+text-only request shapes described in Phase 272.
 
 The full configured input window and explicit maximum output are reserved, plus
 Anthropic's separate configured thinking allowance. Input, cache-read and

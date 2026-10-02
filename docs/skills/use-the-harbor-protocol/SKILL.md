@@ -1148,6 +1148,17 @@ helpers, retries and resumes share the durable allowance. Inspect
 and cannot be assumed refundable after cancellation. Token-only tasks retain
 `guarantee: tokens` and `pricing_status: unavailable`.
 
+Hard token funding requires an audited physical request bound as well as a
+model profile. The Bifrost consumer supports text requests through native
+OpenAI/Anthropic and the exact supported OpenAI-compatible custom/routed
+factories. Opaque extra parameters, file/media work and other provider families
+refuse before dispatch. Reservations multiply the SDK logical retry envelope
+by fasthttp's physical-send cap; configuring zero logical retries does not
+remove transport retries. Final-response usage cannot prove earlier attempts
+free, so successful calls can retain unknown capacity indefinitely. Accepted
+ceilings never grow automatically, and pre-repair work cannot acquire a
+retroactive hard-cap guarantee. See `docs/CONFIG.md` for compatibility limits.
+
 Before returning unused funding, also negotiate
 `task_inference_allocation_finality_v1`. Require `closed: true`, zero
 `reserved_tokens`, `unknown_tokens`, `reserved_cost_micro_usd` and

@@ -2329,6 +2329,14 @@ while unproven work retains the full money hold. Neither is actual spend.
 Incomplete/mismatched tariffs and unsupported physical request shapes fail before
 transport. Provider-reported pricing and post-call floats remain insufficient.
 
+Nested transport and SDK retry limits multiply; a logical retry count is not a
+physical-attempt bound. The pinned Bifrost consumer admits only audited text
+OpenAI/Anthropic factories, including exact OpenAI-compatible custom/selected
+routes for token-only funding. Other families and auxiliary media/file or opaque
+request work refuse hard allocation admission. The native five-send cap applies
+to each configured logical attempt and the single guarded repair attempt.
+Unreported physical usage remains unknown even when the final response succeeds.
+
 **Allocation finality (D-493).** Task terminality alone is not a spending fence.
 An irreversible allocation close serializes with every provider reservation and
 preserves accepted envelopes for settlement. Built-in engines close only after
