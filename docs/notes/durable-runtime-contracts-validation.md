@@ -213,3 +213,19 @@ comparison establishes an aggregate pass.
 
 The reservation amplification and its usability limits are described in
 [conservative inference reservations](inference-reservation-amplification.md).
+
+## Finality and physical-envelope fixture joins
+
+The version-handshake and combined-surface fixtures now assert all 23 canonical
+capabilities, explicitly including allocation finality. The assembled pricing
+fixture preserves the former 3,300-token/12-micro-USD allocation as a required
+pre-dispatch refusal, and separately refuses an adequate token cap with the old
+monetary cap. A newly funded 16,500-token/60-micro-USD synthetic allocation admits
+one request and retains exactly 16,493 unknown tokens plus the 60-micro-USD
+unknown monetary envelope after the final response reports seven tokens.
+Second-call and post-closure refusal, immutable tariff authority and changed
+manifest restart rejection remain asserted. No production policy is changed.
+
+All ten test/subtest events passed with race detection, and scoped static
+analysis passed with zero findings. These fixture joins do not resolve the
+separate full-suite performance or hosted macOS cleanup failures.

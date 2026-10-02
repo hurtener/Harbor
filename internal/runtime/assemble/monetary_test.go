@@ -21,6 +21,21 @@ import (
 )
 
 func TestMonetaryAllocation_AssemblyWiresTrustedPricingAndTaskProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		tokens, money int64
+		refused       bool
+	}{
+		{name: "prior_token_and_money_envelope_refuses", tokens: 3300, money: 12, refused: true},
+		{name: "prior_money_envelope_refuses", tokens: 16500, money: 12, refused: true},
+		{name: "complete_physical_envelope", tokens: 16500, money: 60},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testAssembledMonetaryPhysicalEnvelope(t, tc.tokens, tc.money, tc.refused) })
+	}
+}
+
+func testAssembledMonetaryPhysicalEnvelope(t *testing.T, tokenCap, moneyCap int64, refused bool) {
+	t.Helper()
 	var hits atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -51,7 +66,7 @@ func TestMonetaryAllocation_AssemblyWiresTrustedPricingAndTaskProjection(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &llm.InferenceAllocation{AllocationID: "fund", Revision: 1, MaxTotalTokens: 3300, MaxCostMicroUSD: new(int64(12)), PricingManifestID: ref.ID, PricingManifestRevision: ref.Revision, PricingManifestSHA256: ref.SHA256}
+	a := &llm.InferenceAllocation{AllocationID: "fund", Revision: 1, MaxTotalTokens: tokenCap, MaxCostMicroUSD: &moneyCap, PricingManifestID: ref.ID, PricingManifestRevision: ref.Revision, PricingManifestSHA256: ref.SHA256}
 	h, err := stack.Tasks.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: tasks.KindForeground, Query: "work", InferenceAllocation: a})
 	if err != nil {
 		t.Fatal("assembly did not wire acceptance", err)
@@ -66,10 +81,17 @@ func TestMonetaryAllocation_AssemblyWiresTrustedPricingAndTaskProjection(t *test
 	}
 	callCtx = llm.WithInferenceAllocationTask(callCtx, accepted.InferenceAllocation, string(h.ID))
 	req := llm.CompleteRequest{Model: "fixture-version-1", MaxTokens: new(100), Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: new("hello")}}}}
-	if _, err = stack.LLM.Complete(callCtx, req); err != nil {
+	_, err = stack.LLM.Complete(callCtx, req)
+	wantHits, wantAttempts, wantKnown, wantReserved, wantUnknownMoney := int64(1), int64(1), int64(7), int64(16493), int64(60)
+	if refused {
+		if !errors.Is(err, llm.ErrAllocationExhausted) || hits.Load() != 0 {
+			t.Fatal("unfunded physical envelope reached provider", err, hits.Load())
+		}
+		wantHits, wantAttempts, wantKnown, wantReserved, wantUnknownMoney = 0, 0, 0, 0, 0
+	} else if err != nil {
 		t.Fatal("assembly did not wire provider pricing", err)
 	}
-	if _, err = stack.LLM.Complete(callCtx, req); !errors.Is(err, llm.ErrAllocationExhausted) || hits.Load() != 1 {
+	if _, err = stack.LLM.Complete(callCtx, req); !errors.Is(err, llm.ErrAllocationExhausted) || hits.Load() != wantHits {
 		t.Fatal("cap bypass", err, hits.Load())
 	}
 	projector, err := taskprotocol.NewRegistryProjector(stack.Tasks, taskprotocol.WithAllocations(allocation.New(stack.State)))
@@ -77,8 +99,15 @@ func TestMonetaryAllocation_AssemblyWiresTrustedPricingAndTaskProjection(t *test
 		t.Fatal(err)
 	}
 	detail, err := projector.GetTask(ctx, id, string(h.ID))
-	if err != nil || detail.InferenceAllocation == nil || detail.InferenceAllocation.UnknownCostMicroUSD != 12 || detail.InferenceAllocation.PricingManifestSHA256 != ref.SHA256 {
+	if err != nil || detail.InferenceAllocation == nil {
 		t.Fatal(detail, err)
+	}
+	snapshot := detail.InferenceAllocation
+	// Fifteen possible physical sends reserve (1000+100)*15 tokens and
+	// (ceil(input)+ceil(output)+request+ancillary)*15 = 60 synthetic micro-USD.
+	// The final response reports only seven tokens; hidden work stays unknown.
+	if snapshot.AttemptCount != wantAttempts || snapshot.SettledTokens != wantKnown || snapshot.ReservedTokens != wantReserved || snapshot.UnknownTokens != wantReserved || snapshot.ChargedCostMicroUSD != 0 || snapshot.ReservedCostMicroUSD != wantUnknownMoney || snapshot.UnknownCostMicroUSD != wantUnknownMoney || snapshot.MaxTotalTokens != tokenCap || snapshot.MaxCostMicroUSD == nil || *snapshot.MaxCostMicroUSD != moneyCap || snapshot.BoundBreached || snapshot.PricingManifestSHA256 != ref.SHA256 {
+		t.Fatalf("exact assembled accounting: %+v", snapshot)
 	}
 	if err = stack.Tasks.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
@@ -87,10 +116,10 @@ func TestMonetaryAllocation_AssemblyWiresTrustedPricingAndTaskProjection(t *test
 		t.Fatal(err)
 	}
 	detail, err = projector.GetTask(ctx, id, string(h.ID))
-	if err != nil || !detail.InferenceAllocation.Closed || detail.InferenceAllocation.UnknownCostMicroUSD != 12 {
+	if err != nil || !detail.InferenceAllocation.Closed || detail.InferenceAllocation.UnknownCostMicroUSD != wantUnknownMoney || detail.InferenceAllocation.ReservedTokens != wantReserved || detail.InferenceAllocation.SettledTokens != wantKnown || detail.InferenceAllocation.ChargedCostMicroUSD != 0 {
 		t.Fatalf("closed unknown liability: %+v %v", detail, err)
 	}
-	if _, err = stack.LLM.Complete(callCtx, req); !errors.Is(err, llm.ErrAllocationClosed) || hits.Load() != 1 {
+	if _, err = stack.LLM.Complete(callCtx, req); !errors.Is(err, llm.ErrAllocationClosed) || hits.Load() != wantHits {
 		t.Fatal("late transport escaped closed allocation", err, hits.Load())
 	}
 	if err = stack.Close(context.Background()); err != nil {

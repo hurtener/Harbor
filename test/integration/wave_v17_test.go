@@ -581,13 +581,13 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 				t.Errorf("advertised capability %q is not in the canonical universe", c)
 			}
 		}
-		for _, capability := range []prototypes.Capability{"tenant_scoped_broker_credentials_v1", "tools_configuration_view_v1", "run_llm_settings_v1", prototypes.CapAgentConfigMemory, prototypes.CapArtifactTransfer, prototypes.CapDurableArtifactTransfer, prototypes.CapDurableTaskInputReceipts, prototypes.CapTaskInferenceAllocation, prototypes.CapScopedSessionAdmission} {
+		for _, capability := range []prototypes.Capability{"tenant_scoped_broker_credentials_v1", "tools_configuration_view_v1", "run_llm_settings_v1", prototypes.CapAgentConfigMemory, prototypes.CapArtifactTransfer, prototypes.CapDurableArtifactTransfer, prototypes.CapDurableTaskInputReceipts, prototypes.CapTaskInferenceAllocation, prototypes.CapTaskInferenceAllocationFinality, prototypes.CapScopedSessionAdmission} {
 			if !prototypes.IsValidCapability(capability) {
 				t.Fatalf("missing canonical capability %s", capability)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 22 {
-			t.Errorf("canonical capability universe has %d entries, want 22", n)
+		if n := len(prototypes.Capabilities()); n != 23 {
+			t.Errorf("canonical capability universe has %d entries, want 23", n)
 		}
 	})
 
