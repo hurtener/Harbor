@@ -186,3 +186,30 @@ actual-attempt receipt and cannot certify work admitted under the old smaller
 envelope. See [physical-attempt qualification](bifrost-physical-attempt-validation.md).
 Combined binary/consumer, hosted and independent-review release gates remain
 open; no production-enablement claim follows from these local tests.
+
+## Bounded close progress correction
+
+Hosted full qualification exposed starvation in the original 128-try allocation
+close loop: 100 concurrent callers can each reserve and settle, producing more
+than 128 valid accounting generations. Closing now yields after a lost CAS and
+retries within a five-second operation bound, preserving an earlier caller
+deadline. Cancellation and timeout leave liability intact; successful closure
+still uses the same atomic total-record predicate.
+
+A deterministic regression inserts 160 real reserve/settle pairs between close
+reads and writes. It fails against the original implementation and passes after
+the correction. Ten complete allocation race repetitions passed 420 test events
+with no failures or skips, including the unchanged 100-way workload ten times
+each on in-memory, SQLite and real PostgreSQL 17. Explicit cancellation and
+deadline tests retain unknown liability. Scoped static analysis reports zero
+findings. The concurrent test now joins every writer before reporting a close
+error, so teardown cannot mask the original failure with a closed-store panic.
+
+This is a focused correction. The preceding candidate's hosted aggregate also
+exposed a stale monetary fixture, two capability-count fixtures, macOS retained
+cleanup deadlines and a ReAct benchmark regression. Those remain separate
+qualification blockers; neither this gate nor the selected local benchmark
+comparison establishes an aggregate pass.
+
+The reservation amplification and its usability limits are described in
+[conservative inference reservations](inference-reservation-amplification.md).

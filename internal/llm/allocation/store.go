@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -163,10 +164,20 @@ func (s *Store) Close(ctx context.Context, q identity.Quadruple, a llm.Inference
 	if err := validate(q, a); err != nil {
 		return err
 	}
+	// Finite concurrent work can produce more mutations than a fixed retry
+	// count: each accepted envelope can reserve and later settle. Yield after
+	// a lost CAS, within a five-second operation limit that preserves any
+	// earlier caller deadline. Timing out never clears or refunds liability.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	if err := s.Ensure(ctx, q, a); err != nil {
 		return err
 	}
-	for range 128 {
+	delay := 100 * time.Microsecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("allocation close contention: %w", err)
+		}
 		rec, t, err := s.load(ctx, q, a)
 		if err != nil {
 			return err
@@ -181,6 +192,14 @@ func (s *Store) Close(ctx context.Context, q identity.Quadruple, a llm.Inference
 		}
 		err = s.state.SaveBatchIf(ctx, []state.SlotExpectation{allocationExpectation(q, totalKind, rec.ID)}, []state.StateRecord{next})
 		if errors.Is(err, state.ErrConditionFailed) {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("allocation close contention: %w", ctx.Err())
+			case <-timer.C:
+			}
+			delay = min(delay*2, time.Millisecond)
 			continue
 		}
 		if err != nil {
@@ -188,7 +207,6 @@ func (s *Store) Close(ctx context.Context, q identity.Quadruple, a llm.Inference
 		}
 		return nil
 	}
-	return fmt.Errorf("allocation close contention: %w", state.ErrConditionFailed)
 }
 
 // Reserve holds a conservative complete provider-attempt liability before I/O.

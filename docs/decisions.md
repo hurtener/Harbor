@@ -16337,6 +16337,12 @@ the same snapshot as its cumulative accounting. Consumers negotiate
 unknown finality. Closed plus zero reserved/unknown counters and no bound breach
 is a final conservative capacity charge, never a provider spending receipt.
 
+Close yields after a lost storage predicate and retries for at most five
+seconds, preserving an earlier caller deadline. The operation limit bounds
+contention without treating a finite number of legitimate concurrent updates as
+terminal failure. Cancellation or timeout never releases liability; a later
+exact close may retry the unchanged immutable allocation.
+
 The built-in task engines close a funding root only when that root and every
 already-accepted same-owner descendant are terminal. The engine lock serializes
 new descendant acceptance with this decision; a late new descendant cannot reopen

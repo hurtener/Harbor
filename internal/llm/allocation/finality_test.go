@@ -78,10 +78,11 @@ func TestAllocation_CloseSerializesReservationsAndRetainsLiability(t *testing.T)
 				})
 			}
 			close(start)
-			if err = mgr.Close(t.Context(), q, a); err != nil {
-				t.Fatal(err)
-			}
+			closeErr := mgr.Close(t.Context(), q, a)
 			wg.Wait()
+			if closeErr != nil {
+				t.Fatal(closeErr)
+			}
 			for range 100 {
 				if err = allocation.New(st).Reserve(t.Context(), q, a, "late-helper", 1); !errors.Is(err, llm.ErrAllocationClosed) {
 					t.Fatalf("closed helper: %v", err)
