@@ -192,3 +192,21 @@ two-record fixture) so it cannot mutate the caller's headers. Payloads are
 copied once per write as before; no extra payload cache or persistent state is
 introduced. This modest allocation tradeoff keeps payload work outside the
 shared critical section.
+
+## Full hosted runner diagnostics
+
+The larger runtime candidate still failed the unchanged 128-owner embedded
+retention tests on macOS 26/arm64 with Go 1.27.1 and serial package execution.
+The current-release documentation branch passed the same platform matrix after
+the payload-copy lock correction. That difference does not establish that the
+runtime candidate's failure is noise or resolved.
+
+A required Go-matrix failure in the assemble package now triggers one full
+package diagnostic on the same runner, retaining the original failed status.
+It records the exact commit, OS/architecture/toolchain, CPU count, memory size
+where available, GC trace and CPU/allocation/block/mutex profiles. The original
+128-owner fixtures, assertions, production deadlines and required test command
+remain intact. Profile instrumentation can change scheduling, so this rerun is
+diagnostic evidence, never a replacement pass or a latency qualification.
+Only synthetic test output and bounded runner metadata are retained; no
+environment dump, production credentials or caller data is collected.

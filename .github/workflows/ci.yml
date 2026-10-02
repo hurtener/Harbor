@@ -54,12 +54,62 @@ jobs:
       - name: Vet
         run: make vet
       - name: Test
+        id: go_test
         # Each package already exercises 128-way runtime concurrency. Avoid
         # multiplying independent stress suites on the same shared runner;
         # retain every test, the race detector, and production deadlines.
         env:
           GOFLAGS: '-p=1'
-        run: make test
+        shell: bash
+        run: |
+          set -o pipefail
+          make test 2>&1 | tee "$RUNNER_TEMP/harbor-go-test.log"
+      - name: Diagnose failed assemble package on this runner
+        if: failure() && steps.go_test.conclusion == 'failure'
+        shell: bash
+        run: |
+          # This is evidence collection after a failed required test. It never
+          # changes that conclusion, a fixture, a production deadline or a cap.
+          if ! grep -Eq '^FAIL[[:space:]]+github.com/hurtener/Harbor/internal/runtime/assemble([[:space:]]|$)' "$RUNNER_TEMP/harbor-go-test.log"; then
+            exit 0
+          fi
+          diagnostic_dir="$RUNNER_TEMP/harbor-assemble-diagnostic"
+          mkdir -p "$diagnostic_dir"
+          {
+            git rev-parse HEAD
+            go env GOOS GOARCH GOVERSION
+            uname -srm
+            if [ "$(uname -s)" = Darwin ]; then
+              sysctl -n hw.ncpu hw.memsize
+            else
+              getconf _NPROCESSORS_ONLN
+            fi
+            df -k .
+          } > "$diagnostic_dir/runner.txt"
+          set +e
+          GODEBUG="${GODEBUG:+$GODEBUG,}gctrace=1" go test -p 1 -race -count=1 -timeout=10m \
+            -cpuprofile="$diagnostic_dir/assemble.cpu" \
+            -memprofile="$diagnostic_dir/assemble.mem" \
+            -blockprofile="$diagnostic_dir/assemble.block" \
+            -mutexprofile="$diagnostic_dir/assemble.mutex" \
+            ./internal/runtime/assemble > "$diagnostic_dir/test.log" 2>&1
+          diagnostic_status=$?
+          set -e
+          printf '%s\n' "$diagnostic_status" > "$diagnostic_dir/test-exit-status.txt"
+          for profile in cpu mem block mutex; do
+            if [ -f "$diagnostic_dir/assemble.$profile" ]; then
+              go tool pprof -top -nodecount=60 "$diagnostic_dir/assemble.$profile" \
+                > "$diagnostic_dir/$profile-top.txt" 2>&1 || true
+            fi
+          done
+      - name: Preserve failed-runner diagnostic evidence
+        if: failure() && steps.go_test.conclusion == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: assemble-diagnostic-${{ matrix.os }}
+          path: ${{ runner.temp }}/harbor-assemble-diagnostic
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Build
         env:
           CGO_ENABLED: '0'
