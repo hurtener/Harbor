@@ -209,6 +209,20 @@ func (s *Store) Close(ctx context.Context, q identity.Quadruple, a llm.Inference
 	}
 }
 
+// waitForAccountingProgress yields between failed predicates without changing
+// authoritative accounting. Caller cancellation always bounds the wait.
+func waitForAccountingProgress(ctx context.Context, delay *time.Duration) error {
+	timer := time.NewTimer(*delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		*delay = min(*delay*2, time.Millisecond)
+		return ctx.Err()
+	}
+}
+
 // Reserve holds a conservative complete provider-attempt liability before I/O.
 // Existing attempt identities are never authorizations to repeat provider I/O.
 func (s *Store) Reserve(ctx context.Context, q identity.Quadruple, a llm.InferenceAllocation, id string, units int64) error {
@@ -237,10 +251,27 @@ func (s *Store) reserve(ctx context.Context, q identity.Quadruple, a llm.Inferen
 	if err := s.Ensure(ctx, q, a); err != nil {
 		return err
 	}
-	for range 128 {
+	delay := 100 * time.Microsecond
+	var previous state.EventID
+	unchanged := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("allocation contention: %w", err)
+		}
 		rec, t, err := s.load(ctx, q, a)
 		if err != nil {
 			return err
+		}
+		// Charge only retries without observed progress to the original
+		// contention budget. Other attempts changing the total are real
+		// progress, not a reason to abandon admitted provider accounting.
+		if rec.ID == previous {
+			unchanged++
+			if unchanged >= 128 {
+				return fmt.Errorf("allocation contention without progress: %w", state.ErrConditionFailed)
+			}
+		} else {
+			previous, unchanged = rec.ID, 0
 		}
 		if t.Closed {
 			return llm.ErrAllocationClosed
@@ -269,6 +300,9 @@ func (s *Store) reserve(ctx context.Context, q identity.Quadruple, a llm.Inferen
 			} else if !errors.Is(lookup, state.ErrNotFound) {
 				return fmt.Errorf("lookup allocation attempt: %w", lookup)
 			}
+			if err := waitForAccountingProgress(ctx, &delay); err != nil {
+				return fmt.Errorf("allocation contention: %w", err)
+			}
 			continue
 		}
 		if err != nil {
@@ -276,7 +310,6 @@ func (s *Store) reserve(ctx context.Context, q identity.Quadruple, a llm.Inferen
 		}
 		return nil
 	}
-	return fmt.Errorf("allocation contention: %w", state.ErrConditionFailed)
 }
 
 // Settle records provider-reported usage once. Nil usage retains all liability;
@@ -301,10 +334,27 @@ func (s *Store) settle(ctx context.Context, q identity.Quadruple, a llm.Inferenc
 	if err := s.Ensure(ctx, q, a); err != nil {
 		return err
 	}
-	for range 128 {
+	delay := 100 * time.Microsecond
+	var previous state.EventID
+	unchanged := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("allocation contention: %w", err)
+		}
 		rec, t, err := s.load(ctx, q, a)
 		if err != nil {
 			return err
+		}
+		// Charge only retries without observed progress to the original
+		// contention budget. Other attempts changing the total are real
+		// progress, not a reason to abandon admitted provider accounting.
+		if rec.ID == previous {
+			unchanged++
+			if unchanged >= 128 {
+				return fmt.Errorf("allocation contention without progress: %w", state.ErrConditionFailed)
+			}
+		} else {
+			previous, unchanged = rec.ID, 0
 		}
 		ar, err := s.loadAttempt(ctx, q, id)
 		if err != nil {
@@ -395,6 +445,9 @@ func (s *Store) settle(ctx context.Context, q identity.Quadruple, a llm.Inferenc
 		}
 		err = s.state.SaveBatchIf(ctx, []state.SlotExpectation{allocationExpectation(q, totalKind, rec.ID), allocationExpectation(q, attemptPrefix+id, ar.ID)}, []state.StateRecord{next, an})
 		if errors.Is(err, state.ErrConditionFailed) {
+			if err := waitForAccountingProgress(ctx, &delay); err != nil {
+				return fmt.Errorf("allocation contention: %w", err)
+			}
 			continue
 		}
 		if err != nil {
@@ -402,7 +455,6 @@ func (s *Store) settle(ctx context.Context, q identity.Quadruple, a llm.Inferenc
 		}
 		return nil
 	}
-	return fmt.Errorf("allocation contention: %w", state.ErrConditionFailed)
 }
 
 // Snapshot returns accounting without creating or mutating a record.

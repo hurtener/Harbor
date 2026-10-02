@@ -34,3 +34,23 @@ attempt. A timer, task terminality, a logical retry counter or a successful fina
 response cannot supply that evidence. Monetary reservations additionally require
 the exact immutable inclusive pricing manifest and retain their own unknown
 liability; this token example is not an invoice or a cost estimate.
+
+Accounting persistence must also survive finite concurrent progress. Reservation
+and settlement yield after a lost storage predicate and honor caller cancellation
+and deadlines. Their original contention budget now counts only retries without
+an observed change to the accounting generation. Legitimate settlements or
+reservations advancing that generation reset the no-progress budget; a stalled
+predicate cannot spin indefinitely. The close barrier retains its existing
+five-second operation limit. No caller deadline or task funding is increased.
+
+Cancellation or timeout never refunds an attempt. A settlement whose acknowledgment
+was lost remains recoverable by the same attempt and usage witness. A reservation
+retry never authorizes duplicate provider dispatch. These rules remain in force
+after closure and session erasure.
+
+Previously, any 128 lost predicates ended reservation or settlement, even when
+128 different valid generations proved forward progress. Now 128 lost predicates
+against the same observed generation still end the operation, including with a
+background context. Progress can keep an operation alive beyond 128 total attempts
+when its caller supplied no deadline. Callers that require an overall latency
+bound must continue to provide one; every retry and backoff respects that bound.
