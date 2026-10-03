@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // Get implements the `tasks.get` Protocol method. It validates
@@ -18,6 +20,9 @@ import (
 // the Projector never inlines bytes above the heavy-content
 // threshold.
 func (s *Service) Get(ctx context.Context, req prototypes.TaskGetRequest) (prototypes.TaskDetail, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodTasksGet); err != nil {
+		return prototypes.TaskDetail{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.TaskDetail{}, err

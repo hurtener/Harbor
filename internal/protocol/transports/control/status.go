@@ -22,6 +22,14 @@ import (
 // transport serves, so the docs cannot drift from this function.
 func HTTPStatus(code protoerrors.Code) int {
 	switch code {
+	case protoerrors.CodeArtifactTransferExpired:
+		return http.StatusGone
+	case protoerrors.CodeArtifactTransferRevoked:
+		return http.StatusForbidden
+	case protoerrors.CodeInferenceAllocationPricingUnavailable:
+		return http.StatusBadRequest
+	case protoerrors.CodeControlReceiptConflict:
+		return http.StatusConflict
 	case protoerrors.CodeInvalidRequest:
 		// Structurally malformed request — the client must fix the
 		// request shape.
@@ -116,7 +124,7 @@ func HTTPStatus(code protoerrors.Code) int {
 		// retries.
 		return http.StatusConflict // 409
 	case protoerrors.CodeAgentPackCopyConflict,
-		protoerrors.CodeAgentPackCopyIdempotencyConflict:
+		protoerrors.CodeAgentPackCopyIdempotencyConflict, protoerrors.CodeArtifactTransferConflict, protoerrors.CodeArtifactTransferInProgress:
 		// Same-runtime Agent pack copy was well-formed and authorized, but
 		// the atomic mutation was refused by target state or idempotency
 		// replay. Both are actionable 409 conflicts, not malformed requests.

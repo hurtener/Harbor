@@ -343,3 +343,14 @@ owner. See the
 [serving example](examples/serve.yaml), and
 [implementation status](docs/plans/phase-269-retained-session-context.md).
 Final coverage, release gates and matched live RC acceptance remain unfinished.
+
+Recipient-admitted runtime artifact copies, exact final-answer export, and
+content-free transfer receipts are documented in [Protocol operations](docs/skills/use-the-harbor-protocol/SKILL.md).
+
+Task funding supports [trusted inclusive monetary ceilings](docs/CONFIG.md#llmpricing_manifests)
+for explicitly priced bounded transports; charged/held capacity is separate from
+observed provider spend. The [candidate qualification note](docs/notes/durable-runtime-contracts-validation.md)
+records the remaining release gates.
+
+For method-restricted credentials and durable session mutation enrollment, see
+[the Protocol compatibility guide](docs/site/protocol/versioning-and-compatibility.md#scoped-session-admission).

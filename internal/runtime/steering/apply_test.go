@@ -373,3 +373,7 @@ func TestClassifyApplyErr(t *testing.T) {
 		}
 	}
 }
+
+func (s *stubTaskRegistry) Get(context.Context, tasks.TaskID) (*tasks.Task, error) {
+	return nil, tasks.ErrNotFound
+}

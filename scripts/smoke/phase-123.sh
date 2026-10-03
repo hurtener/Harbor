@@ -23,10 +23,10 @@ source "scripts/smoke/common.sh"
 
 # 1. Actual assembled requests stay within budget across cumulative rollovers.
 assert_go_tests_pass "${TMPDIR:-/tmp}/harbor-smoke-phase-123-go-test.log" \
-    './test/integration' 'phase 123: cumulative request budgets and failed-summary preservation' \
+    '-race -count=1 ./test/integration' 'phase 123: cumulative request budgets and failed-summary preservation' \
     TestE2E_Phase123_MemoryLLMBudget_StaysRunnable \
     TestE2E_Phase123_MemoryLLMBudget_ZeroUsesModelCapacity \
-    TestE2E_Phase123_MemoryLLMBudget_OversizedSummaryPreservesSources
+    TestE2E_Phase123_MemoryLLMBudget_TruncatedSummaryPreservesSources
 
 # 2. D-026 byte check is role-scoped (tool/binary only; conversation exempt).
 if go test -race -count=1 -timeout 120s -run 'FindContextLeak_RoleScope' ./internal/llm/... >/dev/null 2>&1; then

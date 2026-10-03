@@ -8,7 +8,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // removeconnection.go — the admin-scoped `agent_config.remove_mcp_connection`
@@ -69,6 +71,9 @@ var (
 // file doc for the full contract (revision + residue prune, the two distinct
 // loud errors, the projection-boundary teardown, token retention).
 func (s *Service) RemoveMCPConnection(ctx context.Context, req prototypes.AgentConfigRemoveMCPConnectionRequest) (prototypes.AgentConfigRemoveMCPConnectionResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigRemoveMCPConnection); err != nil {
+		return prototypes.AgentConfigRemoveMCPConnectionResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRemoveMCPConnectionResponse{}, err
 	}

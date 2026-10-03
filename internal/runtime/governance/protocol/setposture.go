@@ -9,7 +9,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // setposture.go — the admin-scoped `governance.set_posture` write service.
@@ -102,6 +104,9 @@ func NewPostureWriteService(store PostureWriteStore, opts ...PostureWriteOption)
 // verified admin caller, derived server-side by the wire handler — never
 // the request body (which carries no identity field).
 func (s *PostureWriteService) SetPosture(ctx context.Context, actor identity.Quadruple, req prototypes.GovernanceSetPostureRequest) (prototypes.GovernanceSetPostureResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodGovernanceSetPosture); err != nil {
+		return prototypes.GovernanceSetPostureResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.GovernanceSetPostureResponse{}, err
 	}

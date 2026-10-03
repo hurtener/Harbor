@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -96,6 +97,33 @@ func (e *Engine) RecoverInterruptedTasks(ctx context.Context) (int, error) {
 		recovered++
 	}
 
+	// A persisted pause has no trusted restart/relaunch boundary. Preserve its
+	// lifecycle, but do not leave an unconsumed input promising live delivery.
+	for _, task := range e.tasks {
+		if task.Status != tasks.StatusPaused {
+			continue
+		}
+		prior := task.InputReceipts
+		next := append([]tasks.InputRecord(nil), prior...)
+		changed := false
+		for i := range next {
+			if next[i].Receipt.Status == tasks.InputAccepted {
+				next[i].Receipt.Status = tasks.InputTerminal
+				next[i].Receipt.Reason = RecoveryErrorCode
+				next[i].Receipt.TerminalAt = time.Now().UnixNano()
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		task.InputReceipts = next
+		if err := e.persistTaskLocked(ctx, task, e.contentHashLocked(task)); err != nil {
+			task.InputReceipts = prior
+			errs = append(errs, fmt.Errorf("recover task inputs %q: %w", task.ID, err))
+		}
+	}
+
 	// Reconcile group resolution from member terminality. This heals a
 	// group whose resolution was computed in a PRIOR session but whose
 	// group-record persist failed before the crash (members durably
@@ -106,6 +134,17 @@ func (e *Engine) RecoverInterruptedTasks(ctx context.Context) (int, error) {
 	// resolution from member terminality").
 	if rerr := e.reconcileGroupsLocked(ctx); rerr != nil {
 		errs = append(errs, rerr)
+	}
+	// Older records, or a crash between terminal persistence and historical
+	// accounting, may already be terminal without a funding barrier. Reconcile
+	// each root once; unresolved provider envelopes stay reserved after closure.
+	for _, task := range e.tasks {
+		if task.InferenceAllocation == nil || task.AllocationTaskID != "" || !isTerminal(task.Status) {
+			continue
+		}
+		if err := e.closeTerminalAllocationLocked(ctx, task); err != nil {
+			errs = append(errs, fmt.Errorf("recover allocation finality %q: %w", task.ID, err))
+		}
 	}
 
 	if len(errs) > 0 {

@@ -13,6 +13,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -504,6 +505,12 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 // Dispatch holds no per-call state on the AppsSurface.
 func (s *AppsSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsMCPAppsMethod(method) {
+		return nil, protoerrors.New(protoerrors.CodeUnknownMethod, "unknown method")
+	}
+	if err := auth.AuthorizeMethod(ctx, method); err != nil {
+		return nil, sessionadmission.ProtocolError(err)
+	}
+	if !methods.IsMCPAppsMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol MCP Apps method", string(method))
 	}
@@ -647,6 +654,18 @@ const admissionTokenTimeLayout = "2006-01-02T15:04:05Z07:00"
 
 // handleCallTool serves mcp.apps.call_tool — the app-tool-call proxy.
 func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) {
+	r, ok := req.(*types.MCPAppCallToolRequest)
+	if !ok || r == nil {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid App callback request")
+	}
+	id, perr := gateAppsIdentity(ctx, methods.MethodMCPAppsCallTool, &r.Identity)
+	if perr != nil {
+		return nil, perr
+	}
+	return sessionadmission.Run(ctx, id, methods.MethodMCPAppsCallTool, func(accepted context.Context) (any, error) { return s.handleCallToolAccepted(accepted, req) })
+}
+
+func (s *AppsSurface) handleCallToolAccepted(ctx context.Context, req any) (any, error) {
 	method := methods.MethodMCPAppsCallTool
 	r, ok := req.(*types.MCPAppCallToolRequest)
 	if !ok || r == nil {

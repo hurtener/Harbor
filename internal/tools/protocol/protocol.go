@@ -54,7 +54,9 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto
@@ -222,12 +224,18 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 // facet filter + free-text search + pagination, and computes the
 // filtered-view aggregates.
 func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (prototypes.ToolListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsList); err != nil {
+		return prototypes.ToolListResponse{}, err
+	}
 	return s.ListForView(ctx, req, false, "")
 }
 
 // ListForView accepts the transport's verified admin decision and admitted effective agent.
 // Configuration inventory is read-only and never grants invocation authority.
 func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListRequest, adminScoped bool, admittedAgentID string) (prototypes.ToolListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsList); err != nil {
+		return prototypes.ToolListResponse{}, err
+	}
 	if err := validateCatalogView(req.View, req.AgentID, admittedAgentID, adminScoped); err != nil {
 		return prototypes.ToolListResponse{}, err
 	}
@@ -347,6 +355,9 @@ func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListReques
 // Get implements the `tools.get` method — a single catalog-row
 // projection.
 func (s *Service) Get(ctx context.Context, req prototypes.ToolGetRequest) (prototypes.Tool, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsGet); err != nil {
+		return prototypes.Tool{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.Tool{}, err
@@ -364,11 +375,17 @@ func (s *Service) Get(ctx context.Context, req prototypes.ToolGetRequest) (proto
 // Describe implements the `tools.describe` method — the full manifest
 // projection.
 func (s *Service) Describe(ctx context.Context, req prototypes.ToolDescribeRequest) (prototypes.ToolManifest, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsDescribe); err != nil {
+		return prototypes.ToolManifest{}, err
+	}
 	return s.DescribeForView(ctx, req, false, "")
 }
 
 // DescribeForView describes a tool using a transport-verified configuration admission.
 func (s *Service) DescribeForView(ctx context.Context, req prototypes.ToolDescribeRequest, adminScoped bool, admittedAgentID string) (prototypes.ToolManifest, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsDescribe); err != nil {
+		return prototypes.ToolManifest{}, err
+	}
 	if err := validateCatalogView(req.View, req.AgentID, admittedAgentID, adminScoped); err != nil {
 		return prototypes.ToolManifest{}, err
 	}
@@ -399,6 +416,9 @@ func (s *Service) DescribeForView(ctx context.Context, req prototypes.ToolDescri
 // Metrics implements the `tools.metrics` method — per-tool error-rate
 // gauges + status pill over the resolved window.
 func (s *Service) Metrics(ctx context.Context, req prototypes.ToolMetricsRequest) (prototypes.ToolMetrics, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsMetrics); err != nil {
+		return prototypes.ToolMetrics{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.ToolMetrics{}, err
@@ -423,6 +443,9 @@ func (s *Service) Metrics(ctx context.Context, req prototypes.ToolMetricsRequest
 // ContentStats implements the `tools.content_stats` method — the
 // per-tool result-size histogram + negotiated DisplayMode snapshot.
 func (s *Service) ContentStats(ctx context.Context, req prototypes.ToolContentStatsRequest) (prototypes.ToolContentStats, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsContentStats); err != nil {
+		return prototypes.ToolContentStats{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.ToolContentStats{}, err
@@ -443,6 +466,9 @@ func (s *Service) ContentStats(ctx context.Context, req prototypes.ToolContentSt
 // ErrAdminScopeRequired. On success, emits an
 // `audit.admin_scope_used` event.
 func (s *Service) SetApprovalPolicy(ctx context.Context, req prototypes.ToolSetApprovalPolicyRequest, adminScoped bool) (prototypes.ToolSetApprovalPolicyResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsSetApprovalPolicy); err != nil {
+		return prototypes.ToolSetApprovalPolicyResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.ToolSetApprovalPolicyResponse{}, err
@@ -475,6 +501,9 @@ func (s *Service) SetApprovalPolicy(ctx context.Context, req prototypes.ToolSetA
 // closed with ErrAdminScopeRequired. On success, emits an
 // `audit.admin_scope_used` event.
 func (s *Service) RevokeOAuth(ctx context.Context, req prototypes.ToolRevokeOAuthRequest, adminScoped bool) (prototypes.ToolRevokeOAuthResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodToolsRevokeOAuth); err != nil {
+		return prototypes.ToolRevokeOAuthResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.ToolRevokeOAuthResponse{}, err

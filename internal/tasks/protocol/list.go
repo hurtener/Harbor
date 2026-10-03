@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // List implements the `tasks.list` Protocol method. It validates
@@ -24,6 +26,9 @@ import (
 // naming more than one distinct tenant); a single-tenant request never
 // requires it.
 func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, adminScoped bool) (prototypes.TaskListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodTasksList); err != nil {
+		return prototypes.TaskListResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.TaskListResponse{}, err

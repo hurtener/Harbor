@@ -446,6 +446,11 @@ func TestAssemble_ExternalGrantRuntimeDefaultReachesBifrostCustomProvider(t *tes
 
 	cfg := minimalCfg(t)
 	cfg.LLM.Driver = "bifrost"
+	// This serial transport fixture needs a real provider, not its default
+	// 1000-worker pool. Keep race-instrumented suite memory proportional to
+	// the exercised work; grant, receipt and request assertions are unchanged.
+	cfg.LLM.NetworkDefaults.Concurrency = 2
+	cfg.LLM.NetworkDefaults.BufferSize = 4
 	cfg.LLM.Provider = provider
 	cfg.LLM.Model = model
 	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{{

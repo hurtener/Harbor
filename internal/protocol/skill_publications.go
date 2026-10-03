@@ -11,6 +11,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/publication"
 )
@@ -76,6 +77,9 @@ func (s *SkillPublicationsSurface) Dispatch(ctx context.Context, method methods.
 	if !methods.IsSkillPublicationMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical skill-publication method", string(method))
+	}
+	if err := sessionadmission.CheckMethod(ctx, method); err != nil {
+		return nil, err
 	}
 	scope, perr := publicationScope(req)
 	if perr != nil {

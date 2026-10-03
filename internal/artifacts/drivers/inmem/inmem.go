@@ -44,8 +44,9 @@ const (
 // `artifacts.Open`.
 func New(_ config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 	return &driver{
-		refs:  map[indexKey]artifacts.ArtifactRef{},
-		blobs: map[indexKey][]byte{},
+		refs:   map[indexKey]artifacts.ArtifactRef{},
+		fences: map[artifacts.ArtifactScope]bool{},
+		blobs:  map[indexKey][]byte{},
 	}, nil
 }
 
@@ -78,6 +79,7 @@ func keyFor(scope artifacts.ArtifactScope, id string) indexKey {
 
 type driver struct {
 	mu     sync.RWMutex
+	fences map[artifacts.ArtifactScope]bool
 	refs   map[indexKey]artifacts.ArtifactRef
 	blobs  map[indexKey][]byte
 	closed atomic.Bool
@@ -88,7 +90,7 @@ type driver struct {
 // (triple, namespace, bytes) returns the existing ref (no duplicate) —
 // including when the caller's `scope.TaskID` differs from the stored
 // one, in which case the FIRST writer's stamp is what comes back.
-func (d *driver) PutBytes(_ context.Context, scope artifacts.ArtifactScope, data []byte, opts artifacts.PutOpts) (artifacts.ArtifactRef, error) {
+func (d *driver) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, data []byte, opts artifacts.PutOpts) (artifacts.ArtifactRef, error) {
 	if d.closed.Load() {
 		return artifacts.ArtifactRef{}, artifacts.ErrStoreClosed
 	}
@@ -112,6 +114,12 @@ func (d *driver) PutBytes(_ context.Context, scope artifacts.ArtifactScope, data
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return artifacts.ArtifactRef{}, err
+	}
+	if d.fences[scope.Triple()] {
+		return artifacts.ArtifactRef{}, artifacts.ErrScopeFenced
+	}
 	if existing, ok := d.refs[key]; ok {
 		// Dedup: same triple + id already stored. Same content (sha
 		// matches by construction since ID embeds the truncated hash).
@@ -157,6 +165,9 @@ func (d *driver) Get(_ context.Context, scope artifacts.ArtifactScope, id string
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	if d.fences[scope.Triple()] {
+		return nil, false, nil
+	}
 	blob, ok := d.blobs[keyFor(scope, id)]
 	if !ok {
 		return nil, false, nil
@@ -179,6 +190,9 @@ func (d *driver) GetRef(_ context.Context, scope artifacts.ArtifactScope, id str
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	if d.fences[scope.Triple()] {
+		return nil, false, nil
+	}
 	ref, ok := d.refs[keyFor(scope, id)]
 	if !ok {
 		return nil, false, nil
@@ -202,6 +216,9 @@ func (d *driver) Exists(_ context.Context, scope artifacts.ArtifactScope, id str
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	if d.fences[scope.Triple()] {
+		return false, nil
+	}
 	_, ok := d.refs[keyFor(scope, id)]
 	return ok, nil
 }

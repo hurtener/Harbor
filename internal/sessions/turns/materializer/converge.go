@@ -269,9 +269,10 @@ func (m *Materializer) completeSealProjection(ctx context.Context, sess *session
 	// is the only honest sequence — it never fabricates one.
 	ans := snap.Answer
 	u := turns.Update{
-		Answer:   &ans,
-		Outputs:  snapshotOutputs(snap),
-		EventSeq: attachSeq,
+		Answer:         &ans,
+		Outputs:        snapshotOutputs(snap),
+		OutputManifest: snap.OutputManifest,
+		EventSeq:       attachSeq,
 	}
 	if snap.InputsPresent && len(ts.inputs) == 0 {
 		// The record now reports input attachments that the spawn

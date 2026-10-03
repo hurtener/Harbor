@@ -37,6 +37,7 @@ function turnRow(id: string, overrides: Partial<SessionTurnRow> = {}): SessionTu
 		sealed: true,
 		version: 1,
 		last_applied_event_seq: 1,
+		output_manifest: { version: 0, input_revision: 0 },
 		started_at: '2026-07-10T12:00:00Z',
 		updated_at: '2026-07-10T12:00:01Z',
 		finished_at: '2026-07-10T12:00:01Z',

@@ -8,7 +8,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -23,6 +25,9 @@ import (
 // SkillsList returns the agent's skills (metadata only) from the
 // SkillStore under the caller's identity.
 func (s *Service) SkillsList(ctx context.Context, req prototypes.AgentConfigSkillsListRequest) (prototypes.AgentConfigSkillsListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSkillsList); err != nil {
+		return prototypes.AgentConfigSkillsListResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSkillsListResponse{}, err
 	}
@@ -56,6 +61,9 @@ func (s *Service) SkillsList(ctx context.Context, req prototypes.AgentConfigSkil
 // surfaces as the typed `skills.ErrPackOverwriteRefused` (mapped to
 // CodeInvalidRequest at the wire edge) — never a silent overwrite.
 func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSkillsUpsertRequest) (prototypes.AgentConfigSkillsUpsertResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSkillsUpsert); err != nil {
+		return prototypes.AgentConfigSkillsUpsertResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSkillsUpsertResponse{}, err
 	}
@@ -108,6 +116,9 @@ func (s *Service) SkillsUpsert(ctx context.Context, req prototypes.AgentConfigSk
 // SkillsDelete deletes a skill from the SkillStore and records the
 // membership change as a config revision.
 func (s *Service) SkillsDelete(ctx context.Context, req prototypes.AgentConfigSkillsDeleteRequest) (prototypes.AgentConfigSkillsDeleteResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSkillsDelete); err != nil {
+		return prototypes.AgentConfigSkillsDeleteResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSkillsDeleteResponse{}, err
 	}

@@ -25,6 +25,7 @@ const (
 	retainedContextVersion   = 4
 	maxRetainedContextActive = 32
 	retainedContextAttempts  = 32
+	retainedTerminalBudget   = 5 * time.Second
 )
 
 var (
@@ -238,68 +239,121 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 // outcomes; no stored action is replayed. It must be called only after the
 // active execution has returned and any final answer has been validated.
 // A failed required write remains an error even when side effects succeeded.
+// Content preparation and conditional publication/cleanup each have a five-second
+// budget, both subject to ctx. Failed preparation performs no store operations.
 func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query, answer, status string) error {
 	return r.finishRetained(ctx, tr, query, answer, status, r.now().Add(r.ttl), false)
 }
 
 func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory, query, answer, status string, expiresAt time.Time, mustRetain bool) error {
+	// Content preparation has its own bound and performs no store operations.
+	// Otherwise redaction/validation can consume the persistence budget before
+	// the first read, leaving an already committed terminal write unable to
+	// clean its journal. Parent deadlines/cancellation still bound both stages.
+	prepareCtx, cancelPreparation := context.WithTimeout(ctx, retainedTerminalBudget)
+	turn, safe, err := r.prepareRetainedTurn(prepareCtx, tr, query, answer, status, expiresAt)
+	cancelPreparation()
+	if err != nil {
+		return err
+	}
+	persistCtx, cancelPersistence := context.WithTimeout(ctx, retainedTerminalBudget)
+	defer cancelPersistence()
+	return r.publishRetainedTurn(persistCtx, tr, turn, safe, mustRetain)
+}
+
+func (r *RetainedRun) prepareRetainedTurn(ctx context.Context, tr *planner.Trajectory, query, answer, status string, expiresAt time.Time) (retainedTurn, retainedTurn, error) {
 	if r.journalFailure != nil {
-		return fmt.Errorf("%w: dispatch persistence failed: %w", ErrRetainedContextUnavailable, r.journalFailure)
+		return retainedTurn{}, retainedTurn{}, fmt.Errorf("%w: dispatch persistence failed: %w", ErrRetainedContextUnavailable, r.journalFailure)
 	}
 	if r.journal.Pending {
-		return fmt.Errorf("%w: dispatch outcome is unsettled", ErrRetainedContextUnavailable)
+		return retainedTurn{}, retainedTurn{}, fmt.Errorf("%w: dispatch outcome is unsettled", ErrRetainedContextUnavailable)
+	}
+	if err := ctx.Err(); err != nil {
+		return retainedTurn{}, retainedTurn{}, err
 	}
 	if r.finished || tr == nil || r.prefixLen > len(tr.Steps) || !validRetainedStatus(status) || !utf8.ValidString(query) || !utf8.ValidString(answer) {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	if !expiresAt.After(r.now()) {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	turn := retainedTurn{Admission: r.admission, ExpiresAt: expiresAt, Status: status, Query: query, Answer: answer}
+	identities := make([]retainedStepIdentity, 0, len(tr.Steps)-r.prefixLen)
 	for index, step := range tr.Steps[r.prefixLen:] {
+		if err := ctx.Err(); err != nil {
+			return retainedTurn{}, retainedTurn{}, err
+		}
 		// Only the permitted model-facing representation is retained. No raw
 		// diagnostic duplicate, tool handles, credentials, or reasoning trace.
 		modelStep, err := planner.RetainStep(step, r.q.RunID, index)
 		if err != nil {
-			return err
+			return retainedTurn{}, retainedTurn{}, err
 		}
+		identity, err := prepareRetainedStepIdentity(modelStep)
+		if err != nil {
+			return retainedTurn{}, retainedTurn{}, err
+		}
+		identities = append(identities, identity)
 		encoded, err := json.Marshal(modelStep)
 		if err != nil {
-			return ErrRetainedContextUnavailable
+			return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 		}
 		turn.Steps = append(turn.Steps, encoded)
 	}
+	if err := ctx.Err(); err != nil {
+		return retainedTurn{}, retainedTurn{}, err
+	}
 	encoded, err := json.Marshal(turn)
 	if err != nil {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	var evidence any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	if err := decoder.Decode(&evidence); err != nil {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return retainedTurn{}, retainedTurn{}, err
 	}
 	redacted, err := r.redactor.Redact(ctx, evidence)
 	if err != nil {
-		return fmt.Errorf("%w: redaction refused retention: %w", ErrRetainedContextUnavailable, err)
+		return retainedTurn{}, retainedTurn{}, fmt.Errorf("%w: redaction refused retention: %w", ErrRetainedContextUnavailable, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return retainedTurn{}, retainedTurn{}, err
 	}
 	encoded, err = json.Marshal(redacted)
 	if err != nil {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return retainedTurn{}, retainedTurn{}, err
 	}
 	var safe retainedTurn
 	if err := decodeRetained(encoded, &safe); err != nil {
-		return err
+		return retainedTurn{}, retainedTurn{}, err
 	}
 	// Administrative metadata cannot be changed by a content redactor.
 	if safe.Admission != turn.Admission || !safe.ExpiresAt.Equal(turn.ExpiresAt) || safe.Status != status || len(safe.Steps) != len(turn.Steps) {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	for index := range turn.Steps {
-		if !sameRetainedStepIdentity(turn.Steps[index], safe.Steps[index]) {
-			return ErrRetainedContextUnavailable
+		if err := ctx.Err(); err != nil {
+			return retainedTurn{}, retainedTurn{}, err
+		}
+		if !sameRetainedStepIdentity(identities[index], safe.Steps[index]) {
+			return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return retainedTurn{}, retainedTurn{}, err
+	}
+	return turn, safe, nil
+}
+
+func (r *RetainedRun) publishRetainedTurn(ctx context.Context, tr *planner.Trajectory, turn, safe retainedTurn, mustRetain bool) error {
+	status, expiresAt := turn.Status, turn.ExpiresAt
 	for range retainedContextAttempts {
 		window, recordID, err := r.load(ctx)
 		if err != nil {
@@ -365,30 +419,58 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 	return ErrRetainedContextUnavailable
 }
 
+// retainedStepIdentity is a call-local snapshot of a freshly built historical
+// envelope and its content-stripped action. It holds no receipt bytes and is
+// never used as admission authority or retained across callbacks.
+type retainedStepIdentity struct {
+	envelope planner.HistoricalStep
+	action   any
+}
+
+// prepareRetainedStepIdentity only accepts the envelope just built by
+// planner.RetainStep. Its host fields are already constructed and its body is
+// freshly marshaled JSON, so extract the action without decoding or copying the
+// entire receipt again. Custom-redactor output still takes the full validation
+// path in sameRetainedStepIdentity.
+func prepareRetainedStepIdentity(step planner.Step) (retainedStepIdentity, error) {
+	var body struct {
+		Action json.RawMessage `json:"action"`
+	}
+	if err := json.Unmarshal(step.Historical.Body, &body); err != nil {
+		return retainedStepIdentity{}, ErrRetainedContextUnavailable
+	}
+	var action any
+	if len(body.Action) != 0 {
+		if err := decodeRetained(body.Action, &action); err != nil {
+			return retainedStepIdentity{}, err
+		}
+	}
+	stripRetainedActionContent(action)
+	envelope := *step.Historical
+	envelope.Body = nil
+	return retainedStepIdentity{envelope: envelope, action: action}, nil
+}
+
 // sameRetainedStepIdentity applies the dispatch journal's content-stripped
 // action identity rule to a terminal historical exchange. A redactor may
 // rewrite content-bearing arguments and observations, but it cannot change the
 // inert envelope coordinates or the operation those coordinates describe.
-func sameRetainedStepIdentity(original, redacted json.RawMessage) bool {
-	var originalOuter, redactedOuter planner.Step
-	if decodeRetained(original, &originalOuter) != nil || decodeRetained(redacted, &redactedOuter) != nil ||
-		originalOuter.Historical == nil || redactedOuter.Historical == nil {
+func sameRetainedStepIdentity(original retainedStepIdentity, redacted json.RawMessage) bool {
+	var redactedOuter planner.Step
+	if decodeRetained(redacted, &redactedOuter) != nil || redactedOuter.Historical == nil {
 		return false
 	}
-	wantEnvelope, gotEnvelope := originalOuter.Historical, redactedOuter.Historical
+	wantEnvelope, gotEnvelope := original.envelope, redactedOuter.Historical
 	if wantEnvelope.Version != gotEnvelope.Version || wantEnvelope.SourceRun != gotEnvelope.SourceRun ||
 		wantEnvelope.Index != gotEnvelope.Index || wantEnvelope.Kind != gotEnvelope.Kind {
 		return false
 	}
-	want, err := planner.ReadHistoricalStep(originalOuter)
-	if err != nil {
-		return false
-	}
 	got, err := planner.ReadHistoricalStep(redactedOuter)
-	if err != nil || (want.Action == nil) != (got.Action == nil) {
+	if err != nil || (original.action == nil) != (got.Action == nil) {
 		return false
 	}
-	return want.Action == nil || sameRetainedActionIdentity(want.Action, got.Action)
+	identity, err := retainedActionIdentity(got.Action)
+	return err == nil && reflect.DeepEqual(original.action, identity)
 }
 
 func validRetainedStatus(s string) bool {

@@ -56,6 +56,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -120,6 +121,20 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...
 	if err := e.hydrate(context.Background()); err != nil {
 		return nil, err
 	}
+	// Pin every recovered root before serving erasure or descendant work. Legacy
+	// session-local records must not vanish before their accounting is protected.
+	if e.allocations != nil {
+		for _, task := range e.tasks {
+			if task.InferenceAllocation == nil || task.AllocationTaskID != "" {
+				continue
+			}
+			q := task.Identity
+			q.RunID = string(task.ID)
+			if err := e.allocations.Ensure(context.Background(), q, *task.InferenceAllocation); err != nil {
+				return nil, fmt.Errorf("recover protected allocation: %w", err)
+			}
+		}
+	}
 	return e, nil
 }
 
@@ -128,6 +143,18 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...
 // progress snapshot hydrated into lastProgressEmit uses the injected
 // clock's epoch consistently with the reports that will follow).
 type Option func(*Engine)
+
+// WithPricingCatalog installs operator-authorized immutable tariff references.
+func WithPricingCatalog(catalog *pricing.Catalog) Option {
+	return func(e *Engine) { e.pricingCatalog = catalog }
+}
+
+// WithAllocations binds terminal funding closure to the same durable accounting
+// store used by provider admission. Embeddings without this seam cannot claim
+// finality even when their task lifecycle reports a terminal state.
+func WithAllocations(allocations llm.AllocationStore) Option {
+	return func(e *Engine) { e.allocations = allocations }
+}
 
 // WithProgressPolicy replaces the default ReportProgress
 // coalescing/rate policy. A zero-valued policy is treated as "use
@@ -228,9 +255,11 @@ type idempotencyRecord struct {
 }
 
 type Engine struct {
-	backend  Backend
-	bus      events.EventBus
-	redactor audit.Redactor
+	allocations    llm.AllocationStore
+	pricingCatalog *pricing.Catalog
+	backend        Backend
+	bus            events.EventBus
+	redactor       audit.Redactor
 
 	mu       sync.RWMutex
 	tasks    map[tasks.TaskID]*tasks.Task
@@ -287,6 +316,38 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	allocationTaskID := ""
+	if accepted := llm.InferenceAllocationFrom(ctx); accepted != nil {
+		if req.ParentTaskID == nil {
+			return tasks.TaskHandle{}, llm.ErrAllocationInvalid
+		}
+		parent, ok := e.tasks[*req.ParentTaskID]
+		if !ok || parent.InferenceAllocation == nil || !llm.EqualInferenceAllocation(parent.InferenceAllocation, accepted) {
+			return tasks.TaskHandle{}, llm.ErrAllocationInvalid
+		}
+	}
+	if req.ParentTaskID != nil {
+		parent, ok := e.tasks[*req.ParentTaskID]
+		if ok && parent.InferenceAllocation != nil {
+			if !identitiesEqual(parent.Identity.Identity, req.Identity.Identity) {
+				return tasks.TaskHandle{}, tasks.ErrInvalidRequest
+			}
+			if req.InferenceAllocation != nil && !llm.EqualInferenceAllocation(req.InferenceAllocation, parent.InferenceAllocation) {
+				return tasks.TaskHandle{}, llm.ErrAllocationInvalid
+			}
+			req.InferenceAllocation = llm.CloneInferenceAllocation(parent.InferenceAllocation)
+			allocationTaskID = parent.AllocationTaskID
+			if allocationTaskID == "" {
+				allocationTaskID = string(parent.ID)
+			}
+		}
+	}
+	if err := llm.ValidateInferenceAllocationPricing(req.InferenceAllocation, e.pricingCatalog); err != nil {
+		// Pure validation precedes idempotency mutation, task persistence and
+		// dispatch. Carry that proof across the TaskRegistry boundary; the
+		// pricing error code alone cannot establish it for a custom registry.
+		return tasks.TaskHandle{}, tasks.RejectBeforeSpawn(err)
+	}
 	if req.VirtualAgent != nil {
 		parentID := *req.ParentTaskID
 		parent, ok := e.tasks[parentID]
@@ -323,6 +384,20 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 				}
 				return tasks.TaskHandle{ID: existing.TaskID, Reused: true}, nil
 			}
+		}
+	}
+
+	// A new descendant cannot reopen funding after the last accepted member
+	// closed it. Idempotent retries above still return their canonical handle.
+	if allocationTaskID != "" && e.allocations != nil {
+		q := req.Identity
+		q.RunID = allocationTaskID
+		snapshot, err := e.allocations.Snapshot(ctx, q, *req.InferenceAllocation)
+		if err != nil {
+			return tasks.TaskHandle{}, err
+		}
+		if snapshot.Closed {
+			return tasks.TaskHandle{}, tasks.RejectBeforeSpawn(llm.ErrAllocationClosed)
 		}
 	}
 
@@ -389,23 +464,26 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		return tasks.TaskHandle{}, err
 	}
 	t := &tasks.Task{
-		ID:                id,
-		Identity:          req.Identity,
-		Kind:              req.Kind,
-		Status:            tasks.StatusPending,
-		Priority:          req.Priority,
-		ParentTaskID:      req.ParentTaskID,
-		Description:       redactedDesc,
-		Query:             redactedQuery,
-		PropagateOnCancel: propagate,
-		NotifyOnComplete:  req.NotifyOnComplete,
-		IdempotencyKey:    req.IdempotencyKey,
-		ExternalGrant:     append([]byte(nil), req.ExternalGrant...),
-		ProviderRoute:     cloneProviderRoute(req.ProviderRoute),
-		LLMSettings:       llm.CloneRunSettings(req.LLMSettings),
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		InputArtifactIDs:  inputArtifactIDs,
+		OutputManifest:      &tasks.OutputManifest{Version: 1, Position: -1},
+		ID:                  id,
+		Identity:            req.Identity,
+		Kind:                req.Kind,
+		Status:              tasks.StatusPending,
+		Priority:            req.Priority,
+		ParentTaskID:        req.ParentTaskID,
+		Description:         redactedDesc,
+		Query:               redactedQuery,
+		PropagateOnCancel:   propagate,
+		NotifyOnComplete:    req.NotifyOnComplete,
+		IdempotencyKey:      req.IdempotencyKey,
+		ExternalGrant:       append([]byte(nil), req.ExternalGrant...),
+		ProviderRoute:       cloneProviderRoute(req.ProviderRoute),
+		LLMSettings:         llm.CloneRunSettings(req.LLMSettings),
+		InferenceAllocation: llm.CloneInferenceAllocation(req.InferenceAllocation),
+		AllocationTaskID:    allocationTaskID,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		InputArtifactIDs:    inputArtifactIDs,
 		// per-attachment disposition hints.
 		InputArtifactDispositions: inputArtifactDispositions,
 		// per-request output schema (raw JSON-Schema bytes).
@@ -439,6 +517,13 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		memberGroup = g
 	}
 
+	if t.InferenceAllocation != nil && t.AllocationTaskID == "" && e.allocations != nil {
+		q := t.Identity
+		q.RunID = string(t.ID)
+		if err := e.allocations.Ensure(ctx, q, *t.InferenceAllocation); err != nil {
+			return tasks.TaskHandle{}, fmt.Errorf("pin accepted allocation: %w", err)
+		}
+	}
 	if err := e.persistTaskLocked(ctx, t, contentHash); err != nil {
 		return tasks.TaskHandle{}, err
 	}
@@ -561,9 +646,12 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		return nil, fmt.Errorf("%w: id=%q", tasks.ErrNotFound, id)
 	}
 	cp := *t
+	cp.OutputManifest = tasks.CloneOutputManifest(t.OutputManifest)
+	cp.InputReceipts = append([]tasks.InputRecord(nil), t.InputReceipts...)
 	cp.ExternalGrant = append([]byte(nil), t.ExternalGrant...)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
+	cp.InferenceAllocation = llm.CloneInferenceAllocation(t.InferenceAllocation)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -741,8 +829,11 @@ func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 // in-place after Spawn).
 func copyTask(t *tasks.Task) *tasks.Task {
 	cp := *t
+	cp.OutputManifest = tasks.CloneOutputManifest(t.OutputManifest)
+	cp.InputReceipts = append([]tasks.InputRecord(nil), t.InputReceipts...)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
+	cp.InferenceAllocation = llm.CloneInferenceAllocation(t.InferenceAllocation)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1015,13 +1106,41 @@ func (e *Engine) MarkComplete(ctx context.Context, id tasks.TaskID, result tasks
 	if err != nil {
 		return fmt.Errorf("tasks/engine: redact result: %w", err)
 	}
+	priorManifest := t.OutputManifest
+	if priorManifest != nil {
+		if priorManifest.Uncertain {
+			return tasks.ErrOutputInvocationUnknown
+		}
+		for _, slot := range priorManifest.Invocations {
+			if slot.State == "pending" {
+				return tasks.ErrOutputInvocationUnknown
+			}
+		}
+	}
 	priorResult := t.Result
-	t.Result = &tasks.TaskResult{Value: redactedValue}
+	if result.IncorporatedInputRevision != t.AppliedInputRevision {
+		return fmt.Errorf("%w: result input revision does not match consumed task input", tasks.ErrInvalidRequest)
+	}
+	t.Result = &tasks.TaskResult{Value: redactedValue, IncorporatedInputRevision: result.IncorporatedInputRevision}
+	if priorManifest != nil {
+		sealed := tasks.CloneOutputManifest(priorManifest)
+		sealed.Sealed = true
+		sealed.InputRevision = result.IncorporatedInputRevision
+		t.OutputManifest = sealed
+		digest, hashErr := tasks.OutputManifestDigest(t)
+		if hashErr != nil {
+			t.OutputManifest = priorManifest
+			t.Result = priorResult
+			return hashErr
+		}
+		sealed.SHA256 = digest
+	}
 	if err := e.transitionLocked(ctx, t, tasks.StatusComplete); err != nil {
 		// transitionLocked already rolled back status on a persist
 		// failure; restore the result it doesn't know about so the
 		// in-memory record stays consistent with the store.
 		t.Result = priorResult
+		t.OutputManifest = priorManifest
 		return err
 	}
 	return e.publish(ctx, t, tasks.EventTypeTaskCompleted, tasks.TaskCompletedPayload{
@@ -1165,6 +1284,13 @@ func (e *Engine) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 			return err
 		}
 	}
+	if isTerminal(to) {
+		// Close before publishing the last terminal member. A failed or unknown
+		// closure leaves lifecycle retryable and never announces final funding.
+		if err := e.closeTerminalAllocationLocked(ctx, t); err != nil {
+			return err
+		}
+	}
 	// Snapshot the fields we are about to mutate so a persist failure
 	// leaves the in-memory record in agreement with the store. Without
 	// this, a failed Save would advance in-memory status while the
@@ -1173,11 +1299,16 @@ func (e *Engine) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 	// and a restart would recover a divergent state.
 	priorStatus := t.Status
 	priorUpdated := t.UpdatedAt
+	priorInputs := t.InputReceipts
 	t.Status = to
 	t.UpdatedAt = time.Now().UnixNano()
+	if isTerminal(to) {
+		t.InputReceipts = terminalInputReceipts(t.InputReceipts, to, t.UpdatedAt)
+	}
 	if err := e.persistTaskLocked(ctx, t, e.contentHashLocked(t)); err != nil {
 		t.Status = priorStatus
 		t.UpdatedAt = priorUpdated
+		t.InputReceipts = priorInputs
 		return err
 	}
 	if isTerminal(to) {
@@ -1576,6 +1707,14 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 			req.ProviderRoute.ProviderConnectionGeneration,
 			req.ProviderRoute.CredentialAssetGeneration,
 			req.ProviderRoute.ModelSelector)
+	}
+	if req.InferenceAllocation != nil {
+		allocation, err := json.Marshal(req.InferenceAllocation)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("allocation fingerprint: %w", err)
+		}
+		h.Write([]byte("\x1finference_allocation\x1f"))
+		h.Write(allocation)
 	}
 	if req.LLMSettings != nil {
 		// JSON preserves nil versus explicit zero/empty scalar semantics.

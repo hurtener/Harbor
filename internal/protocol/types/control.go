@@ -121,6 +121,8 @@ type StartRequest struct {
 	// LLMSettings is copied into this task at acceptance, including durable
 	// recovery and retries. It changes neither runtime config nor preferences.
 	LLMSettings *RunLLMSettings `json:"llm_settings,omitempty"`
+	// InferenceAllocation caps cumulative task inference across retries/resumes.
+	InferenceAllocation *InferenceAllocation `json:"inference_allocation,omitempty"`
 	// Query is the user-facing query that starts the run. Optional —
 	// some runs are kicked off without a natural-language query.
 	Query string `json:"query,omitempty"`
@@ -318,6 +320,8 @@ type StartResponse struct {
 // does not re-implement any of that (CLAUDE.md §13 forbids a
 // second validator).
 type ControlRequest struct {
+	// ExpectedInputRevision optionally fences a keyed text input against stale intent.
+	ExpectedInputRevision *uint64 `json:"expected_input_revision,omitempty"`
 	// Identity is the request's identity scope. The full quadruple
 	// (triple + Run) is mandatory — a steering control targets a
 	// specific run's inbox. Scope is the caller's steering scope claim.
@@ -329,8 +333,8 @@ type ControlRequest struct {
 	// edge; an oversize payload fails the request closed.
 	Payload map[string]any `json:"payload,omitempty"`
 	// EventID is the caller-supplied idempotency / correlation key
-	// (ULID-shaped). Optional — the control-history dedupe uses
-	// it. Empty is permitted.
+	// (maximum 128 bytes). A nonempty key on user_message enables durable
+	// exact-payload receipts. Other controls remain enqueue-only.
 	EventID string `json:"event_id,omitempty"`
 }
 
@@ -343,10 +347,13 @@ type ControlRequest struct {
 // NOT synchronously in this response — a richer synchronous response
 // would couple the Protocol edge to the run loop's step timing.
 type ControlResponse struct {
+	// Receipt is present only for user_message with a nonempty event_id.
+	// Other controls retain their existing enqueue-only acknowledgement.
+	Receipt *ControlReceipt `json:"receipt,omitempty"`
 	// Accepted is true when the control event was validated, scope-checked,
 	// and enqueued on the run's steering inbox. A false Accepted is never
-	// returned — a rejected control surfaces as a *protocol.Error from
-	// Dispatch, not an Accepted=false response.
+	// returned on legacy controls. A durable text input can return false
+	// with an explicit declined or terminal receipt.
 	Accepted bool `json:"accepted"`
 	// Method echoes the Protocol method name the control was submitted
 	// under (`cancel`, `pause`, …) so a client correlating async

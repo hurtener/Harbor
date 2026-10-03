@@ -2323,3 +2323,81 @@ sum to admission's estimate; output headroom is separate. Numeric attempt and
 optional installed runtime replay coordinates describe selected context, not
 provider delivery, source inspection or billed usage. Maintenance does not inherit
 parent history. Existing event/Protocol ownership applies. RFC §6.5, D-476.
+
+## Recipient-admitted artifact transfer
+
+An exact immutable artifact copy whose source owner and destination owner
+independently authorize a signed transfer. Bytes travel directly between
+boot-trusted runtime endpoints. The signed capability does not independently
+authenticate the network sender. See D-486.
+
+## Transfer receipt
+
+Content-free durable evidence tying a transfer ID and grant digest to both
+owner-scoped artifact references and the shared SHA-256 content version. It
+records delivery, not lasting read authority.
+
+## Transfer policy epoch
+
+A boot-controlled generation required by signed artifact authority. Changing
+it invalidates old unexecuted admissions without broadening any owner reach.
+
+## Task input receipt
+
+Content-free outcome evidence for one caller-keyed text input on an exact task.
+Accepted input revisions increase monotonically; an optional expected revision
+refuses stale new intent. Exact retries recover the retained outcome. D-487.
+
+## Incorporated input revision
+
+The accepted-input revision consumed by the planning invocation whose result
+became the sealed task answer. It is independent of later accepted inputs and
+is not inferred from enqueue success. D-487.
+
+## Task inference allocation
+
+An immutable cumulative token allowance and optional trusted monetary ceiling
+shared by a task and its same-identity spawned descendants. Its durable
+reservations precede provider transport. D-488, D-490.
+
+## Unknown inference liability
+
+Reserved capacity for provider work whose complete usage is unproven. It
+survives cancellation and restart and has no expiry-based refund. D-488.
+
+## Trusted pricing manifest
+
+An operator/coordinator-installed immutable ID/revision/hash containing exact
+provider/model/version and endpoint bindings with explicit inclusive integer USD
+ceilings. It is not inferred from model output or provider cost telemetry. D-490.
+
+## Charged monetary capacity
+
+Conservative task funding consumed at the full trusted envelope after proven
+complete single-attempt work. It is an upper bound, not measured provider spend.
+Unproven envelopes remain reserved unknown liability without expiry. D-490.
+
+- **Native output manifest** — bounded immutable metadata for successful verified direct-native binary outputs owned by one engine task (D-489).
+- **Output invocation fence** — persisted exact decision/branch admission preventing blind replay after uncertain provenance or missing observation (D-489).
+
+## Signed method reach
+
+Optional JWT `method_reach` restricting a bearer to exact canonical Protocol
+methods. Absence preserves legacy behavior; an empty set denies every method.
+It does not grant identity, scopes or other reach. D-491.
+
+## Session admission epoch
+
+Monotonic Runtime-owned session mutation generation bound to the full owner
+identity and immutable verified issuer/coordinator. D-491.
+
+## Unresolved session acceptance
+
+One bounded durable pending reservation whose accepting operation has not
+returned a proved completion. It blocks enrollment and further mutations and
+never expires merely with time or process loss. D-491.
+
+- **Allocation closure:** An irreversible barrier against new provider reservations
+  for one canonical task funding root. Accepted envelopes can settle afterward;
+  unresolved liability remains held. Closed and fully settled accounting proves
+  final conservative capacity, not actual provider spending (D-493).

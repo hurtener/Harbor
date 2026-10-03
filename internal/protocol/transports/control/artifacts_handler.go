@@ -73,6 +73,26 @@ func (h *Handler) serveArtifacts(w http.ResponseWriter, r *http.Request, method 
 // ArtifactScope so the identity-backfill helper can mutate it in place.
 func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.ArtifactScope, *protoerrors.Error) {
 	switch method {
+	case methods.MethodArtifactsExportAnswer:
+		req := &types.ArtifactsExportAnswerRequest{}
+		if err := decodeStrict(body, req); err != nil {
+			return nil, nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid final answer selector")
+		}
+		return req, &req.Scope, nil
+
+	case methods.MethodArtifactsPrepareImport, methods.MethodArtifactsTransfer:
+		req := &types.ArtifactsTransferRequest{}
+		if err := decodeStrict(body, req); err != nil {
+			return nil, nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid transfer request")
+		}
+		return req, &req.Scope, nil
+	case methods.MethodArtifactsTransferStatus, methods.MethodArtifactsRevokeTransfer:
+		req := &types.ArtifactsTransferStatusRequest{}
+		if err := decodeStrict(body, req); err != nil {
+			return nil, nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid transfer status request")
+		}
+		return req, &req.Scope, nil
+
 	case methods.MethodArtifactsList:
 		req := &types.ArtifactsListRequest{}
 		if len(body) > 0 {
@@ -147,7 +167,7 @@ func (h *Handler) reconcileArtifactsIdentity(r *http.Request, method methods.Met
 		surface = bodyscope.SurfaceArtifactsPut
 	case methods.MethodArtifactsDelete:
 		surface = bodyscope.SurfaceArtifactsDelete
-	case methods.MethodArtifactsGet, methods.MethodArtifactsGetRef:
+	case methods.MethodArtifactsGet, methods.MethodArtifactsGetRef, methods.MethodArtifactsExportAnswer, methods.MethodArtifactsPrepareImport, methods.MethodArtifactsTransfer, methods.MethodArtifactsTransferStatus, methods.MethodArtifactsRevokeTransfer:
 		surface = bodyscope.SurfaceArtifactsRef
 	}
 	return bodyscope.Reconcile(r.Context(), bodyscope.ForArtifactScope(scope),

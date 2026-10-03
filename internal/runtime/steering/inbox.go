@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // ControlEvent is the canonical steering record (RFC §6.3
@@ -15,6 +16,8 @@ import (
 // the run's Inbox. drains these between planner steps and
 // projects the result onto RunContext.Control.
 type ControlEvent struct {
+	// ExpectedInputRevision is an optional caller admission precondition.
+	ExpectedInputRevision *uint64
 	// Type is one of the nine canonical control types. An invalid
 	// Type is rejected by Inbox.Enqueue with ErrUnknownControlType.
 	Type ControlType
@@ -37,6 +40,11 @@ type ControlEvent struct {
 	// (ULID-shaped, mirrors events.EventID). Optional —
 	// the control-history dedupe uses it. Empty is permitted.
 	EventID string
+	// InputRevision is runtime-owned durable text-input admission, never wire authority.
+	InputRevision uint64
+	// inputTaskID is bound by the runtime's accepted receipt, independently of
+	// the inbox's execution run ID. It cannot be supplied over the wire.
+	inputTaskID tasks.TaskID
 	// EnqueuedAt is stamped by Inbox.Enqueue from the Inbox's Clock.
 	// Callers MUST NOT pre-fill it; a non-zero value is rejected so
 	// the Inbox owns the timeline (mirrors events.Event.Sequence).
@@ -66,11 +74,13 @@ type Inbox struct {
 	hardCancellation      *ControlEvent
 	executionFinished     bool
 	identity              identity.Quadruple
+	taskID                tasks.TaskID
 	clock                 Clock
 
-	mu     sync.Mutex
-	queue  []ControlEvent
-	closed bool
+	mu          sync.Mutex
+	queue       []ControlEvent
+	inputEvents map[string]struct{}
+	closed      bool
 
 	// notify is a 1-buffered "something was enqueued" signal channel.
 	// Enqueue does a non-blocking send on it; WaitForEvent (the
@@ -144,9 +154,8 @@ func (in *Inbox) validateEvent(ev ControlEvent) error {
 		return err
 	}
 	if ev.Type == ControlUserMessage {
-		message, ok := stringFromPayload(ev.Payload, "message")
-		if !ok || message == "" || len(ev.Payload) != 1 {
-			return fmt.Errorf("%w: USER_MESSAGE requires only a nonempty message string; send attachments with a new turn", ErrPayloadInvalid)
+		if _, err := UserMessageText(ev.Payload); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -53,9 +53,11 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -1074,6 +1076,9 @@ func NewService(registry agentcfg.Registry, opts ...Option) (*Service, error) {
 
 // Get reads the agent's active config revision.
 func (s *Service) Get(ctx context.Context, req prototypes.AgentConfigGetRequest) (prototypes.AgentConfigGetResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigGet); err != nil {
+		return prototypes.AgentConfigGetResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigGetResponse{}, err
 	}
@@ -1096,6 +1101,9 @@ func (s *Service) Get(ctx context.Context, req prototypes.AgentConfigGetRequest)
 // SetRevision writes a new immutable revision and advances the active
 // pointer.
 func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSetRevisionRequest) (prototypes.AgentConfigSetRevisionResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetRevision); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
@@ -1220,6 +1228,9 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 
 // ListRevisions returns the agent's revision chain, newest-first.
 func (s *Service) ListRevisions(ctx context.Context, req prototypes.AgentConfigListRevisionsRequest) (prototypes.AgentConfigListRevisionsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigListRevisions); err != nil {
+		return prototypes.AgentConfigListRevisionsResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigListRevisionsResponse{}, err
 	}
@@ -1243,6 +1254,9 @@ func (s *Service) ListRevisions(ctx context.Context, req prototypes.AgentConfigL
 
 // Diff returns the server-side compare of two existing revisions.
 func (s *Service) Diff(ctx context.Context, req prototypes.AgentConfigDiffRequest) (prototypes.AgentConfigDiffResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigDiff); err != nil {
+		return prototypes.AgentConfigDiffResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigDiffResponse{}, err
 	}
@@ -1276,6 +1290,9 @@ func (s *Service) Diff(ctx context.Context, req prototypes.AgentConfigDiffReques
 // runtime) the guard is inert and the door keeps its exact pre-baseline
 // behavior.
 func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollbackRequest) (prototypes.AgentConfigRollbackResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigRollback); err != nil {
+		return prototypes.AgentConfigRollbackResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
@@ -1308,6 +1325,9 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 // admin control-plane operation; data-plane reach is intentionally not part of
 // this service contract and is therefore never inferred from the request.
 func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRequest) (prototypes.AgentConfigRetireResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigRetire); err != nil {
+		return prototypes.AgentConfigRetireResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRetireResponse{}, err
 	}

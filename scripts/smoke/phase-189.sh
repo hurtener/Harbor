@@ -39,7 +39,9 @@ run_race_tests() {
         ok "${desc}"
         return
     fi
-    printf '%s\n' "${out}" | tail -25
+    # Later passing packages must not hide the failing package, assertion,
+    # or race report at the start of this multi-package test output.
+    printf '%s\n' "${out}"
     fail "${desc}: go test exited ${rc}"
 }
 

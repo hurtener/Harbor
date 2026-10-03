@@ -8,7 +8,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -17,7 +19,14 @@ import (
 // its anti-replay tombstone. It intentionally accepts no authority envelope:
 // removal is authorized by the verified admin caller and the frozen exact pair
 // receipt, so expiry or verifier-key rotation can never strand a live bearer.
-func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest) (_ prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse, retErr error) {
+func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest) (prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigRemoveOAuthMCPCapability); err != nil {
+		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+	}
+	return s.removeOAuthMCPCapabilityAuthorized(ctx, req)
+}
+
+func (s *Service) removeOAuthMCPCapabilityAuthorized(ctx context.Context, req prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest) (_ prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 	}
@@ -237,6 +246,9 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 // agent reach before loading the immutable pair receipt, then removes only the
 // caller's ConfigScopeUser desired pair and physical owner.
 func (s *Service) RemoveUserOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigUserRemoveOAuthMCPCapabilityRequest) (prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserRemoveOAuthMCPCapability); err != nil {
+		return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{}, err
+	}
 	id, err := identityFromScope(req.Identity, req.AgentID)
 	if err != nil {
 		return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{}, err
@@ -245,7 +257,7 @@ func (s *Service) RemoveUserOAuthMCPCapability(ctx context.Context, req prototyp
 		return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{}, err
 	}
 	scopedCtx := withSignedOAuthMCPConfigScope(ctx, agentcfg.ConfigScopeUser)
-	response, err := s.RemoveOAuthMCPCapability(scopedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest(req))
+	response, err := s.removeOAuthMCPCapabilityAuthorized(scopedCtx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest(req))
 	if err != nil {
 		return prototypes.AgentConfigUserRemoveOAuthMCPCapabilityResponse{}, err
 	}

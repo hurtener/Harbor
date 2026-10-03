@@ -16098,3 +16098,294 @@ writes. Agent-wide settings and sibling session/tenant settings are preserved.
 The existing configuration Protocol is unchanged. Selecting the new store does
 not recover old in-memory revisions; operators must explicitly restore approved
 settings through the existing authenticated configuration surface.
+
+## D-486 — Exact-content recipient-admitted artifact copies
+
+**Date:** 2026-10-01. **Scope:** Phase 270.
+
+Cross-runtime copies preserve the source artifact isolation key. A coordinator
+signs one content-free intent binding both runtime audiences and owner triples,
+exact source artifact ID and full SHA-256 version identity, MIME, byte length,
+purpose, policy epochs and a short expiry. The recipient independently ratifies
+that exact intent through its owner-authenticated Protocol before any bytes move.
+The source owner then requests direct delivery to an operator-pinned peer. No
+caller-controlled URL, redirect, public link, credential or coordinator byte
+proxy is introduced. The import-only edge checks the signature and durable
+recipient admission; these authorize exact content import, not independent
+network-sender identity. Source lineage is the signed authorization claim.
+
+Durable conditional records preserve exact idempotency. Importing/exporting
+states mean movement may have begun: revocation refuses to claim rollback.
+Completed receipts bind both scoped artifact IDs and the immutable digest, but
+do not replace fresh read authorization. A deterministic destination namespace
+allows crash recovery after blob storage without duplicate bytes. Expiry blocks
+new movement; a currently authenticated recipient may seal the receipt for a
+previously stored exact blob. Epoch changes reject prior unexecuted authority.
+The mechanism reuses the StateStore persistence triad. Transfer admission
+requires the explicit atomic artifact-scope-fence capability, implemented by
+in-memory, SQLite-blob and Postgres-blob drivers. FS/S3 do not yet supply that
+proof and fail closed when transfer is enabled. Each supported byte store
+serializes every Put with a permanent owner tombstone inside its own lock or
+transaction. Session deletion fences before its sweep, so a paused writer
+cannot resurrect bytes after successful erasure; no cross-store transaction,
+process-local lease, or expiry-based release of unknown delivery is used.
+Enablement requires explicit acknowledgement that all shared-store writers
+honor the fence or have stopped. The erasure hook remains wired whenever the
+artifact driver supports it, independent of the transfer feature toggle or
+current trust keys.
+
+## D-487 — Exact-task text input receipts and sealed provenance
+
+**Date:** 2026-10-01. **Scope:** Phase 271.
+
+Caller-keyed text-only user messages use the canonical task record as their
+bounded receipt ledger. An exact retry returns the retained content-free
+receipt; changing its text or expected accepted-input revision conflicts.
+Optional `expected_input_revision` is checked at admission under the owning
+runtime's task lock before the inbox is interrupted. `tasks.get.input_revision`
+is the accepted counter; `incorporated_input_revision` names only the planning
+invocation admitted as the sealed result. Neither accepted nor applied receipt
+status alone promises successful final output.
+
+Runtime steering remains the only executor. Consumption is persisted after the
+planner observes the projected input and before its decision executes. Terminal
+transitions atomically resolve unconsumed receipts. Restart retains evidence,
+never automatically relaunches work. The existing durable TaskRegistry is a
+single-active-runtime store: its cached rows and restart recovery are not a
+multi-writer active-task service. Cross-process durability means restart
+reconstruction, not simultaneous task ownership. Capabilities require durable
+tasks over SQLite or PostgreSQL state. Unkeyed controls remain process-local.
+
+## D-488 — Cumulative token allocation with conservative liability
+
+**Date:** 2026-10-01. **Scope:** Phase 272.
+
+An immutable allocation binds accepted task intent and is inherited unchanged
+by same-identity descendants. A StateStore conditional batch reserves a bounded
+provider envelope before transport. Helpers, retry and resume calls consume the
+same allocation. Missing authoritative usage, interrupted transport or process
+loss retains the unknown liability; elapsed time never refunds it. Measured
+usage above the bound latches a breach and blocks further attempts.
+
+The current guarantee is integer tokens only. A hard monetary request is
+explicitly refused with `inference_allocation_pricing_unavailable`. The provider
+catalog exposes pricing availability/provenance rather than a versioned tariff;
+model cost overrides and returned receipts provide post-call estimates or
+settlement data, not inclusive pre-dispatch ceilings. Monetary support requires
+an immutable trusted provider/model/version tariff covering input, output,
+reasoning, cache, per-request and ancillary charges, checked integer arithmetic,
+and reservation/settlement provenance for every attempt. No guessed price or
+provider-returned cost establishes that guarantee.
+
+## D-489 — Task-owned native output manifests
+
+**Date:** 2026-10-01. **Scope:** Phase 273.
+
+A session artifact catalog and a blob's first-writer TaskID never prove that a
+later task produced an artifact. Native dispatch first persists a deterministic
+invocation fence over the owner triple, engine task identity, append-only
+trajectory position and branch slot. The fence follows approval, credential and
+local argument admission and surrounds the ordinary retry policy; an approval
+or OAuth wait creates no pending invocation. It separately binds exact tool input by
+hash. Pending and settled slots refuse re-invocation when observation recovery
+is missing; persistence uncertainty terminates planning through the existing
+required-cleanup path. Ordinary known tool errors retain their error semantics.
+
+Only successful direct native results carrying opaque verified materialization
+evidence contribute metadata. JSON-shaped refs, failed results, helper/sibling
+outputs and resource links confer no provenance. The bounded manifest is sealed
+under the task lock before successful completion and cannot be changed by late
+usage or projection events. Version-zero legacy absence is unknown; version-one
+sealed empty is known empty. Existing session-turn Protocol reads expose the
+seal and stable artifact-ID-ordered exact refs. Fresh task/turn visibility,
+effective-agent reach and current artifact authorization remain necessary for
+any later use. Historical provenance grants neither access nor publication.
+
+Durable task-row writes and compensation deletes now compare the exact
+StateStore EventID loaded by that backend instance. An overlapping recovery
+retains invocation evidence while terminally failing interrupted work; the old
+writer cannot overwrite that newer generation or seal a successful result.
+This is a stale-writer fence, not multi-runtime scheduling ownership: opening a
+second registry is a recovery takeover, never permission to operate two active
+runtimes over one task store. Uncertain CAS outcomes remain fenced until reopen.
+
+## D-490 — Immutable inclusive task monetary ceilings
+
+**Date:** 2026-10-02. **Scope:** Phase 274, extending D-488; unreleased candidate.
+
+Only an operator/coordinator-installed catalog can supply pricing authority.
+Accepted task intent carries an immutable manifest ID, revision and full content
+hash. Runtime startup pins every ID/revision in reserved StateStore coordination
+records, refusing changed contents across restart. Task text, returned provider
+floats, cost overrides and credentials grants cannot install or replace tariffs.
+
+Every exact provider/model/version and configured endpoint needs explicit integer
+USD ceilings for input, output, cache reads, cache writes, reasoning, per-request
+and ancillary charges, plus an all-charges assertion and immutable-version
+attestation. Checked arithmetic rounds each category upward for every possible
+physical attempt. Token and money reservation commit in one conditional batch.
+Retries, helpers, resumed calls and same-owner descendants retain the root's
+funding identity; accepted caps and tariff hashes cannot change.
+
+Successful complete single-attempt work consumes the full monetary envelope as
+`charged_cost_micro_usd`, a conservative capacity charge, never measured spend.
+Missing usage, partial/errored output, hidden attempts and crash uncertainty hold
+money indefinitely. Cancellation only refunds a provider envelope when driver
+entry was proven not to occur. Observed token-bound violations latch refusal.
+
+The initial Bifrost monetary consumer proves static OpenAI/Anthropic text shapes.
+OpenRouter, external provider routes, custom-provider IDs, unbounded passthrough
+and multimedia/native file operations remain explicitly unpriced. The guarantee
+is conditional on truthful operator inclusive ceilings and provider compliance;
+it does not prove an invoice or authorize credentials. No production prices are
+bundled. This decision does not certify a stable release or deployed docs.
+
+**Cross-references:** RFC §6.5, §6.11, §6.15; D-488; briefs 03, 05, 07, 08;
+`docs/plans/phase-274-task-monetary-caps.md`.
+
+## D-491 — Signed methods and durable session acceptance
+
+**Date:** 2026-10-02. **Scope:** Phase 275.
+
+A signed `method_reach` is an optional exact closed set: absent means legacy,
+empty means deny all. Unknown values, aliases, duplicate names/claims, malformed
+arrays and partial admission authority are rejected. It only narrows existing
+identity, scopes, agent reach and session reach. Restricted credentials require
+a separate exact singleton audience; auth rotation cannot turn them into broad
+credentials. Legacy audience enforcement, drained older writers and downgrade
+prevention are explicit fleet-adoption prerequisites, not inferred from a
+capability bit. No production grants or authentication settings change here.
+
+The Runtime stores one protected bounded acceptance slot per full session
+identity. Enrollment derives immutable issuer/coordinator from authenticated
+admin authority; mutation requires the current signed epoch, exact original JWT
+identity and explicit method. Legacy acceptance also CAS-reserves the same slot
+before enrollment, closing absent-policy check-then-act. Enrollment refuses a
+pending acceptance. Domain acceptance stays in existing task, steering,
+override, session, artifact, App and native OAuth paths, outside DB callback
+locks because these paths use StateStore themselves. There is no second
+executor, distributed task ownership claim, permit ledger or blind lease expiry.
+
+Process loss or uncertain acquisition retains the slot if its commit reached
+the store; no domain operation is invoked after an uncertain acquire. Existing
+readable task/input evidence remains the reconciliation source, and lack of
+proof keeps the session blocked. Release uncertainty cannot prove that the
+mutation failed. Enrollment does not revoke already accepted queued controls
+or task execution; consumers must reconcile/quiesce these before coordinated
+continuation. Native OAuth retains its verified flow-state/owner/pause authority,
+with only its completion acceptance serialized. Separate tenant/admin and
+user-wide configuration privileges are not revoked by session enrollment.
+
+The App callback boundary includes a native lifecycle handoff within its existing
+catalog descriptor chain. The approval owner parks acceptance only after its
+pause exists, and successful approval must reacquire original method/owner
+claims against the current durable epoch before descriptor execution. OAuth
+handoff is limited to established pre-invocation credential challenges; arbitrary
+tool failures cannot release uncertainty. A concrete MCP dispatch marks possible
+effects, preventing a later challenge from discarding an earlier attempted
+write. Context reuse is not an admission bypass: each additional mutation
+reserves the durable slot, and repeated native reentry is idempotent only for the
+same still-active invocation.
+
+Served opt-in requires SQLite or PostgreSQL state. In-memory gates remain
+reference/test artifacts; production assembly must not revive old broad tokens
+by forgetting enrollment on restart.
+
+## D-492 — Separate bounded terminal preparation from persistence
+
+**Date:** 2026-10-02. **Scope:** RFC 002, phase 269 finalization correction.
+
+Retained terminal preparation gets a five-second context before the unchanged
+five-second conditional publication and exact journal-cleanup context begins.
+Both derive from the supplied parent: cancellation and an earlier deadline
+remain binding. Served and embedded consumers keep their existing detachment
+from an already-finished execution's cancellation, and delegate both bounds to
+the shared retained owner. Their finalization can therefore take up to ten
+seconds in total; a caller-provided earlier deadline is never extended.
+
+Preparation performs no store operations. Redaction, host/action validation and
+serialization failures cannot publish or clean anything. Conditional publication
+still rechecks the live admission, generation, source lifetime and erasure fences.
+It seals the journal and writes terminal evidence atomically before cleanup.
+Cleanup failure remains explicit and leaves the sealed admission fenced; only
+exact-generation reconciliation may retry deletion. No action is replayed and
+no background cleanup, new store API, authority cache or dependency is added.
+
+Hosted macOS race failures occurred during cleanup after terminal evidence had
+already committed. On the unchanged 14,660-byte fixture, local Go 1.27.1 race
+measurements put approximately 97% of terminal time in preparation before the
+first state read. The call-local identity optimization reduces repeated receipt
+decoding, but does not by itself establish resolution of hosted contention.
+The budget correction follows RFC 002's separation of validation and persistence;
+the unchanged 128-scope hosted tests remain the platform acceptance gate.
+
+## D-493 — Irreversible task allocation closure
+
+**Status:** Accepted design; implementation qualification pending.
+**Date:** 2026-10-02. **Scope:** Phase 272/274 funding finality, RFC §6.15.
+
+A terminal root task and zero currently unknown counters do not prove that an
+inherited helper cannot reserve another provider envelope. Consumers therefore
+must not return unused funding based on lifecycle or counter observations alone.
+
+The canonical allocation store adds an irreversible `Close` barrier in the same
+protected conditional total slot as `Reserve` and `ReserveMonetary`. A close never refunds
+an accepted envelope. Attempts admitted before the barrier can still settle;
+unknown liability stays held. `tasks.get.inference_allocation.closed` is read in
+the same snapshot as its cumulative accounting. Consumers negotiate
+`task_inference_allocation_finality_v1`; an omitted field or older capability is
+unknown finality. Closed plus zero reserved/unknown counters and no bound breach
+is a final conservative capacity charge, never a provider spending receipt.
+
+Close yields after a lost storage predicate and retries for at most five
+seconds, preserving an earlier caller deadline. The operation limit bounds
+contention without treating a finite number of legitimate concurrent updates as
+terminal failure. Cancellation or timeout never releases liability; a later
+exact close may retry the unchanged immutable allocation.
+
+The built-in task engines close a funding root only when that root and every
+already-accepted same-owner descendant are terminal. The engine lock serializes
+new descendant acceptance with this decision; a late new descendant cannot reopen
+closed funding. Existing idempotent task retries retain their canonical handle.
+The barrier precedes the last terminal task write. A failed or lost close reply
+leaves that lifecycle transition retryable; a failed later task write leaves the
+allocation conservatively closed. Durable recovery reconciles older terminal
+families without releasing their outstanding envelopes. Paused and pending
+accepted descendants continue to hold funding. Unregistered delayed helpers are
+refused once all accepted tasks have become terminal.
+
+Accounting is pinned before native task acceptance and migrated during durable
+root hydration. Version-2 totals and attempts live in the existing reserved
+coordination namespace, partitioned by tenant digest and a length-framed full
+owner/session/canonical-task digest. No raw scope strings or caller funding ID
+are retained there; immutable funding is verified by fingerprint. Payloads contain
+only cumulative counters and bounded opaque attempt receipts, with no prompts,
+artifact contents or credentials. Ordinary session erasure cannot remove the
+barrier, recreate funding, discard unknown liability or prevent late settlement.
+
+Legacy totals and their attempt records migrate in one conditional batch. The
+legacy total becomes a marker without its former funding identity, so an older
+reader refuses it and an already-loaded old writer loses its CAS. Migration is
+bounded to fewer than 1,000 legacy attempt records; an over-limit or inconsistent
+history fails closed and requires explicitly quiesced maintenance. Unknown
+versions and legacy-compatible close envelopes are rejected. Drain older writers
+before rollout and never downgrade an active funded store. The marker fences
+legacy access while it exists; after session erasure an older binary does not
+understand the protected namespace. This is not a boot-time downgrade detector or
+a mixed-version erasure guarantee. The generic StateStore schema and
+session-erasure behavior remain unchanged.
+
+There is no online tenant/account deletion surface in this runtime. Session
+erasure is not tenant/account decommission: content-free funding records persist
+without a timer so stale helpers cannot regain authority. An explicit operator
+storage-decommission workflow must revoke and drain all writers before removing
+that tenant's protected accounting partition, along with its legacy markers.
+This patch supplies no purge API, background retention cleanup or production
+maintenance action. Whole-store decommission has the same writer-quiescence
+precondition. Counters are not credentials or session contents.
+
+Allocation scope remains the full owner triple and runtime-derived root task ID.
+A coordinator must bind each external funding slice to one canonical task; a new
+root task is a new admission and cannot reuse an already-refunded slice. Runtime
+closure does not authorize grants, purchase inference, settle unknown attempts,
+or replace the application-wide budget ledger.

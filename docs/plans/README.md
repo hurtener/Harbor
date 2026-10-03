@@ -410,6 +410,38 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 |267 | Same-runtime agent-pack inspect/copy (D-456): admin-only `agent_config.agent_packs.inspect` with complete distinct boot/revision bodies plus effective hashes, and additive `agent_config.agent_packs.copy` with bounded `pack_ids`, expected source/target composition-hash CAS, one all-or-nothing target revision, server-stamped copy lineage, equal-content no-op, fail-closed independent collision, and boot read-only/target governance preservation | agent-config pack resolver + StateStore CAS + Protocol/SDK/reference surfaces | §5.2, §5.5, §6.7, §6.11, §6.16, §7, §9 | 04, 05, 06, 07, 09, 11, 37, 40, 202, 205, 206, 232, 237, 240, 248, 250, 266, D-411, D-414, D-415, D-427, D-430 | focused wire/driver conformance + same-runtime admin/reach isolation + CAS/idempotency/collision/reconciliation race + static smoke | Shipped (v1.31.0; explicit-empty reconciliation corrected in v1.31.1; canonical empty-target CAS corrected in v1.31.2; copied operator-pack run resolution corrected in v1.31.3; release workflows green; downstream deployment/acceptance pending) |
 |268 | Portable compaction and request budgets | planner + steering + LLM | §6.2, §6.3, §6.5 | 43, 45, 46, 111e | request/race/adapter smoke + measured package coverage; final gates pending | In progress — PR #779 |
 |269 | Cumulative session execution memory | memory + runctx + serve/assembly + StateStore/ArtifactStore | §6.2, §6.6, §6.9, §6.11 | 15, 16, 17, 246, 268 | 100 turns / five generations + three-driver boundedness + N=128 race; final gates pending | In progress — cumulative rollover and default activation implemented; legacy retirement and acceptance pending |
+|270 | Recipient-admitted artifact transfer | artifacts / Protocol | §6.10, §6.11 | 18, 54, 269 | 80% | In progress |
+|271 | Durable exact-task input receipts | tasks / steering | §6.3, §6.8 | 269 | 80% | In progress |
+|272 | Cumulative task inference allocation | llm / tasks | §6.5, §6.15 | 261, 269 | 80% | In progress |
+|275 | Scoped session admission: signed exact method reach, isolated audience and durable session mutation acceptance (D-491) | protocol + sessionadmission | §5.5, §6.11, §6.3 | 16, 30, 50, 271 | sessionadmission 85%; changed auth branches 90% (final qualification pending) | In progress |
+
+### Phase 270 — Recipient-admitted artifact transfer
+
+- **Status:** In progress; draft integration candidate in PR781; release qualification open
+- **RFC:** §6.10, §6.11. **Decision:** D-486. **Plan:** `docs/plans/phase-270-recipient-artifact-transfer.md`
+- **Contract:** Exact two-owner grants, direct pinned-peer delivery, durable replay and atomic erasure fences; final-answer materialization preserves sealed provenance
+- **Boundaries:** FS/S3 transfer fails closed; receipt proves past delivery, not continuing read permission
+
+### Phase 271 — Durable exact-task input receipts
+
+- **Status:** In progress; draft integration candidate in PR781; release qualification open
+- **RFC:** §6.3, §6.8. **Decision:** D-487. **Plan:** `docs/plans/phase-271-task-input-receipts.md`
+- **Contract:** Exact text input keys, optional accepted-revision precondition, retained outcome lookup and sealed incorporated revision
+- **Boundaries:** One active task-registry owner; durable restart does not establish concurrent multi-runtime admission or automatically relaunch work
+
+### Phase 272 — Cumulative task inference allocation
+
+- **Status:** In progress; token-only checkpoint in draft PR781; finality extension under qualification
+- **RFC:** §6.5, §6.15. **Decision:** D-488. **Plan:** `docs/plans/phase-272-task-inference-allocation.md`
+- **Contract:** Immutable cumulative token funding, same-identity inheritance, atomic multi-manager reservations and retained unknown liability; D-493 adds irreversible close after the accepted task family is terminal
+- **Boundaries:** Token-only checkpoint; Phase 274 adds explicitly installed inclusive monetary tariffs without treating token estimates as money
+
+### Phase 274 — Trusted inclusive task monetary caps
+
+- **Status:** In progress; draft integration candidate in PR781; release qualification open
+- **RFC:** §6.5, §6.11, §6.15. **Decision:** D-490. **Plan:** `docs/plans/phase-274-task-monetary-caps.md`
+- **Contract:** Immutable operator catalog, exact accepted reference/hash, atomic token/money reservation and durable conservative unknown liability
+- **Boundaries:** Initial static OpenAI/Anthropic text consumer only; unmatched/incomplete tariffs, external routes and unbounded charge shapes refuse. Charged capacity is not actual spend. Final release/review/deployed-docs gates remain open
 
 ### Phase 233a — Durable session overlay and personal-skill correction
 
@@ -6031,3 +6063,11 @@ client now use D-470's settled-journal primitive (D-471). Subsequent increments
 add large-result retrieval and attachment/steering continuity. Final persistence
 conformance is now complete. Final exact-head release gates remain pending; the
 phase is not RC-ready.
+
+- [Phase 273 — Native output provenance](phase-273-native-output-provenance.md) — planned/in qualification; immutable task-owned native artifact membership (D-489).
+
+### Phase 275 — Scoped session admission
+
+- **Status:** In progress; final qualification pending
+- **Scope:** Signed exact method reach, isolated audience and durable session mutation acceptance (D-491)
+- **Plan:** [Scoped session admission](phase-275-scoped-session-admission.md)

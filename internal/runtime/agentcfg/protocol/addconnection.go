@@ -13,8 +13,10 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
@@ -359,6 +361,9 @@ var (
 // AddMCPConnection adds a NEW MCP server connection. See the file doc for
 // the full lifecycle, secret-hygiene, and stdio-gate contract.
 func (s *Service) AddMCPConnection(ctx context.Context, req prototypes.AgentConfigAddMCPConnectionRequest) (prototypes.AgentConfigAddMCPConnectionResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAddMCPConnection); err != nil {
+		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigAddMCPConnectionResponse{}, err
 	}

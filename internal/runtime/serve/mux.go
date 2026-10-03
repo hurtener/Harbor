@@ -37,6 +37,7 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/allocation"
 	"github.com/hurtener/Harbor/internal/llm/provider"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -58,6 +59,7 @@ import (
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/search"
 	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
 	searchevents "github.com/hurtener/Harbor/internal/search/events"
@@ -303,6 +305,26 @@ func sessionWindowFunc(reg *sessions.Registry) sessionsprotocol.SessionWindowFun
 // imply and returns the mounted transports mux. It is the single source of
 // the handle→transport-option mapping shared by cmd/harbor and the test kit.
 func BuildMux(in MuxInput) (*BuiltMux, error) {
+	admissionEnabled := in.Cfg != nil && in.Cfg.Identity.ScopedTokenAudience != ""
+	if admissionEnabled && in.Cfg.State.Driver != "sqlite" && in.Cfg.State.Driver != "postgres" {
+		return nil, fmt.Errorf("session admission requires persistent sqlite or postgres state")
+	}
+
+	if err := sessionadmission.RequireEnabled(context.Background(), in.State, admissionEnabled); err != nil {
+		return nil, err
+	}
+	if admissionEnabled && (in.Validator == nil || !in.Cfg.Identity.SessionAdmissionLegacyWritersDrained) {
+		return nil, fmt.Errorf("session admission requires verified authentication and drained legacy writers")
+	}
+	var admissionGate *sessionadmission.Gate
+	if in.Cfg != nil && in.Cfg.Identity.ScopedTokenAudience != "" {
+		var admissionErr error
+		admissionGate, admissionErr = sessionadmission.New(in.State)
+		if admissionErr != nil {
+			return nil, fmt.Errorf("session admission: %w", admissionErr)
+		}
+	}
+
 	cfg := in.Cfg
 	if cfg != nil && cfg.ConfigurationState.Driver != "" && in.ConfigurationState == nil {
 		return nil, fmt.Errorf("configuration_state selected but its store is not wired")
@@ -310,6 +332,15 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	bus := in.Bus
 	red := in.Redactor
 	logger := in.Logger
+
+	transferService, transferErr := buildArtifactTransfer(in)
+	if transferErr != nil {
+		return nil, transferErr
+	}
+	var transferFencer sessions.ArtifactTransferFencer
+	if transferService != nil {
+		transferFencer = transferService
+	}
 
 	muxOpts := []transports.Option{}
 	if logger != nil {
@@ -362,6 +393,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	}
 
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
+		ScopedSessionAdmissionAvailable: admissionGate != nil && in.Validator != nil && in.Sessions != nil,
 		Build: types.RuntimeInfo{
 			BuildVersion:       in.BuildVersion,
 			BuildCommit:        in.BuildCommit,
@@ -380,26 +412,31 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
-		Metrics:                         runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                      governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
-		LLM:                             llm.NewPostureProvider(in.LLMSnapshot),
-		ProviderCatalog:                 in.ProviderCatalog,
-		AgentReach:                      in.AgentReach,
-		ProviderRouteRuntimeID:          in.ProviderRouteRuntimeID,
-		Redactor:                        red,
-		Bus:                             bus,
-		DisplayName:                     in.DisplayName,
-		InstanceID:                      in.InstanceID,
-		ExternalGrant:                   in.ExternalGrantReadiness,
-		TopologyAvailable:               in.TopologyAvailable,
-		AgentConfigAvailable:            in.AgentConfig != nil,
-		MemoryBudgetAvailable:           in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
-		StateSnapshotsAvailable:         stateSnapshotsAvailable,
-		SessionLifecycleAvailable:       sessionLifecycleAvailable,
-		ToolAnnotationsAvailable:        toolAnnotationsAvailable,
-		ToolsConfigurationViewAvailable: in.Catalog != nil && in.AgentConfig != nil && in.MCPRegistry != nil && in.AgentResolver != nil && in.AgentReach != nil,
-		SkillPublicationsAvailable:      publicationAvailable,
-		ProviderCatalogAvailable:        in.ProviderCatalog != nil,
+		Metrics:                                  runtimeposture.MetricsProvider(in.Metrics, logger),
+		Governance:                               governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
+		LLM:                                      llm.NewPostureProvider(in.LLMSnapshot),
+		ProviderCatalog:                          in.ProviderCatalog,
+		AgentReach:                               in.AgentReach,
+		ProviderRouteRuntimeID:                   in.ProviderRouteRuntimeID,
+		Redactor:                                 red,
+		Bus:                                      bus,
+		DisplayName:                              in.DisplayName,
+		InstanceID:                               in.InstanceID,
+		ExternalGrant:                            in.ExternalGrantReadiness,
+		TopologyAvailable:                        in.TopologyAvailable,
+		AgentConfigAvailable:                     in.AgentConfig != nil,
+		DurableTaskInputReceiptsAvailable:        in.Tasks != nil && cfg.Tasks.Driver == "durable" && (cfg.State.Driver == "sqlite" || cfg.State.Driver == "postgres"),
+		TaskInferenceAllocationAvailable:         in.RunLoopDriver != nil && in.State != nil,
+		TaskInferenceAllocationFinalityAvailable: inferenceAllocationFinalityAvailable(in.Tasks),
+		DurableArtifactTransferAvailable:         in.Cfg.Artifacts.Transfer != nil && (in.Cfg.State.Driver == "sqlite" || in.Cfg.State.Driver == "postgres") && (in.Cfg.Artifacts.Driver == "sqlite" || in.Cfg.Artifacts.Driver == "postgres"),
+		ArtifactTransferAvailable:                in.Cfg.Artifacts.Transfer != nil,
+		MemoryBudgetAvailable:                    in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
+		StateSnapshotsAvailable:                  stateSnapshotsAvailable,
+		SessionLifecycleAvailable:                sessionLifecycleAvailable,
+		ToolAnnotationsAvailable:                 toolAnnotationsAvailable,
+		ToolsConfigurationViewAvailable:          in.Catalog != nil && in.AgentConfig != nil && in.MCPRegistry != nil && in.AgentResolver != nil && in.AgentReach != nil,
+		SkillPublicationsAvailable:               publicationAvailable,
+		ProviderCatalogAvailable:                 in.ProviderCatalog != nil,
 	})
 	if err != nil {
 		return nil, wrapErr("posture surface", err)
@@ -647,6 +684,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			projectorOpts = append(projectorOpts,
 				tasksprotocol.WithApprovalChecker(NewApprovalChecker(in.Coordinator)))
 		}
+		if in.State != nil {
+			projectorOpts = append(projectorOpts, tasksprotocol.WithAllocations(allocation.New(in.State)))
+		}
 		tasksProjector, pErr := tasksprotocol.NewRegistryProjector(in.Tasks, projectorOpts...)
 		if pErr != nil {
 			return nil, wrapErr("tasks/protocol projector", pErr)
@@ -726,6 +766,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			}
 			eraser, eErr := sessions.NewCascadeEraser(sessions.CascadeEraserDeps{
 				ConfigurationState: separateConfigurationState,
+				ArtifactTransfers:  transferFencer,
 				Registry:           in.Sessions,
 				State:              in.State,
 				Artifacts:          in.Artifacts,
@@ -758,12 +799,39 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		muxOpts = append(muxOpts, transports.WithSessionsService(sessionsService))
 	}
 
+	// The HA-64 conversation-turn read service: served ENTIRELY from the
+	// durable projection (never a raw history / task fallback), with the
+	// canonical signed agent-reach gate wired (an unwired gate would fail
+	// closed on named-agent turns).
+	var finalAnswer protocol.FinalAnswerSelector
+	if in.TurnsProjector != nil {
+		turnsService, tErr := turnsprotocol.NewService(in.TurnsProjector,
+			turnsprotocol.WithAgentReachAuthorizer(in.AgentReach),
+			turnsprotocol.WithSessionReachAuthorizer(auth.NewSessionReachAuthorizer()),
+			turnsprotocol.WithBus(bus),
+			turnsprotocol.WithRedactor(red),
+			turnsprotocol.WithLogger(logger),
+		)
+		if tErr != nil {
+			return nil, wrapErr("sessions/turns/protocol service", tErr)
+		}
+		muxOpts = append(muxOpts, transports.WithSessionTurnsService(turnsService))
+		if in.Tasks != nil {
+			finalAnswer, tErr = NewFinalAnswerSelector(turnsService, in.Tasks)
+			if tErr != nil {
+				return nil, wrapErr("final answer selector", tErr)
+			}
+		}
+	}
+
 	if in.Artifacts != nil {
 		artDriverName := cfg.Artifacts.Driver
 		if artDriverName == "" {
 			artDriverName = "inmem"
 		}
 		artifactsSurface, asErr := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
+			Transfer:     transferService,
+			FinalAnswer:  finalAnswer,
 			Store:        in.Artifacts,
 			Memory:       in.Memory,
 			Redactor:     red,
@@ -957,24 +1025,6 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		muxOpts = append(muxOpts, transports.WithAgentResolver(in.AgentResolver))
 	}
 
-	// The HA-64 conversation-turn read service: served ENTIRELY from the
-	// durable projection (never a raw history / task fallback), with the
-	// canonical signed agent-reach gate wired (an unwired gate would fail
-	// closed on named-agent turns).
-	if in.TurnsProjector != nil {
-		turnsService, tErr := turnsprotocol.NewService(in.TurnsProjector,
-			turnsprotocol.WithAgentReachAuthorizer(in.AgentReach),
-			turnsprotocol.WithSessionReachAuthorizer(auth.NewSessionReachAuthorizer()),
-			turnsprotocol.WithBus(bus),
-			turnsprotocol.WithRedactor(red),
-			turnsprotocol.WithLogger(logger),
-		)
-		if tErr != nil {
-			return nil, wrapErr("sessions/turns/protocol service", tErr)
-		}
-		muxOpts = append(muxOpts, transports.WithSessionTurnsService(turnsService))
-	}
-
 	// The HA-65 observability rollup service: the closed administrative
 	// query over the durable rollup rows. The Querier and the freshness
 	// QualitySource point at the SAME underlying store (the wiring's
@@ -1010,9 +1060,12 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	// every write path. A nil owner keeps the guards inert (no boot
 	// baseline bound). The wrapper is a frozen compiled artifact — safe
 	// for N concurrent requests.
-	var mounted http.Handler = mux
+	mounted := artifactTransferMux(transferService, mux)
 	if in.BootOwnership != nil {
 		mounted = bootOwnershipMux(in.BootOwnership, mounted)
+	}
+	if admissionGate != nil {
+		mounted = sessionAdmissionMux(admissionGate, mounted)
 	}
 	return &BuiltMux{Mux: mounted, FlowRegistry: flowRegistry}, nil
 }
@@ -1039,4 +1092,10 @@ func bootOwnershipMux(owner agentcfgprotocol.BootOwnership, next http.Handler) h
 // identically.
 func wrapErr(ctx string, err error) error {
 	return fmt.Errorf("%s: %w", ctx, err)
+}
+
+// inferenceAllocationFinalityAvailable never infers a custom registry guarantee.
+func inferenceAllocationFinalityAvailable(registry tasks.TaskRegistry) bool {
+	finalizer, ok := registry.(interface{ InferenceAllocationFinality() bool })
+	return ok && finalizer.InferenceAllocationFinality()
 }

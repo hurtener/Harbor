@@ -187,6 +187,9 @@ func classifyAuthError(err error) (protoerrors.Code, int, string) {
 		errors.Is(err, auth.ErrRotateIdentityMismatch):
 		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,
 			"auth.rotate_token: identity scope incomplete or mismatched"
+	case errors.Is(err, auth.ErrRotateRestricted):
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			"auth.rotate_token: issuer cannot preserve signed token restrictions"
 	case errors.Is(err, auth.ErrRotateScopeRequired):
 		return protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
 			"auth.rotate_token: requires the verified `admin` scope claim"

@@ -165,6 +165,7 @@ func subtreeRoute(pattern, prefix string, m methods.Method) string {
 // same construction the renderer uses.
 func methodTable() map[methods.Method]methodEntry {
 	t := map[methods.Method]methodEntry{
+		methods.MethodControlReceipt: {Route: controlRoute(methods.MethodControlReceipt), Request: "ControlReceiptRequest", Response: "ControlReceiptResponse", Auth: "verified exact task identity and steering scope; read-only receipt lookup"},
 		// --- Task control: start + the nine steering controls.
 		methods.MethodStart: {
 			Route: controlRoute(methods.MethodStart), Mutates: true,
@@ -221,6 +222,11 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "ArtifactsListRequest", Response: "ArtifactsListResponse",
 			CrossTenant: crossTenantAdminOrFleet,
 		},
+		methods.MethodArtifactsPrepareImport:  {Route: controlRoute(methods.MethodArtifactsPrepareImport), Mutates: true, Request: "ArtifactsTransferRequest", Response: "ArtifactTransferReceipt"},
+		methods.MethodArtifactsTransfer:       {Route: controlRoute(methods.MethodArtifactsTransfer), Mutates: true, Request: "ArtifactsTransferRequest", Response: "ArtifactTransferReceipt"},
+		methods.MethodArtifactsTransferStatus: {Route: controlRoute(methods.MethodArtifactsTransferStatus), Mutates: false, Request: "ArtifactsTransferStatusRequest", Response: "ArtifactTransferReceipt"},
+		methods.MethodArtifactsRevokeTransfer: {Route: controlRoute(methods.MethodArtifactsRevokeTransfer), Mutates: true, Request: "ArtifactsTransferStatusRequest", Response: "ArtifactTransferReceipt"},
+		methods.MethodArtifactsExportAnswer:   {Route: controlRoute(methods.MethodArtifactsExportAnswer), Mutates: true, Request: "ArtifactsExportAnswerRequest", Response: "ArtifactsExportAnswerResponse"},
 		methods.MethodArtifactsPut: {
 			Route: controlRoute(methods.MethodArtifactsPut), Mutates: true,
 			Request: "ArtifactsPutRequest", Response: "ArtifactsPutResponse",
@@ -376,6 +382,11 @@ func methodTable() map[methods.Method]methodEntry {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsReconcileContext), Mutates: true,
 			Request: "SessionsReconcileContextRequest", Response: "SessionsReconcileContextResponse",
 			Auth: "Own-session only; verified tenant/user/session is authoritative, including for admin callers. Requires retained context enabled. Seals only fully settled evidence; pending effects return retained_context_unsettled (409). Does not resume, dispatch, or return private content.",
+		},
+		methods.MethodSessionsSetAdmission: {
+			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsSetAdmission), Mutates: true,
+			Request: "SessionsSetAdmissionRequest", Response: "SessionsSetAdmissionResponse",
+			Auth: "Verified admin; target tenant/user must match the authenticated owner. Enrollment binds the verified JWT issuer and subject immutably to the session. Epoch changes compare the expected durable epoch. No cross-tenant path; enrollment does not attest that earlier accepted work has drained.",
 		},
 		methods.MethodSessionsSetTitle: {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsSetTitle), Mutates: true,
@@ -894,6 +905,8 @@ func classify(m methods.Method) string {
 	switch {
 	case m == methods.MethodStart:
 		return "task control — spawn"
+	case m == methods.MethodControlReceipt:
+		return "task control — receipt lookup"
 	case methods.IsControlMethod(m):
 		return "task control — steering"
 	case methods.IsStreamingEventsMethod(m):
@@ -967,7 +980,9 @@ var methodClusters = []struct {
 	Match  func(methods.Method) bool
 	Anchor string
 }{
-	{"Task control", func(m methods.Method) bool { return m == methods.MethodStart || methods.IsControlMethod(m) }, "task-control"},
+	{"Task control", func(m methods.Method) bool {
+		return m == methods.MethodStart || m == methods.MethodControlReceipt || methods.IsControlMethod(m)
+	}, "task-control"},
 	{"Streaming events", methods.IsStreamingEventsMethod, "streaming-events"},
 	{"Tasks", methods.IsTasksMethod, "tasks"},
 	{"Sessions", methods.IsSessionsMethod, "sessions"},

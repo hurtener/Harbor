@@ -6,7 +6,7 @@
 # dispatches CallTool decisions via a new ToolExecutor seam, appends
 # trajectory.Step{Action, Observation, LLMObservation} so the planner
 # sees its prior actions, populates Catalog/Trajectory/Emit on
-# RunContext, and writes back to memory on FinishGoal. End-to-end
+# RunContext, and seals cumulative execution memory at termination. End-to-end
 # coverage is the operator validation against mcp-youtube.
 
 set -euo pipefail
@@ -58,8 +58,11 @@ assert_grep_present 'Emit:\s*emit' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Emit closure"
 assert_grep_present 'ToolExecutor:\s*d\.executor' "internal/runtime/serve/runloop.go" \
     "runOne sets RunSpec.ToolExecutor"
-assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
-    "memory.AddTurn writeback on FinishGoal"
+# D-477 seals cumulative execution memory rather than appending a second pair.
+assert_grep_present 'err == nil && fin\.Reason == planner\.FinishGoal' "internal/runtime/serve/retained_context.go" \
+    "only a successful FinishGoal becomes a complete retained turn"
+assert_grep_present 'retained\.Finish\(context\.WithoutCancel\(ctx\), spec\.Base\.Trajectory, spec\.Base\.Query, answer, status\)' "internal/runtime/serve/retained_context.go" \
+    "cumulative terminal memory is persisted with the settled trajectory"
 
 # ----------------------------------------------------------------------------
 # Devstack parity (D-094 → 110a / D-194: the hand-maintained executor +
@@ -74,7 +77,7 @@ assert_grep_present 'Executor:\s*core\.Executor' "harbortest/devstack/devstack.g
     "devstack consumes the assembly's executor (110a / D-194 via D-197)"
 assert_grep_present 'tools\.NewPlannerView' "internal/runtime/serve/runloop.go" \
     "devstack wires the promoted catalog view (110a / D-194)"
-assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
-    "devstack mirror carries memory writeback (D-094)"
+assert_grep_present 'serve\.NewRunLoopDriver' "harbortest/devstack/devstack.go" \
+    "devstack uses the same memory-writing runloop as production"
 
 smoke_summary

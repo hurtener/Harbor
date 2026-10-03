@@ -473,6 +473,7 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	if err := tools.CheckInvocationFence(ctx); err != nil {
 		return nil, nil, err
 	}
+	desc = e.withOutputInvocation(rc, 0, desc)
 	result, err := desc.Invoke(ctx, d.Args)
 	if err != nil {
 		e.logger.Warn("dispatch: tool invoke failed",
@@ -608,7 +609,7 @@ func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
 // §13); the runloop wraps them as the step's error observation and the
 // planner re-plans.
 func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
-	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(e.resolverForRun(ctx, rc)))
+	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup(), parallel.WithResolver(e.resolverForRun(ctx, rc)), e.outputInvocationBranches(rc))
 	if err != nil && !errors.Is(err, tools.ErrInvocationCleanupFailed) {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
 	}
@@ -1089,7 +1090,7 @@ func (e *toolExecutor) batch(ctx context.Context, rc planner.RunContext, d plann
 		results, err := e.parallel.Execute(ctx,
 			planner.CallParallel{Branches: d.Tools, Join: d.Join},
 			parallel.WithNonAtomicSetup(),
-			parallel.WithResolver(e.resolverForRun(ctx, rc)))
+			parallel.WithResolver(e.resolverForRun(ctx, rc)), e.outputInvocationBranches(rc))
 		if err != nil && !errors.Is(err, tools.ErrInvocationCleanupFailed) {
 			return nil, nil, fmt.Errorf("batch tool dispatch: %w", err)
 		}

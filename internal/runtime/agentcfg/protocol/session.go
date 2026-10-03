@@ -9,7 +9,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -46,6 +48,17 @@ var ErrSessionOverlayUnavailable = errors.New("agentcfg/protocol: session safe-s
 // session-writable shape carries no base field, so this can never alter the
 // operator base — base-unwritable-by-session is structural.
 func (s *Service) SessionSetUserPrompt(ctx context.Context, req prototypes.AgentConfigSessionSetUserPromptRequest) (prototypes.AgentConfigSessionSetUserPromptResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSessionSetUserPrompt); err != nil {
+		return prototypes.AgentConfigSessionSetUserPromptResponse{}, err
+	}
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: req.Identity.Session}
+	return sessionadmission.Run(ctx, target, methods.MethodAgentConfigSessionSetUserPrompt, func(accepted context.Context) (prototypes.AgentConfigSessionSetUserPromptResponse, error) {
+		out, err := s.sessionSetUserPromptAccepted(accepted, req)
+		return out, rejectedSessionMutation(err)
+	})
+}
+
+func (s *Service) sessionSetUserPromptAccepted(ctx context.Context, req prototypes.AgentConfigSessionSetUserPromptRequest) (prototypes.AgentConfigSessionSetUserPromptResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSessionSetUserPromptResponse{}, err
 	}
@@ -83,6 +96,17 @@ func (s *Service) SessionSetUserPrompt(ctx context.Context, req prototypes.Agent
 // admin exclusion set — so a session edit can only narrow the admin-allowed
 // exposure, never widen it.
 func (s *Service) SessionSetSourceDisables(ctx context.Context, req prototypes.AgentConfigSessionSetSourceDisablesRequest) (prototypes.AgentConfigSessionSetSourceDisablesResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSessionSetSourceDisables); err != nil {
+		return prototypes.AgentConfigSessionSetSourceDisablesResponse{}, err
+	}
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: req.Identity.Session}
+	return sessionadmission.Run(ctx, target, methods.MethodAgentConfigSessionSetSourceDisables, func(accepted context.Context) (prototypes.AgentConfigSessionSetSourceDisablesResponse, error) {
+		out, err := s.sessionSetSourceDisablesAccepted(accepted, req)
+		return out, rejectedSessionMutation(err)
+	})
+}
+
+func (s *Service) sessionSetSourceDisablesAccepted(ctx context.Context, req prototypes.AgentConfigSessionSetSourceDisablesRequest) (prototypes.AgentConfigSessionSetSourceDisablesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSessionSetSourceDisablesResponse{}, err
 	}
@@ -119,6 +143,9 @@ func (s *Service) SessionSetSourceDisables(ctx context.Context, req prototypes.A
 // controller's ScopeSession tier; ScopeUser composition belongs to Directory
 // and the general skill tools.
 func (s *Service) SessionSkillsList(ctx context.Context, req prototypes.AgentConfigSessionSkillsListRequest) (prototypes.AgentConfigSessionSkillsListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSessionSkillsList); err != nil {
+		return prototypes.AgentConfigSessionSkillsListResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSessionSkillsListResponse{}, err
 	}
@@ -153,6 +180,17 @@ func (s *Service) SessionSkillsList(ctx context.Context, req prototypes.AgentCon
 // agent/tenant scope. The response reloads the authoritative tier and derives
 // names dynamically; it never mutates legacy Overlay.PersonalSkills.
 func (s *Service) SessionSkillsUpsert(ctx context.Context, req prototypes.AgentConfigSessionSkillsUpsertRequest) (prototypes.AgentConfigSessionSkillsUpsertResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSessionSkillsUpsert); err != nil {
+		return prototypes.AgentConfigSessionSkillsUpsertResponse{}, err
+	}
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: req.Identity.Session}
+	return sessionadmission.Run(ctx, target, methods.MethodAgentConfigSessionSkillsUpsert, func(accepted context.Context) (prototypes.AgentConfigSessionSkillsUpsertResponse, error) {
+		out, err := s.sessionSkillsUpsertAccepted(accepted, req)
+		return out, rejectedSessionMutation(err)
+	})
+}
+
+func (s *Service) sessionSkillsUpsertAccepted(ctx context.Context, req prototypes.AgentConfigSessionSkillsUpsertRequest) (prototypes.AgentConfigSessionSkillsUpsertResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSessionSkillsUpsertResponse{}, err
 	}
@@ -203,6 +241,17 @@ func (s *Service) SessionSkillsUpsert(ctx context.Context, req prototypes.AgentC
 // the authoritative tier for the response and never writes the legacy overlay
 // name field.
 func (s *Service) SessionSkillsDelete(ctx context.Context, req prototypes.AgentConfigSessionSkillsDeleteRequest) (prototypes.AgentConfigSessionSkillsDeleteResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSessionSkillsDelete); err != nil {
+		return prototypes.AgentConfigSessionSkillsDeleteResponse{}, err
+	}
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: req.Identity.Session}
+	return sessionadmission.Run(ctx, target, methods.MethodAgentConfigSessionSkillsDelete, func(accepted context.Context) (prototypes.AgentConfigSessionSkillsDeleteResponse, error) {
+		out, err := s.sessionSkillsDeleteAccepted(accepted, req)
+		return out, rejectedSessionMutation(err)
+	})
+}
+
+func (s *Service) sessionSkillsDeleteAccepted(ctx context.Context, req prototypes.AgentConfigSessionSkillsDeleteRequest) (prototypes.AgentConfigSessionSkillsDeleteResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSessionSkillsDeleteResponse{}, err
 	}
@@ -291,4 +340,14 @@ func overlayToWire(o sessionoverlay.Overlay, personalNames []string) prototypes.
 		DisabledTools:   append([]string(nil), o.DisabledTools...),
 		PersonalSkills:  append([]string(nil), personalNames...),
 	}
+}
+
+// rejectedSessionMutation marks only validation/unwired failures that cannot
+// follow accepted overlay publication. Storage, projection and unknown errors
+// retain the acceptance fence.
+func rejectedSessionMutation(err error) error {
+	if errors.Is(err, ErrIdentityRequired) || errors.Is(err, ErrSessionOverlayUnavailable) || errors.Is(err, ErrSkillsUnavailable) || errors.Is(err, sessionoverlay.ErrInvalidInput) || errors.Is(err, skills.ErrInvalidSkill) {
+		return sessionadmission.Rejected(err)
+	}
+	return err
 }

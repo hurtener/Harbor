@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/artifacts/transfer"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -16,6 +17,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // ArtifactsSurface is the transport-agnostic
@@ -97,6 +99,8 @@ import (
 // the redactor governs: not an event payload, not a trajectory entry,
 // not a log line.
 type ArtifactsSurface struct {
+	finalAnswer  FinalAnswerSelector
+	transfer     *transfer.Service
 	store        artifacts.ArtifactStore
 	memory       memory.MemoryStore
 	redactor     audit.Redactor
@@ -115,6 +119,10 @@ type ArtifactsSurface struct {
 // ArtifactsDeps bundles the runtime-side seams an ArtifactsSurface reads
 // through. The Runtime wires these at boot.
 type ArtifactsDeps struct {
+	// FinalAnswer reads only an exact owner-authorized sealed final answer.
+	FinalAnswer FinalAnswerSelector
+	// Transfer is the opt-in two-sided recipient-admitted copy service.
+	Transfer *transfer.Service
 	// Store is the runtime's content-addressed artifact store — the
 	// shipped ArtifactStore. Mandatory.
 	Store artifacts.ArtifactStore
@@ -192,6 +200,8 @@ func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 			ErrArtifactsMisconfigured, deps.FetchDefaultMaxBytes, deps.FetchHardMaxBytes)
 	}
 	return &ArtifactsSurface{
+		finalAnswer:          deps.FinalAnswer,
+		transfer:             deps.Transfer,
 		store:                deps.Store,
 		memory:               deps.Memory,
 		redactor:             deps.Redactor,
@@ -266,10 +276,53 @@ type ArtifactUploadedPayload struct {
 // Dispatch holds no per-call state on the surface.
 func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsArtifactsMethod(method) {
+		return nil, protoerrors.New(protoerrors.CodeUnknownMethod, "unknown method")
+	}
+	if err := auth.AuthorizeMethod(ctx, method); err != nil {
+		return nil, sessionadmission.ProtocolError(err)
+	}
+	var scope *types.ArtifactScope
+	switch method {
+	case methods.MethodArtifactsPut:
+		if r, ok := req.(*types.ArtifactsPutRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsDelete:
+		if r, ok := req.(*types.ArtifactsDeleteRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsExportAnswer:
+		if r, ok := req.(*types.ArtifactsExportAnswerRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsPrepareImport, methods.MethodArtifactsTransfer:
+		if r, ok := req.(*types.ArtifactsTransferRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	case methods.MethodArtifactsRevokeTransfer:
+		if r, ok := req.(*types.ArtifactsTransferStatusRequest); ok && r != nil {
+			scope = &r.Scope
+		}
+	default:
+		return s.dispatchAccepted(ctx, method, req)
+	}
+	if scope == nil {
+		return nil, protoerrors.New(protoerrors.CodeInvalidRequest, "invalid artifact mutation request")
+	}
+	target := identity.Identity{TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session}
+	return sessionadmission.Run(ctx, target, method, func(accepted context.Context) (any, error) { return s.dispatchAccepted(accepted, method, req) })
+}
+
+func (s *ArtifactsSurface) dispatchAccepted(ctx context.Context, method methods.Method, req any) (any, error) {
+	if !methods.IsArtifactsMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol artifacts method", string(method))
 	}
 	switch method {
+	case methods.MethodArtifactsExportAnswer:
+		return s.handleExportAnswer(ctx, req)
+	case methods.MethodArtifactsPrepareImport, methods.MethodArtifactsTransfer, methods.MethodArtifactsTransferStatus, methods.MethodArtifactsRevokeTransfer:
+		return s.handleTransfer(ctx, method, req)
 	case methods.MethodArtifactsList:
 		lr, ok := req.(*types.ArtifactsListRequest)
 		if !ok || lr == nil {

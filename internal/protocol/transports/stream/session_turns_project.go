@@ -121,6 +121,7 @@ func projectSessionTurnRow(row turns.TurnRow) types.SessionTurnRow {
 		Pause:               projectSessionTurnPause(row.Pause),
 		Inputs:              inputs,
 		Outputs:             outputs,
+		OutputManifest:      types.SessionTurnOutputManifest{Version: row.OutputManifest.Version, SHA256: row.OutputManifest.SHA256, InputRevision: row.OutputManifest.InputRevision},
 		Usage:               projectSessionTurnUsage(row.Usage),
 		Reasoning:           projectSessionTurnReasoning(row.Reasoning),
 		Activity:            projectSessionTurnActivity(row.Activity),

@@ -11,7 +11,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // ErrKeyRotateMisconfigured — NewKeyRotateService was called with a nil
@@ -108,6 +110,9 @@ func NewKeyRotateService(rotator KeyRotator, opts ...KeyRotateOption) (*KeyRotat
 // fingerprint + rotation timestamp. The new key never appears in the
 // response, the audit event, or any log line.
 func (s *KeyRotateService) RotateKey(ctx context.Context, req prototypes.GovernanceRotateKeyRequest) (prototypes.GovernanceRotateKeyResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodGovernanceRotateKey); err != nil {
+		return prototypes.GovernanceRotateKeyResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.GovernanceRotateKeyResponse{}, err
 	}

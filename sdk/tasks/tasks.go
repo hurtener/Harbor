@@ -12,6 +12,10 @@ import (
 
 // Registry + task vocabulary — aliases of the internal types.
 type (
+	InputReceipt = internal.InputReceipt
+	InputRecord  = internal.InputRecord
+	InputStatus  = internal.InputStatus
+
 	// TaskRegistry is the identity-mandatory task registry interface.
 	TaskRegistry = internal.TaskRegistry
 	// Dependencies carries the registry's construction dependencies.
@@ -68,6 +72,15 @@ type (
 // DefaultDriver is the driver name Open resolves when the config
 // names none.
 const DefaultDriver = internal.DefaultDriver
+
+// Task-input receipt outcomes and retention bound.
+const (
+	InputAccepted    = internal.InputAccepted
+	InputApplied     = internal.InputApplied
+	InputDeclined    = internal.InputDeclined
+	InputTerminal    = internal.InputTerminal
+	MaxInputReceipts = internal.MaxInputReceipts
+)
 
 // TaskKind values.
 const (
@@ -132,6 +145,8 @@ const (
 
 // Re-exported sentinel errors callers compare via errors.Is.
 var (
+	ErrInputReceiptNotFound = internal.ErrInputReceiptNotFound
+	ErrInputReceiptCapacity = internal.ErrInputReceiptCapacity
 	// ErrNotFound — no task under that ID.
 	ErrNotFound = internal.ErrNotFound
 	// ErrInvalidTransition — an illegal lifecycle transition.
@@ -183,3 +198,28 @@ var From = internal.From
 
 // MustFrom extracts the registry from ctx, panicking when absent.
 var MustFrom = internal.MustFrom
+
+// ErrInputRevisionConflict indicates stale expected task input state.
+var ErrInputRevisionConflict = internal.ErrInputRevisionConflict
+
+// Native output metadata is immutable after successful completion. These types
+// let external registry implementations satisfy the mandatory bookkeeping seam;
+// runtime invocation authority itself is never constructible from Protocol JSON.
+type ProducedArtifact = internal.ProducedArtifact
+type OutputInvocationIntent = internal.OutputInvocationIntent
+type OutputInvocation = internal.OutputInvocation
+type OutputManifest = internal.OutputManifest
+
+const MaxProducedArtifacts = internal.MaxProducedArtifacts
+const MaxOutputInvocationBranches = internal.MaxOutputInvocationBranches
+
+var ErrOutputProvenance = internal.ErrOutputProvenance
+var ErrOutputInvocationUnknown = internal.ErrOutputInvocationUnknown
+var ErrOutputInvocationSettled = internal.ErrOutputInvocationSettled
+
+// RejectBeforeSpawn marks a registry validation refusal proved before acceptance.
+// Never use it for an unknown persistence or already-accepted task outcome.
+var RejectBeforeSpawn = internal.RejectBeforeSpawn
+
+// IsRejectedBeforeSpawn recognizes explicit proof without hiding joined unknowns.
+var IsRejectedBeforeSpawn = internal.IsRejectedBeforeSpawn

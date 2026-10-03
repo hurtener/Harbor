@@ -1268,6 +1268,11 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	allocationTaskID := task.AllocationTaskID
+	if allocationTaskID == "" {
+		allocationTaskID = string(task.ID)
+	}
+	taskCtx = llm.WithInferenceAllocationTask(taskCtx, task.InferenceAllocation, allocationTaskID)
 	var externalGrant json.RawMessage
 	if len(task.ExternalGrant) > 0 {
 		var grant llm.ExternalGrant
@@ -1994,6 +1999,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Continue from taskCtx, not the pre-restoration admissionCtx: taskCtx now
 	// carries both the verified reach context and the run-scoped quadruple.
 	runCtx := tools.WithInvokingAgent(taskCtx, d.agentConfigID)
+	// Only this registry-backed driver can bind canonical task-output authority.
+	// A bare steering RunSpec also serves headless runs with correlation IDs.
+	runCtx = tasks.WithOutputTask(runCtx, taskID)
 	if frozenProfiles != nil {
 		runCtx = virtualagent.WithFrozenMap(runCtx, frozenProfiles)
 	}
@@ -2029,6 +2037,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		// goal.
 		code := planner.TaskErrorCodeRunLoopError
 		switch {
+		case errors.Is(err, llm.ErrAllocationExhausted):
+			code = planner.TaskErrorCodeInferenceAllocationExhausted
+		case errors.Is(err, llm.ErrAllocationInvalid) || errors.Is(err, llm.ErrAllocationUnavailable) || errors.Is(err, llm.ErrAllocationPricingUnavailable) || errors.Is(err, llm.ErrAllocationBoundUnavailable) || errors.Is(err, llm.ErrAllocationBoundViolated):
+			code = planner.TaskErrorCodeInferenceAllocationUnavailable
 		case errors.Is(err, context.Canceled):
 			code = planner.TaskErrorCodeCancelled
 			d.logger.Debug("RunLoopDriver: run cancelled",
@@ -2138,7 +2150,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 				slog.String("err", err.Error()))
 			raw = []byte("{}")
 		}
-		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw}); mErr != nil {
+		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw, IncorporatedInputRevision: fin.IncorporatedInputRevision}); mErr != nil {
 			d.logger.Warn("RunLoopDriver: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),

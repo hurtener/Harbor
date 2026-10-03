@@ -69,6 +69,10 @@ var (
 // part fails, earlier content-addressed writes may remain in the session
 // manifest. They are identity-scoped and deduplicated on retry.
 func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artifacts.ArtifactScope, value any, provenance string) (projected any, err error) {
+	return materialize(ctx, store, scope, value, provenance, nil)
+}
+
+func materialize(ctx context.Context, store artifacts.ArtifactStore, scope artifacts.ArtifactScope, value any, provenance string, attest func([]tools.ArtifactContentRef) error) (projected any, err error) {
 	// Preserve the underlying sentinel (store, cancellation, validation, or
 	// projection) while marking every materialization failure terminal for the
 	// reliability shell. A remote tool call can have completed before this
@@ -185,6 +189,11 @@ func Materialize(ctx context.Context, store artifacts.ArtifactStore, scope artif
 	}
 	if remaining := projectedResult.ArtifactContentParts(); len(remaining) != 0 {
 		return nil, fmt.Errorf("%w: %d binary candidate(s) remain after projection", ErrInvalidResult, len(remaining))
+	}
+	if attest != nil {
+		if err := attest(refs); err != nil {
+			return nil, err
+		}
 	}
 	projected = projectedResult
 	return projected, nil

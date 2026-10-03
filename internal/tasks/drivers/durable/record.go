@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
@@ -39,7 +40,13 @@ type persistedTask struct {
 // backend is the StateStore-backed engine.Backend. Records survive a
 // restart; Hydrate replays them on open.
 type backend struct {
-	store state.StateStore
+	store           state.StateStore
+	mu              sync.Mutex
+	taskGenerations map[taskSlot]state.EventID
+}
+type taskSlot struct {
+	Scope identity.Quadruple
+	ID    tasks.TaskID
 }
 
 var _ engine.Backend = (*backend)(nil)
@@ -58,7 +65,20 @@ func (b *backend) SaveTask(ctx context.Context, rec engine.TaskRecord) error {
 	if err != nil {
 		return fmt.Errorf("tasks/durable: marshal task: %w: %w", tasks.ErrUnserializable, err)
 	}
-	return b.save(ctx, sessionScope(rec.Task.Identity), taskKindPrefix+string(rec.Task.ID), payload)
+	scope := sessionScope(rec.Task.Identity)
+	key := taskSlot{scope, rec.Task.ID}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.taskGenerations == nil {
+		b.taskGenerations = make(map[taskSlot]state.EventID)
+	}
+	next := state.StateRecord{ID: state.NewEventID(), Identity: scope, Kind: taskKindPrefix + string(rec.Task.ID), Bytes: payload}
+	expected := state.SlotExpectation{Identity: scope, Kind: next.Kind, ExpectedEventID: b.taskGenerations[key]}
+	if err := b.store.SaveIf(ctx, []state.SlotExpectation{expected}, next); err != nil {
+		return fmt.Errorf("tasks/durable: conditional task save: %w", err)
+	}
+	b.taskGenerations[key] = next.ID
+	return nil
 }
 
 // SaveGroup persists a group to its own per-ID slot.
@@ -95,9 +115,22 @@ func (b *backend) DeleteTask(ctx context.Context, t *tasks.Task) error {
 	if t == nil {
 		return fmt.Errorf("tasks/durable: DeleteTask received a nil task")
 	}
-	if err := b.store.Delete(ctx, sessionScope(t.Identity), taskKindPrefix+string(t.ID)); err != nil {
-		return fmt.Errorf("tasks/durable: state delete (task %s): %w", t.ID, err)
+	scope := sessionScope(t.Identity)
+	key := taskSlot{scope, t.ID}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	generation := b.taskGenerations[key]
+	if generation == "" {
+		return nil
 	}
+	deleted, err := b.store.DeleteIf(ctx, state.SlotExpectation{Identity: scope, Kind: taskKindPrefix + string(t.ID), ExpectedEventID: generation})
+	if err != nil {
+		return fmt.Errorf("tasks/durable: conditional task delete: %w", err)
+	}
+	if !deleted {
+		return fmt.Errorf("tasks/durable: stale task delete: %w", state.ErrConditionFailed)
+	}
+	delete(b.taskGenerations, key)
 	return nil
 }
 
@@ -122,6 +155,9 @@ func (b *backend) save(ctx context.Context, scope identity.Quadruple, kind strin
 // leaks one tenant's records into another's scope — the engine keys
 // everything by the record's own identity.
 func (b *backend) Hydrate(ctx context.Context) (engine.Snapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.taskGenerations = make(map[taskSlot]state.EventID)
 	var snap engine.Snapshot
 	scope := state.ListScope{MaintenanceScoped: true}
 
@@ -145,6 +181,7 @@ func (b *backend) Hydrate(ctx context.Context) (engine.Snapshot, error) {
 			}
 			copy(hash[:], decoded)
 		}
+		b.taskGenerations[taskSlot{sessionScope(pt.Task.Identity), pt.Task.ID}] = rec.ID
 		snap.Tasks = append(snap.Tasks, engine.TaskRecord{Task: pt.Task, ContentHash: hash})
 	}
 

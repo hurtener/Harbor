@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 	"github.com/hurtener/Harbor/internal/persistence/postgrespool"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/virtualagent"
@@ -100,6 +101,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateSessions,
 		c.validatePauseResume,
 		c.validateArtifacts,
+		c.validateArtifactTransfer,
 		c.validateTasks,
 		c.validateDistributed,
 		c.validateMemory,
@@ -295,6 +297,15 @@ func (c *Config) validateIdentity() error {
 	if c.Identity.Audience == "" {
 		return fieldError("identity.audience", "must not be empty")
 	}
+	if c.Identity.ScopedTokenAudience != "" && c.State.Driver != "sqlite" && c.State.Driver != "postgres" {
+		return fieldError("identity.scoped_token_audience", "session admission requires persistent sqlite or postgres state")
+	}
+	if c.Identity.ScopedTokenAudience != "" && !c.Identity.SessionAdmissionLegacyWritersDrained {
+		return fieldError("identity.session_admission_legacy_writers_drained", "must acknowledge drained old writers and mandatory legacy audience enforcement")
+	}
+	if c.Identity.ScopedTokenAudience != "" && (len(c.Identity.ScopedTokenAudience) > 2048 || len(c.Identity.Audience) > 2048 || strings.ContainsFunc(c.Identity.ScopedTokenAudience, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) || strings.ContainsFunc(c.Identity.Audience, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) || c.Identity.ScopedTokenAudience == c.Identity.Audience) {
+		return fieldError("identity.scoped_token_audience", "must be a distinct nonblank audience")
+	}
 	if c.Identity.JWKSURL == "" && c.Identity.JWKSFile == "" {
 		return fieldError("identity",
 			"one of jwks_url or jwks_file must be set")
@@ -405,6 +416,9 @@ func (c *Config) validateLLM() error {
 	customNames, err := c.validateLLMCustomProviders(driver)
 	if err != nil {
 		return err
+	}
+	if _, err := pricing.New(c.LLM.PricingManifests); err != nil {
+		return fieldError("llm.pricing_manifests", err.Error())
 	}
 	// Validate network defaults independently of which provider path
 	// applies — operators may tune them with a native primary too.

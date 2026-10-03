@@ -69,6 +69,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -110,6 +111,7 @@ type ScopeChecker func(ctx context.Context, s auth.Scope) bool
 // Construct a ControlSurface via NewControlSurface; do not construct one
 // directly.
 type ControlSurface struct {
+	admission        *sessionadmission.Gate
 	tasks            tasks.TaskRegistry
 	steering         *steering.Registry
 	topology         TopologyAccessor          // may be nil (Runtime hosts no engine)
@@ -358,3 +360,8 @@ var (
 	// agent-config implementation package.
 	ErrAgentRetired = stderrors.New("protocol: agent retired")
 )
+
+// WithSessionAdmissionGate wires the durable session mutation acceptance fence.
+func WithSessionAdmissionGate(g *sessionadmission.Gate) Option {
+	return func(s *ControlSurface) { s.admission = g }
+}

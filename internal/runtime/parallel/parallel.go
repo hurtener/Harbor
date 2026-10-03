@@ -115,6 +115,7 @@ type executeOptions struct {
 	// false = the atomic posture.
 	nonAtomicSetup bool
 	resolver       Resolver
+	decorate       func(int, tools.ToolDescriptor) tools.ToolDescriptor
 }
 
 // WithNonAtomicSetup selects non-atomic setup validation.
@@ -145,6 +146,12 @@ func WithNonAtomicSetup() ExecuteOption {
 // shared Executor.
 func WithResolver(resolver Resolver) ExecuteOption {
 	return func(o *executeOptions) { o.resolver = resolver }
+}
+
+// WithDescriptorDecorator applies runtime invocation binding by the immutable
+// branch index after setup validation. It never mutates a shared catalog.
+func WithDescriptorDecorator(fn func(int, tools.ToolDescriptor) tools.ToolDescriptor) ExecuteOption {
+	return func(o *executeOptions) { o.decorate = fn }
 }
 
 // Result is the per-branch outcome the executor produces. Each entry
@@ -294,6 +301,14 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts 
 					continue
 				}
 				return nil, err
+			}
+		}
+	}
+
+	if eo.decorate != nil {
+		for i, desc := range descriptors {
+			if desc.Invoke != nil {
+				descriptors[i] = eo.decorate(i, desc)
 			}
 		}
 	}

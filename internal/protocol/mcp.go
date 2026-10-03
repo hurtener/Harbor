@@ -16,6 +16,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -384,6 +385,9 @@ func (s *MCPSurface) Dispatch(ctx context.Context, method methods.Method, req an
 	if !methods.IsMCPServersMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol MCP method", string(method))
+	}
+	if err := sessionadmission.CheckMethod(ctx, method); err != nil {
+		return nil, err
 	}
 
 	// Identity + admin/control-scope gate at the edge. Every MCP method
@@ -1126,6 +1130,14 @@ func nonNilStrings(s []string) []string {
 // error code. The mapping closes the wire surface — every error shape is
 // observable as a Code (CLAUDE.md §13).
 func mapMCPError(method string, err error) error {
+	if stderrors.Is(err, tools.ErrInvocationAdmission) {
+		var perr *protoerrors.Error
+		if stderrors.As(err, &perr) {
+			return perr
+		}
+		return protoerrors.New(protoerrors.CodeRuntimeError, "native invocation admission is unavailable")
+	}
+
 	switch {
 	case err == nil:
 		return nil

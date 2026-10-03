@@ -19,22 +19,35 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
+# Keep each failed suite's diagnostic output visible in the preflight log.
+GO_LOG="$(mktemp "${TMPDIR:-/tmp}/harbor-phase-143-go.XXXXXX")"
+trap 'rm -f "${GO_LOG}"' EXIT
+
 # 1. The assemble runner + envelope + planner schema surface under -race.
-if go test -race -count=1 -timeout 120s \
+# This package now includes the full three-store, three-budget, 100-turn
+# cumulative-history matrix. Keep every case and runtime deadline; the old
+# two-minute aggregate budget predates that matrix. This is not a latency SLA.
+if go test -race -count=1 -timeout 10m \
 	./internal/runtime/assemble/... \
 	./internal/runtime/runctx/... \
-	./internal/planner/ >/dev/null 2>&1; then
+	./internal/planner/ >"${GO_LOG}" 2>&1; then
 	ok 'phase 143: assemble + runctx + planner output-schema tests pass under -race'
 else
 	fail 'phase 143: output-schema unit tests failed (run `go test -race ./internal/runtime/assemble/... ./internal/planner/`)'
+	# Keep the failure headline as well as the end of a long timeout trace.
+	head -40 "${GO_LOG}"
+	tail -80 "${GO_LOG}"
 fi
 
 # 2. The §13 primitive-with-consumer E2E (happy / corrective-retry /
 #    exhaustion / planner-agnostic deterministic leg) under -race.
-if go test -race -count=1 -timeout 120s -run '^TestE2E_Phase143_' ./test/integration/... >/dev/null 2>&1; then
+if go test -race -count=1 -timeout 120s -run '^TestE2E_Phase143_' ./test/integration/... >"${GO_LOG}" 2>&1; then
 	ok 'phase 143: structured-output consumer E2E passes (TestE2E_Phase143_*)'
 else
 	fail 'phase 143: consumer E2E failed (run `go test -race -run TestE2E_Phase143_ ./test/integration/...`)'
+	# Keep the failure headline as well as the end of a long timeout trace.
+	head -40 "${GO_LOG}"
+	tail -80 "${GO_LOG}"
 fi
 
 # 3. Static: answer_payload is defined in EXACTLY ONE wire-shape (the

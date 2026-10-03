@@ -245,6 +245,32 @@ Phase 60 (Protocol wire transport) is no longer a decision gate; it is a normal 
 
 ### 5.5 Authentication
 
+**Scoped session mutation admission (D-491).** An optional signed
+`method_reach` is a strict array of unique exact canonical Protocol methods:
+absence preserves legacy behavior, while an explicit empty array grants none.
+Unknown methods, aliases, malformed/null arrays and duplicate authority claims
+are refused. It only narrows existing verified identity/scopes/reach. A paired
+`session_admission_epoch` / `session_admission_coordinator` binds explicit
+method authority to the original JWT full identity and immutable issuer. A
+separate exact singleton scoped audience is mandatory; old audience-less
+verifiers and old writers must be removed before adoption. Capability negotiation
+alone cannot make a credential safe on a server that ignores these claims.
+
+Runtime-owned `sessions.set_admission` enrolls/advances an exact owner session
+through authenticated admin authority, binding the verified issuer and subject
+immutably. One protected StateStore CAS slot serializes enrollment with every
+supported session mutation's acceptance, including broad legacy mutations
+before enrollment exists. Mutation reservations are bounded to one per session,
+never expire automatically, and do not create another executor. A crash or
+uncertain acceptance remains an explicit blocked state until proven. Enrollment
+does not retract work already accepted; migration must reconcile/quiesce queued
+controls and tasks. Existing explicitly authorized reads, native decisions,
+OAuth flow/pause completion, and signed artifact transfer retain their distinct
+authorities. Independent administrative or user-wide configuration grants are
+not revoked by this session contract. Disabling the feature over recorded state
+is refused by aware runtimes; older binaries still require operational downgrade
+prevention.
+
 JWT, asymmetric algorithms only (RS256/RS384/RS512/ES256/ES384/ES512). The triple `(tenant, user, session)` is in the JWT claims; the Protocol rejects any request without an identity scope. (Settled — `AGENTS.md` §7.) Extended scopes (`admin`, `console:fleet`) gate cross-session and cross-tenant subscriptions.
 
 **Agent reach is signed resource authority, not isolation (D-397).** Every
@@ -520,6 +546,16 @@ or cold execution relaunch is introduced. See
 [phase 268 plan](docs/plans/phase-268-portable-compaction.md).
 
 ### 6.3 Steering and the unified pause/resume primitive
+
+**Exact-task input receipts (D-487).** A caller-keyed text `user_message` may
+include an expected accepted-input revision. Admission checks that precondition
+under the owning runtime's task lock, persists the immutable request identity,
+and returns content-free evidence. Exact retries recover the same receipt;
+changed text or expectation conflicts. Applied means a planner invocation
+consumed the projected input before its resulting decision executes. Sealed
+answers carry that invocation's incorporated input revision. Restart preserves
+evidence, never automatically resumes execution. This uses the existing
+single-active-runtime TaskRegistry; concurrent runtime ownership is not implied.
 
 **Same-run step tranches.** A configured finite tranche charges each
 completed nonterminal planner decision exactly once, including control and
@@ -1636,6 +1672,33 @@ does any identity, task-id, or run-id disagreement.
 
 ### 6.10 Artifacts
 
+**Task-owned native output provenance (D-489).** A bounded immutable manifest
+certifies only successful direct-native binary tool materialization under the
+current engine task identity. Runtime invocation admission is persisted before
+I/O and bound to the stable trajectory position and branch index; unresolved or
+already-settled slots cannot be blindly invoked again after lost observation.
+Persistence uncertainty stops planning. Completion seals metadata before its
+terminal event, and existing canonical session turns project the seal with
+stable exact references. Legacy unknown is distinct from sealed known empty.
+Session ownership and first-writer artifact annotations confer no output
+membership. Helpers, sibling tasks, model-authored links and failed results are
+not inherited. A historical manifest is neither current visibility nor a grant;
+fresh task/turn and artifact authorization remain required for later copies.
+
+**Recipient-admitted direct copies (D-486).** Cross-runtime artifact transfer is
+an explicit two-owner operation. It uses coordinator-signed exact-content
+authority and a durable recipient admission, then moves bytes directly from
+the authenticated source runtime to a boot-trusted recipient. The signed
+identity, audience, SHA-256 version, MIME, size, expiry and policy epochs are
+immutable. No coordinator byte proxy or implicit knowledge ingestion is used.
+Receipt replay and crash recovery reuse StateStore conditional writes. A signed
+import capability authenticates permitted content and destination, not the
+network sender; a completed receipt is evidence of past delivery, not current
+read access. Revocation cannot undo an already dispatched copy. Transfer
+enablement requires atomic same-store owner-scope fencing (inmem, SQLite-blob
+and Postgres-blob); FS/S3 fail closed. Session erasure fences every late byte
+write before its artifact sweep, without cross-store transaction callbacks.
+
 **MCP App callback and tool-context contracts (settled).** MCP discovery
 preserves provider-authored `_meta.ui.visibility` declarations containing
 `app` in an internal per-server callback catalog alongside the planner
@@ -2251,6 +2314,38 @@ Slog + OpenTelemetry from t=0. The Runtime emits events; the events drive both s
 ---
 
 ### 6.15 Governance subsystem
+
+**Cumulative task allocation (D-488).** Accepted immutable task funding bounds
+all provider calls, helper calls, retries, resumes and same-identity descendants.
+StateStore conditional batches reserve a conservative physical-request envelope
+before transport; unknown work stays reserved through cancellation and restart.
+Token-only mode retains its original contract. The D-490 extension admits hard
+micro-USD caps only with an exact operator-installed manifest ID/revision/hash,
+immutable provider/model/version selector and configured endpoint binding. Its
+explicit integer ceilings include input, output, cache, reasoning, request and
+ancillary charges. Conditional batches reserve token and monetary envelopes
+atomically; complete single-attempt work consumes a conservative charged ceiling,
+while unproven work retains the full money hold. Neither is actual spend.
+Incomplete/mismatched tariffs and unsupported physical request shapes fail before
+transport. Provider-reported pricing and post-call floats remain insufficient.
+
+Nested transport and SDK retry limits multiply; a logical retry count is not a
+physical-attempt bound. The pinned Bifrost consumer admits only audited text
+OpenAI/Anthropic factories, including exact OpenAI-compatible custom/selected
+routes for token-only funding. Other families and auxiliary media/file or opaque
+request work refuse hard allocation admission. The native five-send cap applies
+to each configured logical attempt and the single guarded repair attempt.
+Unreported physical usage remains unknown even when the final response succeeds.
+
+**Allocation finality (D-493).** Task terminality alone is not a spending fence.
+An irreversible allocation close serializes with every provider reservation and
+preserves accepted envelopes for settlement. Built-in engines close only after
+the funding root and all accepted same-owner descendants are terminal; late
+helpers cannot reopen funding. Canonical snapshots expose `closed`, negotiated
+through `task_inference_allocation_finality_v1`. Only closed, non-breached,
+fully-settled accounting establishes final conservative capacity, not actual
+spend. Versioned totals fence pre-extension writers; rollout requires draining
+older writers and forbids downgrading an active funded store.
 
 Governance is Harbor's middleware between the Runtime and the `LLMClient` driver. It owns identity-scoped policies — cost accumulators + ceilings, rate limits, per-call token budgets, and (post-V1) key rotation, model swap, failover chains, circuit breakers — that the LLM-call substrate (bifrost) doesn't and shouldn't know about, because it doesn't know Harbor's identity triple.
 

@@ -133,6 +133,8 @@ type TurnRow struct {
 	// Outputs are the turn's output attachment metadata (artifact
 	// references; never bytes), each with reference availability.
 	Outputs []Attachment
+	// OutputManifest binds only sealed runtime-native output metadata. Version zero is legacy/unknown.
+	OutputManifest OutputManifestSeal
 	// Usage is the cumulative per-measure honest token/cost/latency/
 	// model rollup. Every measure states its own availability /
 	// exactness — an absent measure is unavailable, never a fabricated
@@ -688,4 +690,13 @@ type AppOpsRef struct {
 	ToolName string
 	// Availability is the component availability.
 	Availability AppAvailability
+}
+
+// OutputManifestSeal is immutable task-owned provenance for Outputs. Version 1
+// certifies the bounded direct-native set, including an explicitly empty set.
+// It does not certify helper/sibling outputs or grant current artifact access.
+type OutputManifestSeal struct {
+	Version       int
+	SHA256        string
+	InputRevision uint64
 }

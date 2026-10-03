@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 40 canonical Harbor Protocol error codes, generated from the single-source
+The 46 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -21,9 +21,15 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `agent_pack_copy_idempotency_conflict` | 409 | A same-runtime Agent pack copy idempotency key was reused with a different source, target, selected-pack set, or composition precondition fingerprint. The replay is refused without mutation. | No — replay the original request with that key or choose a new idempotency key for a distinct copy. |
 | `agent_retired` | 409 | An authorized agent-addressed operation selected a terminally retired agent configuration. | No — choose a different agent; retirement is terminal. |
 | `agent_retirement_conflict` | 409 | A retirement request used a stale active-content hash or a different operation id from the durable replay identity. | Only by replaying `agent_config.retire` with the exact original operation id and expected content hash. |
+| `artifact_transfer_conflict` | 409 | A transfer ID was reused with changed authority, metadata or content. | Reuse the exact admitted grant; never retry changed bindings. |
+| `artifact_transfer_expired` | 410 | The signed transfer validity interval no longer allows new byte movement. | Inspect the existing receipt; obtain fresh authority for genuinely new work. |
+| `artifact_transfer_in_progress` | 409 | Dispatch began and bytes may already have moved; revocation cannot assert rollback. | Inspect the exact durable receipt. |
+| `artifact_transfer_revoked` | 403 | An owner revoked the transfer before dispatch. | Do not retry the revoked operation. |
 | `auth_rejected` | 401 | A bearer token was present but failed verification: malformed, an algorithm outside the asymmetric allowlist, bad signature, expired / not-yet-valid, unknown `kid`, audience or issuer mismatch. | Only after obtaining a fresh valid token. |
+| `control_receipt_conflict` | 409 | An exact task input event ID was reused with changed text. | Replay the original event and text; use a new event ID for different input. |
 | `identity_required` | 401 | The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed. | No — attach a token / session first ([Auth & identity](./auth-and-identity.md)). |
 | `identity_scope_required` | 403 | The request is authenticated and identified, but the requested cross-tenant fan-in (e.g. `events.subscribe?admin=1`) or admin verb needs a verified `admin` / `console:fleet` scope claim the token does not carry. | No — re-authenticate with a scope-bearing token. |
+| `inference_allocation_pricing_unavailable` | 400 | A hard monetary cap lacks trusted finite pricing authority. | Configure a trusted immutable pricing manifest or request token-only admission. |
 | `invalid_cursor` | 400 | The `observability.query` page cursor is malformed or was produced by a differently-shaped query (including a different identity scope). The query never silently restarts at an arbitrary position. | Yes — restart from the first page (no cursor). |
 | `invalid_request` | 400 | The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, an out-of-range field. | No — fix the request shape first. |
 | `not_found` | 404 | The request's target does not exist in the caller's scope: a steering control for a run with no live inbox (never started or already terminal), an unknown task / flow / artifact id. Cross-tenant existence is never revealed — a foreign id is indistinguishable from a missing one. | No — the target is gone or never existed for you. |

@@ -67,7 +67,9 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/sessions"
 )
 
@@ -357,6 +359,9 @@ func isCrossTenant(callerTenant string, f prototypes.SessionFilter) bool {
 // pagination, and emits an `audit.admin_scope_used` event on a
 // successful admin-scope query.
 func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, adminScoped bool) (prototypes.SessionsListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodSessionsList); err != nil {
+		return prototypes.SessionsListResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.SessionsListResponse{}, err
@@ -514,6 +519,9 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 // Inspect implements the `sessions.inspect` method — the full
 // per-session snapshot the Console Sessions detail view renders.
 func (s *Service) Inspect(ctx context.Context, req prototypes.SessionsInspectRequest, adminScoped bool) (prototypes.SessionsInspectResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodSessionsInspect); err != nil {
+		return prototypes.SessionsInspectResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.SessionsInspectResponse{}, err
@@ -614,6 +622,20 @@ func (s *Service) HasTitleSetter() bool { return s.titleSetter != nil }
 // ErrErasureUnsupported. A refusal on a RUNNING task surfaces as
 // ErrSessionRunning (409); an absent session as ErrSessionNotFound (404).
 func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteRequest) (prototypes.SessionsDeleteResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodSessionsDelete); err != nil {
+		return prototypes.SessionsDeleteResponse{}, err
+	}
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: req.Identity.Session}
+	return sessionadmission.Run(ctx, target, methods.MethodSessionsDelete, func(accepted context.Context) (prototypes.SessionsDeleteResponse, error) {
+		out, err := s.deleteAccepted(accepted, req)
+		if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrIdentityRequired) || errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionRunning) || errors.Is(err, ErrErasureUnsupported) {
+			err = sessionadmission.Rejected(err)
+		}
+		return out, err
+	})
+}
+
+func (s *Service) deleteAccepted(ctx context.Context, req prototypes.SessionsDeleteRequest) (prototypes.SessionsDeleteResponse, error) {
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.SessionsDeleteResponse{}, err
@@ -657,6 +679,20 @@ func (s *Service) Delete(ctx context.Context, req prototypes.SessionsDeleteReque
 // tenant/user matter). A nil TitleSetter (the capability was not wired)
 // is reported as ErrTitleSetUnsupported.
 func (s *Service) SetTitle(ctx context.Context, req prototypes.SessionsSetTitleRequest) (prototypes.SessionsSetTitleResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodSessionsSetTitle); err != nil {
+		return prototypes.SessionsSetTitleResponse{}, err
+	}
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: strings.TrimSpace(req.SessionID)}
+	return sessionadmission.Run(ctx, target, methods.MethodSessionsSetTitle, func(accepted context.Context) (prototypes.SessionsSetTitleResponse, error) {
+		out, err := s.setTitleAccepted(accepted, req)
+		if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrIdentityRequired) || errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrTitleSetUnsupported) {
+			err = sessionadmission.Rejected(err)
+		}
+		return out, err
+	})
+}
+
+func (s *Service) setTitleAccepted(ctx context.Context, req prototypes.SessionsSetTitleRequest) (prototypes.SessionsSetTitleResponse, error) {
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.SessionsSetTitleResponse{}, err

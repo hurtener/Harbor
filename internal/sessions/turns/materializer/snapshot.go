@@ -165,6 +165,7 @@ type TaskSnapshot struct {
 	// stay as accumulated (or absent).
 	OutputsPresent bool
 	Outputs        []turns.Attachment
+	OutputManifest *turns.OutputManifestSeal
 
 	// FailurePresent reports whether the record carries the terminal
 	// failure classification. When true, ErrorCode is the canonical
@@ -196,7 +197,7 @@ func snapshotOutputs(snap TaskSnapshot) []turns.Attachment {
 	if !snap.OutputsPresent {
 		return nil
 	}
-	return snap.Outputs
+	return append([]turns.Attachment{}, snap.Outputs...)
 }
 
 // snapshotFailureMessage returns the optional task-record failure message only

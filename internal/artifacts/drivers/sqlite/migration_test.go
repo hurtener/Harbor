@@ -32,8 +32,8 @@ func TestMigrate_CleanDB_StartsClean(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	versions := loadSchemaMigrations(t, db)
-	if !equalVersions(versions, []int{1, 2}) {
-		t.Fatalf("schema_migrations=%v, want [1 2]", versions)
+	if !equalVersions(versions, []int{1, 2, 3}) {
+		t.Fatalf("schema_migrations=%v, want [1 2 3]", versions)
 	}
 }
 
@@ -65,8 +65,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	versions := loadSchemaMigrations(t, db)
-	if !equalVersions(versions, []int{1, 2}) {
-		t.Fatalf("schema_migrations after re-open=%v, want [1 2]", versions)
+	if !equalVersions(versions, []int{1, 2, 3}) {
+		t.Fatalf("schema_migrations after re-open=%v, want [1 2 3]", versions)
 	}
 }
 

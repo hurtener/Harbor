@@ -13,7 +13,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // setoauthprovider.go — the admin-scoped `agent_config.set_oauth_provider`
@@ -116,6 +118,9 @@ const (
 // See the file doc for the full contract (the zero-URL invariant, revision +
 // live install + fail-closed audit, the boot-declared loud error).
 func (s *Service) SetOAuthProvider(ctx context.Context, req prototypes.AgentConfigSetOAuthProviderRequest) (prototypes.AgentConfigSetOAuthProviderResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetOAuthProvider); err != nil {
+		return prototypes.AgentConfigSetOAuthProviderResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetOAuthProviderResponse{}, err
 	}

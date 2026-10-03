@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -349,6 +350,14 @@ func (a *taskSnapshotAdapter) Task(ctx context.Context, id identity.Identity, ta
 		}
 	}
 
+	// A newly completed task with an explicit empty result has a definite empty
+	// answer. The sealed versioned manifest distinguishes this from a legacy
+	// record whose absent result source must remain honestly unavailable.
+	if t.Result != nil && len(t.Result.Value) == 0 && t.OutputManifest != nil && t.OutputManifest.Sealed {
+		snap.AnswerPresent = true
+		snap.Answer = turns.Answer{State: turns.AnswerStateEmpty, Complete: turns.CompletenessComplete}
+	}
+
 	// The terminal failure classification, mapped exactly: the task's
 	// Error.Code / Error.Message are already redacted; the FAILED seal
 	// derives the closed error class from the code.
@@ -358,8 +367,32 @@ func (a *taskSnapshotAdapter) Task(ctx context.Context, id identity.Identity, ta
 		snap.ErrorMessage = t.Error.Message
 	}
 
-	// Output attachment metadata: the task record declares no output
-	// artifact ids, so the honest gap (OutputsPresent=false) stands.
+	// A sealed task manifest is the only source of output membership. Blob
+	// first-writer task stamps and session listings are not task provenance.
+	if t.OutputManifest != nil && t.OutputManifest.Sealed {
+		if err := tasks.ValidateOutputManifest(t); err != nil {
+			return materializer.TaskSnapshot{}, err
+		}
+		snap.OutputsPresent = true
+		snap.Outputs = []turns.Attachment{}
+		snap.OutputManifest = &turns.OutputManifestSeal{Version: t.OutputManifest.Version, SHA256: t.OutputManifest.SHA256, InputRevision: t.OutputManifest.InputRevision}
+		byID := map[string]turns.Attachment{}
+		for _, ref := range t.OutputManifest.Artifacts {
+			att := turns.Attachment{ID: ref.ID, SHA256: ref.SHA256, MimeType: ref.MIMEType, SizeBytes: ref.SizeBytes, Availability: turns.CompletenessComplete}
+			if prior, ok := byID[ref.ID]; ok && prior != att {
+				return materializer.TaskSnapshot{}, tasks.ErrOutputProvenance
+			}
+			byID[ref.ID] = att
+		}
+		ids := make([]string, 0, len(byID))
+		for id := range byID {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			snap.Outputs = append(snap.Outputs, byID[id])
+		}
+	}
 	return snap, nil
 }
 

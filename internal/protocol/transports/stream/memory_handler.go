@@ -538,6 +538,10 @@ func memoryHasAdminScope(ctx context.Context) bool {
 // classifyMemoryError maps an internal/memory/protocol error onto a
 // canonical Protocol Code + HTTP status + safe operator-facing message.
 func classifyMemoryError(err error) (protoerrors.Code, int, string) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		return perr.Code, bodyScopeStatus(perr.Code), perr.Message
+	}
 	switch {
 	case errors.Is(err, memory.ErrIdentityRequired):
 		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,

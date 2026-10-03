@@ -10,6 +10,28 @@ import (
 )
 
 type (
+	// InferenceAllocation is immutable task funding in integer token units.
+	InferenceAllocation = types.InferenceAllocation
+	// InferenceAllocationReceipt is content-free provider-envelope settlement evidence.
+	InferenceAllocationReceipt = types.InferenceAllocationReceipt
+	// InferenceAllocationSnapshot retains cumulative uncertain liability.
+	InferenceAllocationSnapshot = types.InferenceAllocationSnapshot
+
+	// ArtifactsExportAnswerRequest selects exact final-answer bytes without carrying them.
+	ArtifactsExportAnswerRequest = types.ArtifactsExportAnswerRequest
+	// ArtifactsExportAnswerResponse is an immutable source artifact receipt.
+	ArtifactsExportAnswerResponse = types.ArtifactsExportAnswerResponse
+	// ArtifactTransferGrant is signed exact-copy authority.
+	ArtifactTransferGrant = types.ArtifactTransferGrant
+	// ArtifactTransferEndpoint binds the runtime audience and owner.
+	ArtifactTransferEndpoint = types.ArtifactTransferEndpoint
+	// ArtifactTransferReceipt is content-free durable transfer evidence.
+	ArtifactTransferReceipt = types.ArtifactTransferReceipt
+	// ArtifactsTransferRequest selects one signed transfer.
+	ArtifactsTransferRequest = types.ArtifactsTransferRequest
+	// ArtifactsTransferStatusRequest selects an owner-scoped receipt.
+	ArtifactsTransferStatusRequest = types.ArtifactsTransferStatusRequest
+
 	// Client is the curated concurrent-safe REST/SSE Protocol client interface.
 	Client = internal.Client
 	// RuntimeClient is the additive Runtime inspection/control client,
@@ -88,7 +110,10 @@ type (
 	// PauseListResponse is the pause.list response.
 	PauseListResponse = types.PauseListResponse
 	// ControlRequest is the shared steering-control request.
-	ControlRequest = types.ControlRequest
+	ControlRequest         = types.ControlRequest
+	ControlReceipt         = types.ControlReceipt
+	ControlReceiptRequest  = types.ControlReceiptRequest
+	ControlReceiptResponse = types.ControlReceiptResponse
 	// ControlResponse is the shared steering-control response.
 	ControlResponse = types.ControlResponse
 	// ArtifactsPutRequest is the artifacts.put request.
@@ -151,6 +176,8 @@ const (
 	MethodPrioritize = methods.MethodPrioritize
 	// MethodUserMessage injects a user message.
 	MethodUserMessage = methods.MethodUserMessage
+	// MethodControlReceipt reads an exact retained input receipt.
+	MethodControlReceipt = methods.MethodControlReceipt
 )
 
 var (
@@ -194,3 +221,30 @@ func StaticToken(token string, principal IdentityScope) TokenSource {
 
 // WithHTTPClient supplies the HTTP client used for REST and SSE calls.
 func WithHTTPClient(client *http.Client) Option { return internal.WithHTTPClient(client) }
+
+// SessionTurnsListRequest selects canonical retained turns for an owned session.
+type SessionTurnsListRequest = types.SessionTurnsListRequest
+
+// SessionTurnsListResponse contains the canonical retained-turn projection.
+type SessionTurnsListResponse = types.SessionTurnsListResponse
+
+// SessionTurnsGetRequest selects one exact canonical task turn.
+type SessionTurnsGetRequest = types.SessionTurnsGetRequest
+
+// SessionTurnsGetResponse contains one exact canonical retained-turn projection.
+type SessionTurnsGetResponse = types.SessionTurnsGetResponse
+
+// SessionTurnRow carries canonical conversation-turn metadata.
+type SessionTurnRow = types.SessionTurnRow
+
+// SessionTurnAttachment identifies one canonical artifact attachment.
+type SessionTurnAttachment = types.SessionTurnAttachment
+
+// SessionTurnOutputManifest carries the immutable native-output seal and revision.
+type SessionTurnOutputManifest = types.SessionTurnOutputManifest
+
+// SessionsSetAdmissionRequest is the canonical exact session epoch transition.
+type SessionsSetAdmissionRequest = types.SessionsSetAdmissionRequest
+
+// SessionsSetAdmissionResponse is the installed epoch, not an execution completion proof.
+type SessionsSetAdmissionResponse = types.SessionsSetAdmissionResponse

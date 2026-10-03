@@ -366,6 +366,16 @@ const (
 	// control" row): the `start` method plus the nine steering-control
 	// methods.
 	CapTaskControl Capability = "task_control"
+	// CapDurableTaskInputReceipts requires durable tasks and persistent state.
+	CapDurableTaskInputReceipts Capability = "durable_task_input_receipts_v1"
+	// CapTaskInferenceAllocation exposes immutable cumulative task token funding.
+	CapTaskInferenceAllocation Capability = "task_inference_allocation_v1"
+	// CapTaskInferenceAllocationFinality exposes irreversible reservation closure.
+	CapTaskInferenceAllocationFinality Capability = "task_inference_allocation_finality_v1"
+	// CapArtifactTransfer is the opt-in two-sided recipient-admitted copy surface.
+	CapArtifactTransfer Capability = "artifact_transfer_v1"
+	// CapDurableArtifactTransfer requires persistent StateStore and fenced blob drivers.
+	CapDurableArtifactTransfer Capability = "durable_artifact_transfer_v1"
 	// CapEventsSubscribe — the streaming-events surface (RFC §5.2
 	// "Streaming events" row): the `events.subscribe` method and the
 	// `events.aggregate` time-bucket method. Shipped in.
@@ -446,6 +456,8 @@ const (
 	// is backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapSessionLifecycle Capability = "session_lifecycle"
+	// CapScopedSessionAdmission requires scoped audience validation and durable acceptance fencing.
+	CapScopedSessionAdmission Capability = "scoped_session_admission_v1"
 	// CapToolAnnotations — the per-tool annotation surface (OAuth binding
 	// status / approval policy / last-used / metrics / content-stats /
 	// display-modes) the Tools page's OAuth + approval facets and the
@@ -510,23 +522,29 @@ const (
 // `topology_snapshot` is in the canonical set, but only runtimes
 // hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
-	CapTaskControl:                   {},
-	CapEventsSubscribe:               {},
-	CapRuntimePosture:                {},
-	CapTenantScopedBrokerCredentials: {},
-	CapTopologySnapshot:              {},
-	CapStateSnapshots:                {},
-	CapAgentConfig:                   {},
-	CapAgentConfigMemory:             {},
-	CapSessionLifecycle:              {},
-	CapToolAnnotations:               {},
-	CapToolsConfigurationView:        {},
-	CapCallerMemory:                  {},
-	CapSkillPublications:             {},
-	CapLLMProviderCatalog:            {},
-	CapLLMProviderRoute:              {},
-	CapLLMProviderRouteModelProfile:  {},
-	CapRunLLMSettings:                {},
+	CapDurableTaskInputReceipts:        {},
+	CapTaskInferenceAllocation:         {},
+	CapTaskInferenceAllocationFinality: {},
+	CapDurableArtifactTransfer:         {},
+	CapArtifactTransfer:                {},
+	CapTaskControl:                     {},
+	CapEventsSubscribe:                 {},
+	CapRuntimePosture:                  {},
+	CapTenantScopedBrokerCredentials:   {},
+	CapTopologySnapshot:                {},
+	CapStateSnapshots:                  {},
+	CapAgentConfig:                     {},
+	CapAgentConfigMemory:               {},
+	CapSessionLifecycle:                {},
+	CapScopedSessionAdmission:          {},
+	CapToolAnnotations:                 {},
+	CapToolsConfigurationView:          {},
+	CapCallerMemory:                    {},
+	CapSkillPublications:               {},
+	CapLLMProviderCatalog:              {},
+	CapLLMProviderRoute:                {},
+	CapLLMProviderRouteModelProfile:    {},
+	CapRunLLMSettings:                  {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

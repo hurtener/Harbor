@@ -46,8 +46,14 @@ for def in 'func projectMemoryBlocks' 'func projectSkillsContext' \
     assert_grep_absent "${def}" "internal/runtime/serve/runloop.go" \
         "cmd runloop no longer defines '${def}'"
 done
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "cmd runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
+# Cumulative execution memory supersedes the old pair-only projection. Pin
+# the real retained owner, not the deleted FetchMemoryBlocks call or a comment.
+assert_grep_present '^[[:space:]]*fin, err := d\.runWithRetainedContext\(' "internal/runtime/serve/runloop.go" \
+    "served execution enters its retained session owner"
+assert_grep_present '^[[:space:]]*retained, err := sessionmemory\.BeginRetainedRun\(' "internal/runtime/serve/retained_context.go" \
+    "retained owner uses the canonical session admission"
+assert_grep_present '^[[:space:]]*err = retained\.Apply\(&spec.Base\)' "internal/runtime/serve/retained_context.go" \
+    "retained session evidence reaches the actual run context"
 assert_grep_present 'runctx\.ResolveInputArtifacts' "internal/runtime/serve/runloop.go" \
     "cmd runloop calls runctx.ResolveInputArtifacts"
 assert_grep_present 'events\.IdentityStampingEmitter' "internal/runtime/serve/runloop.go" \
@@ -101,5 +107,12 @@ if go test ./internal/runtime/runctx/ ./internal/events/ ./internal/llm/ \
 else
     fail "runctx/emitter/chunk-publisher test slice failed (-race)"
 fi
+
+memory_log="$(mktemp "${TMPDIR:-/tmp}/harbor-smoke-memory.XXXXXX")"
+trap 'rm -f "$memory_log"' EXIT
+assert_go_tests_pass "$memory_log" '-race -p 1 ./internal/runtime/runctx ./internal/runtime/serve' \
+    'one retained memory owner preserves exact evidence without duplicate projection' \
+    TestNewRunContext_NoParallelMemoryProjection \
+    TestRetainedServer_ExactRootContextAndPrivateChild
 
 smoke_summary

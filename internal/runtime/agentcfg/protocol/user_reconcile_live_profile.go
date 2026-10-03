@@ -5,7 +5,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // UserReconcileLiveProfile runs the existing signed OAuth MCP recovery
@@ -13,6 +15,9 @@ import (
 // fresh profile projection for immediate tool re-listing. It does not accept
 // or mint any provider, descriptor, authority, JTI, tenant, or user selector.
 func (s *Service) UserReconcileLiveProfile(ctx context.Context, req prototypes.AgentConfigUserReconcileLiveProfileRequest) (prototypes.AgentConfigUserReconcileLiveProfileResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserReconcileLiveProfile); err != nil {
+		return prototypes.AgentConfigUserReconcileLiveProfileResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserReconcileLiveProfileResponse{}, err
 	}

@@ -140,6 +140,8 @@ const (
 	// visible on the planner's next step. Maps onto the USER_MESSAGE
 	// steering control; the message is the payload's `message` string.
 	MethodUserMessage Method = "user_message"
+	// MethodControlReceipt reads one durable text-input receipt without executing work.
+	MethodControlReceipt Method = "control.receipt"
 
 	// MethodEventsSubscribe opens a server-filtered event subscription.
 	// The wire-transport route is `GET /v1/events`
@@ -801,6 +803,16 @@ const (
 	// without it. Emits `artifacts.deleted` for audit. Routes through the
 	// control surface at `POST /v1/control/artifacts.delete`.
 	MethodArtifactsDelete Method = "artifacts.delete"
+	// MethodArtifactsPrepareImport ratifies an exact recipient-bound copy.
+	MethodArtifactsPrepareImport Method = "artifacts.prepare_import"
+	// MethodArtifactsTransfer dispatches one directly delivered artifact copy.
+	MethodArtifactsTransfer Method = "artifacts.transfer"
+	// MethodArtifactsExportAnswer materializes one exact sealed final answer.
+	MethodArtifactsExportAnswer Method = "artifacts.export_answer"
+	// MethodArtifactsTransferStatus reads an owner's durable transfer receipt.
+	MethodArtifactsTransferStatus Method = "artifacts.transfer_status"
+	// MethodArtifactsRevokeTransfer revokes an undispatched transfer admission.
+	MethodArtifactsRevokeTransfer Method = "artifacts.revoke_transfer"
 
 	// MethodMemoryList — Returns the
 	// paginated, identity-scope-filtered set of memory records the
@@ -1113,6 +1125,8 @@ const (
 	// Sessions handler. Identity-mandatory. The wire-transport route is
 	// `POST /v1/sessions/delete`.
 	MethodSessionsDelete Method = "sessions.delete"
+	// MethodSessionsSetAdmission enrolls or advances exact session mutation authority.
+	MethodSessionsSetAdmission Method = "sessions.set_admission"
 	// MethodSessionsSetTitle — sets or clears a session's human-readable
 	// title. The write scope is the owning `(tenant, user)` —
 	// the same scope `sessions.list` reads at — NOT own-session-only:
@@ -1230,6 +1244,7 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
+	MethodControlReceipt:                            {},
 	MethodStart:                                     {},
 	MethodCancel:                                    {},
 	MethodPause:                                     {},
@@ -1322,6 +1337,11 @@ var canonicalMethods = map[Method]struct{}{
 	MethodArtifactsGet:                              {},
 	MethodArtifactsGetRef:                           {},
 	MethodArtifactsDelete:                           {},
+	MethodArtifactsPrepareImport:                    {},
+	MethodArtifactsTransfer:                         {},
+	MethodArtifactsExportAnswer:                     {},
+	MethodArtifactsTransferStatus:                   {},
+	MethodArtifactsRevokeTransfer:                   {},
 	MethodMemoryList:                                {},
 	MethodMemoryGet:                                 {},
 	MethodMemoryHealth:                              {},
@@ -1351,6 +1371,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSessionsList:             {},
 	MethodSessionsInspect:          {},
 	MethodSessionsDelete:           {},
+	MethodSessionsSetAdmission:     {},
 	MethodSessionsSetTitle:         {},
 	MethodSessionsReconcileContext: {},
 
@@ -1467,11 +1488,16 @@ func IsAgentsControlMethod(m Method) bool {
 // route the request through the artifacts dispatcher instead of the
 // task-control surface.
 var canonicalArtifactsMethods = map[Method]struct{}{
-	MethodArtifactsList:   {},
-	MethodArtifactsPut:    {},
-	MethodArtifactsGet:    {},
-	MethodArtifactsGetRef: {},
-	MethodArtifactsDelete: {},
+	MethodArtifactsList:           {},
+	MethodArtifactsPut:            {},
+	MethodArtifactsGet:            {},
+	MethodArtifactsGetRef:         {},
+	MethodArtifactsDelete:         {},
+	MethodArtifactsPrepareImport:  {},
+	MethodArtifactsTransfer:       {},
+	MethodArtifactsExportAnswer:   {},
+	MethodArtifactsTransferStatus: {},
+	MethodArtifactsRevokeTransfer: {},
 }
 
 // IsArtifactsMethod reports whether m is one of the canonical artifacts
@@ -1959,6 +1985,7 @@ var canonicalSessionsMethods = map[Method]struct{}{
 	MethodSessionsList:             {},
 	MethodSessionsInspect:          {},
 	MethodSessionsDelete:           {},
+	MethodSessionsSetAdmission:     {},
 	MethodSessionsSetTitle:         {},
 	MethodSessionsReconcileContext: {},
 }
@@ -2270,7 +2297,7 @@ func IsControlMethod(m Method) bool {
 	if !IsValidMethod(m) {
 		return false
 	}
-	if m == MethodStart {
+	if m == MethodStart || m == MethodControlReceipt {
 		return false
 	}
 	if _, ok := streamingEventsMethods[m]; ok {

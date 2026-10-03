@@ -40,8 +40,9 @@ assert_grep_present 'planner.skills_context_max' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 # Driver fetches the four primitives + project helpers exist.
 # ----------------------------------------------------------------------------
-assert_grep_present 'memory.MemoryStore' "internal/runtime/serve/runloop.go" \
-    "perTaskRunLoopDriver opts carry the MemoryStore dep (D-149)"
+# D-477 replaces the legacy pair-only projection with the cumulative owner.
+assert_grep_present 'SessionMemory[[:space:]]+config\.MemoryConfig' "internal/runtime/serve/runloop.go" \
+    "runloop options carry the shared session-memory configuration"
 # Phase 233a replaces the boot-time Directory dependency as the source of
 # truth with a run-start immutable reader snapshot. The Directory still
 # projects `<skills_context>`, but it MUST resolve that exact snapshot rather
@@ -53,10 +54,13 @@ assert_grep_present 'skills\.NewRunSkillReaderSnapshot' "internal/runtime/serve/
     "runloop binds the composite resolver to one immutable per-run skill reader (Phase 233a)"
 assert_grep_present 'skills\.WithRunSkillReaderSnapshot\(taskCtx, skillSnapshot\)' "internal/runtime/serve/runloop.go" \
     "runloop installs the immutable reader before Directory consumers run (Phase 233a)"
-# Phase 110b (D-195) re-homed the projection helpers to the exported
-# internal/runtime/runctx package; the run loop is a thin caller.
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
+# The cumulative owner admits and applies history once, before dispatch.
+assert_grep_present 'sessionmemory\.BeginRetainedRun\(ctx, d\.stateStore, d\.redactor, spec\.Base\.Quadruple' "internal/runtime/serve/retained_context.go" \
+    "runloop admits identity-scoped cumulative execution memory"
+assert_grep_present 'retained\.Apply\(&spec\.Base\)' "internal/runtime/serve/retained_context.go" \
+    "runloop applies the admitted cumulative history to its RunContext"
+assert_grep_present 'd\.runWithRetainedContext\(' "internal/runtime/serve/runloop.go" \
+    "runOne invokes the cumulative memory owner"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "internal/runtime/serve/runloop.go" \
     "runloop projects the snapshot-authorized Directory view via runctx.ProjectSkillsDirectory (110b → 111d → 233a)"
 assert_grep_present 'RepairCounters{' "internal/runtime/serve/runloop.go" \
@@ -74,8 +78,8 @@ assert_grep_present 'planner\.HintsFromConfig' "internal/runtime/serve/serve.go"
 # ----------------------------------------------------------------------------
 # Phase 110b (D-195): the D-094 mirror copies are deleted; devstack
 # calls the SAME promoted projections production calls.
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "devstack calls runctx.FetchMemoryBlocks (mirror collapsed; 110b + semantic recall)"
+assert_grep_present 'SessionMemory:[[:space:]]+cfg\.Memory' "harbortest/devstack/devstack.go" \
+    "devstack passes the same session-memory config to the shared runloop"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "internal/runtime/serve/runloop.go" \
     "devstack projects the Directory view via runctx.ProjectSkillsDirectory (mirror; 110b → 111d)"
 

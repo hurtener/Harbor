@@ -10,7 +10,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // setllmprovider.go — the admin-scoped `agent_config.set_llm_provider` control
@@ -86,6 +88,9 @@ const llmProviderWritableSource = "remote"
 // SetLLMProvider installs (upserts) / rotates a ZERO-URL, broker-pull inference
 // provider binding. See the file doc for the full contract.
 func (s *Service) SetLLMProvider(ctx context.Context, req prototypes.AgentConfigSetLLMProviderRequest) (prototypes.AgentConfigSetLLMProviderResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetLLMProvider); err != nil {
+		return prototypes.AgentConfigSetLLMProviderResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetLLMProviderResponse{}, err
 	}

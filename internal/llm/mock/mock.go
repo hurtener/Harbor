@@ -282,3 +282,8 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 
 // Compile-time assertion: *Driver implements llm.Driver.
 var _ llm.Driver = (*Driver)(nil)
+
+// ProviderAttemptBound reports the mock's single local attempt.
+func (d *Driver) ProviderAttemptBound(context.Context, llm.CompleteRequest) (int, error) {
+	return 1, nil
+}

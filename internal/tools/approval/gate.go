@@ -253,6 +253,11 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 	g.pending[pause.Token] = entry
 	g.mu.Unlock()
 
+	if err := tools.ParkInvocationAdmission(ctx); err != nil {
+		g.removePending(pause.Token)
+		return nil, err
+	}
+
 	// Publish tool.approval_requested. A bus publish failure is
 	// loud-and-surfaced — the caller does NOT proceed to invoke a
 	// tool whose approval observers might have missed (§13 fail-
@@ -284,6 +289,9 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 				// not the correctness path. Surface the err wrapped
 				// so callers that care can branch.
 				return req.Args, fmt.Errorf("approval: approved but emit failed: %w", err)
+			}
+			if err := tools.ResumeInvocationAdmission(ctx); err != nil {
+				return nil, err
 			}
 			return req.Args, nil
 		case DecisionReject:

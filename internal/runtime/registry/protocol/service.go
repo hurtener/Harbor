@@ -11,8 +11,10 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto
@@ -206,6 +208,9 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 // non-widened request never requires it and stays byte-compatible with
 // the identity-scoped read.
 func (s *Service) List(ctx context.Context, req prototypes.AgentListRequest, adminScoped bool) (prototypes.AgentListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsList); err != nil {
+		return prototypes.AgentListResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentListResponse{}, err
@@ -367,6 +372,9 @@ func computeAggregates(agents []prototypes.Agent) prototypes.AgentAggregates {
 // Get implements the `agents.get` method — the full projection of one
 // agent.
 func (s *Service) Get(ctx context.Context, req prototypes.AgentGetRequest) (prototypes.AgentGetResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsGet); err != nil {
+		return prototypes.AgentGetResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentGetResponse{}, err
@@ -383,6 +391,9 @@ func (s *Service) Get(ctx context.Context, req prototypes.AgentGetRequest) (prot
 
 // Tools implements the `agents.tools` method.
 func (s *Service) Tools(ctx context.Context, req prototypes.AgentToolsRequest) (prototypes.AgentToolsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsTools); err != nil {
+		return prototypes.AgentToolsResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentToolsResponse{}, err
@@ -399,6 +410,9 @@ func (s *Service) Tools(ctx context.Context, req prototypes.AgentToolsRequest) (
 
 // Memory implements the `agents.memory` method.
 func (s *Service) Memory(ctx context.Context, req prototypes.AgentMemoryRequest) (prototypes.AgentMemoryResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsMemory); err != nil {
+		return prototypes.AgentMemoryResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentMemoryResponse{}, err
@@ -415,6 +429,9 @@ func (s *Service) Memory(ctx context.Context, req prototypes.AgentMemoryRequest)
 
 // Governance implements the `agents.governance` method.
 func (s *Service) Governance(ctx context.Context, req prototypes.AgentGovernanceRequest) (prototypes.AgentGovernanceResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsGovernance); err != nil {
+		return prototypes.AgentGovernanceResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentGovernanceResponse{}, err
@@ -431,6 +448,9 @@ func (s *Service) Governance(ctx context.Context, req prototypes.AgentGovernance
 
 // Skills implements the `agents.skills` method.
 func (s *Service) Skills(ctx context.Context, req prototypes.AgentSkillsRequest) (prototypes.AgentSkillsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsSkills); err != nil {
+		return prototypes.AgentSkillsResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentSkillsResponse{}, err
@@ -447,6 +467,9 @@ func (s *Service) Skills(ctx context.Context, req prototypes.AgentSkillsRequest)
 
 // Permissions implements the `agents.permissions` method.
 func (s *Service) Permissions(ctx context.Context, req prototypes.AgentPermissionsRequest) (prototypes.AgentPermissionsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsPermissions); err != nil {
+		return prototypes.AgentPermissionsResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentPermissionsResponse{}, err
@@ -464,6 +487,9 @@ func (s *Service) Permissions(ctx context.Context, req prototypes.AgentPermissio
 // Metrics implements the `agents.metrics` method — the registry-wide
 // rollup over the caller's identity scope.
 func (s *Service) Metrics(ctx context.Context, req prototypes.AgentMetricsRequest) (prototypes.AgentMetricsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsMetrics); err != nil {
+		return prototypes.AgentMetricsResponse{}, err
+	}
 	id, err := validIdentity(req.Identity)
 	if err != nil {
 		return prototypes.AgentMetricsResponse{}, err
@@ -477,24 +503,36 @@ func (s *Service) Metrics(ctx context.Context, req prototypes.AgentMetricsReques
 
 // Pause implements the `agents.pause` fleet-control verb.
 func (s *Service) Pause(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsPause); err != nil {
+		return prototypes.AgentControlResponse{}, err
+	}
 	return s.doControl(ctx, req, controlScoped, "pause",
 		func(c context.Context, id string) error { return s.controller.Pause(c, id, req.Reason) })
 }
 
 // Drain implements the `agents.drain` fleet-control verb.
 func (s *Service) Drain(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsDrain); err != nil {
+		return prototypes.AgentControlResponse{}, err
+	}
 	return s.doControl(ctx, req, controlScoped, "drain",
 		func(c context.Context, id string) error { return s.controller.Drain(c, id, req.Reason) })
 }
 
 // Restart implements the `agents.restart` fleet-control verb.
 func (s *Service) Restart(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsRestart); err != nil {
+		return prototypes.AgentControlResponse{}, err
+	}
 	return s.doControl(ctx, req, controlScoped, "restart",
 		func(c context.Context, id string) error { return s.controller.Restart(c, id, req.Reason) })
 }
 
 // ForceStop implements the `agents.force_stop` fleet-control verb.
 func (s *Service) ForceStop(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsForceStop); err != nil {
+		return prototypes.AgentControlResponse{}, err
+	}
 	return s.doControl(ctx, req, controlScoped, "force_stop",
 		func(c context.Context, id string) error { return s.controller.ForceStop(c, id, req.Reason) })
 }
@@ -503,6 +541,9 @@ func (s *Service) ForceStop(ctx context.Context, req prototypes.AgentControlRequ
 // Irreversible; the reason is not carried to the registry
 // (registry.Deregister takes no reason).
 func (s *Service) Deregister(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentsDeregister); err != nil {
+		return prototypes.AgentControlResponse{}, err
+	}
 	return s.doControl(ctx, req, controlScoped, "deregister",
 		func(c context.Context, id string) error { return s.controller.Deregister(c, id) })
 }

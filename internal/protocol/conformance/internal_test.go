@@ -98,8 +98,8 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 	// HA-68 skill-publication five + Phase 267 Agent-pack copy distinctions two +
 	// Phase 269 retained-context refusal distinctions two = 40
 	// canonical codes at Protocol 0.1.0.
-	if len(errorCodeMatrix) != 40 {
-		t.Errorf("errorCodeMatrix size = %d, want 40 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
+	if len(errorCodeMatrix) != 46 {
+		t.Errorf("errorCodeMatrix size = %d, want 46 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

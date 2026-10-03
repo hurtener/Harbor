@@ -85,6 +85,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -174,16 +175,23 @@ type VirtualAgent = virtualagent.Binding
 // intentionally narrow at so the PR adds those
 // fields against a stable shape.
 type Task struct {
-	ID           TaskID
-	Identity     identity.Quadruple
-	Kind         TaskKind
-	Status       TaskStatus
-	Priority     int
-	ParentTaskID *TaskID
-	Description  string
-	Query        string
-	Result       *TaskResult
-	Error        *TaskError
+	// OutputManifest is runtime-produced provenance; nil denotes legacy unknown.
+	OutputManifest *OutputManifest `json:",omitempty"`
+	// Input revisions and receipts belong to this exact task. Their bounded
+	// idempotency history survives terminal state and durable driver recovery.
+	InputRevision        uint64        `json:",omitempty"`
+	AppliedInputRevision uint64        `json:",omitempty"`
+	InputReceipts        []InputRecord `json:",omitempty"`
+	ID                   TaskID
+	Identity             identity.Quadruple
+	Kind                 TaskKind
+	Status               TaskStatus
+	Priority             int
+	ParentTaskID         *TaskID
+	Description          string
+	Query                string
+	Result               *TaskResult
+	Error                *TaskError
 	// Progress is the task's LATEST durable progress snapshot, replaced
 	// wholesale by every accepted ReportProgress call (last-write-wins;
 	// no history is retained). Nil means the caller has reported no
@@ -223,8 +231,12 @@ type Task struct {
 	// LLMSettings is immutable execution input, copied at Spawn and recovered
 	// with this task. It never enters the pending session override store.
 	LLMSettings *llm.RunSettings `json:",omitempty"`
-	CreatedAt   int64            // unix nanoseconds; matches sessions / events convention
-	UpdatedAt   int64            // unix nanoseconds
+	// InferenceAllocation is immutable cumulative task funding.
+	InferenceAllocation *llm.InferenceAllocation `json:",omitempty"`
+	// AllocationTaskID is the server-derived root shared by spawned helpers.
+	AllocationTaskID string `json:",omitempty"`
+	CreatedAt        int64  // unix nanoseconds; matches sessions / events convention
+	UpdatedAt        int64  // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
 	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
@@ -387,6 +399,8 @@ type SpawnRequest struct {
 	ProviderRoute *llm.ProviderRoute
 	// LLMSettings participates in task identity and is detached at acceptance.
 	LLMSettings *llm.RunSettings
+	// InferenceAllocation binds a finite cumulative token allowance.
+	InferenceAllocation *llm.InferenceAllocation
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
 	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
@@ -542,7 +556,10 @@ type TaskSummary struct {
 // structure, multimodal) will EXTEND the shape with new keys, never
 // break existing ones (forward-compatible additive evolution).
 type TaskResult struct {
-	Value json.RawMessage
+	// IncorporatedInputRevision is fixed by the accepted terminal planner
+	// invocation, never copied from a later accepted input counter.
+	IncorporatedInputRevision uint64 `json:",omitempty"`
+	Value                     json.RawMessage
 }
 
 // TaskError carries the failure payload. `Code` is a caller-defined
@@ -797,6 +814,22 @@ func DefaultProgressPolicy() ProgressPolicy {
 // runtime engine; Cancel / Prioritize are caller-initiated (planner,
 // steering, Console).
 type TaskRegistry interface {
+	// BeginOutputInvocation persists a current-task dispatch fence before a tool call.
+	BeginOutputInvocation(context.Context, TaskID, OutputInvocationIntent) (string, error)
+	// FinishOutputInvocation commits only the exact successful native binary refs.
+	FinishOutputInvocation(context.Context, TaskID, string, []ProducedArtifact, bool) error
+	// AcceptInput persists immutable caller-keyed text for the exact task.
+	// The runtime calls it inside the live inbox/terminal-admission fence.
+	// An optional expectedRevision rejects stale new intent; exact retries
+	// recover their original outcome even after later inputs are accepted.
+	AcceptInput(ctx context.Context, id TaskID, eventID, message string, expectedRevision ...uint64) (InputRecord, error)
+	// RefuseInput records run_not_active without reviving a known receipt.
+	RefuseInput(ctx context.Context, id TaskID, eventID, message, reason string, expectedRevision ...uint64) (InputRecord, error)
+	// GetInputReceipt reads exact outcome evidence without executing work.
+	GetInputReceipt(ctx context.Context, id TaskID, eventID string) (InputReceipt, error)
+	// MarkInputApplied commits planning consumption before decision execution.
+	MarkInputApplied(ctx context.Context, id TaskID, eventID string, revision uint64) (InputReceipt, error)
+
 	// Spawn creates a new task or returns the existing handle when an
 	// idempotency-key match is found. Returns `ErrIdentityRequired`
 	// when the request's identity triple is incomplete.
@@ -1087,6 +1120,9 @@ func ValidateRequest(req SpawnRequest) error {
 			return fmt.Errorf("%w: virtual profile child requires a parent task", ErrInvalidRequest)
 		}
 	}
+	if err := llm.ValidateInferenceAllocation(req.InferenceAllocation); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+	}
 	if err := llm.ValidateRunSettings(req.LLMSettings, req.ProviderRoute); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
@@ -1181,6 +1217,8 @@ type Factory func(deps Dependencies) (TaskRegistry, error)
 // config are passed through verbatim. Wiring lives in `cmd/harbor`
 // (or test helpers); the registry never reaches into ctx for these.
 type Dependencies struct {
+	// PricingCatalog is the operator-installed catalog used at acceptance.
+	PricingCatalog *pricing.Catalog
 	// Store is the StateStore used to persist task lifecycle records
 	// (typed-wrapper-over-generic). Required.
 	Store state.StateStore

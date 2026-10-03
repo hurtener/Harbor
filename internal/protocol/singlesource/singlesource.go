@@ -102,6 +102,7 @@ const (
 // tree where methods/ itself is the thing under audit), so the set is
 // duplicated here and the test pins the duplication.
 var CanonicalMethods = map[string]struct{}{
+	"control.receipt":                 {},
 	"start":                           {},
 	"cancel":                          {},
 	"pause":                           {},
@@ -194,6 +195,11 @@ var CanonicalMethods = map[string]struct{}{
 	"pause.list":                                      {},
 	"topology.snapshot":                               {},
 	"artifacts.list":                                  {},
+	"artifacts.prepare_import":                        {},
+	"artifacts.transfer":                              {},
+	"artifacts.transfer_status":                       {},
+	"artifacts.revoke_transfer":                       {},
+	"artifacts.export_answer":                         {},
 	"artifacts.put":                                   {},
 	"artifacts.get":                                   {},
 	"artifacts.get_ref":                               {},
@@ -237,6 +243,7 @@ var CanonicalMethods = map[string]struct{}{
 	"sessions.delete":            {},
 	"sessions.reconcile_context": {},
 	"sessions.set_title":         {},
+	"sessions.set_admission":     {},
 	// Session-turns read pair — the turn-projection surface (routes are
 	// pinned explicitly; never derived generically).
 	"sessions.turns.list": {},
@@ -296,6 +303,9 @@ var CanonicalMethods = map[string]struct{}{
 // Kept in lockstep with the canonical packages by
 // TestSingleSource_CanonicalWireTypesInLockstep.
 var CanonicalWireTypes = map[string]string{
+	"ControlReceipt":         "types",
+	"ControlReceiptRequest":  "types",
+	"ControlReceiptResponse": "types",
 	"IdentityScope":          "types",
 	"StartRequest":           "types",
 	"StartResponse":          "types",
@@ -543,22 +553,32 @@ var CanonicalWireTypes = map[string]string{
 	"TopologySnapshotRequest": "types",
 	// artifacts-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
-	"ArtifactScope":           "types",
-	"SizeRange":               "types",
-	"TimeRange":               "types",
-	"ArtifactRef":             "types",
-	"ArtifactRow":             "types",
-	"ArtifactsListRequest":    "types",
-	"ArtifactsListResponse":   "types",
-	"ArtifactsPutOpts":        "types",
-	"ArtifactsPutRequest":     "types",
-	"ArtifactsPutResponse":    "types",
-	"ArtifactsGetRequest":     "types",
-	"ArtifactsGetResponse":    "types",
-	"ArtifactsGetRefRequest":  "types",
-	"ArtifactsGetRefResponse": "types",
-	"ArtifactsDeleteRequest":  "types",
-	"ArtifactsDeleteResponse": "types",
+	"ArtifactScope":                  "types",
+	"SizeRange":                      "types",
+	"TimeRange":                      "types",
+	"ArtifactRef":                    "types",
+	"ArtifactRow":                    "types",
+	"ArtifactsListRequest":           "types",
+	"ArtifactsListResponse":          "types",
+	"ArtifactsPutOpts":               "types",
+	"ArtifactTransferEndpoint":       "types",
+	"ArtifactTransferGrant":          "types",
+	"ArtifactTransferReceipt":        "types",
+	"ArtifactsTransferRequest":       "types",
+	"ArtifactsTransferStatusRequest": "types",
+	"ArtifactsExportAnswerRequest":   "types",
+	"ArtifactsExportAnswerResponse":  "types",
+	"InferenceAllocation":            "types",
+	"InferenceAllocationReceipt":     "types",
+	"InferenceAllocationSnapshot":    "types",
+	"ArtifactsPutRequest":            "types",
+	"ArtifactsPutResponse":           "types",
+	"ArtifactsGetRequest":            "types",
+	"ArtifactsGetResponse":           "types",
+	"ArtifactsGetRefRequest":         "types",
+	"ArtifactsGetRefResponse":        "types",
+	"ArtifactsDeleteRequest":         "types",
+	"ArtifactsDeleteResponse":        "types",
 	// Console-memory-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"MemoryItem":            "types",
@@ -760,6 +780,8 @@ var CanonicalWireTypes = map[string]string{
 	"SessionsDeleteResponse":           "types",
 	"SessionsReconcileContextRequest":  "types",
 	"SessionsReconcileContextResponse": "types",
+	"SessionsSetAdmissionRequest":      "types",
+	"SessionsSetAdmissionResponse":     "types",
 	"SessionsSetTitleRequest":          "types",
 	"SessionsSetTitleResponse":         "types",
 	// Session-turns wire types (HA-63/64) — the turn-projection read
@@ -770,6 +792,7 @@ var CanonicalWireTypes = map[string]string{
 	"SessionTurnsGetRequest":    "types",
 	"SessionTurnsGetResponse":   "types",
 	"SessionUsageTurnRow":       "types",
+	"SessionTurnOutputManifest": "types",
 	"SessionTurnRow":            "types",
 	"SessionTurnAgent":          "types",
 	"SessionTurnQuery":          "types",

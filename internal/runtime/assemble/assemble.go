@@ -51,6 +51,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
+
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
@@ -59,6 +61,8 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/allocation"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 	llmreceipts "github.com/hurtener/Harbor/internal/llm/receipts"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
@@ -383,6 +387,9 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	if cfg == nil {
 		return nil, fmt.Errorf("assemble: cfg is required (call config.Load, or config.Defaults + ValidateCore for headless embedding)")
 	}
+	if cfg.Identity.ScopedTokenAudience != "" && cfg.State.Driver != "sqlite" && cfg.State.Driver != "postgres" {
+		return nil, fmt.Errorf("%w: session admission requires persistent sqlite or postgres state", sessionadmission.ErrUnavailable)
+	}
 	stack := &Stack{Cfg: cfg}
 
 	// Open the runtime-wide PostgreSQL pool manager before any store. It
@@ -419,6 +426,19 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 	stack.State = stateStore
 	stack.closers = append(stack.closers, stateStore.Close)
+	// Refuse an admission downgrade before events, task recovery, callbacks or
+	// any mutation-capable runtime component can start.
+	if err := sessionadmission.RequireEnabled(ctx, stateStore, cfg.Identity.ScopedTokenAudience != ""); err != nil {
+		return stack, err
+	}
+	pricingCatalog, pricingErr := pricing.New(cfg.LLM.PricingManifests)
+	if pricingErr != nil {
+		return stack, fmt.Errorf("llm pricing catalog: %w", pricingErr)
+	}
+	if pricingErr = allocation.BindPricingCatalog(ctx, stateStore, pricingCatalog); pricingErr != nil {
+		return stack, pricingErr
+	}
+
 	stack.ConfigurationState = stateStore
 	if cfg.ConfigurationState.Driver != "" &&
 		(cfg.ConfigurationState.Driver != cfg.State.Driver || cfg.ConfigurationState.DSN != cfg.State.DSN) {
@@ -645,11 +665,13 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		// exposed on the Stack as a KeyRotator (the admin write path).
 		liveKey := llm.NewLiveKey()
 		llmClient, llmErr := llm.Open(ctx, llmCfg, llm.Deps{
-			Artifacts:     artStore,
-			Bus:           bus,
-			LiveKey:       liveKey,
-			ExternalGrant: externalGrant,
-			ProviderRoute: opts.ProviderRoute,
+			Artifacts:      artStore,
+			Allocations:    allocation.New(stateStore),
+			PricingCatalog: pricingCatalog,
+			Bus:            bus,
+			LiveKey:        liveKey,
+			ExternalGrant:  externalGrant,
+			ProviderRoute:  opts.ProviderRoute,
 		})
 		if llmErr != nil {
 			return stack, fmt.Errorf("llm: %w", llmErr)
@@ -721,10 +743,11 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
-		Store:    stateStore,
-		Bus:      bus,
-		Redactor: red,
-		Cfg:      cfg.Tasks,
+		PricingCatalog: pricingCatalog,
+		Store:          stateStore,
+		Bus:            bus,
+		Redactor:       red,
+		Cfg:            cfg.Tasks,
 	})
 	if err != nil {
 		return stack, fmt.Errorf("tasks: %w", err)

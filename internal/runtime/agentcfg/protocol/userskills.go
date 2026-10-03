@@ -6,7 +6,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -52,6 +54,9 @@ import (
 // ScopeUser rows across the caller's sessions, so the list is durable and
 // conversation-independent.
 func (s *Service) UserSkillsList(ctx context.Context, req prototypes.AgentConfigUserSkillsListRequest) (prototypes.AgentConfigUserSkillsListResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserSkillsList); err != nil {
+		return prototypes.AgentConfigUserSkillsListResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserSkillsListResponse{}, err
 	}
@@ -85,6 +90,9 @@ func (s *Service) UserSkillsList(ctx context.Context, req prototypes.AgentConfig
 // scope is FORCED to skills.ScopeUser — a session caller cannot widen the
 // visibility scope, and the durable rung is keyed (tenant, user).
 func (s *Service) UserSkillsUpsert(ctx context.Context, req prototypes.AgentConfigUserSkillsUpsertRequest) (prototypes.AgentConfigUserSkillsUpsertResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserSkillsUpsert); err != nil {
+		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserSkillsUpsertResponse{}, err
 	}
@@ -137,6 +145,9 @@ func (s *Service) UserSkillsUpsert(ctx context.Context, req prototypes.AgentConf
 // UserSkillsDelete deletes one of the caller's durable user-scope personal
 // skills and removes its name from the user-scope membership revision.
 func (s *Service) UserSkillsDelete(ctx context.Context, req prototypes.AgentConfigUserSkillsDeleteRequest) (prototypes.AgentConfigUserSkillsDeleteResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserSkillsDelete); err != nil {
+		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigUserSkillsDeleteResponse{}, err
 	}

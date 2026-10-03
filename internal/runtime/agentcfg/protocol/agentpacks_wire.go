@@ -13,7 +13,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	harborprotocol "github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 const (
@@ -25,6 +27,9 @@ const (
 // expected to carry the verified identity established by the Protocol surface;
 // the request's identity is intentionally not used as an authority source.
 func (s *Service) Inspect(ctx context.Context, req prototypes.AgentConfigAgentPacksInspectRequest) (prototypes.AgentConfigAgentPacksInspectResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksInspect); err != nil {
+		return prototypes.AgentConfigAgentPacksInspectResponse{}, err
+	}
 	view, err := s.InspectEffective(ctx, req.AgentID)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksInspectResponse{}, err
@@ -36,6 +41,9 @@ func (s *Service) Inspect(ctx context.Context, req prototypes.AgentConfigAgentPa
 // durable receipt and target CAS; the adapter preserves the wire request's
 // mandatory composition expectations and returns one outcome per selection.
 func (s *Service) Copy(ctx context.Context, req prototypes.AgentConfigAgentPacksCopyRequest) (prototypes.AgentConfigAgentPacksCopyResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigAgentPacksCopy); err != nil {
+		return prototypes.AgentConfigAgentPacksCopyResponse{}, err
+	}
 	var packIDs []string
 	if req.PackIDs != nil {
 		packIDs = append([]string{}, req.PackIDs...)

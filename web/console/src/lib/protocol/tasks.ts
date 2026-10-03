@@ -1,3 +1,4 @@
+import type { InferenceAllocationSnapshot } from './inference-allocation.js';
 /**
  * Tasks-page Protocol wire types (Phase 73d / D-123).
  *
@@ -275,6 +276,9 @@ export interface TaskTrajectoryRef {
 
 /** The enriched payload `tasks.get` returns. */
 export interface TaskDetail {
+  input_revision?: number;
+  inference_allocation?: InferenceAllocationSnapshot;
+  incorporated_input_revision?: number;
   task: TaskRow;
   parent_session: TaskParentSessionRef;
   parent_task?: TaskParentTaskRef;

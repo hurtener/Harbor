@@ -64,6 +64,7 @@ func NewJWKSValidator(ctx context.Context, cfg config.IdentityConfig, deps Valid
 	validator, err := NewValidator(keys,
 		WithIssuer(cfg.Issuer),
 		WithAudience(cfg.Audience),
+		WithScopedTokenAudience(cfg.ScopedTokenAudience),
 		WithRedactor(deps.Redactor),
 		WithLogger(deps.Logger),
 		WithEventBus(deps.Bus),

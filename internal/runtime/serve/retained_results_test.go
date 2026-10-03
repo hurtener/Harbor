@@ -20,7 +20,7 @@ func TestRetainedServer_ResultReferencesAndDeletion(t *testing.T) {
 	defer func() { _ = store.Close(context.Background()) }()
 	env, client, calls := retainedServerHarness(t, func(opts *RunLoopDriverOptions) {
 		opts.ArtifactStore = store
-		opts.Executor = dispatch.NewToolExecutor(opts.Catalog, store, nil, dispatch.WithHeavyThreshold(4096))
+		opts.Executor = dispatch.NewToolExecutor(opts.Catalog, store, opts.Tasks, dispatch.WithHeavyThreshold(4096))
 	})
 	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "large-served"}
 	first := retainedServerTurn(t, env, id, "first root", nil)

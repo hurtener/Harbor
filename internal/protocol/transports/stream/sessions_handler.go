@@ -131,6 +131,8 @@ func (h *SessionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	wireID := prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
 
 	switch strings.TrimPrefix(r.URL.Path, "/v1/sessions/") {
+	case "set_admission":
+		h.serveSetAdmission(w, r, body, wireID)
 	case "list":
 		h.serveList(w, r, body, wireID, adminScoped)
 	case "inspect":
@@ -278,6 +280,10 @@ func (h *SessionsHandler) writeServiceError(w http.ResponseWriter, r *http.Reque
 // Protocol Code + HTTP status. The mapping is the single place the
 // Sessions wire surface translates a Go error into a Protocol error.
 func classifySessionsError(method methods.Method, err error) (protoerrors.Code, int, string) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		return perr.Code, bodyScopeStatus(perr.Code), perr.Message
+	}
 	m := string(method)
 	switch {
 	case errors.Is(err, sessionsprotocol.ErrContextReconcileUnsupported):

@@ -259,3 +259,24 @@ You only need it when something consumes embeddings — semantic skill retrieval
 - [`observe-with-the-console`](../observe-with-the-console/SKILL.md) — the LLM tab in the Console's Task page shows every prompt/completion.
 - Bifrost's full provider matrix: `github.com/maximhq/bifrost`.
 - The CONFIG.md reference: `docs/CONFIG.md#llm` (and `#embeddings` for the embedding client).
+
+## Install trusted task monetary ceilings
+
+`llm.pricing_manifests` is an optional restart-required operator surface, separate
+from `model_profiles.cost_overrides`. Install only independently established
+inclusive ceilings for exact immutable model versions and the exact configured
+endpoint. Every token category and fixed charge must be explicit, including zero,
+and `includes_all_charges` plus `immutable_model_version` must be true. These are
+operator attestations, not facts inferred from model output or provider telemetry.
+
+Catalog revisions are permanently content-pinned in shared runtime state; change
+the revision whenever any tariff changes and retain old versions for tasks that
+still reference them. The runtime refuses a changed previously pinned revision
+at startup. SDK hosts use `NewPricingCatalog`, `BindPricingCatalog` and the same
+catalog in both task and LLM dependencies.
+
+Initial monetary transport support is limited to static OpenAI/Anthropic text.
+OpenRouter, external routes, custom-provider IDs, multimodal/native file work and
+unbounded passthrough fail closed. No catalog is installed by default, and the
+example configuration contains no production price. Consult
+`docs/CONFIG.md#llmpricing_manifests` before asserting financial guarantees.

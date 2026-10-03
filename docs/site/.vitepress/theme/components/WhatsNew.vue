@@ -12,7 +12,7 @@ import Section from "./Section.vue";
         <span class="hb-new__date">{{ w.date }}</span>
       </div>
       <ul class="hb-new__list">
-        <li v-for="b in w.bullets" :key="b.title">
+        <li v-for="(b, index) in w.bullets" :key="index">
           <h3>{{ b.title }}</h3>
           <p>{{ b.body }}</p>
         </li>

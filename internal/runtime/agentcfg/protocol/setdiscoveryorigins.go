@@ -11,7 +11,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/adminwrite"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // setdiscoveryorigins.go — the admin-scoped
@@ -117,6 +119,9 @@ var ErrConnectionOwnerMismatch = errors.New("agentcfg/protocol: connection is re
 // contract (revision + owner-scoped live apply + revoke-prune, the four
 // distinct loud errors, the fail-closed audit, the rollback reconcile path).
 func (s *Service) SetMCPDiscoveryOrigins(ctx context.Context, req prototypes.AgentConfigSetMCPDiscoveryOriginsRequest) (prototypes.AgentConfigSetMCPDiscoveryOriginsResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetMCPDiscoveryOrigins); err != nil {
+		return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetMCPDiscoveryOriginsResponse{}, err
 	}

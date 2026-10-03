@@ -172,6 +172,7 @@ describe('turnRowMessages — the durable projection (HA-64 / D-425)', () => {
 			sealed: true,
 			version: 1,
 			last_applied_event_seq: 5,
+			output_manifest: { version: 0, input_revision: 0 },
 			started_at: '2026-07-10T12:00:00Z',
 			updated_at: '2026-07-10T12:00:05Z',
 			finished_at: '2026-07-10T12:00:05Z',

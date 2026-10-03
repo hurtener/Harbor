@@ -210,3 +210,23 @@ func (s *trajectoryStubEnricher) PlannerSnapshot(_ context.Context, _ identity.I
 func (s *trajectoryStubEnricher) Trajectory(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskTrajectoryRef {
 	return s.ref
 }
+
+func TestGet_SealedIncorporatedInputRevision(t *testing.T) {
+	svc, reg, _ := newListService(t)
+	id := idFor("t1", "u1", "s1")
+	ctx := ctxFor(t, id)
+	taskID := seedTask(t, reg, id, tasks.KindForeground, tasks.StatusRunning, "input provenance", "original")
+	if _, err := reg.AcceptInput(ctx, taskID, "input", "correction"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.MarkInputApplied(ctx, taskID, "input", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.MarkComplete(ctx, taskID, tasks.TaskResult{Value: []byte(`{"answer":"done","incorporated_input_revision":1}`), IncorporatedInputRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(context.Background(), prototypes.TaskGetRequest{Identity: scopeOf("t1", "u1", "s1"), ID: string(taskID)})
+	if err != nil || got.IncorporatedInputRevision != 1 || !strings.Contains(got.ResultInline, `"incorporated_input_revision":1`) {
+		t.Fatalf("projection=%+v err=%v", got, err)
+	}
+}

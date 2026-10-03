@@ -8,7 +8,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // extrasystemblocks.go — the agent-config additive-prompt-blocks control
@@ -123,6 +125,9 @@ func blocksToDomain(in []prototypes.AgentConfigNamedBlock) []agentcfg.NamedBlock
 // happen is a map becoming the carrier, because map iteration order is
 // not a composition order.
 func (s *Service) SetExtraSystemBlocks(ctx context.Context, req prototypes.AgentConfigSetExtraSystemBlocksRequest) (prototypes.AgentConfigSetExtraSystemBlocksResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigSetExtraSystemBlocks); err != nil {
+		return prototypes.AgentConfigSetExtraSystemBlocksResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetExtraSystemBlocksResponse{}, err
 	}

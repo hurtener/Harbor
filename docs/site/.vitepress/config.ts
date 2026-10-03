@@ -9,8 +9,37 @@
 // environment so the CI workflow can pin it to "/Harbor/" without
 // hard-coding the repo name in the config.
 import { defineConfig } from "vitepress";
+import { readFileSync } from "node:fs";
 
 const base = process.env.DOCS_BASE ?? "/";
+
+// Derive release copy at build time from the canonical changelog and generated
+// wire manifest. Do not ship the entire changelog in the landing-page bundle or
+// maintain a second hand-written product version/method count.
+const changelog = readFileSync(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
+const release = /^## \[([0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?)\] [—-] (\d{4}-\d{2}-\d{2})\s*$/m.exec(changelog);
+if (!release || release.index === undefined) throw new Error("Published release metadata is missing from CHANGELOG.md");
+const releaseBody = changelog.slice(release.index + release[0].length).split(/^## /m)[0];
+const highlights: { title: string; body: string }[] = [];
+let releaseSection = "Release note";
+for (const line of releaseBody.split("\n")) {
+  const section = /^### (.+)$/.exec(line);
+  const bullet = /^- (.+)$/.exec(line);
+  if (section) releaseSection = section[1];
+  else if (bullet) highlights.push({ title: releaseSection, body: bullet[1] });
+  else if (/^  \S/.test(line) && highlights.length) highlights[highlights.length - 1].body += " " + line.trim();
+}
+const plain = (value: string): string => value.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/`|\*\*/g, "");
+const wireManifest = JSON.parse(readFileSync(new URL("../../../web/console/src/lib/protocol/wire-manifest.gen.json", import.meta.url), "utf8"));
+if (!Array.isArray(wireManifest.methods) || wireManifest.methods.length === 0 || highlights.length === 0) {
+  throw new Error("Canonical release notes or Protocol methods are missing");
+}
+const releaseMetadata = {
+  version: `v${release[1]}`,
+  date: release[2],
+  highlights: highlights.slice(0, 4).map((entry) => ({ title: entry.title, body: plain(entry.body) })),
+  methodCount: wireManifest.methods.length,
+};
 
 // Canonical in-repo docs (RFC, glossary, decisions, skills, recipes)
 // are mirrored into pages via `<!--@include: …-->` stubs — the repo
@@ -37,6 +66,7 @@ const repoTreeLink = (url: string): boolean => {
 
 export default defineConfig({
   base,
+  vite: { define: { __HARBOR_DOCS_RELEASE__: JSON.stringify(releaseMetadata) } },
   lang: "en-US",
   title: "Harbor",
   description:
@@ -311,6 +341,8 @@ export default defineConfig({
             { text: "Glossary", link: "/reference/glossary" },
             { text: "Decisions log", link: "/reference/decisions" },
             { text: "Master phase plan", link: "/reference/master-plan" },
+            { text: "Native output provenance plan", link: "/reference/phase-273-native-output-provenance" },
+            { text: "Scoped session admission plan", link: "/reference/phase-275-scoped-session-admission" },
             { text: "Productionization playbook", link: "/reference/productionization-playbook" },
             { text: "Changelog", link: "/reference/changelog" },
           ],

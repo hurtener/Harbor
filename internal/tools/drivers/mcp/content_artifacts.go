@@ -38,7 +38,7 @@ func (p *Provider) materializeValue(ctx context.Context, value MCPToolValue, pro
 	if quad, ok := identity.QuadrupleFrom(ctx); ok {
 		scope.TaskID = quad.RunID
 	}
-	projected, err := artifactcontent.Materialize(ctx, p.cfg.ArtifactStore, scope, value, producer)
+	projected, witness, err := artifactcontent.MaterializeWithWitness(ctx, p.cfg.ArtifactStore, scope, value, producer)
 	if err != nil {
 		return MCPToolValue{}, fmt.Errorf("mcp: materialize binary content: %w", err)
 	}
@@ -46,6 +46,7 @@ func (p *Provider) materializeValue(ctx context.Context, value MCPToolValue, pro
 	if !ok {
 		return MCPToolValue{}, fmt.Errorf("mcp: materialize binary content returned %T, want MCPToolValue", projected)
 	}
+	out.materializedWitness = witness
 	return out, nil
 }
 

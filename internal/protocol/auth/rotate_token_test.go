@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
@@ -218,4 +219,39 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b[pos:])
+}
+
+func TestRotate_RestrictedAuthorityNeverReachesIssuer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ctx    context.Context
+		change func(*auth.Verified)
+	}{
+		{name: "context allowed rotation", ctx: auth.WithMethodReach(context.Background(), []methods.Method{methods.MethodAuthRotateToken})},
+		{name: "context empty", ctx: auth.WithMethodReach(context.Background(), []methods.Method{})},
+		{name: "context admission", ctx: auth.WithSessionAdmission(context.Background(), &auth.SessionAdmissionAuthority{Epoch: 1})},
+		{name: "verified method reach", ctx: context.Background(), change: func(v *auth.Verified) { v.MethodReach = []methods.Method{methods.MethodAuthRotateToken} }},
+		{name: "verified empty", ctx: context.Background(), change: func(v *auth.Verified) { v.MethodReach = []methods.Method{} }},
+		{name: "verified admission", ctx: context.Background(), change: func(v *auth.Verified) { v.SessionAdmission = &auth.SessionAdmissionAuthority{Epoch: 1} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issuer := &fakeIssuer{}
+			bus := &rotateCapturingBus{}
+			surface, err := auth.NewRotateSurface(issuer, testNoopRedactor{}, auth.WithRotateBus(bus))
+			if err != nil {
+				t.Fatal(err)
+			}
+			verified := adminVerified()
+			if tc.change != nil {
+				tc.change(&verified)
+			}
+			response, err := surface.Rotate(tc.ctx, verified, types.AuthRotateTokenRequest{})
+			if !errors.Is(err, auth.ErrRotateRestricted) || response != nil {
+				t.Fatalf("restricted rotation = %#v, %v", response, err)
+			}
+			if issuer.calls.Load() != 0 || bus.count() != 0 {
+				t.Fatal("restricted rotation reached issuer or emitted successful rotation")
+			}
+		})
+	}
 }

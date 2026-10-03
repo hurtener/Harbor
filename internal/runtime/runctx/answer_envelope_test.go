@@ -114,3 +114,22 @@ func TestFinishAnswerEnvelope_WithPayload_Golden(t *testing.T) {
 		t.Fatalf("envelope bytes = %s\nwant           %s", raw, golden)
 	}
 }
+
+func TestFinishAnswerEnvelope_IncorporatedInputRevision(t *testing.T) {
+	fin := planner.Finish{Reason: planner.FinishGoal, Payload: "answer", IncorporatedInputRevision: 3}
+	envelope, err := runctx.FinishAnswerEnvelope(fin, nil, nil)
+	if err != nil || envelope.IncorporatedInputRevision != 3 {
+		t.Fatalf("envelope=%+v err=%v", envelope, err)
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["incorporated_input_revision"] != float64(3) {
+		t.Fatalf("wire=%s", raw)
+	}
+}

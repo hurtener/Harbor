@@ -9,6 +9,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactcontent"
 	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 )
 
@@ -80,6 +81,7 @@ type EmbeddedRef struct {
 // preserve the wire ordering so downstream consumers (LLM context
 // assembly, audit) can reconstruct the server's response.
 type MCPToolValue struct {
+	materializedWitness artifactcontent.Witness
 	// Text concatenates every TextContent block in encounter order.
 	Text string
 	// Parts is the ordered, typed slice of every non-text content
@@ -829,4 +831,10 @@ func lowerGetPromptResult(res *mcpsdk.GetPromptResult) MCPToolValue {
 	}
 	value.Text = b.String()
 	return value
+}
+
+// MaterializedArtifactWitness is runtime-only evidence excluded from every
+// JSON projection; it cannot be supplied by remote MCP structured content.
+func (v MCPToolValue) MaterializedArtifactWitness() artifactcontent.Witness {
+	return v.materializedWitness
 }

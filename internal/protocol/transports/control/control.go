@@ -583,6 +583,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // for the nine steering controls. A decode failure surfaces as
 // CodeInvalidRequest — never a silent zero-value request.
 func decodeRequest(method methods.Method, body []byte) (any, *protoerrors.Error) {
+	if method == methods.MethodControlReceipt {
+		var request types.ControlReceiptRequest
+		if err := decodeStrict(body, &request); err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "invalid input receipt request: %s", decodeDetail(err))
+		}
+		return &request, nil
+	}
 	if method == methods.MethodStart {
 		var sr types.StartRequest
 		if err := decodeStrict(body, &sr); err != nil {
@@ -714,6 +721,8 @@ func (h *Handler) elevateForImpersonation(ctx context.Context, method methods.Me
 		scope = v.Identity
 	case *types.ControlRequest:
 		scope = v.Identity
+	case *types.ControlReceiptRequest:
+		scope = v.Identity
 	default:
 		return ctx, nil
 	}
@@ -760,6 +769,8 @@ func (h *Handler) reconcileBodyIdentity(r *http.Request, req any) (context.Conte
 	case *types.StartRequest:
 		scope = &v.Identity
 	case *types.ControlRequest:
+		scope = &v.Identity
+	case *types.ControlReceiptRequest:
 		scope = &v.Identity
 	case *types.TopologySnapshotRequest:
 		scope = &v.Identity
@@ -814,6 +825,8 @@ func (h *Handler) assertImpersonationShape(r *http.Request, method methods.Metho
 	case *types.StartRequest:
 		bodyScope = v.Identity
 	case *types.ControlRequest:
+		bodyScope = v.Identity
+	case *types.ControlReceiptRequest:
 		bodyScope = v.Identity
 	default:
 		return false, nil
@@ -949,6 +962,8 @@ func (h *Handler) emitAdminScopeUsed(ctx context.Context, method methods.Method,
 	case *types.StartRequest:
 		scope = v.Identity
 	case *types.ControlRequest:
+		scope = v.Identity
+	case *types.ControlReceiptRequest:
 		scope = v.Identity
 	default:
 		return fmt.Errorf("control: emitAdminScopeUsed called with unsupported request type %T", req)

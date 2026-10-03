@@ -424,34 +424,33 @@ type ApprovalWrapperOptions struct {
 // flow into `d.Invoke`. Identity is read from ctx (mandatory —
 // `identity.MustFrom`).
 func WrapWithApproval(d tools.ToolDescriptor, gate *approval.ApprovalGate, opts ApprovalWrapperOptions) tools.ToolDescriptor {
-	innerInvoke := d.Invoke
 	tags := append([]string(nil), opts.Tags...)
-	out := d
-	out.Invoke = func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-		id, ok := identity.From(ctx)
-		if !ok {
-			return tools.ToolResult{}, fmt.Errorf("catalog: approval wrapper: %w",
-				approval.ErrIdentityRequired)
+	return tools.WrapInvocationGate(d, func(innerInvoke tools.Invocation) tools.Invocation {
+		return func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+			id, ok := identity.From(ctx)
+			if !ok {
+				return tools.ToolResult{}, fmt.Errorf("catalog: approval wrapper: %w",
+					approval.ErrIdentityRequired)
+			}
+			req := &approval.ApprovalRequest{
+				Tool:     d.Tool,
+				Args:     args,
+				Identity: id,
+				Tags:     tags,
+			}
+			approvedArgs, err := gate.RunGuarded(ctx, req)
+			if err != nil {
+				// Gate errors propagate verbatim — the caller (the planner /
+				// runtime dispatcher) reaches `*approval.ErrToolRejected`
+				// via errors.As.
+				return tools.ToolResult{}, err
+			}
+			if err := tools.CheckInvocationFence(ctx); err != nil {
+				return tools.ToolResult{}, err
+			}
+			return innerInvoke(ctx, approvedArgs)
 		}
-		req := &approval.ApprovalRequest{
-			Tool:     d.Tool,
-			Args:     args,
-			Identity: id,
-			Tags:     tags,
-		}
-		approvedArgs, err := gate.RunGuarded(ctx, req)
-		if err != nil {
-			// Gate errors propagate verbatim — the caller (the planner /
-			// runtime dispatcher) reaches `*approval.ErrToolRejected`
-			// via errors.As.
-			return tools.ToolResult{}, err
-		}
-		if err := tools.CheckInvocationFence(ctx); err != nil {
-			return tools.ToolResult{}, err
-		}
-		return innerInvoke(ctx, approvedArgs)
-	}
-	return out
+	})
 }
 
 // OAuthWrapperOptions tunes the OAuth wrapper's behaviour.
@@ -476,35 +475,42 @@ type OAuthWrapperOptions struct {
 // is to PRE-CHECK token availability so the runtime can pause for
 // OAuth completion BEFORE attempting the call.
 func WrapWithOAuth(d tools.ToolDescriptor, prov auth.OAuthProvider, opts OAuthWrapperOptions) tools.ToolDescriptor {
-	innerInvoke := d.Invoke
 	source := d.Tool.Source
-	out := d
-	out.Invoke = func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-		// Identity is mandatory (CLAUDE.md §6 rule 9). The tool-OAuth
-		// provider also enforces this; we surface a wrapped error
-		// here so the trace points back at the catalog wrapper.
-		if _, ok := identity.From(ctx); !ok {
-			return tools.ToolResult{}, fmt.Errorf("catalog: oauth wrapper (provider=%q, scope=%q): %w",
-				opts.ProviderName, opts.BindingScope, auth.ErrIdentityRequired)
+	return tools.WrapInvocationGate(d, func(innerInvoke tools.Invocation) tools.Invocation {
+		return func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+			// Identity is mandatory (CLAUDE.md §6 rule 9). The tool-OAuth
+			// provider also enforces this; we surface a wrapped error
+			// here so the trace points back at the catalog wrapper.
+			if _, ok := identity.From(ctx); !ok {
+				return tools.ToolResult{}, fmt.Errorf("catalog: oauth wrapper (provider=%q, scope=%q): %w",
+					opts.ProviderName, opts.BindingScope, auth.ErrIdentityRequired)
+			}
+			if err := tools.CheckInvocationFence(ctx); err != nil {
+				return tools.ToolResult{}, err
+			}
+			// Pre-check token availability. A missing token surfaces
+			// `*auth.ErrAuthRequired` which propagates upward — the
+			// planner / runtime catches it and pauses via the
+			// Coordinator. We do NOT swallow the err; the §13 fail-loud
+			// principle is non-negotiable here.
+			if _, err := prov.Token(ctx, source); err != nil {
+				// Only this pre-invocation native credential pause may park an App
+				// admission. An arbitrary invoked-tool error retains uncertainty.
+				var required *auth.ErrAuthRequired
+				if errors.As(err, &required) && required.PauseToken != "" {
+					if parkErr := tools.ParkInvocationAdmission(ctx); parkErr != nil {
+						return tools.ToolResult{}, parkErr
+					}
+				}
+				return tools.ToolResult{}, err
+			}
+			// Credential acquisition may wait while cancellation or steering wins.
+			if err := tools.CheckInvocationFence(ctx); err != nil {
+				return tools.ToolResult{}, err
+			}
+			return innerInvoke(ctx, args)
 		}
-		if err := tools.CheckInvocationFence(ctx); err != nil {
-			return tools.ToolResult{}, err
-		}
-		// Pre-check token availability. A missing token surfaces
-		// `*auth.ErrAuthRequired` which propagates upward — the
-		// planner / runtime catches it and pauses via the
-		// Coordinator. We do NOT swallow the err; the §13 fail-loud
-		// principle is non-negotiable here.
-		if _, err := prov.Token(ctx, source); err != nil {
-			return tools.ToolResult{}, err
-		}
-		// Credential acquisition may wait while cancellation or steering wins.
-		if err := tools.CheckInvocationFence(ctx); err != nil {
-			return tools.ToolResult{}, err
-		}
-		return innerInvoke(ctx, args)
-	}
-	return out
+	})
 }
 
 // registeredNames lists every name currently in the catalog. Used in

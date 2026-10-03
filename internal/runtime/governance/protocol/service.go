@@ -44,7 +44,9 @@ import (
 
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto a
@@ -124,6 +126,9 @@ func NewService(store TenantOverrideStore, opts ...Option) (*Service, error) {
 // tenant. Validation failures (unknown model, out-of-range value) surface
 // from the policy and map onto CodeInvalidRequest at the wire edge.
 func (s *Service) SetTenantOverrides(ctx context.Context, req prototypes.GovernanceSetTenantOverridesRequest) (prototypes.GovernanceSetTenantOverridesResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodGovernanceSetTenantOverrides); err != nil {
+		return prototypes.GovernanceSetTenantOverridesResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.GovernanceSetTenantOverridesResponse{}, err
 	}
@@ -145,6 +150,9 @@ func (s *Service) SetTenantOverrides(ctx context.Context, req prototypes.Governa
 // GetTenantOverrides validates identity and returns the caller tenant's
 // current default-override record.
 func (s *Service) GetTenantOverrides(ctx context.Context, req prototypes.GovernanceGetTenantOverridesRequest) (prototypes.GovernanceGetTenantOverridesResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodGovernanceGetTenantOverrides); err != nil {
+		return prototypes.GovernanceGetTenantOverridesResponse{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return prototypes.GovernanceGetTenantOverridesResponse{}, err
 	}

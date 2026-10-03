@@ -104,6 +104,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 	sessionReachGate := NewSessionReachAuthorizer()
 
 	return func(next http.Handler) http.Handler {
+		methodHandler := MethodMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, err := extractBearer(r.Header.Get("Authorization"))
 			if err != nil {
@@ -183,6 +184,11 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 			}
 			ctx = WithScopes(ctx, verified.Scopes)
 			ctx = WithAgentReach(ctx, verified.AgentReach)
+			ctx = WithTokenAuthority(ctx, TokenAuthority{Issuer: verified.Issuer, Subject: verified.Subject})
+			ctx = WithSessionAdmission(ctx, verified.SessionAdmission)
+			if verified.MethodReach != nil {
+				ctx = WithMethodReach(ctx, verified.MethodReach)
+			}
 
 			// session_reach: an OPTIONAL signed claim that
 			// narrows the effective session. Absence preserves the
@@ -210,7 +216,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 						"session_reach: the selected session is not within this bearer's signed session reach"))
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(ctx))
+			methodHandler.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -342,6 +348,10 @@ func reasonForWire(err error) string {
 		return "unknown_key"
 	case errors.Is(err, ErrIdentityClaimMissing):
 		return "identity_claim_missing"
+	case errors.Is(err, ErrMethodReachMalformed):
+		return "method_reach_malformed"
+	case errors.Is(err, ErrSessionAdmissionMalformed):
+		return "session_admission_malformed"
 	case errors.Is(err, ErrSessionReachMalformed):
 		return "session_reach_malformed"
 	case errors.Is(err, ErrAudienceMismatch):

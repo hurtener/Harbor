@@ -28,8 +28,8 @@ func TestMigrate_CleanDB_StartsClean(t *testing.T) {
 	defer func() { _ = s.Close(context.Background()) }()
 
 	versions := readSchemaMigrations(t, dsn)
-	if !equalVersions(versions, []int{1, 2}) {
-		t.Errorf("schema_migrations = %v, want [1 2]", versions)
+	if !equalVersions(versions, []int{1, 2, 3}) {
+		t.Errorf("schema_migrations = %v, want [1 2 3]", versions)
 	}
 }
 
@@ -53,8 +53,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 	defer func() { _ = s2.Close(context.Background()) }()
 
 	versions := readSchemaMigrations(t, dsn)
-	if !equalVersions(versions, []int{1, 2}) {
-		t.Errorf("schema_migrations after second run = %v, want [1 2]", versions)
+	if !equalVersions(versions, []int{1, 2, 3}) {
+		t.Errorf("schema_migrations after second run = %v, want [1 2 3]", versions)
 	}
 }
 
@@ -242,8 +242,8 @@ func TestMigrate_Concurrent_AdvisoryLockSerializes(t *testing.T) {
 	}
 
 	versions := readSchemaMigrations(t, dsn)
-	if !equalVersions(versions, []int{1, 2}) {
-		t.Errorf("schema_migrations after %d concurrent runs = %v, want [1 2]", n, versions)
+	if !equalVersions(versions, []int{1, 2, 3}) {
+		t.Errorf("schema_migrations after %d concurrent runs = %v, want [1 2 3]", n, versions)
 	}
 }
 

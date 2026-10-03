@@ -144,11 +144,14 @@ func (e *ProtocolError) Unwrap() error { return e.Cause }
 
 // Client is the supported immutable, concurrent-safe Protocol attachment.
 type Client interface {
+	SessionsSetAdmission(context.Context, types.SessionsSetAdmissionRequest) (types.SessionsSetAdmissionResponse, error)
 	RuntimeInfo(context.Context) (types.RuntimeInfo, error)
 	RuntimeHealth(context.Context) (types.RuntimeHealth, error)
 	Start(context.Context, types.StartRequest) (types.StartResponse, error)
 	TasksList(context.Context, types.TaskListRequest) (types.TaskListResponse, error)
 	TasksGet(context.Context, types.TaskGetRequest) (types.TaskDetail, error)
+	SessionTurnsList(context.Context, types.SessionTurnsListRequest) (types.SessionTurnsListResponse, error)
+	SessionTurnsGet(context.Context, types.SessionTurnsGetRequest) (types.SessionTurnsGetResponse, error)
 	SessionsList(context.Context, types.SessionsListRequest) (types.SessionsListResponse, error)
 	SessionsInspect(context.Context, types.SessionsInspectRequest) (types.SessionsInspectResponse, error)
 	SessionsSetTitle(context.Context, types.SessionsSetTitleRequest) (types.SessionsSetTitleResponse, error)
@@ -157,6 +160,12 @@ type Client interface {
 	StateHistory(context.Context, types.StateHistoryRequest) (types.StateHistoryResponse, error)
 	PauseList(context.Context, types.PauseListRequest) (types.PauseListResponse, error)
 	Control(context.Context, methods.Method, types.ControlRequest) (types.ControlResponse, error)
+	ArtifactsExportAnswer(context.Context, types.ArtifactsExportAnswerRequest) (types.ArtifactsExportAnswerResponse, error)
+	ArtifactsPrepareImport(context.Context, types.ArtifactsTransferRequest) (types.ArtifactTransferReceipt, error)
+	ArtifactsTransfer(context.Context, types.ArtifactsTransferRequest) (types.ArtifactTransferReceipt, error)
+	ArtifactsTransferStatus(context.Context, types.ArtifactsTransferStatusRequest) (types.ArtifactTransferReceipt, error)
+	ArtifactsRevokeTransfer(context.Context, types.ArtifactsTransferStatusRequest) (types.ArtifactTransferReceipt, error)
+	ControlReceipt(context.Context, types.ControlReceiptRequest) (types.ControlReceiptResponse, error)
 	ArtifactsPut(context.Context, types.ArtifactsPutRequest) (types.ArtifactsPutResponse, error)
 	ArtifactsList(context.Context, types.ArtifactsListRequest) (types.ArtifactsListResponse, error)
 	Subscribe(context.Context, StreamOptions) (*EventStream, error)
@@ -950,4 +959,12 @@ func cloneIdentityPointer(scope *types.IdentityScope, seen map[*types.IdentitySc
 	}
 	clone := cloneIdentitySeen(scope, seen)
 	return &clone
+}
+
+// SessionsSetAdmission installs an exact session mutation epoch with admin authority.
+func (c *client) SessionsSetAdmission(ctx context.Context, request types.SessionsSetAdmissionRequest) (types.SessionsSetAdmissionResponse, error) {
+	request.Identity = c.scope()
+	var out types.SessionsSetAdmissionResponse
+	err := c.callMethod(ctx, methods.MethodSessionsSetAdmission, request, &out)
+	return out, err
 }

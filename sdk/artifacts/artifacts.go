@@ -12,6 +12,8 @@ import (
 
 // Store vocabulary — aliases of the internal types.
 type (
+	// ScopeFencer atomically fences artifact writes before owner erasure.
+	ScopeFencer = internal.ScopeFencer
 	// ArtifactStore is the identity-mandatory artifact store interface.
 	ArtifactStore = internal.ArtifactStore
 	// ArtifactRef is the by-reference handle to stored heavy content.
@@ -32,6 +34,8 @@ const DefaultDriver = internal.DefaultDriver
 
 // Re-exported sentinel errors callers compare via errors.Is.
 var (
+	// ErrScopeFenced rejects writes to permanently erased owner scopes.
+	ErrScopeFenced = internal.ErrScopeFenced
 	// ErrNotFound — the ref does not exist.
 	ErrNotFound = internal.ErrNotFound
 	// ErrScopeMismatch — the ref belongs to a different scope.

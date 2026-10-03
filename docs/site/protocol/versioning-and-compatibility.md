@@ -158,3 +158,89 @@ capabilities — keeps arriving in minors, covered by the tolerance rules
 above, and regenerates the [reference pages](./methods.md) in the same
 commit, mechanically (`make protocol-docs-gen-check` gates a wire change
 whose docs didn't move).
+
+## Scoped session admission
+
+Negotiate `scoped_session_admission_v1` before using the method/epoch contract.
+This capability says the Runtime has its gate assembled. It does not prove that
+all other reachable runtimes enforce the same security boundary.
+
+The issuer signs `method_reach` as an array of exact canonical method names.
+Omitting it preserves legacy behavior; `[]` denies every method. Null, unknown
+names, duplicates and aliases such as `control.start` are invalid (`start` is
+the canonical method). Existing identity, scopes, `agent_reach` and
+`session_reach` still apply. Browser history, events, pause reads and
+`artifacts.get` can be listed independently from control methods. Explicit
+`artifacts.put` allows uploads only with the required session mutation authority.
+There is no new generic download route: paged bytes use
+`POST /v1/control/artifacts.get`, and existing presigned URLs retain their storage
+capability semantics.
+
+Restricted tokens require a separate singleton audience configured through
+`identity.scoped_token_audience`, distinct from `identity.audience`. Before
+issuing them, verify that every legacy server enforces the legacy audience:
+an old verifier accepting any audience would ignore the new restriction.
+Stop old writers, reconcile their in-flight accepted work, prevent old binaries
+from reopening shared state, and then explicitly acknowledge
+`identity.session_admission_legacy_writers_drained`. These are deployment
+preconditions; setting the flag is not evidence that they have happened. This
+feature never changes registrations, grants, issuers or live configuration for
+you. A current runtime refuses disabling it once admission state exists.
+
+An authenticated admin calls `POST /v1/sessions/set_admission` with its exact
+owner identity, `expected_epoch: 0` and `epoch: 1` for first enrollment.
+The runtime binds the verified JWT issuer and subject as immutable
+issuer/coordinator. Further changes require the same authority and exactly the
+next epoch. Repeating the same successful transition recovers its result.
+Tenant/user/session, issuer and coordinator cannot be replaced by request body
+values or by a different admin.
+
+For an enrolled session every supported external mutation must carry explicit
+method reach plus `session_admission_epoch` and
+`session_admission_coordinator`. The original JWT tenant/user/session must equal
+the exact resolved mutation target; changing `X-Harbor-Session` cannot move that
+authority. Broad tokens issued before enrollment immediately fail new mutation
+acceptance. Plain reads may keep their supported legacy authorization. Narrow
+native approve/reject/resume requests continue through their existing pause
+semantics; an ordinary read token cannot acquire those methods through an App
+callback. `auth.rotate_token` refuses restricted credentials because its legacy
+issuer cannot preserve these restrictions.
+
+Enrollment serializes with acceptance through one bounded durable slot per
+session, including mutations begun before first enrollment. The existing
+Runtime still executes work. A successful enrollment is not proof that earlier
+accepted controls or tasks have finished. Drain/reconcile that work before
+starting a coordinated continuation. Independent store actors share the CAS
+fence, but active task execution remains single-runtime ownership. SQLite and
+PostgreSQL persist the fence through restart; in-memory state lasts only for its
+store lifetime.
+
+An unresolved slot returns `revision_conflict` and does not expire. An HTTP
+cancellation or missing response cannot prove that a mutation failed. Read the
+existing exact task/input receipt; preserve its original operation/key. Do not
+clear uncertain state, blindly retry under a new key, or assume that elapsed
+time released authority. There is no general automatic recovery/clear operation
+for an acceptance whose outcome cannot be proved. Native OAuth callbacks retain
+their already verified exact flow-state and pause binding, with completion
+acceptance serialized against enrollment; they do not grant arbitrary steering.
+Separate tenant/admin and durable user-wide configuration privileges remain
+independent and require their own grant migration where needed.
+
+Outstanding independently signed artifact imports remain governed by their exact
+transfer grants and recipient admissions. Migration must reconcile/quiesce those
+admissions too; session enrollment is not a retroactive revocation of transfer
+permission.
+
+An App's canonical native approval wait parks its acceptance reservation after
+the existing coordinator establishes the pause. Before the original descriptor
+continues, the runtime reacquires the same method/owner authority against the
+current session epoch; changing enrollment while parked refuses that stale
+continuation. OAuth handoff is permitted at the canonical credential preflight,
+not by interpreting arbitrary errors from an already invoked tool. A dispatched
+MCP attempt marks possible effects, so a later challenge cannot release unknown
+prior work. The existing wrapper chain remains authoritative, and repeated
+native delivery never invents a new App action.
+
+Served scoped admission requires SQLite or PostgreSQL StateStore persistence;
+volatile state is refused at configuration/assembly. The in-memory gate remains
+the reference/testing seam and does not promise enrollment across process loss.

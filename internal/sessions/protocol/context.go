@@ -9,7 +9,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 var (
@@ -37,6 +39,23 @@ func WithContextReconciler(r ContextReconciler) Option {
 // ReconcileContext seals committed evidence only for the verified identity.
 // There is deliberately no admin override or independently selected session.
 func (s *Service) ReconcileContext(ctx context.Context, req prototypes.SessionsReconcileContextRequest) (prototypes.SessionsReconcileContextResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodSessionsReconcileContext); err != nil {
+		return prototypes.SessionsReconcileContextResponse{}, err
+	}
+	id, err := validIdentity(req.Identity)
+	if err != nil {
+		return prototypes.SessionsReconcileContextResponse{}, err
+	}
+	return sessionadmission.Run(ctx, id, methods.MethodSessionsReconcileContext, func(accepted context.Context) (prototypes.SessionsReconcileContextResponse, error) {
+		out, err := s.reconcileContextAccepted(accepted, req)
+		if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrIdentityRequired) || errors.Is(err, ErrContextReconcileUnsupported) {
+			err = sessionadmission.Rejected(err)
+		}
+		return out, err
+	})
+}
+
+func (s *Service) reconcileContextAccepted(ctx context.Context, req prototypes.SessionsReconcileContextRequest) (prototypes.SessionsReconcileContextResponse, error) {
 	var out prototypes.SessionsReconcileContextResponse
 	if err := ctx.Err(); err != nil {
 		return out, err

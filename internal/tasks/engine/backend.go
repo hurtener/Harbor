@@ -95,6 +95,9 @@ func (e *Engine) hydrate(ctx context.Context) error {
 		if t == nil {
 			continue
 		}
+		if err := tasks.ValidateOutputManifest(t); err != nil {
+			return fmt.Errorf("hydrate output provenance: %w", err)
+		}
 		e.tasks[t.ID] = t
 		if t.IdempotencyKey != "" {
 			e.idemIdx[idemKeyFor(t.Identity.Identity, t.IdempotencyKey)] = idempotencyRecord{

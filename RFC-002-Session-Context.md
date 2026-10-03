@@ -269,6 +269,14 @@ required write stops dependent work explicitly; telemetry acceptance is not proo
 of persistence. Store blobs before publishing references; failed commits must
 leave no dangling reference, and abandoned blobs follow bounded cleanup policy.
 
+Terminal evidence preparation has its own five-second bound before the existing
+five-second conditional publication and journal-cleanup budget begins (D-492).
+Preparation failure performs no store operations; caller cancellation and earlier
+deadlines still bound both stages. Returned execution outcomes keep the existing
+cancellation-independent finalization boundary. A cleanup failure after atomic
+publication remains explicit, leaves the sealed outcome fenced, and permits only
+exact-generation cleanup through reconciliation, never action replay.
+
 A bounded session index selects prior terminal root-turn context once at run
 admission; the current run then uses that frozen prefix plus its own tail. Order
 root turns by existing admission identity, not completion timing. Concurrent

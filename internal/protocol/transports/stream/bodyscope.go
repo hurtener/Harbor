@@ -45,6 +45,8 @@ func bodyScopeCodes() []protoerrors.Code {
 // with different statuses.
 func bodyScopeStatus(code protoerrors.Code) int {
 	switch code {
+	case protoerrors.CodeRevisionConflict:
+		return http.StatusConflict
 	case protoerrors.CodeInvalidRequest:
 		return http.StatusBadRequest
 	case protoerrors.CodeIdentityRequired:

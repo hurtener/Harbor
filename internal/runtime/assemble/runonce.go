@@ -253,6 +253,10 @@ func (s *Stack) RunOnce(
 	if err := identity.Validate(id); err != nil {
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce identity: %w", err)
 	}
+	// This headless entry point owns no TaskRegistry task. A caller may invoke
+	// it from another task's context, but that task's output authority must not
+	// leak into this independent run or turn a correlation ID into provenance.
+	ctx = tasks.WithOutputTask(ctx, "")
 
 	var cfg runOnceConfig
 	var memoryTurns int
@@ -324,10 +328,9 @@ func (s *Stack) RunOnce(
 			retainedTrajectory = &planner.Trajectory{}
 		}
 		// A cancelled execution has already returned; its observed outcomes
-		// still need a bounded terminal write. No tool is retried here.
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
-		defer cancel()
-		if persistErr := retained.Finish(persistCtx, retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
+		// still need terminal retention. Finish separately bounds preparation
+		// and persistence, so CPU work cannot consume the store's budget.
+		if persistErr := retained.Finish(context.WithoutCancel(runCtx), retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
 			retErr = errors.Join(retErr, persistErr)
 		}
 	}()

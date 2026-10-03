@@ -8,10 +8,31 @@ package llm
 
 import (
 	internal "github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/llm/allocation"
+	"github.com/hurtener/Harbor/internal/llm/pricing"
 )
 
 // Client + request/response vocabulary — aliases of the internal types.
 type (
+	// InferenceAllocation is immutable cumulative task token funding.
+	InferenceAllocation = internal.InferenceAllocation
+	// PricingManifest is operator-only boot configuration, never model data.
+	PricingManifest = pricing.Manifest
+	// PricingTariff declares all charge ceilings for an immutable model selector.
+	PricingTariff = pricing.Tariff
+	// PricingCatalog is an immutable validated operator pricing catalog.
+	PricingCatalog = pricing.Catalog
+	// PricingReference pins a manifest by ID, revision and full content hash.
+	PricingReference = pricing.Reference
+	// MonetaryTarget bounds one driver's actual selected physical request.
+	MonetaryTarget = internal.MonetaryTarget
+	// MonetaryBoundedDriver opts in only for bounded request shapes.
+	MonetaryBoundedDriver = internal.MonetaryBoundedDriver
+	// AllocationSnapshot exposes content-free cumulative liabilities.
+	AllocationSnapshot = internal.AllocationSnapshot
+	// AllocationStore is the durable provider-attempt accounting seam.
+	AllocationStore = internal.AllocationStore
+
 	// LLMClient is the provider-corrected completion client interface.
 	LLMClient = internal.LLMClient
 	// ConfigSnapshot is the resolved LLM configuration a client opens with.
@@ -379,3 +400,42 @@ const EventTypeContextPrepared = internal.EventTypeContextPrepared
 
 // EstimateRequestTokenSections partitions the same estimate used for admission.
 var EstimateRequestTokenSections = internal.EstimateRequestTokenSections
+
+// WithInferenceAllocation attaches explicitly accepted funding to a stable run context.
+var WithInferenceAllocation = internal.WithInferenceAllocation
+
+// ValidateInferenceAllocation validates finite task funding and refuses unpriced cost.
+var ValidateInferenceAllocation = internal.ValidateInferenceAllocation
+
+// AllocationReceipt is a bounded content-free settlement witness.
+type AllocationReceipt = internal.AllocationReceipt
+
+// AllocationBoundedDriver declares a finite physical provider-attempt envelope.
+type AllocationBoundedDriver = internal.AllocationBoundedDriver
+
+// ErrAllocationExhausted refuses a provider envelope that exceeds remaining funding.
+var ErrAllocationExhausted = internal.ErrAllocationExhausted
+
+// ErrAllocationClosed rejects a call after its canonical funding root closed.
+var ErrAllocationClosed = internal.ErrAllocationClosed
+
+// ErrAllocationInvalid refuses changed or malformed immutable funding.
+var ErrAllocationInvalid = internal.ErrAllocationInvalid
+
+// ErrAllocationPricingUnavailable refuses unconfigured hard monetary guarantees.
+var ErrAllocationPricingUnavailable = internal.ErrAllocationPricingUnavailable
+
+// ErrAllocationBoundUnavailable refuses a provider without a trusted finite bound.
+var ErrAllocationBoundUnavailable = internal.ErrAllocationBoundUnavailable
+
+// ErrAllocationBoundViolated reports observed usage exceeding its reserved bound.
+var ErrAllocationBoundViolated = internal.ErrAllocationBoundViolated
+
+// NewPricingCatalog validates and detaches explicitly trusted operator manifests.
+var NewPricingCatalog = pricing.New
+
+// PricingEndpointBinding fingerprints the exact configured provider base URL.
+var PricingEndpointBinding = pricing.EndpointBinding
+
+// BindPricingCatalog durably pins catalog revisions at a trusted host's boot.
+var BindPricingCatalog = allocation.BindPricingCatalog

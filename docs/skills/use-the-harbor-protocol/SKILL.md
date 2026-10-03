@@ -10,6 +10,33 @@ metadata:
 
 # Use the Harbor Protocol
 
+## Exact-task text clarification receipts
+
+Send a text-only `user_message` with an exact `identity.run` and a nonempty
+`event_id` (at most 128 bytes) to obtain an input receipt. The payload must be
+exactly `{"message":"..."}` and keeps the normal 4096-character control limit.
+Do not use this contract for attachments, approval, cancellation, or other
+control verbs.
+
+Persist the caller event ID before submission. After a lost response, read
+`POST /v1/control/control.receipt` with the same identity and event ID, or retry
+the identical `user_message`. A changed payload under the same key receives
+HTTP 409 / `control_receipt_conflict`. Each task retains at most 256 receipts;
+old keys are never evicted to admit new ones.
+
+Read the receipt status rather than interpreting enqueue or stream events as
+consumption. `accepted` means recorded for delivery; `applied` means a planning
+invocation consumed it; `declined` and `terminal` mean it will not newly apply.
+A task result's `incorporated_input_revision` identifies the context used for
+its sealed answer. An applied receipt alone does not prove successful output.
+
+Negotiate `durable_task_input_receipts_v1` for cross-process guarantees. It is
+advertised only with `tasks.driver: durable` and persistent SQLite/Postgres
+state. The in-process driver provides process-lifetime idempotency only.
+Runtime restart does not relaunch a task: interrupted running work fails, and
+pending inputs on an unavailable paused run become terminal receipts. Receipt
+lookup never resumes or creates execution.
+
 ## MCP source ownership
 
 Use returned MCP source/tool IDs for new calls. Boot-configured infrastructure
@@ -1081,3 +1108,134 @@ key conflicts. A present bundle skips the legacy next-message slot. Omitted
 fields use runtime/agent defaults, an empty reasoning value requests provider
 defaults, and `off` disables thinking. No preference is saved and no restart is
 needed. Governance and selected-model support remain authoritative.
+
+## Recipient-admitted artifact copies
+
+Check runtime.info for artifact_transfer_v1; require durable_artifact_transfer_v1
+when restart persistence matters. Transfer currently requires inmem, SQLite-blob
+or Postgres-blob artifact storage, plus explicitly acknowledged fence-aware
+shared-store writers. FS/S3 fail closed. New SQL artifact migration 0003 must be
+applied before verify-mode boot. Do not enable trust keys or change production
+configuration as an implicit side effect of using this guide.
+
+The coordinator signs an exact content-free grant binding both runtime audiences,
+owner triples, policy epochs, source artifact ID/full SHA-256, MIME, byte size
+and expiry. Keep signed grants out of model context and normal logs. The
+recipient owner first calls artifacts.prepare_import; the source owner then
+calls artifacts.transfer. Bytes go directly to a boot-pinned recipient endpoint.
+No caller URL, redirect, broad bearer, download/reupload or provider ingestion is
+part of this flow. Use artifacts.transfer_status for durable evidence and
+artifacts.revoke_transfer only before dispatch. A completed receipt is past
+delivery evidence, not continuing read permission or independently observed
+network sender identity.
+
+For a sealed inline final answer, artifacts.export_answer accepts an exact
+owner/task/turn/version/answer-sequence selector with the UTF-8 answer's digest
+and byte length. The runtime materializes only that final answer into an
+immutable source artifact, preserves incorporated-input revision and returns
+metadata. Never create this artifact by copying a transcript or reading bytes
+through the coordinator. A stale source or conflicting request ID is refused.
+
+## Cumulative task allocations
+
+Negotiate `task_inference_allocation_v1` before sending `inference_allocation`
+with Start. For process-restart continuity, also require durable tasks and
+SQLite/Postgres state, verifiable through `durable_task_input_receipts_v1` or
+the runtime driver posture. An in-memory store only retains its own lifetime. Supply an immutable allocation ID, positive revision and positive
+`max_total_tokens`. Exact Start retries reuse the task and cap. Descendants,
+helpers, retries and resumes share the durable allowance. Inspect
+`tasks.get.inference_allocation`; reserved capacity includes unknown liability
+and cannot be assumed refundable after cancellation. Token-only tasks retain
+`guarantee: tokens` and `pricing_status: unavailable`.
+
+Hard token funding requires an audited physical request bound as well as a
+model profile. The Bifrost consumer supports text requests through native
+OpenAI/Anthropic and the exact supported OpenAI-compatible custom/routed
+factories. Opaque extra parameters, file/media work and other provider families
+refuse before dispatch. Reservations multiply the SDK logical retry envelope
+by fasthttp's physical-send cap; configuring zero logical retries does not
+remove transport retries. Final-response usage cannot prove earlier attempts
+free, so successful calls can retain unknown capacity indefinitely. Accepted
+ceilings never grow automatically, and pre-repair work cannot acquire a
+retroactive hard-cap guarantee. See `docs/CONFIG.md` for compatibility limits.
+
+Before returning unused funding, also negotiate
+`task_inference_allocation_finality_v1`. Require `closed: true`, zero
+`reserved_tokens`, `unknown_tokens`, `reserved_cost_micro_usd` and
+`unknown_cost_micro_usd`, and `bound_breached: false` on the exact accepted
+allocation ID/revision/caps/pricing reference. Closed with outstanding liability
+stays held. The resulting charge is conservative capacity, not actual spending.
+The runtime waits for all accepted descendants before closing; delayed helpers
+cannot reserve afterward. Drain old writers before the one-way versioned
+allocation-record upgrade; do not downgrade an active funded store. Session
+erasure retains content-free funding fingerprints, accounting and closure
+barriers. Tenant/account storage decommission requires revoked/drained writers
+and explicit protected-partition removal; there is no online purge API.
+
+For a monetary task, an operator must first install a complete immutable
+`llm.pricing_manifests` catalog. Supply `max_cost_micro_usd` together with its
+exact `pricing_manifest_id`, `pricing_manifest_revision` and full lowercase
+`pricing_manifest_sha256`. References do not install tariff contents. Inspect
+`charged_cost_micro_usd`, `reserved_cost_micro_usd`, `unknown_cost_micro_usd`
+and per-receipt `monetary_status`; charged values are conservative consumed
+capacity, not provider spend. Missing complete usage and possible hidden retries
+retain the whole monetary hold. Only pre-dispatch cancellation can refund it.
+
+The initial consumer supports bounded static OpenAI/Anthropic text requests.
+OpenRouter, external routes, custom-provider IDs, multimodal/native files and
+unbounded passthrough remain unpriced. Exact model versions and endpoint bindings
+must match on every call. A mismatch or missing tariff returns
+`inference_allocation_pricing_unavailable`; do not retry with fabricated prices
+or interpret the existing allocation capability as universal monetary coverage.
+See `docs/CONFIG.md#llmpricing_manifests` for the operator contract.
+
+For active text clarification, read `tasks.get.input_revision` (absence means
+zero), then send it as `expected_input_revision` alongside the keyed
+`user_message`. A stale new request returns `revision_conflict` before changing
+the inbox. Refresh before constructing a new intent; never change an existing
+event key's payload or expectation. Receipts remain scoped to the one runtime
+owning the active task; simultaneous task-registry writers are unsupported.
+
+### Native task output provenance
+
+A completed sealed consumer turn may carry `output_manifest.version = 1`, its
+immutable SHA-256 seal, and the incorporated input revision. `outputs` then names
+only successful verified direct-native callable-tool binary materializations, sorted by
+artifact ID; an empty list with version one is a known empty set. Version zero
+means legacy/unknown. Do not infer task output membership from `artifacts.list`
+or a blob's first-writer task annotation, and do not inherit helper/sibling
+outputs. Before a later copy, re-read the exact task and sealed turn under the
+owner and effective agent, compare the seal and exact metadata, and recheck
+current artifact availability/authorization. Historical provenance grants no
+new visibility or publication authority.
+
+## Restrict methods and enroll session mutation authority
+
+Require `scoped_session_admission_v1` and follow the fleet-adoption preconditions
+in the [compatibility guide](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility#scoped-session-admission).
+A signed `method_reach` is an exact canonical array: absent preserves legacy,
+empty denies all, and aliases/duplicates/unknown names are refused. Keep read
+methods (history, events, pause status, artifact bytes) separate from explicitly
+permitted mutations. Neither a scope label nor removing agent reach makes an
+old broad bearer read-only.
+
+An authenticated owner/admin calls `sessions.set_admission` with an exact
+expected epoch and its successor. The Runtime binds the JWT issuer/subject
+immutably. Current mutation tokens carry the original exact owner identity,
+explicit method reach, signed epoch and coordinator. Existing broad bearers are
+then denied new session mutations. The supported client method is
+`SessionsSetAdmission`; preserve exact request identity and epoch on retries.
+
+Scoped tokens need the configured distinct singleton audience. Every legacy
+verifier must reject that audience, old writers must be stopped, and downgrade
+must be prevented before enrollment. Configuring the local opt-in is not fleet
+proof. Do not modify production audiences, issuers, registrations or grants
+implicitly. Already accepted work must be reconciled/quiesced separately.
+Unresolved acceptance is a durable attention condition with no lease expiry;
+inspect exact task/control receipts instead of creating a new operation key.
+Native approve/reject/resume and OAuth flow completion remain explicit native
+paths. Restricted-token rotation fails closed rather than losing restrictions.
+
+Served scoped admission requires SQLite or PostgreSQL StateStore persistence;
+volatile state is refused at configuration/assembly. The in-memory gate remains
+the reference/testing seam and does not promise enrollment across process loss.

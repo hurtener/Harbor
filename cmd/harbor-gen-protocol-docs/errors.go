@@ -25,6 +25,7 @@ type errorEntry struct {
 // entry MUST have a row (lockstep-pinned); a new canonical code without
 // a row fails the build.
 var errorTable = map[protoerrors.Code]errorEntry{
+	protoerrors.CodeControlReceiptConflict: {When: "An exact task input event ID was reused with changed text.", Retry: "Replay the original event and text; use a new event ID for different input."},
 	protoerrors.CodeInvalidRequest: {
 		When:  "The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, an out-of-range field.",
 		Retry: "No — fix the request shape first.",
@@ -86,6 +87,11 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "The method name is not in the canonical registry ([methods.md](./methods.md)).",
 		Retry: "No — check the method name and this Runtime's advertised capabilities (`runtime.info`).",
 	},
+	protoerrors.CodeArtifactTransferConflict:              {When: "A transfer ID was reused with changed authority, metadata or content.", Retry: "Reuse the exact admitted grant; never retry changed bindings."},
+	protoerrors.CodeArtifactTransferExpired:               {When: "The signed transfer validity interval no longer allows new byte movement.", Retry: "Inspect the existing receipt; obtain fresh authority for genuinely new work."},
+	protoerrors.CodeArtifactTransferRevoked:               {When: "An owner revoked the transfer before dispatch.", Retry: "Do not retry the revoked operation."},
+	protoerrors.CodeArtifactTransferInProgress:            {When: "Dispatch began and bytes may already have moved; revocation cannot assert rollback.", Retry: "Inspect the exact durable receipt."},
+	protoerrors.CodeInferenceAllocationPricingUnavailable: {When: "A hard monetary cap lacks trusted finite pricing authority.", Retry: "Configure a trusted immutable pricing manifest or request token-only admission."},
 	protoerrors.CodeNotFound: {
 		When:  "The request's target does not exist in the caller's scope: a steering control for a run with no live inbox (never started or already terminal), an unknown task / flow / artifact id. Cross-tenant existence is never revealed — a foreign id is indistinguishable from a missing one.",
 		Retry: "No — the target is gone or never existed for you.",

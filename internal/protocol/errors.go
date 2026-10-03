@@ -4,6 +4,7 @@ import (
 	stderrors "errors"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -80,6 +81,10 @@ func mapTaskError(method string, err error) *protoerrors.Error {
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: idempotency key reused with a divergent request", method)
 
+	case stderrors.Is(err, llm.ErrAllocationPricingUnavailable):
+		return protoerrors.Newf(protoerrors.CodeInferenceAllocationPricingUnavailable, "method %q: trusted allocation pricing unavailable", method)
+	case stderrors.Is(err, llm.ErrAllocationInvalid):
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: invalid task inference allocation", method)
 	case stderrors.Is(err, tasks.ErrInvalidRequest):
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: request failed validation", method)

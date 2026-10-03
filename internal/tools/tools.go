@@ -337,9 +337,10 @@ type AppResultJSONMarshaler interface {
 // first Invoke attempt (validation BEFORE retry — failing args
 // don't get retried).
 type ToolDescriptor struct {
-	Tool     Tool
-	Invoke   func(ctx context.Context, args json.RawMessage) (ToolResult, error)
-	Validate func(args json.RawMessage) error
+	invocationBoundary bool
+	Tool               Tool
+	Invoke             func(ctx context.Context, args json.RawMessage) (ToolResult, error)
+	Validate           func(args json.RawMessage) error
 }
 
 // CatalogFilter is the server-enforced subscription predicate on

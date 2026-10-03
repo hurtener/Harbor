@@ -31,6 +31,7 @@
 // re-exports them — a mechanical migration.
 
 import { ProtocolError, type ProtocolErrorBody } from './errors.js';
+import type { ControlReceiptResponse } from './control.js';
 import type { RuntimeConnection } from '../connection.js';
 import type {
 	MemoryGetResponse,
@@ -127,6 +128,7 @@ import type {
 	ObservabilityQueryResponse,
 } from './observability.js';
 import type { ReadMCPResourceResponse } from './mcp.js';
+import type { ArtifactsTransferRequest, ArtifactsTransferStatusRequest, ArtifactTransferReceipt, ArtifactsExportAnswerRequest, ArtifactsExportAnswerResponse } from './artifacts.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -420,6 +422,31 @@ export class ArtifactsNamespace {
 	constructor(t: Transport) {
 		this.#t = t;
 	}
+ /** `artifacts.prepare_import` — exact owner-authorized, content-free control. */
+ prepareImport(req: ArtifactsTransferRequest): Promise<ArtifactTransferReceipt> {
+  return this.#t.request<ArtifactTransferReceipt>('/v1/control/artifacts.prepare_import', req as unknown as Record<string, unknown>, 'POST', { omitBodyIdentity: true });
+ }
+
+ /** `artifacts.transfer` — exact owner-authorized, content-free control. */
+ transfer(req: ArtifactsTransferRequest): Promise<ArtifactTransferReceipt> {
+  return this.#t.request<ArtifactTransferReceipt>('/v1/control/artifacts.transfer', req as unknown as Record<string, unknown>, 'POST', { omitBodyIdentity: true });
+ }
+
+ /** `artifacts.transfer_status` — exact owner-authorized, content-free control. */
+ transferStatus(req: ArtifactsTransferStatusRequest): Promise<ArtifactTransferReceipt> {
+  return this.#t.request<ArtifactTransferReceipt>('/v1/control/artifacts.transfer_status', req as unknown as Record<string, unknown>, 'POST', { omitBodyIdentity: true });
+ }
+
+ /** `artifacts.revoke_transfer` — exact owner-authorized, content-free control. */
+ revokeTransfer(req: ArtifactsTransferStatusRequest): Promise<ArtifactTransferReceipt> {
+  return this.#t.request<ArtifactTransferReceipt>('/v1/control/artifacts.revoke_transfer', req as unknown as Record<string, unknown>, 'POST', { omitBodyIdentity: true });
+ }
+
+ /** `artifacts.export_answer` — runtime-native exact final-answer export. */
+ exportAnswer(req: ArtifactsExportAnswerRequest): Promise<ArtifactsExportAnswerResponse> {
+  return this.#t.request<ArtifactsExportAnswerResponse>('/v1/control/artifacts.export_answer', req as unknown as Record<string, unknown>, 'POST', { omitBodyIdentity: true });
+ }
+
 	/**
 	 * `artifacts.list` — the identity-scoped, metadata-only artifact catalog.
 	 *
@@ -783,7 +810,9 @@ export class ControlNamespace {
 		verb: string,
 		taskID: string,
 		payload?: Record<string, unknown>,
-		scope = 'owner_user'
+		scope = 'owner_user',
+		eventID?: string,
+		expectedInputRevision?: number
 	): Promise<R> {
 		const body: Record<string, unknown> = {
 			identity: { run: taskID, scope }
@@ -791,7 +820,15 @@ export class ControlNamespace {
 		if (payload !== undefined) {
 			body.payload = payload;
 		}
+		if (eventID !== undefined) body.event_id = eventID;
+		if (expectedInputRevision !== undefined) body.expected_input_revision = expectedInputRevision;
 		return this.#t.request<R>(`/v1/control/${verb}`, body);
+	}
+	/** Read one exact text-input receipt without resubmitting or resuming it. */
+	receipt(taskID: string, eventID: string): Promise<ControlReceiptResponse> {
+		return this.#t.request<ControlReceiptResponse>('/v1/control/control.receipt', {
+			identity: { run: taskID }, event_id: eventID
+		});
 	}
 	/**
 	 * `start` — spawn a new foreground task in the caller's session.

@@ -200,6 +200,25 @@ OIDC issuer URL. Default: none. Validation: non-empty.
 
 OIDC audience claim. Default: none. Validation: non-empty.
 
+### identity.scoped_token_audience
+
+Optional exact audience for signed method-restricted credentials and session
+mutation admission. Default: empty (disabled). Served opt-in requires SQLite
+or PostgreSQL state; volatile production state is refused. When set, it must differ from
+`identity.audience`; a restricted token must carry only this one audience.
+Every older reachable verifier must enforce the distinct legacy audience before
+these credentials are issued. A claim alone cannot restrict an unaware server.
+An aware runtime refuses to disable this feature over recorded admission state.
+
+### identity.session_admission_legacy_writers_drained
+
+Default: `false`. Must be explicitly true when `scoped_token_audience` is set.
+This is an operator acknowledgment that old writers have stopped, all legacy
+verifiers enforce their distinct audience, and downgrade is prevented. It does
+not discover or attest a fleet. Reconcile already accepted controls/tasks and
+independent transfer/native admissions before coordinated continuation. No live
+settings or grants are changed by this documented code-only opt-in.
+
 ### identity.jwks_url
 
 URL the JWT verifier fetches the JWKS document from. Default:
@@ -410,6 +429,77 @@ of a native bifrost provider.
 Canonical model identifier. Default: empty. Validation: required
 when `driver != "mock"`. Must have a matching `model_profiles[name]`
 entry for the safety-net token-budget guard.
+
+### Hard task allocation transport bounds
+
+For the pinned Bifrost v1.9.0 / fasthttp v1.74.0 text Chat transport, the
+reservation multiplies the complete physical-send cap (five) by configured
+`max_retries + 2`. The second logical allowance covers the SDK's single guarded
+encrypted-reasoning repair. Transport retries can resend a fully consumed POST
+after response-header loss; logical retry metadata does not prove zero work.
+Request-specific output caps and exact pricing references remain binding.
+
+Hard token allocations admit only native OpenAI/Anthropic text, declared custom
+OpenAI-compatible text, and selected OpenAI/Anthropic text routes using those
+same bounded factories. Other provider families, unproved route selections,
+opaque request parameters, images, audio, files and provider-native uploads
+return `inference_allocation_bound_unavailable` before provider entry. Ordinary
+unallocated calls keep their existing provider compatibility. The monetary
+allowlist remains narrower, as described below.
+
+Final-only usage cannot settle unseen physical attempts. Their conservative
+remainder stays reserved indefinitely, even after the allocation closes; this
+can retain most of an allocation after successful work. The larger reservation
+can refuse an existing cap, and never increases an accepted cap automatically.
+Pre-repair executions with smaller envelopes cannot gain a retroactive hard-cap
+claim from this correction. Existing unknown liabilities remain retained.
+
+### llm.pricing_manifests
+
+Optional immutable operator-installed USD ceiling catalog. Default: empty;
+restart-required. This is trusted boot configuration, never a task, model or
+Protocol tariff submission. Existing floating-point `cost_overrides` and provider
+pricing metadata do not satisfy this contract.
+
+Each manifest requires `id`, positive `revision`, `currency: USD` and nonempty
+`tariffs`. Each tariff requires:
+
+- Exact `provider`, `model`, and identical immutable `model_version` selector
+- `immutable_model_version: true` and `includes_all_charges: true`
+- `endpoint_binding: provider_default` for the driver's default endpoint, or
+  `sha256:` followed by the lowercase SHA-256 of the exact configured base URL
+- Explicit nonnegative integer `input_micro_usd_per_million`,
+  `output_micro_usd_per_million`, `cache_read_micro_usd_per_million`,
+  `cache_write_micro_usd_per_million` and `reasoning_micro_usd_per_million`
+- Explicit nonnegative integer `request_micro_usd` and `ancillary_micro_usd`
+
+Omitted charge dimensions are rejected; verified zero must be written as zero.
+The ancillary ceiling must bound every charge not covered by the listed rates.
+Rates are ceilings in micro-USD per million tokens, not USD floats. The runtime
+adds all input/cache categories and output/reasoning categories, rounds each
+upward, adds fixed charges and multiplies by the maximum physical attempts with
+checked arithmetic. This intentionally over-reserves when categories overlap.
+
+Operators attest pricing completeness and immutable selector meaning. Harbor
+cannot independently prove a provider's tariff or invoice. Static OpenAI and
+Anthropic text transports are the initial admitted consumers. OpenRouter,
+external routes, custom-provider IDs, multimedia/native file work and arbitrary
+passthrough remain unpriced. An endpoint override needs its own exact binding.
+
+`NewPricingCatalog` returns an immutable detached catalog; `References()` returns
+accepted ID/revision/hash references. SDK hosts also call `BindPricingCatalog`
+with their StateStore and inject that catalog into both task and LLM dependencies.
+Standard assembly performs all three steps. Runtime state permanently pins the
+first hash for each manifest ID/revision and refuses changed contents on boot.
+Adding a tariff or changing its order/ceiling requires a new revision. Removed
+versions cannot reprice accepted tasks and do not release their held capacity.
+
+Start's allocation pins `pricing_manifest_id`, `pricing_manifest_revision` and
+`pricing_manifest_sha256` beside `max_cost_micro_usd`. Durable accepted intent and
+same-identity descendants retain them unchanged. Money and token reservation are
+atomic. Snapshots expose charged ceiling capacity and reserved/unknown capacity;
+none is actual spend. A final success cannot refund unproven hidden attempts.
+Full restart continuity still requires durable tasks with SQLite/PostgreSQL.
 
 ### llm.api_key
 
@@ -2702,3 +2792,42 @@ uncached pull, within the configured TTL; this is not an instantaneous push chan
 `runtime.info.capabilities` advertises `tenant_scoped_broker_credentials_v1` when
 the agent-config surface is wired. Consumers require this capability before relying
 on shared-runtime tenant isolation; a build-version guess is not equivalent evidence.
+
+## Direct recipient-admitted artifact transfer
+
+### artifacts.transfer
+
+`artifacts.transfer` is absent by default. Enabling it requires an artifact
+store with atomic owner-scope fencing: `inmem`, `sqlite` or `postgres` blob
+storage. FS and S3 currently fail configuration rather than claiming safe
+cross-runtime erasure. Restart guarantees require persistent artifact and
+StateStore drivers and durable storage volumes. New SQL artifact migration
+0003 installs the permanent scope tombstone; apply migrations before using
+migration verification mode.
+
+Set `legacy_writers_drained: true` only after every writer sharing these
+artifact/state stores has upgraded to the fence-aware version or stopped.
+Enabling transfer without that explicit acknowledgement fails closed; an old
+binary that ignores the new tombstone cannot be declared safe.
+
+Set `audience`, a positive `epoch`, base64 Ed25519 `public_keys`, `max_bytes`
+(1 through 67108864), and `timeout` (positive, at most one minute). `peers` maps
+recipient audience names to exact HTTPS origins; requests cannot supply URLs.
+`allow_loopback_http: true` is only for explicit local fixtures with literal
+loopback IPs. Every redirect is refused. Only public verification keys live in
+this config; the coordinator retains its signing key outside the runtime.
+
+A signed transfer is a narrow capability, not harmless display metadata. Keep
+it out of model context and normal logs. Its purpose label alone grants no
+reach. The recipient first ratifies the exact signed grant under its own
+Protocol identity; the source owner then calls `artifacts.transfer`. Only the
+source and recipient runtimes handle the bytes. Grants expire within fifteen
+minutes and bind both owner triples, audiences, epochs, full content SHA-256,
+MIME and size. Changing an epoch rejects old unexecuted authority. A receipt
+proves past delivery, not continuing read access, and does not independently
+prove network sender identity.
+
+Session deletion permanently fences all late writes in the artifact store
+before its sweep. Import/export already in progress cannot be described as
+rolled back; inspect the durable receipt. Receipt recovery after expiry can
+seal only an exact blob already persisted, never re-export or recreate bytes.

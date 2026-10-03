@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 461 canonical Harbor Protocol wire types, generated from the single-source
+The 477 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1957,6 +1957,56 @@ Declared in `internal/protocol/types`.
 | `session` | `string` |  |
 | `task` | `string` | optional (`omitempty`) |
 
+## ArtifactTransferEndpoint
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `audience` | `string` |  |
+| `tenant` | `string` |  |
+| `user` | `string` |  |
+| `session` | `string` |  |
+| `epoch` | `uint64` |  |
+
+## ArtifactTransferGrant
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `version` | `int` |  |
+| `key_id` | `string` |  |
+| `transfer_id` | `string` |  |
+| `purpose` | `string` |  |
+| `source` | `types.ArtifactTransferEndpoint` — see [`ArtifactTransferEndpoint`](./types.md#artifacttransferendpoint) |  |
+| `destination` | `types.ArtifactTransferEndpoint` — see [`ArtifactTransferEndpoint`](./types.md#artifacttransferendpoint) |  |
+| `artifact_id` | `string` |  |
+| `sha256` | `string` |  |
+| `mime_type` | `string` |  |
+| `size_bytes` | `int64` |  |
+| `issued_at` | `time.Time` |  |
+| `expires_at` | `time.Time` |  |
+| `signature` | `string` |  |
+
+## ArtifactTransferReceipt
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `transfer_id` | `string` |  |
+| `grant_sha256` | `string` |  |
+| `state` | `string` |  |
+| `source` | `types.ArtifactTransferEndpoint` — see [`ArtifactTransferEndpoint`](./types.md#artifacttransferendpoint) |  |
+| `destination` | `types.ArtifactTransferEndpoint` — see [`ArtifactTransferEndpoint`](./types.md#artifacttransferendpoint) |  |
+| `source_artifact_id` | `string` |  |
+| `destination_artifact_id` | `string` | optional (`omitempty`) |
+| `sha256` | `string` |  |
+| `mime_type` | `string` |  |
+| `size_bytes` | `int64` |  |
+| `expires_at` | `time.Time` |  |
+
 ## ArtifactsDeleteRequest
 
 Declared in `internal/protocol/types`.
@@ -1974,6 +2024,38 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `deleted` | `bool` |  |
 | `protocol_version` | `string` |  |
+
+## ArtifactsExportAnswerRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `scope` | `types.ArtifactScope` — see [`ArtifactScope`](./types.md#artifactscope) |  |
+| `request_id` | `string` |  |
+| `task_id` | `string` |  |
+| `turn_id` | `string` |  |
+| `turn_version` | `int64` |  |
+| `answer_sequence` | `int64` |  |
+| `sha256` | `string` |  |
+| `size_bytes` | `int64` |  |
+
+## ArtifactsExportAnswerResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `request_id` | `string` |  |
+| `artifact_id` | `string` |  |
+| `sha256` | `string` |  |
+| `mime_type` | `string` |  |
+| `size_bytes` | `int64` |  |
+| `task_id` | `string` |  |
+| `turn_id` | `string` |  |
+| `turn_version` | `int64` |  |
+| `answer_sequence` | `int64` |  |
+| `incorporated_input_revision` | `uint64` |  |
 
 ## ArtifactsGetRefRequest
 
@@ -2076,6 +2158,25 @@ Declared in `internal/protocol/types`.
 | `ref` | `types.ArtifactRef` — see [`ArtifactRef`](./types.md#artifactref) |  |
 | `protocol_version` | `string` |  |
 
+## ArtifactsTransferRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `scope` | `types.ArtifactScope` — see [`ArtifactScope`](./types.md#artifactscope) |  |
+| `grant` | `types.ArtifactTransferGrant` — see [`ArtifactTransferGrant`](./types.md#artifacttransfergrant) |  |
+
+## ArtifactsTransferStatusRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `scope` | `types.ArtifactScope` — see [`ArtifactScope`](./types.md#artifactscope) |  |
+| `transfer_id` | `string` |  |
+| `direction` | `string` |  |
+
 ## AuthRotateTokenRequest
 
 Declared in `internal/protocol/types`.
@@ -2093,12 +2194,46 @@ Declared in `internal/protocol/types`.
 | `new_token` | `string` |  |
 | `expires_at` | `time.Time` |  |
 
+## ControlReceipt
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `event_id` | `string` |  |
+| `task_id` | `string` |  |
+| `input_revision` | `uint64` |  |
+| `status` | `string` |  |
+| `reason` | `string` | optional (`omitempty`) |
+| `accepted_at` | `int64` | optional (`omitempty`) |
+| `applied_at` | `int64` | optional (`omitempty`) |
+| `terminal_at` | `int64` | optional (`omitempty`) |
+
+## ControlReceiptRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `event_id` | `string` |  |
+
+## ControlReceiptResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `receipt` | `types.ControlReceipt` — see [`ControlReceipt`](./types.md#controlreceipt) |  |
+| `protocol_version` | `string` |  |
+
 ## ControlRequest
 
 Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `expected_input_revision` | `*uint64` | optional (`omitempty`) |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `payload` | `map[string]any` | optional (`omitempty`) |
 | `event_id` | `string` | optional (`omitempty`) |
@@ -2109,6 +2244,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `receipt` | `*types.ControlReceipt` — see [`ControlReceipt`](./types.md#controlreceipt) | optional (`omitempty`) |
 | `accepted` | `bool` |  |
 | `method` | `string` |  |
 | `protocol_version` | `string` |  |
@@ -2626,6 +2762,63 @@ Declared in `internal/protocol/types`.
 | `budget_ceiling_usd` | `float64` |  |
 | `rate_limit` | `types.RateLimitView` — see [`RateLimitView`](./types.md#ratelimitview) |  |
 | `max_tokens` | `int` |  |
+
+## InferenceAllocation
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `allocation_id` | `string` |  |
+| `revision` | `uint64` |  |
+| `max_total_tokens` | `int64` |  |
+| `max_cost_micro_usd` | `*int64` | optional (`omitempty`) |
+| `pricing_manifest_id` | `string` | optional (`omitempty`) |
+| `pricing_manifest_revision` | `uint64` | optional (`omitempty`) |
+| `pricing_manifest_sha256` | `string` | optional (`omitempty`) |
+
+## InferenceAllocationReceipt
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `reserved_cost_micro_usd` | `int64` |  |
+| `charged_cost_micro_usd` | `int64` |  |
+| `unknown_cost_micro_usd` | `int64` |  |
+| `monetary_status` | `string` | optional (`omitempty`) |
+| `attempt_id` | `string` |  |
+| `reserved_tokens` | `int64` |  |
+| `settled_tokens` | `int64` |  |
+| `unknown_tokens` | `int64` |  |
+| `status` | `string` |  |
+
+## InferenceAllocationSnapshot
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `closed` | `bool` |  |
+| `max_cost_micro_usd` | `*int64` | optional (`omitempty`) |
+| `charged_cost_micro_usd` | `int64` |  |
+| `reserved_cost_micro_usd` | `int64` |  |
+| `unknown_cost_micro_usd` | `int64` |  |
+| `pricing_manifest_id` | `string` | optional (`omitempty`) |
+| `pricing_manifest_revision` | `uint64` | optional (`omitempty`) |
+| `pricing_manifest_sha256` | `string` | optional (`omitempty`) |
+| `receipts` | `[]types.InferenceAllocationReceipt` — see [`InferenceAllocationReceipt`](./types.md#inferenceallocationreceipt) |  |
+| `receipts_truncated` | `bool` |  |
+| `bound_breached` | `bool` |  |
+| `allocation_id` | `string` |  |
+| `revision` | `uint64` |  |
+| `max_total_tokens` | `int64` |  |
+| `settled_tokens` | `int64` |  |
+| `reserved_tokens` | `int64` |  |
+| `unknown_tokens` | `int64` |  |
+| `attempt_count` | `int64` |  |
+| `guarantee` | `string` |  |
+| `pricing_status` | `string` |  |
 
 ## InterventionSummary
 
@@ -4127,6 +4320,16 @@ Declared in `internal/protocol/types`.
 | `snapshot_id` | `uint64` |  |
 | `as_of` | `time.Time` |  |
 
+## SessionTurnOutputManifest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `version` | `int` |  |
+| `sha256` | `string` | optional (`omitempty`) |
+| `input_revision` | `uint64` |  |
+
 ## SessionTurnPause
 
 Declared in `internal/protocol/types`.
@@ -4197,6 +4400,7 @@ Declared in `internal/protocol/types`.
 | `pause` | `types.SessionTurnPause` — see [`SessionTurnPause`](./types.md#sessionturnpause) |  |
 | `inputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |
 | `outputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |
+| `output_manifest` | `types.SessionTurnOutputManifest` — see [`SessionTurnOutputManifest`](./types.md#sessionturnoutputmanifest) |  |
 | `usage` | `types.SessionTurnUsage` — see [`SessionTurnUsage`](./types.md#sessionturnusage) |  |
 | `reasoning` | `types.SessionTurnReasoning` — see [`SessionTurnReasoning`](./types.md#sessionturnreasoning) |  |
 | `activity` | `types.SessionTurnActivity` — see [`SessionTurnActivity`](./types.md#sessionturnactivity) |  |
@@ -4380,6 +4584,25 @@ Declared in `internal/protocol/types`.
 | `session_id` | `string` |  |
 | `source_run_id` | `string` |  |
 | `reconciled` | `bool` |  |
+
+## SessionsSetAdmissionRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `expected_epoch` | `uint64` |  |
+| `epoch` | `uint64` |  |
+
+## SessionsSetAdmissionResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `epoch` | `uint64` |  |
+| `protocol_version` | `string` |  |
 
 ## SessionsSetTitleRequest
 
@@ -4683,6 +4906,7 @@ Declared in `internal/protocol/types`.
 | `external_grant` | `jsontext.Value` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
 | `llm_settings` | `*types.RunLLMSettings` — see [`RunLLMSettings`](./types.md#runllmsettings) | optional (`omitempty`) |
+| `inference_allocation` | `*types.InferenceAllocation` — see [`InferenceAllocation`](./types.md#inferenceallocation) | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
 | `description` | `string` | optional (`omitempty`) |
 | `priority` | `int` | optional (`omitempty`) |
@@ -4804,6 +5028,9 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `input_revision` | `uint64` | optional (`omitempty`) |
+| `inference_allocation` | `*types.InferenceAllocationSnapshot` — see [`InferenceAllocationSnapshot`](./types.md#inferenceallocationsnapshot) | optional (`omitempty`) |
+| `incorporated_input_revision` | `uint64` | optional (`omitempty`) |
 | `task` | `types.TaskRow` — see [`TaskRow`](./types.md#taskrow) |  |
 | `parent_session` | `types.TaskParentSessionRef` — see [`TaskParentSessionRef`](./types.md#taskparentsessionref) |  |
 | `parent_task` | `*types.TaskParentTaskRef` — see [`TaskParentTaskRef`](./types.md#taskparenttaskref) | optional (`omitempty`) |

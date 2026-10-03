@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // TestDispatch_AllNineControls_RoundTrip exercises every one of the nine
@@ -42,6 +43,17 @@ func TestDispatch_AllNineControls_RoundTrip(t *testing.T) {
 		t.Run(string(tc.method), func(t *testing.T) {
 			fx := newSurfaceFixture(t)
 			run := testRun("run-" + string(tc.method))
+			if tc.method == methods.MethodUserMessage {
+				ctx := authCtx(t, run.Identity)
+				h, err := fx.tasks.Spawn(ctx, tasks.SpawnRequest{Identity: run, Kind: tasks.KindForeground})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := fx.tasks.MarkRunning(ctx, h.ID); err != nil {
+					t.Fatal(err)
+				}
+				run.RunID = string(h.ID)
+			}
 			inbox, err := fx.steering.Open(run)
 			if err != nil {
 				t.Fatalf("steering.Open: %v", err)

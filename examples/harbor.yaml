@@ -13,6 +13,11 @@ identity:
     - ES256
   issuer: https://issuer.example.com
   audience: harbor
+  # Optional method-restricted bearer/session-admission contract. Enabling this
+  # requires every legacy verifier to enforce audience above, drained old
+  # writers, reconciliation of accepted work, and downgrade prevention.
+  # scoped_token_audience: harbor-scoped
+  # session_admission_legacy_writers_drained: true
   jwks_url: https://issuer.example.com/.well-known/jwks.json
   # Max-stale ceiling: omit (or 0) for the safe default (1h). Past this
   # age without a successful refresh the verifier fails closed instead of
@@ -55,6 +60,10 @@ state:
 #   migration_mode: verify # After a separate direct-endpoint apply.
 
 llm:
+  # Optional trusted monetary ceilings are empty by default. Install only
+  # operator-verified immutable tariffs; see docs/CONFIG.md#llmpricing_manifests.
+  # Every charge category must be explicit; no example production price is given.
+  pricing_manifests: []
   # `bifrost` (Phase 33 — pure-Go gateway against OpenAI / Anthropic /
   # Google / OpenRouter / etc.) is the production default Phase 64
   # (D-089) flipped to. The `mock` driver (Phase 32 — test-grade, no
@@ -400,6 +409,20 @@ events:
   #   legacy_writers_drained: true
 
 artifacts:
+  # Optional exact two-owner transfer; disabled unless this block is configured.
+  # Requires inmem/sqlite/postgres artifacts and all shared writers fence-aware.
+  # Persistent guarantees require SQLite/PostgreSQL state AND artifact stores.
+  # transfer:
+  #   legacy_writers_drained: true
+  #   audience: runtime-a
+  #   epoch: 1
+  #   public_keys:
+  #     coordinator: "<base64 Ed25519 PUBLIC key>"
+  #   peers:
+  #     runtime-b: https://runtime-b.example.com
+  #   max_bytes: 67108864
+  #   timeout: 30s
+  #   allow_loopback_http: false
   # `inmem` (per-process, dev/embedded floor), `fs` (single-binary
   # production target), `sqlite` (Phase 18 — durable, single-node),
   # `postgres` (Phase 18 — durable, multi-replica safe), or `s3`

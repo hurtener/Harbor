@@ -18,19 +18,22 @@ source "scripts/smoke/common.sh"
 LANDING="docs/site/.vitepress/theme/landingSpec.ts"
 HOTRELOAD_TEST="cmd/harbor/cmd_dev_hot_reload_test.go"
 
-# Landing surface reflects the current canonical method count (110), not 109.
-assert_grep_present 'canonical Protocol methods' "${LANDING}" \
-    "landing: canonical-methods stat present"
-assert_grep_present '"110", label: "canonical Protocol methods"' "${LANDING}" \
-    "landing: canonical-methods stat reads 110"
-assert_grep_present '110 canonical methods' "${LANDING}" \
-    "landing: Protocol section reads 110 canonical methods"
-
-# The stale '109' / 'at v1.6' qualifier is gone from the methods claims.
-assert_grep_absent '109 canonical methods' "${LANDING}" \
-    "landing: no stale '109 canonical methods' claim"
+# Both claims use the same canonical manifest-derived count injected by VitePress.
+# A release adding a method must not require a second hand-maintained count.
+assert_grep_present 'value: String\(release\.methodCount\), label: "canonical Protocol methods"' "${LANDING}" \
+    "landing: canonical-methods stat uses the injected manifest count"
+assert_grep_present '\$\{release\.methodCount\} canonical methods' "${LANDING}" \
+    "landing: Protocol prose uses the same injected manifest count"
+assert_grep_present 'const release = __HARBOR_DOCS_RELEASE__' "${LANDING}" \
+    "landing: release data comes from the docs build"
+assert_grep_present 'methodCount: wireManifest\.methods\.length' "docs/site/.vitepress/config.ts" \
+    "landing: docs build derives method count from the canonical wire manifest"
+assert_grep_present '__HARBOR_DOCS_RELEASE__: JSON\.stringify\(releaseMetadata\)' "docs/site/.vitepress/config.ts" \
+    "landing: VitePress injects the release metadata into the client build"
+assert_grep_absent '[0-9]+ canonical methods|value: "[0-9]+", label: "canonical Protocol methods"' "${LANDING}" \
+    "landing: no hand-maintained canonical-method count remains"
 assert_grep_absent 'canonical methods at v1.6' "${LANDING}" \
-    "landing: no 'at v1.6' qualifier on the methods claim"
+    "landing: no stale release qualifier on the methods claim"
 
 # Cosmetic/unprinted dev-banner artifact removed.
 assert_grep_absent '3 drivers registered' "${LANDING}" \

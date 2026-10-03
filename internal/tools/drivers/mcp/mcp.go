@@ -21,6 +21,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/artifactcontent"
 	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
@@ -1118,39 +1119,71 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	egressParams := p.cfg.ArtifactEgress.ParamsFor(mcpName)
 	egressMapping := p.cfg.ArtifactEgress
 	egressMaxBytes := p.cfg.ArtifactEgressMaxBytes
-	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-		// Egress substitution runs ONCE per dispatched call, AHEAD of the
-		// reliability shell. The shell runs up to MaxRetries+1 attempts
-		// (four at the package default), so resolving inside it would make
-		// the transient footprint `ceiling x attempts x in-flight` instead
-		// of `ceiling x in-flight`, and would re-read the store on every
-		// attempt. It is also correct on the merits: an unresolvable id is
-		// a model mistake, not a transient fault, so retrying it burns the
-		// budget without changing the answer.
-		var plan egressPlan
-		if len(egressParams) > 0 {
-			var err error
-			plan, err = p.prepareEgress(ctx, mcpName, args, egressMapping, egressMaxBytes)
+	makeInvoke := func() tools.Invocation {
+		return func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+			ctx = artifactcontent.ForDescriptor(ctx, tool.Name)
+			// Egress substitution runs ONCE per dispatched call, AHEAD of the
+			// reliability shell. The shell runs up to MaxRetries+1 attempts
+			// (four at the package default), so resolving inside it would make
+			// the transient footprint `ceiling x attempts x in-flight` instead
+			// of `ceiling x in-flight`, and would re-read the store on every
+			// attempt. It is also correct on the merits: an unresolvable id is
+			// a model mistake, not a transient fault, so retrying it burns the
+			// budget without changing the answer.
+			var plan egressPlan
+			if len(egressParams) > 0 {
+				var err error
+				plan, err = p.prepareEgress(ctx, mcpName, args, egressMapping, egressMaxBytes)
+				if err != nil {
+					return tools.ToolResult{}, err
+				}
+			}
+			// Credential admission precedes the invocation boundary, but its
+			// broker calls still need the tool's per-attempt timeout. Bound this
+			// one admission phase separately so the retry shell below keeps a
+			// fresh timeout for each transport attempt.
+			admissionCtx := ctx
+			cancelAdmission := func() {}
+			if p.resolveBearerProvider(mcpName) != nil || p.cfg.Injection != nil {
+				admissionTimeout := tool.Policy.TimeoutMS
+				if admissionTimeout == 0 {
+					admissionTimeout = tools.DefaultPolicy().TimeoutMS
+				}
+				if admissionTimeout > 0 {
+					admissionCtx, cancelAdmission = context.WithTimeout(ctx, time.Duration(admissionTimeout)*time.Millisecond)
+				}
+			}
+			preparedCtx, remote, err := p.prepareToolInvocation(admissionCtx, mcpName, args, toolApp, plan)
+			admissionErr := admissionCtx.Err()
+			if err == nil && admissionErr != nil {
+				err = admissionErr
+			}
+			// The admission deadline is finished. Carry only the resolved
+			// credentials onto the original caller context; retaining the
+			// admission context would also limit every later retry to its
+			// already-consumed deadline.
+			admittedCtx := ctx
+			if err == nil {
+				admittedCtx = withBearer(admittedCtx, bearerFrom(preparedCtx))
+				admittedCtx = withInjectedHeaders(admittedCtx, injectedHeadersFrom(preparedCtx))
+			}
+			cancelAdmission()
 			if err != nil {
 				return tools.ToolResult{}, err
 			}
+			run := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+				return tools.RunWithPolicy(ctx, args, remote, nil, nil, tool.Policy)
+			}
+			return tools.InvokeAtBoundary(admittedCtx, tool.Name, run, args)
+
 		}
-		return tools.RunWithPolicy(
-			ctx,
-			args,
-			func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-				return p.callTool(ctx, mcpName, args, toolApp, plan)
-			},
-			nil, // server-side schema validates on the wire; client-side compiled
-			nil, // output validator is optional.
-			tool.Policy,
-		)
 	}
-	return tools.ToolDescriptor{
+	descriptor := tools.ToolDescriptor{
 		Tool:     tool,
-		Invoke:   invoke,
+		Invoke:   makeInvoke(),
 		Validate: nil, // schemas live on the server side; the wire does the validation.
-	}, nil
+	}
+	return tools.DeclareInvocationBoundary(descriptor), nil
 }
 
 // marshalSchema converts a SDK-side InputSchema (any) into a
@@ -1185,15 +1218,15 @@ func deriveSideEffect(a *mcpsdk.ToolAnnotations) tools.SideEffect {
 	return tools.SideEffectExternal
 }
 
-// callTool dispatches a CallTool RPC and lowers the result. Used by
-// the descriptor's Invoke closure under the ToolPolicy shell. toolApp is
+// prepareToolInvocation completes local admission and returns the transport
+// call plus materialization for the descriptor's ordinary ToolPolicy shell. toolApp is
 // the tool-DEFINITION MCP App binding captured at discovery (nil for a
 // non-app tool); it is reconciled with any per-result `_meta.ui` hint to
 // produce the effective app reference on the result.
-func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef, plan egressPlan) (tools.ToolResult, error) {
+func (p *Provider) prepareToolInvocation(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef, plan egressPlan) (context.Context, tools.Invocation, error) {
 	session, err := p.sessionForRead()
 	if err != nil {
-		return tools.ToolResult{}, err
+		return nil, nil, err
 	}
 	var argMap map[string]any
 	switch {
@@ -1205,26 +1238,20 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		argMap = plan.args
 	case len(args) > 0:
 		if err := json.Unmarshal(args, &argMap); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
+			return nil, nil, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
 	meta, err := p.buildIdentityMeta(ctx)
 	if err != nil {
-		return tools.ToolResult{}, err
+		return nil, nil, err
 	}
-	// Thread a per-call scope-shortfall slot onto ctx BEFORE dispatch: the
-	// challenge-capturing transport writes a parsed `403` + insufficient_scope
-	// step-up here, and this call reads it after CallTool returns to enrich the
-	// SAME call's error. Per-run state on ctx, never provider-level state.
-	slot := &scopeShortfallSlot{}
-	ctx = withScopeShortfallSlot(ctx, slot)
 	// Fail-closed per-identity bearer: on a bound connection, resolve the
 	// token (per-tool override, falling back to the connection binding) and
 	// thread it onto the call's ctx BEFORE dispatch. A Token() failure aborts
 	// here — no wire request is issued.
 	ctx, err = p.resolveBearerCtx(ctx, name)
 	if err != nil {
-		return tools.ToolResult{}, err
+		return nil, nil, err
 	}
 	// Fail-closed per-user credential injection (receiver-style server): source
 	// the acting principal's credential from the broker and inject it in the
@@ -1233,109 +1260,120 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// is stamped onto params below. A broker error aborts here — no wire request.
 	ctx, err = p.resolveInjection(ctx, meta)
 	if err != nil {
-		return tools.ToolResult{}, err
+		return nil, nil, err
 	}
-	params := &mcpsdk.CallToolParams{
-		Name:      name,
-		Arguments: argMap,
-	}
-	params.Meta = meta
-	res, err := session.CallTool(ctx, params)
-	if err != nil {
-		// When the transport observed a `403` + insufficient_scope step-up on
-		// this exact call, upgrade the opaque transport error to the typed,
-		// structured *tools.ErrInsufficientScope so the tool-result error path
-		// carries the required-vs-granted gap and classification stops
-		// retrying a shortfall retry can never fix.
-		if sf, granted := slot.get(); sf != nil {
-			// Enrich the connection-view record with the tool name the
-			// transport-side capture could not know (the transport already
-			// recorded a tool-less shortfall; last-write-wins upgrades it).
-			if p.cfg.OnScopeShortfall != nil {
-				named := *sf
-				named.ToolName = name
-				named.GrantedScopes = granted
-				p.cfg.OnScopeShortfall(named)
+	return ctx, func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+		// Thread a per-call scope-shortfall slot onto ctx BEFORE dispatch: the
+		// challenge-capturing transport writes a parsed `403` + insufficient_scope
+		// step-up here, and this call reads it after CallTool returns to enrich the
+		// SAME call's error. Per-run state on ctx, never provider-level state.
+		slot := &scopeShortfallSlot{}
+		ctx = withScopeShortfallSlot(ctx, slot)
+		params := &mcpsdk.CallToolParams{
+			Name:      name,
+			Arguments: argMap,
+		}
+		params.Meta = meta
+		if err := tools.MarkInvocationEffectStarted(ctx); err != nil {
+			return tools.ToolResult{}, err
+		}
+		res, err := session.CallTool(ctx, params)
+		if err != nil {
+			// When the transport observed a `403` + insufficient_scope step-up on
+			// this exact call, upgrade the opaque transport error to the typed,
+			// structured *tools.ErrInsufficientScope so the tool-result error path
+			// carries the required-vs-granted gap and classification stops
+			// retrying a shortfall retry can never fix.
+			if sf, granted := slot.get(); sf != nil {
+				// Enrich the connection-view record with the tool name the
+				// transport-side capture could not know (the transport already
+				// recorded a tool-less shortfall; last-write-wins upgrades it).
+				if p.cfg.OnScopeShortfall != nil {
+					named := *sf
+					named.ToolName = name
+					named.GrantedScopes = granted
+					p.cfg.OnScopeShortfall(named)
+				}
+				return tools.ToolResult{}, &tools.ErrInsufficientScope{
+					Source:             p.source,
+					ToolName:           name,
+					DownstreamResource: sf.DownstreamResource,
+					RequiredScopes:     sf.RequiredScopes,
+					GrantedScopes:      granted,
+					WWWAuthenticate:    sf.WWWAuthenticate,
+					Origin:             sf.Origin,
+				}
 			}
-			return tools.ToolResult{}, &tools.ErrInsufficientScope{
-				Source:             p.source,
-				ToolName:           name,
-				DownstreamResource: sf.DownstreamResource,
-				RequiredScopes:     sf.RequiredScopes,
-				GrantedScopes:      granted,
-				WWWAuthenticate:    sf.WWWAuthenticate,
-				Origin:             sf.Origin,
+			return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
+		}
+		value, lowerErr := lowerCallToolResult(res)
+		// Materialize typed MCP binary parts before either planner observation or
+		// MCP App context capture. A store failure is terminal for this result:
+		// returning the lowered bytes (or a JSON/truncated fallback) would leak
+		// content across the planner boundary.
+		value, err = p.materializeValue(ctx, value, p.contentProducer("tool", name))
+		if err != nil {
+			return tools.ToolResult{}, err
+		}
+		// The substitution RECORD rides the observation — ids, sizes and a
+		// digest, never the bytes. It is deliberately an EXPORTED, marshalled
+		// field (contrast AppRef, which is `json:"-"` and deliberately kept
+		// out of the observation): the model authored the id, and telling it
+		// "the id you named was delivered, N bytes" is honest, content-free
+		// and replayable. Without it the model would have no way to tell a
+		// delivered document from an ignored parameter.
+		value.ArtifactEgress = plan.records
+		// MCP App discovery: the effective app reference is the tool-DEFINITION
+		// binding (the spec-conformant source of the `ui://` resource URI,
+		// captured at discovery), reconciled with any optional per-result
+		// `_meta.ui` hint (which wins for display mode only). The reconciled
+		// reference feeds BOTH the discovery event below AND the app-tool-call
+		// proxy projection, which reads value.AppRef. When the invoked tool has
+		// a UI binding, surface a discovery event so a Protocol client can mount
+		// the inline renderer for this turn. This is the planner-path projection
+		// of the app reference — the proxy path reuses the same value.AppRef on
+		// its response, but a planner-initiated call never enters that path.
+		value.AppRef = reconcileAppRef(toolApp, value.AppRef, uiDisplayModeHint(res.Meta))
+		if value.AppRef != nil {
+			value.AppRef.Binding = p.mintAppBinding(ctx, value.AppRef.ResourceURI, name)
+			// Mint the stable per-invocation id (a content hash of run /
+			// server / tool / args — no mutable Provider field) and
+			// stamp it on the reference so BOTH the discovery event and the
+			// proxy-path projection (which reads value.AppRef) correlate to the
+			// captured tool context.
+			//
+			// The id is stamped ONLY when a context record actually landed. It is
+			// a PROMISE to the reader — a host that receives one fetches the
+			// context via mcp.apps.tool_context and, per the reader contract,
+			// treats a miss as "the record is gone" (a rendered app then reports
+			// its view as unavailable rather than mounting an empty shell). An id
+			// minted with no capturer wired, or after a capture error, would make
+			// that promise falsely and cost the reader its whole render for a
+			// context that never existed. An absent id says the honest thing
+			// instead: no context was captured, so the reader mounts with no
+			// delivery. Capture stays best-effort for the CALL (the tool result is
+			// the planner's source of truth) — this only governs what the
+			// reference claims.
+			runID := ""
+			if quad, qok := identity.QuadrupleFrom(ctx); qok {
+				runID = quad.RunID
 			}
+			id := ToolCallID(runID, string(p.source), name, args)
+			if p.captureToolContext(ctx, id, name, args, value, res.IsError) {
+				value.AppRef.ToolCallID = id
+			}
+			p.publishAppAvailable(ctx, value.AppRef, name)
 		}
-		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
-	}
-	value, lowerErr := lowerCallToolResult(res)
-	// Materialize typed MCP binary parts before either planner observation or
-	// MCP App context capture. A store failure is terminal for this result:
-	// returning the lowered bytes (or a JSON/truncated fallback) would leak
-	// content across the planner boundary.
-	value, err = p.materializeValue(ctx, value, p.contentProducer("tool", name))
-	if err != nil {
-		return tools.ToolResult{}, err
-	}
-	// The substitution RECORD rides the observation — ids, sizes and a
-	// digest, never the bytes. It is deliberately an EXPORTED, marshalled
-	// field (contrast AppRef, which is `json:"-"` and deliberately kept
-	// out of the observation): the model authored the id, and telling it
-	// "the id you named was delivered, N bytes" is honest, content-free
-	// and replayable. Without it the model would have no way to tell a
-	// delivered document from an ignored parameter.
-	value.ArtifactEgress = plan.records
-	// MCP App discovery: the effective app reference is the tool-DEFINITION
-	// binding (the spec-conformant source of the `ui://` resource URI,
-	// captured at discovery), reconciled with any optional per-result
-	// `_meta.ui` hint (which wins for display mode only). The reconciled
-	// reference feeds BOTH the discovery event below AND the app-tool-call
-	// proxy projection, which reads value.AppRef. When the invoked tool has
-	// a UI binding, surface a discovery event so a Protocol client can mount
-	// the inline renderer for this turn. This is the planner-path projection
-	// of the app reference — the proxy path reuses the same value.AppRef on
-	// its response, but a planner-initiated call never enters that path.
-	value.AppRef = reconcileAppRef(toolApp, value.AppRef, uiDisplayModeHint(res.Meta))
-	if value.AppRef != nil {
-		value.AppRef.Binding = p.mintAppBinding(ctx, value.AppRef.ResourceURI, name)
-		// Mint the stable per-invocation id (a content hash of run /
-		// server / tool / args — no mutable Provider field) and
-		// stamp it on the reference so BOTH the discovery event and the
-		// proxy-path projection (which reads value.AppRef) correlate to the
-		// captured tool context.
-		//
-		// The id is stamped ONLY when a context record actually landed. It is
-		// a PROMISE to the reader — a host that receives one fetches the
-		// context via mcp.apps.tool_context and, per the reader contract,
-		// treats a miss as "the record is gone" (a rendered app then reports
-		// its view as unavailable rather than mounting an empty shell). An id
-		// minted with no capturer wired, or after a capture error, would make
-		// that promise falsely and cost the reader its whole render for a
-		// context that never existed. An absent id says the honest thing
-		// instead: no context was captured, so the reader mounts with no
-		// delivery. Capture stays best-effort for the CALL (the tool result is
-		// the planner's source of truth) — this only governs what the
-		// reference claims.
-		runID := ""
-		if quad, qok := identity.QuadrupleFrom(ctx); qok {
-			runID = quad.RunID
+		if lowerErr != nil {
+			result := tools.ToolResult{Value: value}
+			var typed *tools.MCPToolResultError
+			if errors.As(lowerErr, &typed) {
+				typed.Result = result
+			}
+			return result, lowerErr
 		}
-		id := ToolCallID(runID, string(p.source), name, args)
-		if p.captureToolContext(ctx, id, name, args, value, res.IsError) {
-			value.AppRef.ToolCallID = id
-		}
-		p.publishAppAvailable(ctx, value.AppRef, name)
-	}
-	if lowerErr != nil {
-		result := tools.ToolResult{Value: value}
-		var typed *tools.MCPToolResultError
-		if errors.As(lowerErr, &typed) {
-			typed.Result = result
-		}
-		return result, lowerErr
-	}
-	return tools.ToolResult{Value: value}, nil
+		return tools.ToolResult{Value: value}, nil
+	}, nil
 }
 
 // publishAppAvailable emits the MCP App discovery event for an invoked
@@ -1458,6 +1496,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 	}
 	uri := r.URI
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+		ctx = artifactcontent.ForDescriptor(ctx, tool.Name)
 		return tools.RunWithPolicy(
 			ctx, args,
 			func(ctx context.Context, _ json.RawMessage) (tools.ToolResult, error) {
@@ -1513,6 +1552,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 	}
 	name := pr.Name
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+		ctx = artifactcontent.ForDescriptor(ctx, tool.Name)
 		return tools.RunWithPolicy(
 			ctx, args,
 			func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
@@ -1901,6 +1941,12 @@ func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Co
 	}
 	tok, err := provider.Token(ctx, p.source)
 	if err != nil {
+		var required *auth.ErrAuthRequired
+		if errors.As(err, &required) && required.PauseToken != "" {
+			if parkErr := tools.ParkInvocationAdmission(ctx); parkErr != nil {
+				return nil, parkErr
+			}
+		}
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
 	}
@@ -1953,6 +1999,12 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 	}
 	tok, err := inj.Provider.Token(ctx, p.source)
 	if err != nil {
+		var required *auth.ErrAuthRequired
+		if errors.As(err, &required) && required.PauseToken != "" {
+			if parkErr := tools.ParkInvocationAdmission(ctx); parkErr != nil {
+				return nil, parkErr
+			}
+		}
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
 	}

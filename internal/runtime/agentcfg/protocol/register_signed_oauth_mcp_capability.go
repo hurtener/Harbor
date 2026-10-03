@@ -14,7 +14,9 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -24,6 +26,13 @@ import (
 // operation. The provider is prepared privately and handed directly to MCP
 // preparation; it is never installed in the generic ProviderSet.
 func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest) (prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigRegisterOAuthMCPCapability); err != nil {
+		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+	}
+	return s.registerOAuthMCPCapabilityAuthorized(ctx, req)
+}
+
+func (s *Service) registerOAuthMCPCapabilityAuthorized(ctx context.Context, req prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest) (prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
@@ -394,6 +403,9 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 // agent_config:user entitlement is present, and signed agent reach authorizes
 // the target agent. The durable pair is written in ConfigScopeUser.
 func (s *Service) RegisterUserOAuthMCPCapability(ctx context.Context, req prototypes.AgentConfigUserRegisterOAuthMCPCapabilityRequest) (prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse, error) {
+	if err := sessionadmission.CheckMethod(ctx, methods.MethodAgentConfigUserRegisterOAuthMCPCapability); err != nil {
+		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
+	}
 	id, err := identityFromScope(req.Identity, req.AgentID)
 	if err != nil {
 		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
@@ -402,7 +414,7 @@ func (s *Service) RegisterUserOAuthMCPCapability(ctx context.Context, req protot
 		return prototypes.AgentConfigUserRegisterOAuthMCPCapabilityResponse{}, err
 	}
 	scopedCtx := withSignedOAuthMCPConfigScope(ctx, agentcfg.ConfigScopeUser)
-	response, err := s.RegisterOAuthMCPCapability(scopedCtx, prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
+	response, err := s.registerOAuthMCPCapabilityAuthorized(scopedCtx, prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
 		Identity: req.Identity, AgentID: req.AgentID, ProviderName: req.ProviderName, Broker: req.Broker,
 		Audience: req.Audience, Scopes: append([]string(nil), req.Scopes...), Connection: req.Connection,
 		ExpectedContentHash: req.ExpectedContentHash, AuthorityEnvelope: req.AuthorityEnvelope,

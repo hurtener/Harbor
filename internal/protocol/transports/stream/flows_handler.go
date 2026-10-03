@@ -429,6 +429,10 @@ func reconcileFlowsIdentity(r *http.Request, scope *prototypes.IdentityScope) *f
 // classifyFlowsError maps a Surface error onto a canonical Protocol
 // Code + HTTP status + safe operator-facing message.
 func classifyFlowsError(err error) (protoerrors.Code, int, string) {
+	var perr *protoerrors.Error
+	if errors.As(err, &perr) {
+		return perr.Code, bodyScopeStatus(perr.Code), perr.Message
+	}
 	switch {
 	case errors.Is(err, flowprotocol.ErrIdentityRequired):
 		return protoerrors.CodeIdentityRequired, http.StatusUnauthorized,

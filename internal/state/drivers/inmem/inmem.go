@@ -8,9 +8,9 @@
 //   - A primary map keyed on (Quadruple, Kind) holds the active
 //     record per slot. A secondary map keyed on EventID resolves
 //     idempotency lookups and `LoadByEventID`.
-//   - A single `sync.RWMutex` guards both maps. The driver does no
-//     I/O so contention is bounded by Go's map throughput; a
-//     finer-grained lock structure would be premature.
+//   - A single `sync.RWMutex` guards both maps and atomic predicates.
+//     Stored byte slices are immutable. Point reads and writes allocate/copy
+//     payloads outside that lock so unrelated scopes do not queue behind it.
 //   - `Bytes` is deep-copied on Save and on Load to defend against
 //     callers mutating the slice they passed in (or the slice they
 //     received). Future SQL drivers naturally avoid this issue
@@ -96,6 +96,7 @@ func (d *driver) Save(_ context.Context, r state.StateRecord) error {
 	if err := state.ValidateRecord(r); err != nil {
 		return err
 	}
+	r.Bytes = cloneBytes(r.Bytes)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -131,7 +132,6 @@ func (d *driver) Save(_ context.Context, r state.StateRecord) error {
 	}
 
 	stored := state.StoredRecord(r)
-	stored.Bytes = cloneBytes(r.Bytes)
 	if stored.UpdatedAt.IsZero() {
 		stored.UpdatedAt = time.Now()
 	}
@@ -152,6 +152,7 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	if err := state.ValidateSaveIf(expectations, next); err != nil {
 		return err
 	}
+	next.Bytes = cloneBytes(next.Bytes)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -183,6 +184,14 @@ func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpec
 	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
 		return err
 	}
+	// Detach the slice headers as well as their payloads; callers retain both.
+	// Predicates and all mutations still share the one critical section below.
+	prepared := make([]state.StateRecord, len(writes))
+	for i, write := range writes {
+		prepared[i] = write
+		prepared[i].Bytes = cloneBytes(write.Bytes)
+	}
+	writes = prepared
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -270,7 +279,8 @@ func (d *driver) FenceIf(ctx context.Context, expectation state.SlotExpectation,
 	return fn()
 }
 
-// saveLocked implements Save after the caller has acquired d.mu.
+// saveLocked implements Save after the caller has detached the payload and
+// acquired d.mu. Published payloads are never subsequently modified in place.
 func (d *driver) saveLocked(r state.StateRecord) error {
 	key := keyFor(r.Identity, r.Kind)
 	if prevKey, seen := d.eventIdx[r.ID]; seen {
@@ -287,7 +297,6 @@ func (d *driver) saveLocked(r state.StateRecord) error {
 		delete(d.eventIdx, existing.ID)
 	}
 	stored := state.StoredRecord(r)
-	stored.Bytes = cloneBytes(r.Bytes)
 	if stored.UpdatedAt.IsZero() {
 		stored.UpdatedAt = time.Now()
 	}
@@ -309,12 +318,14 @@ func (d *driver) Load(_ context.Context, q identity.Quadruple, kind string) (sta
 	}
 
 	d.mu.RLock()
-	defer d.mu.RUnlock()
 	rec, ok := d.records[keyFor(q, kind)]
+	d.mu.RUnlock()
 	if !ok {
 		return state.StateRecord{}, fmt.Errorf("%w: %s/%s/%s/%s kind=%s",
 			state.ErrNotFound, q.TenantID, q.UserID, q.SessionID, q.RunID, kind)
 	}
+	// The record value captures one generation. Its immutable payload remains
+	// valid if a concurrent writer replaces or deletes that generation now.
 	rec.Bytes = cloneBytes(rec.Bytes)
 	return rec, nil
 }
@@ -329,13 +340,17 @@ func (d *driver) LoadByEventID(_ context.Context, eventID state.EventID) (state.
 	}
 
 	d.mu.RLock()
-	defer d.mu.RUnlock()
 	key, ok := d.eventIdx[eventID]
+	var rec state.StateRecord
+	var found bool
+	if ok {
+		rec, found = d.records[key]
+	}
+	d.mu.RUnlock()
 	if !ok {
 		return state.StateRecord{}, fmt.Errorf("%w: event_id=%s", state.ErrNotFound, eventID)
 	}
-	rec, ok := d.records[key]
-	if !ok {
+	if !found {
 		// Secondary points at a slot with no primary record — a
 		// driver bug. Surface it loudly.
 		return state.StateRecord{}, fmt.Errorf("%w: secondary index points at missing slot for event_id=%s",

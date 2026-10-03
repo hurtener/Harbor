@@ -65,8 +65,12 @@ assert_grep_present 'same compactor serves in-run' "internal/llm/summarizer/doc.
 #    onto RunSpec.Base.Budget. Pin source, helper, AND projection — a
 #    refactor that stops the configured budget from reaching the spec
 #    breaks one of the three.
-assert_grep_present 'tokenBudget := d\.tokenBudget' "internal/runtime/serve/runloop.go" \
-    "cmd run-loop driver reads memory.budget_tokens into the per-run budget"
+assert_grep_present '^[[:space:]]*tokenBudget, memoryErr := projection\.ActiveMemoryBudget\(.*d\.tokenBudget,' "internal/runtime/serve/runloop.go" \
+    "served run freezes active memory budget with the canonical YAML fallback"
+assert_grep_present '^[[:space:]]*return yamlBudget, nil' "internal/runtime/agentcfg/projection/memory.go" \
+    "memory budget projection preserves YAML when no active override exists"
+assert_grep_present '^[[:space:]]*return rev.Payload.Memory.BudgetTokens, nil' "internal/runtime/agentcfg/projection/memory.go" \
+    "memory budget projection returns the frozen active agent setting"
 assert_grep_present 'TokenBudget:[[:space:]]+cfg.Memory.BudgetTokens' "internal/runtime/serve/serve.go" \
     "served assembly reads the canonical memory budget"
 assert_grep_present 'Budget:.*s.Cfg.Memory.BudgetTokens' "internal/runtime/assemble/runonce.go" \
@@ -117,5 +121,14 @@ if go test ./test/integration/ -run 'Phase111e' -race -count=1 >/dev/null 2>&1; 
 else
     fail "Phase111e long-trajectory compression E2E failed (-race)"
 fi
+
+budget_log="$(mktemp "${TMPDIR:-/tmp}/harbor-smoke-budget.XXXXXX")"
+trap 'rm -f "$budget_log"' EXIT
+assert_go_tests_pass "$budget_log" '-race -p 1 ./internal/runtime/agentcfg/projection ./internal/runtime/serve' \
+    'active memory budget fallback, isolation, next-run update and fail-closed projection' \
+    TestActiveMemoryBudget \
+    TestActiveMemoryBudgetConcurrentIsolation \
+    TestRunOne_MemoryBudgetNextRun \
+    TestRunOne_MemoryBudgetProjectionError_FailsRun
 
 smoke_summary

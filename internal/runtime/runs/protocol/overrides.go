@@ -75,7 +75,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/sessionadmission"
 )
 
 // ComposeLLMOverrides merges the three per-run LLM-override layers into the
@@ -704,6 +706,17 @@ func NewService(store *Store, opts ...Option) (*Service, error) {
 // The override applies to the NEXT message in the session — it is not
 // retroactive. SetOverrides does not touch any past message.
 func (s *Service) SetOverrides(ctx context.Context, req prototypes.RunSetOverridesRequest) (prototypes.RunSetOverridesResponse, error) {
+	target := identity.Identity{TenantID: req.Identity.Tenant, UserID: req.Identity.User, SessionID: req.Identity.Session}
+	return sessionadmission.Run(ctx, target, methods.MethodRunsSetOverrides, func(accepted context.Context) (prototypes.RunSetOverridesResponse, error) {
+		out, err := s.setOverridesAccepted(accepted, req)
+		if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrIdentityRequired) || errors.Is(err, ErrCrossSessionScope) {
+			err = sessionadmission.Rejected(err)
+		}
+		return out, err
+	})
+}
+
+func (s *Service) setOverridesAccepted(ctx context.Context, req prototypes.RunSetOverridesRequest) (prototypes.RunSetOverridesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.RunSetOverridesResponse{}, err
 	}
