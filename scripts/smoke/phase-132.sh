@@ -6,7 +6,7 @@
 # The RUNNING coverage for this phase lives in scripts/smoke/phase-112b.sh
 # leg 6: it compiles the checked-in examples/embed-runonce/ worked example and
 # runs the N>=100 concurrent-reuse -race stress plus the NewRunContext
-# projection-parity table. That delegation is REAL — verified by grep, not
+# no-parallel-memory-projection test. That delegation is REAL — verified by grep, not
 # assumed — and it is deliberately not duplicated here: running the same
 # -race suite twice per preflight buys nothing.
 #
@@ -40,9 +40,9 @@ assert_grep_present 'examples/embed-runonce' "${DELEGATE}" \
 # delegate still RUNS them under -race.
 assert_grep_present 'TestRunOnce_ConcurrentReuse_NoBleedNoLeak' "${DELEGATE}" \
     'phase 132: delegate still pins the N>=100 concurrent-reuse RunOnce -race test'
-assert_grep_present 'TestNewRunContext_MemoryParity' "${DELEGATE}" \
-    'phase 132: delegate still pins the NewRunContext projection-parity test'
-assert_grep_present 'go test -race -run .TestRunOnce' "${DELEGATE}" \
-    'phase 132: delegate still executes the RunOnce/NewRunContext suite under -race'
+assert_grep_present 'TestNewRunContext_NoParallelMemoryProjection' "${DELEGATE}" \
+    'phase 132: delegate still pins the NewRunContext no-parallel-memory-projection test'
+assert_grep_present 'go test -race -run "TestRunOnce\|TestNewRunContext" \./internal/runtime/assemble/ \./internal/runtime/runctx/' "${DELEGATE}" \
+    'phase 132: delegate still executes both RunOnce/NewRunContext packages under -race'
 
 smoke_summary
