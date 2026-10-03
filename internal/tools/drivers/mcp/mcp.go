@@ -1138,7 +1138,36 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 					return tools.ToolResult{}, err
 				}
 			}
-			admittedCtx, remote, err := p.prepareToolInvocation(ctx, mcpName, args, toolApp, plan)
+			// Credential admission precedes the invocation boundary, but its
+			// broker calls still need the tool's per-attempt timeout. Bound this
+			// one admission phase separately so the retry shell below keeps a
+			// fresh timeout for each transport attempt.
+			admissionCtx := ctx
+			cancelAdmission := func() {}
+			if p.resolveBearerProvider(mcpName) != nil || p.cfg.Injection != nil {
+				admissionTimeout := tool.Policy.TimeoutMS
+				if admissionTimeout == 0 {
+					admissionTimeout = tools.DefaultPolicy().TimeoutMS
+				}
+				if admissionTimeout > 0 {
+					admissionCtx, cancelAdmission = context.WithTimeout(ctx, time.Duration(admissionTimeout)*time.Millisecond)
+				}
+			}
+			preparedCtx, remote, err := p.prepareToolInvocation(admissionCtx, mcpName, args, toolApp, plan)
+			admissionErr := admissionCtx.Err()
+			if err == nil && admissionErr != nil {
+				err = admissionErr
+			}
+			// The admission deadline is finished. Carry only the resolved
+			// credentials onto the original caller context; retaining the
+			// admission context would also limit every later retry to its
+			// already-consumed deadline.
+			admittedCtx := ctx
+			if err == nil {
+				admittedCtx = withBearer(admittedCtx, bearerFrom(preparedCtx))
+				admittedCtx = withInjectedHeaders(admittedCtx, injectedHeadersFrom(preparedCtx))
+			}
+			cancelAdmission()
 			if err != nil {
 				return tools.ToolResult{}, err
 			}
