@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.0-rc.1] — 2026-10-03
+
+This is an opt-in release candidate for testing, not a stable compatibility
+promise. It includes known Go source incompatibilities for custom implementations
+and mocks of the public `TaskRegistry` and Protocol `Client` interfaces; their
+new required methods must be implemented before upgrading. Ordinary callers of
+the built-in implementations are a different compatibility case. Protocol
+version remains `0.1.0`; additive wire fields do not imply Go source compatibility.
+Stable release versioning and compatibility remain a separate decision.
+
 ### Added
 
 - Recipient-admitted direct artifact transfer between boot-pinned runtimes,
@@ -62,8 +72,10 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Action required
 
-- Custom Go Protocol `Client`, `TaskRegistry` and `llm.AllocationStore`
-  implementations must implement the new methods. Wire fields and methods are additive; Protocol stays `0.1.0`.
+- Existing custom Go Protocol `Client` and `TaskRegistry` implementations and
+  mocks must add the new required methods. Custom backends for the new allocation
+  feature must implement the complete `llm.AllocationStore` contract. Wire fields
+  and methods are additive; Protocol stays `0.1.0`.
 - Restart-safe task receipts and allocations require the durable task driver
   with SQLite or PostgreSQL state. One runtime owns an active task registry;
   shared active registry ownership is unsupported.

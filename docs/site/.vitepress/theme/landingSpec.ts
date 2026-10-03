@@ -23,6 +23,8 @@ declare const __HARBOR_DOCS_RELEASE__: {
   methodCount: number;
 };
 const release = __HARBOR_DOCS_RELEASE__;
+const installCommand = `go install github.com/hurtener/Harbor/cmd/harbor@${release.version}`;
+const isPrerelease = release.version.includes("-");
 
 export const GITHUB = "https://github.com/hurtener/Harbor";
 export const LICENSE_URL = `${GITHUB}/blob/main/LICENSE`;
@@ -32,8 +34,11 @@ export const hero = {
   name: "Harbor",
   tagline: "Durable, steerable, event-driven AI agents in Go.",
   lead:
+    (isPrerelease
+      ? "Opt-in prerelease for testing. Custom Go implementations and mocks require migration; stable compatibility is not claimed. "
+      : "") +
     "Harbor brings tasks, tools, session history and execution evidence into one Go runtime. Durable stores preserve the configured state; interrupted work stays subject to explicit recovery and uncertainty rules. Tenant, user and session isolation are part of the runtime contract. Choose a planner and run it through one CGo-free static binary.",
-  install: "go install github.com/hurtener/Harbor/cmd/harbor@latest",
+  install: installCommand,
   ctas: [
     { label: "Get started", link: "/get-started", kind: "primary" },
     { label: "Read the design RFC", link: "/reference/rfc", kind: "secondary" },
@@ -41,7 +46,7 @@ export const hero = {
   terminal: {
     file: "your-laptop",
     lines: [
-      "$ go install github.com/hurtener/Harbor/cmd/harbor@latest",
+      `$ ${installCommand}`,
       "$ harbor init        # tiered harbor.yaml + companion docs",
       "$ harbor validate ./harbor.yaml",
       "  ✓ config valid",
@@ -53,7 +58,9 @@ export const hero = {
 };
 
 export const announcement = {
-  text: `Documentation for ${release.version} · Read the current release notes and compatibility requirements`,
+  text: isPrerelease
+    ? `Prerelease ${release.version} for opt-in testing · Custom Go implementations and mocks require migration; stable compatibility is not claimed`
+    : `Documentation for ${release.version} · Read the current release notes and compatibility requirements`,
   link: "/reference/changelog",
 };
 
@@ -76,7 +83,7 @@ export const codeShowcase = {
       label: "Scaffold & run",
       file: "terminal",
       lang: "bash",
-      code: `go install github.com/hurtener/Harbor/cmd/harbor@latest
+      code: `${installCommand}
 
 mkdir my-agent && cd my-agent
 harbor init                       # tiered harbor.yaml + AGENTS.md / CLAUDE.md / README.md
@@ -305,7 +312,7 @@ export const whatsNew = {
 export const finalCta = {
   headline: "Boot the whole runtime locally with one command",
   sub: "Then read the design RFC to see how it's built, or browse the 10 operator skills and 12 recipes that walk you from scaffold to production.",
-  install: "go install github.com/hurtener/Harbor/cmd/harbor@latest",
+  install: installCommand,
   run: "harbor dev",
   ctas: [
     { label: "Get started", link: "/get-started", kind: "primary" },

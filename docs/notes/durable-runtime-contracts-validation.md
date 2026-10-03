@@ -1,5 +1,48 @@
 # Durable runtime contracts: candidate qualification
 
+## Release-candidate checkpoint: 2026-10-03
+
+The intended publication is `v1.33.0-rc.1`, an opt-in prerelease for consumer
+testing, not stable-release qualification. Runtime source checkpoint
+`8ff7a63bdc910b0a8472e3fc24a2e5992f16250f` passed all 17 hosted CI jobs,
+including preflight, Console end-to-end tests and the performance gate, in
+[run 37105844251](https://github.com/hurtener/Harbor/actions/runs/37105844251).
+The [docs build](https://github.com/hurtener/Harbor/actions/runs/37105844330)
+also passed. The release owner reported completed independent adversarial review
+and its credential-admission timeout correction. This is owner-reported review
+evidence; no separate GitHub review submission is recorded.
+
+A frozen `v1.32.1` implementer-contract compile witness passes against that stable
+source and fails against this candidate: `TaskRegistry` adds six required
+methods, and Protocol `Client` adds nine. Custom implementations and mocks need
+source changes. `AllocationStore` is newly introduced in this candidate, not a
+previous stable interface. No claim of source-compatible minor stable release
+follows from additive wire changes or the `-rc.1` suffix. The Protocol remains
+`0.1.0` and the generated candidate manifest contains 160 methods.
+
+The required registry additions are `AcceptInput`, `RefuseInput`,
+`GetInputReceipt`, `MarkInputApplied`, `BeginOutputInvocation` and
+`FinishOutputInvocation`. The client additions are `SessionsSetAdmission`,
+`SessionTurnsList`, `SessionTurnsGet`, `ControlReceipt`, `ArtifactsExportAnswer`,
+`ArtifactsPrepareImport`, `ArtifactsTransfer`, `ArtifactsTransferStatus` and
+`ArtifactsRevokeTransfer`. Implementations must honor the documented contracts;
+empty success stubs do not provide compatibility.
+
+The newer scoped-admission plan records five complete two-runtime native
+consumer reruns covering lost-acknowledgement replay, restart, receipt provenance
+and downstream completion. This supersedes earlier pending statements for that
+scenario, not every possible downstream consumer. Crash-uncertain admission
+reservations still remain blocked without automatic expiry or refund; ordinary
+lost-HTTP-acknowledgement recovery does not close that crash window.
+
+The following sections preserve historical focused checkpoints. Their old
+pending CI and review statements are superseded only by the evidence above.
+Release-metadata changes require their own exact-head checks. Main deployment,
+published candidate-document verification, RC artifacts and downstream RC
+acceptance are not established by a PR build. Stable release remains held.
+
+## Original qualification scope
+
 This is an unmerged candidate for three generic runtime contracts: exact artifact
 transfer, durable task input receipts, and cumulative inference allocations. All
 provider fixtures in the checks below are synthetic; no paid inference is part
