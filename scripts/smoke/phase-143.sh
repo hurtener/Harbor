@@ -19,15 +19,37 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# 1. The assemble runner + envelope + planner schema surface under -race.
-if go test -race -count=1 -timeout 120s \
-	./internal/runtime/assemble/... \
-	./internal/runtime/runctx/... \
-	./internal/planner/ >/dev/null 2>&1; then
-	ok 'phase 143: assemble + runctx + planner output-schema tests pass under -race'
-else
-	fail 'phase 143: output-schema unit tests failed (run `go test -race ./internal/runtime/assemble/... ./internal/planner/`)'
-fi
+# 1. Require the actual output-schema contracts under the existing race/bound.
+# The full assembler now also owns cumulative-memory recovery; its complete
+# package suite belongs to make test and the retained-context smoke. Including
+# it in this two-minute schema gate timed out on unrelated rollover tests.
+test_log="$(mktemp -t harbor-phase143-XXXXXX)"
+trap 'rm -f "$test_log"' EXIT
+assert_go_tests_pass "$test_log" \
+    '-race -count=1 -timeout=120s ./internal/runtime/assemble ./internal/runtime/runctx ./internal/planner' \
+    'phase 143: run output-schema, envelope and validator contracts' \
+    TestRunOnce_WithOutputSchema_EmptySchema_FailsLoud \
+    TestRunOnce_WithOutputSchema_HappyPath_ValidatedPayload \
+    TestRunOnce_WithOutputSchema_ToolsEnvelopeUnwrapped_LandsInAnswerPayload \
+    TestRunOnce_WithOutputSchema_InvalidOutput_ErrOutputInvalid \
+    TestRunOnce_WithOutputSchema_DowngradeExhausted_ErrOutputInvalid \
+    TestRunOnce_WithOutputSchema_NonGoalFinish_NoOutputInvalid \
+    TestRunOnce_WithOutputSchema_StreamSuppressesTokens \
+    TestRunOnce_WithOutputSchema_ConcurrentMixedTraffic_NoBleed \
+    TestNewRunContext_OutputSchema_CompiledOnceAndThreaded \
+    TestFinishAnswerEnvelope_Table \
+    TestFinishAnswerEnvelope_AbsentSchema_ByteIdenticalGolden \
+    TestFinishAnswerEnvelope_WithPayload_Golden \
+    TestAnswerEnvelope_GoldenJSON_Phase106ByteCompat \
+    TestAnswerEnvelope_GoldenJSON_WithPayload \
+    TestAnswerEnvelope_RoundTrip \
+    TestAnswerEnvelope_TaskErrorCodeForFinish \
+    TestCompileOutputSchema_RejectsEmpty \
+    TestCompileOutputSchema_RejectsInvalid \
+    TestOutputSchemaValidator_ValidateTable \
+    TestOutputSchemaValidator_RawIsImmutableCopy \
+    TestOutputSchemaValidator_NilIsNoOp \
+    TestOutputSchemaValidator_ConcurrentValidate
 
 # 2. The §13 primitive-with-consumer E2E (happy / corrective-retry /
 #    exhaustion / planner-agnostic deterministic leg) under -race.

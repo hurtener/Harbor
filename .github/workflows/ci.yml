@@ -455,6 +455,17 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/runtime/agentcfg/protocol -run '^TestRegisterOAuthMCPCapability_PostgresTwoIndependentRuntimes$'
+      - name: Run turns/postgres conformance and isolation against postgres:16
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/turns-postgres.XXXXXX")"
+          trap 'rm -f "${test_log}"' EXIT
+          go test -v -race -count=1 -timeout 180s ./internal/sessions/turns/drivers/postgres | tee "${test_log}"
+          for test_name in TestPostgres_Conformance TestPostgres_Concurrent_MultiSessionIsolation TestPostgres_Indexes_QueriesUseIndexScans; do
+            grep -Fq -- "--- PASS: ${test_name} (" "${test_log}"
+          done
       - name: Run v1.26 production OAuth and retirement paths
         run: |
           set -euo pipefail
@@ -517,6 +528,20 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/memory/drivers/postgres/...
+      - name: Complete cumulative owner and assembler against postgres:16
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+          GOFLAGS: '-p=1'
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/cumulative-postgres.XXXXXX")"
+          trap 'rm -f "${test_log}"' EXIT
+          # The full suites use Go's normal ten-minute package bound. The
+          # historical two-minute phase25a/143 smoke bounds remain unchanged.
+          go test -v -race -count=1 -timeout=10m ./internal/memory/session ./internal/runtime/assemble | tee "${test_log}"
+          for test_name in TestRetainedCumulative_LargeReceiptsExceedLegacyByteLimitAfterCompaction TestRunOnce_CumulativeMemory_FirstConstraintSurvivesWindowRollover; do
+            grep -Eq -- "^[[:space:]]*--- PASS: ${test_name}/postgres(/| )" "${test_log}"
+          done
 
   skills-postgres:
     name: skills/postgres conformance (postgres:16)
@@ -597,11 +622,10 @@ jobs:
     name: artifacts/s3 conformance (MinIO)
     runs-on: ubuntu-latest
     # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
-    # against in CI. We launch it via `docker run` rather than a
-    # GitHub Actions service container because the official
-    # `quay.io/minio/minio` image needs `server /data` as the entrypoint args
-    # (services blocks can't pass command args cleanly), and Bitnami's
-    # alternative dropped its `latest` tag. Credentials are documented
+    # against in CI. Official registries now refuse the historical image, so
+    # build its exact upstream release source instead of changing backend or
+    # skipping conformance. This commit is the peeled upstream
+    # RELEASE.2024-12-18T13-15-44Z tag. Credentials are documented
     # dummy values per AGENTS.md §7 #2 — no real secrets cross this
     # boundary.
     steps:
@@ -617,12 +641,11 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
         run: |
           set -euo pipefail
-          docker run -d --name harbor-minio \
-            -p 127.0.0.1:9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z \
-            server /data
+          GOBIN="$RUNNER_TEMP/minio-bin" go install github.com/minio/minio@16f8cf1c52f0a77eeb8f7565aaf7f7df12454583
+          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            "$RUNNER_TEMP/minio-bin/minio" server "$RUNNER_TEMP/harbor-minio-data" \
+            --address 127.0.0.1:9000 > "$RUNNER_TEMP/harbor-minio.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/harbor-minio.pid"
           # Poll for liveness; create the bucket once MinIO answers.
           for i in $(seq 1 30); do
             if curl -fsS -o /dev/null http://localhost:9000/minio/health/live; then
@@ -661,8 +684,12 @@ jobs:
       - name: Tear down MinIO
         if: always()
         run: |
-          docker logs harbor-minio || true
-          docker rm -f harbor-minio || true
+          if [ -f "$RUNNER_TEMP/harbor-minio.log" ]; then
+            cat "$RUNNER_TEMP/harbor-minio.log"
+          fi
+          if [ -f "$RUNNER_TEMP/harbor-minio.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/harbor-minio.pid")" || true
+          fi
 
   isolation:
     name: cross-tenant isolation conformance harness
