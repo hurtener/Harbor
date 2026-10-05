@@ -17,6 +17,41 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Source-build scaffolds now use the latest published v1.32.1 module fallback,
+  preserving the Go 1.27.1 generated-project requirement. The S3 conformance
+  fixture builds the exact historical MinIO release source when its official
+  container registries refuse the image; the native backend gate is preserved.
+- Native smoke gates follow the current session-owned memory projection,
+  truncated-summary source-preservation test and shared historical Batch replay
+  path. The Batch gate also executes both named prompt-replay regressions.
+- LLM and Bifrost native smokes retain and print failing test output instead of
+  discarding the diagnostic; their race detector and three-/two-minute bounds
+  are unchanged.
+- PostgreSQL turns tests now populate each session's own fixture payload and
+  read every EXPLAIN plan row before checking index usage. CI explicitly runs
+  native turns conformance, concurrent isolation and index regressions; the
+  sessions smoke preserves failing diagnostics with its existing bounds.
+- PostgreSQL turns paging and exact older-row counts use a composite key range
+  instead of an expanded OR, preserving strict cursor boundaries and allowing
+  the keyset index to bound both queries. Index fixtures explicitly vacuum
+  settled history before checking index-only counts and recognize backward
+  scans used by oldest-first retention on the descending keyset index.
+- Output-schema smoke requires every named schema/envelope/validator test under
+  its existing race/time bound instead of accidentally running the expanded
+  cumulative-memory package suite. The complete assembler suite remains in the
+  full test gate. Events smoke uses an isolated log and a portable failure
+  heading so concurrent worktrees cannot overwrite its diagnostic.
+- Historical memory smoke guards now follow the shared retained owner and
+  active scoped budget, require the renamed conversation-composition test,
+  and include both retained-context errors in the closed canonical set.
+  Memory-driver/owner failures retain diagnostics. The historical memory
+  smoke requires the complete registry and named durability/isolation/expiry
+  contracts at its existing bound; the retained-context smoke and full test gate retain
+  expanded evidence coverage. CI additionally runs the complete cumulative
+  owner and assembler with PostgreSQL and requires actual native PASS records.
+
 ### Added
 
 - A signed Start operation can bind its exact request body, retry key, and

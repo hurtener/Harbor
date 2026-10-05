@@ -30,13 +30,15 @@ source "scripts/smoke/common.sh"
 # 1. The full events package tree, including the suite via both driver
 #    consumers, passes under -race.
 # ----------------------------------------------------------------------------
+test_log="$(mktemp -t harbor-phase147-XXXXXX)"
+trap 'rm -f "$test_log"' EXIT
 if [ -d "internal/events/conformancetest" ]; then
-    if go test -race -count=1 ./internal/events/... >/tmp/phase-147-events.log 2>&1; then
+    if go test -race -count=1 ./internal/events/... >"$test_log" 2>&1; then
         ok "phase 147: go test -race ./internal/events/... passes (suite + both consumers + driver-specific tests)"
     else
         fail "phase 147: go test -race ./internal/events/... failed"
-        printf '--- go test output ---\n'
-        cat /tmp/phase-147-events.log
+        printf '%s\n' '--- go test output ---'
+        cat "$test_log"
     fi
 else
     skip "phase 147: internal/events/conformancetest not yet implemented"

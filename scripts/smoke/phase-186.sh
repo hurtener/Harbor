@@ -93,11 +93,19 @@ fi
 #     call_id) — no degraded legacy replay after the executor activates.
 # ----------------------------------------------------------------------------
 if grep -qE 'func renderNativeBatchStep\(' internal/planner/react/prompt.go \
-    && grep -qE 'case step\.Action\.\(planner\.Batch\)|step\.Action\.\(planner\.Batch\)' internal/planner/react/prompt.go; then
+    && grep -qE 'step\.Action\.\(planner\.Batch\)' internal/planner/react/historical.go \
+    && grep -qE 'renderStepMessages\(step, replayMode, i\)' internal/planner/react/prompt.go; then
     ok 'phase 186: React prompt builder reconstructs a Batch step (renderNativeBatchStep)'
 else
     fail 'phase 186: React prompt builder has no Batch step reconstruction'
 fi
+
+replay_log="$(mktemp "${TMPDIR:-/tmp}/harbor-smoke-phase-186-replay.XXXXXX")"
+trap 'rm -f "${replay_log}"' EXIT
+assert_go_tests_pass "${replay_log}" \
+    '-race -count=1 ./internal/planner/react' 'phase 186: Batch replay through the current prompt builder' \
+    TestRenderNativeBatchStep_RoundTrip \
+    TestDefaultBuilder_BatchStepRoundTripsThroughMessages
 
 # ----------------------------------------------------------------------------
 # 6. The assembler wires BOTH the breadth cap AND the hard-cancel hook

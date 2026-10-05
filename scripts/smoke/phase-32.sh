@@ -24,9 +24,12 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if go test -race -count=1 -timeout 180s ./internal/llm/... >/dev/null 2>&1; then
+test_log="$(mktemp "${TMPDIR:-/tmp}/harbor-phase32-gotest.XXXXXX")"
+trap 'rm -f "$test_log"' EXIT
+if go test -race -count=1 -timeout 180s ./internal/llm/... >"$test_log" 2>&1; then
     ok 'phase 32: internal/llm tests pass under -race (interface + safety net + materialize + mock driver + D-025)'
 else
+    tail -n 80 "$test_log"
     fail 'phase 32: internal/llm tests failed (run `go test -race ./internal/llm/...` for detail)'
 fi
 

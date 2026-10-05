@@ -221,7 +221,12 @@ func TestPostgres_Concurrent_MultiSessionIsolation(t *testing.T) {
 			<-start
 			id := identity.Identity{TenantID: fmt.Sprintf("t-%d", i%3), UserID: "u-shared", SessionID: fmt.Sprintf("s-%d", i)}
 			for j := range perSession {
-				if _, err := s.AppendTurnIf(ctx, id, freshRow(fmt.Sprintf("r-%d", j))); err != nil {
+				// The driver preserves caller content. Match the fixture's
+				// payload to its scoped identity, as the production projector
+				// does; otherwise every row claims the helper's default session.
+				row := freshRow(fmt.Sprintf("r-%d", j))
+				row.SessionID = id.SessionID
+				if _, err := s.AppendTurnIf(ctx, id, row); err != nil {
 					errs <- err
 					return
 				}
