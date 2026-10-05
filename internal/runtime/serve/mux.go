@@ -58,6 +58,7 @@ import (
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/search"
 	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
 	searchevents "github.com/hurtener/Harbor/internal/search/events"
@@ -380,11 +381,29 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
-		Metrics:                         runtimeposture.MetricsProvider(in.Metrics, logger),
-		Governance:                      governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
-		LLM:                             llm.NewPostureProvider(in.LLMSnapshot),
-		ProviderCatalog:                 in.ProviderCatalog,
-		AgentReach:                      in.AgentReach,
+		Metrics:         runtimeposture.MetricsProvider(in.Metrics, logger),
+		Governance:      governance.NewPostureProviderWithState(governance.ConfigFromOperator(cfg.Governance), in.State),
+		LLM:             llm.NewPostureProvider(in.LLMSnapshot),
+		ProviderCatalog: in.ProviderCatalog,
+		AgentReach:      in.AgentReach,
+		AgentResolver:   in.AgentResolver,
+		EffectiveRunCompletion: func(ctx context.Context, agentID string, id identity.Identity) (types.EffectiveRunCompletionHook, error) {
+			if in.AgentConfig == nil || agentID == "" {
+				return types.EffectiveRunCompletionHook{}, fmt.Errorf("effective run hook projection unavailable")
+			}
+			spec, active, err := projection.ActiveRunCompletionHook(ctx, in.AgentConfig, agentID, identity.Quadruple{Identity: id}, projection.RunCompletionHookFromConfig(cfg.Runtime.Hooks.RunCompletion))
+			if err != nil {
+				return types.EffectiveRunCompletionHook{}, err
+			}
+			if !active || spec == nil {
+				return types.EffectiveRunCompletionHook{AgentID: agentID, State: "off"}, nil
+			}
+			timeout := spec.Timeout
+			if timeout <= 0 {
+				timeout = steering.DefaultCompletionHookTimeout
+			}
+			return types.EffectiveRunCompletionHook{AgentID: agentID, State: "active", Tool: spec.Tool, TimeoutMS: timeout.Milliseconds()}, nil
+		},
 		ProviderRouteRuntimeID:          in.ProviderRouteRuntimeID,
 		Redactor:                        red,
 		Bus:                             bus,

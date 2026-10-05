@@ -16098,3 +16098,53 @@ writes. Agent-wide settings and sibling session/tenant settings are preserved.
 The existing configuration Protocol is unchanged. Selecting the new store does
 not recover old in-memory revisions; operators must explicitly restore approved
 settings through the existing authenticated configuration surface.
+
+---
+
+## D-486 — Signed edge correlation and artifact transfers stay within one session
+
+**Date:** 2026-09-27. **Scope:** Additive Protocol and tool-exchange behavior.
+
+A signed Start correlation carries an opaque execution operation ID, the
+Start idempotency key, and the SHA-256 digest of the exact raw request body.
+The bearer must have one `session_reach` equal to its signed default session;
+the middleware checks the selected session and body digest, and the control
+surface checks the parsed retry key. Only then does the operation ID enter the
+durable task. Run restoration carries it into the tool-token exchange subject
+and operation-specific cache key. Tool arguments, body fields, and client
+headers cannot supply that provenance. Ordinary starts carry no operation ID.
+
+A separate signed `artifact_transfer` bearer has no elevated scopes or agent
+reach and one exact session reach. It may call only `artifacts.get` for one
+exact reference, or `artifacts.put` into one exact namespace with
+`user_upload` source, empty task annotation, and at most its signed byte
+bound. The read checks the complete artifact size, including source-bound
+memory references, before returning a window. It grants no listing,
+presigning, deletion, task start, or tool execution. The ordinary artifact
+identity gate, storage authority, and upload audit still apply. Expiry is
+governed by the ordinary JWT expiry; the bearer is not single-use.
+
+These are bearer restrictions at the Protocol edge, not new isolation
+principals or a second artifact store. Existing tokens and requests retain
+their behavior. **Cross-references:** RFC §4, §5.5, §6.4, §6.10; D-025,
+D-271, D-347, D-409, D-434, D-458.
+
+---
+
+## D-487 — Effective completion-hook posture is a protected Agent projection
+
+**Date:** 2026-09-27. **Scope:** Additive `runtime.info` request and response.
+
+An explicit `effective_agent_id` on `runtime.info` asks for the same
+agent-config-over-yaml completion-hook projection resolved at run start. It
+requires a verified admin caller and signed reach to the selected Agent before
+the configuration read. An unresolved or unavailable projection fails closed.
+The response reports only `active` with tool name and timeout, or explicit
+`off`; ordinary posture omits the field, so absence never means off. No hook
+dispatch, transcript, credential, or tool arguments enter the posture read.
+`active` means configured, not a tool-connectivity probe or dispatch promise.
+
+The canonical Go type, public RuntimeClient method, Console mirror, generated
+wire manifest, external TypeScript module, and generated Protocol reference
+advance together.
+**Cross-references:** RFC §5.2, §5.5, §6.17; D-025, D-280, D-397, D-409.

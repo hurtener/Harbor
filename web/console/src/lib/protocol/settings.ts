@@ -45,6 +45,14 @@ export interface ExternalGrantReadiness {
 	strict_ready: boolean;
 }
 
+/** Protected per-Agent effective run-completion hook projection. */
+export interface EffectiveRunCompletionHook {
+	agent_id: string;
+	state: string;
+	tool?: string;
+	timeout_ms?: number;
+}
+
 /** `runtime.info` response — the Runtime's build identity + posture. */
 export interface RuntimeInfo {
 	instance_id: string;
@@ -60,6 +68,8 @@ export interface RuntimeInfo {
 	uptime_seconds: number;
 	/** Absent on runtimes built before external-grant readiness projection. */
 	external_grant?: ExternalGrantReadiness;
+	/** Present only for an admin-scoped effective-agent request. */
+	effective_run_completion?: EffectiveRunCompletionHook;
 	/**
 	 * The MCP App (`io.modelcontextprotocol/ui`) display modes this host can
 	 * render, declared by the deployment's `tools.mcp_app_host.display_modes`.

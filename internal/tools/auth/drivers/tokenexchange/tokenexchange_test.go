@@ -181,9 +181,113 @@ func (b *fakeBroker) brokerExpiresIn() int {
 }
 
 type subjectTriple struct {
-	TenantID  string `json:"tenant_id"`
-	UserID    string `json:"user_id"`
-	SessionID string `json:"session_id"`
+	TenantID    string `json:"tenant_id"`
+	UserID      string `json:"user_id"`
+	SessionID   string `json:"session_id"`
+	OperationID string `json:"execution_operation_id,omitempty"`
+}
+
+func TestToken_VerifiedOperationSeparatesExchangeCache(t *testing.T) {
+	broker := newFakeBroker(t)
+	prov, _, _ := mkProvider(t, broker)
+	first := tools.WithVerifiedExecutionOperation(mkCtx(t, aliceID()), "op-one")
+	if _, err := prov.Token(first, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeSubject(broker.form().Get("subject_token")).OperationID; got != "op-one" {
+		t.Fatalf("first operation = %q", got)
+	}
+	second := tools.WithVerifiedExecutionOperation(mkCtx(t, aliceID()), "op-two")
+	if _, err := prov.Token(second, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeSubject(broker.form().Get("subject_token")).OperationID; got != "op-two" {
+		t.Fatalf("second operation = %q", got)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("operation cache crossed runs: %d calls", broker.calls())
+	}
+}
+
+func TestRevoke_ClearsAllOperationCachesForIdentity(t *testing.T) {
+	broker := newFakeBroker(t)
+	prov, _, _ := mkProvider(t, broker)
+	alice := mkCtx(t, aliceID())
+	opOne := tools.WithVerifiedExecutionOperation(alice, "op-one")
+	opTwo := tools.WithVerifiedExecutionOperation(alice, "op-two")
+	bobID := identity.Identity{TenantID: tDummyTenant, UserID: "user-bob", SessionID: "session-bob"}
+	bob := tools.WithVerifiedExecutionOperation(mkCtx(t, bobID), "op-one")
+
+	for _, ctx := range []context.Context{opOne, opTwo, bob} {
+		if _, err := prov.Token(ctx, "any"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if broker.calls() != 3 {
+		t.Fatalf("setup: got %d broker calls, want 3", broker.calls())
+	}
+
+	// An ordinary revoke has no execution operation in its context, but
+	// must invalidate every operation-scoped bearer for this identity.
+	if err := prov.Revoke(alice, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prov.Token(bob, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if broker.calls() != 3 {
+		t.Fatal("Alice's revoke evicted Bob's cached bearer")
+	}
+	for _, ctx := range []context.Context{opOne, opTwo} {
+		if _, err := prov.Token(ctx, "any"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if broker.calls() != 5 {
+		t.Fatalf("ordinary revoke left an operation bearer cached: %d calls, want 5", broker.calls())
+	}
+
+	// A revoke issued inside one operation must also clear the other.
+	if err := prov.Revoke(opOne, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prov.Token(opTwo, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if broker.calls() != 6 {
+		t.Fatalf("in-operation revoke left another operation cached: %d calls, want 6", broker.calls())
+	}
+}
+
+func TestRevoke_RacingOperationExchange_NotRecached(t *testing.T) {
+	broker := newFakeBroker(t)
+	broker.started = make(chan struct{}, 1)
+	broker.gate = make(chan struct{})
+	broker.setPosture("slow")
+	prov, _, _ := mkProvider(t, broker)
+	alice := mkCtx(t, aliceID())
+	op := tools.WithVerifiedExecutionOperation(alice, "op-one")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := prov.Token(op, "any")
+		done <- err
+	}()
+	<-broker.started
+	if err := prov.Revoke(alice, "any"); err != nil {
+		t.Fatal(err)
+	}
+	broker.setPosture("grant")
+	close(broker.gate)
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight operation exchange: %v", err)
+	}
+	if _, err := prov.Token(op, "any"); err != nil {
+		t.Fatalf("Token after revoke: %v", err)
+	}
+	if broker.calls() != 2 {
+		t.Fatalf("in-flight operation exchange repopulated revoked cache: %d calls, want 2", broker.calls())
+	}
 }
 
 func decodeSubject(s string) subjectTriple {

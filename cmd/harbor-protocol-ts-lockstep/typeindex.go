@@ -362,6 +362,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"RuntimeInfo":                                       reflect.TypeOf(types.RuntimeInfo{}),
 	"ExternalGrantReadiness":                            reflect.TypeOf(types.ExternalGrantReadiness{}),
 	"RuntimeInfoRequest":                                reflect.TypeOf(types.RuntimeInfoRequest{}),
+	"EffectiveRunCompletionHook":                        reflect.TypeOf(types.EffectiveRunCompletionHook{}),
 	"SearchArtifactRef":                                 reflect.TypeOf(types.SearchArtifactRef{}),
 	"SearchFacet":                                       reflect.TypeOf(types.SearchFacet{}),
 	"SearchFilter":                                      reflect.TypeOf(types.SearchFilter{}),

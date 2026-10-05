@@ -41,6 +41,8 @@ type (
 	IdentityScope = types.IdentityScope
 	// RuntimeInfo is the runtime.info response.
 	RuntimeInfo = types.RuntimeInfo
+	// EffectiveRunCompletionHook is the protected per-Agent hook posture.
+	EffectiveRunCompletionHook = types.EffectiveRunCompletionHook
 	// ExternalGrantReadiness is runtime.info's content-free external-grant
 	// enforcement and coordinator-transport readiness projection.
 	ExternalGrantReadiness = types.ExternalGrantReadiness

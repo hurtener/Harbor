@@ -398,4 +398,10 @@ else
     fail 'phase 209: TestE2E_ArtifactsGet_* failed (run `go test -race -run TestE2E_ArtifactsGet ./test/integration/`)'
 fi
 
+if go test -race -count=1 -timeout 120s -run 'TestArtifactTransferEnforcesExactRefAndUploadBoundsAtSurface' ./internal/protocol/ >/dev/null 2>&1; then
+    ok 'phase 209: signed transfer bearer respects exact ref, namespace, source, and byte bounds'
+else
+    fail 'phase 209: signed transfer bearer behavior failed under -race'
+fi
+
 smoke_summary

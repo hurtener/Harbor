@@ -285,6 +285,16 @@ and never part of the isolation tuple, and it neither weakens nor
 duplicates tenant/user verification. Carrier-identity / bearer-less mode
 retains its existing behavior and cannot manufacture signed reach.
 
+**Bounded correlation and transfer bearers (D-486).** A signed execution
+operation is accepted only with one exact `session_reach`, an idempotency key,
+and a digest of the raw Start body. The Protocol edge verifies those claims
+before task admission, then persists only the opaque operation ID on the task;
+the run carries it into tool-token exchange after restart. It is provenance,
+never authority supplied by tool arguments. A signed artifact-transfer bearer
+has no elevated scopes or agent reach, is pinned to one session, and may call
+only `artifacts.get` for one exact ref or `artifacts.put` into one exact
+namespace under its byte bound. Normal identity reconciliation still applies.
+
 **Effective agent resolution is ordered and closed (D-397/D-399).**
 `EffectiveAgentID(requested)` is a pure selection step: it chooses the
 explicit requested id or the configured default for an omitted
@@ -1791,6 +1801,16 @@ shape or a remote capability, and resolved bytes remain dispatch-local.
 
 **Bytes are stored as authored; the redactor governs what is *emitted*.** An `ArtifactRef` passes the redactor unredacted precisely because it is a reference (D-022), and an artifact exists to hold the content the event stream and the prompt must not carry. The redactor's role on the upload path is admission — it may refuse a payload — not rewriting. The read surface inherits that boundary and does not relax it: bytes are returned to the identity that already reaches them, and are placed nowhere the redactor governs.
 
+**Browser transfer delegation (D-486).** An issuer may delegate one exact
+identity-scoped artifact reference for reads or one namespace for bounded
+user uploads with an expiring signed bearer. An upload must use the signed
+namespace, `user_upload` source, and no
+task attribution. A read names one exact reference; its full size must fit
+the signed bound. The bearer cannot list, delete, presign, start a task, or
+invoke a tool. The artifact store remains authoritative for bytes and refs.
+The bearer is expiry-bounded, not single-use; retries and repeated bounded
+reads or writes remain possible until it expires.
+
 ### 6.11 StateStore
 
 **Separate configuration persistence (D-485).** Runtime assembly may select an
@@ -2591,6 +2611,14 @@ Soft cancellation and other terminal outcomes retain the firing contract above.
 **Configuration: static yaml paired with the versioned agent-config surface.** The static home is `runtime.hooks.run_completion: {tool, timeout}` in the operator config; the durable, versioned home is a `hooks` section on the agent-config payload (§6.16's content surface), riding the existing revision machinery — content-hash, `set_revision` with sibling-section preservation, server-side diff, rollback, `agent.config.revised`. Resolution happens once at run start with **next-run projection** semantics (the per-run immutable snapshot, §3.5): agent-config section over yaml over no-hook; an in-flight run keeps its snapshot; an edit is invisible to it by construction. No new Protocol method ships for this: the section rides the existing agent-config verbs, and the wire impact is additive types only (the per-section wire schema plus its diff arm, kept in lockstep with the Console client mechanically). On the embed path the `WithCompletionHook` run option overrides (or explicitly disables) the resolved hook per call.
 
 **Identity.** The dispatch carries the run's `(tenant, user, session)` + run quadruple; a hook target on an MCP connection with a per-identity credential binding resolves the caller's bearer automatically from the context identity — no hook-specific auth path exists.
+
+**Effective posture read (D-487).** An admin with signed reach to a selected
+Agent may ask `runtime.info` for that Agent's resolved hook state. The answer
+uses the same agent-config-over-yaml projection as run start and returns only
+`active` with configured tool name/timeout or explicit `off`. `active`
+reports configuration; it does not test current tool connectivity or promise
+a successful dispatch. Ordinary runtime posture has no agent-specific hook
+field; unavailable or unauthorized projections fail closed.
 
 **Non-goals (V1.10, settled).** No pre-run hook point (the next-message override surface covers pre-run shaping; further hook points are additive future decisions against D-280, which is why the firing contract is outcome-carried rather than outcome-encoded). No durable store capture of steering turns (the hook reads live state; durable capture is a named follow-up with its own retention/erasure questions). No generic webhook subsystem — one egress path. (Settled — D-280.)
 

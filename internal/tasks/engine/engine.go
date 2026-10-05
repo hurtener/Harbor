@@ -389,23 +389,24 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		return tasks.TaskHandle{}, err
 	}
 	t := &tasks.Task{
-		ID:                id,
-		Identity:          req.Identity,
-		Kind:              req.Kind,
-		Status:            tasks.StatusPending,
-		Priority:          req.Priority,
-		ParentTaskID:      req.ParentTaskID,
-		Description:       redactedDesc,
-		Query:             redactedQuery,
-		PropagateOnCancel: propagate,
-		NotifyOnComplete:  req.NotifyOnComplete,
-		IdempotencyKey:    req.IdempotencyKey,
-		ExternalGrant:     append([]byte(nil), req.ExternalGrant...),
-		ProviderRoute:     cloneProviderRoute(req.ProviderRoute),
-		LLMSettings:       llm.CloneRunSettings(req.LLMSettings),
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		InputArtifactIDs:  inputArtifactIDs,
+		ID:                           id,
+		Identity:                     req.Identity,
+		Kind:                         req.Kind,
+		Status:                       tasks.StatusPending,
+		Priority:                     req.Priority,
+		ParentTaskID:                 req.ParentTaskID,
+		Description:                  redactedDesc,
+		Query:                        redactedQuery,
+		PropagateOnCancel:            propagate,
+		NotifyOnComplete:             req.NotifyOnComplete,
+		IdempotencyKey:               req.IdempotencyKey,
+		VerifiedExecutionOperationID: req.VerifiedExecutionOperationID,
+		ExternalGrant:                append([]byte(nil), req.ExternalGrant...),
+		ProviderRoute:                cloneProviderRoute(req.ProviderRoute),
+		LLMSettings:                  llm.CloneRunSettings(req.LLMSettings),
+		CreatedAt:                    now,
+		UpdatedAt:                    now,
+		InputArtifactIDs:             inputArtifactIDs,
 		// per-attachment disposition hints.
 		InputArtifactDispositions: inputArtifactDispositions,
 		// per-request output schema (raw JSON-Schema bytes).
@@ -1385,6 +1386,9 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.IdempotencyKey != req.IdempotencyKey {
 		return false
 	}
+	if existing.VerifiedExecutionOperationID != req.VerifiedExecutionOperationID {
+		return false
+	}
 	if !bytes.Equal(existing.ExternalGrant, req.ExternalGrant) {
 		return false
 	}
@@ -1543,6 +1547,10 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 	if req.AgentID != "" {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(req.AgentID))
+	}
+	if req.VerifiedExecutionOperationID != "" {
+		h.Write([]byte{0x1F})
+		h.Write([]byte(req.VerifiedExecutionOperationID))
 	}
 	if admission != nil {
 		h.Write([]byte{0x1F})

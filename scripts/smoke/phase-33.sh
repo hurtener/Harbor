@@ -28,10 +28,13 @@ source "scripts/smoke/common.sh"
 
 # Run the bifrost-driver tests under -race. The live-conformance
 # test self-skips without HARBOR_LIVE_LLM=1, so CI default is fast.
-if go test -race -count=1 -timeout 120s ./internal/llm/drivers/bifrost/... >/dev/null 2>&1; then
+test_log="$(mktemp -t harbor-phase33-XXXXXX)"
+trap 'rm -f "$test_log"' EXIT
+if go test -race -count=1 -timeout 120s ./internal/llm/drivers/bifrost/... >"$test_log" 2>&1; then
     ok 'phase 33: internal/llm/drivers/bifrost tests pass under -race (translate + driver + account + D-025 concurrent + cost emit)'
 else
     fail 'phase 33: bifrost driver tests failed (run `go test -race ./internal/llm/drivers/bifrost/...` for detail)'
+    tail -80 "$test_log" | sed 's/^/    /'
 fi
 
 # Static guard: extend Phase 32's no-tools-symbol grep to the bifrost

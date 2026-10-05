@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -183,6 +184,25 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 			}
 			ctx = WithScopes(ctx, verified.Scopes)
 			ctx = WithAgentReach(ctx, verified.AgentReach)
+			if transfer := verified.ArtifactTransfer; transfer != nil {
+				allowed := r.Method == http.MethodPost && r.URL.RawQuery == "" && !r.URL.ForceQuery &&
+					(transfer.Mode == "read" && r.URL.Path == "/v1/control/artifacts.get" ||
+						transfer.Mode == "write" && r.URL.Path == "/v1/control/artifacts.put")
+				if !allowed {
+					writeProtocolError(w, http.StatusForbidden, protoerrors.Newf(protoerrors.CodeScopeMismatch, "artifact transfer bearer cannot call this method"))
+					return
+				}
+				ctx = WithArtifactTransfer(ctx, *transfer)
+			}
+			if verified.ExecutionStartProof.OperationID != "" && r.URL.Path == "/v1/control/start" {
+				raw, readErr := io.ReadAll(io.LimitReader(r.Body, 512<<10+1))
+				if readErr != nil || !MatchesExecutionStartBody(verified.ExecutionStartProof, raw) {
+					writeProtocolError(w, http.StatusForbidden, protoerrors.Newf(protoerrors.CodeScopeMismatch, "signed execution start body mismatch"))
+					return
+				}
+				r.Body = io.NopCloser(strings.NewReader(string(raw)))
+				ctx = WithExecutionOperation(ctx, verified.ExecutionStartProof)
+			}
 
 			// session_reach: an OPTIONAL signed claim that
 			// narrows the effective session. Absence preserves the

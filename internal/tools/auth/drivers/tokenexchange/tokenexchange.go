@@ -606,8 +606,8 @@ type provider struct {
 	// held across the broker HTTP round-trip.
 	cacheMu sync.Mutex
 	cache   map[string]cachedToken
-	// gens is the per-key revocation generation counter. Revoke bumps
-	// the key's generation; an exchange that was in flight when the
+	// gens is the per-identity revocation generation counter. Revoke bumps
+	// the identity's generation; an exchange that was in flight when the
 	// Revoke landed observes the bump and declines to (re)populate the
 	// cache — closing the "revoke racing an in-flight exchange is
 	// silently lost" window.
@@ -686,7 +686,8 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
 		return auth.Token{}, err
 	}
-	key := p.cacheKey(id)
+	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
+	key := p.cacheKey(id, operationID)
 
 	// Hot path: fresh cache hit → return immediately, emit nothing.
 	p.cacheMu.Lock()
@@ -797,7 +798,8 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 			return
 		}
 	}
-	gen := p.gens[key]
+	baseKey := p.cacheKey(id, "")
+	gen := p.gens[baseKey]
 	p.cacheMu.Unlock()
 
 	tok, meta, err := p.exchange(ctx, id)
@@ -820,11 +822,11 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 	}
 
 	p.cacheMu.Lock()
-	// A Revoke that raced this exchange bumped the key's generation —
+	// A Revoke that raced this exchange bumped the identity's generation —
 	// honour it by NOT caching. The collapsed callers still receive the
 	// freshly minted token (the broker really issued it, and the audit
 	// event fired); the next Token() call re-exchanges.
-	if p.gens[key] == gen {
+	if p.gens[baseKey] == gen {
 		p.cache[key] = cachedToken{
 			token:       tok,
 			serveUntil:  p.serveUntil(tok.ExpiresAt),
@@ -909,7 +911,8 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w (provider name=%q)", auth.ErrExchangeFailed, ErrMissingClientSecret, p.name)
 	}
 
-	subjectToken, err := encodeSubjectToken(id)
+	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
+	subjectToken, err := encodeSubjectToken(id, operationID)
 	if err != nil {
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
 	}
@@ -1221,9 +1224,9 @@ func (p *provider) PendingFlow(_ context.Context, _ string) (auth.PendingFlowInf
 	return auth.PendingFlowInfo{}, false, nil
 }
 
-// Revoke implements auth.OAuthProvider.Revoke by clearing the local
-// cache entry for (ctx identity, source) and bumping the key's
-// revocation generation, so an exchange that was already in flight
+// Revoke implements auth.OAuthProvider.Revoke by clearing all local
+// cache entries for (ctx identity, source), across execution operations,
+// and bumping the identity's revocation generation, so an exchange in flight
 // when the Revoke landed declines to repopulate the cache. Idempotent
 // — no error when nothing is cached. Broker-side custody is untouched
 // (revocation there is the broker's concern; the serve horizon bounds
@@ -1244,10 +1247,15 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
 		return err
 	}
-	key := p.cacheKey(id)
+	baseKey := p.cacheKey(id, "")
+	operationPrefix := baseKey + ";"
 	p.cacheMu.Lock()
-	p.gens[key]++
-	delete(p.cache, key)
+	p.gens[baseKey]++
+	for key := range p.cache {
+		if key == baseKey || strings.HasPrefix(key, operationPrefix) {
+			delete(p.cache, key)
+		}
+	}
 	p.cacheMu.Unlock()
 	return p.credSource.Invalidate(ctx)
 }
@@ -1371,12 +1379,13 @@ func (p *provider) identityFromCtx(ctx context.Context) (identity.Identity, erro
 // encodeSubjectToken serialises the verified identity triple as
 // base64url(JSON) — the subject_token the broker interprets under the
 // Harbor-defined subject_token_type URN.
-func encodeSubjectToken(id identity.Identity) (string, error) {
+func encodeSubjectToken(id identity.Identity, operationID string) (string, error) {
 	b, err := json.Marshal(struct {
-		TenantID  string `json:"tenant_id"`
-		UserID    string `json:"user_id"`
-		SessionID string `json:"session_id"`
-	}{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID})
+		TenantID    string `json:"tenant_id"`
+		UserID      string `json:"user_id"`
+		SessionID   string `json:"session_id"`
+		OperationID string `json:"execution_operation_id,omitempty"`
+	}{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, OperationID: operationID})
 	if err != nil {
 		return "", err
 	}
@@ -1390,7 +1399,11 @@ func encodeSubjectToken(id identity.Identity) (string, error) {
 // length-prefixed so external-input IDs containing separator bytes
 // cannot collide two keys (tenant "a;1" + user "b" vs tenant "a" +
 // user "1;b").
-func (p *provider) cacheKey(id identity.Identity) string {
+func (p *provider) cacheKey(id identity.Identity, operationID string) string {
+	if operationID != "" {
+		base := p.cacheKey(id, "")
+		return fmt.Sprintf("%s;%d:%s", base, len(operationID), operationID)
+	}
 	if p.signedBinding != nil {
 		scope := string(auth.ScopeUser)
 		src := string(p.source)
