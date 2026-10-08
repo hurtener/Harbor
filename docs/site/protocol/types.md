@@ -2829,6 +2829,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `app_operation` | `string` | optional (`omitempty`) |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` | optional (`omitempty`) |
@@ -3694,6 +3695,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `app_operation` | `string` | optional (`omitempty`) |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `agent_id` | `string` | optional (`omitempty`) |
 | `server_id` | `string` |  |
@@ -3706,6 +3708,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `app_operation_generation` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` |  |
 | `mime_type` | `string` | optional (`omitempty`) |
 | `content` | `string` | optional (`omitempty`) |

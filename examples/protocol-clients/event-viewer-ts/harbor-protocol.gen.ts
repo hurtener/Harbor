@@ -2181,6 +2181,7 @@ export interface LLMProviderValidation {
 }
 
 export interface MCPAppCallToolRequest {
+  app_operation?: string;
   identity: IdentityScope;
   agent_id?: string;
   server_id?: string;
@@ -2734,6 +2735,7 @@ export interface RateLimitView {
 }
 
 export interface ReadMCPResourceRequest {
+  app_operation?: string;
   identity: IdentityScope;
   agent_id?: string;
   server_id: string;
@@ -2742,6 +2744,7 @@ export interface ReadMCPResourceRequest {
 }
 
 export interface ReadMCPResourceResponse {
+  app_operation_generation?: string;
   resource_uri: string;
   mime_type?: string;
   content?: string;

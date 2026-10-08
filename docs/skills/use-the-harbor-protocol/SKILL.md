@@ -1081,3 +1081,14 @@ key conflicts. A present bundle skips the legacy next-message slot. Omitted
 fields use runtime/agent defaults, an empty reasoning value requests provider
 defaults, and `off` disables thinking. No preference is saved and no restart is
 needed. Governance and selected-model support remain authoritative.
+
+## Broker-bound manual App operations (candidate)
+
+Trusted host integrations may use the optional `app_operation` selector on
+`mcp.servers.read_resource` and `mcp.apps.call_tool`, as specified in
+[App operation v1](../../contracts/app-operation-v1.md). The selector is not
+permission or a bearer. Keep it and runtime credentials outside the frame.
+Callbacks still require fresh render admission; the broker must acknowledge the
+exact binding and current policy. Unsupported brokers refuse. This candidate
+requires external integration acceptance before activation and does not alter
+ordinary credential caching or authorize a chat/planner fallback.

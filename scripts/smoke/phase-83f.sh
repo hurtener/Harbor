@@ -40,8 +40,8 @@ assert_grep_present 'planner.skills_context_max' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 # Driver fetches the four primitives + project helpers exist.
 # ----------------------------------------------------------------------------
-assert_grep_present 'memory.MemoryStore' "internal/runtime/serve/runloop.go" \
-    "perTaskRunLoopDriver opts carry the MemoryStore dep (D-149)"
+assert_grep_present 'StateStore[[:space:]]+state\.StateStore' "internal/runtime/serve/runloop.go" \
+    "run-loop options carry the retained-context StateStore (RFC-002)"
 # Phase 233a replaces the boot-time Directory dependency as the source of
 # truth with a run-start immutable reader snapshot. The Directory still
 # projects `<skills_context>`, but it MUST resolve that exact snapshot rather
@@ -55,8 +55,8 @@ assert_grep_present 'skills\.WithRunSkillReaderSnapshot\(taskCtx, skillSnapshot\
     "runloop installs the immutable reader before Directory consumers run (Phase 233a)"
 # Phase 110b (D-195) re-homed the projection helpers to the exported
 # internal/runtime/runctx package; the run loop is a thin caller.
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
+assert_grep_present 'd\.runWithRetainedContext' "internal/runtime/serve/runloop.go" \
+    "runloop enters the shared retained-context owner (RFC-002)"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "internal/runtime/serve/runloop.go" \
     "runloop projects the snapshot-authorized Directory view via runctx.ProjectSkillsDirectory (110b → 111d → 233a)"
 assert_grep_present 'RepairCounters{' "internal/runtime/serve/runloop.go" \
@@ -74,9 +74,15 @@ assert_grep_present 'planner\.HintsFromConfig' "internal/runtime/serve/serve.go"
 # ----------------------------------------------------------------------------
 # Phase 110b (D-195): the D-094 mirror copies are deleted; devstack
 # calls the SAME promoted projections production calls.
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "devstack calls runctx.FetchMemoryBlocks (mirror collapsed; 110b + semantic recall)"
+assert_grep_present 'd\.runWithRetainedContext' "internal/runtime/serve/runloop.go" \
+    "devstack uses the same retained-context runner (RFC-002)"
 assert_grep_present 'runctx\.ProjectSkillsDirectory' "internal/runtime/serve/runloop.go" \
     "devstack projects the Directory view via runctx.ProjectSkillsDirectory (mirror; 110b → 111d)"
+
+# RFC-002 replaces the legacy rolling memory projection with this owner.
+assert_grep_present 'sessionmemory\.BeginRetainedRun' "internal/runtime/serve/retained_context.go" \
+    "retained context is admitted through the canonical session owner"
+assert_grep_present 'retained\.Apply' "internal/runtime/serve/retained_context.go" \
+    "retained context reaches the actual run input"
 
 smoke_summary

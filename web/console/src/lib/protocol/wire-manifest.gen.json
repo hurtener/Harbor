@@ -6072,6 +6072,11 @@
       "home": "types",
       "fields": [
         {
+          "key": "app_operation",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "identity",
           "type": "object",
           "ref": "IdentityScope"
@@ -7902,6 +7907,11 @@
       "home": "types",
       "fields": [
         {
+          "key": "app_operation",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "identity",
           "type": "object",
           "ref": "IdentityScope"
@@ -7929,6 +7939,11 @@
     "ReadMCPResourceResponse": {
       "home": "types",
       "fields": [
+        {
+          "key": "app_operation_generation",
+          "type": "string",
+          "optional": true
+        },
         {
           "key": "resource_uri",
           "type": "string"

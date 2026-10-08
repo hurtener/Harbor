@@ -2323,3 +2323,9 @@ sum to admission's estimate; output headroom is separate. Numeric attempt and
 optional installed runtime replay coordinates describe selected context, not
 provider delivery, source inspection or billed usage. Maintenance does not inherit
 parent history. Existing event/Protocol ownership applies. RFC §6.5, D-476.
+
+- **App operation selector** — An opaque broker-owned reference carried by an
+  admitted MCP resource read or fresh-render-admitted callback. It grants no
+  authority; the runtime binds actual coordinates and input to a fresh,
+  acknowledged signed-capability broker pull. D-486; see
+  [App operation v1](contracts/app-operation-v1.md).

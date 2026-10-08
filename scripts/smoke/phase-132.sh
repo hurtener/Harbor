@@ -40,8 +40,8 @@ assert_grep_present 'examples/embed-runonce' "${DELEGATE}" \
 # delegate still RUNS them under -race.
 assert_grep_present 'TestRunOnce_ConcurrentReuse_NoBleedNoLeak' "${DELEGATE}" \
     'phase 132: delegate still pins the N>=100 concurrent-reuse RunOnce -race test'
-assert_grep_present 'TestNewRunContext_MemoryParity' "${DELEGATE}" \
-    'phase 132: delegate still pins the NewRunContext projection-parity test'
+assert_grep_present 'TestNewRunContext_NoParallelMemoryProjection' "${DELEGATE}" \
+    'phase 132: delegate still pins the NewRunContext retained-memory ownership test'
 assert_grep_present 'go test -race -run .TestRunOnce' "${DELEGATE}" \
     'phase 132: delegate still executes the RunOnce/NewRunContext suite under -race'
 

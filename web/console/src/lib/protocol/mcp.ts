@@ -366,6 +366,8 @@ export interface RenderAdmission {
  * by-reference stub at or above it.
  */
 export interface ReadMCPResourceResponse {
+	/** Exact generation sealed into an operation-bound render admission; not authority. */
+	app_operation_generation?: string;
   /** Echoes the fetched resource URI. */
   resource_uri: string;
   /** The resource's declared media type. */

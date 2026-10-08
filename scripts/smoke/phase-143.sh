@@ -20,13 +20,17 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # 1. The assemble runner + envelope + planner schema surface under -race.
-if go test -race -count=1 -timeout 120s \
+# The retained-context suite takes about160s on the reference local machine;
+# preserve the full package gate with a bounded five-minute timeout and logs.
+schema_log="${TMPDIR:-/tmp}/harbor-smoke-phase-143-schema.log"
+if go test -race -count=1 -timeout 5m \
 	./internal/runtime/assemble/... \
 	./internal/runtime/runctx/... \
-	./internal/planner/ >/dev/null 2>&1; then
+	./internal/planner/ >"${schema_log}" 2>&1; then
 	ok 'phase 143: assemble + runctx + planner output-schema tests pass under -race'
 else
-	fail 'phase 143: output-schema unit tests failed (run `go test -race ./internal/runtime/assemble/... ./internal/planner/`)'
+	fail 'phase 143: output-schema unit tests failed (run `go test -race -timeout=5m ./internal/runtime/assemble/... ./internal/planner/`)'
+    tail -40 "${schema_log}"
 fi
 
 # 2. The §13 primitive-with-consumer E2E (happy / corrective-retry /
