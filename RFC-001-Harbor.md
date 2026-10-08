@@ -1707,6 +1707,19 @@ generic capability framework, no persisted callback authority, no arbitrary
 origins, no provider exceptions, no hot registry, and no transcript
 impersonation.
 
+**Broker-bound manual App operations (D-486, implementation candidate).** An
+external trusted host may supply an opaque broker-owned operation selector on
+these existing resource/tool methods. It grants no authority. The runtime binds
+it to the admitted agent/source/resource and exact outgoing input; callbacks
+still require fresh render admission and the existing wrapped invocation. The
+signed-capability broker pull must acknowledge the complete binding, mint a
+bounded credential from current policy, and bypass shared caching/singleflight.
+App-bound callbacks do not automatically retry unknown effects. See
+[App operation v1](docs/contracts/app-operation-v1.md) for the wire contract,
+local acceptance and activation requirements. The external host/broker lane
+requires its own product acceptance; the candidate review records a completed
+isolated local qualification. Production activation remains separate.
+
 MCP App tool-context records have an explicit session-lifetime contract by
 default: they survive session reopen and are removed by session erasure.
 `not_found` therefore means unknown or cross-identity unless a separately
@@ -2864,3 +2877,9 @@ legacy behavior. Supplied values override runtime/agent/virtual-agent defaults,
 while governance and provider capability checks still apply. Changed settings
 with one idempotency key conflict. The advertised capability is
 `run_llm_settings_v1`; Protocol remains `0.1.0`.
+
+The operation-bound opt-in resource response also returns
+`app_operation_generation`, the exact fingerprint sealed into its available
+render admission. This lets a trusted host create an exact next-operation intent
+without decoding the sealed token. Ordinary reads and unavailable admissions omit
+it. The fingerprint is not authority; fresh sealed admission remains mandatory.

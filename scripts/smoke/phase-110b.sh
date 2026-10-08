@@ -46,8 +46,8 @@ for def in 'func projectMemoryBlocks' 'func projectSkillsContext' \
     assert_grep_absent "${def}" "internal/runtime/serve/runloop.go" \
         "cmd runloop no longer defines '${def}'"
 done
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "cmd runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
+assert_grep_present 'd\.runWithRetainedContext' "internal/runtime/serve/runloop.go" \
+    "cmd runloop enters the shared retained-context owner (RFC-002)"
 assert_grep_present 'runctx\.ResolveInputArtifacts' "internal/runtime/serve/runloop.go" \
     "cmd runloop calls runctx.ResolveInputArtifacts"
 assert_grep_present 'events\.IdentityStampingEmitter' "internal/runtime/serve/runloop.go" \
@@ -101,5 +101,11 @@ if go test ./internal/runtime/runctx/ ./internal/events/ ./internal/llm/ \
 else
     fail "runctx/emitter/chunk-publisher test slice failed (-race)"
 fi
+
+# RFC-002 replaces the legacy rolling memory projection with this owner.
+assert_grep_present 'sessionmemory\.BeginRetainedRun' "internal/runtime/serve/retained_context.go" \
+    "retained context is admitted through the canonical session owner"
+assert_grep_present 'retained\.Apply' "internal/runtime/serve/retained_context.go" \
+    "retained context reaches the actual run input"
 
 smoke_summary

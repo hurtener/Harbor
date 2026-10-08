@@ -472,7 +472,7 @@ trap 'rm -f "${GOLOG_219}"' EXIT
 assert_go_tests_pass "${GOLOG_219}" '-race -count=1 ./test/integration/' \
     'phase 219: the caller-memory integration suite (real drivers, recording LLM edge)' \
     TestE2E_CallerMemory_ReachesTheExternalTierAndNothingElse \
-    TestE2E_CallerMemory_ComposesWithSemanticRecall \
+    TestE2E_CallerMemory_ComposesWithConversation \
     TestE2E_CallerMemory_OverCapRefusedAndNoTaskCreated \
     TestE2E_CallerMemory_UnauthenticatedRefusedBeforeTheBody \
     TestE2E_CallerMemory_AdmissionEventFiresWhenTheRunFails \
