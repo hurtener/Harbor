@@ -140,6 +140,9 @@ const (
 // ReadMCPResourceRequest is the `mcp.servers.read_resource` request
 // body. Identity is mandatory.
 type ReadMCPResourceRequest struct {
+	// AppOperation selects a broker-owned, call-specific App operation. It is
+	// not a credential or authority. Callbacks also require fresh render admission.
+	AppOperation string `json:"app_operation,omitempty"`
 	// Identity is the (tenant, user, session) scope the read runs under.
 	// Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`
@@ -170,6 +173,12 @@ type ReadMCPResourceRequest struct {
 // threshold (a loud bypass event accompanies the offload — never a
 // silent truncation, never an inline leak).
 type ReadMCPResourceResponse struct {
+	// AppOperationGeneration is the exact catalog generation sealed into the
+	// accompanying admission, only for an operation-bound opt-in read. It lets
+	// the trusted host bind its next broker intent without opening the token.
+	// The fingerprint is not authority; callbacks still verify the sealed token.
+	AppOperationGeneration string `json:"app_operation_generation,omitempty"`
+
 	// ResourceURI echoes the fetched resource URI.
 	ResourceURI string `json:"resource_uri"`
 	// MIMEType is the resource's declared media type.
@@ -206,6 +215,9 @@ type ReadMCPResourceResponse struct {
 // identity), so an app call to a gated tool parks on the unified pause
 // primitive exactly as a planner call does. Identity is mandatory.
 type MCPAppCallToolRequest struct {
+	// AppOperation selects a broker-owned, call-specific App operation. It is
+	// not a credential or authority. Callbacks also require fresh render admission.
+	AppOperation string `json:"app_operation,omitempty"`
 	// Identity is the (tenant, user, session) scope the tool call runs
 	// under. Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`

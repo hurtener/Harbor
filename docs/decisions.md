@@ -16098,3 +16098,34 @@ writes. Agent-wide settings and sibling session/tenant settings are preserved.
 The existing configuration Protocol is unchanged. Selecting the new store does
 not recover old in-memory revisions; operators must explicitly restore approved
 settings through the existing authenticated configuration surface.
+
+## D-486 — Broker-bound App operation exchange
+
+**Date:** 2026-10-06. **Status:** Accepted for the implementation candidate;
+external host/broker activation remains gated by its integration acceptance.
+
+Extend the existing phase 238 resource-read and fresh-render-admitted callback
+requests with an optional opaque broker-owned operation selector. The runtime
+binds it to admitted coordinates and exact outgoing input, then uses the existing
+authenticated signed-capability broker pull. The broker owns current login,
+organization, dependency and permission decisions. An explicit response digest
+acknowledges the entire binding; ordinary configured scopes cannot substitute.
+
+These call-specific credentials are never cached, shared by singleflight or
+persisted. Each pull retains caller cancellation and current-use/audit gates.
+Existing non-App credential caching remains unchanged. App-bound callbacks keep
+the reliability shell's safety limits but disable automatic retries because a
+lost response may follow a committed effect. Explicit provider recovery remains
+the host's responsibility. A selector cannot replace fresh render admission or
+permit credential passthrough, generic source access or transcript impersonation.
+
+Canonical wire fields, expiry bounds, activation requirements and concrete local
+acceptance tests: [App operation v1](contracts/app-operation-v1.md). This extends
+D-412 / phase 238 and the signed-capability broker path; it does not change the
+historical v1.28 reopen contract or allocate a new phase.
+
+The operation-bound opt-in resource response also returns
+`app_operation_generation`, the exact fingerprint sealed into its available
+render admission. This lets a trusted host create an exact next-operation intent
+without decoding the sealed token. Ordinary reads and unavailable admissions omit
+it. The fingerprint is not authority; fresh sealed admission remains mandatory.

@@ -58,8 +58,8 @@ assert_grep_present 'Emit:\s*emit' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Emit closure"
 assert_grep_present 'ToolExecutor:\s*d\.executor' "internal/runtime/serve/runloop.go" \
     "runOne sets RunSpec.ToolExecutor"
-assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
-    "memory.AddTurn writeback on FinishGoal"
+assert_grep_present 'retained\.Finish' "internal/runtime/serve/retained_context.go" \
+    "canonical retained-context terminal writeback (RFC-002)"
 
 # ----------------------------------------------------------------------------
 # Devstack parity (D-094 → 110a / D-194: the hand-maintained executor +
@@ -74,7 +74,7 @@ assert_grep_present 'Executor:\s*core\.Executor' "harbortest/devstack/devstack.g
     "devstack consumes the assembly's executor (110a / D-194 via D-197)"
 assert_grep_present 'tools\.NewPlannerView' "internal/runtime/serve/runloop.go" \
     "devstack wires the promoted catalog view (110a / D-194)"
-assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
-    "devstack mirror carries memory writeback (D-094)"
+assert_grep_present 'retained\.Finish' "internal/runtime/serve/retained_context.go" \
+    "devstack shares canonical retained-context writeback (RFC-002)"
 
 smoke_summary

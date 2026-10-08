@@ -231,4 +231,9 @@ assert_grep_present "fails closed as a generation mismatch" \
     docs/CONFIG.md \
     "amendment: CONFIG.md pins replica generation-mismatch fails closed"
 
+assert_file docs/contracts/app-operation-v1.md "App operation contract exists"
+assert_grep_present 'AppOperation string' internal/protocol/types/mcp_apps.go "App operation selector is on the existing Protocol"
+assert_grep_present 'TestAppsSurface_AppOperationRequiresCurrentAdmission' internal/protocol/apps_operation_test.go "App operation preserves admission negatives"
+assert_grep_present 'TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect' internal/tools/auth/drivers/tokenexchange/app_operation_test.go "App operation has real MCP transport coverage"
+
 smoke_summary

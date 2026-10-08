@@ -313,6 +313,10 @@ SHA-256 checksums, and a SLSA-style build-provenance attestation.
 Protocol version. `make release-dryrun` exercises the whole path without a
 tag.
 
+For trusted manual MCP App hosts, the candidate
+[App operation broker contract](docs/contracts/app-operation-v1.md) defines
+call-specific credential exchange and required activation checks.
+
 ## Contributing
 
 [`AGENTS.md`](AGENTS.md) is binding for anyone — human or AI — modifying this

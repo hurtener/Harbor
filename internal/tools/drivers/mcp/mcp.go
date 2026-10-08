@@ -21,6 +21,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/appoperation"
 	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
@@ -1135,6 +1136,15 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 				return tools.ToolResult{}, err
 			}
 		}
+		policy := tool.Policy
+		if hasAppOperation(ctx) {
+			// Unknown effects must return to the App host for explicit native
+			// recovery. Retrying a transport failure can duplicate a mutation.
+			// Zero means default retries; a negative budget resolves to one
+			// attempt in RunWithPolicy while retaining its timeout/validation.
+			policy.MaxRetries = -1
+			policy.RetryOn = []tools.ErrorClass{}
+		}
 		return tools.RunWithPolicy(
 			ctx,
 			args,
@@ -1143,7 +1153,7 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 			},
 			nil, // server-side schema validates on the wire; client-side compiled
 			nil, // output validator is optional.
-			tool.Policy,
+			policy,
 		)
 	}
 	return tools.ToolDescriptor{
@@ -1203,9 +1213,19 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		// across attempts is what makes the resolve-once property hold;
 		// re-decoding `args` here would silently drop every substitution.
 		argMap = plan.args
+	case hasAppOperation(ctx):
+		argMap, err = appoperation.DecodeArguments(args)
+		if err != nil {
+			return tools.ToolResult{}, fmt.Errorf("%w: App arguments", tools.ErrToolInvalidArgs)
+		}
 	case len(args) > 0:
 		if err := json.Unmarshal(args, &argMap); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
+		}
+	}
+	if operation, ok := appoperation.From(ctx); ok {
+		if err := operation.CheckCall(string(p.source), fmt.Sprintf("%s_%s", p.source, name), argMap); err != nil {
+			return tools.ToolResult{}, err
 		}
 	}
 	meta, err := p.buildIdentityMeta(ctx)
@@ -1573,6 +1593,11 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 // Concurrent reuse: ReadResource holds no per-call state on the
 // Provider; identity + the URI ride the call.
 func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte, mimeType string, err error) {
+	if operation, ok := appoperation.From(ctx); ok {
+		if err := operation.CheckResource(string(p.source), uri); err != nil {
+			return nil, "", err
+		}
+	}
 	session, sErr := p.sessionForRead()
 	if sErr != nil {
 		return nil, "", sErr
@@ -1897,12 +1922,18 @@ func (p *Provider) resolveBearerProvider(key string) auth.OAuthProvider {
 func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Context, error) {
 	provider := p.resolveBearerProvider(key)
 	if provider == nil {
+		if hasAppOperation(ctx) {
+			return nil, appoperation.ErrInvalid
+		}
 		return ctx, nil
 	}
 	tok, err := provider.Token(ctx, p.source)
 	if err != nil {
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
+	}
+	if operation, ok := appoperation.From(ctx); ok && tok.AppOperationSHA256 != operation.Digest() {
+		return nil, appoperation.ErrInvalid
 	}
 	if tok.AccessToken == "" {
 		// Defence-in-depth: a ("", nil) return from a bound provider must
@@ -2114,4 +2145,9 @@ func (p *Provider) buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
 		}
 	}
 	return buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+}
+
+func hasAppOperation(ctx context.Context) bool {
+	_, ok := appoperation.From(ctx)
+	return ok
 }

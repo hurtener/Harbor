@@ -206,6 +206,9 @@ type OAuthConfig struct {
 // (which is itself called only by trusted tool drivers immediately
 // before composing the upstream request).
 type Token struct {
+	// AppOperationSHA256 acknowledges a fresh broker-bound App operation. It
+	// is call-local, never serialized, and absent on ordinary credentials.
+	AppOperationSHA256 string `json:"-"`
 	// Source is the ToolSourceID this token authorises.
 	Source tools.ToolSourceID
 	// BindingScope is ScopeUser or ScopeAgent — matches the
