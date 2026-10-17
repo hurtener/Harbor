@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 461 canonical Harbor Protocol wire types, generated from the single-source
+The 464 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2866,6 +2866,30 @@ Declared in `internal/protocol/types`.
 | `raw_html_trusted` | `bool` |  |
 | `binding` | `string` | optional (`omitempty`) |
 
+## MCPAppResourceCSP
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `resourceDomains` | `[]string` |  |
+
+## MCPAppResourceMeta
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `ui` | `types.MCPAppResourceUI` — see [`MCPAppResourceUI`](./types.md#mcpappresourceui) |  |
+
+## MCPAppResourceUI
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `csp` | `types.MCPAppResourceCSP` — see [`MCPAppResourceCSP`](./types.md#mcpappresourcecsp) |  |
+
 ## MCPAuthorizationServerView
 
 Declared in `internal/protocol/types`.
@@ -3708,6 +3732,8 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `provider_origin` | `string` | optional (`omitempty`) |
+| `_meta` | `*types.MCPAppResourceMeta` — see [`MCPAppResourceMeta`](./types.md#mcpappresourcemeta) | optional (`omitempty`) |
 | `app_operation_generation` | `string` | optional (`omitempty`) |
 | `resource_uri` | `string` |  |
 | `mime_type` | `string` | optional (`omitempty`) |

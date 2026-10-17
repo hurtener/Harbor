@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole/admission"
@@ -155,10 +156,12 @@ type MCPResourceArtifactRow struct {
 // (the accessor emits the loud bypass event when it offloads). The
 // accessor owns the threshold decision — the surface only projects.
 type MCPResourceContent struct {
-	ResourceURI string
-	MIMEType    string
-	Inline      []byte
-	Artifact    *MCPResourceArtifactRow
+	ResourceDomains []string
+	ProviderOrigin  string
+	ResourceURI     string
+	MIMEType        string
+	Inline          []byte
+	Artifact        *MCPResourceArtifactRow
 }
 
 // MCPResourceReader is the narrow contract the AppsSurface calls into for
@@ -561,10 +564,25 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if err != nil {
 		return nil, mapMCPError(string(method), err)
 	}
+	if strings.HasPrefix(r.ResourceURI, "ui://") {
+		// Re-run the existing current agent/reach gate after resource I/O. CSP
+		// metadata cannot escape a retirement or scope withdrawal during read.
+		if _, err := AdmitEffectiveAgent(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
+			return nil, err
+		}
+	}
 	resp := &types.ReadMCPResourceResponse{
 		ResourceURI:     content.ResourceURI,
 		MIMEType:        content.MIMEType,
 		ProtocolVersion: types.ProtocolVersion,
+	}
+	if strings.HasPrefix(r.ResourceURI, "ui://") {
+		resp.ProviderOrigin = content.ProviderOrigin
+		if content.ResourceDomains != nil {
+			resp.Meta = &types.MCPAppResourceMeta{UI: types.MCPAppResourceUI{CSP: types.MCPAppResourceCSP{
+				ResourceDomains: append([]string{}, content.ResourceDomains...),
+			}}}
+		}
 	}
 	if resp.ResourceURI == "" {
 		resp.ResourceURI = r.ResourceURI
@@ -575,7 +593,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		resp.Content = string(content.Inline)
 	}
 	// HA-56 amendment: the OPT-IN render admission. Omitted/false
-	// preserves the ordinary read byte-for-byte and mints NO callback
+	// preserves ordinary read callback behavior and mints NO callback
 	// authority. Only a SUCCESSFUL read carrying true may mint, and the
 	// mint binds the exact CURRENT registry descriptor generation — a
 	// nil reader, an error, or an empty fingerprint is a typed refusal,

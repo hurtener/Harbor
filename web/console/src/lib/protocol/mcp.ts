@@ -365,7 +365,21 @@ export interface RenderAdmission {
  * inline bytes below the heavy threshold; `artifact_ref` carries the
  * by-reference stub at or above it.
  */
+export interface MCPAppResourceCSP {
+  resourceDomains: string[];
+}
+export interface MCPAppResourceUI {
+  csp: MCPAppResourceCSP;
+}
+export interface MCPAppResourceMeta {
+  ui: MCPAppResourceUI;
+}
 export interface ReadMCPResourceResponse {
+  /** Same-read admitted public HTTPS provider origin; absent for stdio/nonpublic. */
+  provider_origin?: string;
+  /** Bounded standard resource metadata, not callback authority. */
+  _meta?: MCPAppResourceMeta;
+
 	/** Exact generation sealed into an operation-bound render admission; not authority. */
 	app_operation_generation?: string;
   /** Echoes the fetched resource URI. */

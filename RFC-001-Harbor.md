@@ -262,6 +262,20 @@ data-plane callbacks `mcp.servers.resources`, `mcp.servers.read_resource`, and
 an omitted Apps `agent_id` likewise resolves to the configured default so a
 v1.26.10 host remains compatible, while an omitted `tools.describe.agent_id`
 retains its distinct boot-effective projection and is not an agent choice.
+Successful MCP App resource reads may additionally carry bounded standard
+`_meta.ui.csp.resourceDomains` from the exact returned resource content item and
+`provider_origin`, a canonical public HTTPS origin projected from that same
+current admitted provider. Missing declarations stay absent. Only exact HTTPS
+origins are supported (32 entries, 2048 bytes per entry, 8 KiB recognized
+projection); malformed recognized declarations refuse the App read. Credentials,
+private/literal/local endpoints, arbitrary metadata and other CSP directives are
+not projected. This syntactic origin projection performs no DNS lookup and grants
+no callback rights. Hosts retain sandbox control and require current render
+admission before using declarations; existing mounted document CSP is a snapshot.
+Provider replacement, generation changes, effective-agent retirement and source
+withdrawal during the read refuse the result. Non-App resource behavior is
+unchanged; no extra catalog/metadata network request is introduced.
+
 Tenant-local configuration proves only
 that an agent can be selected; it never grants reach. Bearer-less carrier
 identity supplies no signed reach and therefore cannot use these methods.

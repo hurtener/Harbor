@@ -344,7 +344,18 @@ value as opaque host state and echo it as `agent_id` on
 Harbor resolves an omitted value to the runtime
 default for older clients, then applies the same signed `agent_reach` check
 before tenant-local resolution and credential/exposure use, so the echo is not
-trusted authority. `mcp.apps.tool_context` takes no agent id: its record is
+trusted authority. Successful `ui://` resource reads can include optional same-response
+`provider_origin` and `_meta.ui.csp.resourceDomains`. They describe the exact
+admitted resource/provider, not callback authority. Resource domains are bounded
+canonical public HTTPS origins (32, 2048 bytes each, 8 KiB total); recognized
+malformed/unsupported declarations refuse the read. Missing metadata, stdio and
+nonpublic provider origins stay absent. Never infer origins from document HTML or
+fetch another server descriptor to widen CSP. Keep the sandbox and require a
+fresh available render admission before using declarations for passive assets;
+never use them to permit scripts, connections or frames. Older runtimes omit
+these optional fields, so preserve the restrictive fallback.
+
+`mcp.apps.tool_context` takes no agent id: its record is
 already scoped to the verified tenant/user/session triple and it performs no
 agent-config or credential selection.
 
