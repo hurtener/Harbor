@@ -628,6 +628,9 @@ var CanonicalWireTypes = map[string]string{
 	// app-tool-call proxy, all in internal/protocol/types/mcp_apps.go.
 	"ReadMCPResourceRequest":  "types",
 	"ReadMCPResourceResponse": "types",
+	"MCPAppResourceCSP":       "types",
+	"MCPAppResourceUI":        "types",
+	"MCPAppResourceMeta":      "types",
 	"MCPResourceArtifactRef":  "types",
 	"MCPAppCallToolRequest":   "types",
 	"MCPAppCallToolResponse":  "types",

@@ -1592,44 +1592,67 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 //
 // Concurrent reuse: ReadResource holds no per-call state on the
 // Provider; identity + the URI ride the call.
-func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte, mimeType string, err error) {
+func (p *Provider) ReadResource(ctx context.Context, uri string) ([]byte, string, error) {
+	out, err := p.ReadResourceWithMetadata(ctx, uri)
+	return out.Content, out.MIMEType, err
+}
+
+// ReadResourceWithMetadata carries the bounded standard MCP App resource CSP
+// from the same resources/read reply. It performs exactly one remote read and
+// keeps no request state on the reusable provider.
+func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (ResourceRead, error) {
 	if operation, ok := appoperation.From(ctx); ok {
 		if err := operation.CheckResource(string(p.source), uri); err != nil {
-			return nil, "", err
+			return ResourceRead{}, err
 		}
 	}
 	session, sErr := p.sessionForRead()
 	if sErr != nil {
-		return nil, "", sErr
+		return ResourceRead{}, sErr
 	}
 	meta, mErr := p.buildIdentityMeta(ctx)
 	if mErr != nil {
-		return nil, "", mErr
+		return ResourceRead{}, mErr
 	}
 	// Per-entry binding: the resource URI is the addressing key so a per-tool
 	// override declared for this resource resolves its bearer (connection-level
 	// fallback when unbound).
 	ctx, mErr = p.resolveBearerCtx(ctx, uri)
 	if mErr != nil {
-		return nil, "", mErr
+		return ResourceRead{}, mErr
 	}
 	params := &mcpsdk.ReadResourceParams{URI: uri}
 	params.Meta = meta
 	res, rErr := session.ReadResource(ctx, params)
 	if rErr != nil {
-		return nil, "", fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
+		return ResourceRead{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
 	}
 	if res == nil || len(res.Contents) == 0 {
-		return nil, "", fmt.Errorf("%w: resource %q returned no content", ErrTransportFailed, uri)
+		return ResourceRead{}, fmt.Errorf("%w: resource %q returned no content", ErrTransportFailed, uri)
 	}
 	rc := res.Contents[0]
 	if rc == nil {
-		return nil, "", fmt.Errorf("%w: resource %q returned a nil content item", ErrTransportFailed, uri)
+		return ResourceRead{}, fmt.Errorf("%w: resource %q returned a nil content item", ErrTransportFailed, uri)
+	}
+	out := ResourceRead{MIMEType: rc.MIMEType}
+	if IsUIResourceURI(uri) {
+		// Metadata belongs to this exact content item, not the outer result or
+		// another resource returned alongside it.
+		if len(res.Contents) != 1 || rc.URI != uri {
+			return ResourceRead{}, ErrResourceMetadata
+		}
+		domains, err := resourceDomains(rc.Meta)
+		if err != nil {
+			return ResourceRead{}, err
+		}
+		out.ResourceDomains = domains
 	}
 	if len(rc.Blob) > 0 {
-		return append([]byte(nil), rc.Blob...), rc.MIMEType, nil
+		out.Content = append([]byte(nil), rc.Blob...)
+	} else {
+		out.Content = []byte(rc.Text)
 	}
-	return []byte(rc.Text), rc.MIMEType, nil
+	return out, nil
 }
 
 // DisplayModes returns the MCP App display modes THIS HOST can render —

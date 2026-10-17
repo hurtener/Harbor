@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:2c19281e5885298d23b29e047cda27ecbd587b58c3602e36ace16c349355e8d1";
+export const WIRE_SURFACE_DIGEST = "sha256:1f15f212532d119657bb9b675d9ab76b5ed5ad2ebff046640014fa1466c2cbde";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2211,6 +2211,18 @@ export interface MCPAppRef {
   binding?: string;
 }
 
+export interface MCPAppResourceCSP {
+  resourceDomains: string[];
+}
+
+export interface MCPAppResourceMeta {
+  ui: MCPAppResourceUI;
+}
+
+export interface MCPAppResourceUI {
+  csp: MCPAppResourceCSP;
+}
+
 export interface MCPAuthorizationServerView {
   issuer: string;
   authorization_endpoint: string;
@@ -2744,6 +2756,8 @@ export interface ReadMCPResourceRequest {
 }
 
 export interface ReadMCPResourceResponse {
+  provider_origin?: string;
+  _meta?: MCPAppResourceMeta;
   app_operation_generation?: string;
   resource_uri: string;
   mime_type?: string;
