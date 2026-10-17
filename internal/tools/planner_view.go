@@ -65,22 +65,23 @@ func (v PlannerView) Resolve(name string) (Tool, bool) {
 
 // DiscoveryTools returns the identity-visible schema set before prompt loading.
 // Always-loaded tools retain namespace precedence over deferred tools, matching
-// the builtin discovery projection. This snapshot grants no dispatch authority.
-func (v PlannerView) DiscoveryTools() []Tool {
+// the builtin discovery projection. The boolean reports a complete deferred
+// snapshot; it grants no dispatch authority.
+func (v PlannerView) DiscoveryTools() ([]Tool, bool) {
 	always := v.filter
 	always.LoadingModes = []LoadingMode{LoadingAlways}
 	deferred := v.filter
 	deferred.LoadingModes = []LoadingMode{LoadingDeferred}
-	return append(v.cat.List(always), v.cat.List(deferred)...)
+	return append(v.cat.List(always), v.cat.List(deferred)...), true
 }
 
 // discoveryTools preserves custom schema views that only expose List/Resolve.
 // Production views implement DiscoveryTools so deferred schemas participate.
-func discoveryTools(v PlannerCatalogView) []Tool {
-	if discovery, ok := v.(interface{ DiscoveryTools() []Tool }); ok {
+func discoveryTools(v PlannerCatalogView) ([]Tool, bool) {
+	if discovery, ok := v.(interface{ DiscoveryTools() ([]Tool, bool) }); ok {
 		return discovery.DiscoveryTools()
 	}
-	return v.List()
+	return v.List(), false
 }
 
 // List implements the planner's ToolCatalogView contract. Returns the
@@ -178,15 +179,16 @@ func (v ExclusionView) Resolve(name string) (Tool, bool) {
 }
 
 // DiscoveryTools applies exclusions before a discovery namespace is projected.
-func (v ExclusionView) DiscoveryTools() []Tool {
-	in := discoveryTools(v.inner)
+// Completeness follows the inner view, preserving legacy canonical resolution.
+func (v ExclusionView) DiscoveryTools() ([]Tool, bool) {
+	in, complete := discoveryTools(v.inner)
 	out := make([]Tool, 0, len(in))
 	for _, t := range in {
 		if !v.excluded(t) {
 			out = append(out, t)
 		}
 	}
-	return out
+	return out, complete
 }
 
 // List implements PlannerCatalogView. Returns the inner view's tools minus
@@ -305,8 +307,9 @@ func (v LoadingOverrideView) List() []Tool {
 
 // DiscoveryTools rewrites effective loading without hiding deferred schemas.
 // Namespace ownership follows the current effective always/deferred order.
-func (v LoadingOverrideView) DiscoveryTools() []Tool {
-	in := discoveryTools(v.inner)
+// The boolean preserves whether the inner view includes deferred schemas.
+func (v LoadingOverrideView) DiscoveryTools() ([]Tool, bool) {
+	in, complete := discoveryTools(v.inner)
 	always := make([]Tool, 0, len(in))
 	deferred := make([]Tool, 0, len(in))
 	for _, t := range in {
@@ -318,5 +321,5 @@ func (v LoadingOverrideView) DiscoveryTools() []Tool {
 			deferred = append(deferred, t)
 		}
 	}
-	return append(always, deferred...)
+	return append(always, deferred...), complete
 }

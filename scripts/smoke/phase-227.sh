@@ -27,7 +27,8 @@ assert_go_tests_pass "${P227_GOLOG}" '-race ./internal/planner/react/' \
     TestDiscoveryAliases_SearchHarvestNextDeclaration \
     TestDiscoveryAliases_CurrentVisibilityAndSchema \
     TestDiscoveryAliases_CollisionOwnerAndCanonicalCompatibility \
-    TestDiscoveryAliases_ConcurrentRunIsolation
+    TestDiscoveryAliases_ConcurrentRunIsolation \
+    TestDiscoveryAliases_LegacyWrappedCanonicalDiscovery
 
 assert_go_tests_pass "${P227_GOLOG}" './internal/tools/builtin/' \
     'phase 227: discovery, lookup, and action share collision, reservation, and scope policy' \
