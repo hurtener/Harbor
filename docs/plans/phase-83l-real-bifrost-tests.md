@@ -236,3 +236,39 @@ reads the failed consumer turn over HTTP, shuts down, and reads the same failure
 through a fresh SQLite-backed turn service with no provider replay or domain
 handler invocation. These fixtures use a local HTTP server; they are not live
 provider measurements.
+
+## Scoped release qualification (2026-10-17)
+
+The combined runtime checkpoint is
+`9a324f0544591d432c6f786b95c7c752a5dd2bda` (tree
+`5cb0ed108e28de6aa3f2aba5d91b96b1ad3dc647`). It includes the
+[Phase 227 discovery correction](phase-227-declared-tool-resolution.md)
+and the empty-completion correction above. Independent narrow reviews of the
+final corrections reported no P0, P1, or P2 findings. Focused governance/LLM race
+tests, both original reviewer reproductions, scoped lint/vet, and Phase 83l smoke
+passed; the smoke reported 12 OK, zero SKIP, and zero FAIL.
+
+The complete `make preflight` on that immutable runtime finished at
+2026-10-17 10:31:34 UTC with exit code 2 after running 132 static, 144 unit,
+and 119 live-server smoke scripts. Its sole actual failure was Phase 25a's
+120-second memory/session package deadline. The memory subtree, dependencies,
+and Phase 25a script were unchanged from the rollback baseline. A subsequent
+retry of the original `bash scripts/smoke/phase-25a.sh` on the same runtime,
+without source or timeout changes, finished at 10:34:05 UTC with exit code 0:
+2 OK, 1 SKIP, zero FAIL. This resolves the observed failure through a narrow
+retry; the initial full preflight remains a failed run.
+
+The full run also reported 21 expected pending-phase scripts that asserted
+nothing. These planned skips are unimplemented surfaces, not acceptance proof.
+PostgreSQL memory acceptance remains unqualified because `HARBOR_PG_DSN` was
+unset. Hosted CI is blocked by billing. Local HTTP/Bifrost fixtures and local
+live-server smoke checks provide no live-provider or deployed acceptance proof.
+
+The release owner retains `harbor-release-qualification.json`,
+`harbor-release-preflight-9a324/{result.json,preflight.log}`,
+`harbor-phase25a-post-preflight-retry.{json,log}`, and the independent
+`review-harbor-empty-narrow.json` / `review-harbor-discovery-narrow.json`
+records. Integration and deployment remain separate owner actions. The rollback
+runtime is `4dd579a090b86d4970f30deda482f3cf0af48b01`; configuration and
+environment are unchanged by this checkpoint. This documentation child changes
+no runtime code, tests, or timeout policy.
