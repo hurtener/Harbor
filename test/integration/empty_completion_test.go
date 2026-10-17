@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 )
@@ -146,12 +147,28 @@ func TestE2E_EmptyCompletion_TaskFailurePersistsAndReplays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sub, err := stack.Bus.Subscribe(ctx, events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID, Types: []events.EventType{tasks.EventTypeTaskFailed, tasks.EventTypeTaskCompleted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Cancel()
 	task, err := stack.Tasks.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: tasks.KindForeground, Query: "Read a synthetic fixture"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status := waitForTaskTerminal(t, stack, ctx, task.ID, 10*time.Second); status != tasks.StatusFailed {
 		t.Fatalf("terminal=%s", status)
+	}
+	terminalCtx, stopTerminal := context.WithTimeout(t.Context(), 10*time.Second)
+	defer stopTerminal()
+	select {
+	case event := <-sub.Events():
+		payload, ok := event.Payload.(tasks.TaskFailedPayload)
+		if event.Type != tasks.EventTypeTaskFailed || !ok || payload.TaskID != task.ID || payload.ErrorCode != planner.TaskErrorCodeRunLoopError {
+			t.Fatalf("wrong emitted terminal event: %+v", event)
+		}
+	case <-terminalCtx.Done():
+		t.Fatal("runtime did not emit task.failed")
 	}
 	stored, err := stack.Tasks.Get(ctx, task.ID)
 	if err != nil {
