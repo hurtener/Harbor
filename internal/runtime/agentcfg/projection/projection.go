@@ -278,8 +278,19 @@ func (v userScopedMCPView) Resolve(name string) (tools.Tool, bool) {
 	return resolved, true
 }
 
+// DiscoveryTools applies the same owner admission before projecting aliases.
+func (v userScopedMCPView) DiscoveryTools() []tools.Tool {
+	if discovery, ok := v.base.(interface{ DiscoveryTools() []tools.Tool }); ok {
+		return v.allowedTools(discovery.DiscoveryTools())
+	}
+	return v.List()
+}
+
 func (v userScopedMCPView) List() []tools.Tool {
-	all := v.base.List()
+	return v.allowedTools(v.base.List())
+}
+
+func (v userScopedMCPView) allowedTools(all []tools.Tool) []tools.Tool {
 	out := make([]tools.Tool, 0, len(all))
 	for _, tool := range all {
 		if v.allows(tool) {

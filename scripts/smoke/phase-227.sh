@@ -22,6 +22,13 @@ assert_go_tests_pass "${P227_GOLOG}" './internal/planner/react/' \
     TestResolveDeclaredToolName_ReservedControlNeverResolvesToCatalogTool \
     TestResolveDeclaredToolName_ConcurrentReuse
 
+assert_go_tests_pass "${P227_GOLOG}" '-race ./internal/planner/react/' \
+    'phase 227: search aliases activate only current permitted discovery owners' \
+    TestDiscoveryAliases_SearchHarvestNextDeclaration \
+    TestDiscoveryAliases_CurrentVisibilityAndSchema \
+    TestDiscoveryAliases_CollisionOwnerAndCanonicalCompatibility \
+    TestDiscoveryAliases_ConcurrentRunIsolation
+
 assert_go_tests_pass "${P227_GOLOG}" './internal/tools/builtin/' \
     'phase 227: discovery, lookup, and action share collision, reservation, and scope policy' \
     TestBuiltins_ModelAuthoredDeclaredNameNeverDispatchesRawCollider \
