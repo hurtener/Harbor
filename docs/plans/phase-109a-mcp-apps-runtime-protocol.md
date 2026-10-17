@@ -203,3 +203,24 @@ sanitization, cross-user/tenant/agent denial, late source withdrawal and agent
 retirement, current-provider replacement and 128-session reuse under race.
 G01 signed-in consumer/media live acceptance and the full release preflight are
 separate gatekeeper work; this native projection alone closes no product journey.
+
+### Same-read fence through final admission
+
+The accessor retains its original opaque registry entry/generation in a
+request-local final-check callback on the internal resource row, excluded from
+serialization. Protocol reuses current agent/source checks after admission I/O
+and checks that exact original entry and generation immediately before returning
+the response. An available admission must bind the read's original generation;
+an equal catalog digest on a replacement entry is insufficient. A changed tuple
+returns no document, origin metadata or admission and never rereads the resource.
+New metadata without its internal same-read fence fails closed. Legacy readers
+with absent metadata and the non-App interface remain compatible; wire types,
+methods and Protocol version are unchanged.
+
+The deterministic review reproduction is RED at the frozen prior source and
+GREEN after this correction. Committed race regressions cover changed/equal
+catalog replacement after accessor return, replacement/rediscovery/withdrawal/
+retirement during mint, current-source withdrawal in final resolution, mismatched
+admission generation, ordinary reads and a current admission verified against its
+actual sealed tuple. This narrow correction carries earlier generator/static
+proof unchanged; focused race/build evidence and live acceptance remain distinct.

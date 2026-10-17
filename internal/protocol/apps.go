@@ -156,6 +156,11 @@ type MCPResourceArtifactRow struct {
 // (the accessor emits the loud bypass event when it offloads). The
 // accessor owns the threshold decision — the surface only projects.
 type MCPResourceContent struct {
+	// FinalCheck retains the accessor's request-local opaque same-read fence.
+	// It is not serialized or supplied by the client. A nonempty argument is
+	// the generation just sealed into render admission, never a new snapshot.
+	FinalCheck func(context.Context, string) error `json:"-"`
+
 	ResourceDomains []string
 	ProviderOrigin  string
 	ResourceURI     string
@@ -564,13 +569,6 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if err != nil {
 		return nil, mapMCPError(string(method), err)
 	}
-	if strings.HasPrefix(r.ResourceURI, "ui://") {
-		// Re-run the existing current agent/reach gate after resource I/O. CSP
-		// metadata cannot escape a retirement or scope withdrawal during read.
-		if _, err := AdmitEffectiveAgent(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
-			return nil, err
-		}
-	}
 	resp := &types.ReadMCPResourceResponse{
 		ResourceURI:     content.ResourceURI,
 		MIMEType:        content.MIMEType,
@@ -598,6 +596,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	// mint binds the exact CURRENT registry descriptor generation — a
 	// nil reader, an error, or an empty fingerprint is a typed refusal,
 	// never an admission over an empty generation.
+	admittedGeneration := ""
 	if r.RequestRenderAdmission {
 		adm, generation, perr := s.mintRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI)
 		if perr != nil {
@@ -605,9 +604,27 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		}
 		if adm != nil {
 			resp.RenderAdmission = adm
+			if adm.Availability == types.RenderAdmissionAvailable {
+				admittedGeneration = generation
+			}
 			if r.AppOperation != "" && adm.Availability == types.RenderAdmissionAvailable {
 				resp.AppOperationGeneration = generation
 			}
+		}
+	}
+	if strings.HasPrefix(r.ResourceURI, "ui://") {
+		// Agent resolution and admission can block. Reuse current agent/source
+		// checks after that I/O, then check the original opaque entry/generation
+		// before releasing the document, origin policy or admission together.
+		if _, err := AdmitEffectiveAgent(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
+			return nil, err
+		}
+		if content.FinalCheck != nil {
+			if err := content.FinalCheck(idCtx, admittedGeneration); err != nil {
+				return nil, mapMCPError(string(method), err)
+			}
+		} else if content.ProviderOrigin != "" || content.ResourceDomains != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError, "App resource metadata requires its same-read fence")
 		}
 	}
 	return resp, nil

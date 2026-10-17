@@ -256,6 +256,20 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 	}
 	out := protocol.MCPResourceContent{ResourceURI: resourceURI, MIMEType: mime,
 		ResourceDomains: resource.ResourceDomains, ProviderOrigin: resource.ProviderOrigin}
+	if mcp.IsUIResourceURI(resourceURI) {
+		// Keep the original opaque snapshot alive until Protocol finishes its
+		// later agent/admission I/O. This callback never rereads the resource or
+		// changes which entry/generation supplied the document and metadata.
+		out.FinalCheck = func(ctx context.Context, generation string) error {
+			if err := a.gateSourceAttachment(ctx, tools.ToolSourceID(serverID)); err != nil {
+				return err
+			}
+			if err := a.reg.CheckResourceReadAtGeneration(ctx, resource, generation); err != nil {
+				return fmt.Errorf("%w: mcpconsole: %w", protocol.ErrAccessorScopeDenied, err)
+			}
+			return nil
+		}
+	}
 	// Reuse current source/agent/capability policy after I/O before releasing
 	// an App document or any of its CSP metadata. Ordinary resource reads keep
 	// their existing behavior.
