@@ -217,7 +217,8 @@ func (a *RegistryAccessor) ListPrompts(ctx context.Context, name string) ([]prot
 
 // RefreshDiscovery implements protocol.MCPAccessor.
 func (a *RegistryAccessor) RefreshDiscovery(ctx context.Context, name string) (protocol.MCPDiscoveryRow, error) {
-	if err := a.ensureSourceVisible(ctx, name); err != nil {
+	ctx, err := a.sourceAuth.admitDiscovery(ctx, tools.ToolSourceID(name))
+	if err != nil {
 		return protocol.MCPDiscoveryRow{}, markNotFound(err)
 	}
 	r, err := a.reg.RefreshDiscovery(ctx, name)
@@ -241,7 +242,9 @@ func (a *RegistryAccessor) RefreshDiscovery(ctx context.Context, name string) (p
 // captured challenge so the requirement is inspectable.
 func (a *RegistryAccessor) Probe(ctx context.Context, name string) (protocol.MCPProbeRow, error) {
 	if _, verified := identity.From(ctx); verified {
-		if err := a.ensureSourceVisible(ctx, name); err != nil {
+		var err error
+		ctx, err = a.sourceAuth.admitDiscovery(ctx, tools.ToolSourceID(name))
+		if err != nil {
 			return protocol.MCPProbeRow{}, markNotFound(err)
 		}
 	} else if owner, known := a.reg.OwnerOfSource(tools.ToolSourceID(name)); known && owner.Scope() != auth.ScopeBootGlobal {
