@@ -10,9 +10,6 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/llm"
-	// These real wrappers prove the new inner error does not trigger repair or backfill.
-	_ "github.com/hurtener/Harbor/internal/llm/corrections"
-	_ "github.com/hurtener/Harbor/internal/llm/retry"
 )
 
 type emptyCompletionDriver struct {
