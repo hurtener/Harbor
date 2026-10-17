@@ -63,6 +63,26 @@ func (v PlannerView) Resolve(name string) (Tool, bool) {
 	return desc.Tool, true
 }
 
+// DiscoveryTools returns the identity-visible schema set before prompt loading.
+// Always-loaded tools retain namespace precedence over deferred tools, matching
+// the builtin discovery projection. This snapshot grants no dispatch authority.
+func (v PlannerView) DiscoveryTools() []Tool {
+	always := v.filter
+	always.LoadingModes = []LoadingMode{LoadingAlways}
+	deferred := v.filter
+	deferred.LoadingModes = []LoadingMode{LoadingDeferred}
+	return append(v.cat.List(always), v.cat.List(deferred)...)
+}
+
+// discoveryTools preserves custom schema views that only expose List/Resolve.
+// Production views implement DiscoveryTools so deferred schemas participate.
+func discoveryTools(v PlannerCatalogView) []Tool {
+	if discovery, ok := v.(interface{ DiscoveryTools() []Tool }); ok {
+		return discovery.DiscoveryTools()
+	}
+	return v.List()
+}
+
 // List implements the planner's ToolCatalogView contract. Returns the
 // filtered slice of Tools visible to the run's identity.
 func (v PlannerView) List() []Tool {
@@ -155,6 +175,18 @@ func (v ExclusionView) Resolve(name string) (Tool, bool) {
 		return Tool{}, false
 	}
 	return t, true
+}
+
+// DiscoveryTools applies exclusions before a discovery namespace is projected.
+func (v ExclusionView) DiscoveryTools() []Tool {
+	in := discoveryTools(v.inner)
+	out := make([]Tool, 0, len(in))
+	for _, t := range in {
+		if !v.excluded(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // List implements PlannerCatalogView. Returns the inner view's tools minus
@@ -269,4 +301,22 @@ func (v LoadingOverrideView) List() []Tool {
 		out = append(out, rt)
 	}
 	return out
+}
+
+// DiscoveryTools rewrites effective loading without hiding deferred schemas.
+// Namespace ownership follows the current effective always/deferred order.
+func (v LoadingOverrideView) DiscoveryTools() []Tool {
+	in := discoveryTools(v.inner)
+	always := make([]Tool, 0, len(in))
+	deferred := make([]Tool, 0, len(in))
+	for _, t := range in {
+		t = v.rewrite(t)
+		switch t.Loading {
+		case LoadingAlways:
+			always = append(always, t)
+		case LoadingDeferred:
+			deferred = append(deferred, t)
+		}
+	}
+	return append(always, deferred...)
 }
