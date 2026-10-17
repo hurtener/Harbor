@@ -25,6 +25,9 @@ var (
 	// with `Image == nil`). The safety pass rejects loudly rather than
 	// papering over the inconsistency.
 	ErrInvalidContent = errors.New("llm: invalid message content")
+	// ErrEmptyCompletion means the provider returned neither an answer nor a
+	// tool call. Reasoning alone does not satisfy a completion request.
+	ErrEmptyCompletion = errors.New("llm: provider returned no answer or tool call")
 	// ErrContextLeak — runtime-wide invariant violation. A
 	// raw byte / string / DataURL ≥ heavy-output threshold survived
 	// every producer's normalization step and reached the LLM-client
@@ -129,4 +132,39 @@ func IsInvalidJSONSchemaError(err error) bool {
 		}
 	}
 	return false
+}
+
+// EmptyCompletionError retains only a bounded termination reason for a response
+// without answer content or tool calls. Accounting remains on CompleteResponse;
+// this error makes no assertion about measured usage or cost.
+type EmptyCompletionError struct {
+	finishReason string
+}
+
+// Error returns the stable failure and a sanitized termination reason.
+func (e *EmptyCompletionError) Error() string {
+	return ErrEmptyCompletion.Error() + " (finish_reason=" + e.FinishReason() + ")"
+}
+
+// Unwrap supports errors.Is with ErrEmptyCompletion.
+func (*EmptyCompletionError) Unwrap() error { return ErrEmptyCompletion }
+
+// FinishReason returns the allowlisted provider termination reason, "unknown"
+// for an unrecognized value, or "unreported" when no reason was supplied.
+func (e *EmptyCompletionError) FinishReason() string {
+	if e.finishReason == "" {
+		return "unreported"
+	}
+	return e.finishReason
+}
+
+func newEmptyCompletionError(reason string) *EmptyCompletionError {
+	switch reason {
+	case "stop", "length", "max_output_tokens", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "stop_sequence", "pause_turn":
+		return &EmptyCompletionError{finishReason: reason}
+	case "":
+		return &EmptyCompletionError{finishReason: "unreported"}
+	default:
+		return &EmptyCompletionError{finishReason: "unknown"}
+	}
 }
