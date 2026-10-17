@@ -109,12 +109,16 @@ func TestActivePlannerCatalogView_UserMCPDesiredPairsAreIdentityScoped(t *testin
 			if _, ok := view.Resolve(tc.hide); ok {
 				t.Fatalf("foreign user source tool %q is visible: %v", tc.hide, viewNames(view))
 			}
-			discovery, ok := view.(interface{ DiscoveryTools() []tools.Tool })
+			discovery, ok := view.(interface{ DiscoveryTools() ([]tools.Tool, bool) })
 			if !ok {
 				t.Fatal("production owner view dropped deferred discovery")
 			}
 			foundDeferred := false
-			for _, tool := range discovery.DiscoveryTools() {
+			all, complete := discovery.DiscoveryTools()
+			if !complete {
+				t.Fatal("production owner discovery is incomplete")
+			}
+			for _, tool := range all {
 				if tool.Loading != tools.LoadingDeferred {
 					continue
 				}

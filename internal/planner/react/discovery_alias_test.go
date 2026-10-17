@@ -307,3 +307,75 @@ func TestDiscoveryAliases_ConcurrentRunIsolation(t *testing.T) {
 		t.Fatal("discovery executed a handler")
 	}
 }
+
+// legacyDeferredAliasCatalog models existing custom schema views whose List
+// exposes eager schemas while Resolve also admits canonical deferred keys.
+type legacyDeferredAliasCatalog struct {
+	eager, deferred []tools.Tool
+}
+
+func (v legacyDeferredAliasCatalog) List() []tools.Tool { return append([]tools.Tool(nil), v.eager...) }
+func (v legacyDeferredAliasCatalog) Resolve(name string) (tools.Tool, bool) {
+	for _, group := range [][]tools.Tool{v.eager, v.deferred} {
+		for _, tool := range group {
+			if tool.Name == name {
+				return tool, true
+			}
+		}
+	}
+	return tools.Tool{}, false
+}
+
+func TestDiscoveryAliases_LegacyWrappedCanonicalDiscovery(t *testing.T) {
+	target := tools.Tool{Name: "source_" + strings.Repeat("a", 40) + "_read_document", Description: "legacy permitted deferred schema", Loading: tools.LoadingDeferred, Source: "legacy-source", ArgsSchema: json.RawMessage(`{"type":"object"}`)}
+	winner := tools.Tool{Name: "clock.now", Description: "eager collision owner", ArgsSchema: json.RawMessage(`{"type":"object"}`)}
+	loser := tools.Tool{Name: "clock_now", Description: "forbidden raw collider", Loading: tools.LoadingDeferred, ArgsSchema: json.RawMessage(`{"type":"object"}`)}
+	legacy := legacyDeferredAliasCatalog{eager: []tools.Tool{winner}, deferred: []tools.Tool{target, loser}}
+	emptyExclusion := tools.NewExclusionView(legacy, nil, nil)
+	loading := tools.NewLoadingOverrideView(legacy, nil, nil)
+	cases := []struct {
+		name  string
+		view  tools.PlannerCatalogView
+		allow bool
+	}{
+		{"direct", legacy, true},
+		{"exclusion", emptyExclusion, true},
+		{"loading", loading, true},
+		{"nested", tools.NewLoadingOverrideView(emptyExclusion, nil, nil), true},
+		{"disabled", tools.NewExclusionView(loading, nil, []string{target.Name}), false},
+		{"paused", tools.NewLoadingOverrideView(tools.NewExclusionView(legacy, []string{"legacy-source"}, nil), nil, nil), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if discovery, ok := tc.view.(interface{ DiscoveryTools() ([]tools.Tool, bool) }); ok {
+				if _, complete := discovery.DiscoveryTools(); complete {
+					t.Fatal("wrapper claimed the legacy eager List was complete")
+				}
+			}
+			rc := planner.RunContext{Catalog: tc.view}
+			declarations := buildToolDeclarations(rc, []string{target.Name, loser.Name})
+			_, found := declarationNamed(declarations, tools.ModelVisibleToolName(target.Name))
+			if found != tc.allow {
+				t.Fatalf("canonical deferred discovery=%t, want %t", found, tc.allow)
+			}
+			decl, found := declarationNamed(declarations, "clock_now")
+			if !found || decl.Description != winner.Description {
+				t.Fatalf("raw fallback changed collision owner: %#v", decl)
+			}
+		})
+	}
+	// A complete production snapshot still rejects a raw residual-collision loser.
+	cat := tools.NewCatalog()
+	var calls atomic.Int64
+	for _, tool := range []tools.Tool{winner, {Name: "clock/now", Description: "dropped deferred schema", Loading: tools.LoadingDeferred, ArgsSchema: json.RawMessage(`{"type":"object"}`)}} {
+		registerDiscoveryAlias(t, cat, tool, &calls)
+	}
+	complete := tools.NewExclusionView(tools.NewPlannerView(cat, tools.CatalogFilter{}), nil, nil)
+	_, projection := projectModelTools(planner.RunContext{Catalog: complete}, []string{"clock/now"})
+	if _, found := projection.DeclaredName("clock/now"); found {
+		t.Fatal("complete snapshot admitted a raw collision loser")
+	}
+	if calls.Load() != 0 {
+		t.Fatal("canonical discovery invoked a handler")
+	}
+}

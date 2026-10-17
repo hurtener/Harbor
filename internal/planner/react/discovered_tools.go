@@ -341,9 +341,9 @@ func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool
 	candidates := rc.Catalog.List()
 	if len(discovered) > 0 {
 		discoveryCandidates := candidates
-		discoveryView, complete := rc.Catalog.(interface{ DiscoveryTools() []tools.Tool })
-		if complete {
-			discoveryCandidates = discoveryView.DiscoveryTools()
+		complete := false
+		if discoveryView, ok := rc.Catalog.(interface{ DiscoveryTools() ([]tools.Tool, bool) }); ok {
+			discoveryCandidates, complete = discoveryView.DiscoveryTools()
 		}
 		discoveryNames := make([]string, 0, len(discoveryCandidates))
 		for _, tool := range discoveryCandidates {
