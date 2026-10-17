@@ -23,6 +23,8 @@ type (
 	CompleteRequest = internal.CompleteRequest
 	// CompleteResponse is the canonical completion response.
 	CompleteResponse = internal.CompleteResponse
+	// EmptyCompletionError describes a provider response without answer or action.
+	EmptyCompletionError = internal.EmptyCompletionError
 	// ChatMessage is one role-tagged message.
 	ChatMessage = internal.ChatMessage
 	// Content is a message body (text or multimodal parts).
@@ -225,6 +227,8 @@ var (
 	ErrIdentityMissing = internal.ErrIdentityMissing
 	// ErrInvalidContent — the message content is malformed.
 	ErrInvalidContent = internal.ErrInvalidContent
+	// ErrEmptyCompletion — the provider returned no answer or tool call.
+	ErrEmptyCompletion = internal.ErrEmptyCompletion
 	// ErrContextLeak — raw heavy content reached the LLM edge.
 	ErrContextLeak = internal.ErrContextLeak
 	// ErrContextWindowExceeded — the estimate breaches the window reserve.
