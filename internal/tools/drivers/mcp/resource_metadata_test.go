@@ -40,7 +40,7 @@ func TestAppResourceMetadata_ClosedBoundsAndOrigins(t *testing.T) {
 		{"nonstring", appResourceMeta([]any{1}), nil, true},
 		{"count", appResourceMeta(make([]any, 33)), nil, true},
 	}
-	for _, origin := range []string{"http://assets.example.com", "https://*.example.com", "https://assets.example.com/", "https://assets.example.com/a", "https://assets.example.com?q=x", "https://assets.example.com#x", "https://user:secret@assets.example.com", "https://localhost", "https://127.0.0.1", "https://127.1", "https://0x7f000001", "https://2130706433", "https://[::1]", "https://10.1.2.3", "https://a.local", "https://a.internal", "https://a.test", "https://a.invalid", "https://a.home.arpa", "https://ASSETS.example.com", "https://assets.example.com:443", "https://assets.example.com:99999", strings.Repeat("x", 2049)} {
+	for _, origin := range []string{"http://assets.example.com", "https://*.example.com", "https://assets.example.com/", "https://assets.example.com/a", "https://assets.example.com?q=x", "https://assets.example.com#x", "https://user:secret@assets.example.com", "https://localhost", "https://127.0.0.1", "https://127.1", "https://0x7f000001", "https://2130706433", "https://[::1]", "https://10.1.2.3", "https://a.local", "https://a.internal", "https://a.test", "https://a.invalid", "https://a.home.arpa", "https://ASSETS.example.com", "https://assets.example.com:443", "https://assets.example.com:0443", "https://assets.example.com:08443", "https://assets.example.com:99999", strings.Repeat("x", 2049)} {
 		cases = append(cases, struct {
 			name string
 			meta map[string]any
@@ -84,6 +84,8 @@ func TestAppResourceMetadata_ClosedBoundsAndOrigins(t *testing.T) {
 	}
 	for raw, want := range map[string]string{
 		"https://API.example.com:443/private/mcp?token=secret#fragment": "https://api.example.com",
+		"https://api.example.com:0443/mcp":                              "https://api.example.com",
+		"https://api.example.com:08443/mcp":                             "https://api.example.com:8443",
 		"https://api.example.com:8443/mcp":                              "https://api.example.com:8443",
 		"https://user:secret@api.example.com/mcp":                       "", "http://api.example.com/mcp": "", "https://10.0.0.1/mcp": "", "https://api.internal/mcp": "", "node /private/path": "",
 	} {

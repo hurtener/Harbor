@@ -359,12 +359,6 @@ export interface RenderAdmission {
   availability: string;
 }
 
-/**
- * `mcp.servers.read_resource` reply — mirrors `types.ReadMCPResourceResponse`.
- * EXACTLY ONE of `content` / `artifact_ref` is set: `content` carries the
- * inline bytes below the heavy threshold; `artifact_ref` carries the
- * by-reference stub at or above it.
- */
 export interface MCPAppResourceCSP {
   resourceDomains: string[];
 }
@@ -374,6 +368,12 @@ export interface MCPAppResourceUI {
 export interface MCPAppResourceMeta {
   ui: MCPAppResourceUI;
 }
+/**
+ * `mcp.servers.read_resource` reply — mirrors `types.ReadMCPResourceResponse`.
+ * EXACTLY ONE of `content` / `artifact_ref` is set: `content` carries the
+ * inline bytes below the heavy threshold; `artifact_ref` carries the
+ * by-reference stub at or above it.
+ */
 export interface ReadMCPResourceResponse {
   /** Same-read admitted public HTTPS provider origin; absent for stdio/nonpublic. */
   provider_origin?: string;
