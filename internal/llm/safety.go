@@ -169,14 +169,6 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		return resp, err
 	}
 
-	// An HTTP-success response without an answer or action is a failed
-	// completion, including whitespace or reasoning-only output. Return the
-	// original accounting alongside the error; outer wrappers must not infer
-	// usage, repair this as a schema failure, or retry the provider implicitly.
-	if strings.TrimSpace(resp.Content) == "" && len(resp.ToolCalls) == 0 {
-		return resp, newEmptyCompletionError(resp.FinishReason)
-	}
-
 	// Driver-neutral cost/usage/model observability emit. The safety
 	// wrapper is the innermost mandatory band `Open` composes around
 	// EVERY driver, so `llm.cost.recorded` fires for every provider —
@@ -190,6 +182,15 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	// observability-only — cost accounting stays in-band synchronous in
 	// the governance PostCall.
 	emitCostRecorded(ctx, c.deps.Bus, id, req.Model, resp.Cost, resp.Usage, profile.ContextWindowTokens)
+
+	// An HTTP-success response without an answer or action is a failed
+	// completion, including whitespace or reasoning-only output. Return the
+	// original accounting alongside the error; outer wrappers must not infer
+	// usage, repair this as a schema failure, or retry the provider implicitly.
+	if strings.TrimSpace(resp.Content) == "" && len(resp.ToolCalls) == 0 {
+		return resp, newEmptyCompletionError(resp.FinishReason)
+	}
+
 	return resp, nil
 }
 
