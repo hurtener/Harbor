@@ -2151,6 +2151,14 @@ func (r *Registry) ReadResourceWithMetadata(ctx context.Context, name, uri strin
 // CheckResourceRead rechecks the exact read's opaque registry snapshot after
 // downstream offload I/O. It cannot authorize a caller-created resource result.
 func (r *Registry) CheckResourceRead(ctx context.Context, read ResourceRead) error {
+	return r.CheckResourceReadAtGeneration(ctx, read, "")
+}
+
+// CheckResourceReadAtGeneration carries the same opaque read fence through
+// admission. A nonempty generation must equal the read's original generation;
+// the exact registry entry must still be current even for an equal digest.
+// Empty means no admission was minted, as on an ordinary resource read.
+func (r *Registry) CheckResourceReadAtGeneration(ctx context.Context, read ResourceRead, generation string) error {
 	if err := requireIdentity(ctx); err != nil {
 		return err
 	}
@@ -2160,7 +2168,7 @@ func (r *Registry) CheckResourceRead(ctx context.Context, read ResourceRead) err
 	id, _ := identity.From(ctx)
 	r.mu.RLock()
 	current := r.servers[read.source]
-	valid := read.entry != nil && current == read.entry && entryVisibleToIdentity(current, id) && current.currentGeneration == read.generation
+	valid := read.entry != nil && current == read.entry && entryVisibleToIdentity(current, id) && current.currentGeneration == read.generation && (generation == "" || generation == read.generation)
 	r.mu.RUnlock()
 	if !valid {
 		return ErrGenerationMismatch
