@@ -8,6 +8,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/hurtener/Harbor/internal/events"
 
 	"github.com/hurtener/Harbor/internal/llm"
 )
@@ -102,5 +105,57 @@ func TestSafety_EmptyCompletionUnknownAccountingAndConcurrentReuse(t *testing.T)
 	wg.Wait()
 	if driver.calls.Load() != 128 {
 		t.Fatalf("calls=%d, want128", driver.calls.Load())
+	}
+}
+
+func TestSafety_EmptyCompletionCostObservationPreservesAccounting(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage llm.Usage
+		cost  llm.Cost
+	}{
+		{name: "reported", usage: llm.Usage{ReportPresent: true, TotalTokens: 17}, cost: llm.Cost{ReportPresent: true, TotalCost: 0.25}},
+		{name: "unknown"},
+		// SDK-normalized presence on a zero object is preserved, not promoted
+		// into a claim about what the upstream provider actually measured.
+		{name: "normalized-zero", usage: llm.Usage{ReportPresent: true}, cost: llm.Cost{ReportPresent: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, cleanup := makeDeps(t)
+			defer cleanup()
+			sub := subscribeBus(t, deps.Bus, llm.EventTypeCostRecorded)
+			original := llm.CompleteResponse{FinishReason: "length", Usage: tc.usage, Cost: tc.cost}
+			driver := &emptyCompletionDriver{response: original}
+			name := uniqueDriverName("empty-cost-observation")
+			llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
+			cfg := makeSnapshot("m", 8192)
+			cfg.Driver = name
+			client, err := llm.Open(t.Context(), cfg, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close(t.Context()) }()
+			ctx := costEmitCtx(t)
+			response, err := client.Complete(ctx, llm.CompleteRequest{Model: "m"})
+			if !errors.Is(err, llm.ErrEmptyCompletion) || !reflect.DeepEqual(response, original) {
+				t.Fatalf("response/error=%+v %v", response, err)
+			}
+			if err := events.Flush(ctx, deps.Bus); err != nil {
+				t.Fatal(err)
+			}
+			records := countCostEvents(sub, 100*time.Millisecond)
+			if len(records) != 1 {
+				t.Fatalf("cost events=%d, want1 for the successful driver attempt", len(records))
+			}
+			if !reflect.DeepEqual(records[0].Usage, tc.usage) || !reflect.DeepEqual(records[0].Cost, tc.cost) {
+				t.Fatalf("observation changed accounting: %+v", records[0])
+			}
+			if records[0].Identity.RunID != "run-cost-emit" || records[0].Model != "m" || records[0].ContextWindowTokens != 8192 {
+				t.Fatalf("observation attribution=%+v", records[0])
+			}
+			if driver.calls.Load() != 1 {
+				t.Fatalf("provider attempts=%d, want1", driver.calls.Load())
+			}
+		})
 	}
 }

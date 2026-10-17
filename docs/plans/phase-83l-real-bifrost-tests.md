@@ -212,8 +212,9 @@ that contain neither non-whitespace answer content nor a tool call. Reasoning
 alone does not supply an answer or an action. `llm.ErrEmptyCompletion` supports
 `errors.Is`; its typed detail exposes an allowlisted termination reason only.
 The response's cost and usage are returned unchanged alongside the error.
-Normalized SDK report presence and zero values do not establish upstream
-measurement. No new accounting flags, estimates, retries, or model fallbacks
+The existing driver-success cost event is emitted exactly once before semantic
+rejection, preserving known and unknown accounting unchanged. Normalized SDK
+report presence and zero values do not establish upstream measurement. No new accounting flags, estimates, retries, or model fallbacks
 are introduced. Existing error propagation produces a failed task with the
 canonical `runloop_error` code and a bounded consumer-safe message.
 
@@ -222,6 +223,11 @@ reasoning-only responses, unreported and untrusted termination reasons,
 accounting preservation, and zero validator retries.
 `TestSafety_EmptyCompletionUnknownAccountingAndConcurrentReuse` runs 128 calls
 on one shared client without synthesizing usage or cost.
+`TestSafety_EmptyCompletionCostObservationPreservesAccounting` checks exactly
+one unchanged cost event for reported, unknown, and SDK-normalized-zero data.
+`TestFailoverPolicy_EmptyCompletionStopsWithoutAlternate` drives the real safety
+and failover chain, asserting one provider attempt, no alternate credential
+activation, no failover event, and unchanged in-band accounting.
 `TestE2E_EmptyCompletion_RealBifrostHTTP` exercises real Bifrost unary and SSE
 HTTP decoding with empty/whitespace/reasoning-only negatives and valid text/tool
 controls, asserting one provider request per completion.

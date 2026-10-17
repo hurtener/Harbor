@@ -55,7 +55,11 @@ trap 'rm -rf "${P83L_TMP}"' EXIT
 assert_go_tests_pass "${P83L_TMP}/safety.log" '-race ./internal/llm' \
     'empty completion is typed, bounded, and preserves accounting without retries' \
     TestSafety_EmptyCompletionIsTypedAndPreservesAccounting \
-    TestSafety_EmptyCompletionUnknownAccountingAndConcurrentReuse
+    TestSafety_EmptyCompletionUnknownAccountingAndConcurrentReuse \
+    TestSafety_EmptyCompletionCostObservationPreservesAccounting
+assert_go_tests_pass "${P83L_TMP}/failover.log" '-race ./internal/governance' \
+    'empty completion stops the configured provider chain before alternate activation' \
+    TestFailoverPolicy_EmptyCompletionStopsWithoutAlternate
 assert_go_tests_pass "${P83L_TMP}/wire.log" '-race ./test/integration' \
     'real Bifrost empty completions fail and replay as failed turns' \
     TestE2E_EmptyCompletion_RealBifrostHTTP \
