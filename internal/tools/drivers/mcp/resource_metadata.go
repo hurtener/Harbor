@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -66,20 +67,15 @@ func PublicHTTPSOrigin(raw string) string {
 			}
 		}
 	}
-	port := u.Port()
-	if port != "" && port != "443" {
-		// url.Parse checks the port's syntax, but not its numeric range.
-		n := 0
-		for _, c := range port {
-			n = n*10 + int(c-'0')
-			if n > 65535 {
-				return ""
-			}
-		}
-		if n == 0 {
+	if port := u.Port(); port != "" {
+		// Canonicalize numeric ports too: browsers treat :0443 as :443.
+		n, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || n == 0 {
 			return ""
 		}
-		host = net.JoinHostPort(host, port)
+		if n != 443 {
+			host = net.JoinHostPort(host, strconv.FormatUint(n, 10))
+		}
 	}
 	return "https://" + host
 }
