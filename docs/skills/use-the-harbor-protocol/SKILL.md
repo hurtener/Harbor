@@ -880,7 +880,7 @@ The per-server `mcp.servers.*` admin verbs gate on the `admin` scope claim, and 
 - `agent_config.set_mcp_discovery_origins` is **owner-scoped** to your `(tenant, agent_id)` and refuses `403 {"code": "scope_mismatch"}` — see §8's account of that verb. The two differ because that door carries an `agent_id` and this one does not.
 - A write whose audit event cannot be emitted is **reverted**, not left applied: you get `500 {"code": "runtime_error"}` naming the reverted-not-applied case, and the previous value stands.
 
-Reads are unaffected: `mcp.servers.list` / `get` / `resources` / `prompts` / `health`, and the control-plane `refresh_discovery` / `probe`, resolve by bare name across the deployment as they always have — a boot-declared server stays visible to every session.
+Boot-declared servers stay visible to every session. Tenant-owned sources require current signed agent reach and selection in the owning configuration; personal sources also require the owning user. The source-addressed `refresh_discovery` / `probe` calls use the exact returned server ID and carry that admitted registration's owner agent into credentialed discovery. An existing effective-agent selection must agree; neither the admin scope nor a boot invoking-agent attribution substitutes for signed reach or current configuration.
 
 ### 8c. Not clobbering another writer — `expected_content_hash`
 
