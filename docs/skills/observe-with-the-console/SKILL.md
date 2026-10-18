@@ -185,6 +185,8 @@ IDs rather than constructing a source ID from its display name.
 
 The configured MCP servers that supply tools / resources / prompts to the runtime's agents (`mcp.servers.*`). A servers table on the left, a right-rail server detail on the right. Where you confirm an MCP server is connected and what it's contributing to the tool catalog. When a server advertises an OAuth requirement (a `401` + `WWW-Authenticate` step-up), running **Test connection** (`mcp.servers.probe`) triggers requirement discovery and the detail rail shows the discovered authorization server(s), endpoints, scopes, and PKCE posture — marked **unverified (advertised by the connected server)**. Harbor reports that advertised metadata without following it as credential configuration. For an already configured pair-owned source, **Test connection** and **Reload actions** use the admitted source owner's agent and its existing credential provider. The caller still needs admin scope, current signed agent reach and the current owning configuration; these controls do not grant access or start an OAuth flow.
 
+A trusted broker's explicit governed generic-mint refusal still fails **Test connection** or **Reload actions** for that caller, while preserving the source's last successful shared discovery state. Current App resource and callback authorization still runs; other broker, source and configuration failures retain their existing error state.
+
 ### Artifacts — the artifact store browser
 
 Every artifact in the store the attached identity has scope for. Filter by MIME, by size, by task. Click an artifact → preview (image/PDF/text) + the ref ID + which tools have touched it.
