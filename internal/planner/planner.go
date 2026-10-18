@@ -108,6 +108,11 @@ type RunContext struct {
 	// the per-execution scope inside a session.
 	Quadruple identity.Quadruple
 
+	// ToolAllowlist is the runtime-owned per-run tool restriction. Nil keeps
+	// ordinary runs unrestricted; a present empty list also forbids planner
+	// spawns, which would otherwise create a fresh unrestricted child.
+	ToolAllowlist *[]string
+
 	// Query is the user-facing query that started the run. Set once
 	// at run start; never mutated.
 	Query string

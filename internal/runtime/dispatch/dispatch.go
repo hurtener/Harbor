@@ -770,6 +770,9 @@ func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d p
 // error observation while the rest of the batch proceeds (non-atomic
 // per-branch — every call_id is answered).
 func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, d planner.SpawnTask) (tasks.TaskHandle, tasks.TaskKind, error) {
+	if rc.ToolAllowlist != nil && len(*rc.ToolAllowlist) == 0 {
+		return tasks.TaskHandle{}, "", fmt.Errorf("%w: SpawnTask unavailable for a zero-tool run", steering.ErrDecisionShapeUnsupported)
+	}
 	// Recursion guard: the new task's depth is the parent chain depth + 1.
 	// The parent is the current run's task (RunID doubles as the TaskID at
 	// the dev layer). Reject loudly above the cap — never a silent drop.
@@ -793,6 +796,10 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		GroupID:           d.GroupID,
 		PropagateOnCancel: d.Spec.PropagateOnCancel,
 		NotifyOnComplete:  true,
+	}
+	if rc.ToolAllowlist != nil {
+		allowed := append([]string{}, (*rc.ToolAllowlist)...)
+		req.ToolAllowlist = &allowed
 	}
 	seen := make(map[string]struct{}, len(d.Spec.InputArtifactIDs))
 	for _, id := range d.Spec.InputArtifactIDs {
