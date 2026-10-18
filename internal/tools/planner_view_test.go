@@ -58,6 +58,36 @@ func exclusionViewNames(v PlannerCatalogView) map[string]bool {
 	return out
 }
 
+func TestAllowlistViewNarrowsListAndResolve(t *testing.T) {
+	cat := plannerViewTestCatalog(t)
+	base := NewPlannerView(cat, CatalogFilter{TenantID: "t", UserID: "u", SessionID: "s"})
+	for _, tc := range []struct {
+		names   []string
+		visible string
+	}{
+		{names: []string{}, visible: ""},
+		{names: []string{"open_tool", "missing_tool"}, visible: "open_tool"},
+	} {
+		view := NewAllowlistView(base, tc.names)
+		for _, name := range []string{"open_tool", "scoped_tool", "missing_tool"} {
+			_, found := view.Resolve(name)
+			if found != (name == tc.visible) {
+				t.Fatalf("Resolve(%q) = %v, allowed %q", name, found, tc.visible)
+			}
+		}
+		if got := view.List(); len(got) != btoi(tc.visible != "") {
+			t.Fatalf("visible tools = %v", got)
+		}
+	}
+}
+
+func btoi(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 // TestExclusionView_PausedServerHidesAllItsTools — every tool sharing a
 // paused server's source id is hidden from BOTH List and Resolve; other
 // servers' tools and standalone tools stay visible.
