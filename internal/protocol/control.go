@@ -511,6 +511,21 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err != nil {
 		return nil, err
 	}
+	if sr.ToolAllowlist != nil {
+		if len(*sr.ToolAllowlist) > 64 {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: tool allowlist exceeds 64 names", string(method))
+		}
+		seen := make(map[string]struct{}, len(*sr.ToolAllowlist))
+		for _, name := range *sr.ToolAllowlist {
+			if len(name) < 1 || len(name) > 128 || strings.IndexFunc(name, func(r rune) bool { return r <= ' ' || r == 127 }) >= 0 {
+				return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: invalid tool allowlist name", string(method))
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: duplicate tool allowlist name", string(method))
+			}
+			seen[name] = struct{}{}
+		}
+	}
 
 	// create-on-first-use. The session id is the per-request
 	// session the client chose; a `start` on a not-yet-existing session
@@ -614,6 +629,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		InputArtifactIDs:          sr.InputArtifactIDs,
 		InputArtifactDispositions: sr.InputArtifactDispositions,
 		OutputSchema:              sr.OutputSchema,
+		ToolAllowlist:             sr.ToolAllowlist,
 		AgentID:                   sr.AgentID,
 		CallerMemory:              sr.CallerMemory,
 		ExternalGrant:             append([]byte(nil), sr.ExternalGrant...),
@@ -624,10 +640,16 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		return nil, mapTaskError(string(method), err)
 	}
 
+	var applied *bool
+	if sr.ToolAllowlist != nil {
+		accepted := true
+		applied = &accepted
+	}
 	return &types.StartResponse{
-		TaskID:          string(handle.ID),
-		Reused:          handle.Reused,
-		ProtocolVersion: types.ProtocolVersion,
+		TaskID:               string(handle.ID),
+		Reused:               handle.Reused,
+		ProtocolVersion:      types.ProtocolVersion,
+		ToolAllowlistApplied: applied,
 	}, nil
 }
 

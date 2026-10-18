@@ -103,6 +103,53 @@ type PlannerCatalogView interface {
 	List() []Tool
 }
 
+// AllowlistView is a per-run narrowing over an already authorized catalog.
+// It controls both planner discovery and the dispatcher's Resolve check.
+// An empty allowlist intentionally exposes no tools.
+type AllowlistView struct {
+	inner PlannerCatalogView
+	names map[string]struct{}
+}
+
+func NewAllowlistView(inner PlannerCatalogView, names []string) AllowlistView {
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		allowed[name] = struct{}{}
+	}
+	return AllowlistView{inner: inner, names: allowed}
+}
+
+// DiscoveryTools narrows deferred discovery as well as the initial prompt.
+// A caller cannot recover a denied tool by asking the planner to discover it.
+func (v AllowlistView) DiscoveryTools() ([]Tool, bool) {
+	available, complete := discoveryTools(v.inner)
+	filtered := make([]Tool, 0, len(available))
+	for _, tool := range available {
+		if _, ok := v.names[tool.Name]; ok {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered, complete
+}
+
+func (v AllowlistView) Resolve(name string) (Tool, bool) {
+	if _, ok := v.names[name]; !ok {
+		return Tool{}, false
+	}
+	return v.inner.Resolve(name)
+}
+
+func (v AllowlistView) List() []Tool {
+	all := v.inner.List()
+	out := make([]Tool, 0, len(all))
+	for _, tool := range all {
+		if _, ok := v.names[tool.Name]; ok {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // compile-time assertion: PlannerView satisfies PlannerCatalogView.
 var _ PlannerCatalogView = PlannerView{}
 

@@ -409,7 +409,8 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		// per-attachment disposition hints.
 		InputArtifactDispositions: inputArtifactDispositions,
 		// per-request output schema (raw JSON-Schema bytes).
-		OutputSchema: outputSchema,
+		OutputSchema:  outputSchema,
+		ToolAllowlist: cloneToolAllowlist(req.ToolAllowlist),
 		// the caller-named agent (edge-validated; "" = the runtime's
 		// configured default).
 		AgentID:             req.AgentID,
@@ -741,6 +742,7 @@ func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 // in-place after Spawn).
 func copyTask(t *tasks.Task) *tasks.Task {
 	cp := *t
+	cp.ToolAllowlist = cloneToolAllowlist(t.ToolAllowlist)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
 	if t.Result != nil {
@@ -774,6 +776,21 @@ func copyTask(t *tasks.Task) *tasks.Task {
 		cp.VirtualAgent = cloneVirtualAgent(t.VirtualAgent)
 	}
 	return &cp
+}
+
+func cloneToolAllowlist(value *[]string) *[]string {
+	if value == nil {
+		return nil
+	}
+	copy := append([]string{}, (*value)...)
+	return &copy
+}
+
+func toolAllowlistsEqual(a, b *[]string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return stringSliceEqual(*a, *b)
 }
 
 // Cancel implements tasks.TaskRegistry. The target transitions
@@ -1409,6 +1426,9 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if !bytes.Equal(existing.OutputSchema, req.OutputSchema) {
 		return false
 	}
+	if !toolAllowlistsEqual(existing.ToolAllowlist, req.ToolAllowlist) {
+		return false
+	}
 	// the caller-named agent is part of the task's content identity: a
 	// reused idempotency key naming a DIFFERENT agent must surface as a
 	// loud conflict, never silently adopt the original task's agent.
@@ -1543,6 +1563,13 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 	if req.AgentID != "" {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(req.AgentID))
+	}
+	if req.ToolAllowlist != nil {
+		h.Write([]byte{0x1F, 0x54})
+		for _, name := range *req.ToolAllowlist {
+			h.Write([]byte(name))
+			h.Write([]byte{0})
+		}
 	}
 	if admission != nil {
 		h.Write([]byte{0x1F})
