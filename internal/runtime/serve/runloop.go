@@ -1954,6 +1954,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		Planner: d.planner,
 		Base: planner.RunContext{
 			Quadruple:            q,
+			ToolAllowlist:        task.ToolAllowlist,
 			ExternalGrant:        externalGrant,
 			Query:                task.Query,
 			Goal:                 task.Query,   // initial goal = user query; runtime REDIRECT may mutate
