@@ -629,3 +629,15 @@ func (e permanentAuthError) Permanent() bool { return true }
 
 // ErrCredentialRejected is a permanent broker authority or configuration refusal.
 var ErrCredentialRejected = permanentAuthError("auth: credential rejected")
+
+// GovernedAppMintRequiredError is the trusted broker's explicit refusal of a
+// generic user mint for a governed App. It denies this caller's credential
+// request without asserting that the shared source or its last catalog failed.
+// Other broker authority/configuration refusals retain ErrCredentialRejected.
+type GovernedAppMintRequiredError struct{}
+
+func (*GovernedAppMintRequiredError) Error() string {
+	return "auth: governed App requires bound operation"
+}
+func (*GovernedAppMintRequiredError) Unwrap() error   { return ErrCredentialRejected }
+func (*GovernedAppMintRequiredError) Permanent() bool { return true }

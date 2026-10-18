@@ -906,6 +906,7 @@ type brokerResponse struct {
 type brokerError struct {
 	Err              string `json:"error"`
 	ErrorDescription string `json:"error_description"`
+	Reason           string `json:"reason"`
 	// ConsentURL / VerificationURI carry the broker-supplied central
 	// consent URL when the refusal is consent_required-class. Both
 	// spellings are accepted (brokers vary).
@@ -1018,14 +1019,21 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) //nolint:errcheck // a partial read still yields a usable error message; the status code drives the branch
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode/100 != 2 {
 		// Decode the OAuth error body to distinguish a consent refusal
 		// (park path) from a hard failure (fail-loud path).
 		var be brokerError
-		_ = json.Unmarshal(raw, &be) //nolint:errcheck // a non-JSON body simply leaves be zero → treated as a hard failure
+		decodeErr := json.Unmarshal(raw, &be)
 		if isConsentRequired(be.Err) {
 			return auth.Token{}, exchangeMeta{}, &consentError{consentURL: firstNonEmpty(be.ConsentURL, be.VerificationURI)}
+		}
+		// Only this explicit reason from the configured signed broker proves
+		// that generic user minting, rather than the shared connection, was
+		// refused. Never infer it from status alone or from error descriptions.
+		if readErr == nil && decodeErr == nil && len(raw) < 1<<16 && p.signedBinding != nil && !auth.IsSignedCapabilityPreparation(ctx) && operationDigest == "" &&
+			resp.StatusCode == http.StatusForbidden && be.Err == "access_denied" && be.Reason == "governed_app_operation_required" {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w", auth.ErrExchangeFailed, &auth.GovernedAppMintRequiredError{})
 		}
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
 			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w: broker %s status %d", auth.ErrExchangeFailed, auth.ErrCredentialRejected, p.brokerHost, resp.StatusCode)

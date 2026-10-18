@@ -2749,8 +2749,11 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		return nil, &DiscoveryStaleError{Retry: true}
 	}
 	if derr != nil {
-		e.stats.errorRatePerMin++
-		e.stats.state = ServerStateError
+		var callerRefusal *auth.GovernedAppMintRequiredError
+		if !errors.As(derr, &callerRefusal) {
+			e.stats.errorRatePerMin++
+			e.stats.state = ServerStateError
+		}
 		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: RefreshDiscovery %q: %w", name, derr)
 	}
@@ -2823,7 +2826,10 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 	_, derr := e.provider.Discover(ctx)
 	latency := r.clock().Sub(start).Milliseconds()
 	if derr != nil {
-		r.recordError(name)
+		var callerRefusal *auth.GovernedAppMintRequiredError
+		if !errors.As(derr, &callerRefusal) {
+			r.recordError(name)
+		}
 		// A probe failure is a successful probe with a failed result:
 		// derr is surfaced inside ProbeResult.Error, not as a top-level
 		// error, so callers always get a populated ProbeResult.
