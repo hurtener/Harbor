@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/mcpconsole/admission"
@@ -14,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/appoperation"
 )
 
 // AppsSurface is the transport-agnostic Harbor Protocol MCP Apps
@@ -154,10 +156,17 @@ type MCPResourceArtifactRow struct {
 // (the accessor emits the loud bypass event when it offloads). The
 // accessor owns the threshold decision — the surface only projects.
 type MCPResourceContent struct {
-	ResourceURI string
-	MIMEType    string
-	Inline      []byte
-	Artifact    *MCPResourceArtifactRow
+	// FinalCheck retains the accessor's request-local opaque same-read fence.
+	// It is not serialized or supplied by the client. A nonempty argument is
+	// the generation just sealed into render admission, never a new snapshot.
+	FinalCheck func(context.Context, string) error `json:"-"`
+
+	ResourceDomains []string
+	ProviderOrigin  string
+	ResourceURI     string
+	MIMEType        string
+	Inline          []byte
+	Artifact        *MCPResourceArtifactRow
 }
 
 // MCPResourceReader is the narrow contract the AppsSurface calls into for
@@ -550,6 +559,12 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		return nil, err
 	}
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
+	if r.AppOperation != "" {
+		idCtx, err = appoperation.WithRead(idCtx, r.AppOperation, effectiveID, r.ServerID, r.ResourceURI)
+		if err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "invalid App operation")
+		}
+	}
 	content, err := s.resource.ReadResource(idCtx, r.ServerID, r.ResourceURI)
 	if err != nil {
 		return nil, mapMCPError(string(method), err)
@@ -558,6 +573,14 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		ResourceURI:     content.ResourceURI,
 		MIMEType:        content.MIMEType,
 		ProtocolVersion: types.ProtocolVersion,
+	}
+	if strings.HasPrefix(r.ResourceURI, "ui://") {
+		resp.ProviderOrigin = content.ProviderOrigin
+		if content.ResourceDomains != nil {
+			resp.Meta = &types.MCPAppResourceMeta{UI: types.MCPAppResourceUI{CSP: types.MCPAppResourceCSP{
+				ResourceDomains: append([]string{}, content.ResourceDomains...),
+			}}}
+		}
 	}
 	if resp.ResourceURI == "" {
 		resp.ResourceURI = r.ResourceURI
@@ -568,18 +591,40 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		resp.Content = string(content.Inline)
 	}
 	// HA-56 amendment: the OPT-IN render admission. Omitted/false
-	// preserves the ordinary read byte-for-byte and mints NO callback
+	// preserves ordinary read callback behavior and mints NO callback
 	// authority. Only a SUCCESSFUL read carrying true may mint, and the
 	// mint binds the exact CURRENT registry descriptor generation — a
 	// nil reader, an error, or an empty fingerprint is a typed refusal,
 	// never an admission over an empty generation.
+	admittedGeneration := ""
 	if r.RequestRenderAdmission {
-		adm, perr := s.mintRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI)
+		adm, generation, perr := s.mintRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI)
 		if perr != nil {
 			return nil, perr
 		}
 		if adm != nil {
 			resp.RenderAdmission = adm
+			if adm.Availability == types.RenderAdmissionAvailable {
+				admittedGeneration = generation
+			}
+			if r.AppOperation != "" && adm.Availability == types.RenderAdmissionAvailable {
+				resp.AppOperationGeneration = generation
+			}
+		}
+	}
+	if strings.HasPrefix(r.ResourceURI, "ui://") {
+		// Agent resolution and admission can block. Reuse current agent/source
+		// checks after that I/O, then check the original opaque entry/generation
+		// before releasing the document, origin policy or admission together.
+		if _, err := AdmitEffectiveAgent(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
+			return nil, err
+		}
+		if content.FinalCheck != nil {
+			if err := content.FinalCheck(idCtx, admittedGeneration); err != nil {
+				return nil, mapMCPError(string(method), err)
+			}
+		} else if content.ProviderOrigin != "" || content.ResourceDomains != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError, "App resource metadata requires its same-read fence")
 		}
 	}
 	return resp, nil
@@ -599,10 +644,10 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 // admission over an empty generation. Returns a typed Protocol error
 // when the surface is misconfigured (the seam is unwired) or the gate
 // failed as a seam.
-func (s *AppsSurface) mintRenderAdmission(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) (*types.RenderAdmission, *protoerrors.Error) {
+func (s *AppsSurface) mintRenderAdmission(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) (*types.RenderAdmission, string, *protoerrors.Error) {
 	method := methods.MethodMCPReadResource
 	if s.admissionAuthority == nil || s.admissionGate == nil {
-		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+		return nil, "", protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: render-admission authority is not wired on this runtime", string(method))
 	}
 	generation, err := s.admissionGate.AuthorizeRender(ctx, serverID, resourceURI)
@@ -611,9 +656,9 @@ func (s *AppsSurface) mintRenderAdmission(ctx context.Context, id identity.Ident
 			// The CURRENT render-admission conditions refuse the tuple —
 			// the closed availability answer: no admission, no token. The
 			// read itself succeeded; the caller must re-read.
-			return &types.RenderAdmission{Availability: types.RenderAdmissionUnavailable}, nil
+			return &types.RenderAdmission{Availability: types.RenderAdmissionUnavailable}, "", nil
 		}
-		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+		return nil, "", protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: render-admission authorization failed: %v", string(method), err)
 	}
 	if generation == "" {
@@ -621,7 +666,7 @@ func (s *AppsSurface) mintRenderAdmission(ctx context.Context, id identity.Ident
 		// bind an empty generation. The closed availability answer is
 		// "unavailable": the caller must re-read, and no admission is
 		// minted.
-		return &types.RenderAdmission{Availability: types.RenderAdmissionUnavailable}, nil
+		return &types.RenderAdmission{Availability: types.RenderAdmissionUnavailable}, "", nil
 	}
 	tok, err := s.admissionAuthority.Mint(ctx, admission.RenderTuple{
 		Identity:              id,
@@ -631,14 +676,14 @@ func (s *AppsSurface) mintRenderAdmission(ctx context.Context, id identity.Ident
 		DescriptorFingerprint: generation,
 	})
 	if err != nil {
-		return nil, mapRenderAdmissionError(string(method), err)
+		return nil, "", mapRenderAdmissionError(string(method), err)
 	}
 	return &types.RenderAdmission{
 		Token:        tok.Value,
 		IssuedAt:     tok.IssuedAt.UTC().Format(admissionTokenTimeLayout),
 		ExpiresAt:    tok.ExpiresAt.UTC().Format(admissionTokenTimeLayout),
 		Availability: types.RenderAdmissionAvailable,
-	}, nil
+	}, generation, nil
 }
 
 // admissionTokenTimeLayout is the RFC 3339 UTC layout the render
@@ -656,6 +701,9 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	id, perr := gateAppsIdentity(ctx, method, &r.Identity)
 	if perr != nil {
 		return nil, perr
+	}
+	if r.AppOperation != "" && (r.RenderAdmission == "" || r.Binding != "") {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "App operation requires fresh render admission")
 	}
 	if r.Tool == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
@@ -727,6 +775,12 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		generation, perr := s.verifyRenderAdmission(idCtx, id, effectiveID, r.ServerID, r.ResourceURI, r.RenderAdmission)
 		if perr != nil {
 			return nil, perr
+		}
+		if r.AppOperation != "" {
+			idCtx, err = appoperation.WithCall(idCtx, r.AppOperation, effectiveID, r.ServerID, r.ResourceURI, generation, r.Tool, r.Arguments)
+			if err != nil {
+				return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "invalid App operation")
+			}
 		}
 		idCtx = withRenderAdmissionProof(idCtx, renderAdmissionProof{
 			tenantID:    id.TenantID,

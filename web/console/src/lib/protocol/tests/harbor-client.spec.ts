@@ -33,6 +33,21 @@ function errorResponse(status: number, code: string, message: string): Response 
 }
 
 describe('HarborClient namespace dispatch', () => {
+ it('carries an optional App operation selector on existing resource and callback methods', async () => {
+  const fetchImpl = vi.fn(async () => okResponse({}));
+  const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+  const reference = 'a'.repeat(64);
+  await client.mcp.servers.readResource('server', 'ui://report', 'agent', true, reference);
+  await client.mcp.apps.callTool('server', 'server_save', { id: 'target' }, 'agent', undefined, 'ui://report', 'fresh-admission', reference);
+  const bodies = fetchImpl.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+  expect(bodies[0]).toMatchObject({ app_operation: reference, request_render_admission: true });
+  expect(bodies[1]).toMatchObject({ app_operation: reference, render_admission: 'fresh-admission', arguments: { id: 'target' } });
+  expect(bodies[1].binding).toBeUndefined();
+  await client.mcp.servers.readResource('server', 'ui://report');
+  const last = fetchImpl.mock.calls[2] as unknown as [string, RequestInit];
+  expect(JSON.parse(last[1].body as string).app_operation).toBeUndefined();
+ });
+
 	it('routes tools.list to POST /v1/tools/list with the identity body', async () => {
 		const fetchImpl = vi.fn(async () => okResponse({ tools: [] }));
 		const client = new HarborClient({ connection: CONNECTION, fetchImpl });

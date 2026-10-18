@@ -345,6 +345,7 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 		// the field and would discard it silently.
 		types.CapCallerMemory,
 		types.CapRunLLMSettings,
+		types.CapRunScopedTools,
 	}
 	if topologyAvailable {
 		caps = append(caps, types.CapTopologySnapshot)

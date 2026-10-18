@@ -564,7 +564,8 @@ export class MCPServersNamespace {
 		serverID: string,
 		resourceURI: string,
 		agentID?: string,
-		requestRenderAdmission = false
+		requestRenderAdmission = false,
+		appOperation?: string
 	): Promise<R> {
 		return this.#t.request<R>(
 			'/v1/control/mcp.servers.read_resource',
@@ -572,7 +573,8 @@ export class MCPServersNamespace {
 				server_id: serverID,
 				resource_uri: resourceURI,
 				...(agentID ? { agent_id: agentID } : {}),
-				...(requestRenderAdmission ? { request_render_admission: true } : {})
+				...(requestRenderAdmission ? { request_render_admission: true } : {}),
+				...(appOperation ? { app_operation: appOperation } : {})
 			}
 		);
 	}
@@ -602,7 +604,7 @@ export class MCPAppsNamespace {
 	 * `binding` or `renderAdmission`; a call that supplies both is refused by
 	 * the Runtime as ambiguous (`render_authority_ambiguous`).
 	 */
-  callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string, renderAdmission?: string): Promise<R> {
+  callTool<R = unknown>(serverID: string, tool: string, args?: unknown, agentID?: string, binding?: string, resourceURI?: string, renderAdmission?: string, appOperation?: string): Promise<R> {
 		return this.#t.request<R>('/v1/control/mcp.apps.call_tool', {
 			server_id: serverID,
 			tool,
@@ -610,7 +612,8 @@ export class MCPAppsNamespace {
 			...(agentID ? { agent_id: agentID } : {}),
           ...(binding ? { binding } : {}),
           ...(resourceURI ? { resource_uri: resourceURI } : {}),
-          ...(renderAdmission ? { render_admission: renderAdmission } : {})
+          ...(renderAdmission ? { render_admission: renderAdmission } : {}),
+          ...(appOperation ? { app_operation: appOperation } : {})
 		});
 	}
 	/**

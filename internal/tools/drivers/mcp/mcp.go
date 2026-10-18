@@ -21,6 +21,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/appoperation"
 	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 )
@@ -1135,6 +1136,15 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 				return tools.ToolResult{}, err
 			}
 		}
+		policy := tool.Policy
+		if hasAppOperation(ctx) {
+			// Unknown effects must return to the App host for explicit native
+			// recovery. Retrying a transport failure can duplicate a mutation.
+			// Zero means default retries; a negative budget resolves to one
+			// attempt in RunWithPolicy while retaining its timeout/validation.
+			policy.MaxRetries = -1
+			policy.RetryOn = []tools.ErrorClass{}
+		}
 		return tools.RunWithPolicy(
 			ctx,
 			args,
@@ -1143,7 +1153,7 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 			},
 			nil, // server-side schema validates on the wire; client-side compiled
 			nil, // output validator is optional.
-			tool.Policy,
+			policy,
 		)
 	}
 	return tools.ToolDescriptor{
@@ -1203,9 +1213,19 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		// across attempts is what makes the resolve-once property hold;
 		// re-decoding `args` here would silently drop every substitution.
 		argMap = plan.args
+	case hasAppOperation(ctx):
+		argMap, err = appoperation.DecodeArguments(args)
+		if err != nil {
+			return tools.ToolResult{}, fmt.Errorf("%w: App arguments", tools.ErrToolInvalidArgs)
+		}
 	case len(args) > 0:
 		if err := json.Unmarshal(args, &argMap); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
+		}
+	}
+	if operation, ok := appoperation.From(ctx); ok {
+		if err := operation.CheckCall(string(p.source), fmt.Sprintf("%s_%s", p.source, name), argMap); err != nil {
+			return tools.ToolResult{}, err
 		}
 	}
 	meta, err := p.buildIdentityMeta(ctx)
@@ -1572,39 +1592,67 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 //
 // Concurrent reuse: ReadResource holds no per-call state on the
 // Provider; identity + the URI ride the call.
-func (p *Provider) ReadResource(ctx context.Context, uri string) (content []byte, mimeType string, err error) {
+func (p *Provider) ReadResource(ctx context.Context, uri string) ([]byte, string, error) {
+	out, err := p.ReadResourceWithMetadata(ctx, uri)
+	return out.Content, out.MIMEType, err
+}
+
+// ReadResourceWithMetadata carries the bounded standard MCP App resource CSP
+// from the same resources/read reply. It performs exactly one remote read and
+// keeps no request state on the reusable provider.
+func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (ResourceRead, error) {
+	if operation, ok := appoperation.From(ctx); ok {
+		if err := operation.CheckResource(string(p.source), uri); err != nil {
+			return ResourceRead{}, err
+		}
+	}
 	session, sErr := p.sessionForRead()
 	if sErr != nil {
-		return nil, "", sErr
+		return ResourceRead{}, sErr
 	}
 	meta, mErr := p.buildIdentityMeta(ctx)
 	if mErr != nil {
-		return nil, "", mErr
+		return ResourceRead{}, mErr
 	}
 	// Per-entry binding: the resource URI is the addressing key so a per-tool
 	// override declared for this resource resolves its bearer (connection-level
 	// fallback when unbound).
 	ctx, mErr = p.resolveBearerCtx(ctx, uri)
 	if mErr != nil {
-		return nil, "", mErr
+		return ResourceRead{}, mErr
 	}
 	params := &mcpsdk.ReadResourceParams{URI: uri}
 	params.Meta = meta
 	res, rErr := session.ReadResource(ctx, params)
 	if rErr != nil {
-		return nil, "", fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
+		return ResourceRead{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
 	}
 	if res == nil || len(res.Contents) == 0 {
-		return nil, "", fmt.Errorf("%w: resource %q returned no content", ErrTransportFailed, uri)
+		return ResourceRead{}, fmt.Errorf("%w: resource %q returned no content", ErrTransportFailed, uri)
 	}
 	rc := res.Contents[0]
 	if rc == nil {
-		return nil, "", fmt.Errorf("%w: resource %q returned a nil content item", ErrTransportFailed, uri)
+		return ResourceRead{}, fmt.Errorf("%w: resource %q returned a nil content item", ErrTransportFailed, uri)
+	}
+	out := ResourceRead{MIMEType: rc.MIMEType}
+	if IsUIResourceURI(uri) {
+		// Metadata belongs to this exact content item, not the outer result or
+		// another resource returned alongside it.
+		if len(res.Contents) != 1 || rc.URI != uri {
+			return ResourceRead{}, ErrResourceMetadata
+		}
+		domains, err := resourceDomains(rc.Meta)
+		if err != nil {
+			return ResourceRead{}, err
+		}
+		out.ResourceDomains = domains
 	}
 	if len(rc.Blob) > 0 {
-		return append([]byte(nil), rc.Blob...), rc.MIMEType, nil
+		out.Content = append([]byte(nil), rc.Blob...)
+	} else {
+		out.Content = []byte(rc.Text)
 	}
-	return []byte(rc.Text), rc.MIMEType, nil
+	return out, nil
 }
 
 // DisplayModes returns the MCP App display modes THIS HOST can render —
@@ -1897,12 +1945,18 @@ func (p *Provider) resolveBearerProvider(key string) auth.OAuthProvider {
 func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Context, error) {
 	provider := p.resolveBearerProvider(key)
 	if provider == nil {
+		if hasAppOperation(ctx) {
+			return nil, appoperation.ErrInvalid
+		}
 		return ctx, nil
 	}
 	tok, err := provider.Token(ctx, p.source)
 	if err != nil {
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
+	}
+	if operation, ok := appoperation.From(ctx); ok && tok.AppOperationSHA256 != operation.Digest() {
+		return nil, appoperation.ErrInvalid
 	}
 	if tok.AccessToken == "" {
 		// Defence-in-depth: a ("", nil) return from a bound provider must
@@ -2114,4 +2168,9 @@ func (p *Provider) buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
 		}
 	}
 	return buildIdentityMeta(ctx, p.cfg.MetaAnnotations)
+}
+
+func hasAppOperation(ctx context.Context) bool {
+	_, ok := appoperation.From(ctx)
+	return ok
 }

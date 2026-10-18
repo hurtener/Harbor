@@ -323,8 +323,9 @@ func isRetryableProviderError(err error) bool {
 // lives at package scope (the concurrent-reuse contract).
 func permanentSentinels() []error {
 	return []error{
-		// Structural LLM sentinels — a provider swap cannot fix these.
+		// Structural and terminal LLM errors stop automatic provider swaps.
 		llm.ErrInvalidContent,
+		llm.ErrEmptyCompletion,
 		llm.ErrInvalidConfig,
 		llm.ErrUnsupportedModel,
 		llm.ErrContextLeak,

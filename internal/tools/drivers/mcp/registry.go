@@ -2102,6 +2102,80 @@ func (r *Registry) ReadResource(ctx context.Context, name, uri string) (content 
 	return content, mimeType, nil
 }
 
+// ReadResourceWithMetadata preserves the legacy provider interface while using
+// the real MCP driver's same-read metadata projection when available. Legacy
+// embedders honestly return no declared resource domains.
+func (r *Registry) ReadResourceWithMetadata(ctx context.Context, name, uri string) (ResourceRead, error) {
+	name = r.CanonicalSourceID(ctx, name)
+	if err := requireIdentity(ctx); err != nil {
+		return ResourceRead{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ResourceRead{}, err
+	}
+	e, err := r.identityVisibleEntry(ctx, name)
+	if err != nil {
+		return ResourceRead{}, err
+	}
+	r.mu.RLock()
+	generation := e.currentGeneration
+	transport, endpoint := e.transport, e.urlOrCommand
+	r.mu.RUnlock()
+	var out ResourceRead
+	if reader, ok := e.provider.(interface {
+		ReadResourceWithMetadata(context.Context, string) (ResourceRead, error)
+	}); ok {
+		out, err = reader.ReadResourceWithMetadata(ctx, uri)
+	} else {
+		out.Content, out.MIMEType, err = e.provider.ReadResource(ctx, uri)
+	}
+	if err != nil {
+		return ResourceRead{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ResourceRead{}, err
+	}
+	out.entry, out.generation, out.source = e, generation, name
+	if err := r.CheckResourceRead(ctx, out); err != nil {
+		return ResourceRead{}, err
+	}
+	// The origin comes only from this exact admitted registry entry. Provider
+	// content cannot supply or override it. stdio has no public origin.
+	out.ProviderOrigin = ""
+	if (transport == string(TransportSSE) || transport == string(TransportStreamableHTTP)) && IsUIResourceURI(uri) {
+		out.ProviderOrigin = PublicHTTPSOrigin(endpoint)
+	}
+	return out, nil
+}
+
+// CheckResourceRead rechecks the exact read's opaque registry snapshot after
+// downstream offload I/O. It cannot authorize a caller-created resource result.
+func (r *Registry) CheckResourceRead(ctx context.Context, read ResourceRead) error {
+	return r.CheckResourceReadAtGeneration(ctx, read, "")
+}
+
+// CheckResourceReadAtGeneration carries the same opaque read fence through
+// admission. A nonempty generation must equal the read's original generation;
+// the exact registry entry must still be current even for an equal digest.
+// Empty means no admission was minted, as on an ordinary resource read.
+func (r *Registry) CheckResourceReadAtGeneration(ctx context.Context, read ResourceRead, generation string) error {
+	if err := requireIdentity(ctx); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	id, _ := identity.From(ctx)
+	r.mu.RLock()
+	current := r.servers[read.source]
+	valid := read.entry != nil && current == read.entry && entryVisibleToIdentity(current, id) && current.currentGeneration == read.generation && (generation == "" || generation == read.generation)
+	r.mu.RUnlock()
+	if !valid {
+		return ErrGenerationMismatch
+	}
+	return nil
+}
+
 // requireIdentity fails closed when ctx carries no identity triple.
 // Identity is mandatory on every read path (AGENTS.md §6 rule 9).
 func requireIdentity(ctx context.Context) error {
@@ -2675,8 +2749,11 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		return nil, &DiscoveryStaleError{Retry: true}
 	}
 	if derr != nil {
-		e.stats.errorRatePerMin++
-		e.stats.state = ServerStateError
+		var callerRefusal *auth.GovernedAppMintRequiredError
+		if !errors.As(derr, &callerRefusal) {
+			e.stats.errorRatePerMin++
+			e.stats.state = ServerStateError
+		}
 		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: RefreshDiscovery %q: %w", name, derr)
 	}
@@ -2749,7 +2826,10 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 	_, derr := e.provider.Discover(ctx)
 	latency := r.clock().Sub(start).Milliseconds()
 	if derr != nil {
-		r.recordError(name)
+		var callerRefusal *auth.GovernedAppMintRequiredError
+		if !errors.As(derr, &callerRefusal) {
+			r.recordError(name)
+		}
 		// A probe failure is a successful probe with a failed result:
 		// derr is surfaced inside ProbeResult.Error, not as a top-level
 		// error, so callers always get a populated ProbeResult.

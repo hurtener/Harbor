@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: unit-tests
 #
 # Phase 83l — real-bifrost integration tests + production-bug fix
 # (CustomProviders / NetworkDefaults / Corrections projection). D-155.
@@ -49,5 +49,20 @@ assert_grep_present 'llm\.SnapshotFromConfig' "cmd/harbor/devcompose.go" \
 # which consumes the same exported projection -- parity by construction.
 assert_grep_present 'llm\.SnapshotFromConfig' "internal/runtime/assemble/assemble.go" \
     "the assembly consumes the exported projection (110c via 110d)"
+
+P83L_TMP="$(mktemp -d "${TMPDIR:-/tmp}/harbor-phase-83l.XXXXXX")"
+trap 'rm -rf "${P83L_TMP}"' EXIT
+assert_go_tests_pass "${P83L_TMP}/safety.log" '-race ./internal/llm' \
+    'empty completion is typed, bounded, and preserves accounting without retries' \
+    TestSafety_EmptyCompletionIsTypedAndPreservesAccounting \
+    TestSafety_EmptyCompletionUnknownAccountingAndConcurrentReuse \
+    TestSafety_EmptyCompletionCostObservationPreservesAccounting
+assert_go_tests_pass "${P83L_TMP}/failover.log" '-race ./internal/governance' \
+    'empty completion stops the configured provider chain before alternate activation' \
+    TestFailoverPolicy_EmptyCompletionStopsWithoutAlternate
+assert_go_tests_pass "${P83L_TMP}/wire.log" '-race ./test/integration' \
+    'real Bifrost empty completions fail and replay as failed turns' \
+    TestE2E_EmptyCompletion_RealBifrostHTTP \
+    TestE2E_EmptyCompletion_TaskFailurePersistsAndReplays
 
 smoke_summary

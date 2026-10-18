@@ -105,6 +105,10 @@ type RunLLMSettings struct {
 // asks the Runtime to spawn a new task / foreground run. It maps onto the
 // tasks.TaskRegistry.Spawn surface.
 type StartRequest struct {
+	// ToolAllowlist is an optional, run-scoped restriction. A present empty
+	// list disables every tool; omission retains the agent's current catalog.
+	// It can only narrow the catalog and survives subsequent user messages.
+	ToolAllowlist *[]string `json:"tool_allowlist,omitempty"`
 	// Identity is the request's identity scope. The triple is mandatory;
 	// Run is ignored (a `start` mints the run). Scope is ignored.
 	Identity IdentityScope `json:"identity"`
@@ -293,6 +297,10 @@ type StartRequest struct {
 
 // StartResponse is the wire response for the `start` Protocol method.
 type StartResponse struct {
+	// ToolAllowlistApplied echoes admission of the run-scoped restriction.
+	// Nil means the caller requested no restriction; false must never be
+	// returned for a request that supplied one.
+	ToolAllowlistApplied *bool `json:"tool_allowlist_applied,omitempty"`
 	// TaskID is the runtime-assigned task identifier for the spawned
 	// (or, on an idempotency-key match, the existing) task.
 	TaskID string `json:"task_id"`

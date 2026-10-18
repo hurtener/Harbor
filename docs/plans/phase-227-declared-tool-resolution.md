@@ -53,6 +53,11 @@ Closes #654 by giving every model-authored tool name one shared declaration proj
 
 - **Unit:** sanitization, shortening, collisions, unknown names.
 - **Integration:** planner declaration through builtin dispatch to the real catalog.
+  Real builtin `tool_search` results are harvested through the trajectory into
+  the next ReAct declaration, including shortened aliases and loading overrides.
+  Discovery resolves through current scope/exclusion filters and the shared name
+  projection; retained canonical names remain compatible without retargeting a
+  collision owner. Discovery alone invokes no domain handler.
 - **Conformance:** all model-authored builtin resolution paths share the projection.
 - **Concurrency / leak:** N≥100 projections/resolutions on one shared catalog.
 - **Performance:** `BenchmarkReActPlanner_NextStep_DeclaredTool` measures the
@@ -83,4 +88,23 @@ Closes #654 by giving every model-authored tool name one shared declaration proj
 
 ## Pre-merge checklist
 
-- [x] `make drift-audit`, mirror, CI preflight, coverage, integration, and concurrent-reuse gates pass
+- [x] Original phase delivery: `make drift-audit`, mirror, CI preflight,
+      coverage, integration, and concurrent-reuse gates passed. The correction's
+      qualification is recorded separately below.
+
+## Discovery correction qualification (2026-10-17)
+
+The final discovery correction is
+`4a6ae0fd843d991d1d409619d9cfa02d7a94587d`. Focused race tests, scoped
+lint/vet/build, Phase 227 smoke (6 OK, zero SKIP, zero FAIL), and the external
+current-source discovery reproduction passed. Its independent narrow review
+confirmed legacy canonical discovery through wrappers, current-source shortened
+alias declarations, production collision refusal, and disabled/paused denial,
+with no P0, P1, or P2 findings. Discovery alone executes no domain handler.
+
+The earlier broad gate associated with
+`bf90083ab8329da159e2341a4c60d9c091768cd8` was incomplete; it is not a full
+preflight pass on either discovery checkpoint. The subsequent combined runtime
+`9a324f0544591d432c6f786b95c7c752a5dd2bda` has separately recorded
+[full-gate and narrow-retry evidence](phase-83l-real-bifrost-tests.md#scoped-release-qualification-2026-10-17),
+including its failed initial full gate and remaining qualification limits.

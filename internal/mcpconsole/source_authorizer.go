@@ -81,6 +81,36 @@ func (a *SourceAuthorizer) Visible(ctx context.Context, source tools.ToolSourceI
 	return a.VisibleRegistration(ctx, source, owner, logical, effectiveAgent)
 }
 
+// admitDiscovery binds a source-addressed control call to its registered
+// owner only after the same current reach/config admission used by source
+// reads. The owner comes from the registry, never a request agent hint or boot
+// invoking-agent attribution. An existing effective selection must agree.
+// Boot sources keep their existing credential-neutral control behavior.
+func (a *SourceAuthorizer) admitDiscovery(ctx context.Context, source tools.ToolSourceID) (context.Context, error) {
+	if err := sourceIdentity(ctx); err != nil {
+		return nil, err
+	}
+	if a == nil || a.registry == nil {
+		return nil, ErrSourceAuthorityUnavailable
+	}
+	owner, logical, registered, err := a.registry.SourceAccess(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	if !registered || owner.Scope() == auth.ScopeBootGlobal {
+		return ctx, nil
+	}
+	agent, _ := tools.EffectiveAgentConfigFrom(ctx)
+	visible, err := a.VisibleRegistration(ctx, source, owner, logical, agent)
+	if err != nil {
+		return nil, err
+	}
+	if !visible {
+		return nil, fmt.Errorf("%w: %q", mcp.ErrServerNotFound, source)
+	}
+	return tools.WithEffectiveAgentConfig(ctx, owner.Agent), nil
+}
+
 // VisibleRegistration is the snapshot form used by paginated registry reads.
 // The owner and logical name must come from one Registry snapshot; callers
 // must not synthesize either value. It shares the exact same owning-scope

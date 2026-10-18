@@ -63,6 +63,27 @@ func (v PlannerView) Resolve(name string) (Tool, bool) {
 	return desc.Tool, true
 }
 
+// DiscoveryTools returns the identity-visible schema set before prompt loading.
+// Always-loaded tools retain namespace precedence over deferred tools, matching
+// the builtin discovery projection. The boolean reports a complete deferred
+// snapshot; it grants no dispatch authority.
+func (v PlannerView) DiscoveryTools() ([]Tool, bool) {
+	always := v.filter
+	always.LoadingModes = []LoadingMode{LoadingAlways}
+	deferred := v.filter
+	deferred.LoadingModes = []LoadingMode{LoadingDeferred}
+	return append(v.cat.List(always), v.cat.List(deferred)...), true
+}
+
+// discoveryTools preserves custom schema views that only expose List/Resolve.
+// Production views implement DiscoveryTools so deferred schemas participate.
+func discoveryTools(v PlannerCatalogView) ([]Tool, bool) {
+	if discovery, ok := v.(interface{ DiscoveryTools() ([]Tool, bool) }); ok {
+		return discovery.DiscoveryTools()
+	}
+	return v.List(), false
+}
+
 // List implements the planner's ToolCatalogView contract. Returns the
 // filtered slice of Tools visible to the run's identity.
 func (v PlannerView) List() []Tool {
@@ -80,6 +101,53 @@ type PlannerCatalogView interface {
 	Resolve(name string) (Tool, bool)
 	// List returns every Tool visible to the run.
 	List() []Tool
+}
+
+// AllowlistView is a per-run narrowing over an already authorized catalog.
+// It controls both planner discovery and the dispatcher's Resolve check.
+// An empty allowlist intentionally exposes no tools.
+type AllowlistView struct {
+	inner PlannerCatalogView
+	names map[string]struct{}
+}
+
+func NewAllowlistView(inner PlannerCatalogView, names []string) AllowlistView {
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		allowed[name] = struct{}{}
+	}
+	return AllowlistView{inner: inner, names: allowed}
+}
+
+// DiscoveryTools narrows deferred discovery as well as the initial prompt.
+// A caller cannot recover a denied tool by asking the planner to discover it.
+func (v AllowlistView) DiscoveryTools() ([]Tool, bool) {
+	available, complete := discoveryTools(v.inner)
+	filtered := make([]Tool, 0, len(available))
+	for _, tool := range available {
+		if _, ok := v.names[tool.Name]; ok {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered, complete
+}
+
+func (v AllowlistView) Resolve(name string) (Tool, bool) {
+	if _, ok := v.names[name]; !ok {
+		return Tool{}, false
+	}
+	return v.inner.Resolve(name)
+}
+
+func (v AllowlistView) List() []Tool {
+	all := v.inner.List()
+	out := make([]Tool, 0, len(all))
+	for _, tool := range all {
+		if _, ok := v.names[tool.Name]; ok {
+			out = append(out, tool)
+		}
+	}
+	return out
 }
 
 // compile-time assertion: PlannerView satisfies PlannerCatalogView.
@@ -155,6 +223,19 @@ func (v ExclusionView) Resolve(name string) (Tool, bool) {
 		return Tool{}, false
 	}
 	return t, true
+}
+
+// DiscoveryTools applies exclusions before a discovery namespace is projected.
+// Completeness follows the inner view, preserving legacy canonical resolution.
+func (v ExclusionView) DiscoveryTools() ([]Tool, bool) {
+	in, complete := discoveryTools(v.inner)
+	out := make([]Tool, 0, len(in))
+	for _, t := range in {
+		if !v.excluded(t) {
+			out = append(out, t)
+		}
+	}
+	return out, complete
 }
 
 // List implements PlannerCatalogView. Returns the inner view's tools minus
@@ -269,4 +350,23 @@ func (v LoadingOverrideView) List() []Tool {
 		out = append(out, rt)
 	}
 	return out
+}
+
+// DiscoveryTools rewrites effective loading without hiding deferred schemas.
+// Namespace ownership follows the current effective always/deferred order.
+// The boolean preserves whether the inner view includes deferred schemas.
+func (v LoadingOverrideView) DiscoveryTools() ([]Tool, bool) {
+	in, complete := discoveryTools(v.inner)
+	always := make([]Tool, 0, len(in))
+	deferred := make([]Tool, 0, len(in))
+	for _, t := range in {
+		t = v.rewrite(t)
+		switch t.Loading {
+		case LoadingAlways:
+			always = append(always, t)
+		case LoadingDeferred:
+			deferred = append(deferred, t)
+		}
+	}
+	return append(always, deferred...), complete
 }

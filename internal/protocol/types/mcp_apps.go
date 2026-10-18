@@ -140,6 +140,9 @@ const (
 // ReadMCPResourceRequest is the `mcp.servers.read_resource` request
 // body. Identity is mandatory.
 type ReadMCPResourceRequest struct {
+	// AppOperation selects a broker-owned, call-specific App operation. It is
+	// not a credential or authority. Callbacks also require fresh render admission.
+	AppOperation string `json:"app_operation,omitempty"`
 	// Identity is the (tenant, user, session) scope the read runs under.
 	// Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`
@@ -154,13 +157,30 @@ type ReadMCPResourceRequest struct {
 	ResourceURI string `json:"resource_uri"`
 	// RequestRenderAdmission is the OPT-IN flag that asks the Runtime to
 	// mint a bounded render admission for THIS successful `ui://` read.
-	// Omitted or false preserves the current ordinary resource-read
-	// behavior byte-for-byte and mints NO callback authority — only a
+	// Omitted or false preserves ordinary resource-read callback behavior
+	// and mints NO callback authority — only a
 	// successful `ui://` read carrying true may return the
 	// `render_admission` object, and the mint happens only AFTER the
 	// full verified identity / reach / retirement / erasure / current
 	// exposure / exact server+resource checks pass.
 	RequestRenderAdmission bool `json:"request_render_admission,omitempty"`
+}
+
+// MCPAppResourceCSP is the bounded standard passive-resource CSP projection.
+// Other CSP directives are not granted by this read surface.
+type MCPAppResourceCSP struct {
+	ResourceDomains []string `json:"resourceDomains"`
+}
+
+// MCPAppResourceUI preserves the standard MCP Apps resource metadata nesting.
+type MCPAppResourceUI struct {
+	CSP MCPAppResourceCSP `json:"csp"`
+}
+
+// MCPAppResourceMeta carries only recognized resource metadata, never arbitrary
+// provider _meta payloads or callback authority.
+type MCPAppResourceMeta struct {
+	UI MCPAppResourceUI `json:"ui"`
 }
 
 // ReadMCPResourceResponse is the `mcp.servers.read_resource` reply.
@@ -170,6 +190,20 @@ type ReadMCPResourceRequest struct {
 // threshold (a loud bypass event accompanies the offload — never a
 // silent truncation, never an inline leak).
 type ReadMCPResourceResponse struct {
+	// ProviderOrigin is the canonical public HTTPS origin of this exact read's
+	// current admitted provider. Omitted for stdio, unknown or nonpublic origins.
+	ProviderOrigin string `json:"provider_origin,omitempty"`
+	// Meta is this exact resource content item's bounded standard CSP metadata.
+	// Absent metadata remains absent. Hosts still enforce their own sandbox and
+	// fresh render admission; these declarations grant no callback authority.
+	Meta *MCPAppResourceMeta `json:"_meta,omitempty"`
+
+	// AppOperationGeneration is the exact catalog generation sealed into the
+	// accompanying admission, only for an operation-bound opt-in read. It lets
+	// the trusted host bind its next broker intent without opening the token.
+	// The fingerprint is not authority; callbacks still verify the sealed token.
+	AppOperationGeneration string `json:"app_operation_generation,omitempty"`
+
 	// ResourceURI echoes the fetched resource URI.
 	ResourceURI string `json:"resource_uri"`
 	// MIMEType is the resource's declared media type.
@@ -206,6 +240,9 @@ type ReadMCPResourceResponse struct {
 // identity), so an app call to a gated tool parks on the unified pause
 // primitive exactly as a planner call does. Identity is mandatory.
 type MCPAppCallToolRequest struct {
+	// AppOperation selects a broker-owned, call-specific App operation. It is
+	// not a credential or authority. Callbacks also require fresh render admission.
+	AppOperation string `json:"app_operation,omitempty"`
 	// Identity is the (tenant, user, session) scope the tool call runs
 	// under. Mandatory — an incomplete triple fails closed.
 	Identity IdentityScope `json:"identity"`

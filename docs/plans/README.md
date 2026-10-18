@@ -586,6 +586,8 @@ real two-client race under `-race`.
 
 ### Phase 238 — App-only callback catalog (HA-56)
 
+- **Candidate extension:** D-486 [broker-bound App operations](../contracts/app-operation-v1.md); external host/broker qualification passed on isolated local services. Production activation is separate. Existing shipped catalog and render-admission status is unchanged.
+
 - **Subsystem:** MCP discovery metadata, tool catalog/planner projection,
   `internal/mcpconsole` App dispatch, and Protocol/Console lockstep.
 - **RFC:** §6.4, §7.3, §5.2, §7. **Deps:** 207, 204, 109k, 109l.

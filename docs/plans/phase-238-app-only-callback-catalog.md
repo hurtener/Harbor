@@ -263,3 +263,27 @@ decision, or HA.
 - [ ] Real-driver/spec-derived integration with failure mode under `-race`
 - [ ] Glossary updated
 - [ ] Amendment: the fresh render-admission contract — including the current provider/catalog-generation binding with its deterministic, replica-stable, fail-closed-mismatch semantics — is recorded on every governance surface (D-412, RFC §6.10, master plan, register, glossary, smoke, skill, config docs) and its implementation (sealed authority core, additive wire, generation binding, readiness-loud composition, real Console consumer) ships in the v1.28 wave
+
+## Broker-bound manual operations (D-486, implementation candidate)
+
+The optional operation selector on the existing read/call methods is specified
+in [App operation v1](../contracts/app-operation-v1.md). It uses the existing
+signed-capability broker exchange and fresh render admission; no new phase or
+planner capability is introduced. The external host/broker is the first consumer;
+its canonical policy and real product journeys passed on isolated local services.
+Production activation remains a separate downstream release decision.
+
+Acceptance: exact admitted identity/source/resource/tool/input; no legacy
+admission fallback; exact number preservation; strict broker acknowledgement and
+1–30 second expiry; current use authorization and audit; N=128 distinct concurrent
+exchanges despite a warm ordinary cache; cancellation isolation; actual MCP SDK
+HTTP dispatch; zero callback retry after uncertain effect. The concrete named
+tests and required external activation proof are linked in the contract. Run the
+focused race suites, Protocol generation/lockstep, Console client checks and live
+preflight locally. Hosted CI is unavailable due to account billing for this work.
+
+The operation-bound opt-in resource response also returns
+`app_operation_generation`, the exact fingerprint sealed into its available
+render admission. This lets a trusted host create an exact next-operation intent
+without decoding the sealed token. Ordinary reads and unavailable admissions omit
+it. The fingerprint is not authority; fresh sealed admission remains mandatory.

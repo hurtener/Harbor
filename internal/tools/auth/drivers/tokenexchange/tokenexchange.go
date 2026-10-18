@@ -126,6 +126,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/appoperation"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 )
@@ -666,8 +667,9 @@ func (e *consentError) Error() string { return "auth/tokenexchange: broker requi
 
 // Token implements auth.OAuthProvider.Token. The `requested` source is
 // retargeted onto the operator-configured source (the V1 one-provider-
-// one-attachment model, mirroring the oauth2 driver).
-func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token, error) {
+// one-attachment model, mirroring the oauth2 driver). App operations instead
+// require the exact bound source and a fresh, acknowledged broker exchange.
+func (p *provider) Token(ctx context.Context, source tools.ToolSourceID) (auth.Token, error) {
 	ctx, release, err := p.admit(ctx)
 	if err != nil {
 		return auth.Token{}, err
@@ -685,6 +687,12 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 	}
 	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
 		return auth.Token{}, err
+	}
+	if operation, ok := appoperation.From(ctx); ok {
+		if p.signedBinding == nil || operation.AgentID != p.signedBinding.AgentID || operation.ServerID != string(source) {
+			return auth.Token{}, fmt.Errorf("%w: invalid App operation destination", auth.ErrExchangeFailed)
+		}
+		return p.exchangeAppOperation(ctx, id)
 	}
 	key := p.cacheKey(id)
 
@@ -709,6 +717,34 @@ func (p *provider) Token(ctx context.Context, _ tools.ToolSourceID) (auth.Token,
 			// pause primitive; a resume re-drives Token().
 			return auth.Token{}, p.buildConsentRequired(ctx, id, ce)
 		}
+		return auth.Token{}, err
+	}
+	return tok, nil
+}
+
+// exchangeAppOperation performs a fresh policy pull for THIS caller only. It
+// deliberately uses neither the shared credential cache nor singleflight and
+// retains caller cancellation. No operation selector or bearer is persisted.
+func (p *provider) exchangeAppOperation(ctx context.Context, id identity.Identity) (auth.Token, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	stopClose := context.AfterFunc(p.closeCtx, cancel)
+	defer stopClose()
+	tok, meta, err := p.exchange(ctx, id)
+	if err != nil {
+		var ce *consentError
+		if errors.As(err, &ce) {
+			return auth.Token{}, p.buildConsentRequired(ctx, id, ce)
+		}
+		return auth.Token{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return auth.Token{}, fmt.Errorf("%w: App exchange cancelled: %w", auth.ErrExchangeFailed, err)
+	}
+	if err := p.authorizeSignedCapabilityUse(ctx); err != nil {
+		return auth.Token{}, err
+	}
+	if err := p.emitCredentialExchanged(ctx, id, tok, meta); err != nil {
 		return auth.Token{}, err
 	}
 	return tok, nil
@@ -861,12 +897,16 @@ type brokerResponse struct {
 	// signed-capability profile. Generic RFC 8693 providers ignore them.
 	Audience string `json:"audience"`
 	Resource string `json:"resource"`
+	// AppOperationSHA256 acknowledges the exact requested binding. Its absence
+	// refuses an older broker that ignored the extension.
+	AppOperationSHA256 string `json:"app_operation_sha256"`
 }
 
 // brokerError is the RFC 6749 §5.2 error body shape.
 type brokerError struct {
 	Err              string `json:"error"`
 	ErrorDescription string `json:"error_description"`
+	Reason           string `json:"reason"`
 	// ConsentURL / VerificationURI carry the broker-supplied central
 	// consent URL when the refusal is consent_required-class. Both
 	// spellings are accepted (brokers vary).
@@ -919,7 +959,19 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	form.Set("subject_token_type", subjectTokenTypeIdentityTriple)
 	form.Set("subject_token", subjectToken)
 	form.Set("audience", p.audience)
-	if len(p.scopes) > 0 {
+	var operationDigest string
+	if operation, ok := appoperation.From(ctx); ok {
+		if p.signedBinding == nil {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: App operation requires signed capability", auth.ErrExchangeFailed)
+		}
+		raw, err := json.Marshal(operation)
+		if err != nil {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: App operation encoding", auth.ErrExchangeFailed)
+		}
+		sum := sha256.Sum256(raw)
+		operationDigest = hex.EncodeToString(sum[:])
+		form.Set("app_operation", string(raw))
+	} else if len(p.scopes) > 0 {
 		form.Set("scope", strings.Join(p.scopes, " "))
 	}
 	// RFC 8707 resource indicator: when declared, ride the exchange as the
@@ -967,14 +1019,21 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) //nolint:errcheck // a partial read still yields a usable error message; the status code drives the branch
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode/100 != 2 {
 		// Decode the OAuth error body to distinguish a consent refusal
 		// (park path) from a hard failure (fail-loud path).
 		var be brokerError
-		_ = json.Unmarshal(raw, &be) //nolint:errcheck // a non-JSON body simply leaves be zero → treated as a hard failure
+		decodeErr := json.Unmarshal(raw, &be)
 		if isConsentRequired(be.Err) {
 			return auth.Token{}, exchangeMeta{}, &consentError{consentURL: firstNonEmpty(be.ConsentURL, be.VerificationURI)}
+		}
+		// Only this explicit reason from the configured signed broker proves
+		// that generic user minting, rather than the shared connection, was
+		// refused. Never infer it from status alone or from error descriptions.
+		if readErr == nil && decodeErr == nil && len(raw) < 1<<16 && p.signedBinding != nil && !auth.IsSignedCapabilityPreparation(ctx) && operationDigest == "" &&
+			resp.StatusCode == http.StatusForbidden && be.Err == "access_denied" && be.Reason == "governed_app_operation_required" {
+			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w", auth.ErrExchangeFailed, &auth.GovernedAppMintRequiredError{})
 		}
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
 			return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: %w: broker %s status %d", auth.ErrExchangeFailed, auth.ErrCredentialRejected, p.brokerHost, resp.StatusCode)
@@ -993,6 +1052,10 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	if p.signedBinding != nil && (br.Audience != p.signedBinding.Audience || br.Resource != p.signedBinding.Resource) {
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: broker response destination mismatch (audience=%q resource=%q)",
 			auth.ErrExchangeFailed, br.Audience, br.Resource)
+	}
+
+	if operationDigest != "" && (br.AppOperationSHA256 != operationDigest || br.ExpiresIn <= 0 || br.ExpiresIn > 30 || br.TokenType != "Bearer") {
+		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: broker did not acknowledge bounded App operation", auth.ErrExchangeFailed)
 	}
 
 	// Best-effort audience verification (confused-deputy defence) applies to
@@ -1028,14 +1091,15 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 		expiresAt = p.now().Add(time.Duration(br.ExpiresIn) * time.Second)
 	}
 	tok := auth.Token{
-		Source:       p.source,
-		BindingScope: auth.ScopeUser,
-		TenantID:     id.TenantID,
-		UserID:       id.UserID,
-		AccessToken:  br.AccessToken,
-		TokenType:    firstNonEmpty(br.TokenType, "Bearer"),
-		ExpiresAt:    expiresAt,
-		Scopes:       splitScopes(br.Scope),
+		AppOperationSHA256: operationDigest,
+		Source:             p.source,
+		BindingScope:       auth.ScopeUser,
+		TenantID:           id.TenantID,
+		UserID:             id.UserID,
+		AccessToken:        br.AccessToken,
+		TokenType:          firstNonEmpty(br.TokenType, "Bearer"),
+		ExpiresAt:          expiresAt,
+		Scopes:             splitScopes(br.Scope),
 		// RefreshToken deliberately empty: refresh is re-exchange, and a
 		// brokered token is never persisted.
 	}
