@@ -45,6 +45,24 @@ The signed-capability exchange adds one URL-encoded form field,
 | `tool` | Required for tools: exact qualified runtime catalog name. |
 | `arguments_sha256` | Required for tools: exact canonical input digest. |
 
+Ordinary planner MCP calls may use `kind: agent_tool` after the authenticated
+broker returns the exact typed `governed_app_operation_required` refusal to a
+fresh generic credential pull. Harbor captures the effective Agent, resolved
+physical source, qualified tool name and actual outgoing arguments after
+substitution. This call-local binding omits `resource_uri` and `generation`, and
+includes the canonical JSON `arguments` object and its SHA-256 digest. The
+runtime never accepts those fields from the model as authority. It permits only
+the broker's exact bounded acknowledgement, with no credential cache or
+singleflight. Other broker errors remain errors; they cannot trigger fallback.
+
+The current host admits only six read operations through this kind: search,
+describe, runs, view, report-app bootstrap and guide. It rechecks current App
+installation, audience, membership, entitlement, signed Agent activation and
+per-dependency grants, then mints a short-lived exact operation/resource token.
+This chat session is not a stored viewer session. Query, refresh, authoring and
+generic write tools remain closed on this lane. The host's resource and callback
+selectors continue to require their existing one-use intent and render admission.
+
 A successful operation-bound opt-in resource read also returns
 `app_operation_generation`: the exact generation sealed into the accompanying
 available render admission. The trusted host uses this returned value when
