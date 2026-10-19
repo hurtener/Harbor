@@ -124,6 +124,48 @@ func TestAgentReadCandidateRequiresExactBrokerRefusalAndFreshAcknowledgement(t *
 	}
 }
 
+func TestAgentResourceCandidateRequiresExactBrokerRefusalAndAcknowledgement(t *testing.T) {
+	var generic, bound atomic.Int32
+	p, base := appOperationProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
+		if r.Form.Get("app_operation") == "" {
+			generic.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"access_denied","reason":"governed_app_operation_required"}`))
+			return
+		}
+		bound.Add(1)
+		var binding appoperation.Binding
+		if json.Unmarshal([]byte(r.Form.Get("app_operation")), &binding) != nil || binding.Kind != "agent_resource" || binding.ResourceURI != "ui://chartworks/report-app/v1" || binding.ServerID != "server" || binding.Tool != "" || len(binding.Arguments) != 0 {
+			t.Error("resource read lost its exact selector")
+		}
+		writeAppToken(t, w, r, 30, true)
+	})
+	ctx, err := appoperation.WithAgentResourceCandidate(base, "agent-signed", "server", "ui://chartworks/report-app/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := p.Token(ctx, "server"); err != nil || token.AccessToken == "" {
+		t.Fatalf("bound resource: %v", err)
+	}
+	if generic.Load() != 1 || bound.Load() != 1 {
+		t.Fatalf("generic=%d bound=%d", generic.Load(), bound.Load())
+	}
+	wrong, err := appoperation.WithAgentResourceCandidate(base, "agent-signed", "other-server", "ui://chartworks/report-app/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Token(wrong, "server"); err == nil {
+		t.Fatal("resource candidate crossed its resolved source")
+	}
+	if generic.Load() != 1 || bound.Load() != 1 {
+		t.Fatal("mismatched source reached broker")
+	}
+}
+
 func TestLargeOrdinaryAgentCallKeepsGenericBrokerDecision(t *testing.T) {
 	large := json.RawMessage(`{"text":"` + strings.Repeat("x", 1<<20) + `"}`)
 	for _, governed := range []bool{false, true} {

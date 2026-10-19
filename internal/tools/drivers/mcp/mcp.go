@@ -1620,6 +1620,12 @@ func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (Re
 		if err := operation.CheckResource(string(p.source), uri); err != nil {
 			return ResourceRead{}, err
 		}
+	} else if agent, ok := tools.EffectiveAgentConfigFrom(ctx); ok && IsUIResourceURI(uri) {
+		var err error
+		ctx, err = appoperation.WithAgentResourceCandidate(ctx, agent, string(p.source), uri)
+		if err != nil {
+			return ResourceRead{}, err
+		}
 	}
 	session, sErr := p.sessionForRead()
 	if sErr != nil {

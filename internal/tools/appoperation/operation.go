@@ -72,6 +72,20 @@ func WithAgentCallCandidate(ctx context.Context, agent, server, tool string, arg
 	return context.WithValue(ctx, candidateContextKey{}, b), nil
 }
 
+// WithAgentResourceCandidate captures an ordinary agent's actual UI resource
+// read. A governed broker must still refuse generic minting before activation.
+func WithAgentResourceCandidate(ctx context.Context, agent, server, resource string) (context.Context, error) {
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, ErrInvalid
+	}
+	b := Binding{Version: "app-operation-v1", Reference: hex.EncodeToString(nonce[:]), Kind: "agent_resource", AgentID: agent, ServerID: server, ResourceURI: resource}
+	if b.validate() != nil {
+		return nil, ErrInvalid
+	}
+	return context.WithValue(ctx, candidateContextKey{}, b), nil
+}
+
 // CandidateFrom returns an immutable-by-convention value copy for a broker
 // refusal. The broker must still independently authorize the operation.
 func CandidateFrom(ctx context.Context) (Binding, bool) {
@@ -83,7 +97,7 @@ func CandidateFrom(ctx context.Context) (Binding, bool) {
 // ActivateCandidate attaches the call-local binding to the existing fresh,
 // acknowledged App-operation credential path after an exact broker refusal.
 func ActivateCandidate(ctx context.Context, b Binding) (context.Context, error) {
-	if b.Kind != "agent_tool" || b.validate() != nil {
+	if (b.Kind != "agent_tool" && b.Kind != "agent_resource") || b.validate() != nil {
 		return nil, ErrInvalid
 	}
 	b.Arguments = append(json.RawMessage(nil), b.Arguments...)
@@ -130,7 +144,7 @@ func (b Binding) validate() error {
 		return ErrInvalid
 	}
 	switch b.Kind {
-	case "resource":
+	case "resource", "agent_resource":
 		if b.Tool != "" || b.ArgumentsSHA256 != "" || b.Generation != "" || len(b.Arguments) != 0 {
 			return ErrInvalid
 		}
