@@ -43,25 +43,31 @@ type candidateContextKey struct{}
 // is inert unless the configured broker explicitly refuses generic minting for
 // a governed App. It cannot be supplied by a model or Protocol caller.
 func WithAgentCallCandidate(ctx context.Context, agent, server, tool string, args json.RawMessage) (context.Context, error) {
+	if !bounded(agent, 256) || !bounded(server, 256) || !bounded(tool, 256) {
+		return nil, ErrInvalid
+	}
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, ErrInvalid
+	}
+	b := Binding{Version: "app-operation-v1", Reference: hex.EncodeToString(nonce[:]), Kind: "agent_tool", AgentID: agent, ServerID: server, Tool: tool}
+	// Keep an oversized ordinary call eligible for a fresh generic broker
+	// decision. Its marker cannot activate an App operation if the broker says
+	// the source is governed; no large payload is retained in the binding.
+	if len(args) > 1<<20 {
+		return context.WithValue(ctx, candidateContextKey{}, b), nil
+	}
 	value, err := DecodeArguments(args)
 	if err != nil {
-		return nil, err
+		return context.WithValue(ctx, candidateContextKey{}, b), nil
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {
 		return nil, ErrInvalid
 	}
-	digest := sha256.Sum256(canonical)
-	var nonce [32]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil, ErrInvalid
-	}
-	b := Binding{Version: "app-operation-v1", Reference: hex.EncodeToString(nonce[:]), Kind: "agent_tool", AgentID: agent, ServerID: server, Tool: tool, ArgumentsSHA256: hex.EncodeToString(digest[:]), Arguments: canonical}
-	// A large ordinary tool call still needs a fresh generic broker decision.
-	// The broker-bound lane rejects it after an exact governed refusal; it must
-	// not block an unrelated non-governed MCP call before credential resolution.
-	if !bounded(agent, 256) || !bounded(server, 256) || !bounded(tool, 256) || len(canonical) > 1<<20 {
-		return nil, ErrInvalid
+	if len(canonical) <= 1<<20 {
+		digest := sha256.Sum256(canonical)
+		b.ArgumentsSHA256, b.Arguments = hex.EncodeToString(digest[:]), canonical
 	}
 	return context.WithValue(ctx, candidateContextKey{}, b), nil
 }

@@ -60,8 +60,16 @@ func TestAgentCallCandidateBindsActualSourceToolAndArguments(t *testing.T) {
 	if again.Digest() != second.Digest() {
 		t.Fatal("active binding leaked a mutable slice")
 	}
-	if _, err := appoperation.WithAgentCallCandidate(ctx, "agent", "source", "source_reporting_view", json.RawMessage(`{"run":1,"run":2}`)); !errors.Is(err, appoperation.ErrInvalid) {
-		t.Fatal("duplicate outgoing arguments accepted")
+	duplicate, err := appoperation.WithAgentCallCandidate(ctx, "agent", "source", "source_other", json.RawMessage(`{"run":1,"run":2}`))
+	if err != nil {
+		t.Fatal("generic duplicate-key call blocked before broker decision", err)
+	}
+	unbound, ok := appoperation.CandidateFrom(duplicate)
+	if !ok || len(unbound.Arguments) != 0 {
+		t.Fatal("duplicate-key call lost its broker-decision marker")
+	}
+	if _, err := appoperation.ActivateCandidate(duplicate, unbound); !errors.Is(err, appoperation.ErrInvalid) {
+		t.Fatal("duplicate-key governed call acquired a token")
 	}
 	large := json.RawMessage(`{"text":"` + strings.Repeat("x", 8192) + `"}`)
 	ordinary, err := appoperation.WithAgentCallCandidate(ctx, "agent", "source", "source_other", large)
@@ -71,6 +79,18 @@ func TestAgentCallCandidateBindsActualSourceToolAndArguments(t *testing.T) {
 	unsupported, _ := appoperation.CandidateFrom(ordinary)
 	if _, err := appoperation.ActivateCandidate(ordinary, unsupported); !errors.Is(err, appoperation.ErrInvalid) {
 		t.Fatal("oversized governed call acquired a token")
+	}
+	veryLarge := json.RawMessage(`{"text":"` + strings.Repeat("x", 1<<20) + `"}`)
+	ordinary, err = appoperation.WithAgentCallCandidate(ctx, "agent", "source", "source_other", veryLarge)
+	if err != nil {
+		t.Fatal("large generic call blocked before broker decision", err)
+	}
+	unsupported, ok = appoperation.CandidateFrom(ordinary)
+	if !ok || len(unsupported.Arguments) != 0 || unsupported.Tool != "source_other" {
+		t.Fatal("large generic call lost its broker-decision marker")
+	}
+	if _, err := appoperation.ActivateCandidate(ordinary, unsupported); !errors.Is(err, appoperation.ErrInvalid) {
+		t.Fatal("large governed call acquired a token")
 	}
 }
 

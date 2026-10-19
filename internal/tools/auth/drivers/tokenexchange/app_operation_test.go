@@ -124,6 +124,44 @@ func TestAgentReadCandidateRequiresExactBrokerRefusalAndFreshAcknowledgement(t *
 	}
 }
 
+func TestLargeOrdinaryAgentCallKeepsGenericBrokerDecision(t *testing.T) {
+	large := json.RawMessage(`{"text":"` + strings.Repeat("x", 1<<20) + `"}`)
+	for _, governed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("governed=%t", governed), func(t *testing.T) {
+			var generic, bound atomic.Int32
+			p, base := appOperationProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+					return
+				}
+				if r.Form.Get("app_operation") != "" {
+					bound.Add(1)
+					t.Error("oversized call reached bound App operation")
+					return
+				}
+				generic.Add(1)
+				if governed {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":"access_denied","reason":"governed_app_operation_required"}`))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "generic", "expires_in": 30, "token_type": "Bearer", "audience": "https://downstream.example", "resource": "https://downstream.example"})
+			})
+			call, err := appoperation.WithAgentCallCandidate(base, "agent-signed", "server", "server_other", large)
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := p.Token(call, "server")
+			if governed && err == nil || !governed && (err != nil || token.AccessToken != "generic") {
+				t.Fatalf("large call broker decision token=%q err=%v", token.AccessToken, err)
+			}
+			if generic.Load() != 1 || bound.Load() != 0 {
+				t.Fatalf("large call generic=%d bound=%d", generic.Load(), bound.Load())
+			}
+		})
+	}
+}
+
 func TestAppOperation_ConcurrentCallsNeverShareCredentials(t *testing.T) {
 	var calls atomic.Int64
 	p, ctx := appOperationProvider(t, func(w http.ResponseWriter, r *http.Request) {
