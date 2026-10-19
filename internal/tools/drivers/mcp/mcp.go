@@ -1227,6 +1227,21 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		if err := operation.CheckCall(string(p.source), fmt.Sprintf("%s_%s", p.source, name), argMap); err != nil {
 			return tools.ToolResult{}, err
 		}
+	} else if agent, ok := tools.EffectiveAgentConfigFrom(ctx); ok {
+		// Capture only the resolved source and outgoing arguments. This remains
+		// inert for ordinary MCP credentials; the broker must explicitly refuse
+		// generic minting before the guarded App-operation path can use it.
+		actual, marshalErr := json.Marshal(argMap)
+		if marshalErr != nil {
+			return tools.ToolResult{}, fmt.Errorf("%w: encode outgoing arguments", tools.ErrToolInvalidArgs)
+		}
+		if argMap == nil {
+			actual = json.RawMessage("{}")
+		}
+		ctx, err = appoperation.WithAgentCallCandidate(ctx, agent, string(p.source), fmt.Sprintf("%s_%s", p.source, name), actual)
+		if err != nil {
+			return tools.ToolResult{}, fmt.Errorf("%w: bind outgoing arguments", tools.ErrToolInvalidArgs)
+		}
 	}
 	meta, err := p.buildIdentityMeta(ctx)
 	if err != nil {

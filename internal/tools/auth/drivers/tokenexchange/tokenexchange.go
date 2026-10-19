@@ -694,6 +694,30 @@ func (p *provider) Token(ctx context.Context, source tools.ToolSourceID) (auth.T
 		}
 		return p.exchangeAppOperation(ctx, id)
 	}
+	if candidate, ok := appoperation.CandidateFrom(ctx); ok && p.signedBinding != nil {
+		if candidate.AgentID != p.signedBinding.AgentID || candidate.ServerID != string(source) {
+			return auth.Token{}, fmt.Errorf("%w: invalid agent call destination", auth.ErrExchangeFailed)
+		}
+		// A governed App can refuse ordinary per-user minting. Probe freshly:
+		// a cached generic bearer must never survive that transition. Only the
+		// broker's exact typed refusal can select the operation-bound path.
+		probe, meta, probeErr := p.exchange(ctx, id)
+		if probeErr == nil {
+			if err := p.emitCredentialExchanged(ctx, id, probe, meta); err != nil {
+				return auth.Token{}, err
+			}
+			return probe, nil
+		}
+		var governed *auth.GovernedAppMintRequiredError
+		if !errors.As(probeErr, &governed) {
+			return auth.Token{}, probeErr
+		}
+		bound, err := appoperation.ActivateCandidate(ctx, candidate)
+		if err != nil {
+			return auth.Token{}, err
+		}
+		return p.exchangeAppOperation(bound, id)
+	}
 	key := p.cacheKey(id)
 
 	// Hot path: fresh cache hit → return immediately, emit nothing.

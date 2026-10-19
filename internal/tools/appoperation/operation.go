@@ -6,6 +6,7 @@ package appoperation
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,21 +20,69 @@ import (
 // ErrInvalid is a closed, content-free refusal of an operation binding.
 var ErrInvalid = errors.New("invalid app operation binding")
 
-// Binding is the content-free broker request extension. Identity and signed
-// provider destination still travel through their existing authenticated fields.
+// Binding is the broker request extension. Agent-tool bindings include only
+// bounded actual outgoing arguments; identity and signed provider destination
+// still travel through their existing authenticated fields.
 type Binding struct {
-	Version         string `json:"version"`
-	Reference       string `json:"reference"`
-	Kind            string `json:"kind"`
-	AgentID         string `json:"agent_id"`
-	ServerID        string `json:"server_id"`
-	ResourceURI     string `json:"resource_uri"`
-	Generation      string `json:"generation,omitempty"`
-	Tool            string `json:"tool,omitempty"`
-	ArgumentsSHA256 string `json:"arguments_sha256,omitempty"`
+	Version         string          `json:"version"`
+	Reference       string          `json:"reference"`
+	Kind            string          `json:"kind"`
+	AgentID         string          `json:"agent_id"`
+	ServerID        string          `json:"server_id"`
+	ResourceURI     string          `json:"resource_uri"`
+	Generation      string          `json:"generation,omitempty"`
+	Tool            string          `json:"tool,omitempty"`
+	ArgumentsSHA256 string          `json:"arguments_sha256,omitempty"`
+	Arguments       json.RawMessage `json:"arguments,omitempty"`
 }
 
 type contextKey struct{}
+type candidateContextKey struct{}
+
+// WithAgentCallCandidate captures the actual resolved MCP call. The candidate
+// is inert unless the configured broker explicitly refuses generic minting for
+// a governed App. It cannot be supplied by a model or Protocol caller.
+func WithAgentCallCandidate(ctx context.Context, agent, server, tool string, args json.RawMessage) (context.Context, error) {
+	value, err := DecodeArguments(args)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	digest := sha256.Sum256(canonical)
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, ErrInvalid
+	}
+	b := Binding{Version: "app-operation-v1", Reference: hex.EncodeToString(nonce[:]), Kind: "agent_tool", AgentID: agent, ServerID: server, Tool: tool, ArgumentsSHA256: hex.EncodeToString(digest[:]), Arguments: canonical}
+	// A large ordinary tool call still needs a fresh generic broker decision.
+	// The broker-bound lane rejects it after an exact governed refusal; it must
+	// not block an unrelated non-governed MCP call before credential resolution.
+	if !bounded(agent, 256) || !bounded(server, 256) || !bounded(tool, 256) || len(canonical) > 1<<20 {
+		return nil, ErrInvalid
+	}
+	return context.WithValue(ctx, candidateContextKey{}, b), nil
+}
+
+// CandidateFrom returns an immutable-by-convention value copy for a broker
+// refusal. The broker must still independently authorize the operation.
+func CandidateFrom(ctx context.Context) (Binding, bool) {
+	b, ok := ctx.Value(candidateContextKey{}).(Binding)
+	b.Arguments = append(json.RawMessage(nil), b.Arguments...)
+	return b, ok
+}
+
+// ActivateCandidate attaches the call-local binding to the existing fresh,
+// acknowledged App-operation credential path after an exact broker refusal.
+func ActivateCandidate(ctx context.Context, b Binding) (context.Context, error) {
+	if b.Kind != "agent_tool" || b.validate() != nil {
+		return nil, ErrInvalid
+	}
+	b.Arguments = append(json.RawMessage(nil), b.Arguments...)
+	return context.WithValue(ctx, contextKey{}, b), nil
+}
 
 // WithRead binds a selector to the resource read admitted by the Protocol.
 func WithRead(ctx context.Context, ref, agent, server, resource string) (context.Context, error) {
@@ -63,6 +112,7 @@ func WithCall(ctx context.Context, ref, agent, server, resource, generation, too
 // From returns a value copy; callers cannot mutate another request's binding.
 func From(ctx context.Context) (Binding, bool) {
 	b, ok := ctx.Value(contextKey{}).(Binding)
+	b.Arguments = append(json.RawMessage(nil), b.Arguments...)
 	return b, ok
 }
 
@@ -70,16 +120,24 @@ func (b Binding) validate() error {
 	if b.Version != "app-operation-v1" || len(b.Reference) != 64 ||
 		strings.Trim(b.Reference, "0123456789abcdef") != "" ||
 		!bounded(b.AgentID, 256) || !bounded(b.ServerID, 256) ||
-		!bounded(b.ResourceURI, 2048) || !strings.HasPrefix(b.ResourceURI, "ui://") {
+		(b.Kind != "agent_tool" && (!bounded(b.ResourceURI, 2048) || !strings.HasPrefix(b.ResourceURI, "ui://"))) {
 		return ErrInvalid
 	}
 	switch b.Kind {
 	case "resource":
-		if b.Tool != "" || b.ArgumentsSHA256 != "" || b.Generation != "" {
+		if b.Tool != "" || b.ArgumentsSHA256 != "" || b.Generation != "" || len(b.Arguments) != 0 {
 			return ErrInvalid
 		}
 	case "tool":
-		if !bounded(b.Tool, 256) || !bounded(b.Generation, 512) || len(b.ArgumentsSHA256) != 64 {
+		if !bounded(b.Tool, 256) || !bounded(b.Generation, 512) || len(b.ArgumentsSHA256) != 64 || len(b.Arguments) != 0 {
+			return ErrInvalid
+		}
+	case "agent_tool":
+		if b.ResourceURI != "" || b.Generation != "" || !bounded(b.Tool, 256) || len(b.ArgumentsSHA256) != 64 || len(b.Arguments) == 0 || len(b.Arguments) > 8192 {
+			return ErrInvalid
+		}
+		digest, err := ArgumentsDigest(b.Arguments)
+		if err != nil || digest != b.ArgumentsSHA256 {
 			return ErrInvalid
 		}
 	default:
@@ -100,7 +158,7 @@ func bounded(s string, limit int) bool {
 	return true
 }
 
-// Digest identifies the complete content-free binding acknowledged by the broker.
+// Digest identifies the complete binding acknowledged by the broker.
 func (b Binding) Digest() string {
 	raw, _ := json.Marshal(b) // Binding contains only strings; marshal cannot fail.
 	sum := sha256.Sum256(raw)

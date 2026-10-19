@@ -79,6 +79,51 @@ func appOperationContext(t *testing.T, ctx context.Context, ref string) context.
 	return ctx
 }
 
+func TestAgentReadCandidateRequiresExactBrokerRefusalAndFreshAcknowledgement(t *testing.T) {
+	var generic, bound atomic.Int64
+	p, base := appOperationProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
+		if r.Form.Get("app_operation") == "" {
+			generic.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"access_denied","reason":"governed_app_operation_required"}`))
+			return
+		}
+		bound.Add(1)
+		var binding appoperation.Binding
+		if json.Unmarshal([]byte(r.Form.Get("app_operation")), &binding) != nil || binding.Kind != "agent_tool" || binding.Tool != "server_reporting_view" || binding.ServerID != "server" || string(binding.Arguments) != `{"run":"one"}` || r.Form.Get("scope") != "" {
+			t.Error("agent operation lost its exact call binding")
+		}
+		writeAppToken(t, w, r, 30, true)
+	})
+	for i := 0; i < 2; i++ {
+		call, err := appoperation.WithAgentCallCandidate(base, "agent-signed", "server", "server_reporting_view", json.RawMessage(`{"run":"one"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, err := p.Token(call, "server")
+		if err != nil || tok.AccessToken == "" {
+			t.Fatalf("bound exchange: %v", err)
+		}
+	}
+	if generic.Load() != 2 || bound.Load() != 2 {
+		t.Fatalf("operation reused a generic cache or prior binding: generic=%d bound=%d", generic.Load(), bound.Load())
+	}
+	other, err := appoperation.WithAgentCallCandidate(base, "agent-signed", "different-source", "different-source_reporting_view", json.RawMessage(`{"run":"one"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Token(other, "server"); err == nil {
+		t.Fatal("candidate crossed its resolved source")
+	}
+	if generic.Load() != 2 || bound.Load() != 2 {
+		t.Fatal("source mismatch issued a broker call")
+	}
+}
+
 func TestAppOperation_ConcurrentCallsNeverShareCredentials(t *testing.T) {
 	var calls atomic.Int64
 	p, ctx := appOperationProvider(t, func(w http.ResponseWriter, r *http.Request) {

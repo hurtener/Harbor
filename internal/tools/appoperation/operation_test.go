@@ -30,6 +30,50 @@ func TestArgumentsDigest_CanonicalAndExact(t *testing.T) {
 	}
 }
 
+func TestAgentCallCandidateBindsActualSourceToolAndArguments(t *testing.T) {
+	ctx, err := appoperation.WithAgentCallCandidate(context.Background(), "agent", "source", "source_reporting_view", json.RawMessage(`{"run":"one","n":9007199254740993}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, active := appoperation.From(ctx); active {
+		t.Fatal("candidate acquired authority before broker refusal")
+	}
+	first, ok := appoperation.CandidateFrom(ctx)
+	if !ok || first.Kind != "agent_tool" || first.AgentID != "agent" || first.ServerID != "source" || first.Tool != "source_reporting_view" || string(first.Arguments) != `{"n":9007199254740993,"run":"one"}` {
+		t.Fatal("resolved call not captured")
+	}
+	first.Arguments[0] = '['
+	second, _ := appoperation.CandidateFrom(ctx)
+	if string(second.Arguments) != `{"n":9007199254740993,"run":"one"}` {
+		t.Fatal("caller mutated another call's binding")
+	}
+	bound, err := appoperation.ActivateCandidate(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, ok := appoperation.From(bound)
+	if !ok || active.Digest() != second.Digest() {
+		t.Fatal("bound call digest changed")
+	}
+	active.Arguments[0] = '['
+	again, _ := appoperation.From(bound)
+	if again.Digest() != second.Digest() {
+		t.Fatal("active binding leaked a mutable slice")
+	}
+	if _, err := appoperation.WithAgentCallCandidate(ctx, "agent", "source", "source_reporting_view", json.RawMessage(`{"run":1,"run":2}`)); !errors.Is(err, appoperation.ErrInvalid) {
+		t.Fatal("duplicate outgoing arguments accepted")
+	}
+	large := json.RawMessage(`{"text":"` + strings.Repeat("x", 8192) + `"}`)
+	ordinary, err := appoperation.WithAgentCallCandidate(ctx, "agent", "source", "source_other", large)
+	if err != nil {
+		t.Fatal("large ordinary call blocked before broker decision", err)
+	}
+	unsupported, _ := appoperation.CandidateFrom(ordinary)
+	if _, err := appoperation.ActivateCandidate(ordinary, unsupported); !errors.Is(err, appoperation.ErrInvalid) {
+		t.Fatal("oversized governed call acquired a token")
+	}
+}
+
 func TestBinding_ActualDispatchConfinement(t *testing.T) {
 	ref := strings.Repeat("a", 64)
 	ctx, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://report", "generation", "save", json.RawMessage(`{"n":9007199254740993}`))
