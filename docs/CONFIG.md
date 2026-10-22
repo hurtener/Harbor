@@ -2705,7 +2705,7 @@ on shared-runtime tenant isolation; a build-version guess is not equivalent evid
 
 ### Broker-bound App operation requests
 
-The candidate [App operation v1](contracts/app-operation-v1.md) contract extends
+The candidate [App operation v1](https://github.com/hurtener/Harbor/blob/main/docs/contracts/app-operation-v1.md) contract extends
 existing Protocol requests, not provider configuration. It requires a signed
 capability broker and existing fresh render admission for callbacks. Older
 brokers or credential providers fail closed. Keep external host activation off

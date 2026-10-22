@@ -1729,7 +1729,7 @@ still require fresh render admission and the existing wrapped invocation. The
 signed-capability broker pull must acknowledge the complete binding, mint a
 bounded credential from current policy, and bypass shared caching/singleflight.
 App-bound callbacks do not automatically retry unknown effects. See
-[App operation v1](docs/contracts/app-operation-v1.md) for the wire contract,
+[App operation v1](https://github.com/hurtener/Harbor/blob/main/docs/contracts/app-operation-v1.md) for the wire contract,
 local acceptance and activation requirements. The external host/broker lane
 requires its own product acceptance before production activation.
 

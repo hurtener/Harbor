@@ -2328,4 +2328,4 @@ parent history. Existing event/Protocol ownership applies. RFC §6.5, D-476.
   admitted MCP resource read or fresh-render-admitted callback. It grants no
   authority; the runtime binds actual coordinates and input to a fresh,
   acknowledged signed-capability broker pull. D-486; see
-  [App operation v1](contracts/app-operation-v1.md).
+  [App operation v1](https://github.com/hurtener/Harbor/blob/main/docs/contracts/app-operation-v1.md).

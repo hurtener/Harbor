@@ -1955,8 +1955,14 @@ func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Co
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
 	}
-	if operation, ok := appoperation.From(ctx); ok && tok.AppOperationSHA256 != operation.Digest() {
-		return nil, appoperation.ErrInvalid
+	if operation, ok := appoperation.From(ctx); ok {
+		digest, err := operation.Digest()
+		if err != nil {
+			return nil, err
+		}
+		if tok.AppOperationSHA256 != digest {
+			return nil, appoperation.ErrInvalid
+		}
 	}
 	if tok.AccessToken == "" {
 		// Defence-in-depth: a ("", nil) return from a bound provider must

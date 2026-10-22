@@ -25,6 +25,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
+
 	// This test composes only the real MCP and exchange drivers under test.
 	mcpdriver "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )

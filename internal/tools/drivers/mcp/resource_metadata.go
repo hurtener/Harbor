@@ -62,7 +62,7 @@ func PublicHTTPSOrigin(raw string) string {
 			return ""
 		}
 		for _, c := range label {
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 				return ""
 			}
 		}
@@ -140,7 +140,10 @@ func canonicalResourceDomains(values []string) ([]string, error) {
 		if origin == "" || origin != value {
 			return nil, ErrResourceMetadata
 		}
-		b, _ := json.Marshal(value)
+		b, err := json.Marshal(value)
+		if err != nil {
+			return nil, ErrResourceMetadata
+		}
 		size += len(b) + 1
 		if size > 8192 {
 			return nil, ErrResourceMetadata

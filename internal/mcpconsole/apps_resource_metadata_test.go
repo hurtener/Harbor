@@ -39,7 +39,7 @@ func TestAppResourceMetadata_ActualAdmittedProtocolRead(t *testing.T) {
 			read := func(_ context.Context, req *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
 				reads.Add(1)
 				if mode == "withdrawn_during_read" {
-					config.setActive(false)
+					config.deactivate()
 				}
 				meta := mcpsdk.Meta{"ui": map[string]any{"csp": map[string]any{"resourceDomains": []any{"https://assets.example.com"}, "connectDomains": []any{"https://private.example.com"}}, "permissions": map[string]any{"camera": true}}, "secret": "hidden"}
 				if mode == "absent" {

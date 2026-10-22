@@ -138,9 +138,9 @@ func TestAppResourceReadFence_FinalAdmissionSnapshot(t *testing.T) {
 					}
 				}
 			case "withdrawal_on_mint":
-				authority.afterMint = func() { config.setActive(false) }
+				authority.afterMint = func() { config.deactivate() }
 			case "withdrawal_on_resolve":
-				agent.afterResolve = func() { config.setActive(false) }
+				agent.afterResolve = func() { config.deactivate() }
 			case "retired_on_mint":
 				authority.afterMint = func() { agent.retired = true }
 			}

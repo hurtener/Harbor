@@ -16120,7 +16120,7 @@ the host's responsibility. A selector cannot replace fresh render admission or
 permit credential passthrough, generic source access or transcript impersonation.
 
 Canonical wire fields, expiry bounds, activation requirements and concrete local
-acceptance tests: [App operation v1](contracts/app-operation-v1.md). This extends
+acceptance tests: [App operation v1](https://github.com/hurtener/Harbor/blob/main/docs/contracts/app-operation-v1.md). This extends
 D-412 / phase 238 and the signed-capability broker path; it does not change the
 historical v1.28 reopen contract or allocate a new phase.
 

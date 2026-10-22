@@ -101,10 +101,13 @@ func bounded(s string, limit int) bool {
 }
 
 // Digest identifies the complete content-free binding acknowledged by the broker.
-func (b Binding) Digest() string {
-	raw, _ := json.Marshal(b) // Binding contains only strings; marshal cannot fail.
+func (b Binding) Digest() (string, error) {
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return "", ErrInvalid
+	}
 	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // CheckResource refuses reuse for another source or resource before credential

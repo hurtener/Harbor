@@ -24,6 +24,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/auth/credsource"
 	"github.com/hurtener/Harbor/internal/tools/auth/drivers/tokenexchange"
+
 	// This harness composes only the real credential and MCP drivers under test.
 	mcpdriver "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
@@ -36,20 +37,20 @@ func TestGovernedMintRefusalRequiresExactTrustedBrokerProof(t *testing.T) {
 		status           int
 		want             bool
 	}{
-		{"exact", governedMintRefusalJSON, "", 403, true},
-		{"missing-reason", `{"error":"access_denied"}`, "", 403, false},
-		{"wrong-reason", `{"error":"access_denied","reason":"other"}`, "", 403, false},
-		{"wrong-code", `{"error":"invalid_client","reason":"governed_app_operation_required"}`, "", 403, false},
-		{"wrong-status", governedMintRefusalJSON, "", 401, false},
-		{"server-error", governedMintRefusalJSON, "", 500, false},
-		{"malformed", strings.TrimSuffix(governedMintRefusalJSON, "}"), "", 403, false},
-		{"wrong-reason-type", `{"error":"access_denied","reason":7}`, "", 403, false},
-		{"truncated-body", governedMintRefusalJSON + strings.Repeat(" ", 1<<16) + "invalid", "", 403, false},
-		{"incomplete-body", governedMintRefusalJSON, "incomplete-body", 403, false},
-		{"description-only", `{"error":"access_denied","error_description":"governed_app_operation_required"}`, "", 403, false},
-		{"unsigned", governedMintRefusalJSON, "unsigned", 403, false},
-		{"preparation", governedMintRefusalJSON, "preparation", 403, false},
-		{"bound-operation", governedMintRefusalJSON, "operation", 403, false},
+		{"exact", governedMintRefusalJSON, "", http.StatusForbidden, true},
+		{"missing-reason", `{"error":"access_denied"}`, "", http.StatusForbidden, false},
+		{"wrong-reason", `{"error":"access_denied","reason":"other"}`, "", http.StatusForbidden, false},
+		{"wrong-code", `{"error":"invalid_client","reason":"governed_app_operation_required"}`, "", http.StatusForbidden, false},
+		{"wrong-status", governedMintRefusalJSON, "", http.StatusUnauthorized, false},
+		{"server-error", governedMintRefusalJSON, "", http.StatusInternalServerError, false},
+		{"malformed", strings.TrimSuffix(governedMintRefusalJSON, "}"), "", http.StatusForbidden, false},
+		{"wrong-reason-type", `{"error":"access_denied","reason":7}`, "", http.StatusForbidden, false},
+		{"truncated-body", governedMintRefusalJSON + strings.Repeat(" ", 1<<16) + "invalid", "", http.StatusForbidden, false},
+		{"incomplete-body", governedMintRefusalJSON, "incomplete-body", http.StatusForbidden, false},
+		{"description-only", `{"error":"access_denied","error_description":"governed_app_operation_required"}`, "", http.StatusForbidden, false},
+		{"unsigned", governedMintRefusalJSON, "unsigned", http.StatusForbidden, false},
+		{"preparation", governedMintRefusalJSON, "preparation", http.StatusForbidden, false},
+		{"bound-operation", governedMintRefusalJSON, "operation", http.StatusForbidden, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int64
@@ -89,7 +90,7 @@ func TestGovernedMintRefusalRequiresExactTrustedBrokerProof(t *testing.T) {
 			if errors.As(err, &governed) != tc.want || calls.Load() != 1 {
 				t.Fatalf("classification want%t calls%d: %v", tc.want, calls.Load(), err)
 			}
-			if tc.status < 500 && (!errors.Is(err, auth.ErrCredentialRejected) || tools.ClassifyError(err, false) != tools.ErrClassPermanent) {
+			if tc.status < http.StatusInternalServerError && (!errors.Is(err, auth.ErrCredentialRejected) || tools.ClassifyError(err, false) != tools.ErrClassPermanent) {
 				t.Fatalf("lost permanent credential refusal: %v", err)
 			}
 		})
@@ -109,11 +110,11 @@ func TestGovernedMintRefusalPreservesSharedSourceAndBoundResource(t *testing.T) 
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sourceRequests.Add(1)
 		if upstreamFailure.Load() {
-			http.Error(w, "source unavailable", 503)
+			http.Error(w, "source unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if r.Header.Get("Authorization") != "Bearer catalog-token" && r.Header.Get("Authorization") != "Bearer resource-token" {
-			http.Error(w, "denied", 403)
+			http.Error(w, "denied", http.StatusForbidden)
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -125,11 +126,11 @@ func TestGovernedMintRefusalPreservesSharedSourceAndBoundResource(t *testing.T) 
 			r.Body = io.NopCloser(bytes.NewReader(raw))
 			var rpc struct{ Method string }
 			if json.Unmarshal(raw, &rpc) != nil {
-				http.Error(w, "invalid RPC", 400)
+				http.Error(w, "invalid RPC", http.StatusBadRequest)
 				return
 			}
 			if rpc.Method == "resources/read" && r.Header.Get("Authorization") != "Bearer resource-token" {
-				http.Error(w, "bound resource bearer required", 403)
+				http.Error(w, "bound resource bearer required", http.StatusForbidden)
 				return
 			}
 		}
@@ -150,20 +151,20 @@ func TestGovernedMintRefusalPreservesSharedSourceAndBoundResource(t *testing.T) 
 		}
 		subject := decodeSubject(r.Form.Get("subject_token"))
 		if subject.TenantID != binding.TenantID {
-			http.Error(w, "denied", 403)
+			http.Error(w, "denied", http.StatusForbidden)
 			return
 		}
 		operationRaw := r.Form.Get("app_operation")
 		if subject.UserID != coordinator.UserID && operationRaw == "" {
 			switch refusalMode.Load() {
 			case 1:
-				w.WriteHeader(401)
+				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = io.WriteString(w, `{"error":"invalid_client"}`)
 			case 2:
-				w.WriteHeader(403)
+				w.WriteHeader(http.StatusForbidden)
 				_, _ = io.WriteString(w, `{"error":"access_denied"}`)
 			default:
-				w.WriteHeader(403)
+				w.WriteHeader(http.StatusForbidden)
 				_, _ = io.WriteString(w, governedMintRefusalJSON)
 			}
 			return
@@ -172,10 +173,15 @@ func TestGovernedMintRefusalPreservesSharedSourceAndBoundResource(t *testing.T) 
 		if operationRaw != "" {
 			var operation appoperation.Binding
 			if json.Unmarshal([]byte(operationRaw), &operation) != nil || operation.AgentID != owner.Agent || operation.CheckResource(physical, resource) != nil {
-				http.Error(w, "invalid operation", 403)
+				http.Error(w, "invalid operation", http.StatusForbidden)
 				return
 			}
-			response["access_token"], response["expires_in"], response["app_operation_sha256"] = "resource-token", 30, operation.Digest()
+			digest, err := operation.Digest()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			response["access_token"], response["expires_in"], response["app_operation_sha256"] = "resource-token", 30, digest
 		}
 		_ = json.NewEncoder(w).Encode(response)
 	}))

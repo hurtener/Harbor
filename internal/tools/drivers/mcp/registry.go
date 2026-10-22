@@ -2841,7 +2841,7 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 		// A probe failure is a successful probe with a failed result:
 		// derr is surfaced inside ProbeResult.Error, not as a top-level
 		// error, so callers always get a populated ProbeResult.
-		return &ProbeResult{OK: false, LatencyMs: latency, Error: derr.Error()}, nil //nolint:nilerr // probe failure is reported in ProbeResult.Error, not as a return error
+		return &ProbeResult{OK: false, LatencyMs: latency, Error: derr.Error()}, nil
 	}
 	r.mu.Lock()
 	e.stats.recentLatencyMs = latency

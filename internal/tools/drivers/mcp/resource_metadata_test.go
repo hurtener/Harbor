@@ -238,8 +238,12 @@ func TestProvider_AppResourceMetadata_ConcurrentReuse(t *testing.T) {
 			id.SessionID = fmt.Sprintf("session-%d", i)
 			ctx, _ := identity.With(context.Background(), id)
 			got, err := p.ReadResourceWithMetadata(ctx, "ui://app/main.html")
-			if err != nil || string(got.Content) != id.SessionID || len(got.ResourceDomains) != 1 {
-				errs <- fmt.Errorf("request %d got %q: %v", i, got.Content, err)
+			if err != nil {
+				errs <- fmt.Errorf("request %d: %w", i, err)
+				return
+			}
+			if string(got.Content) != id.SessionID || len(got.ResourceDomains) != 1 {
+				errs <- fmt.Errorf("request %d got %q with %d resource domains", i, got.Content, len(got.ResourceDomains))
 				return
 			}
 			got.ResourceDomains[0] = "detached"

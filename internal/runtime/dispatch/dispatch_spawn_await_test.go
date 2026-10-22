@@ -121,7 +121,6 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	cat := tools.NewCatalog()
 	called := 0
 	for _, name := range []string{"read_summary", "write_document"} {
-		name := name
 		if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: name}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 			called++
 			return tools.ToolResult{Value: name}, nil
@@ -131,7 +130,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	}
 	exec := newSpawnAwaitExecutor(t, reg, 32*1024, 4, cat)
 	ctx := spawnAwaitIDCtx(t)
-	spawnParent := func(allowed *[]string) (tasks.TaskHandle, planner.RunContext) {
+	spawnParent := func(allowed *[]string) planner.RunContext {
 		t.Helper()
 		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: dispatchTestID}, Kind: tasks.KindForeground, Query: "document discussion", ToolAllowlist: allowed})
 		if err != nil {
@@ -146,10 +145,10 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 		if stored.ToolAllowlist != nil {
 			rc.Catalog = tools.NewAllowlistView(rc.Catalog, *stored.ToolAllowlist)
 		}
-		return h, rc
+		return rc
 	}
 	zero := []string{}
-	_, zeroRun := spawnParent(&zero)
+	zeroRun := spawnParent(&zero)
 	before := countSpawnAwaitTasks(t, reg)
 	if _, _, err := exec.ExecuteDecision(ctx, zeroRun, planner.SpawnTask{Kind: tasks.KindBackground, Spec: planner.SpawnSpec{Query: "invoke write_document"}}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("zero-tool parent spawned: %v", err)
@@ -161,7 +160,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 		t.Fatalf("zero-tool parent invoked provider: called=%d err=%v", called, err)
 	}
 	allowed := []string{"read_summary"}
-	_, limitedRun := spawnParent(&allowed)
+	limitedRun := spawnParent(&allowed)
 	raw, _, err := exec.ExecuteDecision(ctx, limitedRun, planner.SpawnTask{Kind: tasks.KindBackground, Spec: planner.SpawnSpec{Query: "read summary"}})
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +182,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	if _, _, err := exec.ExecuteDecision(ctx, childRun, planner.CallTool{Tool: "read_summary", Args: json.RawMessage(`{}`)}); err != nil || called != 1 {
 		t.Fatalf("child lost allowed provider: called=%d err=%v", called, err)
 	}
-	_, ordinaryRun := spawnParent(nil)
+	ordinaryRun := spawnParent(nil)
 	if _, _, err := exec.ExecuteDecision(ctx, ordinaryRun, planner.SpawnTask{Kind: tasks.KindBackground, Spec: planner.SpawnSpec{Query: "ordinary"}}); err != nil {
 		t.Fatalf("ordinary spawn changed: %v", err)
 	}

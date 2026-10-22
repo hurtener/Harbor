@@ -115,7 +115,7 @@ func TestAppOperation_ConcurrentCallsNeverShareCredentials(t *testing.T) {
 		t.Fatalf("prime: %v", err)
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -144,7 +144,7 @@ func TestAppOperation_ConcurrentCallsNeverShareCredentials(t *testing.T) {
 	}
 	// Even an identical operation is freshly authorized on another pull.
 	same := appOperationContext(t, ctx, fmt.Sprintf("%064x", 1))
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := p.Token(same, "server"); err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestAppOperation_RequiresBoundedBrokerAcknowledgement(t *testing.T) {
 				writeAppToken(t, w, r, tc.ttl, tc.ack)
 			})
 			ctx = appOperationContext(t, ctx, strings.Repeat("a", 64))
-			for i := 0; i < 2; i++ {
+			for range 2 {
 				if _, err := p.Token(ctx, "server"); !errors.Is(err, auth.ErrExchangeFailed) {
 					t.Fatalf("unbounded/old broker accepted: %v", err)
 				}
@@ -278,7 +278,7 @@ func TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect(t *testing.T) {
 				var binding appoperation.Binding
 				if err := json.Unmarshal([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), &binding); err != nil {
 					t.Error("missing operation-specific bearer")
-					http.Error(w, "denied", 403)
+					http.Error(w, "denied", http.StatusForbidden)
 					return
 				}
 				if rpc.Method == "tools/call" {
@@ -297,12 +297,12 @@ func TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect(t *testing.T) {
 					}
 					if err := binding.CheckCall("server", "server_"+call.Name, args); err != nil {
 						t.Error("wire authority/input mismatch")
-						http.Error(w, "denied", 403)
+						http.Error(w, "denied", http.StatusForbidden)
 						return
 					}
 				} else if binding.Kind != "resource" {
 					t.Error("tool authority used for resource")
-					http.Error(w, "denied", 403)
+					http.Error(w, "denied", http.StatusForbidden)
 					return
 				}
 			}

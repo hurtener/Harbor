@@ -86,7 +86,15 @@ func TestBinding_BoundsAndAcknowledgement(t *testing.T) {
 	a, _ := appoperation.From(ctx)
 	b := a
 	b.ResourceURI = "ui://other"
-	if a.Digest() == b.Digest() {
+	aDigest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bDigest, err := b.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aDigest == bDigest {
 		t.Fatal("acknowledgement does not bind the resource")
 	}
 	for _, agent := range []string{"", strings.Repeat("a", 257), "agent\n", string([]byte{0xff})} {
