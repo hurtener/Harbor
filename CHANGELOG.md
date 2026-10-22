@@ -17,6 +17,39 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.0] — 2026-10-22
+
+### Added
+
+- MCP App operations: manual App tool calls bind fresh broker authority on
+  every call instead of reusing a cached grant, so hosted MCP Apps act only
+  with the caller's current authority.
+- Admitted MCP App resource CSP metadata is carried to the host, with HTTPS
+  default ports canonicalized in resource origins and metadata fenced through
+  final admission. CSP domains supplied by embedding providers are validated
+  and never widen the declared origins.
+- Run-scoped tool restrictions (`start.tool_allowlist`, capability
+  `run_scoped_tools_v1`): tool visibility and invocation are fenced to the
+  admitted allowlist for the whole run, including planner task spawns and
+  deterministic-planner children. Allowlists are enforced on resolved tool
+  names; an empty child allowlist is rejected rather than widened.
+
+### Fixed
+
+- Discovered model tool aliases are activated, and legacy discovery keeps
+  working through catalog wrappers.
+- Credentialed MCP discovery admits the source owner, and shared discovery is
+  preserved after a governed caller is refused.
+- Empty upstream LLM completions are rejected explicitly with a canonical
+  failure event; they no longer trigger provider failover, and cost
+  accounting is retained (including through structured-output handling).
+- Scaffolded projects pin the current Harbor module version.
+
+### Protocol
+
+- New additive capability `run_scoped_tools_v1`. Harbor Protocol version is
+  unchanged (`0.1.0`).
+
 ## [1.32.1] — 2026-09-24
 
 ### Fixed
