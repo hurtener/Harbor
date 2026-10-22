@@ -1,7 +1,7 @@
 # Broker-bound App operations
 
-Status: implementation candidate with real isolated external host/broker
-qualification; production activation is separate. This extends the existing phase 238 MCP Apps path and the existing
+Status: implementation candidate; external host/broker acceptance and production
+activation remain separate. This extends the existing phase 238 MCP Apps path and the existing
 signed-capability token exchange. It creates no issuer, permission store, planner
 capability, browser credential channel, or alternate MCP transport.
 
@@ -109,6 +109,4 @@ must remain disabled there. No production activation is part of this candidate.
 - `TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect`: actual MCP SDK and HTTP
   transport, real token-exchange driver, exact integer input and no effect retry.
 
-These are local runtime tests, not external product acceptance or hosted CI.
-The separate real-service consumer qualification is recorded in
-[the candidate review](../notes/app-operation-review.md#external-consumer-qualification--2026-10-07).
+These are local runtime tests; external product acceptance remains required.

@@ -33,17 +33,30 @@ function errorResponse(status: number, code: string, message: string): Response 
 }
 
 describe('HarborClient namespace dispatch', () => {
+	it('preserves omitted, empty, and populated run tool fences on start', async () => {
+		const fetchImpl = vi.fn(async () => okResponse({ task_id: 'task', reused: false, protocol_version: '0.1.0', tool_allowlist_applied: true }));
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.control.start('summarize');
+		await client.control.start('summarize', { toolAllowlist: [] });
+		const accepted = await client.control.start('summarize', { toolAllowlist: ['read_document'] });
+		const bodies = fetchImpl.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+		expect(bodies[0].tool_allowlist).toBeUndefined();
+		expect(bodies[1].tool_allowlist).toEqual([]);
+		expect(bodies[2].tool_allowlist).toEqual(['read_document']);
+		expect(accepted.tool_allowlist_applied).toBe(true);
+	});
+
  it('carries an optional App operation selector on existing resource and callback methods', async () => {
   const fetchImpl = vi.fn(async () => okResponse({}));
   const client = new HarborClient({ connection: CONNECTION, fetchImpl });
   const reference = 'a'.repeat(64);
-  await client.mcp.servers.readResource('server', 'ui://report', 'agent', true, reference);
-  await client.mcp.apps.callTool('server', 'server_save', { id: 'target' }, 'agent', undefined, 'ui://report', 'fresh-admission', reference);
+  await client.mcp.servers.readResource('server', 'ui://workspace', 'agent', true, reference);
+  await client.mcp.apps.callTool('server', 'server_save', { id: 'target' }, 'agent', undefined, 'ui://workspace', 'fresh-admission', reference);
   const bodies = fetchImpl.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
   expect(bodies[0]).toMatchObject({ app_operation: reference, request_render_admission: true });
   expect(bodies[1]).toMatchObject({ app_operation: reference, render_admission: 'fresh-admission', arguments: { id: 'target' } });
   expect(bodies[1].binding).toBeUndefined();
-  await client.mcp.servers.readResource('server', 'ui://report');
+  await client.mcp.servers.readResource('server', 'ui://workspace');
   const last = fetchImpl.mock.calls[2] as unknown as [string, RequestInit];
   expect(JSON.parse(last[1].body as string).app_operation).toBeUndefined();
  });

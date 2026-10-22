@@ -3,6 +3,7 @@ package output_test
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/llm"
@@ -87,6 +88,32 @@ func TestDowngrade_ReportsNonSchemaErrorAttempt(t *testing.T) {
 	}
 	if !approxUSD(total, 0.07) {
 		t.Fatalf("tap total = %v, want 0.07", total)
+	}
+}
+
+func TestDowngrade_EmptyCompletionPreservesResponseAndAccountsOnce(t *testing.T) {
+	t.Parallel()
+	bus := testBus(t)
+	original := llm.CompleteResponse{
+		FinishReason: "length",
+		Usage:        llm.Usage{ReportPresent: true, TotalTokens: 17},
+		Cost:         llm.Cost{ReportPresent: true, TotalCost: 0.07},
+	}
+	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
+		return original, fmt.Errorf("provider: %w", llm.ErrEmptyCompletion)
+	})
+	client := output.Wrap(rec, downgradeProfile(), llm.Deps{Bus: bus})
+
+	ctx, tap := llm.ContextWithAttemptCostTap(ctxWithIdentity(t))
+	resp, err := client.Complete(ctx, sampleRequest("m", llm.FormatJSONSchema))
+	if !errors.Is(err, llm.ErrEmptyCompletion) {
+		t.Fatalf("err = %v, want empty completion", err)
+	}
+	if !reflect.DeepEqual(resp, original) {
+		t.Fatalf("response accounting changed: got %+v, want %+v", resp, original)
+	}
+	if total, n := tap.Drain(); total != 0 || n != 0 {
+		t.Fatalf("tap = (%v, %d), want no duplicate accounting", total, n)
 	}
 }
 

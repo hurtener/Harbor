@@ -32,7 +32,7 @@ func TestArgumentsDigest_CanonicalAndExact(t *testing.T) {
 
 func TestBinding_ActualDispatchConfinement(t *testing.T) {
 	ref := strings.Repeat("a", 64)
-	ctx, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://report", "generation", "save", json.RawMessage(`{"n":9007199254740993}`))
+	ctx, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://workspace", "generation", "save", json.RawMessage(`{"n":9007199254740993}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,22 +56,22 @@ func TestBinding_ActualDispatchConfinement(t *testing.T) {
 	if err := b.CheckCall("server", "save", args); !errors.Is(err, appoperation.ErrInvalid) {
 		t.Fatal("changed arguments allowed")
 	}
-	if err := b.CheckResource("server", "ui://report"); !errors.Is(err, appoperation.ErrInvalid) {
+	if err := b.CheckResource("server", "ui://workspace"); !errors.Is(err, appoperation.ErrInvalid) {
 		t.Fatal("tool used as resource")
 	}
-	readCtx, err := appoperation.WithRead(context.Background(), ref, "agent", "server", "ui://report")
+	readCtx, err := appoperation.WithRead(context.Background(), ref, "agent", "server", "ui://workspace")
 	if err != nil {
 		t.Fatal(err)
 	}
 	read, _ := appoperation.From(readCtx)
-	if err := read.CheckResource("server", "ui://report"); err != nil {
+	if err := read.CheckResource("server", "ui://workspace"); err != nil {
 		t.Fatal(err)
 	}
 	if err := read.CheckResource("server", "ui://other"); !errors.Is(err, appoperation.ErrInvalid) {
 		t.Fatal("resource retarget allowed")
 	}
 	for _, ref := range []string{"", strings.Repeat("A", 64), strings.Repeat("a", 65)} {
-		if _, err := appoperation.WithRead(context.Background(), ref, "agent", "server", "ui://report"); !errors.Is(err, appoperation.ErrInvalid) {
+		if _, err := appoperation.WithRead(context.Background(), ref, "agent", "server", "ui://workspace"); !errors.Is(err, appoperation.ErrInvalid) {
 			t.Fatal("bad selector accepted")
 		}
 	}
@@ -79,7 +79,7 @@ func TestBinding_ActualDispatchConfinement(t *testing.T) {
 
 func TestBinding_BoundsAndAcknowledgement(t *testing.T) {
 	ref := strings.Repeat("a", 64)
-	ctx, err := appoperation.WithRead(context.Background(), ref, "agent", "server", "ui://report")
+	ctx, err := appoperation.WithRead(context.Background(), ref, "agent", "server", "ui://workspace")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,14 +90,14 @@ func TestBinding_BoundsAndAcknowledgement(t *testing.T) {
 		t.Fatal("acknowledgement does not bind the resource")
 	}
 	for _, agent := range []string{"", strings.Repeat("a", 257), "agent\n", string([]byte{0xff})} {
-		if _, err := appoperation.WithRead(context.Background(), ref, agent, "server", "ui://report"); !errors.Is(err, appoperation.ErrInvalid) {
+		if _, err := appoperation.WithRead(context.Background(), ref, agent, "server", "ui://workspace"); !errors.Is(err, appoperation.ErrInvalid) {
 			t.Fatal("invalid agent admitted")
 		}
 	}
-	if _, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://report", "", "save", nil); !errors.Is(err, appoperation.ErrInvalid) {
+	if _, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://workspace", "", "save", nil); !errors.Is(err, appoperation.ErrInvalid) {
 		t.Fatal("missing generation admitted")
 	}
-	if _, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://report", "gen", "save", json.RawMessage("null")); !errors.Is(err, appoperation.ErrInvalid) {
+	if _, err := appoperation.WithCall(context.Background(), ref, "agent", "server", "ui://workspace", "gen", "save", json.RawMessage("null")); !errors.Is(err, appoperation.ErrInvalid) {
 		t.Fatal("invalid arguments admitted")
 	}
 	values, err := appoperation.DecodeArguments(json.RawMessage(`{"nested":[true,false,null,{"x":1.00}]}`))

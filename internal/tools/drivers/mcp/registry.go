@@ -2135,6 +2135,14 @@ func (r *Registry) ReadResourceWithMetadata(ctx context.Context, name, uri strin
 	if err := ctx.Err(); err != nil {
 		return ResourceRead{}, err
 	}
+	if IsUIResourceURI(uri) {
+		out.ResourceDomains, err = canonicalResourceDomains(out.ResourceDomains)
+		if err != nil {
+			return ResourceRead{}, err
+		}
+	} else {
+		out.ResourceDomains = nil
+	}
 	out.entry, out.generation, out.source = e, generation, name
 	if err := r.CheckResourceRead(ctx, out); err != nil {
 		return ResourceRead{}, err

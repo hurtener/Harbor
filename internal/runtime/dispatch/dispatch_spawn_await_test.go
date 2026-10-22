@@ -120,7 +120,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	reg := mkSpawnAwaitTestTaskRegistry(t, bus)
 	cat := tools.NewCatalog()
 	called := 0
-	for _, name := range []string{"read_summary", "write_report"} {
+	for _, name := range []string{"read_summary", "write_document"} {
 		name := name
 		if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: name}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 			called++
@@ -133,7 +133,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	ctx := spawnAwaitIDCtx(t)
 	spawnParent := func(allowed *[]string) (tasks.TaskHandle, planner.RunContext) {
 		t.Helper()
-		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: dispatchTestID}, Kind: tasks.KindForeground, Query: "report discussion", ToolAllowlist: allowed})
+		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: dispatchTestID}, Kind: tasks.KindForeground, Query: "document discussion", ToolAllowlist: allowed})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,13 +151,13 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	zero := []string{}
 	_, zeroRun := spawnParent(&zero)
 	before := countSpawnAwaitTasks(t, reg)
-	if _, _, err := exec.ExecuteDecision(ctx, zeroRun, planner.SpawnTask{Kind: tasks.KindBackground, Spec: planner.SpawnSpec{Query: "invoke write_report"}}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
+	if _, _, err := exec.ExecuteDecision(ctx, zeroRun, planner.SpawnTask{Kind: tasks.KindBackground, Spec: planner.SpawnSpec{Query: "invoke write_document"}}); !errors.Is(err, steering.ErrDecisionShapeUnsupported) {
 		t.Fatalf("zero-tool parent spawned: %v", err)
 	}
 	if got := countSpawnAwaitTasks(t, reg); got != before {
 		t.Fatalf("zero-tool parent registered child: %d -> %d", before, got)
 	}
-	if _, _, err := exec.ExecuteDecision(ctx, zeroRun, planner.CallTool{Tool: "write_report", Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) || called != 0 {
+	if _, _, err := exec.ExecuteDecision(ctx, zeroRun, planner.CallTool{Tool: "write_document", Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) || called != 0 {
 		t.Fatalf("zero-tool parent invoked provider: called=%d err=%v", called, err)
 	}
 	allowed := []string{"read_summary"}
@@ -177,7 +177,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	childRun := rcFor(childID, cat)
 	childRun.ToolAllowlist = child.ToolAllowlist
 	childRun.Catalog = tools.NewAllowlistView(childRun.Catalog, *child.ToolAllowlist)
-	if _, _, err := exec.ExecuteDecision(ctx, childRun, planner.CallTool{Tool: "write_report", Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) || called != 0 {
+	if _, _, err := exec.ExecuteDecision(ctx, childRun, planner.CallTool{Tool: "write_document", Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) || called != 0 {
 		t.Fatalf("child invoked forbidden provider: called=%d err=%v", called, err)
 	}
 	if _, _, err := exec.ExecuteDecision(ctx, childRun, planner.CallTool{Tool: "read_summary", Args: json.RawMessage(`{}`)}); err != nil || called != 1 {

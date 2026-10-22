@@ -112,8 +112,6 @@ CANONICAL_ERROR_CODES=(
     CodeUnknownMethod
     CodeNotFound
     CodeRestartUnavailable
-    CodeRetainedContextUnsettled
-    CodeRetainedContextUnavailable
     CodeRuntimeError
     CodeAuthRejected
     CodeIdentityScopeRequired

@@ -72,7 +72,7 @@ func writeAppToken(t *testing.T, w http.ResponseWriter, r *http.Request, expires
 
 func appOperationContext(t *testing.T, ctx context.Context, ref string) context.Context {
 	t.Helper()
-	ctx, err := appoperation.WithCall(ctx, ref, "agent-signed", "server", "ui://report", "generation", "save", json.RawMessage(`{"id":"target"}`))
+	ctx, err := appoperation.WithCall(ctx, ref, "agent-signed", "server", "ui://workspace", "generation", "save", json.RawMessage(`{"id":"target"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,10 +251,10 @@ func TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect(t *testing.T) {
 			}
 			return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "saved"}}}, nil
 		})
-	server.AddResource(&mcpsdk.Resource{URI: "ui://report", Name: "report", MIMEType: "text/html"},
+	server.AddResource(&mcpsdk.Resource{URI: "ui://workspace", Name: "workspace", MIMEType: "text/html"},
 		func(context.Context, *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
 			reads.Add(1)
-			return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{{URI: "ui://report", MIMEType: "text/html", Text: "<html>report</html>"}}}, nil
+			return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{{URI: "ui://workspace", MIMEType: "text/html", Text: "<html>workspace</html>"}}}, nil
 		})
 	handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, nil)
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +337,7 @@ func TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect(t *testing.T) {
 		t.Fatal("tool missing")
 	}
 	args := json.RawMessage(`{"n":9007199254740993}`)
-	callCtx, err := appoperation.WithCall(ctx, strings.Repeat("a", 64), "agent-signed", "server", "ui://report", "generation", "server_save", args)
+	callCtx, err := appoperation.WithCall(ctx, strings.Repeat("a", 64), "agent-signed", "server", "ui://workspace", "generation", "server_save", args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,11 +353,11 @@ func TestAppOperation_RealMCPBrokerDispatchAndUnknownEffect(t *testing.T) {
 	if toolCalls.Load() != 1 || exchanges.Load() != 1 {
 		t.Fatal("changed input reached broker/provider")
 	}
-	readCtx, err := appoperation.WithRead(ctx, strings.Repeat("b", 64), "agent-signed", "server", "ui://report")
+	readCtx, err := appoperation.WithRead(ctx, strings.Repeat("b", 64), "agent-signed", "server", "ui://workspace")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := p.ReadResource(readCtx, "ui://report"); err != nil {
+	if _, _, err := p.ReadResource(readCtx, "ui://workspace"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := p.ReadResource(readCtx, "ui://other"); err == nil {

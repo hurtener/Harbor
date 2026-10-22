@@ -140,12 +140,47 @@ func TestProvider_AppResourceMetadata_ActualSDK(t *testing.T) {
 
 type replacingResourceProvider struct {
 	*stubProvider
-	after func()
+	after   func()
+	domains []string
 }
 
 func (p *replacingResourceProvider) ReadResourceWithMetadata(context.Context, string) (ResourceRead, error) {
-	p.after()
-	return ResourceRead{Content: []byte("old"), ResourceDomains: []string{"https://assets.example.com"}, ProviderOrigin: "https://self.example.com"}, nil
+	if p.after != nil {
+		p.after()
+	}
+	return ResourceRead{Content: []byte("old"), ResourceDomains: p.domains, ProviderOrigin: "https://self.example.com"}, nil
+}
+
+func TestRegistry_AppResourceMetadata_ValidatesEmbedderProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		domains []string
+		want    []string
+		bad     bool
+	}{
+		{name: "wildcard", domains: []string{"https://*.example.com"}, bad: true},
+		{name: "private_host", domains: []string{"https://localhost"}, bad: true},
+		{name: "valid_deduped", domains: []string{"https://assets.example.com", "https://assets.example.com"}, want: []string{"https://assets.example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := appsIdentityCtx(t)
+			reg := NewRegistry()
+			provider := &replacingResourceProvider{stubProvider: &stubProvider{id: "metadata"}, domains: tc.domains}
+			if err := reg.Register(ctx, ServerRegistration{Provider: provider, Transport: string(TransportStdio)}); err != nil {
+				t.Fatal(err)
+			}
+			read, err := reg.ReadResourceWithMetadata(ctx, "metadata", "ui://workspace/main")
+			if tc.bad {
+				if !errors.Is(err, ErrResourceMetadata) {
+					t.Fatalf("invalid embedder CSP accepted: %v", err)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(read.ResourceDomains, tc.want) || read.ProviderOrigin != "" {
+				t.Fatalf("embedder projection %+v: %v", read, err)
+			}
+		})
+	}
 }
 
 func TestRegistry_AppResourceMetadata_CurrentIdentityAndOrigin(t *testing.T) {

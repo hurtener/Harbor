@@ -314,6 +314,16 @@ Response is the flat `StartResponse`:
 
 `reused` is `true` only when you supplied an `idempotency_key` that matched an existing task; `protocol_version` lets you detect a version skew.
 
+For a task that may use only selected tools, negotiate `run_scoped_tools_v1`
+on `runtime.info`, then send `tool_allowlist` with physical catalog names on
+`control.start`. For example, `"tool_allowlist":["read_document"]` permits
+that tool if the current identity and agent configuration already authorize it.
+An explicit `[]` closes tool access, while omission preserves ordinary tool
+visibility. Check the response's `tool_allowlist_applied:true` acknowledgment;
+an older runtime may ignore an unknown request member. The restriction also
+applies to discovered tools and planner-spawned child tasks. A retry using the
+same idempotency key must keep the exact list.
+
 To make a task return a **schema-conforming answer**, add the optional `output_schema` field — a JSON-Schema document the runtime validates the task's terminal answer against. On success the completed task's envelope carries a validated `answer_payload` alongside the plain `answer` string, readable via `tasks.get`'s `result_inline` (and via a parent run's AwaitTask observation). An empty, non-compiling, or over-cap (64 KiB) schema is rejected at the edge with a `400 {"code": "invalid_request"}` envelope before any task spawns; a schema-invalid answer after the runtime's correction budget fails the task loud with the `output_invalid` error code — never a schemaless success. A schema-constrained task suppresses assistant token deltas on the event stream (a validate-and-retry loop cannot retract streamed tokens), so the answer arrives once, on completion. Omit the field for the default schemaless behaviour.
 
 ```bash

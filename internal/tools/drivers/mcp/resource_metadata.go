@@ -120,6 +120,15 @@ func resourceDomains(meta map[string]any) ([]string, error) {
 	default:
 		return nil, ErrResourceMetadata
 	}
+	return canonicalResourceDomains(values)
+}
+
+// canonicalResourceDomains applies the same CSP admission to both wire
+// metadata and an embedder's direct ResourceRead projection.
+func canonicalResourceDomains(values []string) ([]string, error) {
+	if values == nil {
+		return nil, nil
+	}
 	if len(values) > 32 {
 		return nil, ErrResourceMetadata
 	}

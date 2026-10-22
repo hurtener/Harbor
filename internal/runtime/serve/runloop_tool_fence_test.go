@@ -16,7 +16,7 @@ import (
 func TestRunLoopDriver_ClosedTaskToolFenceReachesPlanner(t *testing.T) {
 	env := newFailDriverEnv(t)
 	cat := tools.NewCatalog()
-	if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "write_report"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+	if err := cat.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "write_document"}, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 		return tools.ToolResult{Value: "unused"}, nil
 	}}); err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestRunLoopDriver_ClosedTaskToolFenceReachesPlanner(t *testing.T) {
 			if rc.ToolAllowlist == nil || len(*rc.ToolAllowlist) != 0 {
 				t.Errorf("closed task tool policy was not passed to planner: %v", rc.ToolAllowlist)
 			}
-			if _, ok := rc.Catalog.Resolve("write_report"); ok {
+			if _, ok := rc.Catalog.Resolve("write_document"); ok {
 				t.Error("closed task planner resolved a registered tool")
 			}
 			observed <- struct{}{}
@@ -40,7 +40,7 @@ func TestRunLoopDriver_ClosedTaskToolFenceReachesPlanner(t *testing.T) {
 	}
 	q := identity.Quadruple{Identity: runLoopDriverTestID}
 	closed := []string{}
-	h, err := env.reg.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground, Query: "discuss report", ToolAllowlist: &closed})
+	h, err := env.reg.Spawn(ctx, tasks.SpawnRequest{Identity: q, Kind: tasks.KindForeground, Query: "discuss document", ToolAllowlist: &closed})
 	if err != nil {
 		t.Fatal(err)
 	}

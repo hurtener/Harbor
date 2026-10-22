@@ -14,7 +14,7 @@ import (
 func TestStartRunToolAllowlistIsDurableAndCannotChangeOnReplay(t *testing.T) {
 	fx := newSurfaceFixture(t)
 	zero := []string{}
-	req := &types.StartRequest{Identity: types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"}, Query: "Discuss the report", IdempotencyKey: "read-only", ToolAllowlist: &zero}
+	req := &types.StartRequest{Identity: types.IdentityScope{Tenant: "tenant-a", User: "user-1", Session: "session-x"}, Query: "Discuss the document", IdempotencyKey: "read-only", ToolAllowlist: &zero}
 	first, err := fx.surface.Dispatch(context.Background(), methods.MethodStart, req)
 	if err != nil {
 		t.Fatal(err)

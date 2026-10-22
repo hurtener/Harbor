@@ -386,13 +386,13 @@ func TestExecutor_CallTool_GuessedNameCannotBypassRunCatalog(t *testing.T) {
 func TestExecutor_CallTool_RunAllowlistFencesActualInvocation(t *testing.T) {
 	cat := tools.NewCatalog()
 	registerEcho(t, cat, "read_summary")
-	registerEcho(t, cat, "write_report")
+	registerEcho(t, cat, "write_document")
 	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
 	q := dispatchTestQuad("r-plan-only")
 	base := tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID})
 	view := tools.NewAllowlistView(base, []string{"read_summary"})
 	rc := planner.RunContext{Quadruple: q, Catalog: view}
-	if _, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, planner.CallTool{Tool: "write_report", Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) {
+	if _, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, planner.CallTool{Tool: "write_document", Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) {
 		t.Fatalf("write execution escaped run allowlist: %v", err)
 	}
 	if _, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, planner.CallTool{Tool: "read_summary", Args: json.RawMessage(`{}`)}); err != nil {

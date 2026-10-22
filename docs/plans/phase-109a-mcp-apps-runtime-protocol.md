@@ -161,10 +161,10 @@ No new runtime-internal Go surface is exported to the Console; the Console reads
 - [ ] If new vocabulary: glossary updated (`MCP App`, `ui:// resource` — coordinator files the canonical entries)
 - [ ] If a brief finding was departed from: justified above (the 85g "runtime unchanged" departure) + decisions.md entry filed (D-172 / D-173, by coordinator)
 
-## G01 bounded resource CSP projection (2026-10-17)
+## Bounded resource CSP projection
 
-The first external host consumer now needs the existing successful
-`mcp.servers.read_resource` DTO to retain standard passive-resource declarations.
+The existing successful `mcp.servers.read_resource` DTO retains standard
+passive-resource declarations.
 The official Go MCP SDK `ResourceContents.Meta` is the source of
 `_meta.ui.csp.resourceDomains`; the outer result `_meta`, HTML, tool arguments and
 other returned resources cannot supply the declaration. The installed MCP Apps
@@ -201,8 +201,8 @@ Focused gates cover actual official-SDK resource replies through the admitted
 Protocol DTO, missing/malformed/oversized/wrong-resource declarations, origin
 sanitization, cross-user/tenant/agent denial, late source withdrawal and agent
 retirement, current-provider replacement and 128-session reuse under race.
-G01 signed-in consumer/media live acceptance and the full release preflight are
-separate gatekeeper work; this native projection alone closes no product journey.
+Signed-in consumer/media acceptance and the full release preflight remain
+separate gates.
 
 ### Same-read fence through final admission
 

@@ -111,6 +111,8 @@ type AllowlistView struct {
 	names map[string]struct{}
 }
 
+// NewAllowlistView narrows inner to the named physical catalog tools for one
+// run. The names are copied, so caller mutation cannot widen the view.
 func NewAllowlistView(inner PlannerCatalogView, names []string) AllowlistView {
 	allowed := make(map[string]struct{}, len(names))
 	for _, name := range names {
@@ -133,10 +135,16 @@ func (v AllowlistView) DiscoveryTools() ([]Tool, bool) {
 }
 
 func (v AllowlistView) Resolve(name string) (Tool, bool) {
-	if _, ok := v.names[name]; !ok {
+	tool, found := v.inner.Resolve(name)
+	if !found {
 		return Tool{}, false
 	}
-	return v.inner.Resolve(name)
+	// Inner views may translate a legacy alias to a physical catalog name.
+	// The run fence is over that resolved identity, not the caller's spelling.
+	if _, ok := v.names[tool.Name]; !ok {
+		return Tool{}, false
+	}
+	return tool, true
 }
 
 func (v AllowlistView) List() []Tool {

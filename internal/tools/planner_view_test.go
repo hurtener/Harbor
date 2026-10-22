@@ -81,6 +81,36 @@ func TestAllowlistViewNarrowsListAndResolve(t *testing.T) {
 	}
 }
 
+type allowlistAliasView struct{ PlannerCatalogView }
+
+func (v allowlistAliasView) Resolve(name string) (Tool, bool) {
+	if name == "legacy_write" {
+		name = "physical_write"
+	}
+	return v.PlannerCatalogView.Resolve(name)
+}
+
+func TestAllowlistView_ResolvesAliasesAgainstPhysicalName(t *testing.T) {
+	cat := NewCatalog()
+	if err := cat.Register(ToolDescriptor{Tool: Tool{Name: "physical_write"}, Invoke: func(context.Context, json.RawMessage) (ToolResult, error) {
+		return ToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	base := allowlistAliasView{NewPlannerView(cat, CatalogFilter{})}
+	aliasOnly := NewAllowlistView(base, []string{"legacy_write"})
+	if _, ok := aliasOnly.Resolve("legacy_write"); ok {
+		t.Fatal("legacy alias widened the run fence to its physical tool")
+	}
+	if got := aliasOnly.List(); len(got) != 0 {
+		t.Fatalf("alias-only fence exposed physical tool: %v", got)
+	}
+	physical := NewAllowlistView(base, []string{"physical_write"})
+	if tool, ok := physical.Resolve("legacy_write"); !ok || tool.Name != "physical_write" {
+		t.Fatalf("physical fence lost safe legacy resolution: (%+v, %v)", tool, ok)
+	}
+}
+
 func btoi(v bool) int {
 	if v {
 		return 1

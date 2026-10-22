@@ -97,11 +97,11 @@ func TestGovernedMintRefusalRequiresExactTrustedBrokerProof(t *testing.T) {
 }
 
 func TestGovernedMintRefusalPreservesSharedSourceAndBoundResource(t *testing.T) {
-	const resource = "ui://retained/report"
+	const resource = "ui://retained/workspace"
 	var upstreamFailure atomic.Bool
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "governed-fixture", Version: "v0"}, nil)
 	server.AddTool(&mcpsdk.Tool{Name: "metadata", InputSchema: map[string]any{"type": "object"}, Meta: mcpsdk.Meta{"ui": map[string]any{"visibility": []string{"app"}}}}, nil)
-	server.AddResource(&mcpsdk.Resource{URI: resource, Name: "report", MIMEType: "text/html"}, func(context.Context, *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+	server.AddResource(&mcpsdk.Resource{URI: resource, Name: "workspace", MIMEType: "text/html"}, func(context.Context, *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
 		return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{{URI: resource, MIMEType: "text/html", Text: "<html>retained</html>"}}}, nil
 	})
 	handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, nil)

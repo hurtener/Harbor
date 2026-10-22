@@ -107,7 +107,7 @@ func discoveryAliasView(cat tools.ToolCatalog, q identity.Quadruple) tools.Plann
 
 func TestDiscoveryAliases_SearchHarvestNextDeclaration(t *testing.T) {
 	for _, source := range []string{"short", "source-" + strings.Repeat("a", 32)} {
-		for _, verb := range []string{"reporting_view", "reporting_authoring_create_v1"} {
+		for _, verb := range []string{"document_view", "document_authoring_create_v1"} {
 			for _, override := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/override=%t", source, verb, override), func(t *testing.T) {
 					cat := discoveryAliasCatalog(t)

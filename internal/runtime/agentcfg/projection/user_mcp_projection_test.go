@@ -74,7 +74,7 @@ func TestActivePlannerCatalogView_UserMCPDesiredPairsAreIdentityScoped(t *testin
 	// Deferred discovery must pass through the owner view as well as prompt List.
 	for _, source := range []string{"srvA", "srvB"} {
 		if err := cat.Register(tools.ToolDescriptor{
-			Tool: tools.Tool{Name: source + "_reporting_authoring_create_document_version", Source: tools.ToolSourceID(source), Loading: tools.LoadingDeferred},
+			Tool: tools.Tool{Name: source + "_document_authoring_create_version", Source: tools.ToolSourceID(source), Loading: tools.LoadingDeferred},
 			Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 				t.Error("discovery invoked a domain handler")
 				return tools.ToolResult{}, nil

@@ -4708,6 +4708,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `tool_allowlist` | `*[]string` | optional (`omitempty`) |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `external_grant` | `jsontext.Value` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
@@ -4728,6 +4729,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `tool_allowlist_applied` | `*bool` | optional (`omitempty`) |
 | `task_id` | `string` |  |
 | `reused` | `bool` |  |
 | `protocol_version` | `string` |  |

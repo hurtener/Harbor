@@ -269,9 +269,8 @@ decision, or HA.
 The optional operation selector on the existing read/call methods is specified
 in [App operation v1](../contracts/app-operation-v1.md). It uses the existing
 signed-capability broker exchange and fresh render admission; no new phase or
-planner capability is introduced. The external host/broker is the first consumer;
-its canonical policy and real product journeys passed on isolated local services.
-Production activation remains a separate downstream release decision.
+planner capability is introduced. External host/broker acceptance and production
+activation remain separate downstream requirements.
 
 Acceptance: exact admitted identity/source/resource/tool/input; no legacy
 admission fallback; exact number preservation; strict broker acknowledgement and
@@ -280,7 +279,7 @@ exchanges despite a warm ordinary cache; cancellation isolation; actual MCP SDK
 HTTP dispatch; zero callback retry after uncertain effect. The concrete named
 tests and required external activation proof are linked in the contract. Run the
 focused race suites, Protocol generation/lockstep, Console client checks and live
-preflight locally. Hosted CI is unavailable due to account billing for this work.
+preflight locally.
 
 The operation-bound opt-in resource response also returns
 `app_operation_generation`, the exact fingerprint sealed into its available

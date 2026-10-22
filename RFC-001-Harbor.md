@@ -1731,8 +1731,7 @@ bounded credential from current policy, and bypass shared caching/singleflight.
 App-bound callbacks do not automatically retry unknown effects. See
 [App operation v1](docs/contracts/app-operation-v1.md) for the wire contract,
 local acceptance and activation requirements. The external host/broker lane
-requires its own product acceptance; the candidate review records a completed
-isolated local qualification. Production activation remains separate.
+requires its own product acceptance before production activation.
 
 MCP App tool-context records have an explicit session-lifetime contract by
 default: they survive session reopen and are removed by session erasure.
@@ -2891,6 +2890,18 @@ legacy behavior. Supplied values override runtime/agent/virtual-agent defaults,
 while governance and provider capability checks still apply. Changed settings
 with one idempotency key conflict. The advertised capability is
 `run_llm_settings_v1`; Protocol remains `0.1.0`.
+
+### Run-scoped tool restriction
+
+`control.start` may carry `tool_allowlist`, an array of physical catalog tool
+names that narrows the already authorized tool set for this task. An omitted
+field keeps ordinary visibility; a present empty array closes tool access.
+The runtime applies the same fence to prompt listing, deferred discovery,
+invocation, completion hooks, and planner-spawned child tasks. Aliases resolve
+to physical names before the fence is checked, so an alias cannot authorize a
+different tool. A changed allowlist under one idempotency key conflicts. The
+response acknowledges an accepted restriction with `tool_allowlist_applied`,
+and `runtime.info` advertises `run_scoped_tools_v1` when supported.
 
 The operation-bound opt-in resource response also returns
 `app_operation_generation`, the exact fingerprint sealed into its available

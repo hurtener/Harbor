@@ -144,6 +144,7 @@ export interface StartResponse {
 	task_id: string;
 	reused: boolean;
 	protocol_version: string;
+	tool_allowlist_applied?: boolean;
 }
 
 /** Opaque external provider-route selector accepted by `control.start`. */
@@ -900,10 +901,13 @@ export class ControlNamespace {
 			 */
 			providerRoute?: LLMProviderRouteSelector;
 			llmSettings?: RunLLMSettings;
+			/** Physical catalog tool names allowed for this run; [] closes tool access. */
+			toolAllowlist?: string[];
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
 		if (opts.llmSettings !== undefined) body.llm_settings = opts.llmSettings;
+		if (opts.toolAllowlist !== undefined) body.tool_allowlist = opts.toolAllowlist;
 		if (opts.description !== undefined) {
 			body.description = opts.description;
 		}
