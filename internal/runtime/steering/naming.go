@@ -321,7 +321,9 @@ func (rl *RunLoop) fireNaming(runCtx context.Context, spec RunSpec, q identity.Q
 
 // classifyNamingErr maps a naming Complete error to a stable, low-cardinality,
 // redaction-safe class. A governance PreCall block (budget / rate / max-tokens)
-// is governance_blocked; a deadline is timeout; everything else is llm_error.
+// is governance_blocked; a deadline is timeout; a provider completion with no
+// answer is empty_title (the same outcome as an unusable title); everything
+// else is llm_error.
 // The raw error message is never used — it may quote caller data (§7).
 func classifyNamingErr(err error) string {
 	switch {
@@ -331,6 +333,8 @@ func classifyNamingErr(err error) string {
 		errors.Is(err, governance.ErrRateLimited),
 		errors.Is(err, governance.ErrMaxTokensExceeded):
 		return namingClassGovernanceBlocked
+	case errors.Is(err, llm.ErrEmptyCompletion):
+		return namingClassEmptyTitle
 	case errors.Is(err, context.DeadlineExceeded):
 		return namingClassTimeout
 	case errors.Is(err, context.Canceled):
