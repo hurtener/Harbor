@@ -314,6 +314,16 @@ Response is the flat `StartResponse`:
 
 `reused` is `true` only when you supplied an `idempotency_key` that matched an existing task; `protocol_version` lets you detect a version skew.
 
+For a task that may use only selected tools, negotiate `run_scoped_tools_v1`
+on `runtime.info`, then send `tool_allowlist` with physical catalog names on
+`control.start`. For example, `"tool_allowlist":["read_document"]` permits
+that tool if the current identity and agent configuration already authorize it.
+An explicit `[]` closes tool access, while omission preserves ordinary tool
+visibility. Check the response's `tool_allowlist_applied:true` acknowledgment;
+an older runtime may ignore an unknown request member. The restriction also
+applies to discovered tools and planner-spawned child tasks. A retry using the
+same idempotency key must keep the exact list.
+
 To make a task return a **schema-conforming answer**, add the optional `output_schema` field — a JSON-Schema document the runtime validates the task's terminal answer against. On success the completed task's envelope carries a validated `answer_payload` alongside the plain `answer` string, readable via `tasks.get`'s `result_inline` (and via a parent run's AwaitTask observation). An empty, non-compiling, or over-cap (64 KiB) schema is rejected at the edge with a `400 {"code": "invalid_request"}` envelope before any task spawns; a schema-invalid answer after the runtime's correction budget fails the task loud with the `output_invalid` error code — never a schemaless success. A schema-constrained task suppresses assistant token deltas on the event stream (a validate-and-retry loop cannot retract streamed tokens), so the answer arrives once, on completion. Omit the field for the default schemaless behaviour.
 
 ```bash
@@ -344,7 +354,18 @@ value as opaque host state and echo it as `agent_id` on
 Harbor resolves an omitted value to the runtime
 default for older clients, then applies the same signed `agent_reach` check
 before tenant-local resolution and credential/exposure use, so the echo is not
-trusted authority. `mcp.apps.tool_context` takes no agent id: its record is
+trusted authority. Successful `ui://` resource reads can include optional same-response
+`provider_origin` and `_meta.ui.csp.resourceDomains`. They describe the exact
+admitted resource/provider, not callback authority. Resource domains are bounded
+canonical public HTTPS origins (32, 2048 bytes each, 8 KiB total); recognized
+malformed/unsupported declarations refuse the read. Missing metadata, stdio and
+nonpublic provider origins stay absent. Never infer origins from document HTML or
+fetch another server descriptor to widen CSP. Keep the sandbox and require a
+fresh available render admission before using declarations for passive assets;
+never use them to permit scripts, connections or frames. Older runtimes omit
+these optional fields, so preserve the restrictive fallback.
+
+`mcp.apps.tool_context` takes no agent id: its record is
 already scoped to the verified tenant/user/session triple and it performs no
 agent-config or credential selection.
 
@@ -869,7 +890,7 @@ The per-server `mcp.servers.*` admin verbs gate on the `admin` scope claim, and 
 - `agent_config.set_mcp_discovery_origins` is **owner-scoped** to your `(tenant, agent_id)` and refuses `403 {"code": "scope_mismatch"}` — see §8's account of that verb. The two differ because that door carries an `agent_id` and this one does not.
 - A write whose audit event cannot be emitted is **reverted**, not left applied: you get `500 {"code": "runtime_error"}` naming the reverted-not-applied case, and the previous value stands.
 
-Reads are unaffected: `mcp.servers.list` / `get` / `resources` / `prompts` / `health`, and the control-plane `refresh_discovery` / `probe`, resolve by bare name across the deployment as they always have — a boot-declared server stays visible to every session.
+Boot-declared servers stay visible to every session. Tenant-owned sources require current signed agent reach and selection in the owning configuration; personal sources also require the owning user. The source-addressed `refresh_discovery` / `probe` calls use the exact returned server ID and carry that admitted registration's owner agent into credentialed discovery. An existing effective-agent selection must agree; neither the admin scope nor a boot invoking-agent attribution substitutes for signed reach or current configuration.
 
 ### 8c. Not clobbering another writer — `expected_content_hash`
 
@@ -1081,3 +1102,14 @@ key conflicts. A present bundle skips the legacy next-message slot. Omitted
 fields use runtime/agent defaults, an empty reasoning value requests provider
 defaults, and `off` disables thinking. No preference is saved and no restart is
 needed. Governance and selected-model support remain authoritative.
+
+## Broker-bound manual App operations (candidate)
+
+Trusted host integrations may use the optional `app_operation` selector on
+`mcp.servers.read_resource` and `mcp.apps.call_tool`, as specified in
+[App operation v1](../../contracts/app-operation-v1.md). The selector is not
+permission or a bearer. Keep it and runtime credentials outside the frame.
+Callbacks still require fresh render admission; the broker must acknowledge the
+exact binding and current policy. Unsupported brokers refuse. This candidate
+requires external integration acceptance before activation and does not alter
+ordinary credential caching or authorize a chat/planner fallback.

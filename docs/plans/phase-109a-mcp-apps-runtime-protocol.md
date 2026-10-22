@@ -160,3 +160,67 @@ No new runtime-internal Go surface is exported to the Console; the Console reads
 - [ ] **Integration test exists** (`test/integration/<topic>_test.go` or in-package adapter test): real MCP driver + real ArtifactStore on the seam, identity propagation asserted, ≥1 failure mode (missing-identity rejection AND unknown-uri error), runs under `-race`. Not N/A — `Dependencies` names shipped phases 28 / 85a / 84a.
 - [ ] If new vocabulary: glossary updated (`MCP App`, `ui:// resource` — coordinator files the canonical entries)
 - [ ] If a brief finding was departed from: justified above (the 85g "runtime unchanged" departure) + decisions.md entry filed (D-172 / D-173, by coordinator)
+
+## Bounded resource CSP projection
+
+The existing successful `mcp.servers.read_resource` DTO retains standard
+passive-resource declarations.
+The official Go MCP SDK `ResourceContents.Meta` is the source of
+`_meta.ui.csp.resourceDomains`; the outer result `_meta`, HTML, tool arguments and
+other returned resources cannot supply the declaration. The installed MCP Apps
+SDK 1.7.4 schema names `resourceDomains` as an optional string array.
+
+The read carries at most 32 canonical exact public HTTPS origins, 2048 UTF-8
+bytes each, with an 8 KiB recognized declaration budget. Wildcards, paths,
+queries, credentials, IP literals and local/nonpublic host syntax are unsupported;
+recognized malformed/oversized shapes fail with a typed resource-metadata error.
+Other metadata/CSP directives are omitted. No DNS lookup or public reachability
+claim is made. `provider_origin` is independently derived from the exact current
+registry entry, stripping endpoint path/query/fragment and default port; stdio,
+unknown/non-HTTPS/private endpoint syntax and credentialed URLs omit it.
+
+A single resource RPC supplies the document and metadata. The registry rechecks
+its opaque entry/generation snapshot, the accessor reuses current source
+attachment authority after I/O/offload, and the Protocol reuses the effective
+agent/reach gate after I/O. No endpoint, bearer, callback grant or new capability
+policy is introduced. Ordinary successful App reads may carry the new optional
+fields but still mint no callback authority. A host must require available fresh
+render admission and retain its sandbox before widening passive img/media CSP.
+The prior document's CSP remains a snapshot until teardown.
+
+Compatibility: existing provider `ReadResource` implementations remain source
+compatible; the real MCP provider supplies the richer result through an additive
+same-read method. Legacy embedders return absent resource declarations. Non-App
+resource reads retain the existing path and wire shape. Protocol version and
+method inventory are unchanged; generated wire manifests/reference and the
+Console mirror include the additive optional fields. Pre-change binaries omit
+them, so hosts must retain data/blob-only behavior rather than infer origins.
+No schema migration/configuration change or activation is part of this chunk.
+
+Focused gates cover actual official-SDK resource replies through the admitted
+Protocol DTO, missing/malformed/oversized/wrong-resource declarations, origin
+sanitization, cross-user/tenant/agent denial, late source withdrawal and agent
+retirement, current-provider replacement and 128-session reuse under race.
+Signed-in consumer/media acceptance and the full release preflight remain
+separate gates.
+
+### Same-read fence through final admission
+
+The accessor retains its original opaque registry entry/generation in a
+request-local final-check callback on the internal resource row, excluded from
+serialization. Protocol reuses current agent/source checks after admission I/O
+and checks that exact original entry and generation immediately before returning
+the response. An available admission must bind the read's original generation;
+an equal catalog digest on a replacement entry is insufficient. A changed tuple
+returns no document, origin metadata or admission and never rereads the resource.
+New metadata without its internal same-read fence fails closed. Legacy readers
+with absent metadata and the non-App interface remain compatible; wire types,
+methods and Protocol version are unchanged.
+
+The deterministic review reproduction is RED at the frozen prior source and
+GREEN after this correction. Committed race regressions cover changed/equal
+catalog replacement after accessor return, replacement/rediscovery/withdrawal/
+retirement during mint, current-source withdrawal in final resolution, mismatched
+admission generation, ordinary reads and a current admission verified against its
+actual sealed tuple. This narrow correction carries earlier generator/static
+proof unchanged; focused race/build evidence and live acceptance remain distinct.

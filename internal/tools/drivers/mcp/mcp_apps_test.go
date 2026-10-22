@@ -18,6 +18,13 @@ import (
 // Provider and a cleanup.
 func newAppsProvider(t *testing.T, uiBody string) *Provider {
 	t.Helper()
+	return newAppsProviderResult(t, func(_ context.Context, req *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+		return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{{URI: req.Params.URI, MIMEType: "text/html", Text: uiBody}}}, nil
+	})
+}
+
+func newAppsProviderResult(t *testing.T, read mcpsdk.ResourceHandler) *Provider {
+	t.Helper()
 	srv := mcpsdk.NewServer(
 		&mcpsdk.Implementation{Name: "harbor-apps-test-server", Version: "v0"},
 		&mcpsdk.ServerOptions{
@@ -32,13 +39,7 @@ func newAppsProvider(t *testing.T, uiBody string) *Provider {
 	)
 	srv.AddResource(
 		&mcpsdk.Resource{URI: "ui://app/main.html", Name: "main", MIMEType: "text/html"},
-		func(ctx context.Context, req *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
-			return &mcpsdk.ReadResourceResult{
-				Contents: []*mcpsdk.ResourceContents{
-					{URI: req.Params.URI, MIMEType: "text/html", Text: uiBody},
-				},
-			}, nil
-		},
+		read,
 	)
 
 	bus := newTestBus(t)

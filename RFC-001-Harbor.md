@@ -262,6 +262,20 @@ data-plane callbacks `mcp.servers.resources`, `mcp.servers.read_resource`, and
 an omitted Apps `agent_id` likewise resolves to the configured default so a
 v1.26.10 host remains compatible, while an omitted `tools.describe.agent_id`
 retains its distinct boot-effective projection and is not an agent choice.
+Successful MCP App resource reads may additionally carry bounded standard
+`_meta.ui.csp.resourceDomains` from the exact returned resource content item and
+`provider_origin`, a canonical public HTTPS origin projected from that same
+current admitted provider. Missing declarations stay absent. Only exact HTTPS
+origins are supported (32 entries, 2048 bytes per entry, 8 KiB recognized
+projection); malformed recognized declarations refuse the App read. Credentials,
+private/literal/local endpoints, arbitrary metadata and other CSP directives are
+not projected. This syntactic origin projection performs no DNS lookup and grants
+no callback rights. Hosts retain sandbox control and require current render
+admission before using declarations; existing mounted document CSP is a snapshot.
+Provider replacement, generation changes, effective-agent retirement and source
+withdrawal during the read refuse the result. Non-App resource behavior is
+unchanged; no extra catalog/metadata network request is introduced.
+
 Tenant-local configuration proves only
 that an agent can be selected; it never grants reach. Bearer-less carrier
 identity supplies no signed reach and therefore cannot use these methods.
@@ -1707,6 +1721,18 @@ generic capability framework, no persisted callback authority, no arbitrary
 origins, no provider exceptions, no hot registry, and no transcript
 impersonation.
 
+**Broker-bound manual App operations (D-486, implementation candidate).** An
+external trusted host may supply an opaque broker-owned operation selector on
+these existing resource/tool methods. It grants no authority. The runtime binds
+it to the admitted agent/source/resource and exact outgoing input; callbacks
+still require fresh render admission and the existing wrapped invocation. The
+signed-capability broker pull must acknowledge the complete binding, mint a
+bounded credential from current policy, and bypass shared caching/singleflight.
+App-bound callbacks do not automatically retry unknown effects. See
+[App operation v1](https://github.com/hurtener/Harbor/blob/main/docs/contracts/app-operation-v1.md) for the wire contract,
+local acceptance and activation requirements. The external host/broker lane
+requires its own product acceptance before production activation.
+
 MCP App tool-context records have an explicit session-lifetime contract by
 default: they survive session reopen and are removed by session erasure.
 `not_found` therefore means unknown or cross-identity unless a separately
@@ -2864,3 +2890,21 @@ legacy behavior. Supplied values override runtime/agent/virtual-agent defaults,
 while governance and provider capability checks still apply. Changed settings
 with one idempotency key conflict. The advertised capability is
 `run_llm_settings_v1`; Protocol remains `0.1.0`.
+
+### Run-scoped tool restriction
+
+`control.start` may carry `tool_allowlist`, an array of physical catalog tool
+names that narrows the already authorized tool set for this task. An omitted
+field keeps ordinary visibility; a present empty array closes tool access.
+The runtime applies the same fence to prompt listing, deferred discovery,
+invocation, completion hooks, and planner-spawned child tasks. Aliases resolve
+to physical names before the fence is checked, so an alias cannot authorize a
+different tool. A changed allowlist under one idempotency key conflicts. The
+response acknowledges an accepted restriction with `tool_allowlist_applied`,
+and `runtime.info` advertises `run_scoped_tools_v1` when supported.
+
+The operation-bound opt-in resource response also returns
+`app_operation_generation`, the exact fingerprint sealed into its available
+render admission. This lets a trusted host create an exact next-operation intent
+without decoding the sealed token. Ordinary reads and unavailable admissions omit
+it. The fingerprint is not authority; fresh sealed admission remains mandatory.

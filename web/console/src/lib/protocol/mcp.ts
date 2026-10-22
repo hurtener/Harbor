@@ -359,6 +359,15 @@ export interface RenderAdmission {
   availability: string;
 }
 
+export interface MCPAppResourceCSP {
+  resourceDomains: string[];
+}
+export interface MCPAppResourceUI {
+  csp: MCPAppResourceCSP;
+}
+export interface MCPAppResourceMeta {
+  ui: MCPAppResourceUI;
+}
 /**
  * `mcp.servers.read_resource` reply — mirrors `types.ReadMCPResourceResponse`.
  * EXACTLY ONE of `content` / `artifact_ref` is set: `content` carries the
@@ -366,6 +375,13 @@ export interface RenderAdmission {
  * by-reference stub at or above it.
  */
 export interface ReadMCPResourceResponse {
+  /** Same-read admitted public HTTPS provider origin; absent for stdio/nonpublic. */
+  provider_origin?: string;
+  /** Bounded standard resource metadata, not callback authority. */
+  _meta?: MCPAppResourceMeta;
+
+	/** Exact generation sealed into an operation-bound render admission; not authority. */
+	app_operation_generation?: string;
   /** Echoes the fetched resource URI. */
   resource_uri: string;
   /** The resource's declared media type. */

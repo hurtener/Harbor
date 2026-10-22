@@ -585,8 +585,8 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 				t.Fatalf("missing canonical capability %s", capability)
 			}
 		}
-		if n := len(prototypes.Capabilities()); n != 17 {
-			t.Errorf("canonical capability universe has %d entries, want 17", n)
+		if n := len(prototypes.Capabilities()); n != 18 {
+			t.Errorf("canonical capability universe has %d entries, want 18", n)
 		}
 	})
 

@@ -239,13 +239,45 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 	if err := a.gateSourceAttachment(ctx, tools.ToolSourceID(serverID)); err != nil {
 		return protocol.MCPResourceContent{}, err
 	}
-	content, mime, err := a.reg.ReadResource(ctx, serverID, resourceURI)
+	var content []byte
+	var mime string
+	var err error
+	var resource mcp.ResourceRead
+	if mcp.IsUIResourceURI(resourceURI) {
+		resource, err = a.reg.ReadResourceWithMetadata(ctx, serverID, resourceURI)
+		content, mime = resource.Content, resource.MIMEType
+	} else {
+		content, mime, err = a.reg.ReadResource(ctx, serverID, resourceURI)
+	}
 	if err != nil {
 		// Translate the driver's not-found sentinel into the Protocol's so the
 		// wire edge classifies by errors.Is (see markNotFound).
 		return protocol.MCPResourceContent{}, markNotFound(err)
 	}
-	out := protocol.MCPResourceContent{ResourceURI: resourceURI, MIMEType: mime}
+	out := protocol.MCPResourceContent{ResourceURI: resourceURI, MIMEType: mime,
+		ResourceDomains: resource.ResourceDomains, ProviderOrigin: resource.ProviderOrigin}
+	if mcp.IsUIResourceURI(resourceURI) {
+		// Keep the original opaque snapshot alive until Protocol finishes its
+		// later agent/admission I/O. This callback never rereads the resource or
+		// changes which entry/generation supplied the document and metadata.
+		out.FinalCheck = func(ctx context.Context, generation string) error {
+			if err := a.gateSourceAttachment(ctx, tools.ToolSourceID(serverID)); err != nil {
+				return err
+			}
+			if err := a.reg.CheckResourceReadAtGeneration(ctx, resource, generation); err != nil {
+				return fmt.Errorf("%w: mcpconsole: %w", protocol.ErrAccessorScopeDenied, err)
+			}
+			return nil
+		}
+	}
+	// Reuse current source/agent/capability policy after I/O before releasing
+	// an App document or any of its CSP metadata. Ordinary resource reads keep
+	// their existing behavior.
+	if mcp.IsUIResourceURI(resourceURI) {
+		if err := a.gateSourceAttachment(ctx, tools.ToolSourceID(serverID)); err != nil {
+			return protocol.MCPResourceContent{}, err
+		}
+	}
 	// A `ui://` App document is fetched only by the Console and rendered in
 	// a sandboxed iframe, so the ordinary inline-payload bound does not
 	// apply. It rides inline up to the larger App-document cap so
@@ -257,6 +289,11 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 	}
 	if len(content) < inlineCap {
 		out.Inline = content
+		if mcp.IsUIResourceURI(resourceURI) {
+			if err := a.reg.CheckResourceRead(ctx, resource); err != nil {
+				return protocol.MCPResourceContent{}, markNotFound(err)
+			}
+		}
 		return out, nil
 	}
 	row, offErr := a.offload(ctx, content, mime, resourceURI, resourceURI)
@@ -264,6 +301,14 @@ func (a *AppsAccessor) ReadResource(ctx context.Context, serverID, resourceURI s
 		return protocol.MCPResourceContent{}, offErr
 	}
 	out.Artifact = row
+	if mcp.IsUIResourceURI(resourceURI) {
+		if err := a.gateSourceAttachment(ctx, tools.ToolSourceID(serverID)); err != nil {
+			return protocol.MCPResourceContent{}, err
+		}
+		if err := a.reg.CheckResourceRead(ctx, resource); err != nil {
+			return protocol.MCPResourceContent{}, markNotFound(err)
+		}
+	}
 	return out, nil
 }
 

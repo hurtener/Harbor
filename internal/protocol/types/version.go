@@ -388,6 +388,8 @@ const (
 	CapLLMProviderCatalog Capability = "llm_provider_catalog"
 	// CapRunLLMSettings advertises atomic model and thinking settings on Start.
 	CapRunLLMSettings Capability = "run_llm_settings_v1"
+	// CapRunScopedTools advertises the enforced, durable start.tool_allowlist restriction.
+	CapRunScopedTools Capability = "run_scoped_tools_v1"
 
 	// CapLLMProviderRoute advertises that this runtime is booted with the
 	// optional grant-free provider-route resolver and can safely accept the
@@ -527,6 +529,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapLLMProviderRoute:              {},
 	CapLLMProviderRouteModelProfile:  {},
 	CapRunLLMSettings:                {},
+	CapRunScopedTools:                {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

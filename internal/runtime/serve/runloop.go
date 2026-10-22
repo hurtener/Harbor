@@ -1642,6 +1642,15 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		if virtualProfile != nil {
 			catalogView = tools.NewExclusionView(catalogView, virtualProfile.Overlay.PausedServers, virtualProfile.Overlay.DisabledTools)
 		}
+		if task.ToolAllowlist != nil {
+			catalogView = tools.NewAllowlistView(catalogView, *task.ToolAllowlist)
+		}
+	}
+	if task.ToolAllowlist != nil && catalogView == nil {
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: "run tool catalog unavailable"}); fErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed", slog.String("err", fErr.Error()))
+		}
+		return
 	}
 	if d.catalog != nil && d.skillsDirectory != nil {
 		allowed := make([]string, 0)
@@ -1905,6 +1914,20 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	// A run-scoped restriction also fences the trusted completion hook, whose
+	// ordinary dispatch deliberately resolves against the full catalog.
+	if task.ToolAllowlist != nil && completionHook != nil {
+		allowed := false
+		for _, name := range *task.ToolAllowlist {
+			if name == completionHook.Tool {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			completionHook = nil
+		}
+	}
 
 	// Resolve the effective session auto-naming spec once at run start
 	// (agent-config over yaml over off). A read error fails the run loudly
@@ -1931,6 +1954,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		Planner: d.planner,
 		Base: planner.RunContext{
 			Quadruple:            q,
+			ToolAllowlist:        task.ToolAllowlist,
 			ExternalGrant:        externalGrant,
 			Query:                task.Query,
 			Goal:                 task.Query,   // initial goal = user query; runtime REDIRECT may mutate

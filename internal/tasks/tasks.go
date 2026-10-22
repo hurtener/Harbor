@@ -268,6 +268,10 @@ type Task struct {
 	// run-start guard and the idempotency-equality byte compare. omitempty
 	// elides the empty slice so nil round-trips as nil.
 	OutputSchema json.RawMessage `json:",omitempty"`
+	// ToolAllowlist is a durable per-run restriction over the already
+	// authorized catalog. Nil means legacy unrestricted behavior; a present
+	// empty list allows no tools. No task can widen another task's catalog.
+	ToolAllowlist *[]string `json:",omitempty"`
 	// AgentID is the agent this task's run executes under when the
 	// caller NAMED one on the request that created the task. Empty means
 	// the caller named none and the run binds the runtime's configured
@@ -409,7 +413,8 @@ type SpawnRequest struct {
 	// Persisted onto `Task.OutputSchema`; folded into the task's content
 	// identity so a reused idempotency key with a different schema is a
 	// loud conflict. Nil is the common case.
-	OutputSchema json.RawMessage
+	OutputSchema  json.RawMessage
+	ToolAllowlist *[]string
 	// AgentID is the caller-named agent, already validated at the
 	// Protocol edge (the two-check rule) before the spawn — the registry
 	// does not re-validate it. Empty means the runtime's configured

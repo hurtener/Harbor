@@ -53,6 +53,11 @@ Closes #654 by giving every model-authored tool name one shared declaration proj
 
 - **Unit:** sanitization, shortening, collisions, unknown names.
 - **Integration:** planner declaration through builtin dispatch to the real catalog.
+  Real builtin `tool_search` results are harvested through the trajectory into
+  the next ReAct declaration, including shortened aliases and loading overrides.
+  Discovery resolves through current scope/exclusion filters and the shared name
+  projection; retained canonical names remain compatible without retargeting a
+  collision owner. Discovery alone invokes no domain handler.
 - **Conformance:** all model-authored builtin resolution paths share the projection.
 - **Concurrency / leak:** N≥100 projections/resolutions on one shared catalog.
 - **Performance:** `BenchmarkReActPlanner_NextStep_DeclaredTool` measures the

@@ -34,8 +34,9 @@ func TestMCPAppCallToolRequest_ServerIDIsHostDerived(t *testing.T) {
 	// server namespace, verified at dispatch, never trusted as supplied.
 	// RenderAdmission is the DISTINCT HA-56 render-admission authority —
 	// never the legacy Binding (a request supplying both is refused as
-	// ambiguous).
-	want := map[string]bool{"Identity": true, "AgentID": true, "ServerID": true, "Binding": true, "RenderAdmission": true, "ResourceURI": true, "Tool": true, "Arguments": true}
+	// ambiguous). AppOperation is an optional broker-owned selector, never
+	// authority; it additionally requires fresh render admission.
+	want := map[string]bool{"AppOperation": true, "Identity": true, "AgentID": true, "ServerID": true, "Binding": true, "RenderAdmission": true, "ResourceURI": true, "Tool": true, "Arguments": true}
 	got := make(map[string]bool, rt.NumField())
 	for i := range rt.NumField() {
 		got[rt.Field(i).Name] = true

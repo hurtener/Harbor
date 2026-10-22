@@ -339,14 +339,42 @@ func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool
 		return nil, tools.NewModelToolNameProjection(nil, nil)
 	}
 	candidates := rc.Catalog.List()
-	for _, name := range discovered {
-		if name == "" {
-			continue
+	if len(discovered) > 0 {
+		discoveryCandidates := candidates
+		complete := false
+		if discoveryView, ok := rc.Catalog.(interface{ DiscoveryTools() ([]tools.Tool, bool) }); ok {
+			discoveryCandidates, complete = discoveryView.DiscoveryTools()
 		}
-		if tool, ok := rc.Catalog.Resolve(name); ok {
-			candidates = append(candidates, tool)
+		discoveryNames := make([]string, 0, len(discoveryCandidates))
+		for _, tool := range discoveryCandidates {
+			discoveryNames = append(discoveryNames, tool.Name)
+		}
+		discoveryProjection := tools.NewModelToolNameProjectionWithReservedControls(discoveryNames)
+		for _, name := range discovered {
+			if name == "" {
+				continue
+			}
+			// Search observations contain declared aliases; retained successful calls
+			// contain canonical keys. Resolve aliases first so a raw collider cannot
+			// take the declaration's owner. Both forms use current permitted schemas.
+			catalogName, found := discoveryProjection.ResolveDeclared(name)
+			if !found {
+				catalogName = name
+			}
+			if tool, ok := rc.Catalog.Resolve(catalogName); ok {
+				// Current views can translate legacy canonical source names. Verify
+				// the resolved physical key survived the same discovery projection;
+				// a missing or dropped collider never becomes an alternate owner.
+				if complete {
+					if _, kept := discoveryProjection.DeclaredName(tool.Name); !kept {
+						continue
+					}
+				}
+				candidates = append(candidates, tool)
+			}
 		}
 	}
+
 	names := make([]string, 0, len(candidates))
 	for _, tool := range candidates {
 		names = append(names, tool.Name)

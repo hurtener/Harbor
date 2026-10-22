@@ -620,3 +620,56 @@ func TestConcurrentReuse_FailoverPolicy_NoBleed(t *testing.T) {
 	}
 	t.Fatalf("goroutine count %d did not return to baseline %d", runtime.NumGoroutine(), baseline)
 }
+
+// A semantic failure from the mandatory safety boundary must stop the real
+// failover walk before alternate credential activation or another provider call.
+func TestFailoverPolicy_EmptyCompletionStopsWithoutAlternate(t *testing.T) {
+	bus, st, cleanup := busAndState(t)
+	defer cleanup()
+	ctx := ctxWith(t, "acme", "u1", "s1", "empty-failover")
+	sub := subscribeFailover(t, bus, "acme", "u1", "s1")
+	driver := &scriptedDriver{fn: func(attempt int, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+		if attempt > 1 {
+			return llm.CompleteResponse{Content: "alternate must not be used"}, nil
+		}
+		return llm.CompleteResponse{FinishReason: "length", Usage: llm.Usage{ReportPresent: true, TotalTokens: 17}, Cost: llm.Cost{ReportPresent: true, TotalCost: 0.25}}, nil
+	}}
+	name := uniqueChainDriver("empty-completion-failover")
+	llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
+	inner, err := llm.Open(ctx, llm.ConfigSnapshot{Driver: name, ModelProfiles: map[string]llm.ModelProfile{"m": {ContextWindowTokens: 8192, MaxRetries: 3}}}, llm.Deps{Artifacts: chainArtifacts(t), Bus: bus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = inner.Close(t.Context()) }()
+	acc, err := governance.NewCostAccumulator(st, bus, governance.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = acc.Close(t.Context()) }()
+	act := &recordingActivator{}
+	policy := newFailover(t, inner, acc, act, acc, bus)
+	var validations atomic.Int64
+	response, err := policy.Complete(ctx, identity.MustQuadrupleFrom(ctx).Identity, userRequest(func(llm.CompleteResponse) error { validations.Add(1); return nil }, nil), []governance.ProviderRef{{Provider: "alternate", Name: "fixture"}})
+	if !errors.Is(err, llm.ErrEmptyCompletion) {
+		t.Fatalf("error=%v, want original empty completion", err)
+	}
+	if driver.counter.Load() != 1 {
+		t.Fatalf("provider calls=%d, want1", driver.counter.Load())
+	}
+	if validations.Load() != 0 {
+		t.Fatalf("validators=%d, want0", validations.Load())
+	}
+	if got := act.providers(); len(got) != 0 {
+		t.Fatalf("alternate activation=%v, want none", got)
+	}
+	if response.Usage.TotalTokens != 17 || response.Cost.TotalCost != 0.25 {
+		t.Fatalf("response accounting changed: %+v", response)
+	}
+	assertIdentityTotal(t, acc, ctx, 0.25)
+	if err := events.Flush(ctx, bus); err != nil {
+		t.Fatal(err)
+	}
+	if observed := drainFailoverEvents(sub, 100*time.Millisecond); len(observed) != 0 {
+		t.Fatalf("failover events=%d, want0", len(observed))
+	}
+}

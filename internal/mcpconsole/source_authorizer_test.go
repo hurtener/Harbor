@@ -40,9 +40,9 @@ func (r *mutableUserConfig) Active(_ context.Context, _ identity.Quadruple, agen
 	return agentcfg.Revision{Payload: agentcfg.ConfigPayload{SignedOAuthMCPPairs: &pairs}}, true, nil
 }
 
-func (r *mutableUserConfig) setActive(active bool) {
+func (r *mutableUserConfig) deactivate() {
 	r.mu.Lock()
-	r.active = active
+	r.active = false
 	r.mu.Unlock()
 }
 
@@ -105,7 +105,7 @@ func TestSourceAuthorizer_AllNamedSurfacesUseCurrentUserRevision(t *testing.T) {
 	// Simulate the durable revision dropping the pair while the process-local
 	// provider remains registered. Every named surface must now converge on
 	// the same not-found answer before it reaches the provider or cache state.
-	config.setActive(false)
+	config.deactivate()
 	tests := []struct {
 		name string
 		call func() error

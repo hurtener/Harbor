@@ -3,6 +3,7 @@ package output
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -93,6 +94,12 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 		resp, err := d.inner.Complete(attemptCtx, shaped)
 		if err == nil {
 			return resp, nil
+		}
+		// An empty completion is terminal and carries the actual driver's
+		// accounting. Let the governed caller see that response; reporting it
+		// to the attempt tap as well would charge the same attempt twice.
+		if errors.Is(err, llm.ErrEmptyCompletion) {
+			return resp, err
 		}
 
 		// This attempt ERRORED and is CONSUMED: every errored branch below

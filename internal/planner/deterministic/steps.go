@@ -382,6 +382,9 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 	// task in the registry so the WatchGroup the subsequent calls
 	// poll has a real group to resolve.
 	if !state.spawned {
+		if rc.ToolAllowlist != nil && len(*rc.ToolAllowlist) == 0 {
+			return nil, false, fmt.Errorf("SpawnAndAwaitStep[%s]: cannot spawn from a zero-tool run", s.stepID())
+		}
 		spec, err := s.SpecBuilder(rc)
 		if err != nil {
 			return nil, false, fmt.Errorf("SpawnAndAwaitStep[%s]: SpecBuilder: %w", s.stepID(), err)
@@ -411,6 +414,10 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 			Priority:       spec.Priority,
 			IdempotencyKey: s.stateKey(rc.Quadruple),
 			GroupID:        groupID,
+		}
+		if rc.ToolAllowlist != nil {
+			allowed := append([]string{}, (*rc.ToolAllowlist)...)
+			spawnReq.ToolAllowlist = &allowed
 		}
 		handle, err := s.registry.Spawn(spawnCtx, spawnReq)
 		if err != nil {

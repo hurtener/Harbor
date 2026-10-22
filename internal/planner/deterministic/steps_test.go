@@ -306,6 +306,80 @@ func TestSpawnAndAwaitStep_FirstCallEmitsSpawn(t *testing.T) {
 	}
 }
 
+func TestSpawnAndAwaitStep_InheritsRunToolFence(t *testing.T) {
+	deps := mustStepsDeps(t)
+	step := &deterministic.SpawnAndAwaitStep{
+		StepID: "restricted-spawn",
+		SpecBuilder: func(_ planner.RunContext) (planner.SpawnSpec, error) {
+			return planner.SpawnSpec{Query: "read document"}, nil
+		},
+		OnResolved: func(_ planner.RunContext, _ []tasks.MemberOutcome) (planner.Decision, error) {
+			return planner.Finish{Reason: planner.FinishGoal}, nil
+		},
+	}
+	p, err := deterministic.NewDeterministicPlanner(deterministic.WithSteps(step), deterministic.WithRegistry(deps.registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := validQuadruple()
+	allowed := []string{"read_document"}
+	if _, err := p.Next(context.Background(), planner.RunContext{Quadruple: q, ToolAllowlist: &allowed}); err != nil {
+		t.Fatal(err)
+	}
+	allowed[0] = "write_document"
+	ctx, err := identity.With(context.Background(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := deps.registry.List(ctx, q.Identity, tasks.TaskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("spawned tasks = %d, want 1", len(rows))
+	}
+	child, err := deps.registry.Get(ctx, rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ToolAllowlist == nil || len(*child.ToolAllowlist) != 1 || (*child.ToolAllowlist)[0] != "read_document" {
+		t.Fatalf("child widened or changed run tool fence: %+v", child.ToolAllowlist)
+	}
+}
+
+func TestSpawnAndAwaitStep_ZeroToolRunCannotSpawn(t *testing.T) {
+	deps := mustStepsDeps(t)
+	step := &deterministic.SpawnAndAwaitStep{
+		StepID: "closed-spawn",
+		SpecBuilder: func(_ planner.RunContext) (planner.SpawnSpec, error) {
+			return planner.SpawnSpec{Query: "read document"}, nil
+		},
+		OnResolved: func(_ planner.RunContext, _ []tasks.MemberOutcome) (planner.Decision, error) {
+			return planner.Finish{Reason: planner.FinishGoal}, nil
+		},
+	}
+	p, err := deterministic.NewDeterministicPlanner(deterministic.WithSteps(step), deterministic.WithRegistry(deps.registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := validQuadruple()
+	closed := []string{}
+	if _, err := p.Next(context.Background(), planner.RunContext{Quadruple: q, ToolAllowlist: &closed}); !errors.Is(err, planner.ErrDeterministicStep) {
+		t.Fatalf("closed run did not fail loudly: %v", err)
+	}
+	ctx, err := identity.With(context.Background(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := deps.registry.List(ctx, q.Identity, tasks.TaskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("closed run spawned %d tasks", len(rows))
+	}
+}
+
 func TestSpawnAndAwaitStep_SecondCallEmitsAwait(t *testing.T) {
 	deps := mustStepsDeps(t)
 	step := &deterministic.SpawnAndAwaitStep{

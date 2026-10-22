@@ -71,6 +71,18 @@ func TestActivePlannerCatalogView_UserMCPDesiredPairsAreIdentityScoped(t *testin
 		}
 	}
 
+	// Deferred discovery must pass through the owner view as well as prompt List.
+	for _, source := range []string{"srvA", "srvB"} {
+		if err := cat.Register(tools.ToolDescriptor{
+			Tool: tools.Tool{Name: source + "_document_authoring_create_version", Source: tools.ToolSourceID(source), Loading: tools.LoadingDeferred},
+			Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+				t.Error("discovery invoked a domain handler")
+				return tools.ToolResult{}, nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	owners := testSourceOwners{
 		"srvA": {Tenant: projTenant, Agent: projAgent, User: "user-a"},
 		"srvB": {Tenant: projTenant, Agent: projAgent, User: "user-b"},
@@ -96,6 +108,32 @@ func TestActivePlannerCatalogView_UserMCPDesiredPairsAreIdentityScoped(t *testin
 			}
 			if _, ok := view.Resolve(tc.hide); ok {
 				t.Fatalf("foreign user source tool %q is visible: %v", tc.hide, viewNames(view))
+			}
+			discovery, ok := view.(interface{ DiscoveryTools() ([]tools.Tool, bool) })
+			if !ok {
+				t.Fatal("production owner view dropped deferred discovery")
+			}
+			foundDeferred := false
+			all, complete := discovery.DiscoveryTools()
+			if !complete {
+				t.Fatal("production owner discovery is incomplete")
+			}
+			for _, tool := range all {
+				if tool.Loading != tools.LoadingDeferred {
+					continue
+				}
+				if tool.Source != tools.ToolSourceID(tc.want[:4]) {
+					t.Fatalf("foreign deferred source visible: %s", tool.Name)
+				}
+				foundDeferred = true
+				projection := tools.NewModelToolNameProjectionWithReservedControls([]string{tool.Name})
+				canonical, found := projection.ResolveDeclared(tools.ModelVisibleToolName(tool.Name))
+				if !found || canonical != tool.Name {
+					t.Fatal("owner-admitted alias failed resolution")
+				}
+			}
+			if !foundDeferred {
+				t.Fatal("owned deferred source missing")
 			}
 			if !hasName(viewNames(view), "local_tool") {
 				t.Fatalf("operator/boot tool disappeared from user view: %v", viewNames(view))
