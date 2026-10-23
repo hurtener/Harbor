@@ -206,7 +206,7 @@ type MuxInput struct {
 	// AgentReach is the gate shared with the control surface by runtime
 	// assembly. Nil still builds fail-closed stream projections.
 	AgentReach             auth.AgentReachAuthorizer
-	ProviderRouteRuntimeID string
+	ProviderRouteAvailable bool
 	// PublicationStore is the one authorized StateStore-backed store shared by
 	// the Protocol surface and the run-loop driver's exact-reference resolver.
 	// Nil leaves the publication surface unmounted.
@@ -385,7 +385,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		LLM:                             llm.NewPostureProvider(in.LLMSnapshot),
 		ProviderCatalog:                 in.ProviderCatalog,
 		AgentReach:                      in.AgentReach,
-		ProviderRouteRuntimeID:          in.ProviderRouteRuntimeID,
+		ProviderRouteAvailable:          in.ProviderRouteAvailable,
 		Redactor:                        red,
 		Bus:                             bus,
 		DisplayName:                     in.DisplayName,

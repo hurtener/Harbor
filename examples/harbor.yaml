@@ -257,7 +257,7 @@ llm:
   # provider_route:
   #   resolver_url: https://coordinator.example.com/v1/provider-route
   #   auth_token_env: HARBOR_PROVIDER_ROUTE_TOKEN
-  #   runtime_id: runtime-1
+  #   # Runtime identity is derived from the resolver authentication token.
   #   timeout: 10s
 
 # Runtime run-lifecycle hooks.

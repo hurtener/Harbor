@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
@@ -38,24 +39,18 @@ const deprecatedFieldReplacement = "governance.identity_tiers"
 // in lockstep with the decision and the example yaml.
 const deprecatedFieldRemovedIn = "v0.x"
 
-// stripDeprecatedGovernanceKeys parses `data` as YAML, removes every
-// key under the top-level `governance:` mapping that matches the
-// `deprecatedGovernanceKeys` set, and returns the re-serialised bytes.
-// For each stripped key the function emits a single structured
-// `config.deprecated_field` warning on `logger` with attrs `field`,
-// `replacement`, `removed_in`, and `source` — so an operator's logs
-// show one line per legacy key per load.
-//
-// When the input contains none of the deprecated keys the byte stream
-// is returned unchanged. A parse failure surfaces with the offending
-// source name so the wrapping error carries the same context the
-// caller's `parse:` error would.
-func stripDeprecatedGovernanceKeys(data []byte, source string, logger *slog.Logger) ([]byte, error) {
+// stripDeprecatedConfigKeys removes retired YAML keys before strict decoding
+// and logs one content-free warning per removed setting. Runtime route identity
+// comes from verified bearer authority; governance knobs were replaced by
+// identity tiers. All other unknown keys still fail strict config decoding.
+func stripDeprecatedConfigKeys(data []byte, source string, logger *slog.Logger) ([]byte, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	// Empty input is a no-op; the strict decode that follows will
-	// produce the documented defaults.
+	if _, present := os.LookupEnv("HARBOR_LLM_PROVIDER_ROUTE_RUNTIME_ID"); present {
+		logger.Warn("config.deprecated_field", slog.String("field", "HARBOR_LLM_PROVIDER_ROUTE_RUNTIME_ID"), slog.String("replacement", "verified bearer runtime identity"), slog.String("source", source))
+	}
+	// Empty input still permits the removed environment setting warning above.
 	if len(data) == 0 {
 		return data, nil
 	}
@@ -76,6 +71,41 @@ func stripDeprecatedGovernanceKeys(data []byte, source string, logger *slog.Logg
 		root, ok := mappingFrom(doc.Body)
 		if !ok {
 			continue
+		}
+		if llm := findChildMapping(root, "llm"); llm != nil {
+			if route := findChildMapping(llm, "provider_route"); route != nil {
+				filtered := route.Values[:0]
+				for _, kv := range route.Values {
+					if mappingKeyName(kv.Key) == "runtime_id" {
+						logger.Warn("config.deprecated_field", slog.String("field", "llm.provider_route.runtime_id"), slog.String("replacement", "verified bearer runtime identity"), slog.String("source", source))
+						stripped = true
+						continue
+					}
+					filtered = append(filtered, kv)
+				}
+				route.Values = filtered
+				if len(filtered) == 0 {
+					// Drop an emptied block: the YAML AST serializer cannot
+					// render a formerly nonempty nested mapping as `{}`.
+					children := llm.Values[:0]
+					for _, kv := range llm.Values {
+						if mappingKeyName(kv.Key) != "provider_route" {
+							children = append(children, kv)
+						}
+					}
+					llm.Values = children
+					if len(children) == 0 {
+						fields := root.Values[:0]
+						for _, kv := range root.Values {
+							if mappingKeyName(kv.Key) != "llm" {
+								fields = append(fields, kv)
+							}
+						}
+						root.Values = fields
+						doc.Body = root
+					}
+				}
+			}
 		}
 		governance := findChildMapping(root, "governance")
 		if governance == nil {

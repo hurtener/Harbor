@@ -181,6 +181,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 						"validator returned an invalid identity"))
 				return
 			}
+			ctx = WithRuntimeID(ctx, verified.RuntimeID)
 			ctx = WithScopes(ctx, verified.Scopes)
 			ctx = WithAgentReach(ctx, verified.AgentReach)
 

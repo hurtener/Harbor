@@ -68,7 +68,7 @@ func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, t
 		return ctx, ProviderRouteRequest{}, ErrProviderRouteResolverUnavailable
 	}
 	if err := ValidateProviderRoute(trusted.Route); err != nil || trusted.Route.RouteID == "" ||
-		trusted.RuntimeID == "" || trusted.RuntimeID != cfg.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" ||
+		trusted.RuntimeID == "" || trusted.EffectiveAgentID == "" || trusted.TaskID == "" ||
 		trusted.Purpose != ProviderRoutePurposeRun {
 		return ctx, ProviderRouteRequest{}, ErrProviderRouteInvalid
 	}
@@ -89,7 +89,7 @@ func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, t
 	}
 	return requestCtx, ProviderRouteRequest{
 		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID, LogicalRunID: q.RunID,
-		EffectiveAgentID: trusted.EffectiveAgentID, RuntimeID: trusted.RuntimeID, TaskID: trusted.TaskID,
+		EffectiveAgentID: trusted.EffectiveAgentID, TaskID: trusted.TaskID,
 		LogicalCallID: scope.LogicalCallID, RouteID: trusted.Route.RouteID,
 		RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
 		ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,

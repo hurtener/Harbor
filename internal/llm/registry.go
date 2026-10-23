@@ -522,9 +522,6 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	if err := validateSnapshot(cfg); err != nil {
 		return nil, err
 	}
-	if err := ValidateProviderRouteConfig(deps.ProviderRoute); err != nil {
-		return nil, fmt.Errorf("%w: provider route: %w", ErrInvalidConfig, err)
-	}
 	if deps.ProviderRoute.Resolver != nil && cfg.Driver != "bifrost" {
 		return nil, fmt.Errorf("%w: provider route requires llm driver %q (got %q)", ErrInvalidConfig, "bifrost", cfg.Driver)
 	}

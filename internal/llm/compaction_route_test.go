@@ -40,9 +40,9 @@ func compactionRouteFixture(t *testing.T, tenant string) (context.Context, Provi
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{
-		Route:     ProviderRoute{RouteID: "driving-route", RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "large-model"},
-		RuntimeID: "runtime", EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun,
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime",
+		Route:            ProviderRoute{RouteID: "driving-route", RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "large-model"},
+		EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun,
 	})
 	output := 128000
 	ctx = withCompactionRequest(ctx, CompleteRequest{Model: "large-model", MaxTokens: &output, ReasoningEffort: ReasoningHigh}, ConfigSnapshot{})
@@ -56,14 +56,14 @@ func compactionRouteFixture(t *testing.T, tenant string) (context.Context, Provi
 func TestRoutedCompaction_IndependentBudgetIdentityAndConcurrentReuse(t *testing.T) {
 	var count atomic.Int32
 	resolver := compactionRouteResolver{selectFn: func(_ context.Context, req ProviderRouteRequest) (SelectedProviderRoute, error) {
-		if req.RuntimeID != "runtime" || req.EffectiveAgentID != "agent" || req.TaskID != "task" || req.UserID != "user" ||
+		if req.EffectiveAgentID != "agent" || req.TaskID != "task" || req.UserID != "user" ||
 			req.SessionID != "session" || req.LogicalRunID != "run" || req.LogicalCallID == "" || req.Purpose != ProviderRoutePurposeRun || req.ModelSelector != "small-compactor" {
 			t.Errorf("lost route or admitted identity: %+v", req)
 		}
 		count.Add(1)
 		return compactionRouteSelection(req), nil
 	}}
-	cfg := ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	cfg := ProviderRouteConfig{Resolver: resolver}
 	var wg sync.WaitGroup
 	for i := range 128 {
 		ctx, route := compactionRouteFixture(t, fmt.Sprintf("tenant-%d", i))
@@ -126,7 +126,7 @@ func TestRoutedCompaction_RefusesStaleMissingProfileAndForeignGrants(t *testing.
 			if mode == "unadmitted" {
 				ctx = t.Context()
 			}
-			_, _, _, err := PrepareRoutedCompactionRequest(ctx, req, route, ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}, .05)
+			_, _, _, err := PrepareRoutedCompactionRequest(ctx, req, route, ProviderRouteConfig{Resolver: resolver}, .05)
 			if err == nil {
 				t.Fatal("invalid route accepted")
 			}
@@ -146,7 +146,7 @@ func TestRoutedCompaction_ActualCallRechecksRevocation(t *testing.T) {
 		}
 		return compactionRouteSelection(req), nil
 	}}
-	cfg := ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	cfg := ProviderRouteConfig{Resolver: resolver}
 	output := 2048
 	ctx, req, _, err := PrepareRoutedCompactionRequest(ctx, CompleteRequest{MaxTokens: &output}, route, cfg, .05)
 	if err != nil {

@@ -34,6 +34,7 @@ type AgentReachAdmissionAuthority struct {
 }
 
 type agentReachAdmissionClaims struct {
+	RuntimeID        string `json:"runtime_id,omitempty"`
 	Schema           string `json:"schema"`
 	TenantID         string `json:"tenant_id"`
 	UserID           string `json:"user_id"`
@@ -76,7 +77,7 @@ func (a *AgentReachAdmissionAuthority) Admit(ctx context.Context, id identity.Id
 	if strings.TrimSpace(effectiveAgentID) == "" {
 		return ctx, errors.New("tasks: agent reach admission effective agent is empty")
 	}
-	claims := agentReachAdmissionClaims{Schema: agentReachAdmissionSchema, TenantID: id.TenantID,
+	claims := agentReachAdmissionClaims{RuntimeID: auth.RuntimeIDFrom(ctx), Schema: agentReachAdmissionSchema, TenantID: id.TenantID,
 		UserID: id.UserID, SessionID: id.SessionID, EffectiveAgentID: effectiveAgentID}
 	plain, err := json.Marshal(claims)
 	if err != nil {
@@ -147,6 +148,7 @@ func (a *AgentReachAdmissionAuthority) Restore(ctx context.Context, task *Task) 
 	if err != nil {
 		return ctx, "", false
 	}
+	verified = auth.WithRuntimeID(verified, claims.RuntimeID)
 	verified = auth.WithAgentReach(verified, []string{claims.EffectiveAgentID})
 	return context.WithValue(verified, agentReachAdmissionContextKey{}, admittedAgentReach{receipt: receipt, claims: claims}), claims.EffectiveAgentID, true
 }

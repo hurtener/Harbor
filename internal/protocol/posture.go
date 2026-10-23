@@ -93,7 +93,7 @@ type PostureSurface struct {
 	llm                    *llm.PostureProvider
 	providerCatalog        provider.CatalogSurface
 	agentReach             auth.AgentReachAuthorizer
-	providerRouteRuntimeID string
+	providerRouteAvailable bool
 	redactor               audit.Redactor
 	bus                    events.EventBus
 	bootedAt               time.Time
@@ -176,7 +176,7 @@ type PostureDeps struct {
 	// AgentReach gates route-aware provider operations against verified JWT
 	// reach. It may be nil only when route-aware operations are unused.
 	AgentReach             auth.AgentReachAuthorizer
-	ProviderRouteRuntimeID string
+	ProviderRouteAvailable bool
 	// Redactor is the audit Redactor every cross-tenant
 	// `*.posture_read_admin` payload runs through before the bus
 	// publish (CLAUDE.md §7 rule 6). Mandatory.
@@ -313,14 +313,14 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		llm:                    deps.LLM,
 		providerCatalog:        deps.ProviderCatalog,
 		agentReach:             deps.AgentReach,
-		providerRouteRuntimeID: deps.ProviderRouteRuntimeID,
+		providerRouteAvailable: deps.ProviderRouteAvailable,
 		redactor:               deps.Redactor,
 		bus:                    deps.Bus,
 		bootedAt:               bootedAt,
 		displayName:            deps.DisplayName,
 		instanceID:             deps.InstanceID,
 		externalGrant:          deps.ExternalGrant,
-		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteRuntimeID != "", deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable),
+		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteAvailable, deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable),
 	}, nil
 }
 
@@ -753,7 +753,7 @@ func (s *PostureSurface) handleProviderOperation(
 			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 				"method %q: external provider routes require the admin scope claim", string(method))
 		}
-		if s.agentReach == nil || s.providerRouteRuntimeID == "" || request.ProviderAgentID == "" {
+		if s.agentReach == nil || !s.providerRouteAvailable || request.ProviderAgentID == "" {
 			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
 				"method %q: external provider route capability is not wired", string(method))
 		}
@@ -773,8 +773,8 @@ func (s *PostureSurface) handleProviderOperation(
 				"method %q: external provider route is invalid", string(method))
 		}
 		ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
-			Route: route, EffectiveAgentID: request.ProviderAgentID,
-			RuntimeID: s.providerRouteRuntimeID, TaskID: newProviderOperationID(),
+			RuntimeID: auth.RuntimeIDFrom(ctx),
+			Route:     route, EffectiveAgentID: request.ProviderAgentID, TaskID: newProviderOperationID(),
 			Purpose: llm.ProviderRoutePurposePosture,
 		})
 	}

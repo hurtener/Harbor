@@ -59,7 +59,7 @@ func TestProviderRoute_EndpointMustMatchProviderAndDigest(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			binding := &llm.ProviderEndpointBinding{Kind: kind, Value: endpoint, Digest: digest}
 			resolver := &countingRouteResolver{out: llm.ResolvedProviderRoute{Provider: provider, Model: "model", KeyName: "fixture key", RouteID: req.RouteID, RouteGeneration: req.RouteGeneration, ProviderConnectionID: req.ProviderConnectionID, ProviderConnectionGeneration: req.ProviderConnectionGeneration, CredentialAssetGeneration: req.CredentialAssetGeneration, ModelSelector: req.ModelSelector, Endpoint: binding, ExpiresAt: now.Add(time.Minute), Credential: "test-fixture-not-a-real-key"}}
-			cfg := llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+			cfg := llm.ProviderRouteConfig{Resolver: resolver}
 			selected, err := llm.SelectProviderRoute(t.Context(), cfg, req, now)
 			if err != nil {
 				t.Fatal(err)

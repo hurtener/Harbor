@@ -510,7 +510,7 @@ func (c *Config) validateLLM() error {
 
 func validateLLMProviderRoute(cfg LLMProviderRouteConfig) error {
 	configured := strings.TrimSpace(cfg.ResolverURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
-		strings.TrimSpace(cfg.RuntimeID) != "" || cfg.Timeout != 0
+		cfg.Timeout != 0
 	if !configured {
 		return nil
 	}
@@ -522,9 +522,6 @@ func validateLLMProviderRoute(cfg LLMProviderRouteConfig) error {
 	}
 	if strings.TrimSpace(cfg.AuthTokenEnv) == "" {
 		return fieldError("llm.provider_route.auth_token_env", "must name the env var holding the runtime service token")
-	}
-	if strings.TrimSpace(cfg.RuntimeID) == "" {
-		return fieldError("llm.provider_route.runtime_id", "must be set when provider_route is configured")
 	}
 	if cfg.Timeout < 0 {
 		return fieldError("llm.provider_route.timeout", "must be non-negative")

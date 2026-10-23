@@ -261,10 +261,10 @@ type RunLoopDriverOptions struct {
 	// AgentReachAdmissions authenticates durable control.start reach receipts
 	// before any effective agent context can authorize signed credentials.
 	AgentReachAdmissions *tasks.AgentReachAdmissionAuthority
-	// ProviderRouteRuntimeID is the boot-derived runtime identity stamped into
-	// trusted external provider-route contexts. Empty is valid only while no
+	// ProviderRouteAvailable reports whether an authenticated route resolver is wired for
+	// trusted external provider-route contexts. False is valid only while no
 	// task selects an external route.
-	ProviderRouteRuntimeID string
+	ProviderRouteAvailable bool
 
 	// sessionOverlay resolves the SESSION-scoped safe-subset overlay (the
 	// non-admin lower tier) at run start: the session's user prompt layer,
@@ -424,7 +424,7 @@ type RunLoopDriver struct {
 	ensureBootAgentLifecycle agentcfg.BootLifecycleEnsurer
 	runSnapshots             *runsnapshot.Gate
 	agentReachAdmissions     *tasks.AgentReachAdmissionAuthority
-	providerRouteRuntimeID   string
+	providerRouteAvailable   bool
 
 	// session-scoped safe-subset overlay store, read once at run start to
 	// compose the session user layer + narrow-only disables + personal skills
@@ -575,7 +575,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		ensureBootAgentLifecycle: opts.EnsureBootAgentLifecycle,
 		runSnapshots:             opts.RunSnapshots,
 		agentReachAdmissions:     opts.AgentReachAdmissions,
-		providerRouteRuntimeID:   opts.ProviderRouteRuntimeID,
+		providerRouteAvailable:   opts.ProviderRouteAvailable,
 		sessionOverlay:           opts.SessionOverlay,
 		bootPackReader:           opts.BootPackReader,
 		runCompletionHook:        opts.RunCompletionHook,
@@ -1331,7 +1331,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			}
 			return
 		}
-		if strings.TrimSpace(d.providerRouteRuntimeID) == "" {
+		if !d.providerRouteAvailable {
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 				Code:    "provider_route_unavailable",
 				Message: "external provider route resolver is unavailable",
@@ -2034,9 +2034,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	}
 	if providerRoute != nil {
 		runCtx = llm.WithTrustedProviderRoute(runCtx, llm.TrustedProviderRouteContext{
+			RuntimeID:        auth.RuntimeIDFrom(runCtx),
 			Route:            *providerRoute,
 			EffectiveAgentID: effectiveAgentID,
-			RuntimeID:        d.providerRouteRuntimeID,
 			TaskID:           string(taskID),
 			Purpose:          llm.ProviderRoutePurposeRun,
 		})

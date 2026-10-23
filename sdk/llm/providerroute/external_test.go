@@ -14,7 +14,7 @@ import (
 func TestPublicContractRoundTrip(t *testing.T) {
 	req := providerroute.Request{
 		TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run",
-		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
+		EffectiveAgentID: "agent", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 2, CredentialAssetGeneration: 3, ModelSelector: "fast",
 		Purpose: providerroute.PurposeRun,
@@ -35,6 +35,9 @@ func TestPublicContractRoundTrip(t *testing.T) {
 	raw, err := providerroute.MarshalResponse(req, response)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(`"runtime_id"`)) || bytes.Contains(raw, []byte(`"runtime_id"`)) {
+		t.Fatal("route exchange carries runtime identity")
 	}
 	got, err := providerroute.ParseResponse(req, raw)
 	if err != nil || got.Credential != response.Credential {
@@ -89,7 +92,7 @@ func TestPublicHandlerServesSelectionAndResolutionWithoutInternalImports(t *test
 
 	req := providerroute.Request{
 		TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run",
-		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
+		EffectiveAgentID: "agent", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 2, CredentialAssetGeneration: 3, ModelSelector: "fast",
 		Purpose: providerroute.PurposeRun,

@@ -29,7 +29,6 @@ type requestWire struct {
 	SessionID                    string `json:"session_id"`
 	LogicalRunID                 string `json:"logical_run_id"`
 	EffectiveAgentID             string `json:"effective_agent_id"`
-	RuntimeID                    string `json:"runtime_id"`
 	TaskID                       string `json:"task_id"`
 	LogicalCallID                string `json:"logical_call_id"`
 	RouteID                      string `json:"route_id"`
@@ -91,7 +90,7 @@ func MarshalSelectionRequest(req llm.ProviderRouteRequest) ([]byte, error) {
 func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, error) {
 	w := requestWire{
 		Version: Version, Operation: operation, TenantID: req.TenantID, UserID: req.UserID, SessionID: req.SessionID,
-		LogicalRunID: req.LogicalRunID, EffectiveAgentID: req.EffectiveAgentID, RuntimeID: req.RuntimeID,
+		LogicalRunID: req.LogicalRunID, EffectiveAgentID: req.EffectiveAgentID,
 		TaskID: req.TaskID, LogicalCallID: req.LogicalCallID, RouteID: req.RouteID,
 		RouteGeneration: req.RouteGeneration, ProviderConnectionID: req.ProviderConnectionID,
 		ProviderConnectionGeneration: req.ProviderConnectionGeneration,
@@ -103,7 +102,7 @@ func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, err
 	if (w.Operation != OperationSelect && w.Operation != OperationResolve) ||
 		(w.Purpose != string(llm.ProviderRoutePurposeRun) && w.Purpose != string(llm.ProviderRoutePurposePosture)) ||
 		w.TenantID == "" || w.UserID == "" || w.SessionID == "" || w.LogicalRunID == "" ||
-		w.EffectiveAgentID == "" || w.RuntimeID == "" || w.TaskID == "" || w.LogicalCallID == "" ||
+		w.EffectiveAgentID == "" || w.TaskID == "" || w.LogicalCallID == "" ||
 		w.RouteID == "" || w.RouteGeneration == 0 || w.ProviderConnectionID == "" ||
 		w.ProviderConnectionGeneration == 0 || w.CredentialAssetGeneration == 0 || w.ModelSelector == "" {
 		return nil, llm.ErrProviderRouteInvalid
@@ -115,13 +114,13 @@ func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, err
 	return body, nil
 }
 
-// UnmarshalRequest strictly parses the bounded trusted-context request.
+// UnmarshalRequest parses the bounded trusted-context request.
 func UnmarshalRequest(body []byte) (llm.ProviderRouteRequest, error) {
 	_, req, err := UnmarshalOperationRequest(body)
 	return req, err
 }
 
-// UnmarshalOperationRequest strictly parses the operation and trusted-context
+// UnmarshalOperationRequest parses the operation and trusted-context
 // request so a resolver can keep selection credential-free and resolution
 // attempt-scoped on one authenticated endpoint.
 func UnmarshalOperationRequest(body []byte) (string, llm.ProviderRouteRequest, error) {
@@ -130,7 +129,7 @@ func UnmarshalOperationRequest(body []byte) (string, llm.ProviderRouteRequest, e
 	}
 	var w requestWire
 	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
+	// Ignore removed request fields during resolver-first rollouts.
 	if err := dec.Decode(&w); err != nil {
 		return "", llm.ProviderRouteRequest{}, llm.ErrProviderRouteInvalid
 	}
@@ -140,7 +139,7 @@ func UnmarshalOperationRequest(body []byte) (string, llm.ProviderRouteRequest, e
 	}
 	req := llm.ProviderRouteRequest{
 		TenantID: w.TenantID, UserID: w.UserID, SessionID: w.SessionID, LogicalRunID: w.LogicalRunID,
-		EffectiveAgentID: w.EffectiveAgentID, RuntimeID: w.RuntimeID, TaskID: w.TaskID, LogicalCallID: w.LogicalCallID,
+		EffectiveAgentID: w.EffectiveAgentID, TaskID: w.TaskID, LogicalCallID: w.LogicalCallID,
 		RouteID: w.RouteID, RouteGeneration: w.RouteGeneration, ProviderConnectionID: w.ProviderConnectionID,
 		ProviderConnectionGeneration: w.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    w.CredentialAssetGeneration, ModelSelector: w.ModelSelector,

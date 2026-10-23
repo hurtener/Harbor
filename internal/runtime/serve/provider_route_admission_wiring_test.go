@@ -108,7 +108,7 @@ func TestBoot_ProviderRouteUsesSharedKEKReachAdmissionFallback(t *testing.T) {
 	}
 	opts.ProviderRoute = llm.ProviderRouteConfig{Resolver: admissionRouteResolver{endpoint: &llm.ProviderEndpointBinding{
 		Kind: llm.ProviderEndpointOpenAICompatible, Value: endpointValue, Digest: endpointDigest,
-	}}, RuntimeID: "route-runtime"}
+	}}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -251,6 +251,7 @@ func signWithAgentReach(t *testing.T, signer *testSigner, id identity.Identity, 
 	t.Helper()
 	now := time.Now()
 	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"runtime_id":         "verified-runtime",
 		"sub":                id.UserID,
 		"exp":                now.Add(time.Hour).Unix(),
 		"nbf":                now.Add(-time.Minute).Unix(),

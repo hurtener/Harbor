@@ -477,12 +477,12 @@ token. Required when `provider_route` is configured. The value is read once at
 boot, never serialized, logged, or returned in an error, and is sent only to
 the boot-pinned resolver endpoint. Restart-required.
 
-### llm.provider_route.runtime_id
-
-Opaque runtime identifier sent with an explicit route-resolution request. It
-must be non-empty when `provider_route` is configured and is used to bind the
-resolver call to this runtime. It is not a caller-controlled provider or
-credential selector. Restart-required.
+The runtime is identified by the resolver authentication credential. Harbor sends
+no runtime ID; route calls use the runtime identity from the verified
+coordinator-minted token of the run. Removed `provider_route.runtime_id` and
+`HARBOR_LLM_PROVIDER_ROUTE_RUNTIME_ID` settings are ignored with a deprecation
+warning. Deploy the resolver that ignores the legacy request field first, then
+upgrade Harbor, then remove obsolete fleet settings.
 
 ### llm.provider_route.timeout
 

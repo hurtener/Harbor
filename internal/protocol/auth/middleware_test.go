@@ -534,3 +534,56 @@ func TestMiddleware_PerRequestSession_HeaderCannotWidenTenantOrUser(t *testing.T
 		t.Errorf("session: got %v, want s2", body["session"])
 	}
 }
+
+func TestMiddleware_RuntimeIdentityComesFromVerifiedToken(t *testing.T) {
+	validator, key := newRSValidator(t, fixedNow)
+	for _, runtime := range []any{"verified-runtime", nil, 42} {
+		claims := validClaims(fixedNow)
+		if runtime != nil {
+			claims["runtime_id"] = runtime
+		}
+		token := signRS256(t, key, claims, "k1")
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"runtime_id":"forged"}`))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-Harbor-Runtime-ID", "forged")
+		recorder := httptest.NewRecorder()
+		called := false
+		handler := auth.Middleware(validator)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			want, _ := runtime.(string)
+			if got := auth.RuntimeIDFrom(r.Context()); got != want {
+				t.Errorf("runtime = %q, want %q", got, want)
+			}
+		}))
+		handler.ServeHTTP(recorder, request)
+		if !called {
+			t.Fatalf("verified handler not called: status=%d", recorder.Code)
+		}
+	}
+}
+
+func TestMiddleware_RuntimeIdentityConcurrentTokensStayIsolated(t *testing.T) {
+	validator, key := newRSValidator(t, fixedNow)
+	for i := range 128 {
+		runtimeID := strings.Repeat("r", i+1)
+		claims := validClaims(fixedNow)
+		claims["runtime_id"] = runtimeID
+		token := signRS256(t, key, claims, "k1")
+		t.Run("runtime", func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodPost, "/", nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			recorder := httptest.NewRecorder()
+			called := false
+			auth.Middleware(validator)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				called = true
+				if got := auth.RuntimeIDFrom(r.Context()); got != runtimeID {
+					t.Errorf("runtime = %q, want %q", got, runtimeID)
+				}
+			})).ServeHTTP(recorder, request)
+			if !called {
+				t.Fatalf("verified handler not called: status=%d", recorder.Code)
+			}
+		})
+	}
+}

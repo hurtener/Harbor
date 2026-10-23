@@ -19,6 +19,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -84,11 +85,10 @@ func runProviderRouteProbe(t *testing.T) providerRouteObservation {
 		t.Fatal(err)
 	}
 	const agentID = "agent-provider-route"
-	const runtimeID = "runtime-provider-route"
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus: bus, RunLoop: rl, Planner: p, Tasks: reg,
 		AgentConfigID: agentID, AgentReachAdmissions: authority,
-		ProviderRouteRuntimeID: runtimeID,
+		ProviderRouteAvailable: true,
 	})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)
@@ -102,7 +102,7 @@ func runProviderRouteProbe(t *testing.T) providerRouteObservation {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	spawnCtx, err = authority.Admit(spawnCtx, runLoopDriverTestID, agentID)
+	spawnCtx, err = authority.Admit(auth.WithRuntimeID(spawnCtx, "verified-runtime"), runLoopDriverTestID, agentID)
 	if err != nil {
 		t.Fatalf("authority.Admit: %v", err)
 	}
@@ -240,8 +240,7 @@ func TestPerTaskRunLoopDriver_InstallsProviderRouteOnlyAfterReachRestore(t *test
 	if !observed.present {
 		t.Fatal("trusted provider route absent after sealed Agent-reach restore")
 	}
-	if observed.trusted.EffectiveAgentID != "agent-provider-route" ||
-		observed.trusted.RuntimeID != "runtime-provider-route" ||
+	if observed.trusted.RuntimeID != "verified-runtime" || observed.trusted.EffectiveAgentID != "agent-provider-route" ||
 		observed.trusted.TaskID == "" || observed.trusted.Route.RouteID != "route-a" ||
 		observed.trusted.Route.RouteGeneration != 4 {
 		t.Fatalf("trusted provider route = %+v, want exact admitted Agent/runtime/task/route binding", observed.trusted)
@@ -274,7 +273,7 @@ func TestPerTaskRunLoopDriver_RejectsProviderRouteWithoutReachRestore(t *testing
 	driver, err := NewRunLoopDriver(RunLoopDriverOptions{SessionMemory: config.MemoryConfig{Strategy: "none"},
 		Bus: bus, RunLoop: rl, Planner: p, Tasks: reg,
 		AgentConfigID: "agent-provider-route", AgentReachAdmissions: authority,
-		ProviderRouteRuntimeID: "runtime-provider-route",
+		ProviderRouteAvailable: true,
 	})
 	if err != nil {
 		t.Fatalf("NewRunLoopDriver: %v", err)

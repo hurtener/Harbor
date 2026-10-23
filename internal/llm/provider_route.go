@@ -71,7 +71,6 @@ type ProviderRouteRequest struct {
 	SessionID                    string
 	LogicalRunID                 string
 	EffectiveAgentID             string
-	RuntimeID                    string
 	TaskID                       string
 	LogicalCallID                string
 	RouteID                      string
@@ -229,24 +228,10 @@ type ProviderRouteSelectionValidator interface {
 	ValidateProviderRouteSelection(SelectedProviderRoute) error
 }
 
-// ProviderRouteConfig carries the optional resolver seam and the runtime ID
-// stamped into trusted requests. A zero value is fully latent.
+// ProviderRouteConfig carries the optional authenticated resolver seam.
+// A zero value is fully latent.
 type ProviderRouteConfig struct {
-	Resolver  ProviderRouteResolver
-	RuntimeID string
-}
-
-// ValidateProviderRouteConfig validates an injected resolver configuration.
-// The zero value is the disabled, runtime-default-only posture.
-func ValidateProviderRouteConfig(cfg ProviderRouteConfig) error {
-	configured := cfg.Resolver != nil || strings.TrimSpace(cfg.RuntimeID) != ""
-	if !configured {
-		return nil
-	}
-	if cfg.Resolver == nil || strings.TrimSpace(cfg.RuntimeID) == "" {
-		return fmt.Errorf("%w: configured resolver and runtime id are both required", ErrProviderRouteInvalid)
-	}
-	return nil
+	Resolver ProviderRouteResolver
 }
 
 type providerRouteContextKey struct{}
@@ -255,9 +240,10 @@ type providerRouteContextKey struct{}
 // identity and effective-Agent admission. Protocol callers cannot construct
 // this context through wire fields alone.
 type TrustedProviderRouteContext struct {
+	// RuntimeID comes from verified bearer authority, never resolver responses.
+	RuntimeID        string
 	Route            ProviderRoute
 	EffectiveAgentID string
-	RuntimeID        string
 	TaskID           string
 	Purpose          ProviderRoutePurpose
 }

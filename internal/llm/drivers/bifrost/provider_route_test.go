@@ -154,7 +154,7 @@ func TestDriver_RoutedSchemaRejectionDowngradesWithoutLeaking(t *testing.T) {
 	resolver := &rotatingRouteResolver{selected: selected}
 	driver := newDriverWithClient(newStubClient(), bfschemas.OpenAI, nil)
 	driver.routeClient = provider
-	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver}
 	client := output.Wrap(driver, llm.ConfigSnapshot{ModelProfiles: map[string]llm.ModelProfile{
 		"model": {OutputMode: llm.OutputModeNative},
 	}}, llm.Deps{})
@@ -162,8 +162,8 @@ func TestDriver_RoutedSchemaRejectionDowngradesWithoutLeaking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
-		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun,
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime",
+		Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun,
 	})
 	ctx = llm.WithSelectedProviderRoute(ctx, selected)
 	text := "summarize the bounded evidence"
@@ -247,14 +247,14 @@ func TestDriver_RoutedAttemptsResolveEveryTimeAndRevocationFailsClosed(t *testin
 	provider := newStubClient()
 	driver := newDriverWithClient(newStubClient(), bfschemas.OpenAI, nil)
 	driver.routeClient = provider
-	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver}
 	ctx, err := identity.WithRun(context.Background(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun})
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun})
 	ctx = llm.WithSelectedProviderRoute(ctx, resolver.selected)
-	postureCtx := llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: llm.ProviderRoutePurposePosture})
+	postureCtx := llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposePosture})
 	if _, err := driver.Complete(postureCtx, llm.CompleteRequest{Model: "model"}); !errors.Is(err, llm.ErrProviderRouteInvalid) {
 		t.Fatalf("posture-purpose run error = %v, want ErrProviderRouteInvalid", err)
 	}
@@ -295,10 +295,10 @@ func TestDriver_ExpiredSelectionStillRequiresFreshExactResolution(t *testing.T) 
 		ExpiresAt:                    selectedAt.Add(time.Minute),
 		ModelProfile:                 profile,
 	}}
-	cfg := llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	cfg := llm.ProviderRouteConfig{Resolver: resolver}
 	request := llm.ProviderRouteRequest{
 		TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run",
-		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
+		EffectiveAgentID: "agent", TaskID: "task", LogicalCallID: "call",
 		RouteID: route.RouteID, RouteGeneration: route.RouteGeneration,
 		ProviderConnectionID:         route.ProviderConnectionID,
 		ProviderConnectionGeneration: route.ProviderConnectionGeneration,
@@ -325,8 +325,8 @@ func TestDriver_ExpiredSelectionStillRequiresFreshExactResolution(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
-		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task",
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime",
+		Route: route, EffectiveAgentID: "agent", TaskID: "task",
 		Purpose: llm.ProviderRoutePurposeRun,
 	})
 	ctx = llm.WithSelectedProviderRoute(ctx, selected)
@@ -372,15 +372,15 @@ func TestDriver_RoutedProviderFailureIsContentFree(t *testing.T) {
 	}}
 	driver := newDriverWithClient(newStubClient(), bfschemas.OpenAI, nil)
 	driver.routeClient = provider
-	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	driver.providerRoute = llm.ProviderRouteConfig{Resolver: resolver}
 	ctx, err := identity.WithRun(context.Background(), identity.Identity{
 		TenantID: "tenant", UserID: "user", SessionID: "session",
 	}, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{
-		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task",
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime",
+		Route: route, EffectiveAgentID: "agent", TaskID: "task",
 		Purpose: llm.ProviderRoutePurposeRun,
 	})
 	ctx = llm.WithSelectedProviderRoute(ctx, resolver.selected)

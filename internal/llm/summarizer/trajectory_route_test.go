@@ -23,11 +23,11 @@ func (trajectoryRouteResolver) ResolveProviderRoute(context.Context, llm.Provide
 }
 
 func TestTrajectorySummariser_IndependentRouteRejectsInvalidConstruction(t *testing.T) {
-	for _, mode := range []string{"empty", "incomplete", "missing-resolver", "missing-runtime", "ambiguous-model"} {
+	for _, mode := range []string{"empty", "incomplete", "missing-resolver", "ambiguous-model"} {
 		t.Run(mode, func(t *testing.T) {
 			route := llm.ProviderRoute{RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection",
 				ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "compact"}
-			cfg := llm.ProviderRouteConfig{Resolver: trajectoryRouteResolver{}, RuntimeID: "runtime"}
+			cfg := llm.ProviderRouteConfig{Resolver: trajectoryRouteResolver{}}
 			var options []summarizer.TrajectoryOption
 			switch mode {
 			case "empty":
@@ -36,8 +36,6 @@ func TestTrajectorySummariser_IndependentRouteRejectsInvalidConstruction(t *test
 				route.RouteGeneration = 0
 			case "missing-resolver":
 				cfg.Resolver = nil
-			case "missing-runtime":
-				cfg.RuntimeID = ""
 			case "ambiguous-model":
 				options = append(options, summarizer.WithTrajectoryModel("other"))
 			}
@@ -52,7 +50,7 @@ func TestTrajectorySummariser_IndependentRouteRejectsInvalidConstruction(t *test
 func TestTrajectorySummariser_IndependentRoutePacksActualRequestsAndPreservesParent(t *testing.T) {
 	maintenance := llm.ProviderRoute{RouteID: "maintenance", RouteGeneration: 1, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 2, CredentialAssetGeneration: 3, ModelSelector: "compact-alias"}
-	parent := llm.TrustedProviderRouteContext{Route: maintenance, RuntimeID: "runtime", EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun}
+	parent := llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: maintenance, EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun}
 	parent.Route.RouteID, parent.Route.ModelSelector = "driving", "large-alias"
 	rc := trajRC("run")
 	ctx, err := identity.WithRun(t.Context(), rc.Quadruple.Identity, rc.Quadruple.RunID)
@@ -63,7 +61,7 @@ func TestTrajectorySummariser_IndependentRoutePacksActualRequestsAndPreservesPar
 	selections := make(map[string]bool)
 	resolver := trajectoryRouteResolver{selectFn: func(_ context.Context, req llm.ProviderRouteRequest) (llm.SelectedProviderRoute, error) {
 		if req.TenantID != "t1" || req.UserID != "u1" || req.SessionID != "s1" || req.LogicalRunID != "run" ||
-			req.EffectiveAgentID != "agent" || req.RuntimeID != "runtime" || req.TaskID != "task" || req.RouteID != "maintenance" {
+			req.EffectiveAgentID != "agent" || req.TaskID != "task" || req.RouteID != "maintenance" {
 			t.Fatalf("changed admitted identity or route: %+v", req)
 		}
 		if req.LogicalCallID == "" || selections[req.LogicalCallID] {
@@ -89,7 +87,7 @@ func TestTrajectorySummariser_IndependentRoutePacksActualRequestsAndPreservesPar
 		}
 		return llm.CompleteResponse{Content: goodSummaryJSON, FinishReason: "stop"}, nil
 	}}
-	s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryProviderRoute(maintenance, llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}, .05))
+	s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryProviderRoute(maintenance, llm.ProviderRouteConfig{Resolver: resolver}, .05))
 	if err != nil {
 		t.Fatal(err)
 	}

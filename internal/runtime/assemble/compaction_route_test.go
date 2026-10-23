@@ -111,7 +111,7 @@ func testAssembleIndependentCompactionRoute(t *testing.T, configured, expected i
 	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{{Name: "fixture-route", BaseURL: provider.URL,
 		APIKeyEnvVar: env, Models: []string{"driving-model", "compact-model"}, Timeout: 5 * time.Second}}
 	cfg.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{"driving-model": {ContextWindowTokens: 1000000, TokenEstimator: "chars_div_4"}}
-	stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{ProviderRoute: llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}})
+	stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{ProviderRoute: llm.ProviderRouteConfig{Resolver: resolver}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func testAssembleIndependentCompactionRoute(t *testing.T, configured, expected i
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "runtime", EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun,
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime", EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun,
 		Route: llm.ProviderRoute{RouteID: "driving", RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 2, CredentialAssetGeneration: 3, ModelSelector: "driving-alias"}})
 	rc := planner.RunContext{Quadruple: identity.Quadruple{Identity: id, RunID: "run"}, Query: "edit", Budget: planner.Budget{TokenBudget: 100}}
 	trajectory := func() *planner.Trajectory {

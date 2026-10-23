@@ -175,6 +175,8 @@ type KeySet interface {
 
 // Verified is the result of a successful Validate call.
 type Verified struct {
+	// RuntimeID is the verified top-level runtime_id claim, when present.
+	RuntimeID string
 	// Identity is the (tenant, user, session) triple extracted from the
 	// JWT's mandatory claims. Validates clean against identity.Validate
 	// — the Validator already ran that check.
@@ -513,7 +515,9 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		}
 	}
 
+	runtimeID, _ := claims["runtime_id"].(string) // Missing or non-string authority remains empty and route admission rejects it.
 	return Verified{
+		RuntimeID:    runtimeID,
 		Identity:     id,
 		Scopes:       scopes,
 		AgentReach:   reach,

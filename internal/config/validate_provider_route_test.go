@@ -9,14 +9,13 @@ func TestValidateLLMProviderRoute_EmptyIsOptionalAndConfiguredIsPinned(t *testin
 	if err := validateLLMProviderRoute(LLMProviderRouteConfig{}); err != nil {
 		t.Fatalf("empty optional route config: %v", err)
 	}
-	valid := LLMProviderRouteConfig{ResolverURL: "https://resolver.example.test/provider-route", AuthTokenEnv: "HARBOR_PROVIDER_ROUTE_TOKEN", RuntimeID: "runtime-a"}
+	valid := LLMProviderRouteConfig{ResolverURL: "https://resolver.example.test/provider-route", AuthTokenEnv: "HARBOR_PROVIDER_ROUTE_TOKEN"}
 	if err := validateLLMProviderRoute(valid); err != nil {
 		t.Fatalf("valid: %v", err)
 	}
 	for name, mutate := range map[string]func(*LLMProviderRouteConfig){
 		"plaintext egress":  func(c *LLMProviderRouteConfig) { c.ResolverURL = "http://resolver.example.test/provider-route" },
 		"missing token env": func(c *LLMProviderRouteConfig) { c.AuthTokenEnv = "" },
-		"missing runtime":   func(c *LLMProviderRouteConfig) { c.RuntimeID = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := valid

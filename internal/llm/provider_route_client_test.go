@@ -86,7 +86,6 @@ func TestProviderRouteClient_RejectsSelectionExpiredDuringResolverCall(t *testin
 			Resolver: routeClientResolver{selected: selected, onSelect: func() {
 				now = selected.ExpiresAt
 			}},
-			RuntimeID: "runtime",
 		},
 		validator: routeClientValidator{allowed: map[string]bool{"openai": true}, calls: &validatorCalls},
 		now:       func() time.Time { return now },
@@ -97,8 +96,8 @@ func TestProviderRouteClient_RejectsSelectionExpiredDuringResolverCall(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{
-		Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task",
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime",
+		Route: route, EffectiveAgentID: "agent", TaskID: "task",
 		Purpose: ProviderRoutePurposeRun,
 	})
 
@@ -122,13 +121,13 @@ func TestProviderRouteClient_SelectedModelReachesModelSensitivePolicy(t *testing
 		CredentialAssetGeneration: route.CredentialAssetGeneration, ModelSelector: route.ModelSelector, ExpiresAt: now.Add(time.Minute),
 	}
 	probe := &routePolicyProbe{profiles: map[string]int{"runtime-large": 10_000, "selected-small": 10}}
-	client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}, RuntimeID: "runtime"}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
+	client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}
 	ctx, err := identity.WithRun(context.Background(), id, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 	text := strings.Repeat("x", 80)
 	_, err = client.Complete(ctx, CompleteRequest{Model: "runtime-large", Messages: []ChatMessage{{Role: RoleUser, Content: Content{Text: &text}}}})
 	if !errors.Is(err, ErrContextWindowExceeded) {
@@ -149,13 +148,12 @@ func TestProviderRouteClient_UnpermittedSelectionNeverReachesPolicyChain(t *test
 	}
 	probe := &routePolicyProbe{profiles: map[string]int{"arbitrary-model": 1000}}
 	client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{
-		Resolver: routeClientResolver{selected: selected}, RuntimeID: "runtime",
-	}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
+		Resolver: routeClientResolver{selected: selected}}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
 	ctx, err := identity.WithRun(context.Background(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 	if _, err := client.Complete(ctx, CompleteRequest{}); !errors.Is(err, ErrProviderRouteInvalid) {
 		t.Fatalf("unpermitted selection error = %v, want ErrProviderRouteInvalid", err)
 	}
@@ -174,12 +172,12 @@ func TestProviderRouteClient_UsesRouteModelProfileWithoutStaticProfile(t *testin
 		ModelProfile: &ProviderModelProfile{ContextWindowTokens: 8192, MaxOutputTokens: 1024, ReasoningEffortLevels: []ReasoningEffort{ReasoningHigh}},
 	}
 	probe := &routePolicyProbe{profiles: map[string]int{"arbitrary/model": 1000}}
-	client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}, RuntimeID: "runtime"}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
+	client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
 	ctx, err := identity.WithRun(context.Background(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 	if _, err := client.Complete(ctx, CompleteRequest{Model: "boot/profile", ReasoningEffort: ReasoningHigh}); err != nil {
 		t.Fatalf("route profile completion error = %v", err)
 	}
@@ -203,12 +201,12 @@ func TestProviderRouteClient_DefaultsOmittedMaxTokensToRouteCeiling(t *testing.T
 	}
 	probe := &routePolicyProbe{profiles: map[string]int{"arbitrary/model": 1000}}
 	safe := newSafetyClient(probe, ConfigSnapshot{HeavyOutputThreshold: 32 << 10}, Deps{})
-	client := &providerRouteClient{inner: safe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}, RuntimeID: "runtime"}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
+	client := &providerRouteClient{inner: safe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
 	ctx, err := identity.WithRun(context.Background(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+	ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 	text := "hello"
 	if _, err := client.Complete(ctx, CompleteRequest{Model: "boot/profile", Messages: []ChatMessage{{Role: RoleUser, Content: Content{Text: &text}}}}); err != nil {
 		t.Fatalf("route completion error = %v", err)
@@ -233,12 +231,12 @@ func TestProviderRouteClient_RejectsExplicitControlsOutsideRouteCapabilities(t *
 	} {
 		t.Run(name, func(t *testing.T) {
 			probe := &routePolicyProbe{}
-			client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}, RuntimeID: "runtime"}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
+			client := &providerRouteClient{inner: probe, cfg: ProviderRouteConfig{Resolver: routeClientResolver{selected: selected}}, validator: routeClientValidator{allowed: map[string]bool{"openai": true}}, now: func() time.Time { return now }}
 			ctx, err := identity.WithRun(context.Background(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{Route: route, EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+			ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun})
 			if _, err := client.Complete(ctx, req); !errors.Is(err, ErrProviderRouteInvalid) {
 				t.Fatalf("error = %v, want ErrProviderRouteInvalid", err)
 			}
@@ -287,5 +285,30 @@ func TestEffectiveModelProfileRouteOverlayPreservesConfiguredPolicy(t *testing.T
 	}
 	if profile.DefaultMaxTokens == nil || *profile.DefaultMaxTokens != maxRetries {
 		t.Fatalf("route overlay dropped configured max-token policy: %#v", profile.DefaultMaxTokens)
+	}
+}
+
+func TestProviderRouteClient_RequiresTrustedRuntimeWithoutConfiguredIdentity(t *testing.T) {
+	route := ProviderRoute{RouteID: "route", RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "fast"}
+	selected := SelectedProviderRoute{Provider: "openai", Model: "model", KeyName: "key", RouteID: route.RouteID, RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "fast", ExpiresAt: time.Now().Add(time.Minute)}
+	for _, runtimeID := range []string{"", "verified-runtime"} {
+		t.Run("runtime="+runtimeID, func(t *testing.T) {
+			probe := &routePolicyProbe{profiles: map[string]int{"model": 1000}}
+			selections := 0
+			client := newProviderRouteClient(probe, ProviderRouteConfig{Resolver: routeClientResolver{selected: selected, onSelect: func() { selections++ }}}, routeClientValidator{allowed: map[string]bool{"openai": true}})
+			ctx, err := identity.WithRun(t.Context(), identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}, "run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx = WithTrustedProviderRoute(ctx, TrustedProviderRouteContext{RuntimeID: runtimeID, Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: ProviderRoutePurposeRun})
+			_, err = client.Complete(ctx, CompleteRequest{})
+			if runtimeID == "" {
+				if !errors.Is(err, ErrProviderRouteInvalid) || selections != 0 || probe.calls != 0 {
+					t.Fatalf("missing runtime reached resolver/policy: err=%v select=%d calls=%d", err, selections, probe.calls)
+				}
+			} else if err != nil || selections != 1 || probe.calls != 1 {
+				t.Fatalf("trusted runtime without config failed: err=%v select=%d calls=%d", err, selections, probe.calls)
+			}
+		})
 	}
 }

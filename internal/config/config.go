@@ -326,7 +326,6 @@ type LLMConfig struct {
 type LLMProviderRouteConfig struct {
 	ResolverURL  string        `yaml:"resolver_url,omitempty"`
 	AuthTokenEnv string        `yaml:"auth_token_env,omitempty"`
-	RuntimeID    string        `yaml:"runtime_id,omitempty"`
 	Timeout      time.Duration `yaml:"timeout,omitempty"`
 }
 

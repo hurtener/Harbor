@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -404,4 +405,61 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestProviderRoute_RemovedRuntimeIdentityIgnored(t *testing.T) {
+	for _, yamlSetting := range []bool{false, true} {
+		for _, envSetting := range []bool{false, true} {
+			t.Run(fmt.Sprintf("yaml=%t/env=%t", yamlSetting, envSetting), func(t *testing.T) {
+				data := strings.Replace(baseFixtureYAML, "  provider: openrouter", "  provider_route:\n    resolver_url: https://resolver.example.test/route\n    auth_token_env: ROUTE_TOKEN\n  provider: openrouter", 1)
+				if yamlSetting {
+					data = strings.Replace(data, "    auth_token_env: ROUTE_TOKEN", "    auth_token_env: ROUTE_TOKEN\n    runtime_id: obsolete-runtime", 1)
+				}
+				if envSetting {
+					t.Setenv("HARBOR_LLM_PROVIDER_ROUTE_RUNTIME_ID", "obsolete-env-runtime")
+				}
+				var logs bytes.Buffer
+				cfg, err := config.LoadFromBytes(t.Context(), []byte(data), config.WithLogger(captureLogger(&logs)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cfg.LLM.ProviderRoute.ResolverURL != "https://resolver.example.test/route" || cfg.LLM.ProviderRoute.AuthTokenEnv != "ROUTE_TOKEN" {
+					t.Fatal("resolver configuration lost")
+				}
+				fields := warningFields(t, &logs)
+				want := 0
+				if yamlSetting {
+					want++
+				}
+				if envSetting {
+					want++
+				}
+				if len(fields) != want {
+					t.Fatalf("deprecation warnings = %v, want %d", fields, want)
+				}
+				if strings.Contains(logs.String(), "obsolete-runtime") || strings.Contains(logs.String(), "obsolete-env-runtime") {
+					t.Fatal("obsolete config values logged")
+				}
+			})
+		}
+	}
+}
+
+func TestProviderRoute_RemovedRuntimeIdentityAloneKeepsResolverDisabled(t *testing.T) {
+	data := strings.Replace(baseFixtureYAML, "  provider: openrouter", "  provider_route:\n    runtime_id: obsolete-runtime\n  provider: openrouter", 1)
+	var logs bytes.Buffer
+	cfg, err := config.LoadFromBytes(t.Context(), []byte(data), config.WithLogger(captureLogger(&logs)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.ProviderRoute != (config.LLMProviderRouteConfig{}) {
+		t.Fatalf("removed setting activated resolver: %+v", cfg.LLM.ProviderRoute)
+	}
+	if fields := warningFields(t, &logs); len(fields) != 1 || fields[0] != "llm.provider_route.runtime_id" {
+		t.Fatalf("warnings = %v", fields)
+	}
+	data = strings.Replace(data, "runtime_id:", "runtime_id_typo:", 1)
+	if _, err := config.LoadFromBytes(t.Context(), []byte(data), config.WithLogger(captureLogger(&logs))); err == nil {
+		t.Fatal("unrelated unknown config field accepted")
+	}
 }

@@ -99,7 +99,7 @@ func TestTrajectoryAdmission_RouteRefusalPreservesCheckpoint(t *testing.T) {
 	}}
 	route := llm.ProviderRoute{RouteID: "maintenance", RouteGeneration: 1, ProviderConnectionID: "connection", ProviderConnectionGeneration: 1, CredentialAssetGeneration: 1, ModelSelector: "compact"}
 	client := newStubClient()
-	s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryProviderRoute(route, llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}, .05))
+	s, err := summarizer.NewTrajectorySummariser(client, summarizer.WithTrajectoryProviderRoute(route, llm.ProviderRouteConfig{Resolver: resolver}, .05))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestTrajectoryAdmission_RouteRefusalPreservesCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{Route: route, RuntimeID: "runtime", EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun})
+	ctx = llm.WithTrustedProviderRoute(ctx, llm.TrustedProviderRouteContext{RuntimeID: "verified-runtime", Route: route, EffectiveAgentID: "agent", TaskID: "task", Purpose: llm.ProviderRoutePurposeRun})
 	got, err := s.Summarise(ctx, rc, tr)
 	if !errors.Is(err, llm.ErrProviderRouteResolutionFailed) || got != nil || len(client.seenCalls()) != 0 || selections != 1 {
 		t.Fatalf("revoked maintenance route reached inference: got=%v err=%v calls=%d", got, err, len(client.seenCalls()))
