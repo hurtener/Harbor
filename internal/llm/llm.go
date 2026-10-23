@@ -365,6 +365,11 @@ type ImagePart struct {
 	Artifact *ArtifactStub
 	MIME     string
 	Detail   string
+	// DirectInput marks a bounded operator-uploaded image prepared by the
+	// planner for the current user turn. The LLM safety pass preserves its
+	// bytes for an image-capable provider instead of offloading them by the
+	// heavy-output threshold. It is not serialized into provider payloads.
+	DirectInput bool
 	// ProviderNative requests the driver-internal provider upload for
 	// this part. See the struct doc.
 	ProviderNative bool
@@ -647,6 +652,9 @@ func (s ArtifactStub) MarshalJSON() ([]byte, error) {
 // `ContextWindowTokens` + `TokenEstimator` consumers; later phases
 // consume the rest.
 type ModelProfile struct {
+	// ImageInput is nil when support is unknown. False explicitly forbids
+	// image bytes on this model; true allows the bounded direct-input path.
+	ImageInput *bool
 	// ContextWindowTokens is the model's hard input-token cap.
 	// Required (> 0); the safety net's token-budget guard uses it.
 	ContextWindowTokens int
@@ -704,6 +712,7 @@ type ProviderModelProfile struct {
 	MaxOutputTokens       int
 	ReasoningEffort       ReasoningEffort
 	ReasoningEffortLevels []ReasoningEffort
+	ImageInput            *bool
 }
 
 const (
@@ -783,11 +792,13 @@ func (profile ProviderModelProfile) modelProfile() ModelProfile {
 		ContextWindowTokens: profile.ContextWindowTokens,
 		DefaultMaxTokens:    &maxTokens,
 		ReasoningEffort:     profile.ReasoningEffort,
+		ImageInput:          cloneBool(profile.ImageInput),
 	}
 }
 
 func cloneModelProfile(profile ModelProfile) ModelProfile {
 	clone := profile
+	clone.ImageInput = cloneBool(profile.ImageInput)
 	if profile.DefaultMaxTokens != nil {
 		maxTokens := *profile.DefaultMaxTokens
 		clone.DefaultMaxTokens = &maxTokens
@@ -827,6 +838,11 @@ func EffectiveModelProfile(req CompleteRequest, cfg ConfigSnapshot) (ModelProfil
 		if profile.ReasoningEffort == "" {
 			profile.ReasoningEffort = req.modelProfile.ReasoningEffort
 		}
+		// A selected route's capability describes the actual chosen model.
+		// Nil preserves static policy only when the resolver lacks this fact.
+		if req.modelProfile.ImageInput != nil {
+			profile.ImageInput = cloneBool(req.modelProfile.ImageInput)
+		}
 		return cloneModelProfile(profile), true
 	}
 	profile, ok := cfg.ModelProfiles[req.Model]
@@ -834,6 +850,14 @@ func EffectiveModelProfile(req CompleteRequest, cfg ConfigSnapshot) (ModelProfil
 		return ModelProfile{}, false
 	}
 	return cloneModelProfile(profile), true
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // HasTrustedModelProfile reports whether req carries a route-bound profile for

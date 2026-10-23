@@ -37,7 +37,7 @@ Click the paperclip or drag a file into the chat. The Playground POSTs to the Ru
 
 The runtime then dispatches based on MIME:
 
-- **`image/*`** — Path 1 INLINE. The image is base64-encoded into a `DataURL` and passed in the LLM call as a multimodal content block. The LLM sees the pixels directly. Works for any LLM provider that speaks multimodal vision (Claude, GPT-4o, Gemini, Llama 3.2 Vision).
+- **PNG/JPEG/WebP/GIF `image/*`** — Path 1 INLINE. A current-turn uploaded image is base64-encoded into a bounded `DataURL` and passed as a multimodal block. A declared nonvision model receives a clear notice that it did not inspect the image. Other image types keep the ordinary heavy-content handling.
 - **`application/pdf`** — Path 2 ARTIFACT STUB. The planner sees `{ "ref": "art-abc123", "mime": "application/pdf", "size": 142853, "filename": "report.pdf" }` and can decide what to do (e.g. call a `pdf.extract_text` tool to pull pages out). The bytes never inline into the LLM context window.
 - **`audio/*`** — Path 2 ARTIFACT STUB. Same as PDF — the planner sees a stub and routes to a transcription tool if you have one.
 - **Other MIMEs** — Path 2 ARTIFACT STUB. Conservative default.
@@ -58,7 +58,7 @@ The pick rides the `start` request as `input_artifact_dispositions` and outranks
 ### Limits
 
 - **Max upload size**: governed by `protocol.max_request_bytes` (the `artifacts.put` upload body bound; default 4 MiB). A body above this fails with `CodeRequestTooLarge` / HTTP 413 rather than silently truncating.
-- **Path 1 inline cap**: ~20MB of image data per LLM call (the provider's actual limit varies). Larger images get downscaled by the Console before upload — the original lives in the artifact store; the LLM sees the downscaled version inline.
+- **Path 1 inline cap**: 3 MiB decoded per uploaded image, independent of `artifacts.heavy_output_threshold_bytes`. A larger marked image fails loudly before provider dispatch. The provider may impose a smaller limit.
 
 ## 3. Foreground vs background tasks
 
@@ -132,7 +132,7 @@ Multiple images in one turn — drop them all at once, or use multiple paperclip
 ## Common failure modes
 
 - **"Task failed: ErrMissingAPIKey".** Same root cause as `harbor dev`'s — the env var isn't set in the shell that boots Runtime. Restart `harbor dev` with the key exported.
-- **Image upload silently succeeds but the LLM "doesn't see" it.** Your provider doesn't speak multimodal vision (e.g. `gpt-3.5-turbo`, `claude-3-haiku`). Swap to a vision-capable model (claude-haiku-4.5, gpt-4o, gemini-1.5-pro). Bifrost passes the DataURL regardless; the provider rejects or ignores it.
+- **Image upload succeeds but the model cannot inspect it.** Check `llm.model_profiles.<model>.image_input` or the external route's `model_profile.image_input`. Explicit `false` withholds the image and gives the model a clear notice; omitted means support is unknown and the bounded image is sent to the provider. Select a model that accepts image input when visual inspection is required.
 - **PDF dropped but no tool picks it up.** You don't have a PDF-handling tool registered. Wire one — `add-an-in-process-tool` for an in-house PDF extractor, or attach an MCP server that exposes one.
 - **Chat freezes mid-stream.** Almost always the LLM provider taking longer than `llm.timeout`. Bump the timeout, OR check provider status. The Task page shows the in-flight LLM call's elapsed time live.
 - **"Steer" cancelled my tool call but the tool already wrote to my external API.** Tool calls aren't transactional — the cancellation kills the goroutine but doesn't roll back side effects the tool already executed. Design tools to be idempotent OR use approval (HITL pause before the side-effecting call).

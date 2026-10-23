@@ -99,18 +99,23 @@ func TestProviderRoute_EndpointMustMatchProviderAndDigest(t *testing.T) {
 
 func TestProviderRoute_ModelProfileMustRemainExactAtAttempt(t *testing.T) {
 	t.Parallel()
-	profile := llm.ProviderModelProfile{ContextWindowTokens: 1000000, MaxOutputTokens: 128000, ReasoningEffort: llm.ReasoningHigh, ReasoningEffortLevels: []llm.ReasoningEffort{llm.ReasoningLow, llm.ReasoningHigh}}
+	imageInput := true
+	profile := llm.ProviderModelProfile{ContextWindowTokens: 1000000, MaxOutputTokens: 128000, ReasoningEffort: llm.ReasoningHigh, ReasoningEffortLevels: []llm.ReasoningEffort{llm.ReasoningLow, llm.ReasoningHigh}, ImageInput: &imageInput}
 	selected := llm.SelectedProviderRoute{ModelProfile: &profile}
 	for name, mutate := range map[string]func(*llm.ProviderModelProfile){
-		"context":           func(p *llm.ProviderModelProfile) { p.ContextWindowTokens++ },
-		"output":            func(p *llm.ProviderModelProfile) { p.MaxOutputTokens++ },
-		"default reasoning": func(p *llm.ProviderModelProfile) { p.ReasoningEffort = llm.ReasoningLow },
-		"level count":       func(p *llm.ProviderModelProfile) { p.ReasoningEffortLevels = []llm.ReasoningEffort{llm.ReasoningHigh} },
-		"level value":       func(p *llm.ProviderModelProfile) { p.ReasoningEffortLevels[0] = llm.ReasoningMedium },
+		"context":             func(p *llm.ProviderModelProfile) { p.ContextWindowTokens++ },
+		"output":              func(p *llm.ProviderModelProfile) { p.MaxOutputTokens++ },
+		"default reasoning":   func(p *llm.ProviderModelProfile) { p.ReasoningEffort = llm.ReasoningLow },
+		"level count":         func(p *llm.ProviderModelProfile) { p.ReasoningEffortLevels = []llm.ReasoningEffort{llm.ReasoningHigh} },
+		"level value":         func(p *llm.ProviderModelProfile) { p.ReasoningEffortLevels[0] = llm.ReasoningMedium },
+		"image input":         func(p *llm.ProviderModelProfile) { unsupported := false; p.ImageInput = &unsupported },
+		"unknown image input": func(p *llm.ProviderModelProfile) { p.ImageInput = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			copy := profile
 			copy.ReasoningEffortLevels = append([]llm.ReasoningEffort(nil), profile.ReasoningEffortLevels...)
+			imageInputCopy := *profile.ImageInput
+			copy.ImageInput = &imageInputCopy
 			resolved := llm.ResolvedProviderRoute{ModelProfile: &copy}
 			if !llm.ProviderRouteResolutionMatchesSelection(resolved, selected) {
 				t.Fatal("identical profile refused")

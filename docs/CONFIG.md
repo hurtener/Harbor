@@ -440,6 +440,15 @@ tokens, reasoning-effort, cost overrides, max-retries, correction-
 layer overrides). Each entry's `context_window_tokens` MUST be > 0.
 See the `LLMModelProfileConfig` godoc for the full surface.
 
+`image_input` is optional: `true` declares image input support; `false`
+withholds attached image content from that model and gives it a clear notice;
+omission means support is unknown and preserves the existing image route. An
+external provider-route resolver can supply the same request-local fact as
+`model_profile.image_input` only when Harbor advertises
+`image_input_supported: true` in its select/resolve request.
+Deploy a trusted resolver that honors this negotiation before upgrading a
+runtime, so older runtimes never receive the additive field.
+
 ### llm.corrections.enabled
 
 Top-level toggle for the Phase 34 per-provider correction layer.

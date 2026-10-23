@@ -94,6 +94,7 @@ func modelProfilesFromConfig(in map[string]config.LLMModelProfileConfig) map[str
 	for name, p := range in {
 		mp := ModelProfile{
 			ContextWindowTokens: p.ContextWindowTokens,
+			ImageInput:          cloneBool(p.ImageInput),
 			TokenEstimator:      p.TokenEstimator,
 			JSONSchemaMode:      p.JSONSchemaMode,
 			ReasoningEffort:     ReasoningEffort(p.ReasoningEffort),

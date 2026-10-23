@@ -512,12 +512,14 @@ type LLMCorrectionsConfig struct {
 //     provider doesn't include cost in its response. Harbor
 //     reads when accumulating identity-scoped cost.
 type LLMModelProfileConfig struct {
-	ContextWindowTokens int                     `yaml:"context_window_tokens"`
-	TokenEstimator      string                  `yaml:"token_estimator,omitempty"`
-	JSONSchemaMode      string                  `yaml:"json_schema_mode,omitempty"`
-	DefaultMaxTokens    *int                    `yaml:"default_max_tokens,omitempty"`
-	ReasoningEffort     string                  `yaml:"reasoning_effort,omitempty"`
-	CostOverrides       *LLMCostOverridesConfig `yaml:"cost_overrides,omitempty"`
+	ContextWindowTokens int `yaml:"context_window_tokens"`
+	// ImageInput is an optional capability declaration. Omitted means unknown.
+	ImageInput       *bool                   `yaml:"image_input,omitempty"`
+	TokenEstimator   string                  `yaml:"token_estimator,omitempty"`
+	JSONSchemaMode   string                  `yaml:"json_schema_mode,omitempty"`
+	DefaultMaxTokens *int                    `yaml:"default_max_tokens,omitempty"`
+	ReasoningEffort  string                  `yaml:"reasoning_effort,omitempty"`
+	CostOverrides    *LLMCostOverridesConfig `yaml:"cost_overrides,omitempty"`
 	// Corrections — per-model overrides for the correction
 	// layer. nil → use the per-provider defaults baked into
 	// `internal/llm/corrections.defaultProfileFor`. See

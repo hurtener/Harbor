@@ -374,6 +374,7 @@ func cloneProviderModelProfile(profile *ProviderModelProfile) *ProviderModelProf
 		return nil
 	}
 	clone := *profile
+	clone.ImageInput = cloneBool(profile.ImageInput)
 	if profile.ReasoningEffortLevels != nil {
 		clone.ReasoningEffortLevels = make([]ReasoningEffort, len(profile.ReasoningEffortLevels))
 		copy(clone.ReasoningEffortLevels, profile.ReasoningEffortLevels)
@@ -428,6 +429,10 @@ func providerModelProfilesEqual(a, b *ProviderModelProfile) bool {
 	}
 	if a.ContextWindowTokens != b.ContextWindowTokens || a.MaxOutputTokens != b.MaxOutputTokens ||
 		a.ReasoningEffort != b.ReasoningEffort || len(a.ReasoningEffortLevels) != len(b.ReasoningEffortLevels) {
+		return false
+	}
+	if (a.ImageInput == nil) != (b.ImageInput == nil) ||
+		(a.ImageInput != nil && *a.ImageInput != *b.ImageInput) {
 		return false
 	}
 	if (a.ReasoningEffortLevels == nil) != (b.ReasoningEffortLevels == nil) {

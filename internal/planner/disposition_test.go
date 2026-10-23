@@ -61,8 +61,9 @@ func goldenParityContent(t *testing.T, goal string) llm.Content {
 	parts := []llm.ContentPart{
 		{Type: llm.PartText, Text: goal},
 		{Type: llm.PartImage, Image: &llm.ImagePart{
-			DataURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(imgBytes),
-			MIME:    "image/png",
+			DataURL:     "data:image/png;base64," + base64.StdEncoding.EncodeToString(imgBytes),
+			MIME:        "image/png",
+			DirectInput: true,
 		}},
 		{Type: llm.PartText, Text: stubText(&llm.ArtifactStub{
 			Ref: "art_img_nobytes", MIME: "image/jpeg", SizeBytes: 4096,

@@ -16129,3 +16129,30 @@ The operation-bound opt-in resource response also returns
 render admission. This lets a trusted host create an exact next-operation intent
 without decoding the sealed token. Ordinary reads and unavailable admissions omit
 it. The fingerprint is not authority; fresh sealed admission remains mandatory.
+
+## D-487 — Preserve bounded uploaded images for model inspection
+
+**Date:** 2026-10-22. **Status:** Settled. **Supersedes:** D-022 and D-026 only
+for a bounded current-user image input. **Where it lives:** RFC §6.5, the LLM
+safety pass, and the provider-route model profile.
+
+A user-uploaded PNG/JPEG/WebP/GIF was inlined by the planner, then converted by
+the older LLM safety pass to an `ArtifactStub` whenever its decoded size met
+the heavy-output threshold. The provider saw only a reference and could not
+inspect the pixels. The original safety pass predates the uploaded-image path;
+this was an interaction between two settled mechanisms, not a new provider
+transport behavior.
+
+The planner marks only a current-user upload as direct image input. The LLM
+edge validates its media type, matching DataURL MIME, and decoded size at most
+3 MiB before allowing the provider request to carry its bytes. Larger or
+malformed marked inputs fail loudly. Other roles, modalities, and unmarked
+images retain ordinary offload and leak checks. Image bytes remain absent from
+events, audit, memory, and durable records. A selected model profile may say
+`image_input: true` or `false`; omission means unknown and keeps legacy
+behavior. Explicit false replaces the image with a clear model-facing notice
+that content was withheld and must not be claimed as inspected. The profile is
+request-local for an external route and its boolean is bound across selection
+and credential resolution. External resolvers include `image_input` only when
+the runtime request advertises `image_input_supported`, preserving old runtime
+compatibility.

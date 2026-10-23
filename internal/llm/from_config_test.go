@@ -16,6 +16,7 @@ import (
 func TestSnapshotFromConfig_GoldenFullProjection(t *testing.T) {
 	t.Parallel()
 	enabled := false
+	imageInput := false
 	maxTok := 4096
 	cfg := config.LLMConfig{
 		Driver:               "bifrost",
@@ -28,6 +29,7 @@ func TestSnapshotFromConfig_GoldenFullProjection(t *testing.T) {
 		ModelProfiles: map[string]config.LLMModelProfileConfig{
 			"anthropic/claude-sonnet-4": {
 				ContextWindowTokens: 200000,
+				ImageInput:          &imageInput,
 				TokenEstimator:      "chars_div_4",
 				JSONSchemaMode:      "native",
 				DefaultMaxTokens:    &maxTok,
@@ -107,6 +109,9 @@ func TestSnapshotFromConfig_GoldenFullProjection(t *testing.T) {
 	}
 	if prof.DefaultMaxTokens == nil || *prof.DefaultMaxTokens != 4096 {
 		t.Errorf("DefaultMaxTokens = %v, want ptr to 4096", prof.DefaultMaxTokens)
+	}
+	if prof.ImageInput == nil || *prof.ImageInput || prof.ImageInput == &imageInput {
+		t.Errorf("ImageInput = %v, want independent ptr to false", prof.ImageInput)
 	}
 	// 110c cross-fix: CostOverrides + Corrections must survive the
 	// projection (they were silently dropped pre-110c).
@@ -279,6 +284,7 @@ func TestSnapshotFromConfig_FieldParity_SubStructs(t *testing.T) {
 		t.Parallel()
 		assertFieldParity(t, reflect.TypeOf(config.LLMModelProfileConfig{}), map[string]bool{
 			"ContextWindowTokens": true,
+			"ImageInput":          true,
 			"TokenEstimator":      true,
 			"JSONSchemaMode":      true,
 			"DefaultMaxTokens":    true,
