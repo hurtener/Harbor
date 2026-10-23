@@ -1200,12 +1200,16 @@ func deriveSideEffect(a *mcpsdk.ToolAnnotations) tools.SideEffect {
 // the tool-DEFINITION MCP App binding captured at discovery (nil for a
 // non-app tool); it is reconciled with any per-result `_meta.ui` hint to
 // produce the effective app reference on the result.
-func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef, plan egressPlan) (tools.ToolResult, error) {
+func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessage, toolApp *AppRef, plan egressPlan) (result tools.ToolResult, callErr error) {
+	// Promotion happens inside the reliability shell. Every failure after it,
+	// including result materialization, must stop automatic effect retries.
+	defer func() { callErr = stopAgentOperationRetry(ctx, callErr) }()
 	session, err := p.sessionForRead()
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
 	var argMap map[string]any
+	var legacyDecodeErr error
 	switch {
 	case plan.args != nil:
 		// The egress-substituted argument map, decoded and resolved ONCE
@@ -1220,7 +1224,19 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 		}
 	case len(args) > 0:
 		if err := json.Unmarshal(args, &argMap); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
+			legacyDecodeErr = fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
+			var numberErr *json.UnmarshalTypeError
+			agent, trusted := appoperation.AgentInvocationFrom(ctx)
+			effective, admitted := tools.EffectiveAgentConfigFrom(ctx)
+			// A valid exact number can overflow only the legacy float decoder.
+			// Defer that error for trusted planner calls until the broker decides
+			// whether this is governed; malformed input still fails before auth.
+			if !errors.As(err, &numberErr) || !strings.HasPrefix(numberErr.Value, "number ") || !trusted || !admitted || agent != effective {
+				return tools.ToolResult{}, legacyDecodeErr
+			}
+			if _, err := appoperation.DecodeArguments(args); err != nil {
+				return tools.ToolResult{}, legacyDecodeErr
+			}
 		}
 	}
 	if operation, ok := appoperation.From(ctx); ok {
@@ -1242,24 +1258,48 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// token (per-tool override, falling back to the connection binding) and
 	// thread it onto the call's ctx BEFORE dispatch. A Token() failure aborts
 	// here — no wire request is issued.
-	ctx, err = p.resolveBearerCtx(ctx, name)
+	ctx, err = p.resolveAgentBearerCtx(ctx, name, func(ctx context.Context, agent string) (context.Context, error) {
+		// Ordinary MCP retains its existing decoding behavior. Only a governed
+		// promotion decodes raw input exactly; egress already preserved numbers.
+		if plan.args == nil {
+			var err error
+			argMap, err = appoperation.DecodeArguments(args)
+			if err != nil {
+				return ctx, appoperation.ErrInvalid
+			}
+		}
+		raw, err := json.Marshal(argMap)
+		if err != nil {
+			return ctx, appoperation.ErrInvalid
+		}
+		return appoperation.WithAgentCall(ctx, agent, string(p.source), fmt.Sprintf("%s_%s", p.source, name), raw)
+	})
 	if err != nil {
 		return tools.ToolResult{}, err
+	}
+	if legacyDecodeErr != nil && !hasAppOperation(ctx) {
+		return tools.ToolResult{}, legacyDecodeErr
 	}
 	// Fail-closed per-user credential injection (receiver-style server): source
 	// the acting principal's credential from the broker and inject it in the
 	// declared form. The HTTP forms (header / Basic) ride the call's ctx into
 	// the injecting transport; the `_meta` form mutates meta in place BEFORE it
 	// is stamped onto params below. A broker error aborts here — no wire request.
-	ctx, err = p.resolveInjection(ctx, meta)
+	injected, err := p.resolveInjection(ctx, meta)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
+	ctx = injected
 	params := &mcpsdk.CallToolParams{
 		Name:      name,
 		Arguments: argMap,
 	}
 	params.Meta = meta
+	if operation, ok := appoperation.From(ctx); ok {
+		if err := operation.CheckCall(string(p.source), fmt.Sprintf("%s_%s", p.source, name), argMap); err != nil {
+			return tools.ToolResult{}, err
+		}
+	}
 	res, err := session.CallTool(ctx, params)
 	if err != nil {
 		// When the transport observed a `403` + insufficient_scope step-up on
@@ -1480,7 +1520,8 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
 		return tools.RunWithPolicy(
 			ctx, args,
-			func(ctx context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+			func(ctx context.Context, _ json.RawMessage) (result tools.ToolResult, callErr error) {
+				defer func() { callErr = stopAgentOperationRetry(ctx, callErr) }()
 				session, err := p.sessionForRead()
 				if err != nil {
 					return tools.ToolResult{}, err
@@ -1494,11 +1535,16 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 				// per-tool `oauth_provider` override declared for this resource
 				// resolves its bearer; an unbound resource falls back to the
 				// connection-level binding.
-				ctx, mErr = p.resolveBearerCtx(ctx, uri)
+				ctx, mErr = p.resolveAgentResourceBearerCtx(ctx, uri)
 				if mErr != nil {
 					return tools.ToolResult{}, mErr
 				}
 				params.Meta = meta
+				if operation, ok := appoperation.From(ctx); ok {
+					if err := operation.CheckResource(string(p.source), uri); err != nil {
+						return tools.ToolResult{}, err
+					}
+				}
 				res, err := session.ReadResource(ctx, params)
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, err)
@@ -1617,12 +1663,17 @@ func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (Re
 	// Per-entry binding: the resource URI is the addressing key so a per-tool
 	// override declared for this resource resolves its bearer (connection-level
 	// fallback when unbound).
-	ctx, mErr = p.resolveBearerCtx(ctx, uri)
+	ctx, mErr = p.resolveAgentResourceBearerCtx(ctx, uri)
 	if mErr != nil {
 		return ResourceRead{}, mErr
 	}
 	params := &mcpsdk.ReadResourceParams{URI: uri}
 	params.Meta = meta
+	if operation, ok := appoperation.From(ctx); ok {
+		if err := operation.CheckResource(string(p.source), uri); err != nil {
+			return ResourceRead{}, err
+		}
+	}
 	res, rErr := session.ReadResource(ctx, params)
 	if rErr != nil {
 		return ResourceRead{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)

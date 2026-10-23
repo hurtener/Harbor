@@ -2,8 +2,8 @@
 
 Status: implementation candidate; external host/broker acceptance and production
 activation remain separate. This extends the existing phase 238 MCP Apps path and the existing
-signed-capability token exchange. It creates no issuer, permission store, planner
-capability, browser credential channel, or alternate MCP transport.
+signed-capability token exchange. It creates no issuer, permission store, browser
+credential channel, or alternate MCP transport.
 
 ## Protocol
 
@@ -37,13 +37,14 @@ The signed-capability exchange adds one URL-encoded form field,
 | --- | --- |
 | `version` | Exactly `app-operation-v1`. |
 | `reference` | Broker-owned opaque selector. |
-| `kind` | `resource` or `tool`. |
+| `kind` | `resource`, `tool`, `agent_resource` or `agent_tool`. |
 | `agent_id` | Reach-admitted effective agent; must match signed provider. |
 | `server_id` | Actual runtime source ID, including its owned physical namespace. |
-| `resource_uri` | Exact rendered `ui://` resource. |
-| `generation` | Required for tools: verified current catalog generation. |
+| `resource_uri` | Exact `ui://` resource; empty for `agent_tool`. |
+| `generation` | Required for browser `tool`: verified current catalog generation. |
 | `tool` | Required for tools: exact qualified runtime catalog name. |
-| `arguments_sha256` | Required for tools: exact canonical input digest. |
+| `arguments_sha256` | Required for tool kinds: exact canonical outgoing input digest. |
+| `arguments` | Only `agent_tool`: canonical outgoing object, at most 8192 bytes. |
 
 A successful operation-bound opt-in resource read also returns
 `app_operation_generation`: the exact generation sealed into the accompanying
@@ -72,6 +73,27 @@ Absent arguments mean `{}`. Decode using exact JSON numbers; serialize with Go
 `encoding/json.Marshal` (sorted object keys, normalized string escaping) and hash
 the resulting bytes with SHA-256. Numeric spelling is preserved: `1` and `1.0`
 remain distinct. The broker must use these same rules for its saved input.
+
+## Trusted planner invocations
+
+The runtime marks planner dispatch with the reach-admitted effective agent; no
+model argument or Protocol field can supply this marker. Only the signed broker's
+exact `governed_app_operation_required` refusal promotes such a call to the
+operation lane. Other MCP providers retain their existing behavior. Existing
+cached generic credentials must still be retired before governing a provider.
+
+For `agent_tool`, the runtime generates a fresh random 64-character reference and
+binds the resolved physical source, qualified tool and canonical outgoing arguments
+**after** artifact egress substitution. It sends the exact arguments and digest;
+`resource_uri` is empty and `generation` is omitted. An `agent_resource` binds the
+exact `ui://` resource and omits tool, generation, digest and arguments. The
+reference is an ephemeral correlation coordinate; it grants no authority and is
+not a browser selector. The broker independently checks current provider policy,
+caller, installation and input before acknowledging the binding.
+
+The driver checks the binding again immediately before MCP dispatch. Every error
+after promotion stops automatic retries, including a lost result or materialization
+failure. Browser operations retain their fresh-render admission requirements.
 
 ## Lifecycle and activation
 

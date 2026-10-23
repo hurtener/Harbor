@@ -1728,7 +1728,13 @@ it to the admitted agent/source/resource and exact outgoing input; callbacks
 still require fresh render admission and the existing wrapped invocation. The
 signed-capability broker pull must acknowledge the complete binding, mint a
 bounded credential from current policy, and bypass shared caching/singleflight.
-App-bound callbacks do not automatically retry unknown effects. See
+App-bound callbacks do not automatically retry unknown effects. Trusted planner
+invocations may use the same lane after the signed broker explicitly requires a
+governed operation: they bind the reach-admitted effective agent, resolved source,
+qualified tool and bounded canonical outgoing arguments after artifact egress (or
+an exact App resource read). Browser render admission remains mandatory for browser
+callbacks. Planner bindings carry fresh correlation references, grant no authority,
+and likewise stop automatic retries after promotion. See
 [App operation v1](https://github.com/hurtener/Harbor/blob/main/docs/contracts/app-operation-v1.md) for the wire contract,
 local acceptance and activation requirements. The external host/broker lane
 requires its own product acceptance before production activation.

@@ -1,11 +1,12 @@
-// Package appoperation carries a broker-owned App operation selector through
-// an admitted runtime request. It grants no authority: the broker must resolve
-// the selector against its current policy and the verified caller coordinates.
+// Package appoperation carries exact App operation coordinates through admitted
+// browser and trusted planner requests. It grants no authority: the broker must
+// check its current policy and the verified caller coordinates.
 package appoperation
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,21 +20,76 @@ import (
 // ErrInvalid is a closed, content-free refusal of an operation binding.
 var ErrInvalid = errors.New("invalid app operation binding")
 
-// Binding is the content-free broker request extension. Identity and signed
-// provider destination still travel through their existing authenticated fields.
+// Binding is the broker request extension. Agent tool bindings carry bounded
+// canonical outgoing arguments; identity and destination remain authenticated separately.
 type Binding struct {
-	Version         string `json:"version"`
-	Reference       string `json:"reference"`
-	Kind            string `json:"kind"`
-	AgentID         string `json:"agent_id"`
-	ServerID        string `json:"server_id"`
-	ResourceURI     string `json:"resource_uri"`
-	Generation      string `json:"generation,omitempty"`
-	Tool            string `json:"tool,omitempty"`
-	ArgumentsSHA256 string `json:"arguments_sha256,omitempty"`
+	Version         string          `json:"version"`
+	Reference       string          `json:"reference"`
+	Kind            string          `json:"kind"`
+	AgentID         string          `json:"agent_id"`
+	ServerID        string          `json:"server_id"`
+	ResourceURI     string          `json:"resource_uri"`
+	Generation      string          `json:"generation,omitempty"`
+	Tool            string          `json:"tool,omitempty"`
+	ArgumentsSHA256 string          `json:"arguments_sha256,omitempty"`
+	Arguments       json.RawMessage `json:"arguments,omitempty"`
 }
 
 type contextKey struct{}
+type agentInvocationKey struct{}
+
+// WithAgentInvocation marks the trusted planner dispatch boundary with its
+// reach-admitted effective agent. This is not a Protocol or model input.
+func WithAgentInvocation(ctx context.Context, agent string) context.Context {
+	return context.WithValue(ctx, agentInvocationKey{}, agent)
+}
+
+// AgentInvocationFrom returns the agent stamped by trusted planner dispatch.
+func AgentInvocationFrom(ctx context.Context) (string, bool) {
+	agent, ok := ctx.Value(agentInvocationKey{}).(string)
+	return agent, ok && agent != ""
+}
+
+// WithAgentCall binds one trusted planner invocation to its final outgoing input.
+// The random reference is a call coordinate, never authority or a browser selector.
+func WithAgentCall(ctx context.Context, agent, server, tool string, args json.RawMessage) (context.Context, error) {
+	canonical, digest, err := CanonicalArguments(args)
+	if err != nil {
+		return nil, err
+	}
+	ref, err := newReference()
+	if err != nil {
+		return nil, err
+	}
+	b := Binding{Version: "app-operation-v1", Reference: ref, Kind: "agent_tool",
+		AgentID: agent, ServerID: server, Tool: tool, Arguments: canonical, ArgumentsSHA256: digest}
+	if err := b.validate(); err != nil {
+		return nil, err
+	}
+	return context.WithValue(ctx, contextKey{}, b), nil
+}
+
+// WithAgentRead binds one trusted planner invocation to an exact App resource.
+func WithAgentRead(ctx context.Context, agent, server, resource string) (context.Context, error) {
+	ref, err := newReference()
+	if err != nil {
+		return nil, err
+	}
+	b := Binding{Version: "app-operation-v1", Reference: ref, Kind: "agent_resource",
+		AgentID: agent, ServerID: server, ResourceURI: resource}
+	if err := b.validate(); err != nil {
+		return nil, err
+	}
+	return context.WithValue(ctx, contextKey{}, b), nil
+}
+
+func newReference() (string, error) {
+	var ref [32]byte
+	if _, err := rand.Read(ref[:]); err != nil {
+		return "", ErrInvalid
+	}
+	return hex.EncodeToString(ref[:]), nil
+}
 
 // WithRead binds a selector to the resource read admitted by the Protocol.
 func WithRead(ctx context.Context, ref, agent, server, resource string) (context.Context, error) {
@@ -63,6 +119,7 @@ func WithCall(ctx context.Context, ref, agent, server, resource, generation, too
 // From returns a value copy; callers cannot mutate another request's binding.
 func From(ctx context.Context) (Binding, bool) {
 	b, ok := ctx.Value(contextKey{}).(Binding)
+	b.Arguments = append(json.RawMessage(nil), b.Arguments...)
 	return b, ok
 }
 
@@ -70,16 +127,24 @@ func (b Binding) validate() error {
 	if b.Version != "app-operation-v1" || len(b.Reference) != 64 ||
 		strings.Trim(b.Reference, "0123456789abcdef") != "" ||
 		!bounded(b.AgentID, 256) || !bounded(b.ServerID, 256) ||
-		!bounded(b.ResourceURI, 2048) || !strings.HasPrefix(b.ResourceURI, "ui://") {
+		(b.Kind != "agent_tool" && (!bounded(b.ResourceURI, 2048) || !strings.HasPrefix(b.ResourceURI, "ui://"))) {
 		return ErrInvalid
 	}
 	switch b.Kind {
-	case "resource":
-		if b.Tool != "" || b.ArgumentsSHA256 != "" || b.Generation != "" {
+	case "resource", "agent_resource":
+		if b.Tool != "" || b.ArgumentsSHA256 != "" || b.Generation != "" || len(b.Arguments) != 0 {
 			return ErrInvalid
 		}
 	case "tool":
-		if !bounded(b.Tool, 256) || !bounded(b.Generation, 512) || len(b.ArgumentsSHA256) != 64 {
+		if !bounded(b.Tool, 256) || !bounded(b.Generation, 512) || len(b.ArgumentsSHA256) != 64 || strings.Trim(b.ArgumentsSHA256, "0123456789abcdef") != "" || len(b.Arguments) != 0 {
+			return ErrInvalid
+		}
+	case "agent_tool":
+		if b.ResourceURI != "" || b.Generation != "" || !bounded(b.Tool, 256) || len(b.Arguments) == 0 || len(b.Arguments) > 8192 || len(b.ArgumentsSHA256) != 64 {
+			return ErrInvalid
+		}
+		_, digest, err := CanonicalArguments(b.Arguments)
+		if err != nil || digest != b.ArgumentsSHA256 {
 			return ErrInvalid
 		}
 	default:
@@ -100,7 +165,7 @@ func bounded(s string, limit int) bool {
 	return true
 }
 
-// Digest identifies the complete content-free binding acknowledged by the broker.
+// Digest identifies the complete binding acknowledged by the broker.
 func (b Binding) Digest() (string, error) {
 	raw, err := json.Marshal(b)
 	if err != nil {
@@ -113,7 +178,7 @@ func (b Binding) Digest() (string, error) {
 // CheckResource refuses reuse for another source or resource before credential
 // resolution or network dispatch.
 func (b Binding) CheckResource(server, resource string) error {
-	if b.Kind != "resource" || b.ServerID != server || b.ResourceURI != resource {
+	if (b.Kind != "resource" && b.Kind != "agent_resource") || b.ServerID != server || b.ResourceURI != resource {
 		return ErrInvalid
 	}
 	return b.validate()
@@ -121,7 +186,7 @@ func (b Binding) CheckResource(server, resource string) error {
 
 // CheckCall compares the actual outgoing MCP arguments, after any transformation.
 func (b Binding) CheckCall(server, tool string, args map[string]any) error {
-	if b.Kind != "tool" || b.ServerID != server || b.Tool != tool {
+	if (b.Kind != "tool" && b.Kind != "agent_tool") || b.ServerID != server || b.Tool != tool {
 		return ErrInvalid
 	}
 	raw, err := json.Marshal(args)
@@ -139,16 +204,23 @@ func (b Binding) CheckCall(server, tool string, args map[string]any) error {
 // and string normalization. Number spelling is preserved (including integers
 // beyond float64 precision). Absent arguments mean the empty object.
 func ArgumentsDigest(raw json.RawMessage) (string, error) {
+	_, digest, err := CanonicalArguments(raw)
+	return digest, err
+}
+
+// CanonicalArguments returns key-sorted, duplicate-free object JSON with exact
+// number spelling and its SHA-256 digest, using the app-operation-v1 codec.
+func CanonicalArguments(raw json.RawMessage) (json.RawMessage, string, error) {
 	value, err := DecodeArguments(raw)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {
-		return "", ErrInvalid
+		return nil, "", ErrInvalid
 	}
 	sum := sha256.Sum256(canonical)
-	return hex.EncodeToString(sum[:]), nil
+	return canonical, hex.EncodeToString(sum[:]), nil
 }
 
 // DecodeArguments validates closed object input and preserves exact JSON numbers.

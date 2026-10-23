@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/appoperation"
 	"github.com/hurtener/Harbor/internal/tools/artifactcontent"
 	"github.com/hurtener/Harbor/internal/tools/artifactref"
 	"github.com/hurtener/Harbor/internal/virtualagent"
@@ -361,6 +362,10 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 	// for the task-control shapes too is inert — they invoke no tool —
 	// and a descendant that inherits the ctx runs under the same triple
 	// by construction, so the reach cannot widen sideways.
+	// Every planner tool shape inherits this trusted invocation marker. Only
+	// the run's reach-admitted effective selection can identify the agent.
+	agent, _ := tools.EffectiveAgentConfigFrom(ctx)
+	ctx = appoperation.WithAgentInvocation(ctx, agent)
 	ctx = e.withArtifactResolver(ctx, rc)
 	switch d := decision.(type) {
 	case planner.CallTool:
