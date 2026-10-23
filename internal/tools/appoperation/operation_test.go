@@ -144,3 +144,49 @@ func FuzzArgumentsDigest_BoundedCanonicalObject(f *testing.F) {
 		}
 	})
 }
+
+func TestBinding_AgentWireShapeAndImmutableArguments(t *testing.T) {
+	ctx, err := appoperation.WithAgentCall(context.Background(), "agent", "resolved", "resolved_save", json.RawMessage(`{ "z":9007199254740993,"a":1.00 }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := appoperation.From(ctx)
+	want := `{"a":1.00,"z":9007199254740993}`
+	if b.Kind != "agent_tool" || b.ResourceURI != "" || b.Generation != "" || string(b.Arguments) != want {
+		t.Fatalf("wrong agent shape: %+v", b)
+	}
+	b.Arguments[0] = '['
+	fresh, _ := appoperation.From(ctx)
+	if string(fresh.Arguments) != want {
+		t.Fatal("binding arguments mutated through From")
+	}
+	args, _ := appoperation.DecodeArguments(fresh.Arguments)
+	if err := fresh.CheckCall("resolved", "resolved_save", args); err != nil {
+		t.Fatal(err)
+	}
+	args["z"] = json.Number("9007199254740992")
+	if !errors.Is(fresh.CheckCall("resolved", "resolved_save", args), appoperation.ErrInvalid) {
+		t.Fatal("agent input mutation accepted")
+	}
+	second, err := appoperation.WithAgentCall(context.Background(), "agent", "resolved", "resolved_save", fresh.Arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := appoperation.From(second)
+	if other.Reference == fresh.Reference {
+		t.Fatal("call reference reused")
+	}
+	readCtx, err := appoperation.WithAgentRead(context.Background(), "agent", "resolved", "ui://workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, _ := appoperation.From(readCtx)
+	if read.Kind != "agent_resource" || len(read.Arguments) != 0 || read.CheckResource("resolved", "ui://workspace") != nil {
+		t.Fatal("wrong agent resource shape")
+	}
+	for _, raw := range []string{`null`, `{"x":1,"x":2}`, `{"x":"` + strings.Repeat("a", 8192) + `"}`} {
+		if _, err := appoperation.WithAgentCall(context.Background(), "agent", "resolved", "resolved_save", json.RawMessage(raw)); !errors.Is(err, appoperation.ErrInvalid) {
+			t.Fatalf("invalid agent input accepted: %v", err)
+		}
+	}
+}

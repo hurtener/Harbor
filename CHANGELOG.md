@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.2] — 2026-10-23
+
+### Fixed
+
+- Trusted planner MCP calls can obtain fresh, operation-bound credentials from
+  governed App providers. Bindings cover the resolved source, tool and final
+  outgoing arguments, preserve exact JSON numbers through artifact egress, and
+  prevent automatic retries after an uncertain effect.
+
 ## [1.33.1] — 2026-10-22
 
 ### Fixed

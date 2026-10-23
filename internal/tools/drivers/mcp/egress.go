@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -82,8 +83,13 @@ type egressPlan struct {
 func (p *Provider) prepareEgress(ctx context.Context, name string, args json.RawMessage, mapping artifactegress.Mapping, maxBytes int) (egressPlan, error) {
 	argMap := map[string]any{}
 	if len(args) > 0 {
-		if err := json.Unmarshal(args, &argMap); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(args))
+		decoder.UseNumber()
+		if err := decoder.Decode(&argMap); err != nil {
 			return egressPlan{}, fmt.Errorf("%w: decode args for artifact egress on tool %q: %w", tools.ErrToolInvalidArgs, name, err)
+		}
+		if !json.Valid(args) {
+			return egressPlan{}, fmt.Errorf("%w: invalid args for artifact egress on tool %q", tools.ErrToolInvalidArgs, name)
 		}
 	}
 	records, err := artifactegress.Encode(ctx, argMap, mapping, name, maxBytes)
