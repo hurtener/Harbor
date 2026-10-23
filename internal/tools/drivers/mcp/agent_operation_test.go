@@ -9,10 +9,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/appoperation"
 	"github.com/hurtener/Harbor/internal/tools/auth"
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Only the broker boundary is forced; all MCP encoding, policy and dispatch

@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/hurtener/Harbor/internal/artifacts"
 	artinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/config"
@@ -25,7 +27,6 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/artifactegress"
 	"github.com/hurtener/Harbor/internal/tools/artifactref"
 	mcpdriver "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Compose production planner dispatch, MCP SDK transport, and signed exchange.
