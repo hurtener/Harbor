@@ -96,8 +96,8 @@ func largeValidPNG(t *testing.T) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 512, 512))
 	var state uint32 = 1
-	for y := 0; y < 512; y++ {
-		for x := 0; x < 512; x++ {
+	for y := range 512 {
+		for x := range 512 {
 			state = state*1664525 + 1013904223
 			img.SetRGBA(x, y, color.RGBA{R: byte(state >> 24), G: byte(state >> 16), B: byte(state >> 8), A: 255})
 		}
