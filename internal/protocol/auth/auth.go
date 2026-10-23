@@ -515,7 +515,11 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		}
 	}
 
-	runtimeID, _ := claims["runtime_id"].(string) // Missing or non-string authority remains empty and route admission rejects it.
+	// Missing or non-string authority remains empty and route admission rejects it.
+	runtimeID, ok := claims["runtime_id"].(string)
+	if !ok {
+		runtimeID = ""
+	}
 	return Verified{
 		RuntimeID:    runtimeID,
 		Identity:     id,

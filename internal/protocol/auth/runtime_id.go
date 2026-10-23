@@ -12,6 +12,9 @@ func WithRuntimeID(ctx context.Context, runtimeID string) context.Context {
 
 // RuntimeIDFrom returns the runtime identity from verified bearer authority.
 func RuntimeIDFrom(ctx context.Context) string {
-	runtimeID, _ := ctx.Value(runtimeIDContextKey{}).(string)
+	runtimeID, ok := ctx.Value(runtimeIDContextKey{}).(string)
+	if !ok {
+		return ""
+	}
 	return runtimeID
 }
