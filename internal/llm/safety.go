@@ -103,7 +103,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 
 	// Step 1: auto-materialize. Rewrites oversize DataURLs in-place
 	// on a copied request value.
-	materialized, err := materializeRequest(ctx, req, c.deps.Artifacts, c.deps.Bus, c.cfg.HeavyOutputThreshold, id)
+	materialized, err := materializeRequest(ctx, req, c.deps.Artifacts, c.deps.Bus, c.cfg.HeavyOutputThreshold, id, profile)
 	if err != nil {
 		return CompleteResponse{}, err
 	}
@@ -402,7 +402,8 @@ func findContextLeak(req CompleteRequest, threshold int) (site string, size int,
 					return fmt.Sprintf("Messages[%d].Parts[%d].Text", mi, pi), len(p.Text), true
 				}
 			case PartImage:
-				if p.Image != nil && len(p.Image.DataURL) >= threshold {
+				if p.Image != nil && len(p.Image.DataURL) >= threshold &&
+					!boundedDirectImage(m.Role, p.Image) {
 					return fmt.Sprintf("Messages[%d].Parts[%d].Image.DataURL", mi, pi), len(p.Image.DataURL), true
 				}
 			case PartAudio:

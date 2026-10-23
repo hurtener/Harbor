@@ -15,6 +15,37 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
+// A direct image is only emitted for an operator upload, and remains bounded
+// independently of the heavy-output threshold. Three MiB is the largest raw
+// base64 payload that fits the Protocol's default four MiB request body.
+const maxDirectImageBytes = 3 << 20
+
+// SupportedDirectImageMIME reports whether a MIME may use the bounded direct
+// uploaded-image path to a provider.
+func SupportedDirectImageMIME(mime string) bool {
+	switch mime {
+	case "image/png", "image/jpeg", "image/webp", "image/gif":
+		return true
+	}
+	return false
+}
+
+func validateDirectImage(p *ImagePart) error {
+	if !SupportedDirectImageMIME(p.MIME) || len(p.DataURL) > (4<<20)+64 ||
+		!strings.HasPrefix(p.DataURL, "data:"+p.MIME+";base64,") {
+		return fmt.Errorf("%w: direct image input must be PNG, JPEG, WebP, or GIF and at most %d bytes", ErrInvalidContent, maxDirectImageBytes)
+	}
+	data, mime, err := decodeDataURL(p.DataURL)
+	if err != nil || mime != p.MIME || len(data) == 0 || len(data) > maxDirectImageBytes {
+		return fmt.Errorf("%w: direct image input has invalid MIME or exceeds %d bytes", ErrInvalidContent, maxDirectImageBytes)
+	}
+	return nil
+}
+
+func boundedDirectImage(role Role, p *ImagePart) bool {
+	return role == RoleUser && p != nil && p.DirectInput && validateDirectImage(p) == nil
+}
+
 // materializeRequest walks the assembled CompleteRequest and rewrites
 // any inline DataURL content whose decoded byte length is ≥
 // threshold into an ArtifactStub backed by the configured
@@ -44,18 +75,49 @@ func materializeRequest(
 	bus events.EventBus,
 	threshold int,
 	id identity.Quadruple,
+	profile ModelProfile,
 ) (CompleteRequest, error) {
+	// The safety pass rewrites parts for some models. Keep the caller's
+	// request reusable across retries and concurrent routed attempts.
+	req.Messages = append([]ChatMessage(nil), req.Messages...)
 	for mi := range req.Messages {
 		if req.Messages[mi].Content.Parts == nil {
 			continue
 		}
+		req.Messages[mi].Content.Parts = append([]ContentPart(nil), req.Messages[mi].Content.Parts...)
 		for pi := range req.Messages[mi].Content.Parts {
 			part := &req.Messages[mi].Content.Parts[pi]
+			if part.Image != nil {
+				copy := *part.Image
+				part.Image = &copy
+			}
+			if part.Audio != nil {
+				copy := *part.Audio
+				part.Audio = &copy
+			}
+			if part.File != nil {
+				copy := *part.File
+				part.File = &copy
+			}
 			switch part.Type {
 			case PartImage:
 				if part.Image == nil {
 					return req, fmt.Errorf("%w: Messages[%d].Parts[%d].Type=image but Image is nil",
 						ErrInvalidContent, mi, pi)
+				}
+				if part.Image.DirectInput && req.Messages[mi].Role == RoleUser {
+					if err := validateDirectImage(part.Image); err != nil {
+						return req, fmt.Errorf("Messages[%d].Parts[%d]: %w", mi, pi, err)
+					}
+					if profile.ImageInput == nil || *profile.ImageInput {
+						continue
+					}
+				}
+				if profile.ImageInput != nil && !*profile.ImageInput {
+					if err := withholdImage(ctx, store, id, part); err != nil {
+						return req, fmt.Errorf("Messages[%d].Parts[%d]: %w", mi, pi, err)
+					}
+					continue
 				}
 				stub, materialized, err := materializeDataURL(
 					ctx, store, threshold, id, part.Image.DataURL, part.Image.MIME, "", part.Image.Artifact,
@@ -107,6 +169,28 @@ func materializeRequest(
 		}
 	}
 	return req, nil
+}
+
+func withholdImage(ctx context.Context, store artifacts.ArtifactStore, id identity.Quadruple, part *ContentPart) error {
+	image := part.Image
+	stub := image.Artifact
+	if image.DataURL != "" && stub == nil {
+		var err error
+		stub, _, err = materializeDataURL(ctx, store, 0, id, image.DataURL, image.MIME, "", nil)
+		if err != nil {
+			return err
+		}
+	}
+	note := "Attached image content was withheld because the selected model does not support image input. Do not claim to have inspected the image."
+	if stub != nil {
+		encoded, err := stub.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		note += " Attachment reference: " + string(encoded)
+	}
+	*part = ContentPart{Type: PartText, Text: note}
+	return nil
 }
 
 // materializeDataURL handles ONE part's worth of materialize work.

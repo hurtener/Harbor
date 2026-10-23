@@ -121,7 +121,7 @@ model_profiles:
 
 Look up the official context-window number from the provider's docs; never guess.
 
-The profile is not a one-field shape: alongside `context_window_tokens`, the documented fields `token_estimator`, `json_schema_mode`, `default_max_tokens`, `reasoning_effort`, `cost_overrides`, `corrections`, and `max_retries` (see `docs/CONFIG.md#llmmodel_profiles`) are all honoured. `output_max_tokens` and per-token pricing (`pricing_per_input_token` / `pricing_per_output_token`) are not profile fields today — leave them out of a profile.
+The profile is not a one-field shape: alongside `context_window_tokens`, the documented fields `token_estimator`, `json_schema_mode`, `default_max_tokens`, `reasoning_effort`, `cost_overrides`, `corrections`, `max_retries`, and optional `image_input` (see `docs/CONFIG.md#llmmodel_profiles`) are all honoured. Declare `image_input: false` for a model known not to accept images; Harbor withholds image bytes and tells the model they were not inspected. Omit it when support is unknown. For an external route, the resolver supplies `model_profile.image_input` only after the runtime request advertises `image_input_supported: true`. `output_max_tokens` and per-token pricing (`pricing_per_input_token` / `pricing_per_output_token`) are not profile fields today — leave them out of a profile.
 
 ## 3. The dev-mock escape hatch
 

@@ -25,6 +25,13 @@ func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 	if !bytes.Contains(requestBody, []byte(`"model_profile_supported":true`)) {
 		t.Fatalf("selection request omitted model-profile negotiation bit: %s", requestBody)
 	}
+	if !bytes.Contains(requestBody, []byte(`"image_input_supported":true`)) {
+		t.Fatalf("selection request omitted image-input negotiation bit: %s", requestBody)
+	}
+	resolveBody, err := MarshalRequest(req)
+	if err != nil || !bytes.Contains(resolveBody, []byte(`"image_input_supported":true`)) {
+		t.Fatalf("resolve request omitted image-input negotiation bit: %s (%v)", resolveBody, err)
+	}
 	operation, decoded, err := UnmarshalOperationRequest(requestBody)
 	if err != nil || operation != OperationSelect || decoded != req {
 		t.Fatalf("selection request operation=%q decoded=%+v err=%v", operation, decoded, err)
@@ -63,6 +70,7 @@ func TestRouteContractCarriesOptionalModelProfile(t *testing.T) {
 		ContextWindowTokens:   8192,
 		MaxOutputTokens:       2048,
 		ReasoningEffortLevels: []llm.ReasoningEffort{},
+		ImageInput:            boolPtr(false),
 	}
 	selected := llm.SelectedProviderRoute{
 		Provider: "openai", Model: "arbitrary/model", KeyName: "route key", RouteID: req.RouteID, RouteGeneration: req.RouteGeneration,
@@ -76,6 +84,9 @@ func TestRouteContractCarriesOptionalModelProfile(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte(`"model_profile"`)) || !bytes.Contains(body, []byte(`"reasoning_effort_levels":[]`)) {
 		t.Fatalf("selection response omitted the optional model profile or explicit empty levels: %s", body)
+	}
+	if !bytes.Contains(body, []byte(`"image_input":false`)) {
+		t.Fatalf("selection response omitted explicit nonvision capability: %s", body)
 	}
 	decoded, err := ParseSelectionResponse(req, body)
 	if err != nil {
@@ -93,8 +104,15 @@ func TestRouteContractCarriesOptionalModelProfile(t *testing.T) {
 	if decoded.ModelProfile == nil || decoded.ModelProfile.ReasoningEffortLevels == nil || len(decoded.ModelProfile.ReasoningEffortLevels) != 0 {
 		t.Fatalf("decoded reasoning levels = %#v, want an explicit empty list", decoded.ModelProfile)
 	}
+	if decoded.ModelProfile.ImageInput == nil || *decoded.ModelProfile.ImageInput {
+		t.Fatalf("decoded image capability = %#v, want explicit false", decoded.ModelProfile.ImageInput)
+	}
 	legacyRequest := req
 	legacyRequest.ModelProfileSupported = false
+	legacyBodyRequest, err := MarshalSelectionRequest(legacyRequest)
+	if err != nil || bytes.Contains(legacyBodyRequest, []byte(`"image_input_supported"`)) {
+		t.Fatalf("legacy request negotiated image input: %s (%v)", legacyBodyRequest, err)
+	}
 	if _, err := ParseSelectionResponse(legacyRequest, body); !errors.Is(err, llm.ErrProviderRouteInvalid) {
 		t.Fatalf("descriptor on an unsupported request error = %v, want ErrProviderRouteInvalid", err)
 	}
@@ -123,6 +141,8 @@ func TestRouteContractCarriesOptionalModelProfile(t *testing.T) {
 		t.Fatalf("legacy response decode profile=%#v err=%v, want nil profile", legacyDecoded.ModelProfile, err)
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 func TestRouteContractRejectsUnsupportedModelProfile(t *testing.T) {
 	req := llm.ProviderRouteRequest{

@@ -238,8 +238,9 @@ func imagePartFromBytes(a InputArtifactView) llm.ContentPart {
 	return llm.ContentPart{
 		Type: llm.PartImage,
 		Image: &llm.ImagePart{
-			DataURL: dataURL,
-			MIME:    a.MIME,
+			DataURL:     dataURL,
+			MIME:        a.MIME,
+			DirectInput: llm.SupportedDirectImageMIME(a.MIME),
 		},
 	}
 }

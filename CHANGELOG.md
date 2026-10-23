@@ -17,6 +17,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.1] — 2026-10-22
+
+### Fixed
+
+- Uploaded PNG/JPEG/WebP/GIF images up to 3 MiB now reach image-capable model requests even when they exceed the heavy-output threshold. Models explicitly declared without image input receive a clear withheld-image notice. External provider routes negotiate the optional `image_input` fact to remain compatible with older runtimes; upgrade trusted route resolvers to honor the negotiation before upgrading runtimes.
+
 ## [1.33.0] — 2026-10-22
 
 ### Added

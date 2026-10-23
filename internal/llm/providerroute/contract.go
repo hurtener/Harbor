@@ -39,6 +39,7 @@ type requestWire struct {
 	CredentialAssetGeneration    uint64 `json:"credential_asset_generation"`
 	ModelSelector                string `json:"model_selector"`
 	ModelProfileSupported        bool   `json:"model_profile_supported,omitempty"`
+	ImageInputSupported          bool   `json:"image_input_supported,omitempty"`
 	Purpose                      string `json:"purpose"`
 }
 
@@ -67,6 +68,7 @@ type modelProfileWire struct {
 	MaxOutputTokens       int                   `json:"max_output_tokens"`
 	ReasoningEffort       llm.ReasoningEffort   `json:"reasoning_effort,omitempty"`
 	ReasoningEffortLevels []llm.ReasoningEffort `json:"reasoning_effort_levels"`
+	ImageInput            *bool                 `json:"image_input,omitempty"`
 }
 
 type endpointWire struct {
@@ -95,6 +97,7 @@ func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, err
 		ProviderConnectionGeneration: req.ProviderConnectionGeneration,
 		CredentialAssetGeneration:    req.CredentialAssetGeneration, ModelSelector: req.ModelSelector,
 		ModelProfileSupported: req.ModelProfileSupported,
+		ImageInputSupported:   req.ModelProfileSupported,
 		Purpose:               string(req.Purpose),
 	}
 	if (w.Operation != OperationSelect && w.Operation != OperationResolve) ||
@@ -299,6 +302,7 @@ func marshalModelProfile(profile *llm.ProviderModelProfile) *modelProfileWire {
 		MaxOutputTokens:       profile.MaxOutputTokens,
 		ReasoningEffort:       profile.ReasoningEffort,
 		ReasoningEffortLevels: cloneReasoningEffortLevels(profile.ReasoningEffortLevels),
+		ImageInput:            cloneBool(profile.ImageInput),
 	}
 }
 
@@ -311,6 +315,7 @@ func parseModelProfile(wire *modelProfileWire) (*llm.ProviderModelProfile, error
 		MaxOutputTokens:       wire.MaxOutputTokens,
 		ReasoningEffort:       wire.ReasoningEffort,
 		ReasoningEffortLevels: cloneReasoningEffortLevels(wire.ReasoningEffortLevels),
+		ImageInput:            cloneBool(wire.ImageInput),
 	}
 	if err := llm.ValidateProviderModelProfile(*profile); err != nil {
 		return nil, err
@@ -332,6 +337,14 @@ func cloneReasoningEffortLevels(levels []llm.ReasoningEffort) []llm.ReasoningEff
 	clone := make([]llm.ReasoningEffort, len(levels))
 	copy(clone, levels)
 	return clone
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func marshalEndpoint(endpoint *llm.ProviderEndpointBinding) *endpointWire {
