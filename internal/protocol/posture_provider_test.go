@@ -27,7 +27,7 @@ type routeAwareCatalogFixture struct{ providerCatalogFixture }
 
 func (routeAwareCatalogFixture) Validate(ctx context.Context, req provider.ValidationRequest) provider.ValidationResult {
 	trusted, ok := llm.TrustedProviderRouteFrom(ctx)
-	if !ok || trusted.EffectiveAgentID != "agent-a" || trusted.RuntimeID != "runtime-a" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposePosture {
+	if !ok || trusted.RuntimeID != "verified-runtime" || trusted.EffectiveAgentID != "agent-a" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposePosture {
 		return provider.ValidationResult{Outcome: provider.Outcome{State: provider.SupportUnavailable}}
 	}
 	return provider.ValidationResult{ProviderID: "openai", Outcome: provider.Outcome{State: provider.SupportSupported}, Route: &provider.RouteObservation{
@@ -121,7 +121,7 @@ func TestProviderCatalogRouteRequiresSignedAgentReachAndEchoesGenerations(t *tes
 		Counters: func(context.Context, identity.Identity) types.RuntimeCounters { return types.RuntimeCounters{} },
 		Drivers:  func() []types.SubsystemDriver { return nil }, Metrics: func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
 		Governance: newPostureGovernance(), LLM: newPostureLLM(), ProviderCatalog: routeAwareCatalogFixture{},
-		AgentReach: auth.NewAgentReachAuthorizer(), ProviderRouteRuntimeID: "runtime-a",
+		AgentReach: auth.NewAgentReachAuthorizer(), ProviderRouteAvailable: true,
 		Redactor: patterns.New(), Bus: bus, InstanceID: "provider-test",
 	})
 	if err != nil {
@@ -142,7 +142,7 @@ func TestProviderCatalogRouteRequiresSignedAgentReachAndEchoesGenerations(t *tes
 	if _, err := surface.Dispatch(fleet, methods.MethodLLMPosture, req); err == nil {
 		t.Fatal("route operation with fleet-only scope succeeded")
 	}
-	ctx := auth.WithAgentReach(admin, []string{"agent-a"})
+	ctx := auth.WithRuntimeID(auth.WithAgentReach(admin, []string{"agent-a"}), "verified-runtime")
 	response, err := surface.Dispatch(ctx, methods.MethodLLMPosture, req)
 	if err != nil {
 		t.Fatal(err)

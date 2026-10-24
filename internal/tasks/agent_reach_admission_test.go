@@ -56,7 +56,7 @@ func testAgentReachAuthority(t *testing.T) *AgentReachAdmissionAuthority {
 func TestAgentReachAdmission_SealedCaptureRestoreAndTamperDenial(t *testing.T) {
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}
 	authority := testAgentReachAuthority(t)
-	sealed, err := authority.Admit(context.Background(), id, "agent-a")
+	sealed, err := authority.Admit(auth.WithRuntimeID(context.Background(), "verified-runtime"), id, "agent-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,9 @@ func TestAgentReachAdmission_SealedCaptureRestoreAndTamperDenial(t *testing.T) {
 	restoredCtx, got, admitted := authority.Restore(context.Background(), &restarted)
 	if !admitted || got != "agent-a" {
 		t.Fatalf("restart restore = (%q, %v), want (agent-a, true)", got, admitted)
+	}
+	if got := auth.RuntimeIDFrom(restoredCtx); got != "verified-runtime" {
+		t.Fatalf("restored runtime = %q", got)
 	}
 	verified, ok := identity.FromVerified(restoredCtx)
 	if !ok || verified != id {

@@ -61,12 +61,12 @@ func TestConfigureStockProviderRoute_AuthorityAndConfigurationBoundaries(t *test
 	t.Run("valid stock resolver owns the configured runtime route", func(t *testing.T) {
 		opts := &Options{}
 		client, err := configureStockProviderRoute(config.LLMProviderRouteConfig{
-			ResolverURL: "https://resolver.example", AuthTokenEnv: "TOKEN", RuntimeID: "runtime-a", Timeout: time.Second,
+			ResolverURL: "https://resolver.example", AuthTokenEnv: "TOKEN", Timeout: time.Second,
 		}, opts, func(string) (string, bool) { return "secret", true })
 		if err != nil {
 			t.Fatalf("configureStockProviderRoute: %v", err)
 		}
-		if client == nil || opts.ProviderRoute.Resolver != client || opts.ProviderRoute.RuntimeID != "runtime-a" {
+		if client == nil || opts.ProviderRoute.Resolver != client {
 			t.Fatalf("client=%v route=%+v", client, opts.ProviderRoute)
 		}
 		if err := client.Close(); err != nil {
@@ -75,10 +75,9 @@ func TestConfigureStockProviderRoute_AuthorityAndConfigurationBoundaries(t *test
 	})
 }
 
-func TestBoot_ProviderRouteRefusesPartialAndNonBifrostConfiguration(t *testing.T) {
+func TestBoot_ProviderRouteRefusesNonBifrostConfiguration(t *testing.T) {
 	for name, route := range map[string]llm.ProviderRouteConfig{
-		"missing resolver": {RuntimeID: "runtime"},
-		"non-Bifrost":      {Resolver: admissionRouteResolver{}, RuntimeID: "runtime"},
+		"non-Bifrost": {Resolver: admissionRouteResolver{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := baseOptions(t)

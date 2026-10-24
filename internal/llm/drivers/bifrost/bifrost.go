@@ -190,7 +190,7 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		// resolves a fresh attempt-bound credential below, validates its current
 		// expiry/generations, and exact-matches every non-expiry field back to the
 		// admitted selection.
-		if !selectedOK || trusted.RuntimeID == "" || trusted.RuntimeID != d.providerRoute.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
+		if !selectedOK || trusted.RuntimeID == "" || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposeRun || req.Model != selected.Model {
 			return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
 		}
 		var scope *llm.AttemptScope
@@ -201,7 +201,7 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		}
 		resolved, err := llm.ResolveProviderRoute(ctx, d.providerRoute, llm.ProviderRouteRequest{
 			TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LogicalRunID: id.RunID,
-			EffectiveAgentID: trusted.EffectiveAgentID, RuntimeID: trusted.RuntimeID, TaskID: trusted.TaskID,
+			EffectiveAgentID: trusted.EffectiveAgentID, TaskID: trusted.TaskID,
 			LogicalCallID: scope.LogicalCallID, RouteID: trusted.Route.RouteID,
 			RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,
 			ProviderConnectionGeneration: trusted.Route.ProviderConnectionGeneration,

@@ -1,9 +1,11 @@
 package httptransport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -187,7 +189,7 @@ func TestClientRefusesRedirects(t *testing.T) {
 func testRouteRequest(tenant string, generation uint64) llm.ProviderRouteRequest {
 	return llm.ProviderRouteRequest{
 		TenantID: tenant, UserID: "user", SessionID: "session", LogicalRunID: "run",
-		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call-" + tenant,
+		EffectiveAgentID: "agent", TaskID: "task", LogicalCallID: "call-" + tenant,
 		RouteID: "route", RouteGeneration: generation, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: generation, CredentialAssetGeneration: generation, ModelSelector: "fast",
 		Purpose: llm.ProviderRoutePurposeRun,
@@ -319,4 +321,96 @@ func TestClient_SelectionIsCredentialFreeAndResolutionIsPerAttempt(t *testing.T)
 	if selections != 1 || resolutions != 2 {
 		t.Fatalf("resolver calls select=%d resolve=%d, want 1/2", selections, resolutions)
 	}
+}
+
+// routeRoundTripper keeps the exchange regressions runnable without a
+// loopback listener; it exercises the actual authenticated client exchange.
+type routeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f routeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func routeResponse(operation string) map[string]any {
+	response := map[string]any{
+		"version": 1, "provider": "openai", "model": "model", "key_name": "route key",
+		"route_id": "route", "route_generation": 1,
+		"provider_connection_id": "connection", "provider_connection_generation": 1,
+		"credential_asset_generation": 1, "model_selector": "fast",
+		"expires_at": time.Now().Add(time.Minute).UTC(),
+	}
+	if operation == "resolve" {
+		response["credential"] = "fixture-credential"
+	}
+	return response
+}
+
+func identityFixtureClient(t *testing.T, respond func(string) (int, map[string]any)) *Client {
+	t.Helper()
+	client, err := New(Config{ResolverURL: "https://resolver.example.test", AuthToken: "fixture-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	client.httpClient.Transport = routeRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer fixture-token" {
+			t.Error("missing resolver authentication")
+		}
+		defer r.Body.Close()
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			return nil, err
+		}
+		if _, present := request["runtime_id"]; present {
+			t.Error("removed runtime_id was sent")
+		}
+		operation, _ := request["operation"].(string)
+		status, response := respond(operation)
+		body, err := json.Marshal(response)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})
+	return client
+}
+
+func identityExchange(client *Client, operation string) error {
+	req := testRouteRequest("tenant", 1)
+	if operation == "select" {
+		_, err := client.SelectProviderRoute(context.Background(), req)
+		return err
+	}
+	_, err := client.ResolveProviderRoute(context.Background(), req)
+	return err
+}
+
+func TestClient_RouteExchange_ResponsesNeedNoRuntimeIdentity(t *testing.T) {
+	client := identityFixtureClient(t, func(operation string) (int, map[string]any) {
+		return http.StatusOK, routeResponse(operation)
+	})
+	for _, operation := range []string{"select", "resolve", "select", "resolve"} {
+		if err := identityExchange(client, operation); err != nil {
+			t.Fatalf("%s without response runtime identity: %v", operation, err)
+		}
+	}
+}
+
+func TestClient_RouteExchange_ConcurrentResponsesWithoutRuntimeIdentity(t *testing.T) {
+	client := identityFixtureClient(t, func(operation string) (int, map[string]any) {
+		return http.StatusOK, routeResponse(operation)
+	})
+	var wg sync.WaitGroup
+	for i := range 128 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			operation := "resolve"
+			if i%2 == 0 {
+				operation = "select"
+			}
+			if err := identityExchange(client, operation); err != nil {
+				t.Errorf("concurrent exchange: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
 }

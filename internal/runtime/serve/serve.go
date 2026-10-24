@@ -271,7 +271,7 @@ type Options struct {
 
 func configureStockProviderRoute(cfg config.LLMProviderRouteConfig, opts *Options, getenv func(string) (string, bool)) (*providerroutehttp.Client, error) {
 	configured := strings.TrimSpace(cfg.ResolverURL) != "" || strings.TrimSpace(cfg.AuthTokenEnv) != "" ||
-		strings.TrimSpace(cfg.RuntimeID) != "" || cfg.Timeout != 0
+		cfg.Timeout != 0
 	if !configured {
 		return nil, nil
 	}
@@ -286,7 +286,7 @@ func configureStockProviderRoute(cfg config.LLMProviderRouteConfig, opts *Option
 	if err != nil {
 		return nil, fmt.Errorf("provider route: construct stock resolver: %w", err)
 	}
-	opts.ProviderRoute = llm.ProviderRouteConfig{Resolver: client, RuntimeID: cfg.RuntimeID}
+	opts.ProviderRoute = llm.ProviderRouteConfig{Resolver: client}
 	return client, nil
 }
 
@@ -1199,7 +1199,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		EnsureBootAgentLifecycle: bootLifecycleEnsurer,
 		RunSnapshots:             runSnapshots,
 		AgentReachAdmissions:     agentReachAdmissions,
-		ProviderRouteRuntimeID:   opts.ProviderRoute.RuntimeID,
+		ProviderRouteAvailable:   opts.ProviderRoute.Resolver != nil,
 		PublicationStore:         publicationStore,
 		PublicationRuntimeID:     publicationRuntimeID,
 		SessionOverlay:           sessionOverlayStore,
@@ -1311,7 +1311,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Validator:                      validator,
 		AuthSurface:                    authSurface,
 		AgentReach:                     agentReach,
-		ProviderRouteRuntimeID:         opts.ProviderRoute.RuntimeID,
+		ProviderRouteAvailable:         opts.ProviderRoute.Resolver != nil,
 		PublicationStore:               publicationStore,
 		PublicationRuntimeID:           publicationRuntimeID,
 		DisplayName:                    opts.DisplayName,

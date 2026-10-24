@@ -44,9 +44,6 @@ func NewProviderCatalog(cfg llm.ConfigSnapshot) (*ProviderCatalog, error) {
 // and both provider calls and catalog probes observe the same value without
 // copying a secret through Protocol or the catalog surface.
 func NewProviderCatalogWithDeps(cfg llm.ConfigSnapshot, deps llm.Deps) (*ProviderCatalog, error) {
-	if err := llm.ValidateProviderRouteConfig(deps.ProviderRoute); err != nil {
-		return nil, err
-	}
 	account, err := newAccount(cfg, deps)
 	if err != nil {
 		return nil, err
@@ -245,7 +242,7 @@ func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Cont
 	if err := llm.ValidateProviderRoute(trusted.Route); err != nil || trusted.Route.RouteID == "" {
 		return ctx, "", observation, llm.ErrProviderRouteInvalid
 	}
-	if c.route.Resolver == nil || trusted.RuntimeID == "" || trusted.RuntimeID != c.route.RuntimeID || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposePosture {
+	if c.route.Resolver == nil || trusted.RuntimeID == "" || trusted.EffectiveAgentID == "" || trusted.TaskID == "" || trusted.Purpose != llm.ProviderRoutePurposePosture {
 		return ctx, "", observation, llm.ErrProviderRouteResolverUnavailable
 	}
 	id, ok := identity.From(ctx)
@@ -262,7 +259,7 @@ func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Cont
 	}
 	resolved, err := llm.ResolveProviderRoute(callCtx, c.route, llm.ProviderRouteRequest{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
-		LogicalRunID: logicalRunID, EffectiveAgentID: trusted.EffectiveAgentID, RuntimeID: trusted.RuntimeID,
+		LogicalRunID: logicalRunID, EffectiveAgentID: trusted.EffectiveAgentID,
 		TaskID: trusted.TaskID, LogicalCallID: scope.LogicalCallID,
 		RouteID: trusted.Route.RouteID, RouteGeneration: trusted.Route.RouteGeneration,
 		ProviderConnectionID:         trusted.Route.ProviderConnectionID,

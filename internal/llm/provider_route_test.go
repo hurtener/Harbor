@@ -35,12 +35,6 @@ func (r *countingRouteResolver) SelectProviderRoute(context.Context, llm.Provide
 }
 
 func TestProviderRoute_DefaultIsLatentAndExplicitMissingFails(t *testing.T) {
-	if err := llm.ValidateProviderRouteConfig(llm.ProviderRouteConfig{}); err != nil {
-		t.Fatalf("zero config: %v", err)
-	}
-	if err := llm.ValidateProviderRouteConfig(llm.ProviderRouteConfig{RuntimeID: "runtime"}); err == nil {
-		t.Fatal("partial injected config accepted")
-	}
 	if err := llm.ValidateProviderRoute(llm.ProviderRoute{}); err != nil {
 		t.Fatalf("empty runtime-default route: %v", err)
 	}
@@ -55,11 +49,7 @@ func TestOpen_ProviderRouteFailsBeforeNonBifrostExecution(t *testing.T) {
 	defer cleanup()
 	resolver := &countingRouteResolver{}
 
-	deps.ProviderRoute = llm.ProviderRouteConfig{RuntimeID: "runtime-only"}
-	if _, err := llm.Open(context.Background(), makeSnapshot("model", 1000), deps); !errors.Is(err, llm.ErrInvalidConfig) {
-		t.Fatalf("partial provider route Open error = %v, want ErrInvalidConfig", err)
-	}
-	deps.ProviderRoute = llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	deps.ProviderRoute = llm.ProviderRouteConfig{Resolver: resolver}
 	if _, err := llm.Open(context.Background(), makeSnapshot("model", 1000), deps); !errors.Is(err, llm.ErrInvalidConfig) {
 		t.Fatalf("non-Bifrost provider route Open error = %v, want ErrInvalidConfig", err)
 	}
@@ -108,7 +98,7 @@ func TestResolveProviderRoute_RejectsStaleOrMismatchedBinding(t *testing.T) {
 func TestProviderRouteResolverErrorsAreContentFreeAndCancellationIsPreserved(t *testing.T) {
 	const canary = "credential-canary-must-not-escape"
 	resolver := &countingRouteResolver{err: fmt.Errorf("upstream failed with %s", canary)}
-	cfg := llm.ProviderRouteConfig{Resolver: resolver, RuntimeID: "runtime"}
+	cfg := llm.ProviderRouteConfig{Resolver: resolver}
 	for _, call := range []func(context.Context) error{
 		func(ctx context.Context) error {
 			_, err := llm.SelectProviderRoute(ctx, cfg, llm.ProviderRouteRequest{}, time.Now())

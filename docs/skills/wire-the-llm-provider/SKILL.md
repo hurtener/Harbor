@@ -29,9 +29,13 @@ llm:
   provider_route:
     resolver_url: https://coordinator.example.com/v1/provider-route
     auth_token_env: HARBOR_PROVIDER_ROUTE_TOKEN
-    runtime_id: runtime-1
     timeout: 10s
 ```
+
+The resolver authentication token identifies the runtime; Harbor sends no runtime
+ID and uses the identity from the verified coordinator-minted token of the run.
+Deploy the updated resolver before upgrading Harbor, then remove obsolete
+runtime-ID settings from the fleet.
 
 Bifrost is Harbor's LLM driver — one wire surface that speaks many providers. You don't change Go code to swap providers; you change the `llm:` block in `harbor.yaml`. This skill walks the four common postures + the dev-mock escape hatch + the `model_profiles` block the planner needs for context budgeting.
 

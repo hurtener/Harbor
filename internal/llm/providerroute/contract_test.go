@@ -12,7 +12,7 @@ import (
 func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 	req := llm.ProviderRouteRequest{
 		TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run",
-		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
+		EffectiveAgentID: "agent", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 2, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 3, CredentialAssetGeneration: 4, ModelSelector: "fast",
 		ModelProfileSupported: true,
@@ -32,6 +32,14 @@ func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 	if err != nil || !bytes.Contains(resolveBody, []byte(`"image_input_supported":true`)) {
 		t.Fatalf("resolve request omitted image-input negotiation bit: %s (%v)", resolveBody, err)
 	}
+	if bytes.Contains(requestBody, []byte(`"runtime_id"`)) || bytes.Contains(resolveBody, []byte(`"runtime_id"`)) {
+		t.Fatal("request contains removed runtime ID")
+	}
+	// Resolver-first rollout: an old runtime's removed field is ignored.
+	oldBody := append([]byte(`{"runtime_id":"obsolete",`), requestBody[1:]...)
+	if _, decoded, err := UnmarshalOperationRequest(oldBody); err != nil || decoded != req {
+		t.Fatalf("old runtime request rejected: %v", err)
+	}
 	operation, decoded, err := UnmarshalOperationRequest(requestBody)
 	if err != nil || operation != OperationSelect || decoded != req {
 		t.Fatalf("selection request operation=%q decoded=%+v err=%v", operation, decoded, err)
@@ -49,6 +57,9 @@ func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bytes.Contains(responseBody, []byte(`"runtime_id"`)) {
+		t.Fatal("selection response changed the runtime identity contract")
+	}
 	if bytes.Contains(responseBody, []byte(`"credential":`)) {
 		t.Fatalf("selection response contains credential field: %s", responseBody)
 	}
@@ -60,7 +71,7 @@ func TestSelectionContractCarriesOperationButNeverCredential(t *testing.T) {
 func TestRouteContractCarriesOptionalModelProfile(t *testing.T) {
 	req := llm.ProviderRouteRequest{
 		TenantID: "tenant", UserID: "user", SessionID: "session", LogicalRunID: "run",
-		EffectiveAgentID: "agent", RuntimeID: "runtime", TaskID: "task", LogicalCallID: "call",
+		EffectiveAgentID: "agent", TaskID: "task", LogicalCallID: "call",
 		RouteID: "route", RouteGeneration: 2, ProviderConnectionID: "connection",
 		ProviderConnectionGeneration: 3, CredentialAssetGeneration: 4, ModelSelector: "fast",
 		ModelProfileSupported: true,

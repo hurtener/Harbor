@@ -181,9 +181,6 @@ func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*T
 		if s.providerRoute.RouteID == "" || s.routeConfig.Resolver == nil {
 			return nil, llm.ErrProviderRouteResolverUnavailable
 		}
-		if err := llm.ValidateProviderRouteConfig(s.routeConfig); err != nil {
-			return nil, err
-		}
 	}
 	return s, nil
 }

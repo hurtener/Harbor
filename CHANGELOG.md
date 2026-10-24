@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.3] — 2026-10-23
+
+### Fixed
+
+- External provider routes identify the runtime from the verified bearer token
+  instead of a configured runtime ID. Route requests omit `runtime_id` and response
+  shapes remain unchanged. Removed runtime-ID settings are ignored with a
+  deprecation warning.
+
 ## [1.33.2] — 2026-10-23
 
 ### Fixed
