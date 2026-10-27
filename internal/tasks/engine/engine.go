@@ -107,6 +107,7 @@ func New(bus events.EventBus, redactor audit.Redactor, backend Backend, opts ...
 		progressPolicy:   tasks.DefaultProgressPolicy(),
 		clock:            time.Now,
 		lastProgressEmit: map[tasks.TaskID]int64{},
+		lastRedrive:      map[tasks.TaskID]int64{},
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -266,6 +267,10 @@ type Engine struct {
 	// which can only suppress the first post-restart message-only
 	// update — a real phase/fraction change always publishes).
 	lastProgressEmit map[tasks.TaskID]int64
+	// lastRedrive records when RedrivePendingTasks last re-emitted
+	// task.spawned for a Pending task (UnixNano, engine clock) so a task
+	// is re-emitted at most once per pendingRedriveAfter. Guarded by mu.
+	lastRedrive map[tasks.TaskID]int64
 
 	closed      atomic.Bool
 	ulidEntropy *ulid.MonotonicEntropy
@@ -320,6 +325,16 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 				if !spawnRequestsEqual(stored, existing.ContentHash, req, contentHash, propagate, agentReachAdmission) {
 					return tasks.TaskHandle{}, fmt.Errorf("%w: key=%q",
 						tasks.ErrIdempotencyConflict, req.IdempotencyKey)
+				}
+				if stored.Status == tasks.StatusPending {
+					// The original spawn may have persisted the task but
+					// failed to publish task.spawned (nothing would ever
+					// run it). Re-publish so the run loop picks it up; a
+					// duplicate is harmless because MarkRunning admits
+					// exactly one Pending → Running transition.
+					if err := e.publishSpawnedLocked(ctx, stored); err != nil {
+						return tasks.TaskHandle{}, err
+					}
 				}
 				return tasks.TaskHandle{ID: existing.TaskID, Reused: true}, nil
 			}
@@ -484,20 +499,27 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		}
 	}
 
-	parentForPayload := tasks.TaskID("")
-	if req.ParentTaskID != nil {
-		parentForPayload = *req.ParentTaskID
-	}
-	if err := e.publish(ctx, t, tasks.EventTypeTaskSpawned, tasks.TaskSpawnedPayload{
-		TaskID:         id,
-		Kind:           req.Kind,
-		ParentTaskID:   parentForPayload,
-		Priority:       req.Priority,
-		IdempotencyKey: req.IdempotencyKey,
-	}); err != nil {
+	if err := e.publishSpawnedLocked(ctx, t); err != nil {
 		return tasks.TaskHandle{}, err
 	}
 	return tasks.TaskHandle{ID: id, Reused: false}, nil
+}
+
+// publishSpawnedLocked emits task.spawned for t from its stored fields.
+// It is used by Spawn, by an idempotent retry that finds the task still
+// Pending, and by the pending-task redrive. Caller MUST hold e.mu.
+func (e *Engine) publishSpawnedLocked(ctx context.Context, t *tasks.Task) error {
+	parent := tasks.TaskID("")
+	if t.ParentTaskID != nil {
+		parent = *t.ParentTaskID
+	}
+	return e.publish(ctx, t, tasks.EventTypeTaskSpawned, tasks.TaskSpawnedPayload{
+		TaskID:         t.ID,
+		Kind:           t.Kind,
+		ParentTaskID:   parent,
+		Priority:       t.Priority,
+		IdempotencyKey: t.IdempotencyKey,
+	})
 }
 
 // SpawnTool implements tasks.TaskRegistry. It reshapes the tool request
