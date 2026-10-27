@@ -562,6 +562,24 @@ type Flusher interface {
 	Flush(ctx context.Context) error
 }
 
+// PersistenceHealthReporter is an additive EventBus capability for health
+// probes. PersistenceHealthy returns a non-nil error only when durable
+// publication has been unable to make progress for longer than the driver's
+// bounded tolerance (for example an ambiguous commit that still cannot be
+// reconciled). It must be cheap, non-blocking and safe for concurrent use.
+type PersistenceHealthReporter interface {
+	PersistenceHealthy() error
+}
+
+// PersistenceHealthy reports bus's persistence health when the bus implements
+// PersistenceHealthReporter and nil otherwise.
+func PersistenceHealthy(bus EventBus) error {
+	if reporter, ok := bus.(PersistenceHealthReporter); ok {
+		return reporter.PersistenceHealthy()
+	}
+	return nil
+}
+
 // PublishBatch uses an atomic batch capability when available and otherwise
 // preserves legacy EventBus compatibility by publishing each event in order.
 // Callers that require all-or-none semantics must assert BatchPublisher.

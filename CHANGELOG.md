@@ -17,6 +17,28 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.4] — 2026-10-27
+
+### Fixed
+
+- The durable event bus no longer stops publishing until restart after an
+  ambiguous commit. It checks the store to see whether the batch committed:
+  a committed batch counts as success, a missing batch fails with a
+  retryable error, and if the store can't be read, publishing pauses until
+  a later publish completes the check. The cause of the commit error is now
+  logged at ERROR.
+- PostgreSQL and SQLite state writes now run their transactions with a
+  15-second deadline, independent of the caller. A caller that disconnects
+  during COMMIT can no longer make the commit outcome ambiguous.
+  Cancellation before COMMIT is a clean rollback.
+- `/healthz` and `/readyz` return 503 when event persistence has been stuck
+  for more than 60 seconds, so platform health checks restart the process.
+- The sessions.turns materializer restarts with bounded backoff after a
+  transient error instead of stopping permanently.
+- Failed best-effort event publishes from pause/resume, session lifecycle,
+  agent registry and session GC, and failed GC sweeps, are now logged
+  instead of silently discarded.
+
 ## [1.33.3] — 2026-10-23
 
 ### Fixed

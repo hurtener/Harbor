@@ -172,7 +172,7 @@ var _ state.StateStore = (*driver)(nil)
 // EventIDs targeting different slots — we map that to
 // ErrIdempotencyConflict, since it indicates a routing mistake
 // upstream.
-func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
+func (d *driver) Save(callerCtx context.Context, r state.StateRecord) error {
 	if d.closed.Load() {
 		return state.ErrStoreClosed
 	}
@@ -192,6 +192,8 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 		payload = []byte{}
 	}
 
+	ctx, cancel := detachedTxContext(callerCtx)
+	defer cancel()
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return d.translateErr(err, "postgres: begin tx")
@@ -222,7 +224,7 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 				state.ErrIdempotencyConflict, r.ID)
 		}
 		// Idempotent no-op.
-		if err := tx.Commit(); err != nil {
+		if err := commitDetachedTx(callerCtx, tx); err != nil {
 			return d.translateErr(err, "postgres: commit idempotent no-op")
 		}
 		committed = true
@@ -249,7 +251,7 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 		return d.translateUpsertErr(err)
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitDetachedTx(callerCtx, tx); err != nil {
 		return d.translateErr(err, "postgres: commit upsert")
 	}
 	committed = true
@@ -260,7 +262,7 @@ func (d *driver) Save(ctx context.Context, r state.StateRecord) error {
 // Advisory transaction locks cover both present rows and absent slots; plain
 // SELECT FOR UPDATE cannot lock the latter and would permit a first-write
 // phantom. Sorting gives multi-slot callers one lock order.
-func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+func (d *driver) SaveIf(callerCtx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
 	if d.closed.Load() {
 		return state.ErrStoreClosed
 	}
@@ -271,6 +273,8 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	// absent slots. Read committed is intentional: a waiter must observe the
 	// winner that released its advisory lock, rather than retain a serializable
 	// snapshot from before the wait and report a retry-class database error.
+	ctx, cancel := detachedTxContext(callerCtx)
+	defer cancel()
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return d.translateErr(err, "postgres: begin conditional tx")
@@ -318,7 +322,7 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 		if prev.Identity != next.Identity || prev.Kind != next.Kind || !bytesEqual(prev.Bytes, next.Bytes) || prev.Version != next.Version {
 			return fmt.Errorf("postgres: %w: next EventID %q conflicts", state.ErrIdempotencyConflict, next.ID)
 		}
-		if err := tx.Commit(); err != nil {
+		if err := commitDetachedTx(callerCtx, tx); err != nil {
 			return d.translateErr(err, "postgres: commit conditional idempotent no-op")
 		}
 		committed = true
@@ -338,7 +342,7 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 	if _, err := tx.ExecContext(ctx, upsert, next.Identity.TenantID, next.Identity.UserID, next.Identity.SessionID, next.Identity.RunID, next.Kind, string(next.ID), next.Version, payload, updatedAt); err != nil {
 		return d.translateUpsertErr(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitDetachedTx(callerCtx, tx); err != nil {
 		return d.translateErr(err, "postgres: commit conditional save")
 	}
 	committed = true
@@ -348,13 +352,23 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 // SaveBatchIf atomically verifies all generations and writes every record in
 // one transaction. Ordered advisory locks serialize absent and present slots
 // across independent driver instances.
-func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+func (d *driver) SaveBatchIf(callerCtx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
 	if d.closed.Load() {
 		return state.ErrStoreClosed
 	}
 	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
 		return err
 	}
+	if err := callerCtx.Err(); err != nil {
+		return fmt.Errorf("postgres: conditional batch cancelled before begin: %w", err)
+	}
+	// The transaction runs detached from caller cancellation and bounded by
+	// its own deadline. pgx binds the BeginTx context to COMMIT, so a caller
+	// context cancelled mid-COMMIT would otherwise abort the round-trip and
+	// leave the outcome ambiguous. Caller cancellation is still honoured up
+	// to the commit point, where it becomes a definite rollback.
+	ctx, cancel := detachedTxContext(callerCtx)
+	defer cancel()
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return d.translateErr(err, "postgres: begin conditional batch tx")
@@ -419,18 +433,51 @@ func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpec
 			return d.translateUpsertErr(err)
 		}
 	}
-	if err := commitConditionalBatch(ctx, tx.Commit); err != nil {
+	if err := commitConditionalBatch(callerCtx, ctx, tx.Commit); err != nil {
 		return err
 	}
 	committed = true
 	return nil
 }
 
-func commitConditionalBatch(ctx context.Context, commit func() error) error {
-	if err := ctx.Err(); err != nil {
+// conditionalBatchTimeout bounds one detached write transaction, including
+// advisory-lock waits and COMMIT.
+const conditionalBatchTimeout = 15 * time.Second
+
+// detachedTxContext returns the context a write transaction runs on:
+// detached from caller cancellation (pgx binds the BeginTx context to
+// COMMIT, so a cancelled caller would otherwise abort COMMIT mid-flight and
+// make its outcome ambiguous) and bounded by conditionalBatchTimeout.
+func detachedTxContext(callerCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(callerCtx), conditionalBatchTimeout)
+}
+
+// commitDetachedTx commits tx unless the caller was cancelled first, in which
+// case the deferred Rollback makes the cancellation a definite rollback.
+func commitDetachedTx(callerCtx context.Context, tx *sql.Tx) error {
+	if err := callerCtx.Err(); err != nil {
+		return fmt.Errorf("cancelled before commit: %w", err)
+	}
+	return tx.Commit()
+}
+
+// commitConditionalBatch sends COMMIT unless the caller or the transaction
+// deadline has already ended, in which case the transaction is a definite
+// rollback. Only a COMMIT that was actually sent and then failed is reported
+// as state.ErrCommitOutcomeUnknown.
+func commitConditionalBatch(callerCtx, txCtx context.Context, commit func() error) error {
+	if err := callerCtx.Err(); err != nil {
 		return fmt.Errorf("postgres: conditional batch cancelled before commit: %w", err)
 	}
+	if err := txCtx.Err(); err != nil {
+		return fmt.Errorf("postgres: conditional batch deadline elapsed before commit: %w", err)
+	}
 	if err := commit(); err != nil {
+		if errors.Is(err, sql.ErrTxDone) {
+			// database/sql already finalized (rolled back) the transaction;
+			// COMMIT was never sent.
+			return fmt.Errorf("postgres: conditional batch rolled back before commit: %w", err)
+		}
 		return fmt.Errorf("postgres: commit conditional batch: %w", errors.Join(state.ErrCommitOutcomeUnknown, err))
 	}
 	return nil
@@ -439,13 +486,15 @@ func commitConditionalBatch(ctx context.Context, commit func() error) error {
 // DeleteIf atomically removes only the exact EventID generation named by the
 // caller. Keeping the generation predicate in the DELETE statement makes it
 // linearizable with concurrent UPSERTs without relying on process-local locks.
-func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation) (bool, error) {
+func (d *driver) DeleteIf(callerCtx context.Context, expectation state.SlotExpectation) (bool, error) {
 	if d.closed.Load() {
 		return false, state.ErrStoreClosed
 	}
 	if err := state.ValidateDeleteIf(expectation); err != nil {
 		return false, err
 	}
+	ctx, cancel := detachedTxContext(callerCtx)
+	defer cancel()
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, d.translateErr(err, "postgres: begin conditional delete tx")
@@ -475,7 +524,7 @@ func (d *driver) DeleteIf(ctx context.Context, expectation state.SlotExpectation
 	if err != nil {
 		return false, d.translateErr(err, "postgres: conditional delete rows affected")
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitDetachedTx(callerCtx, tx); err != nil {
 		return false, d.translateErr(err, "postgres: commit conditional delete")
 	}
 	committed = true

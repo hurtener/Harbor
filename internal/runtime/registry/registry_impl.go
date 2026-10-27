@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -674,7 +675,11 @@ func (r *Registry) saveRecord(ctx context.Context, ident identity.Identity, ar *
 // that misses the event can still query the registry. This mirrors
 // sessions.Registry.publish.
 func (r *Registry) publish(ctx context.Context, _ identity.Identity, ev events.Event) {
-	_ = r.bus.Publish(ctx, ev) //nolint:errcheck // best-effort emit; StateStore is source of truth (see doc above)
+	if err := r.bus.Publish(ctx, ev); err != nil {
+		slog.WarnContext(ctx, "registry: event publish failed",
+			slog.String("event_type", string(ev.Type)),
+			slog.String("error", err.Error()))
+	}
 }
 
 // redactString runs an operator-supplied string through the configured

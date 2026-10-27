@@ -10,7 +10,7 @@ import (
 
 func TestCommitConditionalBatch_AppliedThenContextCanceledIsUnknown(t *testing.T) {
 	applied := false
-	err := commitConditionalBatch(context.Background(), func() error {
+	err := commitConditionalBatch(context.Background(), context.Background(), func() error {
 		applied = true
 		return context.Canceled
 	})
@@ -23,7 +23,7 @@ func TestCommitConditionalBatch_PreCommitCancellationDoesNotInvokeCommit(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	called := false
-	err := commitConditionalBatch(ctx, func() error { called = true; return nil })
+	err := commitConditionalBatch(ctx, context.Background(), func() error { called = true; return nil })
 	if called || !errors.Is(err, context.Canceled) || errors.Is(err, state.ErrCommitOutcomeUnknown) {
 		t.Fatalf("called=%v err=%v, want definite pre-commit cancellation", called, err)
 	}

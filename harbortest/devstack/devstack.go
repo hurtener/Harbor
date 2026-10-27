@@ -1312,18 +1312,8 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 		}
 
 		router := http.NewServeMux()
-		router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			//nolint:errcheck // health-probe response write; a failure is non-actionable
-			_, _ = w.Write([]byte(`{"status":"ok","subcommand":"dev"}`))
-		})
-		router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			//nolint:errcheck // readiness-probe response write; a failure is non-actionable
-			_, _ = w.Write([]byte(`{"status":"ready"}`))
-		})
+		router.HandleFunc("/healthz", serve.HealthHandler(stack.Bus, `{"status":"ok","subcommand":"dev"}`, nil))
+		router.HandleFunc("/readyz", serve.HealthHandler(stack.Bus, `{"status":"ready"}`, nil))
 		// Draft handler — mounted under the same auth middleware as the
 		// Protocol mux (bare when SkipAuth so tests inject identity themselves).
 		if stack.DraftStore != nil {

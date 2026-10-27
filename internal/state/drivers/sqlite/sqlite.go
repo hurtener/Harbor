@@ -529,13 +529,21 @@ func (d *driver) SaveIf(ctx context.Context, expectations []state.SlotExpectatio
 
 // SaveBatchIf atomically verifies all generations and writes every record in
 // one serialized SQLite transaction.
-func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+func (d *driver) SaveBatchIf(callerCtx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
 	if d.closed.Load() {
 		return fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
 	}
 	if err := state.ValidateSaveBatchIf(expectations, writes); err != nil {
 		return err
 	}
+	if err := callerCtx.Err(); err != nil {
+		return fmt.Errorf("state/sqlite: conditional batch cancelled before begin: %w", err)
+	}
+	// Detached from caller cancellation (bounded by its own deadline) so a
+	// cancelled caller cannot interrupt COMMIT and make the outcome
+	// ambiguous; caller cancellation still rolls back before COMMIT.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(callerCtx), conditionalBatchTimeout)
+	defer cancel()
 	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return fmt.Errorf("state/sqlite: begin conditional batch tx: %w", err)
@@ -588,18 +596,30 @@ func (d *driver) SaveBatchIf(ctx context.Context, expectations []state.SlotExpec
 			return fmt.Errorf("state/sqlite: conditional batch upsert: %w", err)
 		}
 	}
-	if err := commitConditionalBatch(ctx, tx.Commit); err != nil {
+	if err := commitConditionalBatch(callerCtx, ctx, tx.Commit); err != nil {
 		return err
 	}
 	committed = true
 	return nil
 }
 
-func commitConditionalBatch(ctx context.Context, commit func() error) error {
-	if err := ctx.Err(); err != nil {
+// conditionalBatchTimeout bounds one detached SaveBatchIf transaction.
+const conditionalBatchTimeout = 15 * time.Second
+
+// commitConditionalBatch sends COMMIT unless the caller or the transaction
+// deadline already ended (a definite rollback). Only a sent COMMIT that then
+// failed is reported as state.ErrCommitOutcomeUnknown.
+func commitConditionalBatch(callerCtx, txCtx context.Context, commit func() error) error {
+	if err := callerCtx.Err(); err != nil {
 		return fmt.Errorf("state/sqlite: conditional batch cancelled before commit: %w", err)
 	}
+	if err := txCtx.Err(); err != nil {
+		return fmt.Errorf("state/sqlite: conditional batch deadline elapsed before commit: %w", err)
+	}
 	if err := commit(); err != nil {
+		if errors.Is(err, sql.ErrTxDone) {
+			return fmt.Errorf("state/sqlite: conditional batch rolled back before commit: %w", err)
+		}
 		return fmt.Errorf("state/sqlite: commit conditional batch: %w", errors.Join(state.ErrCommitOutcomeUnknown, err))
 	}
 	return nil

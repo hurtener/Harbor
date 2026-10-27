@@ -1345,18 +1345,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	}
 	router := http.NewServeMux()
 	healthzBody := fmt.Sprintf(`{"status":"ok","subcommand":%q}`, subcommandLabel)
-	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		//nolint:errcheck // health-probe response write; a failure is non-actionable and the probe just retries
-		_, _ = w.Write([]byte(healthzBody))
-	})
-	router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		//nolint:errcheck // readiness-probe response write; a failure is non-actionable and the probe just retries
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
-	})
+	router.HandleFunc("/healthz", HealthHandler(bus, healthzBody, opts.Logger))
+	router.HandleFunc("/readyz", HealthHandler(bus, `{"status":"ready"}`, opts.Logger))
 	if metricsHandler, mherr := telemetry.PrometheusHandler(metricsReg); mherr == nil {
 		router.Handle("/metrics", metricsHandler)
 	} else if opts.Logger != nil {
@@ -1628,5 +1618,34 @@ func (h *Handle) WaitReady(ctx context.Context) (string, error) {
 		return h.ready.addr, h.ready.err
 	case <-ctx.Done():
 		return "", ctx.Err()
+	}
+}
+
+// unhealthyBody is the probe body served while a critical subsystem cannot
+// make progress. It carries no internal error detail.
+const unhealthyBody = `{"status":"unhealthy","reason":"event persistence stalled"}`
+
+// HealthHandler serves a liveness/readiness probe. It answers 200 with okBody
+// while the event bus reports healthy persistence and 503 once the bus has
+// been unable to publish durably for longer than its bounded tolerance, so a
+// platform health check restarts the process as a last resort. Buses without
+// the PersistenceHealthReporter capability are always healthy.
+func HealthHandler(bus events.EventBus, okBody string, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if bus != nil {
+			if err := events.PersistenceHealthy(bus); err != nil {
+				if logger != nil {
+					logger.WarnContext(r.Context(), "serve: health probe failing", slog.String("reason", err.Error()))
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+				//nolint:errcheck // health-probe response write; a failure is non-actionable and the probe just retries
+				_, _ = w.Write([]byte(unhealthyBody))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // health-probe response write; a failure is non-actionable and the probe just retries
+		_, _ = w.Write([]byte(okBody))
 	}
 }
