@@ -792,6 +792,15 @@ func DefaultProgressPolicy() ProgressPolicy {
 	}
 }
 
+// PendingRedriver is an optional TaskRegistry capability that heals tasks
+// stranded at StatusPending (for example when their task.spawned event was
+// never published): stale foreground tasks are failed with a user-safe
+// reason and the rest have task.spawned re-emitted. The run-loop driver
+// calls it after subscribing to task.spawned and then periodically.
+type PendingRedriver interface {
+	RedrivePendingTasks(ctx context.Context) (int, error)
+}
+
 // TaskRegistry is the orchestration surface for the task subsystem.
 //
 // Implementations MUST be safe for concurrent use by N goroutines

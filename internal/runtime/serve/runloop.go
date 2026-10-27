@@ -648,7 +648,41 @@ func (d *RunLoopDriver) Start(ctx context.Context) error {
 
 	d.subLoopWG.Add(1)
 	go d.subscribeLoop()
+	if redriver, ok := d.tasks.(tasks.PendingRedriver); ok {
+		d.subLoopWG.Add(1)
+		go d.redrivePendingLoop(redriver)
+	}
 	return nil
+}
+
+// pendingRedriveInterval is how often the driver asks the registry to heal
+// tasks stranded at Pending. The registry's own age bounds keep this from
+// touching tasks whose spawn is still in flight.
+const pendingRedriveInterval = time.Minute
+
+// redrivePendingLoop heals Pending tasks whose task.spawned was never
+// delivered (for example a publish that failed after the task persisted).
+// It runs once right after the subscription opens, so a re-emitted
+// task.spawned is observed by subscribeLoop, then every
+// pendingRedriveInterval until Close. Errors are logged and retried on the
+// next tick; the loop never exits on a single failure.
+func (d *RunLoopDriver) redrivePendingLoop(redriver tasks.PendingRedriver) {
+	defer d.subLoopWG.Done()
+	ticker := time.NewTicker(pendingRedriveInterval)
+	defer ticker.Stop()
+	for {
+		if n, err := redriver.RedrivePendingTasks(d.subCtx); err != nil {
+			d.logger.Warn("RunLoopDriver: pending-task redrive failed",
+				slog.Int("handled", n), slog.String("err", err.Error()))
+		} else if n > 0 {
+			d.logger.Info("RunLoopDriver: healed stranded pending tasks", slog.Int("handled", n))
+		}
+		select {
+		case <-d.subCtx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // subscribeLoop drains events from the subscription channel. For

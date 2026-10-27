@@ -17,6 +17,25 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.5] — 2026-10-27
+
+### Fixed
+
+- Tasks no longer stay Pending forever when their `task.spawned` event was
+  never published (for example during the v1.33.3 persistence latch). The
+  run-loop driver re-drives stranded tasks after it subscribes and then
+  every minute. A Pending foreground or background task older than two
+  minutes gets its `task.spawned` re-emitted. A foreground task still
+  Pending after fifteen minutes is failed with code
+  `interrupted_before_start` ("interrupted before it started; please
+  retry"), and `task.spawned` plus `task.failed` are emitted so the
+  conversation shows the turn as failed. The startup recovery sweep fails
+  those abandoned foreground tasks too. Duplicate spawn events cannot run a
+  task twice, because only one Pending → Running transition succeeds.
+- An idempotent `Spawn` retry that finds the task still Pending now
+  re-publishes `task.spawned` instead of returning the reused handle with
+  no event.
+
 ## [1.33.4] — 2026-10-27
 
 ### Fixed

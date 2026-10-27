@@ -41,13 +41,19 @@ import (
 // runs the open-time recovery sweep so tasks interrupted by a restart
 // reach a terminal state before the registry serves any request.
 func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
+	return NewWithOptions(deps)
+}
+
+// NewWithOptions is New with engine options (for example engine.WithClock,
+// which tests use to age persisted records deterministically).
+func NewWithOptions(deps tasks.Dependencies, opts ...engine.Option) (tasks.TaskRegistry, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf(
 			"tasks/durable: the durable task driver requires a StateStore but none was wired; " +
 				"configure a durable store via state.driver (sqlite or postgres — see examples/) " +
 				"and ensure it is passed to tasks.Open")
 	}
-	eng, err := engine.New(deps.Bus, deps.Redactor, &backend{store: deps.Store})
+	eng, err := engine.New(deps.Bus, deps.Redactor, &backend{store: deps.Store}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("tasks/durable: %w", err)
 	}
