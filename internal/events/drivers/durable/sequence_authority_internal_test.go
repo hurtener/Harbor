@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,20 +80,145 @@ func TestSequenceAuthority_ConflictRetryHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestSequenceAuthority_UnknownCommitPoisonsUntilRestart(t *testing.T) {
+func TestSequenceAuthority_UnknownCommitThatLandedReconcilesToSuccess(t *testing.T) {
 	b := newAuthorityTestBus(t)
 	inner := b.store
 	b.store = &unknownCommitStore{StateStore: inner}
-	if err := b.Publish(context.Background(), authorityTestEvent()); !errors.Is(err, state.ErrCommitOutcomeUnknown) {
-		t.Fatalf("Publish = %v, want ErrCommitOutcomeUnknown", err)
+	if err := b.Publish(context.Background(), authorityTestEvent()); err != nil {
+		t.Fatalf("Publish with landed-but-ambiguous commit = %v, want reconciled success", err)
 	}
-	if seq, _, err := b.loadSequenceAuthority(context.Background()); err != nil || seq != 1 {
-		t.Fatalf("ambiguous applied commit authority = %d, %v; want 1", seq, err)
+	if b.PersistenceHealthy() != nil || b.pendingCommit != nil {
+		t.Fatal("landed ambiguous commit left a pending reconciliation")
 	}
 	b.store = inner
-	if err := b.Publish(context.Background(), authorityTestEvent()); err == nil {
-		t.Fatal("Publish succeeded after ambiguous commit outcome")
+	if err := b.Publish(context.Background(), authorityTestEvent()); err != nil {
+		t.Fatalf("Publish after reconciled commit: %v", err)
 	}
+	if wm, err := b.Watermark(context.Background()); err != nil || wm != 2 {
+		t.Fatalf("Watermark = %d, %v; want 2 (no sequence reuse)", wm, err)
+	}
+}
+
+func TestSequenceAuthority_UnknownCommitThatDidNotLandIsRetryable(t *testing.T) {
+	b := newAuthorityTestBus(t)
+	inner := b.store
+	b.store = &reconcileStore{StateStore: inner, apply: false}
+	err := b.Publish(context.Background(), authorityTestEvent())
+	if !errors.Is(err, errCommitNotApplied) || errors.Is(err, state.ErrCommitOutcomeUnknown) {
+		t.Fatalf("Publish = %v, want definite errCommitNotApplied", err)
+	}
+	if b.pendingCommit != nil {
+		t.Fatal("absent ambiguous commit left a pending reconciliation")
+	}
+	b.store = inner
+	if err := b.Publish(context.Background(), authorityTestEvent()); err != nil {
+		t.Fatalf("retry after reconciled-absent commit: %v", err)
+	}
+	if wm, err := b.Watermark(context.Background()); err != nil || wm != 1 {
+		t.Fatalf("Watermark = %d, %v; want 1", wm, err)
+	}
+}
+
+func TestSequenceAuthority_ReconcileFailureThenRecoveryClears(t *testing.T) {
+	for _, applied := range []bool{true, false} {
+		t.Run(fmt.Sprintf("applied=%v", applied), func(t *testing.T) {
+			clock := &steppedClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
+			store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			opened, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store, WithClock(clock))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := opened.(*bus)
+			t.Cleanup(func() { _ = b.Close(context.Background()) })
+			wrapped := &reconcileStore{StateStore: store, apply: applied}
+			wrapped.failLoads.Store(true)
+			b.store = wrapped
+			if err := b.Publish(context.Background(), authorityTestEvent()); !errors.Is(err, state.ErrCommitOutcomeUnknown) {
+				t.Fatalf("Publish = %v, want unresolved ErrCommitOutcomeUnknown", err)
+			}
+			if b.pendingCommit == nil {
+				t.Fatal("unresolved reconciliation was not recorded as pending")
+			}
+			if err := b.Publish(context.Background(), authorityTestEvent()); !errors.Is(err, errCommitReconcilePending) {
+				t.Fatalf("Publish while pending = %v, want errCommitReconcilePending", err)
+			}
+			clock.advance(persistenceUnhealthyAfter)
+			if err := b.PersistenceHealthy(); err != nil {
+				t.Fatalf("PersistenceHealthy at the bound = %v, want healthy", err)
+			}
+			clock.advance(time.Second)
+			if err := b.PersistenceHealthy(); !errors.Is(err, errCommitReconcilePending) {
+				t.Fatalf("PersistenceHealthy past the bound = %v, want errCommitReconcilePending", err)
+			}
+
+			wrapped.failLoads.Store(false)
+			wrapped.ambiguous.Store(false)
+			if err := b.Publish(context.Background(), authorityTestEvent()); err != nil {
+				t.Fatalf("Publish after store recovery: %v", err)
+			}
+			if b.pendingCommit != nil || b.PersistenceHealthy() != nil {
+				t.Fatal("recovered reconciliation did not clear the pending state")
+			}
+			want := uint64(1)
+			if applied {
+				want = 2
+			}
+			if wm, err := b.Watermark(context.Background()); err != nil || wm != want {
+				t.Fatalf("Watermark = %d, %v; want %d", wm, err, want)
+			}
+		})
+	}
+}
+
+// reconcileStore reports every SaveBatchIf as ambiguous (optionally applying
+// it first) and can fail Loads to simulate an unreachable store during
+// reconciliation.
+type reconcileStore struct {
+	state.StateStore
+	apply     bool
+	failLoads atomic.Bool
+	ambiguous atomic.Bool
+	init      sync.Once
+}
+
+func (s *reconcileStore) SaveBatchIf(ctx context.Context, expectations []state.SlotExpectation, writes []state.StateRecord) error {
+	s.init.Do(func() { s.ambiguous.Store(true) })
+	if !s.ambiguous.Load() {
+		return s.StateStore.SaveBatchIf(ctx, expectations, writes)
+	}
+	if s.apply {
+		if err := s.StateStore.SaveBatchIf(ctx, expectations, writes); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("ambiguous commit acknowledgement: %w", errors.Join(state.ErrCommitOutcomeUnknown, errors.New("connection reset")))
+}
+
+func (s *reconcileStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	if s.failLoads.Load() && strings.HasPrefix(kind, kindEntryPrefix) {
+		return state.StateRecord{}, errors.New("store unreachable")
+	}
+	return s.StateStore.Load(ctx, q, kind)
+}
+
+type steppedClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *steppedClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *steppedClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
 
 func TestSequenceAuthority_RestartNeverLowersPersistedAuthority(t *testing.T) {

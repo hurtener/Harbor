@@ -1213,7 +1213,11 @@ func (r *Registry) save(ctx context.Context, s Session) error {
 // Identity-mandatory at the bus boundary: q must already carry the
 // triple (caller is the registry, which always has it).
 func (r *Registry) publish(ctx context.Context, _ identity.Quadruple, ev events.Event) {
-	_ = r.bus.Publish(ctx, ev) //nolint:errcheck // best-effort emit; StateStore is source of truth (see doc above)
+	if err := r.bus.Publish(ctx, ev); err != nil {
+		slog.WarnContext(ctx, "sessions: lifecycle event publish failed",
+			slog.String("event_type", string(ev.Type)),
+			slog.String("error", err.Error()))
+	}
 }
 
 // unfenceSession lifts any erasure fence on the triple so a reused session

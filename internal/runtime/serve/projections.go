@@ -113,10 +113,7 @@ func OpenTurnsProjection(ctx context.Context, cfg *config.Config, deps TurnsProj
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if rErr := mat.Run(runCtx); rErr != nil && !errors.Is(rErr, context.Canceled) {
-			deps.Logger.ErrorContext(runCtx, "turns materializer exited",
-				slog.Any("error", rErr))
-		}
+		superviseTurnsMaterializer(runCtx, mat.Run, deps.Logger)
 	}()
 	closers = append(closers, func(context.Context) error {
 		cancel()
@@ -486,5 +483,41 @@ func closeProjectionClosers(closers []func(context.Context) error) {
 	for i := len(closers) - 1; i >= 0; i-- {
 		//nolint:errcheck // best-effort drain of a failed projection construction
 		_ = closers[i](ctx)
+	}
+}
+
+// Restart backoff bounds for the turns materializer supervisor.
+const (
+	turnsMaterializerRestartMin = time.Second
+	turnsMaterializerRestartMax = 30 * time.Second
+)
+
+// superviseTurnsMaterializer restarts run after a transient failure (for
+// example a Postgres blip during a watermark read) with bounded exponential
+// backoff, so one error no longer stops sessions.turns projection until the
+// process restarts. Re-running is safe: the materializer re-applies events
+// idempotently. It returns on cancellation or when the projection source is
+// permanently unavailable.
+func superviseTurnsMaterializer(ctx context.Context, run func(context.Context) error, logger *slog.Logger) {
+	backoff := turnsMaterializerRestartMin
+	for {
+		err := run(ctx)
+		if ctx.Err() != nil || err == nil || errors.Is(err, context.Canceled) {
+			return
+		}
+		if errors.Is(err, materializer.ErrSourceUnavailable) {
+			logger.ErrorContext(ctx, "turns materializer exited: projection source unavailable", slog.Any("error", err))
+			return
+		}
+		logger.ErrorContext(ctx, "turns materializer failed; restarting",
+			slog.Any("error", err), slog.Duration("backoff", backoff))
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(2*backoff, turnsMaterializerRestartMax)
 	}
 }

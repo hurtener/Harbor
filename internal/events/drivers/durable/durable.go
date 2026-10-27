@@ -45,8 +45,12 @@
 // On Publish, one mandatory StateStore SaveBatchIf transaction conditionally
 // advances the global authority and commits the opaque body plus conditional
 // session head. No partial body/head/authority state is visible. An ambiguous
-// transaction acknowledgement poisons the process until restart; restart reads
-// the authority and backfills legacy metadata with generation checks.
+// transaction acknowledgement is reconciled by reading the batch's immutable
+// entry slot on a detached, bounded context: a landed batch is accepted, an
+// absent batch is a retryable failure, and an unresolvable read pauses
+// publication until a later publish reconciles it. The authority CAS, not
+// process-local state, prevents sequence reuse. Restart reads the authority
+// and backfills legacy metadata with generation checks.
 //
 // The driver is registered under name "durable" via init(); cmd/harbor
 // blank-imports this package so the registration fires at process
@@ -103,7 +107,43 @@ const (
 	// the required N=100 concurrent publishers while failing loudly under
 	// sustained churn instead of spinning forever.
 	publishCASMaxAttempts = 256
+	// commitReconcileTimeout bounds the detached read that resolves an
+	// ambiguous commit acknowledgement. It is independent of the caller's
+	// context so a disconnecting client cannot leave the outcome unresolved.
+	commitReconcileTimeout = 5 * time.Second
+	// persistenceUnhealthyAfter is how long an unresolved commit outcome may
+	// remain pending before PersistenceHealthy reports failure. The bound
+	// keeps transient database blips from flapping health probes while still
+	// letting the platform restart a process whose store never recovers.
+	persistenceUnhealthyAfter = 60 * time.Second
 )
+
+// errCommitNotApplied reports that an ambiguous commit acknowledgement was
+// reconciled against the store and the batch is definitely absent. The
+// caller may retry the publication; no sequence or index state changed.
+var errCommitNotApplied = errors.New("durable: commit was not applied (reconciled after ambiguous acknowledgement)")
+
+// errCommitReconcilePending reports that an earlier ambiguous commit has not
+// yet been resolved because the reconciliation read itself failed. Every
+// publish retries the reconciliation first, so the condition clears as soon
+// as the store answers again.
+var errCommitReconcilePending = errors.New("durable: earlier commit outcome is still being reconciled; publish refused")
+
+// commitProbe identifies one immutable entry written by an atomic batch. The
+// entry slot is expected-absent and written in the same transaction as the
+// authority and head, so finding it with this EventID proves the whole batch
+// committed; finding it absent or owned by another EventID proves it did not.
+type commitProbe struct {
+	identity identity.Quadruple
+	kind     string
+	eventID  state.EventID
+}
+
+// pendingCommit is an ambiguous batch whose reconciliation read failed.
+type pendingCommit struct {
+	probe    commitProbe
+	assigned []events.Event
+}
 
 var sequenceAuthorityIdentity = identity.InternalCoordinationQuadruple()
 
@@ -579,12 +619,17 @@ type bus struct {
 	// counter, and the persisted log never disagree. Zero when the log is
 	// empty. Unused in best-effort mode (the ring is the source there).
 	oldestRetainedAt time.Time
-	// persistenceBroken is set after an ambiguous StateStore write failure.
-	// The entry may have reached the store even when Save returned an error;
-	// refusing subsequent publishes prevents sequence reuse from overwriting
-	// a committed payload that has not yet been indexed. A process restart
-	// rehydrates the head and backfills safely.
-	persistenceBroken bool
+	// pendingCommit is set when an ambiguous commit acknowledgement could not
+	// be reconciled because the reconciliation read failed. Publishes are
+	// refused while it is set and each publish retries the reconciliation
+	// first; once the store answers, the outcome is adopted (landed) or
+	// discarded (absent) and publication resumes without a restart. Sequence
+	// safety never depends on this field: the persisted authority CAS rejects
+	// any reuse. Guarded by publishMu.
+	pendingCommit *pendingCommit
+	// pendingSinceUnixNano mirrors when pendingCommit was set (0 = none) so
+	// health probes can read it without taking publishMu.
+	pendingSinceUnixNano atomic.Int64
 
 	// Best-effort ring (used ONLY when bestEffort is true).
 	ringBuf  []events.Event
@@ -1264,8 +1309,10 @@ func (b *bus) sequenceAndStoreBatch(ctx context.Context, batch []events.Event, g
 			return nil, errEventFenced
 		}
 	}
-	if b.persistenceBroken {
-		return nil, fmt.Errorf("durable: persistence/index state is uncertain; restart required before publishing")
+	if b.pendingCommit != nil {
+		if err := b.resolvePendingCommitLocked(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if !sameDurableBatchSession(batch) {
 		return nil, fmt.Errorf("durable: publication batch must use one identity/session")
@@ -1296,18 +1343,90 @@ func (b *bus) sequenceAndStoreBatch(ctx context.Context, batch []events.Event, g
 		if errors.Is(err, errEventFenced) {
 			return nil, err
 		}
-		if errors.Is(err, state.ErrCommitOutcomeUnknown) {
-			b.persistenceBroken = true
-		}
 		return nil, fmt.Errorf("durable: persist event batch: %w", err)
 	}
-	b.nextSeq = accepted[len(accepted)-1].Sequence
+	b.adoptCommittedLocked(accepted)
+	return accepted, nil
+}
+
+// adoptCommittedLocked advances the local watermark and retention horizon for
+// a batch known to be durable. Caller holds publishMu.
+func (b *bus) adoptCommittedLocked(accepted []events.Event) {
+	if len(accepted) == 0 {
+		return
+	}
+	if last := accepted[len(accepted)-1].Sequence; last > b.nextSeq {
+		b.nextSeq = last
+	}
 	for _, ev := range accepted {
 		if b.oldestRetainedAt.IsZero() || ev.OccurredAt.Before(b.oldestRetainedAt) {
 			b.oldestRetainedAt = ev.OccurredAt
 		}
 	}
-	return accepted, nil
+}
+
+// commitOutcome is the reconciled result of an ambiguous commit.
+type commitOutcome int
+
+const (
+	commitOutcomeUnresolved commitOutcome = iota
+	commitOutcomeLanded
+	commitOutcomeAbsent
+)
+
+// reconcileCommit resolves an ambiguous commit by reading the batch's first
+// immutable entry slot on a context detached from the caller's cancellation
+// and bounded by commitReconcileTimeout.
+func (b *bus) reconcileCommit(ctx context.Context, probe commitProbe) (commitOutcome, error) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitReconcileTimeout)
+	defer cancel()
+	rec, err := b.store.Load(rctx, probe.identity, probe.kind)
+	switch {
+	case errors.Is(err, state.ErrNotFound):
+		return commitOutcomeAbsent, nil
+	case err != nil:
+		return commitOutcomeUnresolved, err
+	case rec.ID == probe.eventID:
+		return commitOutcomeLanded, nil
+	default:
+		return commitOutcomeAbsent, nil
+	}
+}
+
+// resolvePendingCommitLocked retries reconciliation of an earlier ambiguous
+// commit. It returns nil once the outcome is known (and publication may
+// proceed) or errCommitReconcilePending while the store still cannot answer.
+// Caller holds publishMu.
+func (b *bus) resolvePendingCommitLocked(ctx context.Context) error {
+	pending := b.pendingCommit
+	outcome, err := b.reconcileCommit(ctx, pending.probe)
+	if outcome == commitOutcomeUnresolved {
+		return fmt.Errorf("%w: %w", errCommitReconcilePending, err)
+	}
+	if outcome == commitOutcomeLanded {
+		b.adoptCommittedLocked(pending.assigned)
+	}
+	b.pendingCommit = nil
+	b.pendingSinceUnixNano.Store(0)
+	b.logger.WarnContext(ctx, "durable: pending commit outcome reconciled; publication resumed",
+		slog.Bool("landed", outcome == commitOutcomeLanded),
+		slog.Int("batch_len", len(pending.assigned)))
+	return nil
+}
+
+// PersistenceHealthy reports an error when an ambiguous commit outcome has
+// remained unresolved for longer than persistenceUnhealthyAfter. It is safe
+// for concurrent use and never blocks on publishMu or the store.
+func (b *bus) PersistenceHealthy() error {
+	since := b.pendingSinceUnixNano.Load()
+	if since == 0 {
+		return nil
+	}
+	pendingFor := b.clock.Now().Sub(time.Unix(0, since))
+	if pendingFor <= persistenceUnhealthyAfter {
+		return nil
+	}
+	return fmt.Errorf("%w (pending for %s)", errCommitReconcilePending, pendingFor.Truncate(time.Second))
 }
 
 // persistAtomicBatch allocates a contiguous sequence range from the shared
@@ -1338,6 +1457,10 @@ func (b *bus) persistAtomicBatch(ctx context.Context, batch []events.Event, gene
 			assigned[i].Sequence = seq
 		}
 		if err := b.persistAtomicBatchAttempt(ctx, assigned, authorityExpectation, expectedEventID); err != nil {
+			var ambiguous *ambiguousCommitError
+			if errors.As(err, &ambiguous) {
+				return b.reconcileAmbiguousCommitLocked(ctx, assigned, ambiguous)
+			}
 			if errors.Is(err, state.ErrConditionFailed) {
 				changed, checkErr := b.erasureEpochChanged(ctx, batch[0].Identity.Identity, generation, expectedEventID)
 				if checkErr != nil {
@@ -1353,6 +1476,53 @@ func (b *bus) persistAtomicBatch(ctx context.Context, batch []events.Event, gene
 		return assigned, nil
 	}
 	return nil, fmt.Errorf("global sequence allocation exceeded %d CAS attempts: %w", publishCASMaxAttempts, state.ErrConditionFailed)
+}
+
+// reconcileAmbiguousCommitLocked resolves an ambiguous commit acknowledgement
+// against the store instead of poisoning the process. A landed batch is
+// returned as accepted; an absent batch returns errCommitNotApplied (safe to
+// retry); an unresolvable read records a pending reconciliation that every
+// later publish retries first. Caller holds publishMu.
+func (b *bus) reconcileAmbiguousCommitLocked(ctx context.Context, assigned []events.Event, ambiguous *ambiguousCommitError) ([]events.Event, error) {
+	b.logger.ErrorContext(ctx, "durable: event batch commit acknowledgement was ambiguous; reconciling against the store",
+		slog.String("error_class", commitErrorClass(ambiguous.err)),
+		slog.String("error", ambiguous.err.Error()),
+		slog.Int("batch_len", len(assigned)))
+	outcome, err := b.reconcileCommit(ctx, ambiguous.probe)
+	switch outcome {
+	case commitOutcomeLanded:
+		b.logger.WarnContext(ctx, "durable: ambiguous commit reconciled as applied", slog.Int("batch_len", len(assigned)))
+		return assigned, nil
+	case commitOutcomeAbsent:
+		b.logger.WarnContext(ctx, "durable: ambiguous commit reconciled as not applied", slog.Int("batch_len", len(assigned)))
+		// Flatten the cause to text: the reconciled-absent batch must not
+		// still satisfy errors.Is(err, state.ErrCommitOutcomeUnknown).
+		return nil, fmt.Errorf("%w: %s", errCommitNotApplied, ambiguous.err.Error())
+	default:
+		b.pendingCommit = &pendingCommit{probe: ambiguous.probe, assigned: assigned}
+		b.pendingSinceUnixNano.Store(b.clock.Now().UnixNano())
+		b.logger.ErrorContext(ctx, "durable: ambiguous commit could not be reconciled; publication paused until the store answers",
+			slog.String("error_class", commitErrorClass(err)),
+			slog.String("error", err.Error()))
+		return nil, fmt.Errorf("%w: reconcile: %w", ambiguous.err, err)
+	}
+}
+
+// commitErrorClass returns a bounded, payload-free label for an ambiguous
+// commit cause so operators can correlate occurrences without logging data.
+func commitErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, state.ErrStoreClosed):
+		return "store_closed"
+	default:
+		return "driver_error"
+	}
 }
 
 func (b *bus) persistAtomicBatchAttempt(ctx context.Context, batch []events.Event, authorityExpectation state.SlotExpectation, expectedEventID string) error {
@@ -1435,8 +1605,27 @@ func (b *bus) persistAtomicBatchAttempt(ctx context.Context, batch []events.Even
 	writes = append(writes, authorityRec)
 	writes = append(writes, entries...)
 	writes = append(writes, headRec)
-	return b.store.SaveBatchIf(ctx, expectations, writes)
+	if err := b.store.SaveBatchIf(ctx, expectations, writes); err != nil {
+		if errors.Is(err, state.ErrCommitOutcomeUnknown) {
+			return &ambiguousCommitError{
+				probe: commitProbe{identity: sessionID, kind: entries[0].Kind, eventID: entries[0].ID},
+				err:   err,
+			}
+		}
+		return err
+	}
+	return nil
 }
+
+// ambiguousCommitError carries the probe needed to reconcile an
+// ErrCommitOutcomeUnknown returned by the atomic batch transaction.
+type ambiguousCommitError struct {
+	probe commitProbe
+	err   error
+}
+
+func (e *ambiguousCommitError) Error() string { return e.err.Error() }
+func (e *ambiguousCommitError) Unwrap() error { return e.err }
 
 func (b *bus) loadHeadForBatch(ctx context.Context, sessionID identity.Quadruple) (headRecord, state.SlotExpectation, error) {
 	expect := state.SlotExpectation{Identity: sessionID, Kind: kindHead}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -708,11 +709,17 @@ func (c *coordinator) emit(ctx context.Context, evType events.EventType, entry *
 	if c.bus == nil {
 		return
 	}
-	_ = c.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; pause is already recorded (see doc above)
+	if err := c.bus.Publish(ctx, events.Event{
 		Type:     evType,
 		Identity: identity.Quadruple{Identity: entry.identity, RunID: entry.runID},
 		Payload:  payload,
-	})
+	}); err != nil {
+		// Best-effort emit (see doc above), but never silent: a lost
+		// pause.requested leaves clients without the approval prompt.
+		slog.WarnContext(ctx, "pauseresume: event publish failed",
+			slog.String("event_type", string(evType)),
+			slog.String("error", err.Error()))
+	}
 }
 
 // toCheckpoint builds the persisted checkpoint envelope from the
