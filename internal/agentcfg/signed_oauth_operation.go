@@ -71,10 +71,10 @@ const (
 	// committed candidate before compensation changes active authority.
 	SignedOAuthMCPPhasePreparationRejectionAdmitted SignedOAuthMCPOperationPhase = "preparation_rejection_admitted"
 	// SignedOAuthMCPPhasePreparationRejected is the terminal receipt for a
-	// committed candidate whose discovered MCP schema rejected the signed
-	// artifact mapping before publication. Recovery uses the frozen revision
+	// committed candidate whose preparation was rejected, or whose owner
+	// explicitly retired the incomplete lifetime. Recovery uses the frozen revision
 	// and activation fence to finish restoring prior authority; the JTI can
-	// never be replayed or renewed into a different mapping.
+	// never be replayed or renewed into a different binding.
 	SignedOAuthMCPPhasePreparationRejected SignedOAuthMCPOperationPhase = "preparation_rejected"
 	// RetirementCleanupClassSignedOAuthMCPPair is the frozen retirement
 	// manifest class for one durable signed OAuth MCP pair lifetime. Its
@@ -211,7 +211,15 @@ func (s *SignedOAuthMCPActivationFenceStore) begin(ctx context.Context, tenant, 
 		if existing.Phase == SignedOAuthMCPFencePending {
 			return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: foreign operation owns activation fence", ErrSignedCapabilityPending)
 		}
-		err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: stateKind, ExpectedEventID: existing.EventID}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
+		expectations := []state.SlotExpectation{{Identity: quad, Kind: stateKind, ExpectedEventID: existing.EventID}}
+		if stateKind == signedOAuthMCPActivationFenceKind && existing.Phase == SignedOAuthMCPFenceAborted {
+			completed, err := s.completedLegacyCompensation(ctx, existing)
+			if err != nil {
+				return SignedOAuthMCPActivationFence{}, err
+			}
+			expectations = append(expectations, completed)
+		}
+		err = s.state.SaveIf(ctx, expectations, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 		if err == nil {
 			return fence, nil
 		}
@@ -228,6 +236,27 @@ func (s *SignedOAuthMCPActivationFenceStore) begin(ctx context.Context, tenant, 
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("%w: foreign operation owns activation fence", ErrSignedCapabilityPending)
 	}
 	return existing, nil
+}
+
+// completedLegacyCompensation prevents reuse of the only exact abort proof
+// until its operation has durably completed the compensation checkpoint.
+func (s *SignedOAuthMCPActivationFenceStore) completedLegacyCompensation(ctx context.Context, current SignedOAuthMCPActivationFence) (state.SlotExpectation, error) {
+	quad := identity.Quadruple{Identity: identity.Identity{TenantID: current.TenantID, UserID: "__agentcfg__", SessionID: "__signed_oauth_mcp__"}}
+	operations := &SignedOAuthMCPOperationStore{state: s.state}
+	op, err := operations.load(ctx, quad, current.OperationKind)
+	if err != nil {
+		return state.SlotExpectation{}, fmt.Errorf("%w: load legacy compensation checkpoint: %w", ErrSignedCapabilityPending, err)
+	}
+	kind, err := operations.Kind(op.ReplayKey)
+	if err != nil || kind != current.OperationKind || op.Binding.TenantID != current.TenantID || op.Binding.AgentID != current.AgentID || op.Fingerprint != current.Fingerprint {
+		return state.SlotExpectation{}, fmt.Errorf("%w: legacy compensation checkpoint does not bind its fence", ErrSignedCapabilityPending)
+	}
+	switch op.Phase {
+	case SignedOAuthMCPPhasePreparationRejected, SignedOAuthMCPPhaseExpiredIncomplete, SignedOAuthMCPPhaseRemoved:
+		return state.SlotExpectation{Identity: quad, Kind: kind, ExpectedEventID: op.EventID}, nil
+	default:
+		return state.SlotExpectation{}, fmt.Errorf("%w: legacy compensation checkpoint is still %q", ErrSignedCapabilityPending, op.Phase)
+	}
 }
 
 // Load returns the exact durable fence for an agent. An absent fence is a
@@ -684,6 +713,12 @@ func (s *SignedOAuthMCPOperationStore) Advance(ctx context.Context, current Sign
 	nextRecord := current
 	nextRecord.Phase = next
 	nextRecord.RevisionID = revisionID
+	if current.Phase == SignedOAuthMCPPhaseExpiredIncomplete && next == SignedOAuthMCPPhasePreparationRejected {
+		// Explicit owner removal makes a compensated expiry non-renewable.
+		// Keep its historical expiry counters, but finish the expiry workflow.
+		nextRecord.ExpiryFromPhase = ""
+		nextRecord.ExpiryCandidateRevisionID = ""
+	}
 	nextRecord.EventID = state.NewEventID()
 	bytes, err := json.Marshal(nextRecord)
 	if err != nil {
@@ -897,6 +932,8 @@ func signedOAuthMCPTransitionAllowed(from, to SignedOAuthMCPOperationPhase) bool
 	case SignedOAuthMCPPhaseRevisionCommitted:
 		return to == SignedOAuthMCPPhasePublished || to == SignedOAuthMCPPhasePreparationRejectionAdmitted
 	case SignedOAuthMCPPhasePreparationRejectionAdmitted:
+		return to == SignedOAuthMCPPhasePreparationRejected
+	case SignedOAuthMCPPhaseExpiredIncomplete:
 		return to == SignedOAuthMCPPhasePreparationRejected
 	case SignedOAuthMCPPhasePublished:
 		return to == SignedOAuthMCPPhaseRemovalAdmitted

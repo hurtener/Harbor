@@ -171,6 +171,70 @@ func TestSignedOAuthMCPOperationStore_SQLiteTwoHandleRenewalRaceHasOneWinner(t *
 	}
 }
 
+func TestSignedOAuthMCPActivationFenceStore_LegacyAbortWaitsForTerminalCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "legacy-compensation.sqlite")
+	leftStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = leftStore.Close(ctx) })
+	ops, _ := NewSignedOAuthMCPOperationStore(leftStore)
+	key := SignedOAuthMCPReplayKey{TenantID: "tenant", TrustAnchorName: "anchor", Issuer: "issuer", KeyID: "kid", JTI: "legacy-x"}
+	binding := SignedOAuthMCPBinding{TenantID: "tenant", UserID: "owner", SessionID: "session", AgentID: "agent", Broker: "broker", ProviderName: "provider", CapabilityRevision: "v1", URLDigest: "url", SinkDigest: "sink", Audience: "aud", Connection: SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://example.test/mcp"}}
+	op, _, err := ops.Claim(ctx, key, binding, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err = ops.Advance(ctx, op, SignedOAuthMCPPhaseRevisionCommitted, "candidate-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err = ops.Advance(ctx, op, SignedOAuthMCPPhasePreparationRejectionAdmitted, "candidate-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, _ := ops.Kind(key)
+	left, _ := NewSignedOAuthMCPActivationFenceStore(leftStore)
+	x, err := left.Begin(ctx, "tenant", "agent", kind, op.Fingerprint, "hash-x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err = left.Advance(ctx, x, SignedOAuthMCPFenceAborted, "candidate-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rightStore.Close(ctx) })
+	right, _ := NewSignedOAuthMCPActivationFenceStore(rightStore)
+	if _, err := right.Begin(ctx, "tenant", "agent", "operation-y", "fingerprint-y", "hash-y", ""); !errors.Is(err, ErrSignedCapabilityPending) {
+		t.Fatalf("Y reused abort proof before terminal checkpoint: %v", err)
+	}
+	retained, err := right.LoadForOperation(ctx, "tenant", "agent", kind)
+	if err != nil || retained != x {
+		t.Fatalf("blocked Y changed X abort proof: %+v %v", retained, err)
+	}
+	if _, err := ops.Advance(ctx, op, SignedOAuthMCPPhasePreparationRejected, "candidate-x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := right.Begin(ctx, "tenant", "agent", "operation-y", "fingerprint-y", "hash-y", ""); err != nil {
+		t.Fatalf("Y retry after X completion: %v", err)
+	}
+	reopenedStore, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedStore.Close(ctx) })
+	reopenedOps, _ := NewSignedOAuthMCPOperationStore(reopenedStore)
+	completed, err := reopenedOps.Load(ctx, key)
+	if err != nil || completed.Phase != SignedOAuthMCPPhasePreparationRejected {
+		t.Fatalf("X completion was not durable: %+v %v", completed, err)
+	}
+}
+
 func TestSignedOAuthMCPActivationFenceStore_ReopensOnlyExactRenewedGeneration(t *testing.T) {
 	store, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
 	if err != nil {

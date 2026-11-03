@@ -406,6 +406,49 @@ remains active or authoritative.
 
 ## Risks / open questions
 
+### Incomplete-lifetime recovery correction
+
+A physical connect failure can leave a committed candidate behind a pending
+activation fence. A new signed JTI previously encountered the old fence while
+the exact-hash removal path accepted only published receipts. The existing
+same-JTI retry remains supported. An exact owner may now replace the incomplete
+lifetime with a new signed operation, or remove its immutable candidate hash
+from revision history. Both reuse durable preparation rejection, publisher
+epoch fencing, exact detach, prior/no-active restoration, and fence abort.
+The same explicit removal completes admitted expiry or terminally rejects a
+compensated expiry so it cannot later renew. Published receipts, foreign
+owners, exact tenant scope, and user attachment namespaces remain protected.
+
+Crash recovery also retains an aborted legacy fence until the old operation's
+terminal compensation write has succeeded. A competing first registration
+gets a retryable 409 during that interval; fence reuse atomically compares the
+old terminal operation EventID. Exact retry/removal/reconciliation completes
+the checkpoint, after which the competing registration can retry normally.
+User GET now shares the agent tier's pending-fence visibility: prior hash or
+`-` for no-active is the replacement precondition; hidden candidate and stale
+hashes refuse cleanup. An ordinary user write cannot bypass its own pending
+candidate, while other users remain independent. Physical revision CAS remains
+mandatory after restoration. A `claimed` receipt can be adopted only from the
+exact physically active pair and pending fence, then use the existing retry
+or compensation phases; immutable history alone is never adoption authority.
+
+Recovery tests cover persisted state through reconstructed services, with and
+without prior authority, wrong hashes, same-JTI replay, foreign owners,
+publication checkpoint loss, delayed publishers across two service instances,
+expiry, user session changes, a lost terminal cleanup checkpoint plus competing
+legacy-fence reuse, user visible/physical precondition differences, and a lost
+revision checkpoint while its physical candidate committed. The production-path fixture uses an actual
+TLS MCP server returning HTTP 404 for a wrong path, corrects the signed URL,
+then retains its existing transient token failure and same-JTI retry checks.
+Run the focused fixtures with:
+
+```sh
+go test -p 2 ./internal/runtime/agentcfg/protocol -run '^TestSignedOAuthMCPIncompleteRecovery'
+go test -p 2 ./internal/runtime/agentcfg/protocol -run '^TestSignedOAuthMCPRecoveryFaults_'
+go test -p 2 ./internal/agentcfg -run '^TestSignedOAuthMCPActivationFenceStore_LegacyAbortWaitsForTerminalCheckpoint$'
+go test -p 2 ./internal/runtime/serve -run '^TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery$'
+```
+
 - Signature format and verifier key rotation must use an existing approved
   asymmetric validator or receive an RFC ruling before implementation; request
   parsing must not select algorithms or issuers.

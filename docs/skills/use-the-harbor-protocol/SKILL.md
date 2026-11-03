@@ -230,10 +230,34 @@ of canonical JSON. Required and signed request values must be canonically equal.
 A JTI is tenant-scoped and immutable: an exact retry converges on the original
 pair, while any binding change is a replay conflict. Before publication Harbor
 also checks each mapped method and parameter against the MCP server's discovered
-string input schema. A signature, replay, bound, persistence, schema, or attach
-failure publishes no capability; a committed rejected candidate is durably
-compensated and restart reconciliation completes the rollback before another
-signed operation can take authority.
+string input schema. A rejected discovered mapping is durably compensated;
+restart reconciliation completes its rollback before another signed operation
+can take authority.
+
+A connection failure can retain an incomplete committed candidate behind the
+activation fence. Retry the same signed JTI for a transient failure. To discard
+that lifetime, the exact owner may use the existing
+`agent_config.remove_oauth_mcp_capability` method with the immutable candidate's
+content hash from `agent_config.list_revisions`, even when `agent_config.get`
+shows only prior or no-active state. A corrected, newly signed registration
+using the same provider or connection name also compensates that owner's
+incomplete lifetime. Its `expected_content_hash` is checked against the logical
+active revision before cleanup, and the replacement write retains its own CAS.
+Cleanup ends at `preparation_rejected`, including after admitted/completed
+expiry, so the discarded JTI cannot renew. Published lifetimes and foreign
+owners remain protected; an older rejected lifetime cannot remove a same-name
+replacement. User-tier sibling methods preserve the same user ownership across
+session changes. No new method or request field is required.
+
+Both agent and user GET hide a pending candidate and return its prior revision
+or no-active state. Use that visible hash, or `-` for no-active, when correcting
+a registration; a hidden candidate hash is a conflict. A lost revision
+checkpoint is recoverable only when the physical candidate and exact pending
+fence prove the same claimed operation. If cleanup aborted the legacy fence
+but its final operation checkpoint failed, an unrelated first registration
+receives a retryable 409 until exact removal/reconciliation finishes that
+checkpoint. Retry the competing registration afterward. This prevents reuse
+from erasing the only durable cleanup proof.
 
 The body is a flat JSON object — the method's request shape — with an `identity` object carrying the triple (or the headers above; the body's `identity` may be left empty when the headers supply it):
 

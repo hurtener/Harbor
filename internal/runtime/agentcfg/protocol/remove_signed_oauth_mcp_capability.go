@@ -68,6 +68,41 @@ func (s *Service) RemoveOAuthMCPCapability(ctx context.Context, req prototypes.A
 	if err != nil {
 		return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
 	}
+	// A private connection can fail after its desired revision was committed.
+	// The immutable candidate hash and frozen owner authorize explicit cleanup
+	// even when Active hides it behind the still-pending publication fence.
+	switch op.Phase {
+	case agentcfg.SignedOAuthMCPPhaseClaimed, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted,
+		agentcfg.SignedOAuthMCPPhasePreparationRejected, agentcfg.SignedOAuthMCPPhaseExpiryAdmitted, agentcfg.SignedOAuthMCPPhaseExpiredIncomplete:
+		if op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed && op.RevisionID != targetRevision.RevisionID && op.ExpiryCandidateRevisionID != targetRevision.RevisionID && op.LastExpiredRevisionID != targetRevision.RevisionID {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: incomplete removal does not bind the exact candidate", agentcfg.ErrRevisionConflict)
+		}
+		physical, ok := s.registry.(physicalActiveRegistry)
+		if !ok {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, ErrSignedCapabilityUnavailable
+		}
+		current, set, err := physical.PhysicalActive(ctx, q, req.AgentID, scope)
+		if err != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+		}
+		pairs, err := current.Payload.EffectiveSignedOAuthMCPPairs()
+		if err != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+		}
+		for _, currentPair := range pairs {
+			if set && (currentPair.ProviderName == pair.ProviderName || currentPair.Connection.Name == pair.Connection.Name) && currentPair.AuthorityOperationKind != pair.AuthorityOperationKind {
+				return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, fmt.Errorf("%w: incomplete pair has a replacement lifetime", agentcfg.ErrRevisionConflict)
+			}
+		}
+		if err := s.compensateIncompleteSignedPair(ctx, q, req.AgentID, op, targetRevision); err != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+		}
+		op, err = s.signedOAuthMCPOperations.LoadForPair(ctx, id.TenantID, pair)
+		if err != nil {
+			return prototypes.AgentConfigRemoveOAuthMCPCapabilityResponse{}, err
+		}
+		return signedCapabilityRemovalResponse(targetRevision, pair, op), nil
+	}
 
 	// A terminal retry is idempotent. The desired revision may already be
 	// inactive after an acknowledgement-loss recovery, so return its frozen
