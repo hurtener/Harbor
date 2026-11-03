@@ -411,6 +411,31 @@ func (r *SignedOAuthMCPReconciler) validPendingFence(ctx context.Context, tenant
 	return fence, nil
 }
 
+// adoptClaimedCandidate repairs a lost operation checkpoint only when the
+// physical pointer, immutable pair, owner, and pending fence prove the same
+// committed candidate. Historical orphans are never enough to advance a claim.
+func (r *SignedOAuthMCPReconciler) adoptClaimedCandidate(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) (agentcfg.SignedOAuthMCPOperation, error) {
+	if op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed || q.TenantID != op.Binding.TenantID || q.UserID != op.Binding.UserID || agentID != op.Binding.AgentID ||
+		(signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeAgent && q.SessionID != op.Binding.SessionID) ||
+		(op.RevisionID != "" && op.RevisionID != candidate.RevisionID) {
+		return agentcfg.SignedOAuthMCPOperation{}, fmt.Errorf("%w: claimed candidate crossed its exact owner or revision", agentcfg.ErrSignedCapabilityReplay)
+	}
+	kind, err := r.operations.Kind(op.ReplayKey)
+	if err != nil {
+		return agentcfg.SignedOAuthMCPOperation{}, err
+	}
+	if !signedCapabilityPayloadMatchesOperation(candidate.Payload, q.TenantID, op.Binding, kind) {
+		return agentcfg.SignedOAuthMCPOperation{}, fmt.Errorf("%w: claimed candidate does not bind operation", agentcfg.ErrSignedCapabilityReplay)
+	}
+	if _, err := requirePhysicalActiveRevision(ctx, r.physical, q, agentID, candidate.RevisionID, candidate.ContentHash); err != nil {
+		return agentcfg.SignedOAuthMCPOperation{}, err
+	}
+	if _, err := r.validPendingFence(ctx, q.TenantID, agentID, op, candidate); err != nil {
+		return agentcfg.SignedOAuthMCPOperation{}, err
+	}
+	return r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, candidate.RevisionID)
+}
+
 func (r *SignedOAuthMCPReconciler) commitFence(ctx context.Context, tenant, agentID string, op agentcfg.SignedOAuthMCPOperation, revision agentcfg.Revision) error {
 	kind, err := r.operations.Kind(op.ReplayKey)
 	if err != nil {
@@ -799,7 +824,7 @@ func (r *SignedOAuthMCPReconciler) resumeExpiryCompensation(ctx context.Context,
 }
 
 // resumePreparationRejection finishes the durable compensation begun after a
-// discovered MCP schema rejected a signed artifact mapping. The operation is
+// rejected preparation or an owner explicitly retired an incomplete pair. The operation is
 // durably admitted before authority is restored, so every crash boundary
 // remains recoverable; it becomes terminal only after restoration and exact
 // fence abort, and the rejected JTI can never publish on restart.
@@ -837,6 +862,15 @@ func (r *SignedOAuthMCPReconciler) resumePreparationRejection(ctx context.Contex
 	if fence.Phase != agentcfg.SignedOAuthMCPFencePending {
 		return fmt.Errorf("%w: rejected preparation fence is %q", agentcfg.ErrSignedCapabilityPending, fence.Phase)
 	}
+	// Admission changed the operation EventID, fencing every older publisher
+	// before exact teardown. An acknowledgement loss after local publication
+	// must not leave that generation blocking a corrected registration.
+	if op.PublisherEpoch != "" {
+		fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, kind, op.PublisherEpoch)
+		if err := r.detachExact(ctx, q, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+			return err
+		}
+	}
 	physical, set, err := r.physical.PhysicalActive(ctx, q, agentID, signedOAuthMCPConfigScope(ctx))
 	if err != nil {
 		return err
@@ -845,6 +879,8 @@ func (r *SignedOAuthMCPReconciler) resumePreparationRejection(ctx context.Contex
 		if err := restorePreOperationAuthority(ctx, r.registry, q, agentID, candidate, fence.PriorRevisionID, kind); err != nil {
 			return err
 		}
+	} else if set && signedCapabilityPayloadMatchesOperation(physical.Payload, q.TenantID, op.Binding, kind) {
+		return fmt.Errorf("%w: incomplete pair moved to a different active revision", agentcfg.ErrSignedCapabilityPending)
 	}
 	if _, err = r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceAborted, candidate.RevisionID); err != nil {
 		return err

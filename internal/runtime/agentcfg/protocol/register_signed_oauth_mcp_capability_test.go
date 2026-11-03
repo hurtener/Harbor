@@ -1156,7 +1156,7 @@ func TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbor
 	ops, _ := agentcfg.NewSignedOAuthMCPOperationStore(st)
 	fences, _ := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
 	olderKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "older-aborted-operation"}
-	older, _, err := ops.Claim(context.Background(), olderKey, binding, oldNow.Add(4*time.Hour))
+	older, _, err := ops.Claim(context.Background(), olderKey, binding, oldNow.Add(30*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1166,6 +1166,16 @@ func TestRegisterOAuthMCPCapability_StableJTIClaimedBeforeFenceReplacesOlderAbor
 		t.Fatal(err)
 	}
 	if _, err := fences.Advance(context.Background(), olderFence, agentcfg.SignedOAuthMCPFenceAborted, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Reusing an abort proof requires a completed compensation checkpoint.
+	// Model a fully compensated expired claim, not an unfinished live claim.
+	older, err = ops.AdmitExpiry(context.Background(), older, "", oldNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	older, err = ops.CompleteExpiry(context.Background(), older)
+	if err != nil {
 		t.Fatal(err)
 	}
 	currentKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: "t", TrustAnchorName: "broker", Issuer: "issuer", KeyID: "kid", JTI: "stable-after-older-aborted"}

@@ -148,6 +148,31 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	ownerID := identity.Identity{TenantID: op.Binding.TenantID, UserID: op.Binding.UserID, SessionID: op.Binding.SessionID}
 	q := identity.Quadruple{Identity: ownerID}
 	operationCtx := agentcfg.WithSignedOAuthMCPFenceOperation(ctx, operationKind)
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+		prior, hasPrior, err := s.registry.Active(ctx, q, req.AgentID, scope)
+		if err != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+		// Check the caller's logical precondition before retiring a hidden
+		// candidate. SetRevision still enforces the actual pointer CAS below.
+		if err := agentcfg.CheckExpectedRevision(agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash}, prior, hasPrior); err != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+		candidate, set, err := physical.PhysicalActive(ctx, q, req.AgentID, scope)
+		if err != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+		if set && signedCapabilityPayloadMatchesOperation(candidate.Payload, id.TenantID, op.Binding, operationKind) {
+			recovery := &SignedOAuthMCPReconciler{registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences}
+			op, err = recovery.adoptClaimedCandidate(ctx, q, req.AgentID, op, candidate)
+			if err != nil {
+				return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+			}
+		}
+		if err := s.retirePriorIncompleteSignedPair(ctx, id, req.AgentID, operationKind, binding); err != nil {
+			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
+		}
+	}
 	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished {
 		if err := s.commitSignedOAuthMCPFence(ctx, id.TenantID, req.AgentID, operationKind, op); err != nil {
 			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
@@ -190,17 +215,6 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	}
 	if err := s.rejectIncompletePriorSignedPairLifetime(ctx, id, req.AgentID, operationKind, binding); err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
-	}
-	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed && hasActive && signedCapabilityPairMatchesOperation(activePair, id.TenantID, binding, operationKind) {
-		physicalRevision, physicalErr := requirePhysicalActiveRevision(ctx, physical, q, req.AgentID, active.RevisionID, active.ContentHash)
-		if physicalErr != nil || !signedCapabilityPayloadMatches(physicalRevision.Payload, id.TenantID, binding) {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, errors.Join(fmt.Errorf("%w: claimed operation does not match physical desired pair", agentcfg.ErrSignedCapabilityReplay), physicalErr)
-		}
-		active = physicalRevision
-		op, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, active.RevisionID)
-		if err != nil {
-			return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
-		}
 	}
 	pair := &agentcfg.SignedOAuthMCPPair{
 		ProviderName: providerName, Broker: broker, Audience: audience, Scopes: scopes,
@@ -419,12 +433,7 @@ func (s *Service) compensateInvalidSignedArtifactMapping(ctx context.Context, q 
 	if op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted || op.RevisionID != candidate.RevisionID {
 		return fmt.Errorf("%w: signed artifact mapping rejection does not bind committed candidate", agentcfg.ErrSignedCapabilityReplay)
 	}
-	physical, ok := s.registry.(physicalActiveRegistry)
-	if !ok {
-		return ErrSignedCapabilityUnavailable
-	}
-	reconciler := &SignedOAuthMCPReconciler{registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences}
-	return reconciler.rejectPreparation(cleanupCtx, q, agentID, op, candidate)
+	return s.compensateIncompleteSignedPair(cleanupCtx, q, agentID, op, candidate)
 }
 
 func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, physical physicalActiveRegistry, exactDetacher ExactConnectionDetacher, op agentcfg.SignedOAuthMCPOperation, key agentcfg.SignedOAuthMCPReplayKey, binding agentcfg.SignedOAuthMCPBinding, verifiedExpiresAt time.Time) (agentcfg.SignedOAuthMCPOperation, error) {
@@ -612,6 +621,114 @@ func (s *Service) rejectIncompletePriorSignedPairLifetime(ctx context.Context, i
 		}
 		continuation = next
 	}
+}
+
+// retirePriorIncompleteSignedPair lets an exact owner replace an unpublished
+// lifetime with a newly signed operation. It runs before Active, whose pending
+// fence intentionally hides the failed candidate. Same-JTI retries continue
+// through the existing resume path; published receipts are never compensated.
+func (s *Service) retirePriorIncompleteSignedPair(ctx context.Context, id identity.Identity, agentID, operationKind string, binding agentcfg.SignedOAuthMCPBinding) error {
+	continuation := ""
+	for {
+		operations, next, err := s.signedOAuthMCPOperations.ScanTenantPage(ctx, id.TenantID, state.MaxStateScanLimit, continuation)
+		if err != nil {
+			return err
+		}
+		for _, op := range operations {
+			userScope := signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeUser
+			if userScope != (op.ReplayKey.UserID != "") || op.Binding.AgentID != agentID ||
+				(op.Binding.ProviderName != binding.ProviderName && op.Binding.Connection.Name != binding.Connection.Name) {
+				continue
+			}
+			kind, err := s.signedOAuthMCPOperations.Kind(op.ReplayKey)
+			if err != nil {
+				return err
+			}
+			if kind == operationKind || (op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed && op.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted && op.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted) {
+				continue
+			}
+			if userScope && op.Binding.UserID != id.UserID {
+				continue
+			}
+			q := identity.Quadruple{Identity: id}
+			var candidate agentcfg.Revision
+			if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+				physical, ok := s.registry.(physicalActiveRegistry)
+				if !ok {
+					return ErrSignedCapabilityUnavailable
+				}
+				var set bool
+				candidate, set, err = physical.PhysicalActive(ctx, q, agentID, signedOAuthMCPConfigScope(ctx))
+				if err != nil {
+					return err
+				}
+				if !set || !signedCapabilityPayloadMatchesOperation(candidate.Payload, id.TenantID, op.Binding, kind) {
+					continue // a pure claim or an orphan is not committed authority
+				}
+			}
+			if op.Binding.UserID != id.UserID || (!userScope && op.Binding.SessionID != id.SessionID) {
+				if userScope {
+					continue // distinct user attachment namespaces
+				}
+				return fmt.Errorf("%w: prior incomplete signed capability belongs to another owner", agentcfg.ErrSignedCapabilityPending)
+			}
+			if op.Phase != agentcfg.SignedOAuthMCPPhaseClaimed {
+				candidate, err = s.registry.Get(ctx, q, agentID, op.RevisionID, signedOAuthMCPConfigScope(ctx))
+				if err != nil {
+					return err
+				}
+			}
+			if err := s.compensateIncompleteSignedPair(ctx, q, agentID, op, candidate); err != nil {
+				return err
+			}
+		}
+		if next == "" {
+			return nil
+		}
+		continuation = next
+	}
+}
+
+func (s *Service) compensateIncompleteSignedPair(ctx context.Context, q identity.Quadruple, agentID string, op agentcfg.SignedOAuthMCPOperation, candidate agentcfg.Revision) error {
+	physical, ok := s.registry.(physicalActiveRegistry)
+	exactDetacher, exactOK := s.detacher.(ExactConnectionDetacher)
+	if !ok || !exactOK || s.signedOAuthMCPFences == nil {
+		return ErrSignedCapabilityUnavailable
+	}
+	reconciler := &SignedOAuthMCPReconciler{registry: s.registry, physical: physical, operations: s.signedOAuthMCPOperations, fences: s.signedOAuthMCPFences, detacher: s.detacher, exactDetacher: exactDetacher}
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseClaimed {
+		var err error
+		op, err = reconciler.adoptClaimedCandidate(ctx, q, agentID, op, candidate)
+		if err != nil {
+			return err
+		}
+	}
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseExpiryAdmitted {
+		if err := reconciler.resumeExpiryCompensation(ctx, q, agentID, op); err != nil {
+			return err
+		}
+		var err error
+		op, err = s.signedOAuthMCPOperations.Load(ctx, op.ReplayKey)
+		if err != nil {
+			return err
+		}
+	}
+	if op.Phase == agentcfg.SignedOAuthMCPPhaseExpiredIncomplete {
+		kind, err := s.signedOAuthMCPOperations.Kind(op.ReplayKey)
+		if err != nil {
+			return err
+		}
+		current, set, err := physical.PhysicalActive(ctx, q, agentID, signedOAuthMCPConfigScope(ctx))
+		if err != nil {
+			return err
+		}
+		if set && signedCapabilityPayloadMatchesOperation(current.Payload, q.TenantID, op.Binding, kind) {
+			return fmt.Errorf("%w: expired incomplete pair is still physically active", agentcfg.ErrSignedCapabilityPending)
+		}
+		_, err = s.signedOAuthMCPOperations.Advance(ctx, op, agentcfg.SignedOAuthMCPPhasePreparationRejected, candidate.RevisionID)
+		return err
+	}
+	return reconciler.rejectPreparation(ctx, q, agentID, op, candidate)
 }
 
 const signedCapabilityCleanupTimeout = 5 * time.Second

@@ -2484,6 +2484,40 @@ less than the accepted authority expiry-plus-skew horizon), so no retry or
 replay can recreate the pair. This recovery state machine explicitly does not
 claim cross-record ACID with the revision.
 
+An incomplete committed candidate also has an explicit owner recovery path.
+A new signed operation using the same provider or connection name may retire
+an older incomplete candidate only for the exact same owner (same user and
+session at agent scope; same user at user scope). Removal may instead name its
+immutable candidate content hash from revision history, even when the pending
+activation fence hides it from the active projection. Both paths reuse
+`preparation_rejection_admitted -> preparation_rejected`: the operation CAS
+first fences every previous publisher epoch, exact teardown removes any local
+publication left by an acknowledgement loss, and exact candidate compensation
+restores prior or no-active authority before aborting the activation fence.
+Published/removal receipts and foreign owners remain excluded. Transient
+connection failures keep the existing same-JTI retry behavior until that owner
+explicitly removes or replaces the incomplete lifetime. Exact removal can also
+finish admitted expiry and make a compensated `expired_incomplete` receipt
+`preparation_rejected`, disabling later renewal. The rejected receipt is a
+permanent anti-replay tombstone; delayed removal of an older rejected candidate
+conflicts when a replacement pair already owns those names. No wire fields or
+method names change.
+
+The pending-fence projection applies to both agent and user revisions: GET
+returns the frozen prior revision or no-active state, and its hash (or `-` for
+absence) is the replacement precondition. A hidden physical candidate's hash
+is not a replacement precondition. Ordinary user writes cannot bypass their
+own pending candidate; another user's candidate does not fence their slot.
+The physical write still performs its own revision CAS after compensation.
+If a physical candidate committed before its operation checkpoint, exact pair,
+owner, physical pointer, and pending-fence proof permit a CAS from `claimed`
+to `revision_committed` before retry or cleanup. An orphan alone is insufficient.
+An aborted legacy fence remains reserved until its operation's terminal
+compensation checkpoint is durable. Reuse checks that exact operation EventID
+in the same SaveIf as the fence replacement; missing or nonterminal checkpoints
+fail closed. An unrelated first registration may therefore receive a retryable
+409 until exact cleanup/reconciliation finishes, then retry normally.
+
 One shared canonical URL-byte helper serves signing, matching, fingerprinting,
 transport, and reconcile: absolute HTTPS only; IDNA2008 lower-case ASCII host
 without root dot; RFC5952 compressed lower-case IPv6 in brackets; no IP

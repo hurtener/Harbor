@@ -337,15 +337,17 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
-	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
-		return agentcfg.Revision{}, err
-	}
 	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
+		return agentcfg.Revision{}, err
+	}
+	// Capture the pointer generation before inspecting pending fences. A
+	// concurrent candidate cannot become this writer's CAS base after the guard.
+	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
 	if fence := opts.PublicationFence; fence != nil {
@@ -575,7 +577,7 @@ func (r *registry) Active(ctx context.Context, id identity.Quadruple, agentID st
 		return agentcfg.Revision{}, false, err
 	}
 	active, set, err := r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
-	if err != nil || scope != agentcfg.ConfigScopeAgent {
+	if err != nil {
 		return active, set, err
 	}
 	return r.applySignedOAuthMCPFence(ctx, id, agentID, keys, active, set)
@@ -741,15 +743,16 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
-	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
-		return agentcfg.Revision{}, err
-	}
 	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
 		return agentcfg.Revision{}, err
 	}
 	q := keys.quad
 	expectations, err := r.activeExpectations(ctx, id, agentID, scope, keys, opts)
 	if err != nil {
+		return agentcfg.Revision{}, err
+	}
+	// Keep the generation captured before the fence guard through the final CAS.
+	if err := r.guardSignedOAuthMCPFenceWriter(ctx, id, agentID, scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
 	// Load the target revision — a missing target fails loud (never a
@@ -1959,12 +1962,29 @@ func validRetirementCleanupClass(class string) bool {
 // authority. Only the internally-marked exact operation may write while the
 // fence is pending.
 func (r *registry) guardSignedOAuthMCPFenceWriter(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) error {
-	if scope != agentcfg.ConfigScopeAgent {
-		return nil
-	}
 	fences, err := r.signedOAuthMCPFences(ctx, id.TenantID, agentID)
 	if err != nil {
 		return err
+	}
+	if scope == agentcfg.ConfigScopeUser {
+		// User fences share the tenant/agent index, but only the exact
+		// candidate in this user's physical slot may fence this writer.
+		keys, err := keysFor(scope, id, agentID)
+		if err != nil {
+			return err
+		}
+		active, set, err := r.loadActiveRevision(ctx, keys.quad, keys.activeKind, keys.revPfx)
+		if err != nil {
+			return err
+		}
+		owned := fences[:0]
+		for _, fence := range fences {
+			if set && active.ContentHash == fence.CandidateContentHash &&
+				(fence.CandidateRevisionID == "" || active.RevisionID == fence.CandidateRevisionID) {
+				owned = append(owned, fence)
+			}
+		}
+		fences = owned
 	}
 	operation := agentcfg.SignedOAuthMCPFenceOperation(ctx)
 	for _, fence := range fences {

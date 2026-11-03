@@ -17,6 +17,26 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.33.6] — 2026-11-03
+
+### Fixed
+
+- A signed OAuth MCP capability whose first connection failed (for example
+  because of a wrong server URL or audience) no longer blocks its own
+  correction. A corrected registration, or an exact removal, now compensates
+  the incomplete, never-live lifetime instead of returning
+  `revision_conflict`. Operation ownership, same-operation replay, publisher
+  fencing and expected-content-hash checks are preserved, and a live pair
+  owned by another writer is still refused.
+- A legacy activation fence is not reused by another capability until the
+  operation that aborted it is terminal, so a crash between aborting the
+  fence and finalizing the operation stays recoverable.
+- User-scoped registrations apply the expected-content-hash precondition to
+  the logical (projected) revision consistently across compensation and
+  replacement.
+- Reconciliation adopts a committed candidate whose operation checkpoint was
+  lost (phase `claimed`) and then compensates it.
+
 ## [1.33.5] — 2026-10-27
 
 ### Fixed

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -98,6 +99,10 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		})
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpServer }, nil)
 	authenticatedMCP := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/mcp" {
+			http.NotFound(w, req)
+			return
+		}
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			http.Error(w, "read request", http.StatusBadRequest)
@@ -308,6 +313,35 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatalf("wrong identity/agent reached credential exchange: exchanges=%d", exchangesBeforeEmptyToken)
 	}
 
+	// Exercise the real HTTP connect failure that leaves a durable pending
+	// candidate. A corrected, freshly signed URL must retire that exact owner
+	// lifetime before it tries to acquire the legacy activation fence.
+	wrongPathClaims := claims
+	wrongPathClaims.ID = "jti-production-wrong-path"
+	wrongPathClaims.Connection.URL = tlsMCP.URL + "/missing-mcp"
+	wrongPathClaims.URLDigest = agentcfg.OAuthMCPURLDigest(wrongPathClaims.Connection.URL)
+	wrongPathToken := jwt.NewWithClaims(jwt.SigningMethodRS256, wrongPathClaims)
+	wrongPathToken.Header["kid"] = "kid"
+	wrongPathReq := req
+	wrongPathReq.Connection.URL = wrongPathClaims.Connection.URL
+	wrongPathReq.AuthorityEnvelope, err = wrongPathToken.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, wrongPathReq); err == nil || !strings.Contains(err.Error(), "Not Found") {
+		t.Fatalf("wrong path connect error = %v, want real HTTP 404", err)
+	} else {
+		t.Logf("real HTTP failed preparation: %v", err)
+	}
+	wrongPathKey := agentcfg.SignedOAuthMCPReplayKey{TenantID: id.TenantID, TrustAnchorName: "broker", Issuer: claims.Issuer, KeyID: "kid", JTI: wrongPathClaims.ID}
+	wrongPathOperation, err := operationStore.Load(context.Background(), wrongPathKey)
+	if err != nil || wrongPathOperation.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted {
+		t.Fatalf("wrong path durable receipt = %+v, err=%v", wrongPathOperation, err)
+	}
+	if _, err := registry.SetRevision(context.Background(), identity.Quadruple{Identity: id}, agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); !stderrors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("foreign write must still encounter the pending fence: %v", err)
+	}
+
 	emptyToken.Store(true)
 	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, req); err == nil {
 		t.Fatal("empty downstream token unexpectedly prepared an MCP connection")
@@ -329,6 +363,10 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	}
 	if failedPreparation.Phase != agentcfg.SignedOAuthMCPPhaseRevisionCommitted || failedPreparation.PublisherEpoch == "" {
 		t.Fatalf("failed preparation receipt = phase %q epoch %q, want revision_committed with publisher epoch", failedPreparation.Phase, failedPreparation.PublisherEpoch)
+	}
+	wrongPathOperation, err = operationStore.Load(context.Background(), wrongPathKey)
+	if err != nil || wrongPathOperation.Phase != agentcfg.SignedOAuthMCPPhasePreparationRejected {
+		t.Fatalf("corrected URL did not retire old lifetime = %+v, err=%v", wrongPathOperation, err)
 	}
 
 	emptyToken.Store(false)
@@ -367,8 +405,8 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	exchangeMu.Lock()
 	forms := append([]url.Values(nil), exchangeForms...)
 	exchangeMu.Unlock()
-	if len(forms) != 2 {
-		t.Fatalf("token exchanges = %d, want failed-empty attempt plus successful retry", len(forms))
+	if len(forms) != 3 {
+		t.Fatalf("token exchanges = %d, want wrong-path and failed-empty attempts plus successful retry", len(forms))
 	}
 	form := forms[len(forms)-1]
 	if form.Get("audience") != claims.Audience || form.Get("resource") != sink {
