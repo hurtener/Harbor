@@ -2523,7 +2523,7 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 
 **Structural precedents.** D-020 (audit redactor as the bus boundary) is the redaction contract `NotificationPayload` rides. D-025 (concurrent reuse contract) is the invariant the pure mapper trivially satisfies. D-028 (sealed `EventPayload` interface) is the seal `NotificationPayload` embeds. D-033 (the `<missing>` identity sentinel) is the convention the identity-rejection path mirrors. D-074 (durable event log) is the replay surface notifications inherit for free (per-class topic naming makes the index trivial). Brief 06 §1 (one bus, not two) is the rule the republish path honours. Brief 11 §CC-3 (notification topology) is the design source the wire-shape decision implements.
 
-**Out of scope (post-V1 follow-ups).** Notification routing fan-out (email / Slack / web-push — lives in 73m Settings + Phase 72h's `notifications_routing` Console DB table); severity escalation policy; snooze / dismiss / mute-this-trigger user actions (Console DB only — D-061); anomaly detection (would consume `events.aggregate` from 72a and re-emit synthetic notifications); per-instance notification de-duplication. None of these is blocked by the V1 shape; each can land additively without breaking the per-class topic contract.
+**Out of scope (post-V1 follow-ups).** Notification routing fan-out (email / messaging / web-push — lives in 73m Settings + Phase 72h's `notifications_routing` Console DB table); severity escalation policy; snooze / dismiss / mute-this-trigger user actions (Console DB only — D-061); anomaly detection (would consume `events.aggregate` from 72a and re-emit synthetic notifications); per-instance notification de-duplication. None of these is blocked by the V1 shape; each can land additively without breaking the per-class topic contract.
 
 ---
 
@@ -13763,7 +13763,7 @@ in the following budget are an operator/orchestrator rollout ceiling, not a
 Harbor runtime configuration field. For the existing Render Basic-4GB
 `max_connections=103` ceiling, the worst planned overlap is nine runtimes ×
 two generations × 3 = 54, plus six direct 5432 migration sessions, a fixed
-12-connection Pengui/capabilities allowance, and a 25-connection operator
+12-connection application/capabilities allowance, and a 25-connection operator
 reserve: 97 planned connections, leaving six below the hard cap. Steady state
 is 70. The deterministic nine-runtime accounting test rejects any topology
 that exceeds 103; a plan upgrade is not a mitigation. `max_idle` and finite
@@ -16156,3 +16156,53 @@ request-local for an external route and its boolean is bound across selection
 and credential resolution. External resolvers include `image_input` only when
 the runtime request advertises `image_input_supported`, preserving old runtime
 compatibility.
+
+---
+
+## D-488 — Signed edge correlation and artifact transfers stay within one session
+
+**Date:** 2026-09-27. **Scope:** Additive Protocol and tool-exchange behavior.
+
+A signed Start correlation carries an opaque execution operation ID, the
+Start idempotency key, and the SHA-256 digest of the exact raw request body.
+The bearer must have one `session_reach` equal to its signed default session;
+the middleware checks the selected session and body digest, and the control
+surface checks the parsed retry key. Only then does the operation ID enter the
+durable task. Run restoration carries it into the tool-token exchange subject
+and operation-specific cache key. Tool arguments, body fields, and client
+headers cannot supply that provenance. Ordinary starts carry no operation ID.
+
+A separate signed `artifact_transfer` bearer has no elevated scopes or agent
+reach and one exact session reach. It may call only `artifacts.get` for one
+exact reference, or `artifacts.put` into one exact namespace with
+`user_upload` source, empty task annotation, and at most its signed byte
+bound. The read checks the complete artifact size, including source-bound
+memory references, before returning a window. It grants no listing,
+presigning, deletion, task start, or tool execution. The ordinary artifact
+identity gate, storage authority, and upload audit still apply. Expiry is
+governed by the ordinary JWT expiry; the bearer is not single-use.
+
+These are bearer restrictions at the Protocol edge, not new isolation
+principals or a second artifact store. Existing tokens and requests retain
+their behavior. **Cross-references:** RFC §4, §5.5, §6.4, §6.10; D-025,
+D-271, D-347, D-409, D-434, D-458.
+
+---
+
+## D-489 — Effective completion-hook posture is a protected Agent projection
+
+**Date:** 2026-09-27. **Scope:** Additive `runtime.info` request and response.
+
+An explicit `effective_agent_id` on `runtime.info` asks for the same
+agent-config-over-yaml completion-hook projection resolved at run start. It
+requires a verified admin caller and signed reach to the selected Agent before
+the configuration read. An unresolved or unavailable projection fails closed.
+The response reports only `active` with tool name and timeout, or explicit
+`off`; ordinary posture omits the field, so absence never means off. No hook
+dispatch, transcript, credential, or tool arguments enter the posture read.
+`active` means configured, not a tool-connectivity probe or dispatch promise.
+
+The canonical Go type, public RuntimeClient method, Console mirror, generated
+wire manifest, external TypeScript module, and generated Protocol reference
+advance together.
+**Cross-references:** RFC §5.2, §5.5, §6.17; D-025, D-280, D-397, D-409.

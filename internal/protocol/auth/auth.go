@@ -177,6 +177,10 @@ type KeySet interface {
 type Verified struct {
 	// RuntimeID is the verified top-level runtime_id claim, when present.
 	RuntimeID string
+	// ArtifactTransfer is a method-restricted signed browser transfer grant.
+	ArtifactTransfer *ArtifactTransferProof
+	// ExecutionStartProof is verified, optional Start correlation.
+	ExecutionStartProof ExecutionStartProof
 	// Identity is the (tenant, user, session) triple extracted from the
 	// JWT's mandatory claims. Validates clean against identity.Validate
 	// — the Validator already ran that check.
@@ -492,6 +496,29 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	}
 
 	scopes := extractScopes(claims["scopes"])
+	var artifactTransfer *ArtifactTransferProof
+	if raw, present := claims[ArtifactTransferClaim]; present {
+		parsed, parseErr := parseArtifactTransfer(raw)
+		if parseErr != nil || len(scopes) != 0 {
+			v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
+			return Verified{}, ErrArtifactTransferMalformed
+		}
+		artifactTransfer = &parsed
+	}
+	var executionProof ExecutionStartProof
+	_, hasOperation := claims[ExecutionOperationClaim]
+	_, hasKey := claims[ExecutionIdempotencyClaim]
+	_, hasDigest := claims[ExecutionStartDigestClaim]
+	if hasOperation || hasKey || hasDigest {
+		operationID, operationIsString := claims[ExecutionOperationClaim].(string)
+		idempotencyKey, keyIsString := claims[ExecutionIdempotencyClaim].(string)
+		bodySHA256, digestIsString := claims[ExecutionStartDigestClaim].(string)
+		executionProof = ExecutionStartProof{OperationID: operationID, IdempotencyKey: idempotencyKey, BodySHA256: bodySHA256}
+		if !operationIsString || !keyIsString || !digestIsString || !validExecutionProof(executionProof) {
+			v.audit(ctx, kidSeen, iss, sub, ErrExecutionOperationMalformed)
+			return Verified{}, ErrExecutionOperationMalformed
+		}
+	}
 	reach, reachErr := ParseAgentReach(claims[AgentReachClaim])
 	if reachErr != nil {
 		v.audit(ctx, kidSeen, iss, sub, ErrAgentReachMalformed)
@@ -514,6 +541,14 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 			return Verified{}, sessionReachErr
 		}
 	}
+	if artifactTransfer != nil && (len(sessionReach) != 1 || sessionReach[0] != id.SessionID || len(reach) != 0) {
+		v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
+		return Verified{}, ErrArtifactTransferMalformed
+	}
+	if executionProof.OperationID != "" && (len(sessionReach) != 1 || sessionReach[0] != id.SessionID) {
+		v.audit(ctx, kidSeen, iss, sub, ErrExecutionOperationMalformed)
+		return Verified{}, ErrExecutionOperationMalformed
+	}
 
 	// Missing or non-string authority remains empty and route admission rejects it.
 	runtimeID, ok := claims["runtime_id"].(string)
@@ -521,13 +556,15 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		runtimeID = ""
 	}
 	return Verified{
-		RuntimeID:    runtimeID,
-		Identity:     id,
-		Scopes:       scopes,
-		AgentReach:   reach,
-		SessionReach: sessionReach,
-		Subject:      sub,
-		Issuer:       iss,
+		RuntimeID:           runtimeID,
+		ArtifactTransfer:    artifactTransfer,
+		ExecutionStartProof: executionProof,
+		Identity:            id,
+		Scopes:              scopes,
+		AgentReach:          reach,
+		SessionReach:        sessionReach,
+		Subject:             sub,
+		Issuer:              iss,
 	}, nil
 }
 

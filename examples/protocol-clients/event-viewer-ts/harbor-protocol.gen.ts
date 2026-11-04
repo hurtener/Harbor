@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:16ee58f86180f3d3613c040900fb522c1669498b96ca20ab3275b47ce7529649";
+export const WIRE_SURFACE_DIGEST = "sha256:42b2d61c6778484ca66028e25a0ffc5837d1e6e4332657fff518a84e3c1a4ef0";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -1727,6 +1727,13 @@ export interface Deprecation {
   note?: string;
 }
 
+export interface EffectiveRunCompletionHook {
+  agent_id: string;
+  state: string;
+  tool?: string;
+  timeout_ms?: number;
+}
+
 export interface Error {
   code: string;
   message: string;
@@ -2839,10 +2846,12 @@ export interface RuntimeInfo {
   mcp_app_display_modes?: string[];
   wire_surface_digest: string;
   external_grant?: ExternalGrantReadiness;
+  effective_run_completion?: EffectiveRunCompletionHook;
 }
 
 export interface RuntimeInfoRequest {
   identity: IdentityScope;
+  effective_agent_id?: string;
   provider_operation?: string;
   provider_id?: string;
   provider_page_size?: number;

@@ -1,6 +1,6 @@
 ---
 name: use-the-harbor-protocol
-description: "Build a chat UI (or any other client) against the Harbor Protocol directly — auth headers, the typed wire surface, events.subscribe SSE, the topology_snapshot capability, artifact upload. Use when shipping a frontend that talks to the runtime WITHOUT the bundled Console — a custom chatbot, a Slack bot, a TUI, an IDE plugin."
+description: "Build a chat UI (or any other client) against the Harbor Protocol directly — auth headers, the typed wire surface, events.subscribe SSE, the topology_snapshot capability, artifact upload. Use when shipping a frontend that talks to the runtime WITHOUT the bundled Console — a custom chatbot, a messaging bot, a TUI, an IDE plugin."
 license: Apache-2.0
 metadata:
   framework: harbor
@@ -9,6 +9,34 @@ metadata:
 ---
 
 # Use the Harbor Protocol
+
+## Bounded execution and artifact bearers
+
+An issuer can bind a Start request to an external operation with signed
+`execution_operation_id`, `execution_idempotency_key`, and
+`execution_start_sha256` claims. Sign the exact raw JSON body sent to
+`POST /v1/control/start`, set the same idempotency key in that body, and pin
+`session_reach` to the token's single session. Harbor rejects a changed body
+or session before admission and retains the opaque operation ID through task
+recovery for downstream tool-token exchange. Tool arguments cannot set it.
+
+For browser artifact transfer, issue a short-lived signed `artifact_transfer`
+object with `mode`, `id`, and `max_bytes`, empty elevated scopes/agent reach,
+and one exact `session_reach`. `read` permits only `artifacts.get` for that
+reference when its full size fits the bound. `write` permits only
+`artifacts.put` into the named namespace, with `source: "user_upload"`, no
+task scope, and a body within the bound. Write namespaces use ASCII letters,
+digits, `_`, or `-` only. The normal identity check still
+applies; use the returned artifact reference in a later Start request. The
+bearer can be retried until JWT expiry; it does not enforce single use.
+
+An admin with signed reach to an Agent can send its ID as
+`runtime.info.effective_agent_id`. A successful response carries
+`effective_run_completion` with `state: "active"` and the resolved tool and
+timeout, or explicit `state: "off"`. Ordinary runtime posture omits that
+field; absence on an older runtime is not an `off` answer. Go callers can use
+`protocolclient.RuntimeClient.RuntimeInfoForAgent(ctx, agentID)` for this
+request. `active` reports configuration; it does not probe tool connectivity.
 
 ## MCP source ownership
 

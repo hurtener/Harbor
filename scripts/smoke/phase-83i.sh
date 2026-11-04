@@ -58,8 +58,10 @@ assert_grep_present 'Emit:\s*emit' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Emit closure"
 assert_grep_present 'ToolExecutor:\s*d\.executor' "internal/runtime/serve/runloop.go" \
     "runOne sets RunSpec.ToolExecutor"
-assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
-    "memory.AddTurn writeback on FinishGoal"
+assert_grep_present 'retained\.Finish\(persistCtx,' "internal/runtime/serve/retained_context.go" \
+    "the shared retained owner persists the terminal execution outcome"
+assert_grep_present 'status, answer = "complete", envelope.Answer' "internal/runtime/serve/retained_context.go" \
+    "only a validated goal finish becomes a successful retained turn"
 
 # ----------------------------------------------------------------------------
 # Devstack parity (D-094 → 110a / D-194: the hand-maintained executor +
@@ -74,7 +76,7 @@ assert_grep_present 'Executor:\s*core\.Executor' "harbortest/devstack/devstack.g
     "devstack consumes the assembly's executor (110a / D-194 via D-197)"
 assert_grep_present 'tools\.NewPlannerView' "internal/runtime/serve/runloop.go" \
     "devstack wires the promoted catalog view (110a / D-194)"
-assert_grep_present 'd\.memory\.AddTurn' "internal/runtime/serve/runloop.go" \
-    "devstack mirror carries memory writeback (D-094)"
+assert_grep_present 'd\.runWithRetainedContext\(runCtx, spec,' "internal/runtime/serve/runloop.go" \
+    "devstack and served runs share the retained terminal writeback"
 
 smoke_summary

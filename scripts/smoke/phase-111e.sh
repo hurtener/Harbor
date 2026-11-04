@@ -65,8 +65,8 @@ assert_grep_present 'same compactor serves in-run' "internal/llm/summarizer/doc.
 #    onto RunSpec.Base.Budget. Pin source, helper, AND projection — a
 #    refactor that stops the configured budget from reaching the spec
 #    breaks one of the three.
-assert_grep_present 'tokenBudget := d\.tokenBudget' "internal/runtime/serve/runloop.go" \
-    "cmd run-loop driver reads memory.budget_tokens into the per-run budget"
+assert_grep_present 'projection\.ActiveMemoryBudget\(taskCtx, d\.agentConfig, effectiveAgentID, q, d\.tokenBudget, d\.compression != nil\)' "internal/runtime/serve/runloop.go" \
+    "cmd run-loop driver resolves the active identity-scoped memory budget with the configured fallback"
 assert_grep_present 'TokenBudget:[[:space:]]+cfg.Memory.BudgetTokens' "internal/runtime/serve/serve.go" \
     "served assembly reads the canonical memory budget"
 assert_grep_present 'Budget:.*s.Cfg.Memory.BudgetTokens' "internal/runtime/assemble/runonce.go" \

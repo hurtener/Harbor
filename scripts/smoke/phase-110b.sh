@@ -46,8 +46,14 @@ for def in 'func projectMemoryBlocks' 'func projectSkillsContext' \
     assert_grep_absent "${def}" "internal/runtime/serve/runloop.go" \
         "cmd runloop no longer defines '${def}'"
 done
-assert_grep_present 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
-    "cmd runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
+# Execution history now has one cumulative owner, shared by served and
+# embedded runs; the legacy pair-history projection must not be restored.
+assert_grep_present 'd\.runWithRetainedContext\(runCtx, spec,' "internal/runtime/serve/runloop.go" \
+    "cmd runloop delegates execution history to the shared retained owner"
+assert_grep_present 'sessionmemory\.BeginRetainedRun' "internal/runtime/serve/retained_context.go" \
+    "cmd retained owner admits the scoped cumulative history"
+assert_grep_absent 'runctx\.FetchMemoryBlocks' "internal/runtime/serve/runloop.go" \
+    "cmd runloop has no parallel legacy memory projection"
 assert_grep_present 'runctx\.ResolveInputArtifacts' "internal/runtime/serve/runloop.go" \
     "cmd runloop calls runctx.ResolveInputArtifacts"
 assert_grep_present 'events\.IdentityStampingEmitter' "internal/runtime/serve/runloop.go" \

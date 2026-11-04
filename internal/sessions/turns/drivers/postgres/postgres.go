@@ -645,7 +645,10 @@ func (d *driver) ListTurns(ctx context.Context, id identity.Identity, before *tu
                 WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3`)
 	args := []any{id.TenantID, id.UserID, id.SessionID}
 	if before != nil {
-		sb.WriteString(` AND (sequence < $4 OR (sequence = $4 AND turn_id < $5))`)
+		// Both keys are NOT NULL. A row comparison preserves the strict
+		// lexicographic boundary while exposing one composite index range;
+		// the expanded OR can make PostgreSQL scan session history instead.
+		sb.WriteString(` AND (sequence, turn_id) < ($4, $5)`)
 		args = append(args, int64(before.Seq), string(before.TurnID))
 	}
 	fmt.Fprintf(&sb, ` ORDER BY sequence DESC, turn_id DESC LIMIT %d`, limit+1)
@@ -695,7 +698,7 @@ func (d *driver) ListTurns(ctx context.Context, id identity.Identity, before *tu
 	err = d.db.QueryRowContext(ctx, `
         SELECT count(*) FROM turn_rows
         WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
-          AND (sequence < $4 OR (sequence = $4 AND turn_id < $5))`,
+          AND (sequence, turn_id) < ($4, $5)`,
 		id.TenantID, id.UserID, id.SessionID,
 		int64(last.Sequence), string(last.TurnID),
 	).Scan(&older)

@@ -17,6 +17,72 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.34.0] — 2026-11-04
+
+### Added
+
+- Signed execution JWT claims `execution_operation_id`,
+  `execution_idempotency_key`, and `execution_start_sha256` bind Start to its
+  exact raw request body, retry key, and single-session reach. The verified
+  operation ID persists with the task, survives recovery, and reaches downstream
+  tool-token exchange; request bodies and tool arguments cannot supply it.
+- Signed `artifact_transfer` grants with `mode`, exact `id`, and `max_bytes`
+  allow artifact-only browser transfers with empty elevated scopes and agent
+  reach, pinned to one session. Read grants name one reference; write grants
+  name one exact upload namespace, require `user_upload`, forbid task scope,
+  and enforce the byte bound. Grants remain retryable until JWT expiry.
+- Protected `runtime.info.effective_agent_id` queries expose
+  `effective_run_completion` with `agent_id`, explicit `active` or `off` state,
+  and the active hook's `tool` and `timeout_ms`. Admin scope and signed agent
+  reach are required; ordinary runtime posture omits the projection.
+- The Go SDK's `protocolclient.RuntimeClient.RuntimeInfoForAgent(ctx, agentID)`
+  reads this posture, and `protocolclient.EffectiveRunCompletionHook` exposes
+  its typed result. Protocol documentation and Console wire types match it.
+
+### Changed
+
+- Harbor Protocol remains **0.1.0**. These additions introduce signed claims
+  and optional posture fields without changing the Protocol version.
+- Source-build scaffolds and the minimal-react golden project now pin the
+  Harbor module to `v1.34.0`, retaining the Go 1.27.1 requirement.
+
+### Fixed
+
+- Token-exchange revocation evicts every cached execution-operation variant
+  for the selected identity and tool, so operation-scoped tokens cannot
+  survive revocation. Exchanges without a verified operation omit that field.
+- PostgreSQL turns paging and exact older-row counts use composite key ranges,
+  preserving strict cursor boundaries and allowing the keyset index to bound
+  both queries. Tests populate each session's fixture, read every EXPLAIN row,
+  vacuum settled history, and recognize backward retention scans.
+- Native smoke gates follow the current session-owned memory projection,
+  retained-context errors, active scoped budget, conversation composition,
+  truncated-summary source preservation, and shared historical Batch replay.
+  Output-schema smoke runs its named contracts within the existing bound;
+  complete assembler coverage remains in the full test gate.
+- LLM, Bifrost, sessions, and memory smokes preserve failure diagnostics;
+  events smoke isolates its log across worktrees. CI explicitly requires
+  native turns conformance/isolation/index tests and complete cumulative
+  owner/assembler PostgreSQL PASS records.
+
+### Store migrations
+
+- State store (SQLite and PostgreSQL): **no new migration**. Task operation
+  provenance uses the existing serialized task payload.
+- Memory store (SQLite and PostgreSQL): **no new migration**.
+- Artifact store (SQLite and PostgreSQL): **no new migration**.
+- Skills store (LocalDB/SQLite and PostgreSQL): **no new migration**.
+- Session turns store (SQLite and PostgreSQL): **no new migration**; the
+  PostgreSQL change adjusts queries against the existing keyset index.
+- Observability rollups store (SQLite and PostgreSQL): **no new migration**.
+- Search cache store (SQLite): **no new migration**.
+- Console local database (IndexedDB): **no new migration**.
+
+### Action required
+
+- Custom `protocolclient.RuntimeClient` implementations and mocks must add
+  `RuntimeInfoForAgent(context.Context, string) (RuntimeInfo, error)`.
+
 ## [1.33.6] — 2026-11-03
 
 ### Fixed

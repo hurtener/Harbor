@@ -26,7 +26,26 @@ type agentCtxKey int
 const (
 	invokingAgentCtxKey agentCtxKey = iota
 	effectiveAgentConfigCtxKey
+	verifiedExecutionOperationCtxKey
 )
+
+// WithVerifiedExecutionOperation carries a signed, Start-admitted operation
+// restored from the durable task. Tool arguments cannot set this context.
+func WithVerifiedExecutionOperation(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, verifiedExecutionOperationCtxKey, id)
+}
+
+// VerifiedExecutionOperationFrom reads the runtime's trusted run correlation.
+func VerifiedExecutionOperationFrom(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	id, ok := ctx.Value(verifiedExecutionOperationCtxKey).(string)
+	return id, ok && id != ""
+}
 
 // WithInvokingAgent returns a child ctx carrying agentID as the acting
 // agent's registration id (RFC §6.16 registration identity — provenance, not

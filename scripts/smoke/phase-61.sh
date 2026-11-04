@@ -135,4 +135,11 @@ fi
 # above.
 skip "phase 61: the JWT auth middleware is exercised end-to-end via httptest in the package + integration tests; the live HTTP server that mounts the transport mux + middleware (\`harbor dev\`) lands in Phase 64"
 
+if go test -race -count=1 -timeout 120s -run 'TestStartBindsVerifiedOperationBeforeTaskAssociation' ./internal/protocol/ >/dev/null 2>&1 &&
+    go test -race -count=1 -timeout 120s -run 'TestEngine_ExecutionOperationSurvivesTaskEncodingAndFencesRetry' ./internal/tasks/engine/ >/dev/null 2>&1; then
+    ok 'phase 61: signed Start operation reaches durable task provenance and fences foreign retries'
+else
+    fail 'phase 61: signed Start operation provenance or retry fence failed under -race'
+fi
+
 smoke_summary

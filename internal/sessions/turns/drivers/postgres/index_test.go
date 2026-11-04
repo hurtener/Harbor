@@ -26,8 +26,10 @@ func TestPostgres_Indexes_QueriesUseIndexScans(t *testing.T) {
 	baseDSN := requireDSN(t)
 	dsn := freshSchema(t, baseDSN)
 
-	// Seed enough rows for the planner to prefer the indexes, then
-	// ANALYZE so the planner's cost estimates are real.
+	// Seed enough rows for the planner to prefer the indexes. VACUUM ANALYZE
+	// models settled history: index-only counts need the MVCC visibility map,
+	// not just statistics. Leaving vacuum to asynchronous autovacuum makes
+	// the plan depend on whether it runs during this fixture's seeding.
 	const n = 5000
 
 	// The fixture raises the retention bound from the documented default
@@ -59,8 +61,8 @@ func TestPostgres_Indexes_QueriesUseIndexScans(t *testing.T) {
 		t.Fatalf("explain sql.Open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.ExecContext(ctx, "ANALYZE turn_rows"); err != nil {
-		t.Fatalf("ANALYZE: %v", err)
+	if _, err := db.ExecContext(ctx, "VACUUM (ANALYZE) turn_rows"); err != nil {
+		t.Fatalf("VACUUM ANALYZE: %v", err)
 	}
 
 	// The keyset boundary used by the page + count queries below.
@@ -73,8 +75,7 @@ func TestPostgres_Indexes_QueriesUseIndexScans(t *testing.T) {
 		t.Fatalf("boundary lookup: %v", err)
 	}
 
-	keyset := fmt.Sprintf(`(sequence < %d OR (sequence = %d AND turn_id < 'run-01000'))`,
-		boundarySeq, boundarySeq)
+	keyset := fmt.Sprintf(`(sequence, turn_id) < (%d, 'run-01000')`, boundarySeq)
 	cases := []struct {
 		name  string
 		query string
@@ -124,12 +125,27 @@ func TestPostgres_Indexes_QueriesUseIndexScans(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var plan string
-			if err := db.QueryRowContext(ctx, "EXPLAIN "+tc.query).Scan(&plan); err != nil {
+			planRows, err := db.QueryContext(ctx, "EXPLAIN "+tc.query)
+			if err != nil {
 				t.Fatalf("EXPLAIN: %v", err)
 			}
+			defer func() { _ = planRows.Close() }()
+			var planLines []string
+			for planRows.Next() {
+				var line string
+				if err := planRows.Scan(&line); err != nil {
+					t.Fatalf("scan EXPLAIN: %v", err)
+				}
+				planLines = append(planLines, line)
+			}
+			if err := planRows.Err(); err != nil {
+				t.Fatalf("read EXPLAIN: %v", err)
+			}
+			plan := strings.Join(planLines, "\n")
 			if !strings.Contains(plan, "Index Scan using "+tc.want) &&
 				!strings.Contains(plan, "Index Only Scan using "+tc.want) &&
+				!strings.Contains(plan, "Index Scan Backward using "+tc.want) &&
+				!strings.Contains(plan, "Index Only Scan Backward using "+tc.want) &&
 				!strings.Contains(plan, "Bitmap Index Scan on "+tc.want) {
 				t.Errorf("plan does not resolve through %s:\n%s", tc.want, plan)
 			}
