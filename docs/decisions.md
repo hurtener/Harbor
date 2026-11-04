@@ -2523,7 +2523,7 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 
 **Structural precedents.** D-020 (audit redactor as the bus boundary) is the redaction contract `NotificationPayload` rides. D-025 (concurrent reuse contract) is the invariant the pure mapper trivially satisfies. D-028 (sealed `EventPayload` interface) is the seal `NotificationPayload` embeds. D-033 (the `<missing>` identity sentinel) is the convention the identity-rejection path mirrors. D-074 (durable event log) is the replay surface notifications inherit for free (per-class topic naming makes the index trivial). Brief 06 §1 (one bus, not two) is the rule the republish path honours. Brief 11 §CC-3 (notification topology) is the design source the wire-shape decision implements.
 
-**Out of scope (post-V1 follow-ups).** Notification routing fan-out (email / Slack / web-push — lives in 73m Settings + Phase 72h's `notifications_routing` Console DB table); severity escalation policy; snooze / dismiss / mute-this-trigger user actions (Console DB only — D-061); anomaly detection (would consume `events.aggregate` from 72a and re-emit synthetic notifications); per-instance notification de-duplication. None of these is blocked by the V1 shape; each can land additively without breaking the per-class topic contract.
+**Out of scope (post-V1 follow-ups).** Notification routing fan-out (email / messaging / web-push — lives in 73m Settings + Phase 72h's `notifications_routing` Console DB table); severity escalation policy; snooze / dismiss / mute-this-trigger user actions (Console DB only — D-061); anomaly detection (would consume `events.aggregate` from 72a and re-emit synthetic notifications); per-instance notification de-duplication. None of these is blocked by the V1 shape; each can land additively without breaking the per-class topic contract.
 
 ---
 
@@ -13763,7 +13763,7 @@ in the following budget are an operator/orchestrator rollout ceiling, not a
 Harbor runtime configuration field. For the existing Render Basic-4GB
 `max_connections=103` ceiling, the worst planned overlap is nine runtimes ×
 two generations × 3 = 54, plus six direct 5432 migration sessions, a fixed
-12-connection Pengui/capabilities allowance, and a 25-connection operator
+12-connection application/capabilities allowance, and a 25-connection operator
 reserve: 97 planned connections, leaving six below the hard cap. Steady state
 is 70. The deterministic nine-runtime accounting test rejects any topology
 that exceeds 103; a plan upgrade is not a mitigation. `max_idle` and finite
