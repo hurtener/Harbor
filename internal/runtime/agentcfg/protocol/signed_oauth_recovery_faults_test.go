@@ -237,16 +237,17 @@ func TestSignedOAuthMCPRecoveryFaults_ClaimedPhysicalCandidateCanBeRetired(t *te
 				t.Fatalf("refused claimed recovery changed receipt = %+v %v", current, err)
 			}
 			svc = signedCapabilityServiceForExisting(t, now, reg, store, preparer, key)
-			if action == "same-jti-retry" {
+			switch action {
+			case "same-jti-retry":
 				oldReq.ExpectedContentHash = agentcfg.ExpectNoActiveRevision
 				if _, err := svc.RegisterOAuthMCPCapability(ctx, oldReq); err != nil {
 					t.Fatalf("same JTI after claimed physical checkpoint = %v", err)
 				}
-			} else if action == "remove" {
+			case "remove":
 				if _, err := svc.RemoveOAuthMCPCapability(ctx, prototypes.AgentConfigRemoveOAuthMCPCapabilityRequest{Identity: scope(), AgentID: testAgentID, ProviderName: oldReq.ProviderName, ExpectedContentHash: candidate.ContentHash}); err != nil {
 					t.Fatalf("remove exact claimed physical candidate = %v", err)
 				}
-			} else {
+			default:
 				corrected := signedCapabilityRequest(t, key, now, "claimed-retire-corrected", "new-audience")
 				corrected.ExpectedContentHash = agentcfg.ExpectNoActiveRevision
 				if _, err := svc.RegisterOAuthMCPCapability(ctx, corrected); err != nil {

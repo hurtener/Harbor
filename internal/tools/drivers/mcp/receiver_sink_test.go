@@ -48,6 +48,28 @@ func TestReceiverSink_ExactSchemeHostAndPort(t *testing.T) {
 	}
 }
 
+func TestReceiverSink_MalformedConfiguredURLRefusesActualDestination(t *testing.T) {
+	credential := &preparationCredentialProvider{}
+	credential.allowedHosts = []string{"receiver.test"}
+	policy := newReceiverSinkPolicy(Config{
+		URL:       "https://receiver.test/%zz",
+		Injection: &CredentialInjection{Provider: credential},
+	})
+	target, err := url.Parse("https://receiver.test/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.validate(target); !errors.Is(err, ErrReceiverSinkRefused) {
+		t.Fatalf("malformed configured sink accepted actual destination: %v", err)
+	}
+	credential.mu.Lock()
+	pulls := len(credential.identities)
+	credential.mu.Unlock()
+	if pulls != 0 {
+		t.Fatalf("configured sink refusal pulled %d credentials", pulls)
+	}
+}
+
 func TestReceiverSink_ConstructionRejectsConfiguredDestinationBeforeCredentialPull(t *testing.T) {
 	for _, form := range []InjectionForm{InjectionFormHeader, InjectionFormBasic, InjectionFormMeta} {
 		for _, preparation := range []bool{false, true} {
