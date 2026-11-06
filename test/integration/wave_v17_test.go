@@ -648,6 +648,9 @@ func TestE2E_WaveV17_CombinedSurface(t *testing.T) {
 		if _, err := a.store.Load(ctx, identity.Quadruple{Identity: idErase}, "events.durable.head"); !errors.Is(err, state.ErrNotFound) {
 			t.Errorf("erased triple durable head survived (state.history non-empty): err=%v", err)
 		}
+		if left, err := a.store.ListKindForIdentity(ctx, identity.Quadruple{Identity: idErase}, "events.durable."); err != nil || len(left) != 0 {
+			t.Errorf("erased triple durable event records (chunks/entries/summary) survived: %d, %v", len(left), err)
+		}
 		if _, err := a.store.Load(ctx, identity.Quadruple{Identity: idErase}, "session.lifecycle"); !errors.Is(err, state.ErrNotFound) {
 			t.Errorf("session.lifecycle survived erasure: err=%v", err)
 		}

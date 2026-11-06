@@ -20,6 +20,8 @@ const (
 	gaugeGovCache               = "harbor_runtime_governance_cache_entries"
 	gaugeEventsDropped          = "harbor_runtime_events_dropped"
 	gaugeAsyncAdmissionFailures = "harbor_runtime_async_admission_failures"
+	gaugeIndexIntegrity         = "harbor_events_index_integrity_failures_total"
+	gaugeRetentionHeads         = "harbor_events_retention_heads"
 )
 
 // TestRegisterRuntimeGauges_SnapshotYieldsGauges feeds known callback
@@ -39,13 +41,17 @@ func TestRegisterRuntimeGauges_SnapshotYieldsGauges(t *testing.T) {
 		gaugeGovCache:               2,
 		gaugeEventsDropped:          11,
 		gaugeAsyncAdmissionFailures: 13,
+		gaugeIndexIntegrity:         17,
+		gaugeRetentionHeads:         19,
 	}
 	if err := reg.RegisterRuntimeGauges(telemetry.RuntimeGaugeSource{
-		ActiveRuns:             func() int64 { return 3 },
-		EngineCapacityEntries:  func() int64 { return 7 },
-		GovernanceCacheEntries: func() int64 { return 2 },
-		EventsDropped:          func() int64 { return 11 },
-		AsyncAdmissionFailures: func() int64 { return 13 },
+		ActiveRuns:                   func() int64 { return 3 },
+		EngineCapacityEntries:        func() int64 { return 7 },
+		GovernanceCacheEntries:       func() int64 { return 2 },
+		EventsDropped:                func() int64 { return 11 },
+		AsyncAdmissionFailures:       func() int64 { return 13 },
+		EventsIndexIntegrityFailures: func() int64 { return 17 },
+		EventsRetentionHeads:         func() int64 { return 19 },
 	}); err != nil {
 		t.Fatalf("RegisterRuntimeGauges: %v", err)
 	}

@@ -206,6 +206,9 @@ func TestCascadeEraser_FenceConcurrent_NoLateHistory(t *testing.T) {
 		if _, err := f.store.Load(ctx, identity.Quadruple{Identity: id}, "events.durable.head"); !errors.Is(err, state.ErrNotFound) {
 			t.Errorf("session %s: durable head survived erasure under concurrency: %v", id.SessionID, err)
 		}
+		if left, err := f.store.ListKindForIdentity(ctx, identity.Quadruple{Identity: id}, "events.durable.chunk/"); err != nil || len(left) != 0 {
+			t.Errorf("session %s: durable index chunks survived erasure: %d, %v", id.SessionID, len(left), err)
+		}
 	}
 }
 

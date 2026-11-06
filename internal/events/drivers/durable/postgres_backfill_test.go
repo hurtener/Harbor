@@ -122,7 +122,7 @@ func TestDurable_Postgres_LegacyBackfillPreservesPayloadRunIDs(t *testing.T) {
 	}
 }
 
-func durablePostgresFreshSchema(t *testing.T, baseDSN string) string {
+func durablePostgresFreshSchema(t testing.TB, baseDSN string) string {
 	t.Helper()
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {

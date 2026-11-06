@@ -209,6 +209,10 @@ func TestCascadeEraser_FullErasure_CascadesAndAudits(t *testing.T) {
 	if _, err := f.store.Load(ctx, identity.Quadruple{Identity: id}, "events.durable.head"); !errors.Is(err, state.ErrNotFound) {
 		t.Errorf("erased triple's durable head survived (state.history non-empty): err=%v", err)
 	}
+	// D-492: no v2 index chunk, entry or retention summary survives either.
+	if left, err := f.store.ListKindForIdentity(ctx, identity.Quadruple{Identity: id}, "events.durable."); err != nil || len(left) != 0 {
+		t.Errorf("erased triple's durable event records survived: %d, %v", len(left), err)
+	}
 
 	// The `session.erased` audit record is keyed under the ACTOR's
 	// observability scope: a durable head exists under (t1, u1) with a
