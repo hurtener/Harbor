@@ -56,6 +56,9 @@ type PolicyStore interface {
 	// a tool with no pinned posture runs auto). It never fabricates a
 	// non-default value.
 	Policy(ctx context.Context, id identity.Identity, toolID string) (prototypes.ToolApprovalPolicy, error)
+	// Policies returns the pinned policies in the complete identity scope.
+	// An absent tool has the semantic default ToolApprovalAuto.
+	Policies(ctx context.Context, id identity.Identity) (map[string]prototypes.ToolApprovalPolicy, error)
 	// SetPolicy persists toolID's approval policy for id. The policy
 	// MUST be a valid ToolApprovalPolicy.
 	SetPolicy(ctx context.Context, id identity.Identity, toolID string, policy prototypes.ToolApprovalPolicy) error
@@ -111,8 +114,12 @@ func (s *statePolicyStore) Policy(ctx context.Context, id identity.Identity, too
 		}
 		return "", fmt.Errorf("approval: policy load: %w", err)
 	}
+	return decodePolicy(rec.Bytes)
+}
+
+func decodePolicy(data []byte) (prototypes.ToolApprovalPolicy, error) {
 	var pr policyRecord
-	if err := json.Unmarshal(rec.Bytes, &pr); err != nil {
+	if err := json.Unmarshal(data, &pr); err != nil {
 		return "", fmt.Errorf("approval: policy decode: %w", err)
 	}
 	policy := prototypes.ToolApprovalPolicy(pr.Policy)
@@ -120,6 +127,32 @@ func (s *statePolicyStore) Policy(ctx context.Context, id identity.Identity, too
 		return "", fmt.Errorf("approval: policy decode: stored policy %q is not a valid approval policy", pr.Policy)
 	}
 	return policy, nil
+}
+
+// Policies implements PolicyStore.Policies with one identity-scoped list.
+func (s *statePolicyStore) Policies(ctx context.Context, id identity.Identity) (map[string]prototypes.ToolApprovalPolicy, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := identity.Validate(id); err != nil {
+		return nil, fmt.Errorf("approval: policies read: %w", err)
+	}
+	records, err := s.store.ListKindForIdentity(ctx, identity.Quadruple{Identity: id}, policyKindPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("approval: policies list: %w", err)
+	}
+	policies := make(map[string]prototypes.ToolApprovalPolicy, len(records))
+	for _, rec := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		policy, err := decodePolicy(rec.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		policies[strings.TrimPrefix(rec.Kind, policyKindPrefix)] = policy
+	}
+	return policies, nil
 }
 
 // SetPolicy implements PolicyStore.SetPolicy.

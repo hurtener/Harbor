@@ -134,12 +134,25 @@ func WithLoadingResolver(r LoadingResolver) CatalogProjectorOption {
 	}
 }
 
+// ToolAnnotations carries the request-scoped annotations used by a list row.
+type ToolAnnotations struct {
+	OAuthStatus    prototypes.ToolOAuthStatus
+	ApprovalPolicy prototypes.ToolApprovalPolicy
+	LastUsedAt     time.Time
+}
+
+// AnnotationBatch annotates one admitted tool using request-local shared reads.
+// It must be safe for concurrent calls and must never be retained across requests.
+type AnnotationBatch func(ctx context.Context, toolID string) ToolAnnotations
+
 // Annotator is the optional per-tool annotation backend
 // CatalogProjector reads OAuth / approval / metrics / content-stats
 // data through. Production wiring supplies an implementation backed by
 // tools/auth + tools/approval + the events stream; tests and
 // partial-builds run without one.
 type Annotator interface {
+	// Batch prepares the identity-scoped list annotations once per request.
+	Batch(ctx context.Context, id identity.Identity) (AnnotationBatch, error)
 	// OAuthStatus returns the tool's OAuth binding status.
 	OAuthStatus(ctx context.Context, id identity.Identity, toolID string) prototypes.ToolOAuthStatus
 	// ApprovalPolicy returns the tool's configured approval policy.
@@ -248,6 +261,16 @@ func reliabilityTierOf(t tools.Tool) string {
 // projectRow maps a runtime tools.Tool onto the wire Tool row,
 // resolving the annotated fields through the Annotator (or defaults).
 func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity, t tools.Tool) prototypes.Tool {
+	annotations := ToolAnnotations{OAuthStatus: prototypes.ToolOAuthNotApplicable, ApprovalPolicy: prototypes.ToolApprovalAuto}
+	if p.annotator != nil {
+		annotations.OAuthStatus = p.annotator.OAuthStatus(ctx, id, t.Name)
+		annotations.ApprovalPolicy = p.annotator.ApprovalPolicy(ctx, id, t.Name)
+		annotations.LastUsedAt = p.annotator.LastUsedAt(ctx, id, t.Name)
+	}
+	return p.projectAnnotatedRow(id, t, annotations)
+}
+
+func (p *CatalogProjector) projectAnnotatedRow(id identity.Identity, t tools.Tool, annotations ToolAnnotations) prototypes.Tool {
 	owner := string(t.Source)
 	logicalID := t.Name
 	if t.Transport == tools.TransportMCP && p.logicalSources != nil {
@@ -267,13 +290,9 @@ func (p *CatalogProjector) projectRow(ctx context.Context, id identity.Identity,
 		Transport:       transportOf(t.Transport),
 		ReliabilityTier: reliabilityTierOf(t),
 		Owner:           owner,
-		OAuthStatus:     prototypes.ToolOAuthNotApplicable,
-		ApprovalPolicy:  prototypes.ToolApprovalAuto,
-	}
-	if p.annotator != nil {
-		row.OAuthStatus = p.annotator.OAuthStatus(ctx, id, t.Name)
-		row.ApprovalPolicy = p.annotator.ApprovalPolicy(ctx, id, t.Name)
-		row.LastUsedAt = p.annotator.LastUsedAt(ctx, id, t.Name)
+		OAuthStatus:     annotations.OAuthStatus,
+		ApprovalPolicy:  annotations.ApprovalPolicy,
+		LastUsedAt:      annotations.LastUsedAt,
 	}
 	// The in-memory admin override is the FALLBACK for a non-persisting
 	// annotator: a `tools.set_approval_policy` call is still observable on
@@ -321,10 +340,35 @@ func (p *CatalogProjector) ListTools(ctx context.Context, id identity.Identity) 
 	if err != nil {
 		return nil, err
 	}
-	descriptors := view.List()
+	return p.projectRows(ctx, id, view.List())
+}
+
+// projectRows builds annotations only after admission, and only for non-empty lists.
+func (p *CatalogProjector) projectRows(ctx context.Context, id identity.Identity, descriptors []tools.Tool) ([]prototypes.Tool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var batch AnnotationBatch
+	if p.annotator != nil && len(descriptors) > 0 {
+		var err error
+		batch, err = p.annotator.Batch(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("tools: annotate catalog: %w", err)
+		}
+		if batch == nil {
+			return nil, fmt.Errorf("%w: Annotator returned a nil batch", ErrMisconfigured)
+		}
+	}
 	rows := make([]prototypes.Tool, 0, len(descriptors))
 	for _, t := range descriptors {
-		rows = append(rows, p.projectRow(ctx, id, t))
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		annotations := ToolAnnotations{OAuthStatus: prototypes.ToolOAuthNotApplicable, ApprovalPolicy: prototypes.ToolApprovalAuto}
+		if batch != nil {
+			annotations = batch(ctx, t.Name)
+		}
+		rows = append(rows, p.projectAnnotatedRow(id, t, annotations))
 	}
 	return rows, nil
 }
@@ -566,12 +610,7 @@ func (p *CatalogProjector) ListConfigurationTools(ctx context.Context, id identi
 	if err != nil {
 		return nil, err
 	}
-	descriptors := view.List()
-	rows := make([]prototypes.Tool, 0, len(descriptors))
-	for _, t := range descriptors {
-		rows = append(rows, p.projectRow(ctx, id, t))
-	}
-	return rows, nil
+	return p.projectRows(ctx, id, view.List())
 }
 
 // DescribeConfigurationTool implements ConfigurationProjector. Even a known physical

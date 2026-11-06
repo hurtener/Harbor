@@ -32,6 +32,14 @@ Two versions move independently in Harbor (RFC §5.3):
   dev TUI therefore shows events retention only. `RuntimeHealth.retention`
   keeps its existing optional wire type; Protocol `0.1.0` is unchanged (D-490).
 
+### Performance
+
+- Tool catalog lists share one identity-scoped approval-policy scan and one
+  bounded event-history window per request, and reuse OAuth status reads for
+  tools from the same source within that request. Single-tool descriptions
+  continue to read only their own annotations; approval read failures reject
+  the list rather than projecting an unverified default.
+
 ## [1.35.0] — 2026-11-06
 
 ### Fixed
