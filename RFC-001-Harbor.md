@@ -226,6 +226,27 @@ Reject-on-sight violations:
 | **Artifacts** | `artifacts.list`, `artifacts.get`, `artifacts.get_ref`, `artifacts.delete` — all scope-checked. Heavy bytes always go by `ArtifactRef`, never inline. |
 | **Traces / metrics** | `traceparent` propagation; OTel traces and metrics derived from the same event bus. |
 
+**Runtime health and retention (D-490).** `runtime.health` is a liveness
+read for every caller, including verified `admin` and `console:fleet` callers.
+It returns subsystem readiness and only the cached events retention horizon at
+`scope:"runtime"`, when wired. It performs no stored reads, no elevation, and
+no audit publication. Durable events horizon reads do not wait for the publish
+lock or storage I/O; readiness is an in-memory projection.
+
+`runtime.retention` is the explicit administrative read for observed events,
+tasks, and sessions horizons, all at `scope:"runtime"`. It takes
+`RuntimeInfoRequest` and returns `RuntimeRetention{retention: [...]}`. Only a
+verified `admin` scope authorizes it; `console:fleet`, ordinary and trust-mode
+callers receive `scope_mismatch`. A successful read emits exactly one
+`audit.admin_scope_used` attributed to the verified actor, and audit failure
+fails the request closed with a runtime error. Missing readers contribute no
+entry; an entry with runtime scope and no timestamp means trustworthy empty.
+Clients needing task/session window completeness migrate to this method with
+admin authority. The additive method and narrowed health semantics retain
+Protocol `0.1.0`; `RuntimeHealth.retention` remains optional with its existing
+type. D-490 supersedes D-296/D-310 only for health retention placement and
+widening.
+
 ### 5.3 Versioning
 
 The Protocol version is pinned in `internal/protocol/types/version.go`. Bumping the version is an RFC change. Breaking changes require a deprecation window so third-party Consoles aren't whipsawed. The deprecation-window obligation extends to **embedder binaries** that mount the Protocol surface via the promoted serve constructor / `sdk/server` (§5.6, D-291): a self-hosted binary serving the surface is a Protocol server like any other, and a breaking wire change whipsaws its clients identically.

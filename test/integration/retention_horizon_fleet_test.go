@@ -2,7 +2,7 @@ package integration_test
 
 // retention_horizon_fleet_test.go — the Phase 175 (HA-23 / D-310) §17.1
 // cross-subsystem integration suite for the fleet-scoped retention
-// horizons on `runtime.health`.
+// horizons on admin-only `runtime.retention` and events-only `runtime.health`.
 //
 // It wires REAL drivers across the whole retention seam — the real inmem
 // event bus (implements events.RetentionReporter), the real in-process
@@ -106,12 +106,13 @@ func (s *retentionFleetStack) seedTenant(t *testing.T, reg *sessions.Registry, i
 func retentionSurface(t *testing.T, stack *retentionFleetStack, red audit.Redactor) *protocol.PostureSurface {
 	t.Helper()
 	s, err := protocol.NewPostureSurface(protocol.PostureDeps{
-		Clock:     func() time.Time { return time.Now().UTC() },
-		Health:    func(context.Context) []types.SubsystemHealth { return nil },
-		Retention: runtimeposture.RetentionProvider(stack.bus, stack.taskReg, stack.lister),
-		Counters:  func(context.Context, identity.Identity) types.RuntimeCounters { return types.RuntimeCounters{} },
-		Drivers:   func() []types.SubsystemDriver { return nil },
-		Metrics:   func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+		Clock:            func() time.Time { return time.Now().UTC() },
+		Health:           func(context.Context) []types.SubsystemHealth { return nil },
+		EventsHorizon:    runtimeposture.EventsHorizonProvider(stack.bus),
+		RuntimeRetention: runtimeposture.RuntimeRetentionProvider(stack.bus, stack.taskReg, stack.lister),
+		Counters:         func(context.Context, identity.Identity) types.RuntimeCounters { return types.RuntimeCounters{} },
+		Drivers:          func() []types.SubsystemDriver { return nil },
+		Metrics:          func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
 		Governance: governance.NewPostureProvider(governance.Config{
 			DefaultTier:   "free",
 			IdentityTiers: map[string]governance.TierConfig{"free": {BudgetCeilingUSD: 5.0}},
@@ -145,7 +146,7 @@ func healthRetention(t *testing.T, s *protocol.PostureSurface, ctx context.Conte
 }
 
 // TestE2E_Phase175_FleetWideningObservesOtherTenants proves the widened
-// path over real drivers: a verified console:fleet caller under a `svc:`
+// path over real drivers: a verified admin caller under a `svc:`
 // identity (owning NO sessions/tasks) observes runtime-wide tasks +
 // sessions horizons reflecting the OTHER tenants' oldest rows, and the
 // widened fan-in emits exactly one audit.admin_scope_used.
@@ -169,11 +170,11 @@ func TestE2E_Phase175_FleetWideningObservesOtherTenants(t *testing.T) {
 	s := retentionSurface(t, stack, auditpatterns.New())
 
 	// The fleet coordinator: a svc: principal owning no sessions/tasks,
-	// carrying a verified console:fleet scope (server-derived).
+	// carrying a verified admin scope (server-derived).
 	svc := identity.Identity{TenantID: "svc", UserID: "coordinator", SessionID: "fleet"}
-	svcCtx := auth.WithScopes(fleetIdentityCtx(t, svc), []auth.Scope{auth.ScopeConsoleFleet})
+	svcCtx := auth.WithScopes(fleetIdentityCtx(t, svc), []auth.Scope{auth.ScopeAdmin})
 
-	m := healthRetention(t, s, svcCtx, svc)
+	m := runtimeRetention(t, s, svcCtx, svc)
 	for _, surface := range []string{"events", "tasks", "sessions"} {
 		h, ok := m[surface]
 		if !ok {
@@ -201,7 +202,7 @@ func TestE2E_Phase175_FleetWideningObservesOtherTenants(t *testing.T) {
 
 // TestE2E_Phase175_OrdinaryCallerStaysScoped proves cross-tenant
 // isolation: an ordinary tenant-a caller (no elevated scope) reads its
-// own scoped horizons only, never another tenant's, and emits no audit.
+// events horizon only and emits no audit.
 func TestE2E_Phase175_OrdinaryCallerStaysScoped(t *testing.T) {
 	stack := newRetentionFleetStack(t)
 	reg := stack.lister.(*sessions.Registry)
@@ -222,16 +223,8 @@ func TestE2E_Phase175_OrdinaryCallerStaysScoped(t *testing.T) {
 	aCtx := fleetIdentityCtx(t, idA)
 	m := healthRetention(t, s, aCtx, idA)
 
-	if got := m["tasks"].Scope; got != types.RetentionScopeSession {
-		t.Fatalf("tasks scope = %q, want session (ordinary caller)", got)
-	}
-	if got := m["sessions"].Scope; got != types.RetentionScopeTenant {
-		t.Fatalf("sessions scope = %q, want tenant (ordinary caller)", got)
-	}
-	// The tenant-a session horizon is its own; it must NOT be a
-	// runtime-wide roll-up that could leak tenant-b.
-	if m["sessions"].Scope == types.RetentionScopeRuntime {
-		t.Fatalf("ordinary caller observed a runtime-wide sessions horizon — isolation breach")
+	if len(m) != 1 || m["events"].Scope != types.RetentionScopeRuntime {
+		t.Fatalf("ordinary health retention = %+v, want events only", m)
 	}
 
 	if count := drainFleetAdminScopeUsed(t, sub, "tenant-a", 300*time.Millisecond); count != 0 {
@@ -251,10 +244,10 @@ func TestE2E_Phase175_WidenedAuditFailure_FailsLoud(t *testing.T) {
 	s := retentionSurface(t, stack, refusingRedactor{})
 
 	svc := identity.Identity{TenantID: "svc", UserID: "coordinator", SessionID: "fleet"}
-	svcCtx := auth.WithScopes(fleetIdentityCtx(t, svc), []auth.Scope{auth.ScopeConsoleFleet})
+	svcCtx := auth.WithScopes(fleetIdentityCtx(t, svc), []auth.Scope{auth.ScopeAdmin})
 	req := &types.RuntimeInfoRequest{Identity: types.IdentityScope{Tenant: "svc", User: "coordinator", Session: "fleet"}}
 
-	_, err := s.Dispatch(svcCtx, methods.MethodRuntimeHealth, req)
+	_, err := s.Dispatch(svcCtx, methods.MethodRuntimeRetention, req)
 	if err == nil {
 		t.Fatal("widened read with a refusing redactor returned nil error, want CodeRuntimeError")
 	}
@@ -266,7 +259,7 @@ func TestE2E_Phase175_WidenedAuditFailure_FailsLoud(t *testing.T) {
 
 // TestE2E_Phase175_ConcurrentMixedCallers stresses the shared surface:
 // N≥10 concurrent readers mixing fleet + ordinary callers observe no
-// cross-talk (an ordinary caller never sees a runtime-scope horizon).
+// cross-talk: all health callers see only the runtime events horizon.
 func TestE2E_Phase175_ConcurrentMixedCallers(t *testing.T) {
 	stack := newRetentionFleetStack(t)
 	reg := stack.lister.(*sessions.Registry)
@@ -287,15 +280,11 @@ func TestE2E_Phase175_ConcurrentMixedCallers(t *testing.T) {
 			ctx := fleetIdentityCtx(t, id)
 			elevated := i%2 == 0
 			if elevated {
-				ctx = auth.WithScopes(ctx, []auth.Scope{auth.ScopeConsoleFleet})
+				ctx = auth.WithScopes(ctx, []auth.Scope{auth.ScopeAdmin})
 			}
 			m := healthRetention(t, s, ctx, id)
-			want := types.RetentionScopeSession
-			if elevated {
-				want = types.RetentionScopeRuntime
-			}
-			if got := m["tasks"].Scope; got != want {
-				errs <- "tasks scope mismatch under contention (widen bleed)"
+			if len(m) != 1 || m["events"].Scope != types.RetentionScopeRuntime {
+				errs <- "health returned more than its runtime events horizon"
 			}
 		}(i)
 	}
@@ -343,9 +332,24 @@ func (e redactErr) Error() string { return string(e) }
 
 func fleetIdentityCtx(t *testing.T, id identity.Identity) context.Context {
 	t.Helper()
-	ctx, err := identity.With(context.Background(), id)
+	ctx, err := identity.WithVerified(context.Background(), id)
 	if err != nil {
-		t.Fatalf("identity.With: %v", err)
+		t.Fatalf("identity.WithVerified: %v", err)
 	}
 	return ctx
+}
+
+func runtimeRetention(t *testing.T, s *protocol.PostureSurface, ctx context.Context, id identity.Identity) map[string]types.RetentionHorizon {
+	t.Helper()
+	req := &types.RuntimeInfoRequest{Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}}
+	out, err := s.Dispatch(ctx, methods.MethodRuntimeRetention, req)
+	if err != nil {
+		t.Fatalf("Dispatch(runtime.retention): %v", err)
+	}
+	retention := out.(*types.RuntimeRetention)
+	result := make(map[string]types.RetentionHorizon, len(retention.Retention))
+	for _, h := range retention.Retention {
+		result[h.Surface] = h
+	}
+	return result
 }

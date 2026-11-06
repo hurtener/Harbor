@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 153 canonical Harbor Protocol methods, generated from the single-source registry
+The 154 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -91,8 +91,9 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `metrics.snapshot` | `POST /v1/control/metrics.snapshot` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`MetricsSnapshot`](./types.md#metricssnapshot) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `runtime.counters` | `POST /v1/control/runtime.counters` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeCounters`](./types.md#runtimecounters) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `runtime.drivers` | `POST /v1/control/runtime.drivers` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeDrivers`](./types.md#runtimedrivers) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `runtime.health` | `POST /v1/control/runtime.health` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeHealth`](./types.md#runtimehealth) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `runtime.health` | `POST /v1/control/runtime.health` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeHealth`](./types.md#runtimehealth) | read-only |
 | `runtime.info` | `POST /v1/control/runtime.info` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeInfo`](./types.md#runtimeinfo) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `runtime.retention` | `POST /v1/control/runtime.retention` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeRetention`](./types.md#runtimeretention) | read-only; Verified admin scope required; emits one audit.admin_scope_used on success. |
 
 ## Topology
 

@@ -196,6 +196,9 @@ const (
 	// returns the per-subsystem readiness rollup (`ready` / `degraded`
 	// / `unavailable`) across the runtime's registered subsystems.
 	MethodRuntimeHealth Method = "runtime.health"
+
+	// MethodRuntimeRetention reads audited runtime-wide horizons with verified admin authority.
+	MethodRuntimeRetention Method = "runtime.retention"
 	// MethodRuntimeCounters — Read-only posture method:
 	// returns the low-cardinality live counters the Console footer /
 	// sidebar chips render (events/sec, tasks running, background jobs,
@@ -1249,6 +1252,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSearchArtifacts:                           {},
 	MethodRuntimeInfo:                               {},
 	MethodRuntimeHealth:                             {},
+	MethodRuntimeRetention:                          {},
 	MethodRuntimeCounters:                           {},
 	MethodRuntimeDrivers:                            {},
 	MethodMetricsSnapshot:                           {},
@@ -2130,7 +2134,7 @@ func IsSearchMethod(m Method) bool {
 	return ok
 }
 
-// canonicalPostureMethods is the closed sub-set of the seven posture
+// canonicalPostureMethods is the closed sub-set of the posture
 // methods — the five `runtime.*` / `metrics.*` reads
 // plus the two `governance.posture` / `llm.posture`
 // reads. IsPostureMethod is O(1); a transport adapter uses it to branch
@@ -2139,6 +2143,7 @@ func IsSearchMethod(m Method) bool {
 var canonicalPostureMethods = map[Method]struct{}{
 	MethodRuntimeInfo:       {},
 	MethodRuntimeHealth:     {},
+	MethodRuntimeRetention:  {},
 	MethodRuntimeCounters:   {},
 	MethodRuntimeDrivers:    {},
 	MethodMetricsSnapshot:   {},

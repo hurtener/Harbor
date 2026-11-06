@@ -194,7 +194,8 @@ func methodTable() map[methods.Method]methodEntry {
 		// --- Posture cluster — read-only; all seven
 		// take the shared RuntimeInfoRequest identity envelope.
 		methods.MethodRuntimeInfo:       postureEntry(methods.MethodRuntimeInfo, "RuntimeInfo"),
-		methods.MethodRuntimeHealth:     postureEntry(methods.MethodRuntimeHealth, "RuntimeHealth"),
+		methods.MethodRuntimeHealth:     {Route: controlRoute(methods.MethodRuntimeHealth), Request: "RuntimeInfoRequest", Response: "RuntimeHealth"},
+		methods.MethodRuntimeRetention:  {Route: controlRoute(methods.MethodRuntimeRetention), Request: "RuntimeInfoRequest", Response: "RuntimeRetention", Auth: "Verified admin scope required; emits one audit.admin_scope_used on success."},
 		methods.MethodRuntimeCounters:   postureEntry(methods.MethodRuntimeCounters, "RuntimeCounters"),
 		methods.MethodRuntimeDrivers:    postureEntry(methods.MethodRuntimeDrivers, "RuntimeDrivers"),
 		methods.MethodMetricsSnapshot:   postureEntry(methods.MethodMetricsSnapshot, "MetricsSnapshot"),

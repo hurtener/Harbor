@@ -131,25 +131,16 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 	eventuallyGoroutinesSettle(t, baseline, 5)
 }
 
-// TestConcurrentReuse_PostureHealth_WidenNoCrossTalk pins D-310's
-// concurrent-reuse invariant on the widened `runtime.health` path: N≥10
-// goroutines mixing elevated (admin / console:fleet) and ordinary callers
-// run against ONE shared PostureSurface under -race. An ordinary caller
-// must NEVER observe a widened (runtime-scope) tasks horizon, and an
-// elevated caller must ALWAYS observe one — no widening state bleeds
-// across concurrent reads (Dispatch derives `widened` from each call's
-// ctx, never from the surface). No goroutine leak after teardown.
-func TestConcurrentReuse_PostureHealth_WidenNoCrossTalk(t *testing.T) {
+// TestConcurrentReuse_PostureHealth_EventsNoCrossTalk exercises 120 shared
+// health reads with mixed verified fleet and ordinary callers. Every caller
+// sees only the runtime events horizon, with no mutable scope state or leak.
+func TestConcurrentReuse_PostureHealth_EventsNoCrossTalk(t *testing.T) {
 	const n = 120 // ≥10 per §17.3; ≥100 keeps parity with the D-025 leg
 
 	at := time.Unix(1_747_000_000, 0).UTC()
 	deps := basePostureDeps(t)
-	deps.Retention = func(_ context.Context, _ identity.Identity, widened bool) []types.RetentionHorizon {
-		scope := types.RetentionScopeSession
-		if widened {
-			scope = types.RetentionScopeRuntime
-		}
-		return []types.RetentionHorizon{{Surface: "tasks", Scope: scope, OldestRetainedAt: &at}}
+	deps.EventsHorizon = func(_ context.Context) []types.RetentionHorizon {
+		return []types.RetentionHorizon{{Surface: "events", Scope: types.RetentionScopeRuntime, OldestRetainedAt: &at}}
 	}
 	s, err := protocol.NewPostureSurface(deps)
 	if err != nil {
@@ -186,16 +177,13 @@ func TestConcurrentReuse_PostureHealth_WidenNoCrossTalk(t *testing.T) {
 			h := out.(*types.RuntimeHealth)
 			var got string
 			for _, r := range h.Retention {
-				if r.Surface == "tasks" {
+				if r.Surface == "events" {
 					got = r.Scope
 				}
 			}
-			want := types.RetentionScopeSession
-			if elevated {
-				want = types.RetentionScopeRuntime
-			}
+			want := types.RetentionScopeRuntime
 			if got != want {
-				errs <- fmt.Errorf("goroutine-%d (elevated=%v): tasks scope = %q, want %q — widen bleed",
+				errs <- fmt.Errorf("goroutine-%d (elevated=%v): events scope = %q, want %q",
 					i, elevated, got, want)
 			}
 		}(i)

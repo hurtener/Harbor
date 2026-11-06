@@ -232,7 +232,8 @@ func (c *Controller) switchTo(ctx context.Context, target types.IdentityScope) e
 }
 
 func (c *Controller) prepareTarget(ctx context.Context, target types.IdentityScope, source protocolclient.TokenSource, generation uint64) (protocolclient.RuntimeClient, types.RuntimeInfo, context.Context, context.CancelFunc, *protocolclient.EventStream, projection.Projection, uint64, error) {
-	if _, err := source.Token(ctx, target); err != nil {
+	token, err := source.Token(ctx, target)
+	if err != nil {
 		return nil, types.RuntimeInfo{}, nil, nil, nil, projection.Projection{}, generation, err
 	}
 	baseClient, err := protocolclient.New(protocolclient.Connection{BaseURL: c.baseURL, Token: source, Identity: target})
@@ -256,7 +257,11 @@ func (c *Controller) prepareTarget(ctx context.Context, target types.IdentitySco
 		cancel()
 		return nil, types.RuntimeInfo{}, nil, nil, nil, projection.Projection{}, generation, err
 	}
-	bundle, err := projection.HydrateClient(ctx, client, generation, 0, 8)
+	// Claims only select optional diagnostics; the server verifies every call.
+	// If the hint cannot be read, continue with base conversation hydration.
+	claims, claimsErr := ParseToken(token, time.Now())
+	includeRuntimeRetention := claimsErr == nil && claims.Admin
+	bundle, err := projection.HydrateClientWithOptions(ctx, client, generation, 0, projection.HydrateOptions{MaxHistoryPages: 8, IncludeRuntimeRetention: includeRuntimeRetention})
 	if err != nil {
 		var protocolErr *protocolclient.ProtocolError
 		if !errors.As(err, &protocolErr) || protocolErr.Code != protoerrors.CodeNotFound {
@@ -476,6 +481,19 @@ func (c *Controller) Inspect(ctx context.Context, request InspectionRequest) Run
 		data.Posture.Health = health
 	}
 	data.Posture.Surfaces[string(methods.MethodRuntimeHealth)] = stateFor(err)
+	if c.tokens != nil {
+		if token, tokenErr := c.tokens.Token(ctx, identity); tokenErr == nil {
+			if claims, claimErr := ParseToken(token, time.Now()); claimErr == nil && claims.Admin {
+				retention, retentionErr := client.RuntimeRetention(ctx)
+				if retentionErr != nil {
+					data.Errors[string(methods.MethodRuntimeRetention)] = retentionErr.Error()
+				} else {
+					data.Posture.Retention = &retention
+				}
+				data.Posture.Surfaces[string(methods.MethodRuntimeRetention)] = stateFor(retentionErr)
+			}
+		}
+	}
 	counters, err := client.RuntimeCounters(ctx)
 	if err != nil {
 		data.Errors[string(methods.MethodRuntimeCounters)] = err.Error()

@@ -17,6 +17,21 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- `runtime.retention` explicitly reads observed events, tasks and sessions
+  horizons at runtime scope. It requires verified `admin` authority and emits
+  one `audit.admin_scope_used`; audit failure fails the request closed.
+
+### Changed
+
+- `runtime.health` now performs no stored reads, elevation or audit publication
+  for any caller and returns only the cached runtime-wide events horizon.
+  Clients needing task/session horizons must call `runtime.retention` with an
+  admin token; `console:fleet` no longer widens retention reads. The trust-mode
+  dev TUI therefore shows events retention only. `RuntimeHealth.retention`
+  keeps its existing optional wire type; Protocol `0.1.0` is unchanged (D-490).
+
 ## [1.35.0] — 2026-11-06
 
 ### Fixed

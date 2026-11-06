@@ -511,6 +511,10 @@ func (b *bus) recoverOldestRetained(ctx context.Context, owner identity.Quadrupl
 		return fmt.Errorf("durable: recover retention horizon: decode oldest entry seq=%d: %w", seq, err)
 	}
 	b.oldestRetainedAt = ev.OccurredAt
+	if !ev.OccurredAt.IsZero() {
+		b.oldestRetainedNano.Store(ev.OccurredAt.UnixNano())
+		b.oldestRetainedPresent.Store(true)
+	}
 	return nil
 }
 
@@ -619,6 +623,10 @@ type bus struct {
 	// counter, and the persisted log never disagree. Zero when the log is
 	// empty. Unused in best-effort mode (the ring is the source there).
 	oldestRetainedAt time.Time
+	// oldestRetainedNano mirrors the committed horizon for lock-free liveness reads.
+	oldestRetainedNano atomic.Int64
+	// Presence is separate because Unix epoch is a valid event timestamp.
+	oldestRetainedPresent atomic.Bool
 	// pendingCommit is set when an ambiguous commit acknowledgement could not
 	// be reconciled because the reconciliation read failed. Publishes are
 	// refused while it is set and each publish retries the reconciliation
@@ -997,7 +1005,7 @@ func (b *bus) Unfence(ctx context.Context, id identity.Identity) error {
 }
 
 // OldestRetainedAt implements events.RetentionReporter. In durable mode
-// it returns the seeded/floored oldestRetainedAt — the OccurredAt of the
+// it atomically reads the seeded/floored horizon — the OccurredAt of the
 // oldest persisted event; present is false when the log is empty. In
 // best-effort mode it reads the in-memory ring (like the inmem driver),
 // so the horizon advances as the ring evicts. Bus-internal notices are
@@ -1006,9 +1014,9 @@ func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 	if b.closed.Load() {
 		return time.Time{}, false, events.ErrBusClosed
 	}
-	b.publishMu.Lock()
-	defer b.publishMu.Unlock()
 	if b.bestEffort {
+		b.publishMu.Lock()
+		defer b.publishMu.Unlock()
 		snapshot := b.ringSnapshotLocked()
 		for _, ev := range snapshot {
 			if events.IsBusInternalNotice(ev.Type) {
@@ -1018,10 +1026,10 @@ func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 		}
 		return time.Time{}, false, nil
 	}
-	if b.oldestRetainedAt.IsZero() {
+	if !b.oldestRetainedPresent.Load() {
 		return time.Time{}, false, nil
 	}
-	return b.oldestRetainedAt, true, nil
+	return time.Unix(0, b.oldestRetainedNano.Load()).UTC(), true, nil
 }
 
 // Publish validates, redacts, sequences, persists, and fans out ev.
@@ -1187,6 +1195,11 @@ func (b *bus) commitBatch(ctx context.Context, batch []events.Event, generation 
 				slog.String("user_id", ev.Identity.UserID),
 				slog.String("session_id", ev.Identity.SessionID))
 		}
+		for _, ev := range batch {
+			if events.RequiresPublication(ev) {
+				return fmt.Errorf("durable: required audit publication: %w", events.ErrPublicationFenced)
+			}
+		}
 		return nil
 	}
 	if err != nil {
@@ -1215,6 +1228,11 @@ func (b *bus) commitPersistBatch(ctx context.Context, batch []events.Event, gene
 				slog.String("tenant_id", ev.Identity.TenantID),
 				slog.String("user_id", ev.Identity.UserID),
 				slog.String("session_id", ev.Identity.SessionID))
+		}
+		for _, ev := range batch {
+			if events.RequiresPublication(ev) {
+				return fmt.Errorf("durable: required audit publication: %w", events.ErrPublicationFenced)
+			}
 		}
 		return nil
 	}
@@ -1361,6 +1379,8 @@ func (b *bus) adoptCommittedLocked(accepted []events.Event) {
 	for _, ev := range accepted {
 		if b.oldestRetainedAt.IsZero() || ev.OccurredAt.Before(b.oldestRetainedAt) {
 			b.oldestRetainedAt = ev.OccurredAt
+			b.oldestRetainedNano.Store(ev.OccurredAt.UnixNano())
+			b.oldestRetainedPresent.Store(true)
 		}
 	}
 }

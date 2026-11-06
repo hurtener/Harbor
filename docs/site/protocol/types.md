@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 465 canonical Harbor Protocol wire types, generated from the single-source
+The 466 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -3883,6 +3883,14 @@ Declared in `internal/protocol/types`.
 | `provider_max_pages` | `int` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
 | `provider_agent_id` | `string` | optional (`omitempty`) |
+
+## RuntimeRetention
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `retention` | `[]types.RetentionHorizon` — see [`RetentionHorizon`](./types.md#retentionhorizon) |  |
 
 ## SearchArtifactRef
 

@@ -253,6 +253,7 @@ Payload `AdminScopeUsedPayload` — safe payload (delivered typed, verbatim).
 | `User` | `string` |  |
 | `Session` | `string` |  |
 | `SubscriberID` | `uint64` |  |
+| `method` | `string` | optional (`omitempty`) |
 
 Payload `AdminScopeUsedPayload` — safe payload (delivered typed, verbatim).
 

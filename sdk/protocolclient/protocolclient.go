@@ -48,6 +48,10 @@ type (
 	ExternalGrantReadiness = types.ExternalGrantReadiness
 	// RuntimeHealth is the runtime.health response.
 	RuntimeHealth = types.RuntimeHealth
+	// RuntimeRetention is the admin-only runtime.retention response.
+	RuntimeRetention = types.RuntimeRetention
+	// RetentionHorizon describes one observed retained surface.
+	RetentionHorizon = types.RetentionHorizon
 	// StartRequest is the start request.
 	StartRequest = types.StartRequest
 	// LLMProviderRouteSelector is the opaque provider-route selector carried by

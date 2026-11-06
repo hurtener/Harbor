@@ -444,3 +444,20 @@ smoke_summary() {
     fi
     return 0
 }
+
+# assert_post_json_auth <url> <body> <bearer> <jq-filter> <description> checks an authenticated POST response shape.
+assert_post_json_auth() {
+    local url="$1" body="$2" bearer="$3" filter="$4" desc="$5" response
+    if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        skip "${desc}: curl/jq unavailable"
+        return
+    fi
+    if ! response=$(curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${bearer}" --data "$body" "$url" 2>/dev/null); then
+        fail "${desc}: authenticated POST failed"
+    elif printf '%s' "$response" | jq -e "$filter" >/dev/null 2>&1; then
+        ok "$desc"
+    else
+        fail "${desc}: response shape does not match"
+    fi
+}

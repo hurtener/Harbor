@@ -149,6 +149,8 @@ func (s *LifetimeTokenSource) staticToken(ctx context.Context, scope types.Ident
 type TokenClaims struct {
 	Identity  types.IdentityScope
 	ExpiresAt time.Time
+	// Admin is only a UI hint; the runtime verifies authority on every call.
+	Admin bool
 }
 
 // ParseToken parses JWT payload claims without treating them as authentication.
@@ -165,6 +167,7 @@ func ParseToken(token string, now time.Time) (TokenClaims, error) {
 	var claims struct {
 		Tenant, User, Session string
 		Exp                   json.Number `json:"exp"`
+		Scopes                []string    `json:"scopes"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(payload)))
 	dec.UseNumber()
@@ -183,7 +186,13 @@ func ParseToken(token string, now time.Time) (TokenClaims, error) {
 	if !expires.After(now) {
 		return TokenClaims{}, ErrTokenExpired
 	}
-	return TokenClaims{Identity: identity, ExpiresAt: expires}, nil
+	admin := false
+	for _, scope := range claims.Scopes {
+		if scope == "admin" {
+			admin = true
+		}
+	}
+	return TokenClaims{Identity: identity, ExpiresAt: expires, Admin: admin}, nil
 }
 
 func validateTokenForScope(token string, scope types.IdentityScope, now time.Time) (string, error) {

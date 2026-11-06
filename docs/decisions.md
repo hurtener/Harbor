@@ -16206,3 +16206,43 @@ The canonical Go type, public RuntimeClient method, Console mirror, generated
 wire manifest, external TypeScript module, and generated Protocol reference
 advance together.
 **Cross-references:** RFC §5.2, §5.5, §6.17; D-025, D-280, D-397, D-409.
+
+---
+
+## D-490 — Liveness health is storage-free; runtime retention is an explicit audited admin read
+
+**Date:** 2026-11-06. **Scope:** H1; runtime posture and retention inspection.
+
+`runtime.health` returns subsystem readiness and only the cached events
+horizon at `scope:"runtime"`, when wired, for every caller. It performs zero
+stored reads, elevation or audit publication, including for verified `admin`
+and `console:fleet` callers. Durable events horizon reads use an atomic
+projection and never wait on a publish lock held across storage I/O; readiness
+checks use in-memory state. Health polling must not produce audit traffic or
+scan task/session history.
+
+`runtime.retention` is the explicit read for observed events, tasks and sessions
+horizons, all at runtime scope. It reuses `RuntimeInfoRequest` and returns
+`RuntimeRetention` with a `retention` array of the existing `RetentionHorizon`
+type. Authorization requires verified `auth.ScopeAdmin` only. `console:fleet`,
+ordinary callers and trust-mode callers receive `scope_mismatch`. Each
+successful read emits exactly one `audit.admin_scope_used`, with method
+`runtime.retention` and the verified actor. Audit failure returns a runtime
+error and no retention response. Missing readers remain honest absence;
+a runtime-scope entry without a timestamp means trustworthy empty.
+
+**Supersession and migration.** This supersedes D-296's placement of task and
+session horizons on health and D-310's health widening/audit behavior, while
+preserving the observed-horizon wire shape and scope markers. It also narrows
+D-111's generic posture authority/trust rules for this new method: trust mode
+cannot authorize retention. Clients needing task/session completeness migrate
+from elevated health reads to an explicit admin retention request. The TUI
+uses that method with admin authority; the trust-mode dev TUI shows events
+only. Fleet scope grants no retention fan-in.
+
+**Compatibility.** The method is additive; `RuntimeHealth.retention` remains
+optional with its existing type, and clients already must handle absent
+surface entries. The semantic narrowing and privilege reduction are documented
+under Changed with the migration above. No Protocol version bump is required:
+`0.1.0` remains pinned. No storage-format or configured-retention change is part
+of H1. **Cross-references:** RFC §5.2, §5.3, §5.5; D-111, D-296, D-310.

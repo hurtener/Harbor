@@ -73,9 +73,9 @@ export interface RetentionHorizon {
 	 * no-timestamp is a trustworthy empty ("the runtime retains nothing"),
 	 * while `scope:"session"`/`"tenant"` + no-timestamp means the
 	 * runtime-wide truth is simply not observable at the caller's scope.
-	 * The `events` horizon is always `runtime`; the `tasks`/`sessions`
-	 * horizons widen to `runtime` for a verified admin/console:fleet
-	 * fleet-observe caller. Absent for an older/headless wiring.
+	 * Health reports the `events` horizon at `runtime` scope. Tasks and
+	 * sessions are exposed at `runtime` scope by admin-only runtime.retention.
+	 * Absent for an older/headless wiring.
 	 */
 	scope?: string;
 	/**
@@ -88,15 +88,15 @@ export interface RetentionHorizon {
 
 /**
  * `runtime.health` response — a per-subsystem readiness rollup across
- * the runtime's registered subsystems, plus the observed per-surface
- * retention horizons. Mirrors `types.RuntimeHealth`.
+ * the runtime's registered subsystems, plus the cached events
+ * retention horizon. Mirrors `types.RuntimeHealth`.
  */
 export interface RuntimeHealth {
 	/** The per-subsystem readiness slice. */
 	subsystems: SubsystemHealth[];
 	/**
-	 * The observed retention horizon per durable surface (events / tasks
-	 * / sessions). Additive; absent when the runtime surfaces none.
+	 * The cached events horizon only. Runtime-wide tasks and sessions
+	 * horizons require the admin-only runtime.retention method.
 	 */
 	retention?: RetentionHorizon[];
 }
@@ -164,4 +164,9 @@ export interface MetricsSnapshot {
 	gauges: NamedGauge[];
 	/** The unix-millis timestamp the metrics were read. */
 	snapshot_at: number;
+}
+
+/** Admin-only, audited runtime-wide retention snapshot. */
+export interface RuntimeRetention {
+	retention: RetentionHorizon[];
 }

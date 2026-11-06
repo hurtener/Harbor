@@ -1580,7 +1580,14 @@ func (m *RuntimeModel) syncRuntimeRoute() {
 		for _, name := range errorKeys {
 			rows = append(rows, renderers.SafeText("Unavailable "+name+": "+m.runtime.Errors[name]))
 		}
-		for _, horizon := range m.runtime.Posture.Health.Retention {
+		if m.shell.projection.RetentionUnavailable && m.runtime.Posture.Retention == nil {
+			rows = append(rows, "Runtime retention diagnostics unavailable")
+		}
+		horizons := m.runtime.Posture.Health.Retention
+		if m.runtime.Posture.Retention != nil {
+			horizons = m.runtime.Posture.Retention.Retention
+		}
+		for _, horizon := range horizons {
 			value := "no rows at caller-visible scope"
 			if horizon.OldestRetainedAt != nil {
 				value = horizon.OldestRetainedAt.Format(time.RFC3339)

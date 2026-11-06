@@ -27,6 +27,7 @@ package posture
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -69,182 +70,55 @@ func utcPtr(t time.Time) *time.Time {
 type oldestRetainedReader interface {
 	// OldestRetainedAt returns the oldest-retained instant across the
 	// whole store and present=true; (zero, false, nil) when the store
-	// retains nothing. An error degrades that one surface to absent.
+	// retains nothing. An error fails an explicit diagnostics snapshot.
 	OldestRetainedAt(ctx context.Context) (oldest time.Time, present bool, err error)
 }
 
-// RetentionProvider returns a `protocol.PostureDeps.Retention` seam that
-// reports the OBSERVED oldest-retained timestamp per durable surface —
-// the honest, forward-looking retention horizon a fleet consumer reads
-// before issuing a windowed read. Every value is read live from the
-// store; NONE is a configured claim (Harbor has no retention knob — the
-// durable log is gap-free and untrimmed).
-//
-// Each entry carries a `scope` marker naming the identity scope the
-// horizon was measured at, and — for a WIRED surface — an entry is
-// ALWAYS emitted, with `OldestRetainedAt` omitted when the surface holds
-// no rows AT THAT SCOPE. This makes the absence of a value representable:
-// a consumer distinguishes `scope:"runtime"` + no-timestamp
-// ("the runtime retains nothing — trustworthy empty") from
-// `scope:"session"` / `scope:"tenant"` + no-timestamp ("nothing at your
-// scope — the runtime-wide truth is not observable here").
-//
-//   - events: the bus's runtime-wide oldest retained event (a bare
-//     wall-clock instant, no identity content), sourced through the
-//     optional events.RetentionReporter capability both V1 bus drivers
-//     implement. Always `scope:"runtime"`. A bus WITHOUT the reader seam
-//     contributes no events entry (the reader being absent is not the
-//     same as "observable and empty" — honest absence, the headless /
-//     third-party-driver path); a bus WITH the reader but holding no
-//     events emits `scope:"runtime"` + no timestamp.
-//   - tasks: when `widened`, the runtime-wide oldest CreatedAt read
-//     through the optional identity-free reader (`scope:"runtime"`); a
-//     registry that omits that reader contributes no runtime-wide entry.
-//     Otherwise the oldest CreatedAt across the caller's session scope
-//     (`scope:"session"`).
-//   - sessions: when `widened`, the runtime-wide oldest OpenedAt through
-//     the optional identity-free reader (`scope:"runtime"`); a lister
-//     that omits it contributes no runtime-wide entry. Otherwise the
-//     oldest OpenedAt across the caller's tenant (`scope:"tenant"`;
-//     open OR closed-but-retained — "oldest retained", not "oldest ever",
-//     since the registry's idle GC reaps old sessions).
-//
-// `widened` is a SERVER-DERIVED Go input the posture surface computes
-// from the caller's verified elevated scope and threads in — it is NEVER
-// a wire field and NEVER read from a request body. The ordinary
-// (non-widened) fold is unchanged apart from the new scope label — no
-// widening, no downgrade knob (CLAUDE.md §13).
-//
-// A registry read error degrades that one surface to absent while the
-// others still report — a posture read is a best-effort observability
-// snapshot, never a load-bearing path. A nil dependency simply omits
-// that surface; a nil-everything seam returns nil (the whole block is
-// omitted on the wire).
-func RetentionProvider(bus events.EventBus, taskReg tasks.TaskRegistry, lister sessions.SessionLister) func(context.Context, identity.Identity, bool) []types.RetentionHorizon {
-	return func(ctx context.Context, id identity.Identity, widened bool) []types.RetentionHorizon {
-		out := make([]types.RetentionHorizon, 0, 3)
+// EventsHorizonProvider returns the events-only, in-memory health seam. An
+// unavailable reporter is omitted; it never falls back to stored reads.
+func EventsHorizonProvider(bus events.EventBus) func(context.Context) []types.RetentionHorizon {
+	return func(ctx context.Context) []types.RetentionHorizon {
+		reporter, ok := bus.(events.RetentionReporter)
+		if !ok {
+			return nil
+		}
+		oldest, present, err := reporter.OldestRetainedAt(ctx)
+		if err != nil {
+			return nil
+		}
+		entry := types.RetentionHorizon{Surface: retentionSurfaceEvents, Scope: types.RetentionScopeRuntime}
+		if present {
+			entry.OldestRetainedAt = utcPtr(oldest)
+		}
+		return []types.RetentionHorizon{entry}
+	}
+}
 
-		// events — always runtime-wide, identity-free. Present only when
-		// the bus implements the reader seam (else honest absence).
-		if reporter, ok := bus.(events.RetentionReporter); ok {
-			entry := types.RetentionHorizon{
-				Surface: retentionSurfaceEvents,
-				Scope:   types.RetentionScopeRuntime,
+// RuntimeRetentionProvider reads observed runtime-wide horizons for the admin
+// diagnostics method. Unwired readers are omitted; errors fail the snapshot.
+func RuntimeRetentionProvider(bus events.EventBus, taskReg tasks.TaskRegistry, lister sessions.SessionLister) func(context.Context) ([]types.RetentionHorizon, error) {
+	return func(ctx context.Context) ([]types.RetentionHorizon, error) {
+		var out []types.RetentionHorizon
+		for _, source := range []struct {
+			name  string
+			value any
+		}{{retentionSurfaceEvents, bus}, {retentionSurfaceTasks, taskReg}, {retentionSurfaceSessions, lister}} {
+			reader, ok := source.value.(oldestRetainedReader)
+			if !ok {
+				continue
 			}
-			if oldest, present, err := reporter.OldestRetainedAt(ctx); err == nil && present {
+			oldest, present, err := reader.OldestRetainedAt(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("retention %s: %w", source.name, err)
+			}
+			entry := types.RetentionHorizon{Surface: source.name, Scope: types.RetentionScopeRuntime}
+			if present {
 				entry.OldestRetainedAt = utcPtr(oldest)
 			}
 			out = append(out, entry)
 		}
-
-		if taskReg != nil {
-			if h, ok := tasksHorizon(ctx, taskReg, id, widened); ok {
-				out = append(out, h)
-			}
-		}
-
-		if lister != nil {
-			if h, ok := sessionsHorizon(ctx, lister, id, widened); ok {
-				out = append(out, h)
-			}
-		}
-
-		if len(out) == 0 {
-			return nil
-		}
-		return out
+		return out, nil
 	}
-}
-
-// tasksHorizon computes the `tasks` retention entry. When `widened`, it
-// reads the runtime-wide oldest CreatedAt through the optional
-// identity-free reader — a registry that does not implement the reader
-// contributes no entry (honest absence). Otherwise it folds the caller's
-// session scope via List. A read error degrades the surface to absent
-// (ok=false). A wired-but-empty-at-scope surface returns an entry with
-// the scope stamped and no timestamp.
-func tasksHorizon(ctx context.Context, taskReg tasks.TaskRegistry, id identity.Identity, widened bool) (types.RetentionHorizon, bool) {
-	if widened {
-		reader, ok := taskReg.(oldestRetainedReader)
-		if !ok {
-			return types.RetentionHorizon{}, false
-		}
-		oldest, present, err := reader.OldestRetainedAt(ctx)
-		if err != nil {
-			return types.RetentionHorizon{}, false
-		}
-		entry := types.RetentionHorizon{Surface: retentionSurfaceTasks, Scope: types.RetentionScopeRuntime}
-		if present {
-			entry.OldestRetainedAt = utcPtr(oldest)
-		}
-		return entry, true
-	}
-
-	summaries, err := taskReg.List(ctx, id, tasks.TaskFilter{})
-	if err != nil {
-		return types.RetentionHorizon{}, false
-	}
-	var oldest int64
-	for _, s := range summaries {
-		if s.CreatedAt == 0 {
-			continue
-		}
-		if oldest == 0 || s.CreatedAt < oldest {
-			oldest = s.CreatedAt
-		}
-	}
-	entry := types.RetentionHorizon{Surface: retentionSurfaceTasks, Scope: types.RetentionScopeSession}
-	if oldest > 0 {
-		entry.OldestRetainedAt = utcPtr(time.Unix(0, oldest))
-	}
-	return entry, true
-}
-
-// sessionsHorizon computes the `sessions` retention entry. When
-// `widened`, it reads the runtime-wide oldest OpenedAt through the
-// optional identity-free reader — a lister that does not implement the
-// reader contributes no entry (honest absence). Otherwise it folds the
-// caller's tenant via ListSnapshots. A read error degrades the surface
-// to absent (ok=false). A wired-but-empty-at-scope surface returns an
-// entry with the scope stamped and no timestamp.
-func sessionsHorizon(ctx context.Context, lister sessions.SessionLister, id identity.Identity, widened bool) (types.RetentionHorizon, bool) {
-	if widened {
-		reader, ok := lister.(oldestRetainedReader)
-		if !ok {
-			return types.RetentionHorizon{}, false
-		}
-		oldest, present, err := reader.OldestRetainedAt(ctx)
-		if err != nil {
-			return types.RetentionHorizon{}, false
-		}
-		entry := types.RetentionHorizon{Surface: retentionSurfaceSessions, Scope: types.RetentionScopeRuntime}
-		if present {
-			entry.OldestRetainedAt = utcPtr(oldest)
-		}
-		return entry, true
-	}
-
-	snaps, err := lister.ListSnapshots(ctx, sessions.SessionListFilter{
-		TenantIDs:     []string{id.TenantID},
-		IncludeClosed: true,
-	})
-	if err != nil {
-		return types.RetentionHorizon{}, false
-	}
-	var oldest time.Time
-	for _, s := range snaps {
-		if s.OpenedAt.IsZero() {
-			continue
-		}
-		if oldest.IsZero() || s.OpenedAt.Before(oldest) {
-			oldest = s.OpenedAt
-		}
-	}
-	entry := types.RetentionHorizon{Surface: retentionSurfaceSessions, Scope: types.RetentionScopeTenant}
-	if !oldest.IsZero() {
-		entry.OldestRetainedAt = utcPtr(oldest)
-	}
-	return entry, true
 }
 
 // CountersProvider returns a `protocol.PostureDeps.Counters` seam that

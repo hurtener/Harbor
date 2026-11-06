@@ -1603,6 +1603,13 @@ endpoints). Default: `false`.
 
 ## Events
 
+Observed retention is separate from configuration: `runtime.health` exposes only
+the cached events horizon, at runtime scope, and performs no stored reads or
+audit publication for any caller. To inspect runtime-wide events, tasks and
+sessions horizons, explicitly call `runtime.retention` with a verified `admin`
+scope. `console:fleet` and trust-mode calls are refused; a successful read emits
+one `audit.admin_scope_used` and fails closed if auditing fails (D-490).
+
 ### events.driver
 
 EventBus driver. Default: `inmem`. Validation: `inmem` or `durable`
