@@ -190,6 +190,17 @@ type Tool struct {
 	// LastUsedAt is the timestamp of the most recent invocation; the
 	// zero value means "never used".
 	LastUsedAt time.Time `json:"last_used_at"`
+	// SideEffect is the declared side-effect class
+	// ("pure" | "read" | "write" | "external" | "stateful"; "" when the
+	// descriptor declares none). Same value as ToolManifest.SideEffect, so a
+	// list consumer needs no per-tool describe. Structural: covered by the
+	// configuration revision.
+	SideEffect string `json:"side_effect,omitempty"`
+	// LoadingMode is the prompt-time loading mode ("always" | "deferred")
+	// of the projected descriptor. For the configuration view it is the
+	// effective mode after the agent's and acting user's tool-exposure
+	// overrides. Structural: covered by the configuration revision.
+	LoadingMode string `json:"loading_mode,omitempty"`
 }
 
 // ToolFilter is the server-enforced facet filter on `tools.list`. An
@@ -243,6 +254,14 @@ type ToolListRequest struct {
 	// DefaultToolListPageSize. A value above MaxToolListPageSize is a
 	// 400 (CodeInvalidRequest) — never a silent clamp.
 	PageSize int `json:"page_size,omitempty"`
+	// IfRevision makes page 1 of a configuration-view list conditional: when
+	// it equals the inventory's current revision the reply is
+	// `{revision, not_modified: true}` with no rows, after only the revision
+	// reads. It is ignored on pages after the first (always full; the client
+	// compares each page's revision with page 1's and restarts on a
+	// mismatch). Valid only with view "configuration" — any other view is a
+	// 400 (CodeInvalidRequest).
+	IfRevision string `json:"if_revision,omitempty"`
 }
 
 // ToolAggregates carries the four catalog counters the Tools-page
@@ -287,6 +306,20 @@ type ToolListResponse struct {
 	// omitempty: a wired build (a wired build) omits it and ships real
 	// aggregates.
 	AggregatesPartial bool `json:"aggregates_partial,omitempty"`
+	// Revision is the configuration inventory's input-addressed revision
+	// (configuration view only; absent for other views and on runtimes that
+	// cannot stamp their inventory). It changes whenever the admitted
+	// structural rows may change — durable agent/user config pointers,
+	// activation fences, the session overlay, and the process-local catalog
+	// and MCP registry. It covers every structural row field including
+	// side_effect and loading_mode, and EXCLUDES the per-request annotations
+	// oauth_status, approval_policy and last_used_at (and describe's
+	// display_modes). It is opaque and principal-bound: compare it only with
+	// a revision returned to the same (tenant, user, agent) request shape.
+	Revision string `json:"revision,omitempty"`
+	// NotModified reports that the request's if_revision matched Revision:
+	// the reply carries no rows and the client's copy is current.
+	NotModified bool `json:"not_modified,omitempty"`
 }
 
 // ToolGetRequest is the `tools.get` request body.
@@ -346,6 +379,10 @@ type ToolManifest struct {
 	// DisplayModes maps a MIME type to its negotiated MCP-Apps
 	// DisplayMode; empty for non-MCP tools.
 	DisplayModes map[string]string `json:"display_modes"`
+	// Revision is the configuration inventory revision the manifest was
+	// projected from (configuration view only; same semantics and
+	// exclusions as ToolListResponse.Revision).
+	Revision string `json:"revision,omitempty"`
 }
 
 // ToolMetricsRequest is the `tools.metrics` request body.

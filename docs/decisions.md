@@ -16206,3 +16206,63 @@ The canonical Go type, public RuntimeClient method, Console mirror, generated
 wire manifest, external TypeScript module, and generated Protocol reference
 advance together.
 **Cross-references:** RFC §5.2, §5.5, §6.17; D-025, D-280, D-397, D-409.
+
+---
+
+## D-491 — Input-addressed tool-catalog revision and conditional configuration reads
+
+**Date:** 2026-11-06. **Scope:** Additive `tools.*` wire fields, a new hint
+event, and a process-local structural cache.
+
+The configuration-view tool inventory (D-459) has an input-addressed
+`revision`: a SHA-256 over the principal (tenant, user, agent, and the session
+only when a session overlay record exists), the agent active pointer (which is
+also the lifecycle slot), every signed-capability activation-fence record, the
+acting user's active pointer, the session overlay record — all as StateStore
+write identities — and the tools catalog's and MCP registry's random
+per-instance epoch plus monotonic generation. Fence phase changes alter
+`Active` visibility without a pointer write, so the fence records are inputs;
+the fence projection has no clock input, so no deadline accompanies the
+revision. The registry generation is registry-wide and moves on every change to
+the live-entry, owner or logical-name maps; the existing per-server
+`CurrentGeneration` digest is unchanged. Because the revision is computed per
+request from durable slots, two runtimes sharing a store never serve each
+other stale revisions, and nothing depends on event delivery.
+
+`tools.list` rows gain `side_effect` and `loading_mode` so list consumers need
+no per-tool describe. Configuration-view list responses and configuration
+manifests carry `revision`; `if_revision` makes page 1 conditional
+(`not_modified: true`, no rows) and is ignored on later pages, where clients
+compare each page's revision with page 1's and restart on a mismatch. Other
+views reject `if_revision`. The revision covers every structural field and
+excludes `oauth_status`, `approval_policy`, `last_used_at` and `display_modes`.
+
+A bounded LRU (512 entries, single-flight per key) caches only the admitted
+structural descriptors, keyed by (tenant, user, agent, view,
+session-if-overlay, revision). Tenant and user are always key components, so a
+principal-dependent visibility rule cannot cross principals even under a
+digest collision. The filter is applied per request after annotations, over the
+cached unfiltered inventory, so filtered and unfiltered reads cannot
+contaminate each other. Admission runs before any revision read and is never
+cached. A miss re-reads the revision after building and inserts only when it is
+unchanged. An overlay-free session shares its user's entry: such an entry
+contains no session data, so a session erasure fence is not consulted on a
+cache hit. The execution (planner) view is not cached and reports no revision.
+
+A discovery refresh whose deterministic descriptor generation (tools,
+resources and App callbacks) equals the committed one commits nothing; an
+unknown generation still republishes. Convergence sweeps and no-op run-start
+reconciles therefore leave revisions and cache entries intact.
+
+`tools.catalog.changed` is a best-effort hint, published asynchronously after
+agent-config pointer and lifecycle writes, activation-fence transitions, MCP
+publication or withdrawal, and changed discoveries. Its payload is
+`{agent_id, scope: agent|user, reason}` with no tool data and no revision. The
+identity is the writer's quadruple when complete and same-tenant, else
+`{tenant, __agentcfg__, agent}`; an unresolvable owner (a boot-declared server)
+is skipped at Debug. Consumers may use it only to drop short-lived caches.
+
+The Protocol version is unchanged: every field is additive and optional. An
+older runtime's strict decoder refuses `if_revision`, so clients send it only to
+runtimes at or above the release carrying this decision.
+**Cross-references:** RFC §6.4, §6.16; D-301, D-448, D-459.

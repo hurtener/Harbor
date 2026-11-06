@@ -1060,6 +1060,9 @@ func NewService(registry agentcfg.Registry, opts ...Option) (*Service, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.signedOAuthMCPFences != nil {
+		s.signedOAuthMCPFences = s.signedOAuthMCPFences.WithChangeObserver(agentcfg.CatalogChangeObserverFor(registry))
+	}
 	if s.coordinator != nil {
 		registrar, ok := s.coordinator.(pauseresume.ContinuationRegistrar)
 		if !ok {

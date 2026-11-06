@@ -365,6 +365,7 @@ export type HarborEventType =
   | "tool.provider_credential_fetch_failed"
   | "tool.provider_credential_fetched"
   | "tool.rejected"
+  | "tools.catalog.changed"
   | "topology.changed"
   | "trajectory.compressed"
   | "trajectory.compression_failed";
@@ -3671,6 +3672,8 @@ export interface Tool {
   reliability_tier: string;
   owner: string;
   last_used_at: string;
+  side_effect?: string;
+  loading_mode?: string;
 }
 
 export interface ToolAggregates {
@@ -3745,6 +3748,7 @@ export interface ToolListRequest {
   filter: ToolFilter;
   page?: number;
   page_size?: number;
+  if_revision?: string;
 }
 
 export interface ToolListResponse {
@@ -3755,6 +3759,8 @@ export interface ToolListResponse {
   total_rows: number;
   aggregates: ToolAggregates;
   aggregates_partial?: boolean;
+  revision?: string;
+  not_modified?: boolean;
 }
 
 export interface ToolManifest {
@@ -3769,6 +3775,7 @@ export interface ToolManifest {
   timeout_ms: number;
   loading_mode: string;
   display_modes: Record<string, string>;
+  revision?: string;
 }
 
 export interface ToolMetrics {

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -448,6 +449,75 @@ type Registry struct {
 	// the durable pair absence is the restart-side publication proof.
 	removing map[string]*exactRemovalReservation
 	clock    func() time.Time
+	// epoch is minted once at construction; generation is bumped under mu
+	// (write) on every mutation of servers or closing — the maps that back
+	// owner, logical-name and live-entry resolution — and on every discovery
+	// commit that changes a server's current generation. Together they are
+	// the registry-wide structural stamp RegistryGeneration reports.
+	epoch      string
+	generation atomic.Uint64
+	// changed is the optional structural-change observer (see
+	// WithRegistryChangeObserver). Immutable after construction.
+	changed RegistryChangeObserver
+}
+
+// RegistryChangeReason classifies a structural registry change for the
+// optional observer. The values are a closed set.
+type RegistryChangeReason string
+
+const (
+	// RegistryChangeConnection marks a server registration being published or
+	// withdrawn (attach, re-attach, replacement, detach).
+	RegistryChangeConnection RegistryChangeReason = "connection"
+	// RegistryChangeDiscovery marks a discovery refresh whose descriptor
+	// generation differs from the committed one.
+	RegistryChangeDiscovery RegistryChangeReason = "discovery"
+)
+
+// RegistryChangeObserver is notified AFTER a structural change committed and
+// the registry lock was released. name is the physical server name and owner
+// its registration owner (zero for boot-declared servers). The observer is a
+// hint channel only: it must not block, and it never participates in the
+// mutation's outcome.
+type RegistryChangeObserver func(ctx context.Context, name string, owner auth.Owner, reason RegistryChangeReason)
+
+// WithRegistryChangeObserver installs the optional structural-change
+// observer. A nil observer is ignored.
+func WithRegistryChangeObserver(fn RegistryChangeObserver) RegistryOption {
+	return func(r *Registry) {
+		if fn != nil {
+			r.changed = fn
+		}
+	}
+}
+
+// RegistryEpoch returns the instance-unique identifier minted when this
+// Registry was constructed. Two registries (two processes, or one process
+// restarted) never share an epoch, so (epoch, generation) never collides
+// across instances.
+func (r *Registry) RegistryEpoch() string { return r.epoch }
+
+// RegistryGeneration returns the registry-wide structural mutation counter.
+// It is bumped while the write lock is held, so a reader that observed a
+// mutated entry set and then reads the counter observes the bump. The
+// per-server [Registry.CurrentGeneration] digest is unaffected.
+func (r *Registry) RegistryGeneration() uint64 { return r.generation.Load() }
+
+// bumpLocked advances the registry-wide generation. Callers hold mu (write).
+func (r *Registry) bumpLocked() { r.generation.Add(1) }
+
+func (r *Registry) notifyChanged(ctx context.Context, name string, owner auth.Owner, reason RegistryChangeReason) {
+	if r.changed != nil {
+		r.changed(ctx, name, owner, reason)
+	}
+}
+
+func newRegistryEpoch() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("mcp: registry epoch: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // RegistryOption configures a Registry at construction.
@@ -472,6 +542,7 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 		pending:        map[string]*RegistrationSwap{},
 		removing:       map[string]*exactRemovalReservation{},
 		clock:          time.Now,
+		epoch:          newRegistryEpoch(),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -1531,6 +1602,7 @@ func (r *Registry) BeginExactRemoval(name string, owner auth.Owner, descriptorFi
 		delete(r.pending, name)
 		staged.invalidated.Store(true)
 		r.closing[name] = staged.staged
+		r.bumpLocked()
 		reservation.invalidatedStage = staged.staged
 	}
 	r.removing[name] = reservation
@@ -1637,6 +1709,7 @@ func (f *ExactRemovalFence) Cancel(ctx context.Context) error {
 	if f.registry.removing[f.name] == reservation && !reservation.sealed && reservation.holders == 1 {
 		if f.registry.closing[f.name] == invalidated {
 			delete(f.registry.closing, f.name)
+			f.registry.bumpLocked()
 		}
 		delete(f.registry.removing, f.name)
 		reservation.holders = 0
@@ -1696,9 +1769,11 @@ func (s *RegistrationSwap) Publish(ctx context.Context, publish func() error) (b
 	}
 	s.registry.servers[s.name] = s.staged
 	delete(s.registry.pending, s.name)
+	s.registry.bumpLocked()
 	s.registry.mu.Unlock()
 	s.done = true
 	s.published = true
+	s.registry.notifyChanged(ctx, s.name, s.staged.owner, RegistryChangeConnection)
 	if s.prior != nil && s.prior.provider != nil && s.prior.provider != s.staged.provider {
 		if err := s.prior.provider.Close(ctx); err != nil {
 			return true, fmt.Errorf("close replaced transport %q: %w", s.name, err)
@@ -1782,6 +1857,7 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 		return fmt.Errorf("mcp: deregister %q refused while an exact replacement is staged", name)
 	}
 	receipt := r.genericClosing[name]
+	withdrawn := false
 	if receipt != nil {
 		if receipt.entry.owner != owner {
 			r.mu.Unlock()
@@ -1794,10 +1870,15 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 			return fmt.Errorf("%w: %q", ErrServerNotFound, name)
 		}
 		delete(r.servers, name)
+		r.bumpLocked()
+		withdrawn = true
 		receipt = &genericCloseReceipt{entry: e}
 		r.genericClosing[name] = receipt
 	}
 	r.mu.Unlock()
+	if withdrawn {
+		r.notifyChanged(ctx, name, owner, RegistryChangeConnection)
+	}
 
 	receipt.mu.Lock()
 	defer receipt.mu.Unlock()
@@ -1860,6 +1941,7 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 		delete(r.pending, name)
 		staged.invalidated.Store(true)
 		r.closing[name] = e
+		r.bumpLocked()
 	} else {
 		var ok bool
 		e, ok = r.servers[name]
@@ -1875,14 +1957,19 @@ func (r *Registry) DeregisterExact(ctx context.Context, name string, owner auth.
 		removed = withdrawCatalog()
 		delete(r.servers, name)
 		r.closing[name] = e
+		r.bumpLocked()
 	}
 	r.mu.Unlock()
+	if !retryingClose {
+		r.notifyChanged(ctx, name, owner, RegistryChangeConnection)
+	}
 	if err := e.provider.Close(ctx); err != nil {
 		return removed, fmt.Errorf("mcp: deregister %q: close transport: %w", name, err)
 	}
 	r.mu.Lock()
 	if r.closing[name] == e {
 		delete(r.closing, name)
+		r.bumpLocked()
 	}
 	if r.removing[name] == removal {
 		delete(r.removing, name)
@@ -2782,23 +2869,39 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		StartMs:   start.UnixMilli(),
 		LatencyMs: latency,
 	})
-	if e.catalog != nil {
-		catalogSwap, cerr := e.catalog.StageSource(tools.ToolSourceID(name), ordinaryDescriptors(descs), true)
-		if cerr != nil {
-			r.mu.Unlock()
-			return nil, fmt.Errorf("mcp: refresh catalog %q: %w", name, cerr)
+	// No-op gate: when the fresh snapshot's deterministic generation (which
+	// covers ordinary tools, resources and App callbacks) equals the committed
+	// one, both views already hold exactly this snapshot. Republishing would
+	// only move the catalog and registry generations and invalidate every
+	// structural catalog projection keyed on them, so the commit is skipped.
+	// An unknown ("") generation is never treated as equal: the previous
+	// behaviour (republish) is kept whenever equality cannot be proven.
+	nextGeneration := currentGenerationFor(descs)
+	changed := nextGeneration == "" || nextGeneration != e.currentGeneration
+	if changed {
+		if e.catalog != nil {
+			catalogSwap, cerr := e.catalog.StageSource(tools.ToolSourceID(name), ordinaryDescriptors(descs), true)
+			if cerr != nil {
+				r.mu.Unlock()
+				return nil, fmt.Errorf("mcp: refresh catalog %q: %w", name, cerr)
+			}
+			catalogSwap.Commit()
 		}
-		catalogSwap.Commit()
+		// Rebuild the App dispatch view from the SAME fresh snapshot that just
+		// re-derived the counts — one discovered set, two views. The
+		// deterministic current provider/catalog generation recomputes with
+		// the snapshot, so a refresh that changes resources / App callbacks /
+		// ordinary catalog rows bumps the generation even when the deployment
+		// registration descriptor did not change.
+		e.appVisible = partitionAppVisible(descs)
+		e.currentGeneration = nextGeneration
+		r.bumpLocked()
 	}
-	// Rebuild the App dispatch view from the SAME fresh snapshot that just
-	// re-derived the counts — one discovered set, two views. The
-	// deterministic current provider/catalog generation recomputes with
-	// the snapshot, so a refresh that changes resources / App callbacks /
-	// ordinary catalog rows bumps the generation even when the deployment
-	// registration descriptor did not change.
-	e.appVisible = partitionAppVisible(descs)
-	e.currentGeneration = currentGenerationFor(descs)
+	owner := e.owner
 	r.mu.Unlock()
+	if changed {
+		r.notifyChanged(ctx, name, owner, RegistryChangeDiscovery)
+	}
 
 	return &DiscoveryResult{
 		DiscoveryID:   discoveryID,
@@ -3110,6 +3213,7 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	// pre-discovery stage.
 	e.appVisible = partitionAppVisible(descs)
 	e.currentGeneration = currentGenerationFor(descs)
+	r.bumpLocked()
 	return nil
 }
 

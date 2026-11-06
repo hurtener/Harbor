@@ -147,7 +147,32 @@ type SignedOAuthMCPActivationFence struct {
 }
 
 // SignedOAuthMCPActivationFenceStore is the durable signed-capability security fence.
-type SignedOAuthMCPActivationFenceStore struct{ state state.StateStore }
+type SignedOAuthMCPActivationFenceStore struct {
+	state state.StateStore
+	// changed is the optional best-effort observer told after every committed
+	// fence write (see WithChangeObserver). Fence phase transitions change
+	// what Registry.Active returns without moving an active pointer.
+	changed func(ctx context.Context, tenantID, agentID string)
+}
+
+// WithChangeObserver returns a copy of the store that reports every committed
+// fence write (begin, release, advance, reopen) to fn. The observer is a hint
+// channel only: it runs after the write and never affects its outcome. A nil
+// fn returns the store unchanged.
+func (s *SignedOAuthMCPActivationFenceStore) WithChangeObserver(fn func(ctx context.Context, tenantID, agentID string)) *SignedOAuthMCPActivationFenceStore {
+	if s == nil || fn == nil {
+		return s
+	}
+	out := *s
+	out.changed = fn
+	return &out
+}
+
+func (s *SignedOAuthMCPActivationFenceStore) notifyChanged(ctx context.Context, tenantID, agentID string) {
+	if s.changed != nil {
+		s.changed(ctx, tenantID, agentID)
+	}
+}
 
 const signedOAuthMCPActivationFenceKind = "agentcfg.signed_oauth_mcp.activation_fence"
 
@@ -193,6 +218,7 @@ func (s *SignedOAuthMCPActivationFenceStore) begin(ctx context.Context, tenant, 
 	}
 	err = s.state.SaveIf(ctx, []state.SlotExpectation{{Identity: quad, Kind: stateKind}}, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 	if err == nil {
+		s.notifyChanged(ctx, tenant, agentID)
 		return fence, nil
 	}
 	if !errors.Is(err, state.ErrConditionFailed) {
@@ -221,6 +247,7 @@ func (s *SignedOAuthMCPActivationFenceStore) begin(ctx context.Context, tenant, 
 		}
 		err = s.state.SaveIf(ctx, expectations, state.StateRecord{ID: fence.EventID, Identity: quad, Kind: stateKind, Bytes: encoded})
 		if err == nil {
+			s.notifyChanged(ctx, tenant, agentID)
 			return fence, nil
 		}
 		if !errors.Is(err, state.ErrConditionFailed) {
@@ -316,6 +343,7 @@ func (s *SignedOAuthMCPActivationFenceStore) ReleasePending(ctx context.Context,
 	if !changed {
 		return fmt.Errorf("%w: activation fence changed concurrently", ErrSignedCapabilityPending)
 	}
+	s.notifyChanged(ctx, current.TenantID, current.AgentID)
 	return nil
 }
 
@@ -369,6 +397,7 @@ func (s *SignedOAuthMCPActivationFenceStore) Advance(ctx context.Context, curren
 	if err != nil {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("advance signed capability activation fence: %w", err)
 	}
+	s.notifyChanged(ctx, current.TenantID, current.AgentID)
 	return next, nil
 }
 
@@ -417,6 +446,7 @@ func (s *SignedOAuthMCPActivationFenceStore) ReopenForRenewedAuthority(ctx conte
 	if err != nil {
 		return SignedOAuthMCPActivationFence{}, fmt.Errorf("reopen renewed signed capability activation fence: %w", err)
 	}
+	s.notifyChanged(ctx, current.TenantID, current.AgentID)
 	return next, nil
 }
 
@@ -960,5 +990,20 @@ func signedOAuthMCPOperationPhaseKnown(phase SignedOAuthMCPOperationPhase) bool 
 		return true
 	default:
 		return false
+	}
+}
+
+// CatalogChangeObserverFor adapts a Registry that implements
+// CatalogChangeNotifier into a fence-store observer publishing the
+// oauth_fence hint at agent scope. It returns nil when the Registry cannot
+// notify, which WithChangeObserver treats as "no observer".
+func CatalogChangeObserverFor(registry Registry) func(ctx context.Context, tenantID, agentID string) {
+	notifier, ok := registry.(CatalogChangeNotifier)
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, tenantID, agentID string) {
+		writer, _ := identity.QuadrupleFrom(ctx)
+		notifier.NotifyCatalogChanged(ctx, writer, tenantID, agentID, CatalogChangeScopeAgent, CatalogChangeReasonOAuthFence)
 	}
 }

@@ -61,6 +61,19 @@ view selector. It is advertised only when the owned-source configuration backend
 is wired. An older runtime receives no selector; clients do not retry a refused
 configuration request by downgrading its view.
 
+Configuration-view list responses and manifests carry an opaque `revision`
+(D-491). To revalidate a cached inventory cheaply, send the cached value as
+`if_revision` on page 1: a match answers `{revision, not_modified: true}` with
+no rows. Later pages ignore `if_revision`; compare each page's `revision` with
+page 1's and restart once on a mismatch. The revision covers structural row
+fields, including the row-level `side_effect` and `loading_mode` (so no
+per-tool `tools.describe` is needed for them), and excludes `oauth_status`,
+`approval_policy`, `last_used_at` and `display_modes`. Key a client cache by
+runtime, tenant, agent, acting user and filter. `tools.catalog.changed` is only
+a hint to drop short-lived caches early; never rely on it for correctness.
+Only send `if_revision` to a runtime whose release includes D-491 — older
+runtimes reject the unknown field.
+
 ## Route-aware provider checks
 
 The existing admin-scoped `llm.posture` provider `validate` and `discover`

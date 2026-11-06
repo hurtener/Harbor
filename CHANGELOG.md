@@ -17,6 +17,37 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- Configuration-view `tools.list` responses and `tools.describe` manifests
+  carry an opaque input-addressed `revision` (D-491). Sending it back as
+  `if_revision` on page 1 answers `{revision, not_modified: true}` with no rows
+  after only four small StateStore reads; later pages ignore it, and clients
+  compare each page's `revision` with page 1's. The revision covers structural
+  row fields and excludes `oauth_status`, `approval_policy`, `last_used_at` and
+  `display_modes`. Other views reject `if_revision`.
+- `tools.list` rows carry `side_effect` and `loading_mode`, so list consumers no
+  longer need one `tools.describe` per tool.
+- The runtime caches admitted configuration inventories (structure only, keyed
+  by tenant, user, agent, view, session-when-overlaid and revision; 512
+  entries). Admission still runs on every request before any revision read.
+- `tools.catalog.changed` is a best-effort hint (`agent_id`, `scope`, `reason`;
+  no tool data, no revision) published after agent-config pointer and lifecycle
+  writes, activation-fence transitions, MCP publication or withdrawal, and
+  changed discoveries. Use it only to drop short-lived caches.
+
+### Changed
+
+- An MCP discovery refresh whose deterministic descriptor generation is
+  unchanged no longer republishes the catalog or App views, so convergence
+  sweeps and no-op run-start reconciles no longer move catalog generations.
+
+### Upgrade notes
+
+- `if_revision` is a new request field; runtimes before this release reject it
+  with `invalid_request` (strict decoding). Upgrade every runtime a client talks
+  to before the client sends it.
+
 ## [1.35.0] — 2026-11-06
 
 ### Fixed

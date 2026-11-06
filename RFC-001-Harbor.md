@@ -655,6 +655,8 @@ separately in PR #779.
 
 The planner reasons about exactly one concept: a `Tool`. The catalog hides whether the tool is in-process Go, MCP, A2A, or HTTP.
 
+A catalog instance reports a random per-instance epoch and a monotonic structural generation, bumped under its write lock on every source publication, replacement or withdrawal; the MCP registry reports the same pair for its live-entry, owner and logical-name maps. These process-local generations are inputs of the input-addressed catalog revision that conditional configuration reads use (§6.16, D-491).
+
 ```go
 type Tool struct {
     Name        string
@@ -2655,6 +2657,36 @@ Clients negotiate `tools_configuration_view_v1` before sending the configuration
 view selector. It is advertised only when the owned-source configuration backend
 is wired. An older runtime receives no selector; clients do not retry a refused
 configuration request by downgrading its view.
+
+**Catalog revision and conditional configuration reads (D-491).** A
+configuration-view `tools.list` response, and a configuration `tools.describe`
+manifest, carry an opaque input-addressed `revision`. It is a SHA-256 over
+every input the admitted inventory reads: the principal (tenant, user, agent,
+and the session when a session overlay exists); the agent active pointer
+(also the lifecycle slot), every signed-capability activation-fence record and
+the acting user's active pointer as durable write identities; the session
+overlay record; and the process-local tool-catalog and MCP-registry epoch and
+generation. Epochs are random per instance, so a restart or another replica
+never repeats a revision, and replicas sharing a store observe each other's
+durable writes without any event. The revision covers every structural row
+field, including the list-row `side_effect` and `loading_mode`, and excludes the
+per-request annotations `oauth_status`, `approval_policy`, `last_used_at` and
+describe's `display_modes`.
+
+`if_revision` on page 1 of a configuration list answers
+`{revision, not_modified: true}` with no rows when it matches, after only the
+revision reads (four small StateStore reads). It is ignored on later pages; a
+client compares each page's `revision` with page 1's and restarts on a
+mismatch. Any other view rejects `if_revision`. Admission — verified admin,
+signed agent reach and effective-agent resolution — runs before any revision
+read. The runtime keeps a bounded structural cache of admitted descriptors
+keyed by principal and revision; it holds no annotations and no authorization
+decision, and a miss re-reads the revision after building and caches only when
+it is unchanged. A discovery refresh whose deterministic descriptor generation
+is unchanged commits nothing, so convergence sweeps and no-op run-start
+reconciles leave revisions intact. The best-effort `tools.catalog.changed`
+event is a hint for dropping short-lived client caches; it carries no tool data
+or revision, and correctness never depends on it.
 
 ### 6.17 Run-completion hook
 
