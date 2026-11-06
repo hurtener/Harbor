@@ -205,7 +205,8 @@ func sameInjection(left, right *MCPCredentialInjectionDescriptor) bool {
 		return left == right
 	}
 	return left.Provider == right.Provider && left.Form == right.Form && left.Header == right.Header &&
-		left.BasicUsername == right.BasicUsername && left.MetaKey == right.MetaKey
+		left.BasicUsername == right.BasicUsername && left.MetaKey == right.MetaKey &&
+		left.AuthenticatePreparation == right.AuthenticatePreparation
 }
 
 func sameArtifactParams(left, right map[string][]string) bool {
@@ -270,6 +271,9 @@ func SignedOAuthMCPPairFingerprint(binding SignedOAuthMCPBinding) string {
 	// a replay cannot redirect a per-user credential to another provider/form/key.
 	if injection := binding.Connection.Injection; injection != nil {
 		parts = append(parts, "injection", injection.Provider, injection.Form, injection.Header, injection.BasicUsername, injection.MetaKey)
+		if injection.AuthenticatePreparation {
+			parts = append(parts, "authenticate_preparation", "true")
+		}
 	}
 	// Preserve the pre-extension fingerprint byte-for-byte for every existing
 	// signed pair. The additive policy contributes bytes only when declared;

@@ -728,6 +728,7 @@ export interface AgentConfigMCPConnectionDescriptor {
 }
 
 export interface AgentConfigMCPCredentialInjectionDescriptor {
+  authenticate_preparation?: boolean;
   provider: string;
   form: string;
   header?: string;

@@ -548,6 +548,7 @@ Declared in `internal/protocol/types`.
 
 | Wire key | Go type | Notes |
 |---|---|---|
+| `authenticate_preparation` | `bool` | optional (`omitempty`) |
 | `provider` | `string` |  |
 | `form` | `string` |  |
 | `header` | `string` | optional (`omitempty`) |

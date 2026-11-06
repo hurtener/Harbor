@@ -216,8 +216,8 @@ type Config struct {
 	OwnOAuthProvider bool
 	// OwnedInjectionProvider is the pair-private provider owned by a signed
 	// receiver-style connection. It is deliberately separate from OAuthProvider:
-	// receiver initialize/discovery stays unauthenticated, while each tool call
-	// pulls the acting user's credential through Injection.Provider.
+	// receiver preparation authenticates only when Injection.AuthenticatePreparation
+	// is signed true; each tool call pulls through Injection.Provider.
 	OwnedInjectionProvider auth.OAuthProvider
 
 	// MetaAnnotations is a static, non-secret set of operator-declared
@@ -345,6 +345,8 @@ const (
 // (fetched-not-held, memory-only TTL); injection changes only the LAST hop — the
 // runtime delivers the value because the receiver server cannot pull it.
 type CredentialInjection struct {
+	// AuthenticatePreparation authenticates preparation for an owned signed receiver.
+	AuthenticatePreparation bool
 	// Provider is the resolved broker the per-user credential is pulled from.
 	Provider auth.OAuthProvider
 	// Form selects the injection form.
@@ -443,6 +445,14 @@ func (c Config) validate() error {
 	// rules for the runtime-add path; this is defence-in-depth for programmatic
 	// New() callers.
 	if c.Injection != nil {
+		if c.Injection.AuthenticatePreparation {
+			if c.OwnedInjectionProvider == nil {
+				return fmt.Errorf("%w: authenticated receiver preparation requires a privately owned signed provider", ErrInvalidConfig)
+			}
+			if c.Injection.Form == InjectionFormMeta && c.TransportMode == TransportSSE {
+				return fmt.Errorf("%w: authenticated meta preparation requires streamable HTTP", ErrInvalidConfig)
+			}
+		}
 		if c.OAuthProvider != nil || len(c.ToolOAuthProviders) > 0 {
 			return fmt.Errorf("%w: Injection is mutually exclusive with OAuthProvider/ToolOAuthProviders (one auth mode per connection)", ErrInvalidConfig)
 		}
@@ -492,6 +502,13 @@ func (c Config) validate() error {
 			}
 		default:
 			return fmt.Errorf("%w: Injection.Form %q is invalid (header/basic/meta)", ErrInvalidConfig, c.Injection.Form)
+		}
+		// Reject a configured destination before Connect or any call can pull
+		// credentials. The transport still rechecks the actual URL on every
+		// attempt, including server-selected endpoints and redirect targets.
+		policy := newReceiverSinkPolicy(c)
+		if err := policy.validate(policy.endpoint); err != nil {
+			return fmt.Errorf("%w: receiver sink configuration: %w", ErrInvalidConfig, err)
 		}
 	}
 	return nil
@@ -749,7 +766,8 @@ func (p *Provider) Connect(ctx context.Context) error {
 	autoFallback := (p.cfg.TransportMode == "" || p.cfg.TransportMode == TransportAuto) &&
 		mode == TransportStreamableHTTP &&
 		p.cfg.URL != "" &&
-		classifyConnectError(firstErr)
+		classifyConnectError(firstErr) &&
+		!(p.cfg.Injection != nil && p.cfg.Injection.AuthenticatePreparation && p.cfg.Injection.Form == InjectionFormMeta)
 	if !autoFallback {
 		return fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
 	}
@@ -2035,13 +2053,21 @@ func (p *Provider) resolveBearerCtx(ctx context.Context, key string) (context.Co
 // discovery deliberately does not. That distinction keeps normal data-plane
 // discovery on reach-admitted EffectiveAgentConfig and prevents it from
 // falling back to boot-derived InvokingAgent provenance. OwnOAuthProvider is
-// the ownership marker carried only by that private binding; ordinary shared
+// the ownership marker carried only by that private binding. A signed receiver
+// opts into the same lifecycle through Injection.AuthenticatePreparation and
+// resolves its declared injection form instead of a bearer. Ordinary shared
 // providers deliberately keep credential-neutral preparation.
 func (p *Provider) resolveSessionBearerCtx(ctx context.Context) (context.Context, error) {
-	if !p.cfg.OwnOAuthProvider {
-		return ctx, nil
+	if p.cfg.OwnOAuthProvider {
+		return p.resolveBearerCtx(ctx, "")
 	}
-	return p.resolveBearerCtx(ctx, "")
+	if p.cfg.Injection != nil && p.cfg.Injection.AuthenticatePreparation {
+		if _, ok := identity.From(ctx); !ok {
+			return nil, ErrIdentityMissing
+		}
+		return p.resolveInjection(ctx, mcpsdk.Meta{})
+	}
+	return ctx, nil
 }
 
 // resolveInjection sources the acting principal's credential from the bound
@@ -2058,11 +2084,16 @@ func (p *Provider) resolveSessionBearerCtx(ctx context.Context) (context.Context
 // compiled artifact); for the `_meta` form the value is written into meta in
 // place (meta is a per-call map).
 func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (context.Context, error) {
-	inj := p.cfg.Injection
+	return resolveCredentialInjection(ctx, p.cfg.Injection, p.cfg.Name, p.source, meta)
+}
+
+// resolveCredentialInjection is shared by RPC preparation, invocation, and HTTP
+// reconnect/retry authentication. All credential state stays on the request.
+func resolveCredentialInjection(ctx context.Context, inj *CredentialInjection, connection string, source tools.ToolSourceID, meta mcpsdk.Meta) (context.Context, error) {
 	if inj == nil {
 		return ctx, nil
 	}
-	tok, err := inj.Provider.Token(ctx, p.source)
+	tok, err := inj.Provider.Token(ctx, source)
 	if err != nil {
 		// Propagate unwrapped so errors.As reaches a typed *auth.ErrAuthRequired.
 		return nil, err
@@ -2070,7 +2101,7 @@ func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (cont
 	if tok.AccessToken == "" {
 		// Defence-in-depth: a ("", nil) return from a bound provider must never
 		// let the RPC proceed unauthenticated.
-		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, p.cfg.Name, p.source)
+		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, connection, source)
 	}
 	switch inj.Form {
 	case InjectionFormHeader:

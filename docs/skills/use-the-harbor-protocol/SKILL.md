@@ -1008,6 +1008,14 @@ After retirement, all active/current config reads and durable writes, plus every
 
 D-401 signed OAuth MCP pairs are retired through their existing durable paired-removal receipt even when the original authority has expired, been revoked, or can no longer be verified after key rotation. The retirement status may expose a `signed_oauth_mcp_pair` cleanup class whose resource is hashes only; it never exposes the URL, JWT/JTI, credentials, or stored owner subject. A close failure leaves the retirement incomplete and retryable with the same retirement operation.
 
+For a signed receiver capability that requires credentials during initialize or
+discovery, sign `connection.injection.authenticate_preparation: true` inside the
+authority envelope and submit the identical descriptor. Initialize, each list,
+refresh, and reattachment use the verified acting identity and fail before any
+request on missing or failed credentials. Header and Basic injection support HTTP
+preparation; meta injection requires streamable HTTP. An unsigned connection write
+cannot enable this setting. Omitted or false preserves existing preparation.
+
 An agent may carry more than one signed OAuth MCP capability. Revision payloads
 project the first pair in `signed_oauth_mcp_pair` and additional providers in
 the `signed_oauth_mcp_pairs` object keyed by `provider_name`; clients should

@@ -27,8 +27,9 @@ func newStreamableTransport(cfg Config) mcpsdk.Transport {
 		// that may outlive it. Neither context can provide a refreshable,
 		// tenant/user-safe credential for one long-lived shared stream. Disable the
 		// optional stream whenever the connection or any entry resolves OAuth per
-		// identity. Fully unbound and static-header connections retain the default.
-		DisableStandaloneSSE: cfg.OAuthProvider != nil || len(cfg.ToolOAuthProviders) > 0,
+		// identity, or a signed receiver authenticates preparation. Fully unbound
+		// and static-header connections retain the default.
+		DisableStandaloneSSE: cfg.OAuthProvider != nil || len(cfg.ToolOAuthProviders) > 0 || (cfg.Injection != nil && cfg.Injection.AuthenticatePreparation),
 		// Negative disables retries; zero defaults to 5. We pass zero
 		// so the SDK's default applies; ToolPolicy retries on top.
 		MaxRetries: 0,

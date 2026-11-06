@@ -1656,11 +1656,12 @@ func injectionDescriptorToDomain(d *prototypes.AgentConfigMCPCredentialInjection
 		return nil
 	}
 	return &agentcfg.MCPCredentialInjectionDescriptor{
-		Provider:      d.Provider,
-		Form:          d.Form,
-		Header:        d.Header,
-		BasicUsername: d.BasicUsername,
-		MetaKey:       d.MetaKey,
+		Provider:                d.Provider,
+		Form:                    d.Form,
+		Header:                  d.Header,
+		AuthenticatePreparation: d.AuthenticatePreparation,
+		BasicUsername:           d.BasicUsername,
+		MetaKey:                 d.MetaKey,
 	}
 }
 

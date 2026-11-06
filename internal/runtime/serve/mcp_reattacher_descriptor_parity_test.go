@@ -119,9 +119,9 @@ func fullyPopulatedDescriptor() agentcfg.MCPConnectionDescriptor {
 		MetaAnnotations:              map[string]string{"harbor.tier": "parity"},
 		OAuthDiscoveryAllowedOrigins: []string{"https://as.example"},
 		Injection: &agentcfg.MCPCredentialInjectionDescriptor{
-			Provider: "parity-broker",
-			Form:     "header",
-			Header:   "X-Parity-Cred",
+			AuthenticatePreparation: true, Provider: "parity-broker",
+			Form:   "header",
+			Header: "X-Parity-Cred",
 		},
 		ArtifactByteEligible: true,
 		ArtifactParams:       map[string][]string{"ingest": {"doc"}},

@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,6 +60,16 @@ func (s productionSignedCapabilityKeySet) KeyByID(kid string) (crypto.PublicKey,
 }
 
 func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery(t *testing.T) {
+	testSignedPreparationProductionPath(t, "")
+}
+
+func TestRegisterOAuthMCPCapability_ReceiverPreparationProductionPath(t *testing.T) {
+	for _, form := range []string{config.MCPInjectionFormHeader, config.MCPInjectionFormBasic, config.MCPInjectionFormMeta} {
+		t.Run(form, func(t *testing.T) { testSignedPreparationProductionPath(t, form) })
+	}
+}
+
+func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 	t.Setenv("HARBOR_SIGNED_PRODUCTION_KEK", "0202020202020202020202020202020202020202020202020202020202020202")
 	t.Setenv("HARBOR_SIGNED_PRODUCTION_BROKER_AUTH", "fixture-broker-auth")
 
@@ -70,12 +79,30 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		connectionName   = "signed"
 		agentID          = "agent"
 	)
+	headerName, downstreamAuth := "Authorization", "Bearer "+downstreamBearer
+	var injection *agentcfg.MCPCredentialInjectionDescriptor
+	var wireInjection *prototypes.AgentConfigMCPCredentialInjectionDescriptor
+	if receiverForm != "" {
+		injection = &agentcfg.MCPCredentialInjectionDescriptor{Provider: providerName, Form: receiverForm, AuthenticatePreparation: true}
+		wireInjection = &prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: providerName, Form: receiverForm, AuthenticatePreparation: true}
+		if receiverForm == config.MCPInjectionFormHeader {
+			headerName, downstreamAuth = "X-Receiver-Api-Key", downstreamBearer
+			injection.Header, wireInjection.Header = headerName, headerName
+		} else if receiverForm == config.MCPInjectionFormMeta {
+			downstreamAuth = downstreamBearer
+			injection.MetaKey, wireInjection.MetaKey = "receiver.api_key", "receiver.api_key"
+		} else {
+			downstreamAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte("service:"+downstreamBearer))
+			injection.BasicUsername, wireInjection.BasicUsername = "service", "service"
+		}
+	}
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}
 	physicalName := mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID})
 
 	catalog := tools.NewCatalog()
 	var mcpRequests atomic.Int64
+	var wrongPathRequests atomic.Int64
 	var catalogVisibleDuringPrepare atomic.Bool
 	var requestMu sync.Mutex
 	methods := make(map[string]int)
@@ -100,6 +127,9 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpServer }, nil)
 	authenticatedMCP := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/mcp" {
+			if req.URL.Path == "/missing-mcp" {
+				wrongPathRequests.Add(1)
+			}
 			http.NotFound(w, req)
 			return
 		}
@@ -112,17 +142,25 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		var message struct {
 			Method string `json:"method"`
+			Params struct {
+				Meta map[string]any `json:"_meta"`
+			} `json:"params"`
 		}
 		_ = json.Unmarshal(body, &message)
+		authValue := req.Header.Get(headerName)
+		if receiverForm == config.MCPInjectionFormMeta {
+			nested, _ := message.Params.Meta["receiver"].(map[string]any)
+			authValue, _ = nested["api_key"].(string)
+		}
 		mcpRequests.Add(1)
 		requestMu.Lock()
 		methods[message.Method]++
-		authHeaders[message.Method] = append(authHeaders[message.Method], req.Header.Get("Authorization"))
+		authHeaders[message.Method] = append(authHeaders[message.Method], authValue)
 		requestMu.Unlock()
 		if _, ok := catalog.Resolve(physicalName + "_echo"); ok {
 			catalogVisibleDuringPrepare.Store(true)
 		}
-		if req.Header.Get("Authorization") != "Bearer "+downstreamBearer {
+		if authValue != downstreamAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -218,7 +256,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL}
+	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL, Injection: injection}
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, AgentID: agentID,
 		Broker: "broker", ProviderName: providerName, CapabilityRevision: "capability-revision-7",
@@ -237,7 +275,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	req := prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
 		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		AgentID:  agentID, ProviderName: providerName, Broker: "broker", Audience: claims.Audience,
-		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL},
+		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL, Injection: wireInjection},
 		AuthorityEnvelope: envelope,
 	}
 	authorities := map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
@@ -328,8 +366,8 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, wrongPathReq); err == nil || !strings.Contains(err.Error(), "Not Found") {
-		t.Fatalf("wrong path connect error = %v, want real HTTP 404", err)
+	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, wrongPathReq); err == nil || wrongPathRequests.Load() == 0 {
+		t.Fatalf("wrong path connect error = %v, observed 404 responses = %d, want a real HTTP 404 rejection", err, wrongPathRequests.Load())
 	} else {
 		t.Logf("real HTTP failed preparation: %v", err)
 	}
@@ -394,7 +432,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 			t.Fatalf("authenticated production preparation omitted %s; methods=%v", method, methods)
 		}
 		for _, header := range authHeaders[method] {
-			if header != "Bearer "+downstreamBearer {
+			if header != downstreamAuth {
 				requestMu.Unlock()
 				t.Fatalf("%s authorization = %q, want exact downstream bearer", method, header)
 			}
@@ -510,7 +548,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatal("signed resources/list made no authenticated downstream request")
 	}
 	latestResourcesAuth := resourcesListAuth[len(resourcesListAuth)-1]
-	if resourcesListAfter != resourcesListBefore+1 || latestResourcesAuth != "Bearer "+downstreamBearer {
+	if resourcesListAfter != resourcesListBefore+1 || latestResourcesAuth != downstreamAuth {
 		t.Fatalf("signed resources/list = calls %d->%d auth %q", resourcesListBefore, resourcesListAfter, latestResourcesAuth)
 	}
 	_, err = mcpSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPServersResources, &prototypes.MCPServerResourcesRequest{
@@ -550,7 +588,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 			t.Fatalf("Apps signed dispatch omitted %s; methods=%v", method, methods)
 		}
 		for _, header := range authHeaders[method] {
-			if header != "Bearer "+downstreamBearer {
+			if header != downstreamAuth {
 				requestMu.Unlock()
 				t.Fatalf("Apps %s authorization = %q, want exact downstream bearer", method, header)
 			}

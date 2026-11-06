@@ -550,6 +550,9 @@ func MCPConnectionFingerprint(d MCPConnectionDescriptor) string {
 // is secret. It mirrors the boot `config.MCPCredentialInjectionConfig` so the
 // runtime-add path and the boot path share ONE injection engine.
 type MCPCredentialInjectionDescriptor struct {
+	// AuthenticatePreparation also authenticates initialize and discovery for a signed, privately owned receiver binding.
+	// Omitted or false preserves credential-neutral preparation.
+	AuthenticatePreparation bool `json:"authenticate_preparation,omitempty"`
 	// Provider names the declared OAuth-provider broker the per-user credential is
 	// pulled from. Required. NON-SECRET (a name).
 	Provider string `json:"provider"`
