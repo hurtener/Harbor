@@ -95,8 +95,10 @@ func marshalPayload(p events.EventPayload) (map[string]any, error) {
 	return m, nil
 }
 
-// headRecord is the per-session index the durable driver maintains: the
-// ordered list of bus-sequences plus their payload-free routing metadata.
+// headRecord is the legacy (v1, before v1.37.0) per-session index: the
+// ordered list of bus-sequences plus their payload-free routing metadata. New
+// sessions use the chunked v2 index (index.go); legacy heads are still read
+// and appended to until the migrator converts them.
 // StateStore has no list/scan method, so this record IS the index —
 // Replay reads it to learn which entry records exist for a session.
 type headRecord struct {

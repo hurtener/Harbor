@@ -1215,6 +1215,25 @@ type EventsConfig struct {
 	// creating durable sequence authority. Authority absence requires it even
 	// when the current head scan is empty.
 	LegacyWritersDrained bool `yaml:"legacy_writers_drained,omitempty"`
+	// Retention configures opt-in audit-trail retention for the durable
+	// driver (D-493). The zero value disables it. Restart-required.
+	Retention EventsRetentionConfig `yaml:"retention,omitempty"`
+}
+
+// MinEventsAuditMaxAge is the smallest non-zero events.retention.audit_max_age.
+const MinEventsAuditMaxAge = 24 * time.Hour
+
+// EventsRetentionConfig bounds how long the durable event log keeps
+// audit-only history. AuditMaxAge == 0 (the default) disables retention
+// entirely; any other value must be at least MinEventsAuditMaxAge. Only rows
+// whose type starts with "audit." and that are older than AuditMaxAge are
+// trimmed, and only as whole audit-only chunk prefixes or an audit-only tail
+// of a session with no other retained rows — user history is never trimmed.
+// The durable driver records a cumulative per-session summary of what was
+// trimmed and reports Bounds.truncated and ErrCursorTooOld for trimmed ranges.
+// Ignored by the inmem driver.
+type EventsRetentionConfig struct {
+	AuditMaxAge time.Duration `yaml:"audit_max_age,omitempty"`
 }
 
 // AuditConfig is owned by the audit subsystem.

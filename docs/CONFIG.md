@@ -1663,6 +1663,39 @@ platform guarantee. Migration-only processes that never publish events are not
 event writers. Once the v1.29.1 authority exists, later restarts do not require
 the acknowledgement.
 
+### events.retention.audit_max_age
+
+Opt-in audit-trail retention for the `durable` driver (D-493). Default: `0`
+(disabled — the durable log keeps everything). Validation: `0` or `>= 24h`.
+Restart-required. Ignored by the `inmem` driver.
+
+When set, a bounded background sweeper (every 15 minutes, ±10 % jitter) trims
+rows whose event type starts with `audit.` and whose `occurred_at` is older
+than `now − audit_max_age`:
+
+- whole sealed 256-row index chunks from the start of a session while every
+  row in the chunk qualifies (it stops at the first chunk that holds any
+  non-audit or recent row, so user history is never trimmed);
+- the unsealed tail of a session with no remaining sealed chunks when every
+  tail row qualifies (the one-row audit sessions that fresh-session admin
+  reads create).
+
+Each trim commits one header-plus-summary transaction (the cumulative
+per-session `events.durable.retention_summary` record) before any delete, and
+the sweeper verifies the chunk chain up to the cut first. Storage deletes are
+idempotent and throttled: at most 2,000 per pass, paced at 20 per second, so
+a large one-time backlog drains over several passes. Readers report the cut
+honestly: `Bounds` returns `truncated=true`, `Replay` from a cursor inside the
+trimmed range returns `ErrCursorTooOld`, list pages that reach the cut set
+`truncated`, and projection pages set `RetentionGap`. Example:
+
+```yaml
+events:
+  driver: durable
+  retention:
+    audit_max_age: 2160h   # 90 days
+```
+
 ---
 
 ## Audit (reserved)

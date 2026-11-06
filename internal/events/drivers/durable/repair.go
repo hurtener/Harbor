@@ -118,7 +118,13 @@ type legacyRepairHeadView struct {
 	record     state.StateRecord
 	head       headRecord
 	duplicates []LegacyRepairDuplicate
+	// v2 marks a chunked v2 index header (D-492). It is outside the legacy
+	// repair contract: reported as not_legacy_v2 and never mutated.
+	v2 bool
 }
+
+// legacyRepairOutcomeNotLegacyV2 reports a head already in the v2 format.
+const legacyRepairOutcomeNotLegacyV2 = "not_legacy_v2"
 
 // ValidateLegacyRepairApplyDSN rejects known transaction-pooled PostgreSQL
 // endpoints for mutation. Inspection may use a read-only pool, but apply must
@@ -220,6 +226,9 @@ func runLegacyRepair(ctx context.Context, store state.StateStore, opts LegacyRep
 		// remains; verify is the operator's post-apply proof boundary and must
 		// reject stale or forged evidence rather than reporting a clean scan.
 		for _, view := range views {
+			if view.v2 {
+				continue
+			}
 			if _, _, err := loadLegacyRepairReceipt(ctx, store, view.record, opts.ToolVersion); err != nil {
 				return report, err
 			}
@@ -308,6 +317,9 @@ func inspectLegacyRepairHead(ctx context.Context, store state.StateStore, rec st
 	}
 	if rec.Identity.RunID != "" {
 		return refuse("head storage RunID must be empty for a session-scoped durable head")
+	}
+	if isIndexV2(rec.Bytes) {
+		return legacyRepairHeadView{record: rec, v2: true}, nil
 	}
 	head, err := decodeHead(rec.Bytes)
 	if err != nil {
@@ -470,6 +482,10 @@ func applyLegacyRepairHeads(ctx context.Context, store state.StateStore, views [
 			fresh, err := inspectLegacyRepairHead(ctx, store, current)
 			if err != nil {
 				return err
+			}
+			if fresh.v2 {
+				// Migrated to v2 since the scan; outside the legacy contract.
+				continue
 			}
 			_, found, receiptErr := loadLegacyRepairReceipt(ctx, store, current, opts.ToolVersion)
 			if receiptErr != nil {
@@ -765,6 +781,9 @@ func buildAppliedLegacyRepairReport(ctx context.Context, store state.StateStore,
 		if err != nil {
 			return report, err
 		}
+		if latest.v2 {
+			continue
+		}
 		current = latest
 		receipt, found, err := loadLegacyRepairReceipt(ctx, store, current.record, toolVersion)
 		if err != nil {
@@ -823,6 +842,15 @@ func headIdentityHash(id identity.Quadruple) string {
 func buildLegacyRepairReport(mode LegacyRepairMode, toolVersion string, views []legacyRepairHeadView) LegacyRepairReport {
 	report := LegacyRepairReport{ToolVersion: toolVersion, Mode: mode, HeadsScanned: len(views)}
 	for _, view := range views {
+		if view.v2 {
+			report.Heads = append(report.Heads, LegacyRepairHead{
+				HeadIdentityHash:   headIdentityHash(view.record.Identity),
+				BeforeHeadHash:     sha256Hex(view.record.Bytes),
+				ExpectedGeneration: string(view.record.ID),
+				Outcome:            legacyRepairOutcomeNotLegacyV2,
+			})
+			continue
+		}
 		if len(view.duplicates) == 0 {
 			continue
 		}

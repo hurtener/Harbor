@@ -119,6 +119,9 @@ const (
 	metricGovernanceCacheLen     = "harbor_runtime_governance_cache_entries"
 	metricEventsDroppedTotal     = "harbor_runtime_events_dropped"
 	metricAsyncAdmissionFailures = "harbor_runtime_async_admission_failures"
+	// Durable event-index gauges (D-492/D-493).
+	metricEventsIndexIntegrityFailures = "harbor_events_index_integrity_failures_total"
+	metricEventsRetentionHeads         = "harbor_events_retention_heads"
 
 	// extraKeyProducer / extraKeyNode are the reserved events.Event.Extra
 	// keys RegisterEvent reads. The events.Event doc reserves Extra for
@@ -456,6 +459,12 @@ type RuntimeGaugeSource struct {
 	// AsyncAdmissionFailures — cumulative asynchronous observability events
 	// rejected by a full or closed bounded publication lane.
 	AsyncAdmissionFailures func() int64
+	// EventsIndexIntegrityFailures — cumulative durable event-index
+	// integrity failures (digest, chain or derived-field mismatches).
+	EventsIndexIntegrityFailures func() int64
+	// EventsRetentionHeads — session heads traversed by the latest
+	// audit-retention pass.
+	EventsRetentionHeads func() int64
 }
 
 // RegisterRuntimeGauges registers the runtime observable gauges from src
@@ -502,6 +511,12 @@ func (r *MetricsRegistry) RegisterRuntimeGauges(src RuntimeGaugeSource) error {
 		return err
 	}
 	if err := reg(metricAsyncAdmissionFailures, "Cumulative asynchronous observability admissions rejected by a full or closed publication lane.", src.AsyncAdmissionFailures); err != nil {
+		return err
+	}
+	if err := reg(metricEventsIndexIntegrityFailures, "Cumulative durable event-index integrity failures (digest, chain or derived-field mismatch).", src.EventsIndexIntegrityFailures); err != nil {
+		return err
+	}
+	if err := reg(metricEventsRetentionHeads, "Session heads traversed by the latest durable audit-retention pass.", src.EventsRetentionHeads); err != nil {
 		return err
 	}
 	return nil
