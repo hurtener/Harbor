@@ -105,7 +105,7 @@ fi
 if [[ "${POSTURE_LANDED}" = "1" ]]; then
     # Static guard: each of the five new method constants is declared in
     # the methods package.
-    for sym in 'MethodRuntimeInfo' 'MethodRuntimeHealth' 'MethodRuntimeCounters' 'MethodRuntimeDrivers' 'MethodMetricsSnapshot'; do
+    for sym in 'MethodRuntimeInfo' 'MethodRuntimeHealth' 'MethodRuntimeRetention' 'MethodRuntimeCounters' 'MethodRuntimeDrivers' 'MethodMetricsSnapshot'; do
         if grep -q "${sym} " "${METHODS_PKG}/methods.go" 2>/dev/null; then
             ok "phase 72f: ${METHODS_PKG}/methods.go declares ${sym}"
         else
@@ -115,7 +115,7 @@ if [[ "${POSTURE_LANDED}" = "1" ]]; then
 
     # Static guard: each of the six new wire types is declared in the
     # types package.
-    for sym in 'RuntimeInfoRequest' 'RuntimeInfo' 'RuntimeHealth' 'RuntimeCounters' 'RuntimeDrivers' 'MetricsSnapshot'; do
+    for sym in 'RuntimeInfoRequest' 'RuntimeInfo' 'RuntimeHealth' 'RuntimeRetention' 'RuntimeCounters' 'RuntimeDrivers' 'MetricsSnapshot'; do
         if grep -rn --include='*.go' "type ${sym} struct" "${TYPES_PKG}/" 2>/dev/null | grep -v '_test.go' | grep -q .; then
             ok "phase 72f: ${TYPES_PKG}/ declares type ${sym}"
         else
@@ -132,7 +132,7 @@ if [[ "${POSTURE_LANDED}" = "1" ]]; then
 
     # Static guard: the singlesource lockstep map carries the six new
     # entries.
-    for sym in 'RuntimeInfoRequest' 'RuntimeInfo' 'RuntimeHealth' 'RuntimeCounters' 'RuntimeDrivers' 'MetricsSnapshot'; do
+    for sym in 'RuntimeInfoRequest' 'RuntimeInfo' 'RuntimeHealth' 'RuntimeRetention' 'RuntimeCounters' 'RuntimeDrivers' 'MetricsSnapshot'; do
         if grep -q "\"${sym}\":" "${SINGLESOURCE_PKG}/singlesource.go" 2>/dev/null; then
             ok "phase 72f: singlesource.CanonicalWireTypes includes \"${sym}\""
         else
@@ -265,6 +265,35 @@ if command -v jq >/dev/null 2>&1 && [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
 fi
 
 probe_posture_method 'runtime.health'    'phase 72f: runtime.health responds 200'
+# Runtime-wide retention is an explicit admin diagnostic; ordinary liveness
+# remains events-only even when the caller carries admin.
+if command -v jq >/dev/null 2>&1 && [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
+    RETENTION_URL="$(api_url /v1/control/runtime.retention)"
+    retention_probe=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{}' "${RETENTION_URL}" || true)
+    if [[ "${retention_probe}" == "404" || "${retention_probe}" == "405" || "${retention_probe}" == "501" || "${retention_probe}" == "000" ]]; then
+        skip "phase 72f: runtime.retention not present (${retention_probe})"
+    else
+        assert_post_json_auth "${RETENTION_URL}" '{}' "${HARBOR_DEV_TOKEN}" \
+            '(.retention | length == 3) and all(.retention[]; .scope == "runtime") and ((.retention | map(.surface) | sort) == ["events","sessions","tasks"])' \
+            'phase 72f: admin retention has three runtime-scoped surfaces'
+        assert_post_json_auth "$(api_url /v1/control/runtime.health)" '{}' "${HARBOR_DEV_TOKEN}" \
+            '(.subsystems | type == "array") and (.retention | length == 1 and .[0].surface == "events" and .[0].scope == "runtime")' \
+            'phase 72f: admin health returns only the cached events horizon'
+        for scopes in '[]' '["console:fleet"]'; do
+            lesser_result=$(curl -fsS --max-time 5 -X POST -H 'Content-Type: application/json' \
+                --data "{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"dev\",\"scopes\":${scopes}}" \
+                "$(api_url /v1/dev/bootstrap.json)" 2>/dev/null) || lesser_result='{}'
+            lesser_token=$(printf '%s' "${lesser_result}" | jq -r '.token // empty')
+            if [[ -n "${lesser_token}" ]]; then
+                assert_post_status_auth 403 "${RETENTION_URL}" '{}' "${lesser_token}" \
+                    "phase 72f: retention refuses non-admin scopes ${scopes}"
+            else
+                skip 'phase 72f: lesser-scope bootstrap unavailable'
+            fi
+        done
+    fi
+fi
+
 probe_posture_method 'runtime.counters'  'phase 72f: runtime.counters responds 200'
 probe_posture_method 'runtime.drivers'   'phase 72f: runtime.drivers responds 200'
 probe_posture_method 'metrics.snapshot'  'phase 72f: metrics.snapshot responds 200'

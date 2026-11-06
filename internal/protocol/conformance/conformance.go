@@ -753,10 +753,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 153 methods; keep the explicit
+	// The canonical list currently contains 154 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 153 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 153 (including explicit session-context reconciliation)", len(got))
+	if len(got) != 154 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 154 (including explicit session-context reconciliation and admin-only runtime retention)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -778,6 +778,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSearchArtifacts:     {},
 		methods.MethodRuntimeInfo:         {},
 		methods.MethodRuntimeHealth:       {},
+		methods.MethodRuntimeRetention:    {},
 		methods.MethodRuntimeCounters:     {},
 		methods.MethodRuntimeDrivers:      {},
 		methods.MethodMetricsSnapshot:     {},

@@ -34,6 +34,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSearchArtifacts,
 	methods.MethodRuntimeInfo,
 	methods.MethodRuntimeHealth,
+	methods.MethodRuntimeRetention,
 	methods.MethodRuntimeCounters,
 	methods.MethodRuntimeDrivers,
 	methods.MethodMetricsSnapshot,
@@ -225,9 +226,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// read pair (sessions.turns.list + sessions.turns.get) = 138, plus the
 	// observability administrative read (observability.query) = 139, plus
 	// HA-68 same-runtime skill publications ten = 151, plus the user live
-	// profile reconciliation verb = 152.
-	if len(got) != 153 {
-		t.Fatalf("Methods() returned %d methods, want 153", len(got))
+	// profile reconciliation verb = 152, explicit session-context
+	// reconciliation = 153, and admin-only runtime retention = 154.
+	if len(got) != 154 {
+		t.Fatalf("Methods() returned %d methods, want 154", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -279,6 +281,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodSearchArtifacts:     "search.artifacts",
 		methods.MethodRuntimeInfo:         "runtime.info",
 		methods.MethodRuntimeHealth:       "runtime.health",
+		methods.MethodRuntimeRetention:    "runtime.retention",
 		methods.MethodRuntimeCounters:     "runtime.counters",
 		methods.MethodRuntimeDrivers:      "runtime.drivers",
 		methods.MethodMetricsSnapshot:     "metrics.snapshot",
@@ -667,6 +670,7 @@ func TestIsPostureMethod(t *testing.T) {
 	for _, m := range []methods.Method{
 		methods.MethodRuntimeInfo,
 		methods.MethodRuntimeHealth,
+		methods.MethodRuntimeRetention,
 		methods.MethodRuntimeCounters,
 		methods.MethodRuntimeDrivers,
 		methods.MethodMetricsSnapshot,

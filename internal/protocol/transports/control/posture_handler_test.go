@@ -7,7 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -98,7 +103,7 @@ func TestPostureHandler_HappyPath_DispatchesToPostureSurface(t *testing.T) {
 func TestPostureHandler_AllFiveMethodsRoute(t *testing.T) {
 	t.Parallel()
 	for _, m := range []methods.Method{
-		methods.MethodRuntimeInfo, methods.MethodRuntimeHealth,
+		methods.MethodRuntimeInfo, methods.MethodRuntimeHealth, methods.MethodRuntimeRetention,
 		methods.MethodRuntimeCounters, methods.MethodRuntimeDrivers,
 		methods.MethodMetricsSnapshot,
 	} {
@@ -348,3 +353,50 @@ func TestPostureHandler_MalformedBody_RejectsInvalidRequest(t *testing.T) {
 		t.Fatalf("malformed body: status %d, want 400", httpResp.StatusCode)
 	}
 }
+
+// Runtime-wide reads never need a target tenant. Rejecting the override through
+// the shared pinned policy prevents a crossing audit before health dispatch or
+// an extra crossing audit before the retention method's one admin audit.
+func TestPostureHandler_RuntimeWideReads_PinIdentityWithoutAudit(t *testing.T) {
+	for _, method := range []methods.Method{methods.MethodRuntimeHealth, methods.MethodRuntimeRetention} {
+		for _, scope := range []auth.Scope{auth.ScopeAdmin, auth.ScopeConsoleFleet} {
+			t.Run(string(method)+"/"+string(scope), func(t *testing.T) {
+				called := false
+				audit := &postureAuditCounter{}
+				cs, cleanup := newTestSurface(t)
+				defer cleanup()
+				h, err := control.NewHandler(cs, control.WithPostureSurface(&recordingPosture{called: &called}), control.WithEventBus(audit), control.WithRedactor(auditpatterns.New()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, err := identity.WithVerified(t.Context(), identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx = auth.WithScopes(withControlTestReach(ctx), []auth.Scope{scope})
+				req := httptest.NewRequest(http.MethodPost, "/v1/control/"+string(method), strings.NewReader(`{"identity":{"tenant":"other","user":"u1","session":"s1"}}`)).WithContext(ctx)
+				rec := httptest.NewRecorder()
+				mux := http.NewServeMux()
+				mux.Handle(control.RoutePattern, h)
+				mux.ServeHTTP(rec, req)
+				if rec.Code != http.StatusUnauthorized || called || audit.calls != 0 {
+					t.Fatalf("status=%d dispatch=%v audit=%d body=%s", rec.Code, called, audit.calls, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+type recordingPosture struct{ called *bool }
+
+func (s *recordingPosture) Dispatch(context.Context, methods.Method, any) (any, error) {
+	*s.called = true
+	return &types.RuntimeHealth{}, nil
+}
+
+type postureAuditCounter struct {
+	events.EventBus
+	calls int
+}
+
+func (s *postureAuditCounter) Publish(context.Context, events.Event) error { s.calls++; return nil }

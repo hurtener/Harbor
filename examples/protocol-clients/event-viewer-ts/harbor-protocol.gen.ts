@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:42b2d61c6778484ca66028e25a0ffc5837d1e6e4332657fff518a84e3c1a4ef0";
+export const WIRE_SURFACE_DIGEST = "sha256:a2bb1b392d6de76359325e326b0e1858ac0813195428b115f16f682d340c7e71";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -139,6 +139,7 @@ export type HarborMethod =
   | "runtime.drivers"
   | "runtime.health"
   | "runtime.info"
+  | "runtime.retention"
   | "search.artifacts"
   | "search.events"
   | "search.query"
@@ -2859,6 +2860,10 @@ export interface RuntimeInfoRequest {
   provider_max_pages?: number;
   provider_route?: LLMProviderRouteSelector;
   provider_agent_id?: string;
+}
+
+export interface RuntimeRetention {
+  retention: RetentionHorizon[];
 }
 
 export interface SearchArtifactRef {

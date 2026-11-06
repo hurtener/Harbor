@@ -361,6 +361,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"RuntimeCounters":                                   reflect.TypeOf(types.RuntimeCounters{}),
 	"RuntimeDrivers":                                    reflect.TypeOf(types.RuntimeDrivers{}),
 	"RuntimeHealth":                                     reflect.TypeOf(types.RuntimeHealth{}),
+	"RuntimeRetention":                                  reflect.TypeOf(types.RuntimeRetention{}),
 	"RetentionHorizon":                                  reflect.TypeOf(types.RetentionHorizon{}),
 	"RuntimeInfo":                                       reflect.TypeOf(types.RuntimeInfo{}),
 	"ExternalGrantReadiness":                            reflect.TypeOf(types.ExternalGrantReadiness{}),

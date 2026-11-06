@@ -80,7 +80,6 @@ var crossTenantProbes = map[methods.Method]crossTenantProbe{
 	methods.MethodSearchEvents:      {body: searchProbeBody},
 	methods.MethodSearchArtifacts:   {body: searchProbeBody},
 	methods.MethodRuntimeInfo:       {body: postureProbeBody},
-	methods.MethodRuntimeHealth:     {body: postureProbeBody},
 	methods.MethodRuntimeCounters:   {body: postureProbeBody},
 	methods.MethodRuntimeDrivers:    {body: postureProbeBody},
 	methods.MethodMetricsSnapshot:   {body: postureProbeBody},

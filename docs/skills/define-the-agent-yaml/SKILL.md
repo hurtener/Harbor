@@ -283,6 +283,12 @@ The scaffold drops a commented summary of advanced defaults. The full reference 
 - **`tasks`**: `driver` (`inprocess` or `durable`). `inprocess` (default) keeps task/group/patch state in memory — a restart starts empty. `durable` persists those records through the `StateStore` so they survive a restart; on open it replays them and recovers any task left `running` by a crash to `failed` (code `runtime_restarted`). It reuses the runtime `StateStore`, so pair it with a durable `state.driver` (`sqlite` / `postgres`) for cross-process survival; selecting `durable` with no store wired fails loudly at boot.
 - **`distributed`**: `bus_driver` (`loopback` or `durable`) + `remote_driver` (`loopback` only in V1.1; A2A wire is post-V1). `loopback` is in-process; `durable` persists every `BusEnvelope` through the `StateStore` and projects it onto the local event bus, with a poller for cross-instance fan-out + restart-replay (StateStore-backed — Postgres-as-queue on a shared Postgres store; tune with `bus_poll_interval`). NATS / Redis Streams remain future drivers.
 
+Observed retention horizons are inspection data, not configured retention
+promises. `runtime.health` reads only the cached runtime-wide events horizon
+for every caller. Inspect events, tasks and sessions together through the
+explicit, audited `runtime.retention` call with verified `admin` authority;
+`console:fleet` and trust-mode callers cannot use it (D-490).
+
 ## Validation — the loud loop
 
 ```bash

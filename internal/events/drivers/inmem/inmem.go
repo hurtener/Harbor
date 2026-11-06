@@ -477,6 +477,9 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	generation, admitted := b.generationForAdmission(prepared.Identity.Identity)
 	if !admitted {
 		b.logFencedDrop(ctx, prepared)
+		if events.RequiresPublication(prepared) {
+			return fmt.Errorf("inmem: required audit publication: %w", events.ErrPublicationFenced)
+		}
 		return nil
 	}
 	return b.ordered.PublishWithGeneration(ctx, prepared, generation)
@@ -514,6 +517,11 @@ func (b *bus) PublishBatch(ctx context.Context, batch []events.Event) error {
 		for _, ev := range prepared {
 			b.logFencedDrop(ctx, ev)
 		}
+		for _, ev := range batch {
+			if events.RequiresPublication(ev) {
+				return fmt.Errorf("inmem: required audit publication: %w", events.ErrPublicationFenced)
+			}
+		}
 		return nil
 	}
 	return b.ordered.PublishBatchWithGeneration(ctx, prepared, generation)
@@ -550,6 +558,11 @@ func (b *bus) PersistBatch(ctx context.Context, batch []events.Event) error {
 		for _, ev := range prepared {
 			b.logFencedDrop(ctx, ev)
 		}
+		for _, ev := range batch {
+			if events.RequiresPublication(ev) {
+				return fmt.Errorf("inmem: required audit publication: %w", events.ErrPublicationFenced)
+			}
+		}
 		return nil
 	}
 	return b.ordered.PersistBatchWithGeneration(ctx, prepared, generation)
@@ -570,6 +583,9 @@ func (b *bus) PublishAsync(ctx context.Context, ev events.Event) error {
 	generation, admitted := b.generationForAdmission(prepared.Identity.Identity)
 	if !admitted {
 		b.logFencedDrop(ctx, prepared)
+		if events.RequiresPublication(prepared) {
+			return fmt.Errorf("inmem: required audit publication: %w", events.ErrPublicationFenced)
+		}
 		return nil
 	}
 	return b.ordered.PublishAsyncWithGeneration(ctx, prepared, generation)
@@ -609,6 +625,9 @@ func (b *bus) preparePublish(ctx context.Context, ev events.Event) (events.Event
 	}
 	if b.isFenced(ev.Identity) {
 		b.logFencedDrop(ctx, ev)
+		if events.RequiresPublication(ev) {
+			return events.Event{}, false, events.ErrPublicationFenced
+		}
 		return events.Event{}, false, nil
 	}
 	payload := ev.Payload
@@ -640,6 +659,11 @@ func (b *bus) commitBatch(ctx context.Context, batch []events.Event, generation 
 		for _, ev := range batch {
 			b.logFencedDrop(ctx, ev)
 		}
+		for _, ev := range batch {
+			if events.RequiresPublication(ev) {
+				return fmt.Errorf("inmem: required audit publication: %w", events.ErrPublicationFenced)
+			}
+		}
 		return nil
 	}
 	if uint64(len(batch)) > ^uint64(0)-b.nextSeq {
@@ -670,6 +694,11 @@ func (b *bus) commitPersistBatch(ctx context.Context, batch []events.Event, gene
 		b.publishMu.Unlock()
 		for _, ev := range batch {
 			b.logFencedDrop(ctx, ev)
+		}
+		for _, ev := range batch {
+			if events.RequiresPublication(ev) {
+				return fmt.Errorf("inmem: required audit publication: %w", events.ErrPublicationFenced)
+			}
 		}
 		return nil
 	}

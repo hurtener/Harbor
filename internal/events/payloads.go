@@ -44,7 +44,13 @@ type AdminScopeUsedPayload struct {
 	User         string
 	Session      string
 	SubscriberID uint64
+	// Method identifies an admin read when this event is not a subscription.
+	Method string `json:"method,omitempty"`
 }
+
+// RequiresPublication makes explicit admin reads fail if session erasure would
+// discard their audit. Subscription notices retain their existing semantics.
+func (p AdminScopeUsedPayload) RequiresPublication() bool { return p.Method != "" }
 
 // RuntimeErrorPayload is the bus-side projection of a Logger.Error
 // call. The telemetry/eventbus adapter constructs one of these from

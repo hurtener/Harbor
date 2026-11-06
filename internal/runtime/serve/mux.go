@@ -376,8 +376,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		Health: func(_ context.Context) []types.SubsystemHealth {
 			return runtimeposture.HealthFromConfig(cfg)
 		},
-		Retention: runtimeposture.RetentionProvider(bus, in.Tasks, in.Sessions),
-		Counters:  runtimeposture.CountersProvider(in.Tasks, in.Sessions, in.MCPRegistry),
+		EventsHorizon:    runtimeposture.EventsHorizonProvider(bus),
+		RuntimeRetention: runtimeposture.RuntimeRetentionProvider(bus, in.Tasks, in.Sessions),
+		Counters:         runtimeposture.CountersProvider(in.Tasks, in.Sessions, in.MCPRegistry),
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},

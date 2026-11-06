@@ -417,7 +417,7 @@ func TestPostureDispatch_RuntimeHealth_NoRetentionSeam_OmitsBlock(t *testing.T) 
 func TestPostureDispatch_RuntimeHealth_RetentionSeam_Surfaces(t *testing.T) {
 	deps := basePostureDeps(t)
 	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	deps.Retention = func(_ context.Context, _ identity.Identity, _ bool) []types.RetentionHorizon {
+	deps.EventsHorizon = func(_ context.Context) []types.RetentionHorizon {
 		return []types.RetentionHorizon{{Surface: "events", Scope: types.RetentionScopeRuntime, OldestRetainedAt: &at}}
 	}
 	s, err := protocol.NewPostureSurface(deps)

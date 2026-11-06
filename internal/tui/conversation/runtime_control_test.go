@@ -25,6 +25,8 @@ func TestController_RuntimeInspectionAndCanonicalActions(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/control/runtime.info":
 			value = types.RuntimeInfo{InstanceID: "runtime", ProtocolVersion: types.ProtocolVersion, WireSurfaceDigest: "digest", Capabilities: []types.Capability{types.CapTaskControl, types.CapToolAnnotations}}
+		case "/v1/control/runtime.retention":
+			value = types.RuntimeRetention{Retention: []types.RetentionHorizon{{Surface: "events", Scope: types.RetentionScopeRuntime}}}
 		case "/v1/control/runtime.health":
 			value = types.RuntimeHealth{Subsystems: []types.SubsystemHealth{}}
 		case "/v1/control/runtime.counters":

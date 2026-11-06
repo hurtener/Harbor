@@ -13,6 +13,7 @@ type State struct {
 	Surfaces   map[string]surface.State
 	Info       types.RuntimeInfo
 	Health     types.RuntimeHealth
+	Retention  *types.RuntimeRetention
 	Counters   types.RuntimeCounters
 	Drivers    types.RuntimeDrivers
 	Metrics    types.MetricsSnapshot

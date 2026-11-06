@@ -349,6 +349,14 @@ type Event struct {
 	Extra      map[string]string
 }
 
+// RequiresPublication reports whether dropping ev would violate its caller's
+// success contract. Required audit payloads opt in; ordinary late events keep
+// the session erasure policy of being discarded without failing the publisher.
+func RequiresPublication(ev Event) bool {
+	payload, ok := ev.Payload.(interface{ RequiresPublication() bool })
+	return ok && payload.RequiresPublication()
+}
+
 // Filter is the server-enforced subscription predicate. Subscribe
 // rejects filters that elide the identity triple (Tenant + User +
 // Session) unless Admin is set. When Admin is set with a partial
@@ -500,6 +508,8 @@ type Subscription interface {
 // embedders that provide only this durable core remain source-compatible;
 // callers that need animation must explicitly test for that capability.
 type EventBus interface {
+	// Publish must return an error if RequiresPublication(ev) is true and
+	// erasure prevents committing the event; success must never mean a drop.
 	Publish(ctx context.Context, ev Event) error
 	Subscribe(ctx context.Context, f Filter) (Subscription, error)
 	Close(ctx context.Context) error
@@ -967,6 +977,9 @@ var (
 	// ErrInvalidEvent — Event failed structural validation (empty
 	// identity triple, missing Payload, etc.).
 	ErrInvalidEvent = errors.New("events: invalid event")
+	// ErrPublicationFenced reports that erasure prevented a required audit from
+	// committing. A caller must not report success without that audit.
+	ErrPublicationFenced = errors.New("events: required publication fenced by session erasure")
 	// ErrIdentityRequired — Publish event identity is missing the
 	// triple. Wraps identity.ErrIdentityIncomplete in spirit; bus-side
 	// rejection happens before any redaction or queueing.

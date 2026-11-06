@@ -44,7 +44,7 @@ import type {
 	EventsListRequest,
 	EventsListResponse
 } from './events.js';
-import type { RuntimeCounters, RuntimeHealth, MetricsSnapshot } from './posture.js';
+import type { RuntimeCounters, RuntimeHealth, RuntimeRetention, MetricsSnapshot } from './posture.js';
 import type { PauseListRequest, PauseListResponse } from './pause.js';
 import type { SearchRequest, SearchResponse } from './search.js';
 import type { StateHistoryRequest, StateHistoryResponse } from './state.js';
@@ -1167,7 +1167,12 @@ export class RuntimeNamespace {
 	counters(): Promise<RuntimeCounters> {
 		return this.#t.request<RuntimeCounters>('/v1/control/runtime.counters', {});
 	}
-	/** `runtime.health` — the per-subsystem readiness rollup. */
+	/** `runtime.retention` — admin-only audited retention snapshot. */
+	retention(): Promise<RuntimeRetention> {
+		return this.#t.request<RuntimeRetention>('/v1/control/runtime.retention', {});
+	}
+
+	/** `runtime.health` — cached readiness and events horizon. */
 	health(): Promise<RuntimeHealth> {
 		return this.#t.request<RuntimeHealth>('/v1/control/runtime.health', {});
 	}

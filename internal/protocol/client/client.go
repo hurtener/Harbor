@@ -146,6 +146,7 @@ func (e *ProtocolError) Unwrap() error { return e.Cause }
 type Client interface {
 	RuntimeInfo(context.Context) (types.RuntimeInfo, error)
 	RuntimeHealth(context.Context) (types.RuntimeHealth, error)
+	RuntimeRetention(context.Context) (types.RuntimeRetention, error)
 	Start(context.Context, types.StartRequest) (types.StartResponse, error)
 	TasksList(context.Context, types.TaskListRequest) (types.TaskListResponse, error)
 	TasksGet(context.Context, types.TaskGetRequest) (types.TaskDetail, error)
@@ -446,6 +447,13 @@ func (c *client) runtimeInfo(ctx context.Context, agentID string) (types.Runtime
 func (c *client) RuntimeHealth(ctx context.Context) (types.RuntimeHealth, error) {
 	var out types.RuntimeHealth
 	err := c.callMethod(ctx, methods.MethodRuntimeHealth, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// RuntimeRetention reads audited runtime-wide horizons; the server requires admin.
+func (c *client) RuntimeRetention(ctx context.Context) (types.RuntimeRetention, error) {
+	var out types.RuntimeRetention
+	err := c.callMethod(ctx, methods.MethodRuntimeRetention, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
 	return out, err
 }
 
