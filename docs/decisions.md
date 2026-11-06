@@ -16375,3 +16375,91 @@ run-start reconcile stability, absent-slot cycles on real drivers, erased-sessio
 refusal on hits and conditional reads, follower cancellation, known-empty
 discovery, annotation-facet refusal, one entry per principal, cross-principal
 isolation, the ABA guard, and 450-tool conditional paging.
+
+---
+
+## D-492 — Chunked durable event index with a chained SHA-256
+
+**Date:** 2026-11-06. **Scope:** Durable event-log storage format (forward-only);
+no wire change.
+
+The durable driver's per-session `events.durable.head` record was one mutable
+document holding every sequence plus routing metadata, rewritten under the
+publish lock on every append. Its cost grew with history: about 20 MB and
+seconds per append on long-lived audit sessions. The head becomes a small v2
+header: the magic `HXIDX2\n` followed by JSON carrying the unsealed tail (at
+most 256 rows), bounds (`retained_count`, `first_seq`, `last_seq`,
+`oldest_occurred_at`), the trimmed range, and two chain anchors. History moves
+into immutable `events.durable.chunk/<index>` records of exactly 256 compact
+rows under the same session key, so `DeleteScope` still erases everything and
+the head scan never loads chunks. A publish reads and writes one small header
+plus one chunk every 256 events, in the same single conditional transaction as
+before; the commit probe and sequence authority are unchanged.
+
+Integrity covers every routing field. A chunk digest is SHA-256 over its
+predecessor's digest and its index, first/last sequence, min/max OccurredAt
+and rows; readers also recompute those fields from the rows. The header's
+`sealed_digest` authenticates the newest chunk, `base_digest` the oldest
+chunk's predecessor, and `header_digest` every header field including the
+tail. Readers walk back from the tail through the chain. Any mismatch is
+`ErrIndexIntegrity`: that session's read or publish fails loudly, the
+`harbor_events_index_integrity_failures_total` gauge moves, other sessions are
+unaffected, and nothing is re-derived on read. Repair is an operator restore;
+online chunk repair is a non-goal.
+
+Legacy heads migrate lazily. Publish converts a legacy head of at most 1,024
+rows inside its own transaction; a larger one keeps appending in the legacy
+format and nudges an always-on background migrator (two minutes after boot,
+then hourly, smallest heads first). The migrator authenticates the head against
+bodies when needed, pre-writes the deterministic chunks expected-absent in
+batches of 16 outside the publish lock (byte-identical slots are reused), then
+flips with one small header CAS conditioned on the legacy generation, retried
+when a concurrent legacy append wins. A failure leaves the session fully legacy
+and backs off per session (1 h doubling to 24 h); there is no retry on the
+publish path. Readers reload the header when a chunk or body disappears mid-read
+and classify the miss as trimmed (D-493) or a genuine gap. The legacy repair
+command reports v2 heads as `not_legacy_v2` and never mutates them.
+
+Binaries below v1.37.0 cannot decode a v2 header and fail closed: their
+publishes and reads of a migrated session error before writing, and their boot
+recovery fails. Rollback is a restore of the snapshot taken before the upgrade.
+**Cross-references:** RFC §6.13; D-074, D-415, D-493.
+
+---
+
+## D-493 — Opt-in audit-trail retention with a cumulative summary
+
+**Date:** 2026-11-06. **Scope:** New `events.retention.audit_max_age` config
+(default off); durable driver only.
+
+`events.retention.audit_max_age` (default `0` = disabled; otherwise at least
+`24h`; restart-required) bounds how long the durable log keeps audit-only
+history. Only rows whose type starts with `audit.` and that are older than the
+cutoff qualify. A sweeper on the bus's maintenance goroutine (every 15 minutes,
+±10 % jitter) trims whole sealed chunks from the start of a session while every
+row qualifies, and — when no sealed chunk remains — a fully qualifying tail,
+which removes the one-row audit sessions that fresh-session admin reads create.
+A session is never trimmed past a non-audit row, so user history is kept. The
+header keeps `last_seq`, so sequence authority and boot recovery are untouched.
+
+Before trimming, the sweeper verifies the chain from `base_digest` through the
+cut and the derived fields of every chunk it trims; an integrity failure aborts
+that session. It then commits the new header and a cumulative
+`events.durable.retention_summary` record (counts by type, first/last trimmed
+sequence and time, chain anchor, policy, passes) in one conditional
+transaction, before any delete. Deletes are idempotent (exact-generation
+`DeleteIf`), re-check that each record lies inside the trimmed range (sequences
+are never reused, so a re-created session is untouched), and are budgeted at
+2,000 per pass, paced at 20 per second. Records still present after a crash are
+found from the header's cleanup marker and removed on a later pass. The
+traversal is a complete head scan in a deterministic order with an in-memory
+resume point, so a budget-limited pass continues where it stopped. The
+`harbor_events_retention_heads` gauge reports the traversal size.
+
+Readers report the cut: `Bounds` returns `truncated=true`, `Replay` from a
+cursor inside the trimmed range returns `ErrCursorTooOld`, list pages that reach
+the cut set `truncated`, and projection pages set `RetentionGap` for a cursor
+before it. A trim racing a read gives the same outcomes, never a gap error. The
+retention horizon can now move later; it is recomputed from the headers after a
+complete pass. Harbor's default stays off; operators opt in per runtime.
+**Cross-references:** RFC §6.13; D-492.

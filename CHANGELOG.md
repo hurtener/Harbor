@@ -17,6 +17,53 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Changed
+
+- The durable event driver stores each session's routing index as a small
+  magic-prefixed header plus immutable 256-row chunks chained by SHA-256 over
+  every routing field (D-492). A publish rewrites only the header and seals one
+  chunk every 256 events, so append cost no longer grows with history (a
+  session retaining 200k events publishes as fast as one retaining 1k), and
+  the publish lock is no longer held across a whole-history rewrite. Readers
+  verify the chain; a digest, link or derived-field mismatch fails that
+  session's read or publish with `ErrIndexIntegrity` and moves the new
+  `harbor_events_index_integrity_failures_total` gauge. Existing sessions
+  migrate lazily: inline on publish up to 1,024 rows, otherwise through an
+  always-on background migrator (two minutes after boot, then hourly) that
+  pre-writes chunks outside the publish lock and flips with one header CAS.
+  The legacy repair command reports migrated heads as `not_legacy_v2`.
+
+### Added
+
+- Opt-in audit-trail retention: `events.retention.audit_max_age` (default `0`,
+  disabled; otherwise at least `24h`) trims aged `audit.*` rows from the
+  durable log — whole audit-only chunk prefixes, and the audit-only tail of a
+  session with no remaining sealed chunk — never user history (D-493). Each
+  trim verifies the chunk chain, commits the header and a cumulative
+  per-session `events.durable.retention_summary` record before any delete, and
+  deletes at most 2,000 records per 15-minute pass at 20 per second. `Bounds`
+  reports `truncated=true`, `Replay` inside the trimmed range returns
+  `ErrCursorTooOld`, list pages set `truncated`, and projection pages set
+  `RetentionGap`. New gauge `harbor_events_retention_heads`.
+
+### Upgrade notes
+
+- **Forward-only storage change.** Each durable-log session migrates to the v2
+  index once. Binaries below this release cannot decode a migrated header: their
+  publishes and reads of a migrated session fail loudly before writing, and their
+  boot recovery fails. They cannot corrupt it, but a rolling deploy's old
+  instance errors on migrated sessions until it stops.
+- **Snapshot the StateStore database before upgrading.** Rollback means
+  restoring that snapshot; there is no dual-read release and no downgrade path
+  for migrated sessions.
+- **Canary first on a Postgres-backed runtime** (an in-memory store has nothing
+  to migrate), let the background migrator finish (look for the
+  `durable: index migration pass` log line with `failed=0`), then roll out the
+  rest.
+- Audit retention stays off unless `events.retention.audit_max_age` is set. A
+  large existing audit backlog drains over several passes (about 2,000 deleted
+  records per 15 minutes).
+
 ## [1.36.0] — 2026-11-06
 
 ### Added
