@@ -18,6 +18,7 @@ var ErrReceiverSinkRefused = errors.New("mcp: receiver credential destination re
 // which intentionally treats :80 and :443 alike for older config matching.
 type receiverSinkPolicy struct {
 	endpoint *url.URL
+	parseErr error
 	allowed  []string
 	signed   bool
 }
@@ -25,16 +26,17 @@ type receiverSinkPolicy struct {
 // newReceiverSinkPolicy is shared by construction-time admission and every
 // actual HTTP attempt, so neither path can weaken scheme or exact-port checks.
 func newReceiverSinkPolicy(cfg Config) receiverSinkPolicy {
-	endpoint, _ := url.Parse(cfg.URL)
-	return receiverSinkPolicy{endpoint: endpoint, allowed: append([]string(nil), cfg.Injection.Provider.AllowedDownstreamHosts()...), signed: cfg.OwnedInjectionProvider != nil}
+	endpoint, err := url.Parse(cfg.URL)
+	return receiverSinkPolicy{endpoint: endpoint, parseErr: err, allowed: append([]string(nil), cfg.Injection.Provider.AllowedDownstreamHosts()...), signed: cfg.OwnedInjectionProvider != nil}
 }
 
 func receiverAuthority(u *url.URL) string {
 	port := u.Port()
 	if port == "" {
-		if u.Scheme == "https" {
+		switch u.Scheme {
+		case "https":
 			port = "443"
-		} else if u.Scheme == "http" {
+		case "http":
 			port = "80"
 		}
 	}
@@ -51,12 +53,15 @@ func receiverLoopback(u *url.URL) bool {
 }
 
 func (p receiverSinkPolicy) validate(u *url.URL) error {
+	if p.parseErr != nil {
+		return fmt.Errorf("%w: malformed configured destination", ErrReceiverSinkRefused)
+	}
 	if u == nil || u.Hostname() == "" || u.User != nil || u.Opaque != "" || u.Fragment != "" {
 		return fmt.Errorf("%w: malformed destination", ErrReceiverSinkRefused)
 	}
 	// HTTP is retained only for an originally configured loopback HTTP endpoint.
 	// Even loopback cannot turn an HTTPS connection into a plaintext one.
-	if u.Scheme != "https" && !(u.Scheme == "http" && p.endpoint != nil && p.endpoint.Scheme == "http" && receiverLoopback(p.endpoint) && receiverLoopback(u)) {
+	if u.Scheme != "https" && (u.Scheme != "http" || p.endpoint == nil || p.endpoint.Scheme != "http" || !receiverLoopback(p.endpoint) || !receiverLoopback(u)) {
 		return fmt.Errorf("%w: destination requires HTTPS", ErrReceiverSinkRefused)
 	}
 	if p.signed && (p.endpoint == nil || u.Scheme != p.endpoint.Scheme || receiverAuthority(u) != receiverAuthority(p.endpoint)) {

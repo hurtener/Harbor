@@ -767,7 +767,7 @@ func (p *Provider) Connect(ctx context.Context) error {
 		mode == TransportStreamableHTTP &&
 		p.cfg.URL != "" &&
 		classifyConnectError(firstErr) &&
-		!(p.cfg.Injection != nil && p.cfg.Injection.AuthenticatePreparation && p.cfg.Injection.Form == InjectionFormMeta)
+		(p.cfg.Injection == nil || !p.cfg.Injection.AuthenticatePreparation || p.cfg.Injection.Form != InjectionFormMeta)
 	if !autoFallback {
 		return fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
 	}

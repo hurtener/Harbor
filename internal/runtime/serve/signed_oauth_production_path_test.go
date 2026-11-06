@@ -85,13 +85,14 @@ func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 	if receiverForm != "" {
 		injection = &agentcfg.MCPCredentialInjectionDescriptor{Provider: providerName, Form: receiverForm, AuthenticatePreparation: true}
 		wireInjection = &prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: providerName, Form: receiverForm, AuthenticatePreparation: true}
-		if receiverForm == config.MCPInjectionFormHeader {
+		switch receiverForm {
+		case config.MCPInjectionFormHeader:
 			headerName, downstreamAuth = "X-Receiver-Api-Key", downstreamBearer
 			injection.Header, wireInjection.Header = headerName, headerName
-		} else if receiverForm == config.MCPInjectionFormMeta {
+		case config.MCPInjectionFormMeta:
 			downstreamAuth = downstreamBearer
 			injection.MetaKey, wireInjection.MetaKey = "receiver.api_key", "receiver.api_key"
-		} else {
+		default:
 			downstreamAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte("service:"+downstreamBearer))
 			injection.BasicUsername, wireInjection.BasicUsername = "service", "service"
 		}
