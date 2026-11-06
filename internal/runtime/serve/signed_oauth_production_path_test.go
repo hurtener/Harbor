@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -65,7 +64,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 }
 
 func TestRegisterOAuthMCPCapability_ReceiverPreparationProductionPath(t *testing.T) {
-	for _, form := range []string{config.MCPInjectionFormHeader, config.MCPInjectionFormBasic} {
+	for _, form := range []string{config.MCPInjectionFormHeader, config.MCPInjectionFormBasic, config.MCPInjectionFormMeta} {
 		t.Run(form, func(t *testing.T) { testSignedPreparationProductionPath(t, form) })
 	}
 }
@@ -89,6 +88,9 @@ func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 		if receiverForm == config.MCPInjectionFormHeader {
 			headerName, downstreamAuth = "X-Receiver-Api-Key", downstreamBearer
 			injection.Header, wireInjection.Header = headerName, headerName
+		} else if receiverForm == config.MCPInjectionFormMeta {
+			downstreamAuth = downstreamBearer
+			injection.MetaKey, wireInjection.MetaKey = "receiver.api_key", "receiver.api_key"
 		} else {
 			downstreamAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte("service:"+downstreamBearer))
 			injection.BasicUsername, wireInjection.BasicUsername = "service", "service"
@@ -100,6 +102,7 @@ func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 
 	catalog := tools.NewCatalog()
 	var mcpRequests atomic.Int64
+	var wrongPathRequests atomic.Int64
 	var catalogVisibleDuringPrepare atomic.Bool
 	var requestMu sync.Mutex
 	methods := make(map[string]int)
@@ -124,6 +127,9 @@ func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpServer }, nil)
 	authenticatedMCP := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/mcp" {
+			if req.URL.Path == "/missing-mcp" {
+				wrongPathRequests.Add(1)
+			}
 			http.NotFound(w, req)
 			return
 		}
@@ -136,17 +142,25 @@ func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		var message struct {
 			Method string `json:"method"`
+			Params struct {
+				Meta map[string]any `json:"_meta"`
+			} `json:"params"`
 		}
 		_ = json.Unmarshal(body, &message)
+		authValue := req.Header.Get(headerName)
+		if receiverForm == config.MCPInjectionFormMeta {
+			nested, _ := message.Params.Meta["receiver"].(map[string]any)
+			authValue, _ = nested["api_key"].(string)
+		}
 		mcpRequests.Add(1)
 		requestMu.Lock()
 		methods[message.Method]++
-		authHeaders[message.Method] = append(authHeaders[message.Method], req.Header.Get(headerName))
+		authHeaders[message.Method] = append(authHeaders[message.Method], authValue)
 		requestMu.Unlock()
 		if _, ok := catalog.Resolve(physicalName + "_echo"); ok {
 			catalogVisibleDuringPrepare.Store(true)
 		}
-		if req.Header.Get(headerName) != downstreamAuth {
+		if authValue != downstreamAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -352,8 +366,8 @@ func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, wrongPathReq); err == nil || !strings.Contains(err.Error(), "Not Found") {
-		t.Fatalf("wrong path connect error = %v, want real HTTP 404", err)
+	if _, err := service.RegisterOAuthMCPCapability(verifiedCtx, wrongPathReq); err == nil || wrongPathRequests.Load() == 0 {
+		t.Fatalf("wrong path connect error = %v, observed 404 responses = %d, want a real HTTP 404 rejection", err, wrongPathRequests.Load())
 	} else {
 		t.Logf("real HTTP failed preparation: %v", err)
 	}

@@ -503,6 +503,13 @@ func (c Config) validate() error {
 		default:
 			return fmt.Errorf("%w: Injection.Form %q is invalid (header/basic/meta)", ErrInvalidConfig, c.Injection.Form)
 		}
+		// Reject a configured destination before Connect or any call can pull
+		// credentials. The transport still rechecks the actual URL on every
+		// attempt, including server-selected endpoints and redirect targets.
+		policy := newReceiverSinkPolicy(c)
+		if err := policy.validate(policy.endpoint); err != nil {
+			return fmt.Errorf("%w: receiver sink configuration: %w", ErrInvalidConfig, err)
+		}
 	}
 	return nil
 }
@@ -2077,12 +2084,12 @@ func (p *Provider) resolveSessionBearerCtx(ctx context.Context) (context.Context
 // compiled artifact); for the `_meta` form the value is written into meta in
 // place (meta is a per-call map).
 func (p *Provider) resolveInjection(ctx context.Context, meta mcpsdk.Meta) (context.Context, error) {
-	return resolveCredentialInjection(ctx, p.cfg.Injection, p.source, meta)
+	return resolveCredentialInjection(ctx, p.cfg.Injection, p.cfg.Name, p.source, meta)
 }
 
 // resolveCredentialInjection is shared by RPC preparation, invocation, and HTTP
 // reconnect/retry authentication. All credential state stays on the request.
-func resolveCredentialInjection(ctx context.Context, inj *CredentialInjection, source tools.ToolSourceID, meta mcpsdk.Meta) (context.Context, error) {
+func resolveCredentialInjection(ctx context.Context, inj *CredentialInjection, connection string, source tools.ToolSourceID, meta mcpsdk.Meta) (context.Context, error) {
 	if inj == nil {
 		return ctx, nil
 	}
@@ -2094,7 +2101,7 @@ func resolveCredentialInjection(ctx context.Context, inj *CredentialInjection, s
 	if tok.AccessToken == "" {
 		// Defence-in-depth: a ("", nil) return from a bound provider must never
 		// let the RPC proceed unauthenticated.
-		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, source, source)
+		return nil, fmt.Errorf("%w (connection %q, source %q)", ErrEmptyBearer, connection, source)
 	}
 	switch inj.Form {
 	case InjectionFormHeader:

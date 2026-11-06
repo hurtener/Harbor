@@ -25,6 +25,19 @@ Two versions move independently in Harbor (RFC §5.3):
   credential. Missing or failed credentials stop the request before it reaches
   the server. The signed setting survives reconciliation and cannot be enabled
   through an unsigned connection write; omitted or false retains existing behavior.
+- Receiver credential injection validates the actual request's HTTPS scheme and
+  exact host and port before sending credentials, including server-advertised SSE
+  endpoints and redirects. Signed providers' redirect refusals apply to receiver
+  credentials too. Authenticated preparation sends no credentials on detached
+  server-response or session-termination traffic.
+
+### Upgrade notes
+
+- After a signed pair carrying `authenticate_preparation: true` is persisted,
+  rolling back below the version introducing this field fails strict descriptor
+  decoding. Remove the affected pair with the current runtime before rollback,
+  or restore a compatible pre-upgrade state snapshot. Do not edit signed state
+  to remove the field.
 
 ## [1.34.0] — 2026-11-04
 

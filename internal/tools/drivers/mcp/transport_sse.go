@@ -138,11 +138,19 @@ func buildHTTPClient(cfg Config) *http.Client {
 		if cfg.Injection.AuthenticatePreparation {
 			transport.preparationInjection = cfg.Injection
 			transport.source = tools.ToolSourceID(cfg.Name)
+			transport.connection = cfg.Name
 		}
 		rt = transport
 	}
 	if cfg.Injection != nil && cfg.Injection.AuthenticatePreparation && cfg.Injection.Form == InjectionFormMeta {
-		rt = &receiverMetaPreparationTransport{base: rt, injection: cfg.Injection, source: tools.ToolSourceID(cfg.Name)}
+		rt = &receiverMetaPreparationTransport{base: rt, injection: cfg.Injection, source: tools.ToolSourceID(cfg.Name), connection: cfg.Name}
+	}
+	var receiverPolicy receiverSinkPolicy
+	if cfg.Injection != nil {
+		receiverPolicy = newReceiverSinkPolicy(cfg)
+		// Run before receiver transports pull or inject credentials. This also
+		// covers SDK-generated SSE endpoint requests, not just HTTP redirects.
+		rt = &receiverSinkTransport{base: rt, policy: receiverPolicy}
 	}
 	if len(cfg.Headers) > 0 {
 		rt = &headerInjectingTransport{
@@ -192,7 +200,19 @@ func buildHTTPClient(cfg Config) *http.Client {
 		// host allowed only by another binding.
 		client.CheckRedirect = refuseEveryCredentialRedirect
 	case cfg.Injection != nil:
-		client.CheckRedirect = redirectGuardFor(cfg.Injection.Provider.AllowedDownstreamHosts())
+		if strict, ok := cfg.Injection.Provider.(interface{ RefuseRedirects() bool }); ok && strict.RefuseRedirects() {
+			client.CheckRedirect = refuseEveryCredentialRedirect
+		} else {
+			client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("%w: stopped after 5 redirects", ErrRedirectToUnlistedHost)
+				}
+				if err := receiverPolicy.validate(req.URL); err != nil {
+					return fmt.Errorf("%w: %w", ErrRedirectToUnlistedHost, err)
+				}
+				return nil
+			}
+		}
 	}
 	return client
 }
@@ -336,24 +356,28 @@ type injectedHeaderTransport struct {
 	base                 http.RoundTripper
 	preparationInjection *CredentialInjection
 	source               tools.ToolSourceID
+	connection           string
 }
 
 // RoundTrip implements http.RoundTripper.
 func (t *injectedHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.preparationInjection != nil {
+		if req.Method == http.MethodDelete {
+			return receiverLocalTermination(req), nil
+		}
+		if req.Method == http.MethodPost {
+			req = req.Clone(req.Context())
+			if err := receiverMethodRequest(req); err != nil {
+				return nil, err
+			}
+		}
 		// SDK retries/reconnects must resolve the exact request identity again;
 		// a credential cached on the connect context is never sufficient.
 		if _, ok := identity.From(req.Context()); !ok {
-			if req.Method == http.MethodDelete {
-				return receiverLocalTermination(req), nil
-			}
 			return nil, ErrIdentityMissing
 		}
-		ctx, err := resolveCredentialInjection(req.Context(), t.preparationInjection, t.source, nil)
+		ctx, err := resolveCredentialInjection(req.Context(), t.preparationInjection, t.connection, t.source, nil)
 		if err != nil {
-			if req.Method == http.MethodDelete {
-				return receiverLocalTermination(req), nil
-			}
 			return nil, fmt.Errorf("mcp: authenticate receiver request: %w", err)
 		}
 		req = req.WithContext(ctx)

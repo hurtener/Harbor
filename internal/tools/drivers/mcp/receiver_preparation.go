@@ -17,9 +17,10 @@ import (
 // current provider and replaces the serialized credential using the shared
 // injection engine. An SDK retry must never replay a revoked or expired value.
 type receiverMetaPreparationTransport struct {
-	base      http.RoundTripper
-	injection *CredentialInjection
-	source    tools.ToolSourceID
+	base       http.RoundTripper
+	injection  *CredentialInjection
+	source     tools.ToolSourceID
+	connection string
 }
 
 func (t *receiverMetaPreparationTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -42,6 +43,9 @@ func (t *receiverMetaPreparationTransport) RoundTrip(req *http.Request) (*http.R
 	if message == nil {
 		return nil, fmt.Errorf("%w: receiver request is not an object", ErrInvalidConfig)
 	}
+	if err := receiverMessageMethod(message); err != nil {
+		return nil, err
+	}
 	params := make(map[string]json.RawMessage)
 	if raw := message["params"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -62,7 +66,7 @@ func (t *receiverMetaPreparationTransport) RoundTrip(req *http.Request) (*http.R
 	if meta == nil {
 		meta = mcpsdk.Meta{}
 	}
-	if _, err := resolveCredentialInjection(req.Context(), t.injection, t.source, meta); err != nil {
+	if _, err := resolveCredentialInjection(req.Context(), t.injection, t.connection, t.source, meta); err != nil {
 		return nil, fmt.Errorf("mcp: authenticate receiver retry: %w", err)
 	}
 	encodedMeta, err := json.Marshal(meta)
@@ -90,4 +94,39 @@ func (t *receiverMetaPreparationTransport) RoundTrip(req *http.Request) (*http.R
 // authenticated. Cleanup never sends a credential after admission was refused.
 func receiverLocalTermination(req *http.Request) *http.Response {
 	return &http.Response{StatusCode: http.StatusNoContent, Status: http.StatusText(http.StatusNoContent), Header: make(http.Header), Body: http.NoBody, Request: req}
+}
+
+// receiverMethodRequest refuses SDK responses whose detached connection context
+// cannot identify the principal of the triggering server request. No credential
+// is pulled and no response is sent; server callbacks are unsupported here.
+func receiverMethodRequest(req *http.Request) error {
+	if req.Body == nil {
+		return fmt.Errorf("%w: receiver request has no JSON-RPC body", ErrInvalidConfig)
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return fmt.Errorf("mcp: read receiver request: %w", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(body, &message); err != nil {
+		_ = req.Body.Close()
+		return fmt.Errorf("%w: receiver request is not a JSON-RPC object", ErrInvalidConfig)
+	}
+	if err := receiverMessageMethod(message); err != nil {
+		_ = req.Body.Close()
+		return err
+	}
+	return nil
+}
+
+func receiverMessageMethod(message map[string]json.RawMessage) error {
+	var method string
+	_, result := message["result"]
+	_, responseError := message["error"]
+	if err := json.Unmarshal(message["method"], &method); err != nil || method == "" || result || responseError {
+		return fmt.Errorf("%w: receiver credentials require a method-bearing JSON-RPC request", ErrInvalidConfig)
+	}
+	return nil
 }

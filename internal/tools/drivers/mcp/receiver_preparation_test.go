@@ -99,6 +99,7 @@ func TestReceiverPreparation_AuthenticatesInitializeDiscoveryAndRefresh(t *testi
 			}))
 			defer server.Close()
 			credential := &preparationCredentialProvider{}
+			credential.allowedHosts = []string{server.Listener.Addr().String()}
 			p, err := New(Config{Name: "receiver", URL: server.URL, TransportMode: TransportStreamableHTTP, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(),
 				OwnedInjectionProvider: credential, Injection: &CredentialInjection{Provider: credential, AuthenticatePreparation: true, Form: form, Header: "X-Receiver-Api-Key", BasicUsername: "service", MetaKey: []string{"receiver", "api_key"}}})
 			if err != nil {
@@ -172,6 +173,7 @@ func TestReceiverPreparation_FailedOrEmptyPullSendsNothing(t *testing.T) {
 			if !empty {
 				credential.err = errors.New("credential unavailable")
 			}
+			credential.allowedHosts = []string{server.Listener.Addr().String()}
 			p, err := New(Config{Name: "receiver", URL: server.URL, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), OwnedInjectionProvider: credential,
 				Injection: &CredentialInjection{Provider: credential, AuthenticatePreparation: true, Form: InjectionFormHeader, Header: "X-Receiver-Api-Key"}})
 			if err != nil {
@@ -199,6 +201,7 @@ func TestReceiverPreparation_FalsePreservesCredentialNeutralDiscovery(t *testing
 	}))
 	defer server.Close()
 	credential := &preparationCredentialProvider{err: errors.New("must not pull during credential-neutral preparation")}
+	credential.allowedHosts = []string{server.Listener.Addr().String()}
 	p, err := New(Config{Name: "receiver", URL: server.URL, TransportMode: TransportStreamableHTTP, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), OwnedInjectionProvider: credential,
 		Injection: &CredentialInjection{Provider: credential, Form: InjectionFormHeader, Header: "X-Receiver-Api-Key"}})
 	if err != nil {
@@ -249,7 +252,8 @@ func TestReceiverPreparation_TransportRetryReauthorizesInsteadOfReusingCredentia
 			}))
 			defer server.Close()
 			ctx := testIdentityCtx(t, identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"})
-			client := buildHTTPClient(Config{Name: "receiver", Injection: &CredentialInjection{Provider: credential, AuthenticatePreparation: true, Form: form, Header: "X-Receiver-Api-Key", BasicUsername: "service", MetaKey: []string{"receiver", "api_key"}}})
+			credential.allowedHosts = []string{server.Listener.Addr().String()}
+			client := buildHTTPClient(Config{Name: "receiver", URL: server.URL, Injection: &CredentialInjection{Provider: credential, AuthenticatePreparation: true, Form: form, Header: "X-Receiver-Api-Key", BasicUsername: "service", MetaKey: []string{"receiver", "api_key"}}})
 			send := func() error {
 				body := bytes.NewBufferString(`{"method":"initialize","params":{"_meta":{"receiver":{"api_key":"stale-value"}}}}`)
 				request, err := http.NewRequestWithContext(withInjectedHeaders(ctx, map[string]string{"X-Receiver-Api-Key": "stale-value"}), http.MethodPost, server.URL, body)
@@ -296,6 +300,7 @@ func TestReceiverPreparation_AbsentFlagLeavesInitializeUnauthorized(t *testing.T
 	}))
 	defer server.Close()
 	credential := &preparationCredentialProvider{err: errors.New("preparation must not pull")}
+	credential.allowedHosts = []string{server.Listener.Addr().String()}
 	p, err := New(Config{Name: "receiver", URL: server.URL, TransportMode: TransportStreamableHTTP, Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), OwnedInjectionProvider: credential,
 		Injection: &CredentialInjection{Provider: credential, Form: InjectionFormHeader, Header: "X-Receiver-Api-Key"}})
 	if err != nil {
@@ -322,7 +327,8 @@ func TestReceiverPreparation_ConcurrentRequestsKeepExactIdentityAndCancellation(
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	client := buildHTTPClient(Config{Name: "receiver", Injection: &CredentialInjection{Provider: credential, AuthenticatePreparation: true, Form: InjectionFormHeader, Header: "X-Receiver-Api-Key"}})
+	credential.allowedHosts = []string{server.Listener.Addr().String()}
+	client := buildHTTPClient(Config{Name: "receiver", URL: server.URL, Injection: &CredentialInjection{Provider: credential, AuthenticatePreparation: true, Form: InjectionFormHeader, Header: "X-Receiver-Api-Key"}})
 	var wg sync.WaitGroup
 	for i := range 100 {
 		wg.Add(1)
@@ -336,7 +342,7 @@ func TestReceiverPreparation_ConcurrentRequestsKeepExactIdentityAndCancellation(
 			}
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/"+user, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/"+user, bytes.NewBufferString(`{"method":"ping"}`))
 			if err != nil {
 				t.Error(err)
 				return
