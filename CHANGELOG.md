@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.35.0] — 2026-11-06
+
 ### Fixed
 
 - Signed receiver MCP capabilities can declare
