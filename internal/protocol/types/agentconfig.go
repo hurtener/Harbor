@@ -275,6 +275,9 @@ type AgentConfigMCPConnectionDescriptor struct {
 // wire-supplied host list) and every declared target key must be
 // redaction-covered.
 type AgentConfigMCPCredentialInjectionDescriptor struct {
+	// AuthenticatePreparation also authenticates initialize and discovery for a signed, privately owned receiver binding.
+	// Omitted or false preserves credential-neutral preparation.
+	AuthenticatePreparation bool `json:"authenticate_preparation,omitempty"`
 	// Provider NAMES the declared `tools.oauth_providers[]` broker the per-user
 	// credential is pulled from (the SAME registry `oauth_provider` resolves
 	// against). NON-SECRET (a name). Required; an unknown name fails at attach.

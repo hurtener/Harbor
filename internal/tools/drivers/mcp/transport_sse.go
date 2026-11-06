@@ -13,6 +13,8 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // newSSETransport builds an mcpsdk.SSEClientTransport from cfg.
@@ -128,10 +130,19 @@ func buildHTTPClient(cfg Config) *http.Client {
 	// Per-user credential injection (receiver-style server): the HTTP forms
 	// (header / Basic) ride each call's ctx into this innermost injecting
 	// transport, so the injected header wins over any static header and holds NO
-	// mutable state (the value rides req.Context()). The `_meta` form injects
-	// into the JSON-RPC body, not a header, so it needs no transport here.
+	// mutable state (the value rides req.Context()). A signed preparation binding
+	// reauthorizes every HTTP attempt, including retries. Its meta form uses the
+	// same injection engine on the serialized request body below.
 	if cfg.Injection != nil && (cfg.Injection.Form == InjectionFormHeader || cfg.Injection.Form == InjectionFormBasic) {
-		rt = &injectedHeaderTransport{base: rt}
+		transport := &injectedHeaderTransport{base: rt}
+		if cfg.Injection.AuthenticatePreparation {
+			transport.preparationInjection = cfg.Injection
+			transport.source = tools.ToolSourceID(cfg.Name)
+		}
+		rt = transport
+	}
+	if cfg.Injection != nil && cfg.Injection.AuthenticatePreparation && cfg.Injection.Form == InjectionFormMeta {
+		rt = &receiverMetaPreparationTransport{base: rt, injection: cfg.Injection, source: tools.ToolSourceID(cfg.Name)}
 	}
 	if len(cfg.Headers) > 0 {
 		rt = &headerInjectingTransport{
@@ -318,14 +329,35 @@ func injectedHeadersFrom(ctx context.Context) map[string]string {
 // the request's ctx (see withInjectedHeaders). It holds NO mutable state — the
 // values ride req.Context(), so one shared transport serves N concurrent
 // identities with no credential bleed (the concurrent-reuse contract). A request
-// whose ctx carries no injected headers passes through untouched (connect-time
-// and unbound paths).
+// whose ctx carries no injected headers passes through untouched for ordinary
+// bindings. Signed authenticated preparation instead requires a fresh pull from
+// that exact request's identity, including HTTP retries and reconnects.
 type injectedHeaderTransport struct {
-	base http.RoundTripper
+	base                 http.RoundTripper
+	preparationInjection *CredentialInjection
+	source               tools.ToolSourceID
 }
 
 // RoundTrip implements http.RoundTripper.
 func (t *injectedHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.preparationInjection != nil {
+		// SDK retries/reconnects must resolve the exact request identity again;
+		// a credential cached on the connect context is never sufficient.
+		if _, ok := identity.From(req.Context()); !ok {
+			if req.Method == http.MethodDelete {
+				return receiverLocalTermination(req), nil
+			}
+			return nil, ErrIdentityMissing
+		}
+		ctx, err := resolveCredentialInjection(req.Context(), t.preparationInjection, t.source, nil)
+		if err != nil {
+			if req.Method == http.MethodDelete {
+				return receiverLocalTermination(req), nil
+			}
+			return nil, fmt.Errorf("mcp: authenticate receiver request: %w", err)
+		}
+		req = req.WithContext(ctx)
+	}
 	headers := injectedHeadersFrom(req.Context())
 	if len(headers) == 0 {
 		return t.base.RoundTrip(req)

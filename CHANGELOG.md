@@ -17,6 +17,15 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Signed receiver MCP capabilities can declare
+  `injection.authenticate_preparation: true` to authenticate initialize,
+  discovery, refresh, and reconnect requests with the acting identity's pulled
+  credential. Missing or failed credentials stop the request before it reaches
+  the server. The signed setting survives reconciliation and cannot be enabled
+  through an unsigned connection write; omitted or false retains existing behavior.
+
 ## [1.34.0] — 2026-11-04
 
 ### Added

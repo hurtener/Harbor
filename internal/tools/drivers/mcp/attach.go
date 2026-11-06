@@ -456,7 +456,7 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 	// Registry discovery arrives without it and must use only the separately
 	// reach-admitted EffectiveAgentConfig capability.
 	providerCtx := ctx
-	if provider.cfg.OwnOAuthProvider {
+	if provider.cfg.OwnOAuthProvider || (provider.cfg.OwnedInjectionProvider != nil && provider.cfg.Injection != nil && provider.cfg.Injection.AuthenticatePreparation) {
 		providerCtx = auth.WithSignedCapabilityPreparation(providerCtx)
 	}
 	if connectErr := provider.Connect(providerCtx); connectErr != nil {
@@ -888,7 +888,7 @@ func resolveInjectionBinding(ms config.MCPServerConfig, mode MCPTransportMode, p
 	if err != nil {
 		return nil, err
 	}
-	ci := &CredentialInjection{Provider: prov}
+	ci := &CredentialInjection{Provider: prov, AuthenticatePreparation: inj.AuthenticatePreparation}
 	switch inj.Form {
 	case config.MCPInjectionFormHeader:
 		if strings.TrimSpace(inj.Header) == "" {

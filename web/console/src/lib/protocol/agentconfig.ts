@@ -152,6 +152,8 @@ export interface AgentConfigMCPConnectionDescriptor {
  * value (resolved per-call from the acting identity) is secret. Mirrors
  * `types.AgentConfigMCPCredentialInjectionDescriptor`. */
 export interface AgentConfigMCPCredentialInjectionDescriptor {
+	/** Authenticate initialize and discovery for a signed private receiver binding. */
+	authenticate_preparation?: boolean;
 	/** Boot-declared broker NAME the per-user credential is pulled from. */
 	provider: string;
 	/** "header" | "basic" | "meta". */

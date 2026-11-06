@@ -652,11 +652,12 @@ func injectionToConfig(d *agentcfg.MCPCredentialInjectionDescriptor) *config.MCP
 		return nil
 	}
 	return &config.MCPCredentialInjectionConfig{
-		Provider:      d.Provider,
-		Form:          d.Form,
-		Header:        d.Header,
-		BasicUsername: d.BasicUsername,
-		MetaKey:       d.MetaKey,
+		Provider:                d.Provider,
+		Form:                    d.Form,
+		Header:                  d.Header,
+		AuthenticatePreparation: d.AuthenticatePreparation,
+		BasicUsername:           d.BasicUsername,
+		MetaKey:                 d.MetaKey,
 	}
 }
 

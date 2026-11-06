@@ -44,17 +44,11 @@ import (
 //
 // # What it does NOT touch: the credential plane
 //
-// The attach path has no token step. An `oauth_provider` binding is a NAME
-// resolved against the boot-declared provider set; the bearer is minted per
-// outbound CALL, one layer later. So this leg initiates no consent flow and
-// mints, holds, refreshes, and exchanges nothing — for either provider family
-// (the interactive one that persists a sealed bearer, and the brokered one that
-// persists nothing). A connection whose consent is genuinely gone therefore
-// still re-attaches; the shortfall surfaces on the FIRST TOOL CALL as the
-// shipped typed auth-required error routed onto the unified pause/resume
-// primitive. This leg neither duplicates nor triggers that path, and it never
-// parks a run: a run-start reconcile has no admin request to resume and no
-// consenting principal, so an auth shortfall at attach is a terminal,
+// Shared provider bindings resolve a name at attach and acquire credentials on
+// ordinary outbound calls. Signed private OAuth bindings and receiver bindings
+// with signed authenticate_preparation also acquire credentials for initialize
+// and discovery through the existing per-identity provider. No consent flow or
+// identity minting is introduced. A preparation shortfall is a terminal,
 // backoff-eligible failure, never a second pause shape (CLAUDE.md §13).
 //
 // # The one genuinely non-re-establishable shape

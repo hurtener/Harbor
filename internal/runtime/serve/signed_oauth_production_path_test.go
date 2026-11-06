@@ -61,6 +61,16 @@ func (s productionSignedCapabilityKeySet) KeyByID(kid string) (crypto.PublicKey,
 }
 
 func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDiscovery(t *testing.T) {
+	testSignedPreparationProductionPath(t, "")
+}
+
+func TestRegisterOAuthMCPCapability_ReceiverPreparationProductionPath(t *testing.T) {
+	for _, form := range []string{config.MCPInjectionFormHeader, config.MCPInjectionFormBasic} {
+		t.Run(form, func(t *testing.T) { testSignedPreparationProductionPath(t, form) })
+	}
+}
+
+func testSignedPreparationProductionPath(t *testing.T, receiverForm string) {
 	t.Setenv("HARBOR_SIGNED_PRODUCTION_KEK", "0202020202020202020202020202020202020202020202020202020202020202")
 	t.Setenv("HARBOR_SIGNED_PRODUCTION_BROKER_AUTH", "fixture-broker-auth")
 
@@ -70,6 +80,20 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		connectionName   = "signed"
 		agentID          = "agent"
 	)
+	headerName, downstreamAuth := "Authorization", "Bearer "+downstreamBearer
+	var injection *agentcfg.MCPCredentialInjectionDescriptor
+	var wireInjection *prototypes.AgentConfigMCPCredentialInjectionDescriptor
+	if receiverForm != "" {
+		injection = &agentcfg.MCPCredentialInjectionDescriptor{Provider: providerName, Form: receiverForm, AuthenticatePreparation: true}
+		wireInjection = &prototypes.AgentConfigMCPCredentialInjectionDescriptor{Provider: providerName, Form: receiverForm, AuthenticatePreparation: true}
+		if receiverForm == config.MCPInjectionFormHeader {
+			headerName, downstreamAuth = "X-Receiver-Api-Key", downstreamBearer
+			injection.Header, wireInjection.Header = headerName, headerName
+		} else {
+			downstreamAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte("service:"+downstreamBearer))
+			injection.BasicUsername, wireInjection.BasicUsername = "service", "service"
+		}
+	}
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	id := identity.Identity{TenantID: "tenant", UserID: "user", SessionID: "session"}
 	physicalName := mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: id.TenantID, Agent: agentID})
@@ -117,12 +141,12 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		mcpRequests.Add(1)
 		requestMu.Lock()
 		methods[message.Method]++
-		authHeaders[message.Method] = append(authHeaders[message.Method], req.Header.Get("Authorization"))
+		authHeaders[message.Method] = append(authHeaders[message.Method], req.Header.Get(headerName))
 		requestMu.Unlock()
 		if _, ok := catalog.Resolve(physicalName + "_echo"); ok {
 			catalogVisibleDuringPrepare.Store(true)
 		}
-		if req.Header.Get("Authorization") != "Bearer "+downstreamBearer {
+		if req.Header.Get(headerName) != downstreamAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -218,7 +242,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL}
+	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL, Injection: injection}
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
 		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, AgentID: agentID,
 		Broker: "broker", ProviderName: providerName, CapabilityRevision: "capability-revision-7",
@@ -237,7 +261,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 	req := prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
 		Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		AgentID:  agentID, ProviderName: providerName, Broker: "broker", Audience: claims.Audience,
-		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL},
+		Scopes: []string{"read"}, Connection: prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL, Injection: wireInjection},
 		AuthorityEnvelope: envelope,
 	}
 	authorities := map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
@@ -394,7 +418,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 			t.Fatalf("authenticated production preparation omitted %s; methods=%v", method, methods)
 		}
 		for _, header := range authHeaders[method] {
-			if header != "Bearer "+downstreamBearer {
+			if header != downstreamAuth {
 				requestMu.Unlock()
 				t.Fatalf("%s authorization = %q, want exact downstream bearer", method, header)
 			}
@@ -510,7 +534,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 		t.Fatal("signed resources/list made no authenticated downstream request")
 	}
 	latestResourcesAuth := resourcesListAuth[len(resourcesListAuth)-1]
-	if resourcesListAfter != resourcesListBefore+1 || latestResourcesAuth != "Bearer "+downstreamBearer {
+	if resourcesListAfter != resourcesListBefore+1 || latestResourcesAuth != downstreamAuth {
 		t.Fatalf("signed resources/list = calls %d->%d auth %q", resourcesListBefore, resourcesListAfter, latestResourcesAuth)
 	}
 	_, err = mcpSurface.Dispatch(dispatchCtx, protocolmethods.MethodMCPServersResources, &prototypes.MCPServerResourcesRequest{
@@ -550,7 +574,7 @@ func TestRegisterOAuthMCPCapability_ProductionPathAuthenticatesInitializeAndDisc
 			t.Fatalf("Apps signed dispatch omitted %s; methods=%v", method, methods)
 		}
 		for _, header := range authHeaders[method] {
-			if header != "Bearer "+downstreamBearer {
+			if header != downstreamAuth {
 				requestMu.Unlock()
 				t.Fatalf("Apps %s authorization = %q, want exact downstream bearer", method, header)
 			}

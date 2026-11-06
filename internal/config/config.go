@@ -2195,6 +2195,9 @@ const (
 // rejects a target the audit redactor would not hold to `***`), so the injected
 // value can never leak uncredacted into an audit payload.
 type MCPCredentialInjectionConfig struct {
+	// AuthenticatePreparation also authenticates initialize and discovery for a signed, privately owned receiver binding.
+	// Omitted or false preserves credential-neutral preparation.
+	AuthenticatePreparation bool `yaml:"authenticate_preparation,omitempty"`
 	// Provider names the declared `tools.oauth_providers[]` broker entry the
 	// per-user credential is pulled from (the SAME registry `oauth_provider`
 	// resolves against). Required; an unknown name fails validation.

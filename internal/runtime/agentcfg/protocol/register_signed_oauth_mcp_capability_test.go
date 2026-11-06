@@ -2507,7 +2507,7 @@ func testDomainInjection(in *prototypes.AgentConfigMCPCredentialInjectionDescrip
 	}
 	return &agentcfg.MCPCredentialInjectionDescriptor{
 		Provider: in.Provider, Form: in.Form, Header: in.Header,
-		BasicUsername: in.BasicUsername, MetaKey: in.MetaKey,
+		BasicUsername: in.BasicUsername, MetaKey: in.MetaKey, AuthenticatePreparation: in.AuthenticatePreparation,
 	}
 }
 

@@ -1858,6 +1858,25 @@ config. Fields:
   connection into a hard redaction failure. It may not collide with a declared
   `meta_annotations` path (see above).
 
+Signed receiver capability descriptors additionally accept
+`injection.authenticate_preparation: true`. The authority envelope must sign
+this setting. It authenticates initialize and each tools/resources/prompts list,
+including live discovery refresh and restart reconciliation, through the same
+identity-scoped broker provider and injection mapping used for calls. Header and
+Basic forms authenticate every HTTP request; the meta form injects into each
+streamable HTTP JSON-RPC POST. Meta preparation does not support SSE transport,
+whose initial GET has no JSON-RPC metadata; fallback fails closed. Standalone
+background event streams are disabled for authenticated receiver preparation.
+SDK retries reauthorize against the current provider before sending a credential.
+An error, empty credential, or missing identity prevents a network request.
+
+This is a signed capability setting, not a boot opt-in or a way for an unsigned
+`add_mcp_connection` or `set_revision` write to acquire preparation authority.
+Unsigned attempts are rejected even with the existing wire-injection dev opt-in.
+The setting is persisted and fingerprinted with the signed mapping. Omitted or
+false preserves credential-neutral receiver preparation and existing replay
+fingerprints. No consent flow or identity minting behavior changes.
+
 Injection is **mutually exclusive** with `oauth_provider` / `tool_oauth_providers`
 / a static `Authorization` header (one auth mode per connection). The connection
 needs an http(s) `url` and its host must be in the broker's

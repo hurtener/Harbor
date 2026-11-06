@@ -1266,6 +1266,11 @@
       "home": "types",
       "fields": [
         {
+          "key": "authenticate_preparation",
+          "type": "boolean",
+          "optional": true
+        },
+        {
           "key": "provider",
           "type": "string"
         },

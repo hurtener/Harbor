@@ -68,6 +68,9 @@ func (s *Service) gateAndValidateInjectionDescriptor(in *prototypes.AgentConfigM
 	if in == nil {
 		return nil, nil
 	}
+	if in.AuthenticatePreparation {
+		return nil, fmt.Errorf("%w: injection.authenticate_preparation requires a signed capability", ErrInvalidConnection)
+	}
 	if !s.allowWireInjection {
 		return nil, fmt.Errorf(
 			"%w: connection carries a credential-injection mapping (injection), which is accepted only behind the fail-closed dev opt-in tools.allow_wire_injection (or the HARBOR_ALLOW_WIRE_INJECTION boot env)",
@@ -135,7 +138,7 @@ func validateWireInjectionDescriptor(in *prototypes.AgentConfigMCPCredentialInje
 	if provider == "" {
 		return nil, fmt.Errorf("%w: injection.provider must name a declared tools.oauth_providers[] broker", ErrInvalidConnection)
 	}
-	out := &agentcfg.MCPCredentialInjectionDescriptor{Provider: provider}
+	out := &agentcfg.MCPCredentialInjectionDescriptor{Provider: provider, AuthenticatePreparation: in.AuthenticatePreparation}
 	switch in.Form {
 	case config.MCPInjectionFormHeader:
 		header := strings.TrimSpace(in.Header)
