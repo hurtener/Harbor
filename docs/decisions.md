@@ -16206,3 +16206,31 @@ The canonical Go type, public RuntimeClient method, Console mirror, generated
 wire manifest, external TypeScript module, and generated Protocol reference
 advance together.
 **Cross-references:** RFC §5.2, §5.5, §6.17; D-025, D-280, D-397, D-409.
+
+---
+
+## D-491 — Keep catalog annotations local to the admitted request
+
+**Date:** 2026-11-06. **Scope:** Request-local annotation batching for tool
+catalog projection. Catalog revision and structural caching build on this
+separation; this entry records the annotation portion.
+
+After catalog admission, non-empty execution and configuration lists prepare
+one annotation batch for the caller's complete identity triple. The approval
+store lists `tools.approval.policy.` once through `ListKindForIdentity`; the
+annotator folds one bounded lifecycle-event `Window` into last-used timestamps
+and memoizes OAuth status once per runtime source. The event types, scan bound,
+max-timestamp rule, and no-history behavior match the per-tool path. Missing
+approval overrides remain `auto`; failed scans or corrupt overrides fail closed.
+
+All maps belong to one request. The OAuth memo is internally synchronized;
+concurrent lists and approval writes share no mutable annotation state.
+Single-tool get/describe retains its per-tool reads and never prepares a batch
+for unrelated tools. No authorization, catalog structure, or annotations are
+cached across requests. The Protocol wire shapes and version are unchanged.
+
+**Cross-references:** RFC §6.4; D-025, D-314. Regression tests cover a 100-tool
+list's read counts and byte equality against per-tool projection, approval
+corruption and scope boundaries, and concurrent configuration lists with
+`tools.set_approval_policy` across 100 identities using in-memory and Postgres
+state drivers.

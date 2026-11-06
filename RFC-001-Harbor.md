@@ -717,6 +717,16 @@ type ToolProvider interface {
 - Argument validation runs at the catalog edge; failures are typed `tool.invalid_args` events (not tool errors) so the planner can reformulate via LLM retry feedback.
 - Result normalization is a layered pipeline (explicit field-extraction → typed-content blocks → heuristic binary detection → size-based safety net). The size-based safety net **mandates** routing through the `ArtifactStore`; there is no inline-large-payload escape.
 
+**Catalog list annotations (Settled — D-491).** After source admission, a
+non-empty tool list prepares one request-local annotation batch: one approval
+policy prefix scan scoped by the complete identity triple, one bounded tool
+lifecycle history window folded by tool name, and OAuth status memoized by
+runtime source within that identity's request. The batch never survives the
+request or caches authority. Missing overrides retain the `auto` default;
+approval scan or decode failures reject the list. Single-tool get/describe
+reads only that tool's annotations. Wire shapes and Protocol version are
+unchanged.
+
 **Reliability shell wraps EVERY tool invocation, regardless of transport (Settled — D-024).** The minimum-expression tool — a plain Go function registered via `tools.RegisterFunc(name, fn, opts...)` — gets the same reliability shell as a Flow tool: per-call timeout, exponential-backoff retry, validation, identity-aware cancellation. The runtime's Dispatcher (§6.4 trio) wraps every tool invocation in the `ToolPolicy` shell once, regardless of `Transport`. **The shell is identical to `NodePolicy` for runtime nodes (§6.1)** — same backoff math, same retry classes, same validation modes — so a developer who learned NodePolicy already knows ToolPolicy. Defaults fire when `ToolPolicy` is zero-valued so the most common case ("`@tool`-decorate this function") needs zero ceremony to be production-resilient.
 
 ```go

@@ -17,6 +17,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Performance
+
+- Tool catalog lists share one identity-scoped approval-policy scan and one
+  bounded event-history window per request, and reuse OAuth status reads for
+  tools from the same source within that request. Single-tool descriptions
+  continue to read only their own annotations; approval read failures reject
+  the list rather than projecting an unverified default.
+
 ## [1.35.0] — 2026-11-06
 
 ### Fixed

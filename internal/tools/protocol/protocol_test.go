@@ -455,6 +455,12 @@ type fakeAnnotator struct {
 	revoked int64
 }
 
+func (a *fakeAnnotator) Batch(_ context.Context, id identity.Identity) (toolsprotocol.AnnotationBatch, error) {
+	return func(ctx context.Context, toolID string) toolsprotocol.ToolAnnotations {
+		return toolsprotocol.ToolAnnotations{OAuthStatus: a.OAuthStatus(ctx, id, toolID), ApprovalPolicy: a.ApprovalPolicy(ctx, id, toolID), LastUsedAt: a.LastUsedAt(ctx, id, toolID)}
+	}, nil
+}
+
 func (f *fakeAnnotator) OAuthStatus(context.Context, identity.Identity, string) prototypes.ToolOAuthStatus {
 	return prototypes.ToolOAuthRequired
 }
