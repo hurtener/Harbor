@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 // driverName is the name under which this driver self-registers with
@@ -78,6 +79,10 @@ type Driver struct {
 // Compile-time assertion: *Driver implements llm.Driver.
 var _ llm.Driver = (*Driver)(nil)
 var _ llm.ProviderRouteSelectionValidator = (*Driver)(nil)
+
+// OwnsProviderRequestTiming keeps route credentials and local translation
+// outside provider latency; dispatch is observed at the chat request itself.
+func (*Driver) OwnsProviderRequestTiming() {}
 
 // ValidateProviderRouteSelection rejects unsupported provider/endpoint shapes
 // before governance and model-sensitive wrappers observe the selected model.
@@ -199,6 +204,7 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		if err != nil {
 			return llm.CompleteResponse{}, err
 		}
+		routeStarted := time.Now()
 		resolved, err := llm.ResolveProviderRoute(ctx, d.providerRoute, llm.ProviderRouteRequest{
 			TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LogicalRunID: id.RunID,
 			EffectiveAgentID: trusted.EffectiveAgentID, TaskID: trusted.TaskID,
@@ -209,6 +215,7 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			ModelProfileSupported: true,
 			Purpose:               trusted.Purpose,
 		}, time.Now())
+		telemetry.RecordTurnStage(ctx, telemetry.TurnStageProviderRoute, time.Since(routeStarted))
 		if err != nil {
 			return llm.CompleteResponse{}, err
 		}
@@ -270,6 +277,7 @@ func (d *Driver) unaryComplete(
 	bctx *bfschemas.BifrostContext,
 	bfReq *bfschemas.BifrostChatRequest,
 ) (llm.CompleteResponse, error) {
+	llm.ObserveProviderRequest(ctx)
 	resp, berr := client.ChatCompletionRequest(bctx, bfReq)
 	if berr != nil {
 		return llm.CompleteResponse{}, translateErrorForContext(ctx, berr, "ChatCompletionRequest")
@@ -293,6 +301,7 @@ func (d *Driver) streamComplete(
 	bfReq *bfschemas.BifrostChatRequest,
 	req llm.CompleteRequest,
 ) (llm.CompleteResponse, error) {
+	llm.ObserveProviderRequest(ctx)
 	ch, berr := client.ChatCompletionStreamRequest(bctx, bfReq)
 	if berr != nil {
 		return llm.CompleteResponse{}, translateErrorForContext(ctx, berr, "ChatCompletionStreamRequest")
@@ -337,12 +346,16 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
+				if hasStreamDelta(chunk.BifrostChatResponse) {
+					llm.ObserveStreamDelta(ctx)
+				}
 				for _, choice := range chunk.BifrostChatResponse.Choices {
 					if choice.Index == 0 && choice.FinishReason != nil {
 						finishReason = *choice.FinishReason
 					}
 				}
 				processStreamChunk(chunk.BifrostChatResponse, &contentB, reasoning, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
+				llm.ObserveProviderUsage(ctx, finalUsage)
 			}
 		}
 	}
@@ -374,6 +387,31 @@ readLoop:
 		Cost:         finalCost,
 	}
 	return out, nil
+}
+
+// hasStreamDelta excludes role, accounting, and terminal-only chunks. Tool-call
+// fragments and reasoning-detail text are model output even without callbacks.
+func hasStreamDelta(resp *bfschemas.BifrostChatResponse) bool {
+	for _, choice := range resp.Choices {
+		if choice.Index != 0 || choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
+			continue
+		}
+		delta := choice.Delta
+		if (delta.Content != nil && *delta.Content != "") || (delta.Reasoning != nil && *delta.Reasoning != "") {
+			return true
+		}
+		for _, detail := range delta.ReasoningDetails {
+			if text, ok := reasoningDetailText(detail); ok && text != "" {
+				return true
+			}
+		}
+		for _, call := range delta.ToolCalls {
+			if (call.ID != nil && *call.ID != "") || (call.Function.Name != nil && *call.Function.Name != "") || call.Function.Arguments != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // processStreamChunk merges a single bifrost stream chunk into the

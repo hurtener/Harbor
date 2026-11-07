@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 // providerRouteClient is the outermost driver-neutral route selector. It runs
@@ -34,7 +35,9 @@ func (c *providerRouteClient) Complete(ctx context.Context, req CompleteRequest)
 	if c.validator == nil {
 		return CompleteResponse{}, ErrProviderRouteInvalid
 	}
+	routeStarted := time.Now()
 	selected, err := SelectProviderRoute(requestCtx, c.cfg, routeReq, c.now())
+	telemetry.RecordTurnStage(ctx, telemetry.TurnStageProviderRoute, time.Since(routeStarted))
 	if err != nil {
 		return CompleteResponse{}, err
 	}

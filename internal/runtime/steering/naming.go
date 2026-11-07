@@ -296,7 +296,7 @@ func (rl *RunLoop) fireNaming(runCtx context.Context, spec RunSpec, q identity.Q
 	digest := buildNamingDigest(initialGoal, spec.Base.Trajectory, steering, fin, st.CurrentTitle)
 	req := namingCompleteRequest(ns.Model, ns.Policy.MaxTitleLen, digest, st.CurrentTitle != "", ns.Policy.ReasoningMode)
 
-	resp, err := ns.LLM.Complete(nctx, req)
+	resp, err := ns.LLM.Complete(llm.WithCallRole(nctx, llm.CallRoleTitle), req)
 	if err != nil {
 		rl.namingFailed(runCtx, q, classifyNamingErr(err))
 		return

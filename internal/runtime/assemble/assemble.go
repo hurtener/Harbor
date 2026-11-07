@@ -652,6 +652,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		// exposed on the Stack as a KeyRotator (the admin write path).
 		liveKey := llm.NewLiveKey()
 		llmClient, llmErr := llm.Open(ctx, llmCfg, llm.Deps{
+			Logger:        logger,
 			Artifacts:     artStore,
 			Bus:           bus,
 			LiveKey:       liveKey,
@@ -674,7 +675,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// registry fails loudly again if an embedder is missing.
 	stack.Embedder = opts.Embedder
 	if stack.Embedder == nil && !cfg.Embeddings.IsZero() {
-		emb, embErr := embeddings.Open(ctx, embeddings.SnapshotFromConfig(cfg.Embeddings), embeddings.Deps{})
+		emb, embErr := embeddings.Open(ctx, embeddings.SnapshotFromConfig(cfg.Embeddings), embeddings.Deps{Logger: logger})
 		if embErr != nil {
 			return stack, fmt.Errorf("embeddings: %w", embErr)
 		}

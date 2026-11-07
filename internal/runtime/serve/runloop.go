@@ -108,6 +108,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills/publication"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
@@ -1120,6 +1121,8 @@ func flattenJoined(err error) []error {
 }
 
 func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple) {
+	startedAt := time.Now()
+	defer func() { telemetry.RecordTurnStage(ctx, telemetry.TurnStageMCPReconcile, time.Since(startedAt)) }()
 	if d.signedOAuthMCPReconciler != nil {
 		if err := d.signedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapability(ctx, q, agentID); err != nil {
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start signed OAuth MCP reconcile failed",
@@ -1167,8 +1170,10 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 		reconcileCtx, cancel = context.WithTimeout(ctx, reconcileConnectionsSweepBudget)
 		defer cancel()
 	}
+	attachStartedAt := time.Now()
 	detached, attached, err := projection.ReconcileConnections(reconcileCtx, d.agentConfig, agentID, q,
 		d.connectionDetacher, d.connectionReattacher, d.bootDeclaredMCP)
+	telemetry.RecordTurnStage(ctx, telemetry.TurnStageToolAttach, time.Since(attachStartedAt))
 	if err != nil {
 		// Partition the joined error. A re-attach parked by its bounded retry
 		// window is NOT a new failure (it was counted, and its count rides the next
@@ -1208,7 +1213,9 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 	// like the detach leg. The detacher concrete satisfies the reconciler seam;
 	// a driver that does not is a no-op.
 	if rec, ok := d.connectionDetacher.(projection.DiscoveryOriginReconciler); ok {
+		discoveryStartedAt := time.Now()
 		applied, aerr := projection.ReconcileDiscoveryOrigins(ctx, d.agentConfig, agentID, q, rec)
+		telemetry.RecordTurnStage(ctx, telemetry.TurnStageMCPDiscoveryReconcile, time.Since(discoveryStartedAt))
 		if aerr != nil {
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile failed",
 				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", aerr.Error()))
@@ -1239,6 +1246,7 @@ func runConfigTaskError(err error, fallback tasks.TaskError) tasks.TaskError {
 }
 
 func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
+	turnStartedAt := time.Now()
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
 	// the triple via identity.With (the same call site §6 mandates for
 	// every identity-scoped storage method). The ctx is derived from
@@ -1302,6 +1310,12 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	// Task creation predates the asynchronous task.spawned delivery, so include
+	// queue/dispatch delay without carrying request context through the bus.
+	if task.CreatedAt > 0 {
+		turnStartedAt = time.Unix(0, task.CreatedAt)
+	}
+	taskCtx = telemetry.BeginTurnTiming(taskCtx, d.logger, turnStartedAt)
 	var externalGrant json.RawMessage
 	if len(task.ExternalGrant) > 0 {
 		var grant llm.ExternalGrant

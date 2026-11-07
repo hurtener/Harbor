@@ -542,6 +542,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	opts.Logger = slog.New(telemetry.URLRedactingHandler(opts.Logger.Handler()))
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
@@ -1407,6 +1408,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	})
 
 	httpServer := &http.Server{
+		ErrorLog:          slog.NewLogLogger(opts.Logger.Handler(), slog.LevelError),
 		Addr:              bindAddr,
 		Handler:           corsHandler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -1434,6 +1436,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		debugMux.HandleFunc("/debug/pprof/symbol", nhpprof.Symbol)
 		debugMux.HandleFunc("/debug/pprof/trace", nhpprof.Trace)
 		debugServer = &http.Server{
+			ErrorLog:          slog.NewLogLogger(opts.Logger.Handler(), slog.LevelError),
 			Addr:              debugAddr,
 			Handler:           debugMux,
 			ReadHeaderTimeout: 10 * time.Second,

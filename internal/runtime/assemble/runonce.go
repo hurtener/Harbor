@@ -40,6 +40,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 // Sentinel errors RunOnce returns when the stack is not runnable.
@@ -227,6 +228,7 @@ func (s *Stack) RunOnce(
 	id identity.Identity,
 	opts ...RunOption,
 ) (answer planner.AnswerEnvelope, retErr error) {
+	ctx = telemetry.BeginTurnTiming(ctx, s.boundLogger(), time.Now())
 	// Runnable posture FIRST: a zero-value or nil-config non-runnable
 	// stack (no RunLoop / no Planner) returns the typed ErrNotRunnable —
 	// never a panic on an absent Cfg. Only a RUNNABLE stack's

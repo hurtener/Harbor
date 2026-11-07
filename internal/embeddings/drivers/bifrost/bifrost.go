@@ -22,13 +22,17 @@ package bifrost
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
+	"time"
 
 	bf "github.com/maximhq/bifrost/core"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/hurtener/Harbor/internal/embeddings"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 // driverName is the name under which this driver self-registers with
@@ -52,6 +56,7 @@ type Driver struct {
 	provider   bfschemas.ModelProvider
 	model      string
 	dimensions int
+	logger     *slog.Logger
 
 	closed atomic.Bool
 }
@@ -68,7 +73,7 @@ var _ embeddings.Embedder = (*Driver)(nil)
 //   - `cfg.APIKey` is empty or references an unset env var
 //     (`ErrMissingAPIKey`);
 //   - the gateway init fails.
-func New(cfg embeddings.ConfigSnapshot, _ embeddings.Deps) (embeddings.Embedder, error) {
+func New(cfg embeddings.ConfigSnapshot, deps embeddings.Deps) (embeddings.Embedder, error) {
 	if cfg.Model == "" {
 		return nil, fmt.Errorf("%w: embeddings model is empty (set embeddings.model)", ErrMissingModel)
 	}
@@ -85,6 +90,7 @@ func New(cfg embeddings.ConfigSnapshot, _ embeddings.Deps) (embeddings.Embedder,
 		provider:   account.provider,
 		model:      cfg.Model,
 		dimensions: cfg.Dimensions,
+		logger:     deps.Logger,
 	}, nil
 }
 
@@ -125,11 +131,26 @@ func (d *Driver) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	}
 
 	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
+	telemetry.ObserveFirstModelRequest(ctx)
+	started := time.Now()
 	resp, berr := d.client.EmbeddingRequest(bctx, req)
-	if berr != nil {
-		return nil, translateError(berr, "EmbeddingRequest")
+	call := telemetry.ModelCallTiming{Provider: string(d.provider), Model: d.model, Role: "embedding", Total: time.Since(started), Failed: berr != nil, Canceled: berr != nil && ctx.Err() != nil}
+	if resp != nil && resp.Usage != nil {
+		call.InputTokens = &resp.Usage.PromptTokens
 	}
-	return translateResponse(resp, len(texts))
+	if berr != nil {
+		err := translateError(berr, "EmbeddingRequest")
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("embeddings/bifrost: EmbeddingRequest: %w", ctxErr)
+		}
+		call.Canceled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		telemetry.RecordModelCall(ctx, d.logger, call)
+		return nil, err
+	}
+	out, err := translateResponse(resp, len(texts))
+	call.Failed = err != nil
+	telemetry.RecordModelCall(ctx, d.logger, call)
+	return out, err
 }
 
 // Close releases the underlying gateway instance, joining its

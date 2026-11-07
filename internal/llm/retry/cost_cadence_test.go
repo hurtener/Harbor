@@ -1,9 +1,13 @@
 package retry_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,7 +81,8 @@ func TestCostEmit_PerAttemptUnderRetry(t *testing.T) {
 
 	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 1})
 	cfg.Driver = name
-	client, err := llm.Open(context.Background(), cfg, llm.Deps{Artifacts: store, Bus: bus})
+	var timingLogs bytes.Buffer
+	client, err := llm.Open(context.Background(), cfg, llm.Deps{Artifacts: store, Bus: bus, Logger: slog.New(slog.NewJSONHandler(&timingLogs, nil))})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -94,6 +99,22 @@ func TestCostEmit_PerAttemptUnderRetry(t *testing.T) {
 	}
 	if got := drv.attempt.Load(); got != 2 {
 		t.Fatalf("driver attempts = %d, want 2 (one retry)", got)
+	}
+
+	// The same mandatory band must emit exactly one timing per driver call,
+	// with retry coordinates preserved and no outer-wrapper duplicate.
+	lines := strings.Split(strings.TrimSpace(timingLogs.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("timing lines = %d, want 2", len(lines))
+	}
+	for index, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["msg"] != "llm.call.completed" || record["retry"] != float64(index) {
+			t.Errorf("timing record = %v", record)
+		}
 	}
 
 	// Collect cost events over a bounded window.

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -18,7 +19,7 @@ import (
 // as opaque scalar values preserves the round-trip.
 func opaquePassThrough(v any) bool {
 	switch v.(type) {
-	case time.Time, *time.Time, time.Duration, *time.Duration:
+	case time.Time, *time.Time, time.Duration, *time.Duration, json.Number:
 		return true
 	}
 	return false
@@ -131,6 +132,7 @@ func CanonicalRules() []Rule {
 		&keyRule{name: "authorization", aliases: authorizationKeys},
 		&keyRule{name: "bearer", aliases: bearerKeyAliases},
 		&keyPredicateRule{name: "injection_credential", match: config.IsReceiverInjectionCredentialKey},
+		&urlQueryRule{},
 		&regexValueRule{
 			name:    "bearer_in_value",
 			pattern: regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._\-+/=~]+`),
@@ -324,9 +326,20 @@ func walkReplaceStrings(v any, replace func(string) string, depth int) (any, err
 	if v == nil {
 		return nil, nil
 	}
+	if opaquePassThrough(v) {
+		return v, nil
+	}
+	value := reflect.ValueOf(v)
+	if (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) && value.IsNil() {
+		return nil, nil
+	}
 	switch val := v.(type) {
 	case string:
 		return replace(val), nil
+	case error:
+		return replace(val.Error()), nil
+	case fmt.Stringer:
+		return replace(val.String()), nil
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, sub := range val {

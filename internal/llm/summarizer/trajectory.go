@@ -301,7 +301,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		if position == start && position < len(tr.Steps) {
 			return nil, fmt.Errorf("%w: exchange %d requires a bounded result reference", ErrTrajectorySummaryCapacity, position+1)
 		}
-		resp, err := s.client.Complete(callCtx, req)
+		resp, err := s.client.Complete(llm.WithCallRole(callCtx, llm.CallRoleCompaction), req)
 		if err != nil {
 			return nil, fmt.Errorf("trajectory summariser: completion %d: %w", calls+1, err)
 		}

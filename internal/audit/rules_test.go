@@ -22,6 +22,7 @@ func TestCanonicalRules_ListsAllNamedSecrets(t *testing.T) {
 		"authorization":        false,
 		"bearer":               false,
 		"injection_credential": false,
+		"url_query":            false,
 		"bearer_in_value":      false,
 		"basic_in_value":       false,
 		"multimodal":           false,

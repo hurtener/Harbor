@@ -46,7 +46,7 @@ func (p *Proposer) Draft(ctx context.Context, q identity.Quadruple, agentID, mod
 	}
 	system := protocol.AgentPackAuthoringSystemMessage(policyJSON)
 	user := "Draft a bounded, executable skill pack item from this operator intent:\n" + intent
-	resp, err := p.client.Complete(ctx, llm.CompleteRequest{
+	resp, err := p.client.Complete(llm.WithCallRole(ctx, llm.CallRoleAgentProposal), llm.CompleteRequest{
 		Model: model,
 		Messages: []llm.ChatMessage{
 			{Role: llm.RoleSystem, Content: llm.Content{Text: &system}},

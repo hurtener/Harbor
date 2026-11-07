@@ -744,7 +744,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// directly; `resp.Content` is treated as the model's preamble (when
 	// ToolCalls are present) or its terminal answer (when ToolCalls are
 	// empty). LLM-call errors propagate verbatim (§13 fail-loudly).
-	resp, err := p.client.Complete(ctx, req)
+	resp, err := p.client.Complete(llm.WithCallRole(ctx, llm.CallRolePlanner), req)
 	if err != nil {
 		return nil, err
 	}
