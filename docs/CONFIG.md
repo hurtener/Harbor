@@ -1687,7 +1687,11 @@ idempotent and throttled: at most 2,000 per pass, paced at 20 per second, so
 a large one-time backlog drains over several passes. Readers report the cut
 honestly: `Bounds` returns `truncated=true`, `Replay` from a cursor inside the
 trimmed range returns `ErrCursorTooOld`, list pages that reach the cut set
-`truncated`, and projection pages set `RetentionGap`. Example:
+`truncated`, and projection pages set `RetentionGap`. Projectors (the turns
+materializer, observability rollups) latch `RetentionGap`: once retention has
+trimmed anything, a projector rebuilt from the start, or added later, reports
+its source as possibly incomplete for good — even though only `audit.*` rows
+were removed. Example:
 
 ```yaml
 events:

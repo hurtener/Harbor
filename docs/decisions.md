@@ -16404,21 +16404,42 @@ chunk's predecessor, and `header_digest` every header field including the
 tail. Readers walk back from the tail through the chain. Any mismatch is
 `ErrIndexIntegrity`: that session's read or publish fails loudly, the
 `harbor_events_index_integrity_failures_total` gauge moves, other sessions are
-unaffected, and nothing is re-derived on read. Repair is an operator restore;
-online chunk repair is a non-goal.
+unaffected, and nothing is re-derived on read. Fleet-wide reads (projection
+pages, admin `events.list`) skip such a session, counted and logged, and report
+`RetentionGap` / `truncated` rather than failing for everyone. At boot a corrupt
+v2 header quarantines its session when the sequence authority exists (every
+header write advances the authority in the same transaction, so skipping it
+cannot lower the floor); boot fails only when no authority exists. Recovery is
+per session: `harbor events rebuild-session-index` (writers stopped, explicit
+`--freeze-ack`) rebuilds the index from the session's immutable entry bodies,
+keeping the audit-retention cut recorded in its summary. Online, in-place chunk
+repair remains a non-goal.
 
 Legacy heads migrate lazily. Publish converts a legacy head of at most 1,024
 rows inside its own transaction; a larger one keeps appending in the legacy
 format and nudges an always-on background migrator (two minutes after boot,
 then hourly, smallest heads first). The migrator authenticates the head against
 bodies when needed, pre-writes the deterministic chunks expected-absent in
-batches of 16 outside the publish lock (byte-identical slots are reused), then
-flips with one small header CAS conditioned on the legacy generation, retried
-when a concurrent legacy append wins. A failure leaves the session fully legacy
+batches of 16 outside the publish lock (byte-identical slots are reused, 50 ms
+pause between batches, 1 s after each large session), then flips with one small
+header CAS conditioned on the legacy generation, retried when a concurrent
+legacy append wins. Every pre-write and the flip are also conditioned, in the
+same transaction, on the session fence being absent and the erasure epoch
+unchanged, so an erasure racing a migration leaves nothing behind; a migration
+that finds its session gone removes what it pre-wrote. Sessions in migration
+backoff are not re-nudged by their publishes. A failure leaves the session fully legacy
 and backs off per session (1 h doubling to 24 h); there is no retry on the
 publish path. Readers reload the header when a chunk or body disappears mid-read
 and classify the miss as trimmed (D-493) or a genuine gap. The legacy repair
 command reports v2 heads as `not_legacy_v2` and never mutates them.
+
+Known limitation: readers reach an old position by walking the verified chain
+back from the tail, one chunk load per 256 rows. Steady-state reads near the
+tail are cheap, but a deep `Window`/`events.list` page or a projection rebuild
+from a low cursor on a very large session costs a chunk load per 256 rows
+skipped. A per-chunk directory in the header was rejected because it would
+make the header — and so every append — grow with history again; a later
+release can add direct, self-verified chunk seeks if deep reads matter.
 
 Binaries below v1.37.0 cannot decode a v2 header and fail closed: their
 publishes and reads of a migrated session error before writing, and their boot
@@ -16450,16 +16471,26 @@ sequence and time, chain anchor, policy, passes) in one conditional
 transaction, before any delete. Deletes are idempotent (exact-generation
 `DeleteIf`), re-check that each record lies inside the trimmed range (sequences
 are never reused, so a re-created session is untouched), and are budgeted at
-2,000 per pass, paced at 20 per second. Records still present after a crash are
-found from the header's cleanup marker and removed on a later pass. The
-traversal is a complete head scan in a deterministic order with an in-memory
-resume point, so a budget-limited pass continues where it stopped. The
+2,000 per pass (at most 514 per session, so one large backlog cannot starve the
+rest), paced at 20 per second. The header records the lowest chunk index that
+may still hold records, and cleanup visits those explicit indices; records
+still present after a crash are removed on a later pass, and the cleanup marker
+clears only once that range and any trimmed-tail entries are proven gone. Every
+pass traverses every head in a deterministic order; trim commits continue after
+the delete budget is spent, and cleanup resumes next pass at the first session
+it had to defer. A sweeper that finds a chunk missing because a peer replica
+trimmed it first re-reads the header instead of reporting corruption. The
 `harbor_events_retention_heads` gauge reports the traversal size.
 
-Readers report the cut: `Bounds` returns `truncated=true`, `Replay` from a
-cursor inside the trimmed range returns `ErrCursorTooOld`, list pages that reach
-the cut set `truncated`, and projection pages set `RetentionGap` for a cursor
-before it. A trim racing a read gives the same outcomes, never a gap error. The
+Readers report the cut: `Bounds` returns `truncated=true` (an empty, truncated
+window when everything was trimmed), `Replay` from a cursor inside the trimmed
+range returns `ErrCursorTooOld`, list pages that reach the cut set `truncated`,
+and projection pages set `RetentionGap` for a cursor before it. A trim racing a
+read gives the same outcomes, never a gap error, and never drops a retained
+event from a projection page. Projectors latch `RetentionGap`, so any projector
+that reads from before a cut — a rebuild from 0 or a newly added projector —
+reports its history as possibly incomplete permanently, even though only
+`audit.*` rows were removed; this is the honest signal, not a fault. The
 retention horizon can now move later; it is recomputed from the headers after a
 complete pass. Harbor's default stays off; operators opt in per runtime.
 **Cross-references:** RFC §6.13; D-492.

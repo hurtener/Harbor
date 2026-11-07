@@ -31,7 +31,12 @@ Two versions move independently in Harbor (RFC §5.3):
   migrate lazily: inline on publish up to 1,024 rows, otherwise through an
   always-on background migrator (two minutes after boot, then hourly) that
   pre-writes chunks outside the publish lock and flips with one header CAS.
-  The legacy repair command reports migrated heads as `not_legacy_v2`.
+  The legacy repair command reports migrated heads as `not_legacy_v2`. A
+  session whose index fails integrity checks is quarantined at boot (when the
+  sequence authority exists) and skipped by projection pages and admin
+  `events.list`; its own reads and publishes still fail. New command
+  `harbor events rebuild-session-index` rebuilds one session's index from its
+  entry bodies with all writers stopped (`--apply --freeze-ack`).
 
 ### Added
 
@@ -62,7 +67,11 @@ Two versions move independently in Harbor (RFC §5.3):
   rest.
 - Audit retention stays off unless `events.retention.audit_max_age` is set. A
   large existing audit backlog drains over several passes (about 2,000 deleted
-  records per 15 minutes).
+  records per 15 minutes). With retention on, projectors that read from before
+  a trim (rebuilds, new projectors) latch `RetentionGap` permanently.
+- Migration of a very large legacy session (about 100k events) costs a
+  one-time CPU burst of under a second; on a 2-core host other publishes in the
+  same process can see a few hundred milliseconds of extra latency meanwhile.
 
 ## [1.36.0] — 2026-11-06
 
