@@ -131,10 +131,15 @@ func (d *Driver) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	}
 
 	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
-	telemetry.ObserveFirstModelRequest(ctx)
 	started := time.Now()
+	call := telemetry.ModelCallTiming{Provider: string(d.provider), Model: d.model, Role: "embedding", Failed: true}
+	// A provider panic must remain visible as a failed call while propagating
+	// unchanged to the caller. Token counts remain unknown until reported.
+	defer func() {
+		call.Total = time.Since(started)
+		telemetry.RecordModelCall(ctx, d.logger, call)
+	}()
 	resp, berr := d.client.EmbeddingRequest(bctx, req)
-	call := telemetry.ModelCallTiming{Provider: string(d.provider), Model: d.model, Role: "embedding", Total: time.Since(started), Failed: berr != nil, Canceled: berr != nil && ctx.Err() != nil}
 	if resp != nil && resp.Usage != nil {
 		call.InputTokens = &resp.Usage.PromptTokens
 	}
@@ -143,13 +148,12 @@ func (d *Driver) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = fmt.Errorf("embeddings/bifrost: EmbeddingRequest: %w", ctxErr)
 		}
-		call.Canceled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-		telemetry.RecordModelCall(ctx, d.logger, call)
+		call.Canceled = errors.Is(err, context.Canceled)
+		call.TimedOut = errors.Is(err, context.DeadlineExceeded)
 		return nil, err
 	}
 	out, err := translateResponse(resp, len(texts))
 	call.Failed = err != nil
-	telemetry.RecordModelCall(ctx, d.logger, call)
 	return out, err
 }
 

@@ -22,15 +22,9 @@ Two versions move independently in Harbor (RFC §5.3):
 - Content-free structured model-call timing logs separate time to first
   streamed delta from total provider time, including auxiliary calls and
   retries. Per-turn preparation timing records the delay before the first
-  model request and measured discovery, route-resolution and tool-attachment
-  stages. Unknown token counts remain absent.
-
-### Security
-
-- Redact credential-bearing URL query values in runtime logs and URL-bearing
-  errors. Existing event-stream query authentication remains supported;
-  clients that can set headers can use `Authorization: Bearer` to keep the
-  access token out of the URL and intermediary request logs.
+  planner chat model request and measured discovery, route-resolution and
+  tool-attachment stages. Unknown token counts remain absent; reported zero
+  counts remain explicit.
 
 ## [1.37.0] — 2026-11-07
 

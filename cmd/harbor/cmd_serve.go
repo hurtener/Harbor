@@ -50,7 +50,6 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
-	"github.com/hurtener/Harbor/internal/telemetry"
 	sdkprotocolclient "github.com/hurtener/Harbor/sdk/protocolclient"
 	tui "github.com/hurtener/Harbor/sdk/tui"
 )
@@ -166,9 +165,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Production: JSON structured logging on the sink (CLAUDE.md §5).
-	logger := slog.New(telemetry.URLRedactingHandler(slog.NewJSONHandler(logSink, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(logSink, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	})))
+	}))
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

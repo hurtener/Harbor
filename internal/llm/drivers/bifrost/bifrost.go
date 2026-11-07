@@ -317,6 +317,9 @@ func (d *Driver) streamComplete(
 		streamErr      error
 		gotAnyChunk    bool
 	)
+	// Preserve accounting even on an interrupted stream or callback panic,
+	// without allocating a timing snapshot for every subsequent content chunk.
+	defer func() { llm.ObserveProviderUsage(ctx, finalUsage) }()
 
 readLoop:
 	for {
@@ -355,7 +358,6 @@ readLoop:
 					}
 				}
 				processStreamChunk(chunk.BifrostChatResponse, &contentB, reasoning, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
-				llm.ObserveProviderUsage(ctx, finalUsage)
 			}
 		}
 	}

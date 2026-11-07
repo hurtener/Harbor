@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -60,7 +61,9 @@ func ObserveProviderRequest(ctx context.Context) {
 		timing.started = time.Now()
 		timing.dispatched = true
 	}
-	telemetry.ObserveFirstModelRequest(ctx)
+	if role, _ := ctx.Value(callRoleKey{}).(CallRole); role == CallRolePlanner {
+		telemetry.ObserveFirstModelRequest(ctx)
+	}
 }
 
 // ObserveStreamDelta records an actual streamed content, reasoning, or tool
@@ -85,10 +88,10 @@ func ObserveProviderUsage(ctx context.Context, usage Usage) {
 	}
 }
 
-func beginCallTiming(ctx context.Context, req CompleteRequest) (context.Context, CompleteRequest, *callTiming) {
+func beginCallTiming(ctx context.Context, req CompleteRequest, driverOwnsTiming bool) (context.Context, CompleteRequest, *callTiming) {
 	timing := &callTiming{started: time.Now()}
 	ctx = context.WithValue(ctx, streamTimingKey{}, timing)
-	if !req.Stream {
+	if !req.Stream || driverOwnsTiming {
 		return ctx, req, timing
 	}
 	wrap := func(next func(string, bool)) func(string, bool) {
@@ -109,6 +112,24 @@ func beginCallTiming(ctx context.Context, req CompleteRequest) (context.Context,
 	return ctx, req, timing
 }
 
+func (c *safetyClient) completeTimed(ctx context.Context, req CompleteRequest, timing *callTiming) (resp CompleteResponse, err error) {
+	returned := false
+	// Do not recover: provider and callback panics propagate unchanged after
+	// their failed timing record. End timing before post-call cost publication.
+	defer func() {
+		timingErr := err
+		if !returned {
+			timingErr = errors.New("model call panicked")
+		} else if timingErr == nil && strings.TrimSpace(resp.Content) == "" && len(resp.ToolCalls) == 0 {
+			timingErr = newEmptyCompletionError(resp.FinishReason)
+		}
+		c.logCallTiming(ctx, req, resp, timingErr, timing)
+	}()
+	resp, err = c.driver.Complete(ctx, req)
+	returned = true
+	return resp, err
+}
+
 func (c *safetyClient) logCallTiming(ctx context.Context, req CompleteRequest, resp CompleteResponse, callErr error, timing *callTiming) {
 	if _, ownsBoundary := c.driver.(ProviderRequestTiming); ownsBoundary && !timing.dispatched {
 		return
@@ -122,7 +143,8 @@ func (c *safetyClient) logCallTiming(ctx context.Context, req CompleteRequest, r
 	call := telemetry.ModelCallTiming{
 		Provider: provider, Model: req.Model, ReasoningEffort: string(effort), Role: string(boundedCallRole(role)),
 		Total: time.Since(timing.started), Failed: callErr != nil,
-		Canceled: callErr != nil && (ctx.Err() != nil || errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)),
+		TimedOut: callErr != nil && (errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(callErr, context.DeadlineExceeded)),
+		Canceled: callErr != nil && (errors.Is(ctx.Err(), context.Canceled) || errors.Is(callErr, context.Canceled)),
 	}
 	if scope, ok := AttemptScopeFrom(ctx); ok && scope != nil {
 		call.Attempt = &telemetry.ModelAttemptCoordinates{Attempt: scope.Attempt, Retry: scope.Retry, Downgrade: scope.Downgrade, FallbackHop: scope.FallbackHop}

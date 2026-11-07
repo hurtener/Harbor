@@ -10,9 +10,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 type timingDriver struct {
@@ -28,7 +30,7 @@ type leafTimingDriver struct{ timingDriver }
 
 func (leafTimingDriver) OwnsProviderRequestTiming() {}
 
-func timingClient(t *testing.T, driver llm.Driver, logs *bytes.Buffer) llm.LLMClient {
+func timingClient(t *testing.T, driver llm.Driver, logs *bytes.Buffer, configure ...func(*llm.ConfigSnapshot)) llm.LLMClient {
 	t.Helper()
 	deps, cleanup := makeDeps(t)
 	t.Cleanup(cleanup)
@@ -38,6 +40,9 @@ func timingClient(t *testing.T, driver llm.Driver, logs *bytes.Buffer) llm.LLMCl
 	cfg := makeSnapshot("m", 100000)
 	cfg.Driver, cfg.Provider = name, "openai"
 	cfg.DisableCorrections, cfg.DisableDowngrade, cfg.DisableRetry, cfg.DisableGovernance = true, true, true, true
+	for _, apply := range configure {
+		apply(&cfg)
+	}
 	client, err := llm.Open(t.Context(), cfg, deps)
 	if err != nil {
 		t.Fatal(err)
@@ -80,9 +85,11 @@ func TestCallTiming_FieldsOutcomesAndPrivacy(t *testing.T) {
 		{name: "terminal only", stream: true, wantOutcome: "ok"},
 		{name: "unreported counts", usage: llm.Usage{PromptTokens: 12, CompletionTokens: 3}, wantOutcome: "ok"},
 		{name: "estimated counts", usage: llm.Usage{ReportPresent: true, Estimated: true, PromptTokens: 12, CompletionTokens: 3}, wantOutcome: "ok"},
-		{name: "zero erased presence", usage: llm.Usage{ReportPresent: true}, wantOutcome: "ok"},
+		{name: "reported zero counts", usage: llm.Usage{ReportPresent: true}, wantOutcome: "ok", wantTokens: true},
+		{name: "reported zero output", usage: llm.Usage{ReportPresent: true, PromptTokens: 12}, wantOutcome: "ok", wantTokens: true},
 		{name: "error", callErr: errors.New(secret), wantOutcome: "error"},
 		{name: "canceled", callErr: fmt.Errorf("%s: %w", secret, context.Canceled), wantOutcome: "canceled"},
+		{name: "timeout", callErr: fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), wantOutcome: "timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,6 +131,9 @@ func TestCallTiming_FieldsOutcomesAndPrivacy(t *testing.T) {
 					t.Errorf("%s presence=%v", key, exists)
 				}
 			}
+			if tc.wantTokens && (got["input_tokens"] != float64(tc.usage.PromptTokens) || got["output_tokens"] != float64(tc.usage.CompletionTokens)) {
+				t.Errorf("reported usage changed: %v", got)
+			}
 			if total, ok := got["total_ms"].(float64); !ok || total < 0 {
 				t.Errorf("total_ms=%v", got["total_ms"])
 			}
@@ -131,6 +141,76 @@ func TestCallTiming_FieldsOutcomesAndPrivacy(t *testing.T) {
 				t.Fatalf("secret leaked: %s", logs.String())
 			}
 		})
+	}
+}
+
+func TestCallTiming_SafetyTimeout(t *testing.T) {
+	var logs bytes.Buffer
+	client := timingClient(t, timingDriver{complete: func(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+		<-ctx.Done()
+		return llm.CompleteResponse{}, ctx.Err()
+	}}, &logs, func(cfg *llm.ConfigSnapshot) { cfg.Timeout = time.Millisecond })
+	_, err := client.Complete(withIdentity(t, context.Background()), llm.CompleteRequest{Model: "m"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v", err)
+	}
+	records := timingRecords(t, &logs)
+	if len(records) != 1 || records[0]["outcome"] != "timeout" {
+		t.Fatalf("records = %v", records)
+	}
+}
+
+func TestCallTiming_PanicRecordsAndPropagates(t *testing.T) {
+	for _, callback := range []bool{false, true} {
+		t.Run(fmt.Sprint(callback), func(t *testing.T) {
+			var logs bytes.Buffer
+			original := &struct{ message string }{"private panic payload"}
+			client := timingClient(t, timingDriver{complete: func(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+				if callback {
+					req.OnContent("private output", false)
+				}
+				panic(original)
+			}}, &logs)
+			func() {
+				defer func() {
+					if got := recover(); got != original {
+						t.Fatalf("panic = %v, want original", got)
+					}
+				}()
+				_, _ = client.Complete(withIdentity(t, t.Context()), llm.CompleteRequest{Model: "m", Stream: callback, OnContent: func(string, bool) { panic(original) }})
+			}()
+			records := timingRecords(t, &logs)
+			if len(records) != 1 || records[0]["outcome"] != "error" {
+				t.Fatalf("records = %v", records)
+			}
+			if strings.Contains(logs.String(), "private") {
+				t.Fatalf("panic payload leaked: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestCallTiming_PreModelWaitsForPlannerDispatch(t *testing.T) {
+	var logs bytes.Buffer
+	client := timingClient(t, timingDriver{complete: func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error) {
+		return llm.CompleteResponse{Content: "ok"}, nil
+	}}, &logs)
+	ctx := telemetry.BeginTurnTiming(withIdentity(t, t.Context()), slog.New(slog.NewJSONHandler(&logs, nil)), time.Now())
+	for _, role := range []llm.CallRole{llm.CallRoleTitle, llm.CallRoleCompaction} {
+		if _, err := client.Complete(llm.WithCallRole(ctx, role), llm.CompleteRequest{Model: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(logs.String(), "turn.pre_model") {
+		t.Fatal("auxiliary call consumed pre-model timing")
+	}
+	for range 2 {
+		if _, err := client.Complete(llm.WithCallRole(ctx, llm.CallRolePlanner), llm.CompleteRequest{Model: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Count(logs.String(), `"msg":"turn.pre_model"`); got != 1 {
+		t.Fatalf("pre-model records = %d: %s", got, logs.String())
 	}
 }
 

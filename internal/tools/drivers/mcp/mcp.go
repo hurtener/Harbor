@@ -17,7 +17,6 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
-	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -1833,7 +1832,7 @@ func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUp
 	if err := p.cfg.Bus.Publish(ctx, ev); err != nil {
 		p.logger.Warn("mcp: publish resource_updated failed",
 			slog.String("source", string(p.source)),
-			slog.String("uri", audit.RedactURL(req.Params.URI)),
+			slog.String("uri", req.Params.URI),
 			slog.String("error", err.Error()),
 		)
 	}

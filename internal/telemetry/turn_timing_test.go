@@ -23,6 +23,8 @@ func TestTurnTiming_FirstDispatch_ExactlyOnce(t *testing.T) {
 	timing.now = func() time.Time { return start.Add(25 * time.Millisecond) }
 	RecordTurnStage(ctx, TurnStageToolAttach, 4*time.Millisecond)
 	RecordTurnStage(ctx, TurnStageToolAttach, 2*time.Millisecond)
+	RecordTurnStage(ctx, TurnStageProviderRoute, 2*time.Millisecond) // route selection
+	RecordTurnStage(ctx, TurnStageProviderRoute, 3*time.Millisecond) // credential resolution
 	RecordTurnStage(ctx, TurnStage(255), time.Second)
 	RecordTurnStage(ctx, TurnStageProviderRoute, -time.Second)
 	if output.Len() != 0 {
@@ -42,11 +44,8 @@ func TestTurnTiming_FirstDispatch_ExactlyOnce(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
 		t.Fatal(err)
 	}
-	if record["msg"] != "turn.pre_model" || record["duration_ms"] != float64(25) || record["tool_attach_ms"] != float64(6) {
+	if record["msg"] != "turn.pre_model" || record["duration_ms"] != float64(25) || record["tool_attach_ms"] != float64(6) || record["provider_route_ms"] != float64(5) {
 		t.Fatalf("unexpected timing fields: %v", record)
-	}
-	if _, ok := record["provider_route_ms"]; ok {
-		t.Fatal("negative or post-dispatch stage was recorded")
 	}
 }
 

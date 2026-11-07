@@ -26,7 +26,6 @@ func TestDriver_Names_DeterministicOrder(t *testing.T) {
 		"authorization",
 		"bearer",
 		"injection_credential",
-		"url_query",
 		"bearer_in_value",
 		"basic_in_value",
 		"multimodal",

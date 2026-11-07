@@ -12,7 +12,6 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -224,7 +223,7 @@ func buildHTTPClient(cfg Config) *http.Client {
 var ErrRedirectToUnlistedHost = errors.New("mcp: redirect target host is not in the bound provider's allowed_downstream_hosts")
 
 func refuseEveryCredentialRedirect(req *http.Request, _ []*http.Request) error {
-	return fmt.Errorf("%w: signed credential binding refuses redirect to %q", ErrRedirectToUnlistedHost, audit.RedactURL(req.URL.String()))
+	return fmt.Errorf("%w: signed credential binding refuses redirect to %q", ErrRedirectToUnlistedHost, req.URL.String())
 }
 
 // redirectGuardFor builds an http.Client CheckRedirect that refuses any

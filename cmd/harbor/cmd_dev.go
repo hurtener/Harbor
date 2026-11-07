@@ -85,7 +85,6 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
-	"github.com/hurtener/Harbor/internal/telemetry"
 	sdkprotocolclient "github.com/hurtener/Harbor/sdk/protocolclient"
 	tui "github.com/hurtener/Harbor/sdk/tui"
 )
@@ -311,9 +310,9 @@ func runDev(cmd *cobra.Command, _ []string) error {
 
 	// Boot logger — text handler so a dev operator's terminal shows readable
 	// lines (captured buffer in --tui mode).
-	logger := slog.New(telemetry.URLRedactingHandler(slog.NewTextHandler(logSink, &slog.HandlerOptions{
+	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	})))
+	}))
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

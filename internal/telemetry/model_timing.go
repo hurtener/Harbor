@@ -23,7 +23,7 @@ type ModelCallTiming struct {
 	Total                            time.Duration
 	FirstDelta                       *time.Duration
 	InputTokens, OutputTokens        *int
-	Failed, Canceled                 bool
+	Failed, Canceled, TimedOut       bool
 	Attempt                          *ModelAttemptCoordinates
 }
 
@@ -47,6 +47,9 @@ func RecordModelCall(ctx context.Context, logger *slog.Logger, call ModelCallTim
 	if call.Canceled {
 		outcome = "canceled"
 	}
+	if call.TimedOut {
+		outcome = "timeout"
+	}
 	attrs := []slog.Attr{
 		slog.String("step_kind", "model"), slog.String("role", role),
 		slog.String("provider", modelTimingIdentifier(call.Provider)), slog.String("model", modelTimingIdentifier(call.Model)),
@@ -60,10 +63,10 @@ func RecordModelCall(ctx context.Context, logger *slog.Logger, call ModelCallTim
 	if call.FirstDelta != nil {
 		attrs = append(attrs, slog.Float64("ttft_ms", float64(max(*call.FirstDelta, 0))/float64(time.Millisecond)))
 	}
-	if call.InputTokens != nil && *call.InputTokens > 0 {
+	if call.InputTokens != nil && *call.InputTokens >= 0 {
 		attrs = append(attrs, slog.Int("input_tokens", *call.InputTokens))
 	}
-	if call.OutputTokens != nil && *call.OutputTokens > 0 {
+	if call.OutputTokens != nil && *call.OutputTokens >= 0 {
 		attrs = append(attrs, slog.Int("output_tokens", *call.OutputTokens))
 	}
 	if call.Attempt != nil {

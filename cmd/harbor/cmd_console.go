@@ -54,7 +54,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hurtener/Harbor/internal/runtime/serve"
-	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 // defaultConsoleConfig is the embedded zero-config default `harbor
@@ -151,9 +150,9 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 	}
 	allowMock := os.Getenv(EnvDevAllowMock) == "1"
 
-	logger := slog.New(telemetry.URLRedactingHandler(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{
+	logger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	})))
+	}))
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

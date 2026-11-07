@@ -17,7 +17,8 @@ const (
 	TurnStageMCPDiscoveryReconcile
 	// TurnStageToolAttach measures connection detach/attach reconciliation.
 	TurnStageToolAttach
-	// TurnStageProviderRoute measures provider-route resolution before dispatch.
+	// TurnStageProviderRoute accumulates provider-route selection and credential
+	// resolution before dispatch.
 	TurnStageProviderRoute
 	turnStageCount
 )
@@ -74,7 +75,8 @@ func RecordTurnStage(ctx context.Context, stage TurnStage, duration time.Duratio
 }
 
 // ObserveFirstModelRequest emits turn.pre_model exactly once for this turn.
-// It must be called at the actual driver dispatch boundary, after local gates.
+// It must be called only for a main planner completion at the actual driver
+// dispatch boundary, after local gates. Auxiliary calls do not consume it.
 // No model means no record. Identity comes from the dispatch context.
 func ObserveFirstModelRequest(ctx context.Context) {
 	timing, ok := ctx.Value(turnTimingKey{}).(*turnTiming)

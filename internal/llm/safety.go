@@ -157,16 +157,12 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		defer cancel()
 	}
 
-	ctx, materialized, timing := beginCallTiming(ctx, materialized)
-	if _, ownsBoundary := c.driver.(ProviderRequestTiming); !ownsBoundary {
+	_, ownsBoundary := c.driver.(ProviderRequestTiming)
+	ctx, materialized, timing := beginCallTiming(ctx, materialized, ownsBoundary)
+	if !ownsBoundary {
 		ObserveProviderRequest(ctx)
 	}
-	resp, err := c.driver.Complete(ctx, materialized)
-	timingErr := err
-	if timingErr == nil && strings.TrimSpace(resp.Content) == "" && len(resp.ToolCalls) == 0 {
-		timingErr = newEmptyCompletionError(resp.FinishReason)
-	}
-	c.logCallTiming(ctx, materialized, resp, timingErr, timing)
+	resp, err := c.completeTimed(ctx, materialized, timing)
 	if err != nil {
 		// Pass the driver's response through UNCHANGED alongside the
 		// error — an errored attempt still carries a provider-reported
