@@ -296,7 +296,9 @@ func sealChunk(index uint64, prev string, rows []indexRow) (indexChunk, error) {
 		Prev:     prev,
 		FirstSeq: rows[0].Seq,
 		LastSeq:  rows[len(rows)-1].Seq,
-		Rows:     append([]indexRow(nil), rows...),
+		// Rows are immutable once sealed; callers never mutate the slice
+		// they pass, so it is referenced, not copied.
+		Rows: rows,
 	}
 	c.MinOccurredAt, c.MaxOccurredAt = rows[0].OccurredAt, rows[0].OccurredAt
 	for _, r := range rows[1:] {

@@ -222,23 +222,22 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 	if isIndexV2(rec.Bytes) {
 		return false, nil
 	}
-	head, err := decodeHead(rec.Bytes)
-	rec.Bytes = nil // release the raw head once decoded
+	// expected is the legacy generation the flip is conditioned on. The
+	// first flip attempt uses it without reloading the head: reloading a
+	// large legacy head just to read its generation costs a second full
+	// copy, and the CAS checks the generation anyway.
+	expected := rec.ID
+	rows, err := b.loadLegacyRows(ctx, id, rec.Bytes, nil)
+	rec.Bytes = nil // release the raw head as soon as it is decoded
+	if errors.Is(err, errLegacyNeedsBackfill) {
+		// The canonical backfill wrote checkpoints, so the generation moved.
+		expected = ""
+		rows, err = b.backfilledLegacyRows(ctx, id)
+	}
 	if err != nil {
 		return false, err
 	}
-	if !headMetadataReady(head) {
-		// Canonical backfill: validates every body and checkpoints. A missing
-		// or mismatching body fails loudly and the head is not migrated.
-		if head, err = b.ensureHeadMetadata(ctx, id, head); err != nil {
-			return false, fmt.Errorf("authenticate legacy head: %w", err)
-		}
-	}
-	rows, err := legacyRows(head)
-	if err != nil {
-		return false, err
-	}
-	chunks, err := sealedChunksFor(rows)
+	chunks, err := sealRange(rows, nil)
 	if err != nil {
 		return false, err
 	}
@@ -248,71 +247,54 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 		}
 		return false, err
 	}
-	prefix := rows[:len(chunks)*indexChunkRows]
 
 	for attempt := 1; attempt <= migrationFlipAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		current, err := b.store.Load(ctx, id, kindHead)
-		if errors.Is(err, state.ErrNotFound) {
-			return false, errMigrationErased // erased meanwhile: drop pre-writes
-		}
-		if err != nil {
-			return false, fmt.Errorf("reload head before flip: %w", err)
-		}
-		if isIndexV2(current.Bytes) {
-			return false, nil
-		}
-		legacy, currentRows := head, rows
-		if current.ID != rec.ID {
-			// A concurrent legacy append landed: decode the new generation.
-			// Its integrity checksum is verified once, over the re-expanded
-			// index, in verifyMigratedHeader (the same digest
-			// headMetadataReady computes), so a large head is not
-			// re-serialized twice per attempt.
-			if legacy, err = decodeHead(current.Bytes); err != nil {
-				return false, err
+		if expected == "" {
+			// A concurrent legacy append (or the backfill) moved the head:
+			// re-read it and stream only the new rows on top of the
+			// already-verified prefix.
+			current, err := b.store.Load(ctx, id, kindHead)
+			if errors.Is(err, state.ErrNotFound) {
+				return false, errMigrationErased // erased meanwhile: drop pre-writes
 			}
-			if !legacy.MetadataReady || legacy.MetadataValidatedCount != len(legacy.Sequences) || len(legacy.Metadata) != len(legacy.Sequences) {
+			if err != nil {
+				return false, fmt.Errorf("reload head before flip: %w", err)
+			}
+			if isIndexV2(current.Bytes) {
+				return false, nil
+			}
+			expected = current.ID
+			grown, err := b.loadLegacyRows(ctx, id, current.Bytes, rows)
+			current.Bytes = nil
+			if errors.Is(err, errLegacyNeedsBackfill) {
 				return false, fmt.Errorf("legacy head lost its authenticated metadata before the flip")
 			}
-			if currentRows, err = legacyRows(legacy); err != nil {
-				return false, err
-			}
-		}
-		// Legacy heads are append-only: the pre-written prefix must still
-		// be the head's prefix.
-		if len(currentRows) < len(prefix) {
-			return false, integrityErrorf("legacy head shrank below the pre-written prefix")
-		}
-		for i := range prefix {
-			if currentRows[i] != prefix[i] {
-				return false, integrityErrorf("legacy head prefix changed at row %d", i)
-			}
-		}
-		if full := len(currentRows) / indexChunkRows; full > len(chunks) {
-			all, err := sealedChunksFor(currentRows)
 			if err != nil {
 				return false, err
 			}
-			if err := b.prewriteChunks(ctx, id, all[len(chunks):], guard); err != nil {
-				if errors.Is(err, errAlreadyMigrated) {
-					return false, nil
+			rows = grown
+			if full := len(rows) / indexChunkRows; full > len(chunks) {
+				extra, err := sealRange(rows, chunks)
+				if err != nil {
+					return false, err
 				}
-				return false, err
+				if err := b.prewriteChunks(ctx, id, extra, guard); err != nil {
+					if errors.Is(err, errAlreadyMigrated) {
+						return false, nil
+					}
+					return false, err
+				}
+				chunks = append(chunks, extra...)
 			}
-			chunks = all
-			prefix = currentRows[:len(chunks)*indexChunkRows]
 		}
-		hdr, err := buildMigratedHeader(currentRows, chunks)
+		hdr, err := buildMigratedHeader(rows, chunks)
 		if err != nil {
 			return false, err
 		}
-		// The initially loaded head was authenticated above
-		// (headMetadataReady or the canonical backfill), so its checksum is
-		// not recomputed; a newer generation is authenticated here.
-		if err := verifyMigratedHeader(id, legacy, currentRows, chunks, hdr, current.ID != rec.ID); err != nil {
+		if err := verifyMigratedHeader(rows, chunks, hdr); err != nil {
 			return false, err
 		}
 		headerBytes, err := encodeHeader(hdr)
@@ -320,7 +302,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 			return false, err
 		}
 		next := state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headerBytes}
-		saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kindHead, ExpectedEventID: current.ID}, guard.fence, guard.epoch}, next)
+		saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kindHead, ExpectedEventID: expected}, guard.fence, guard.epoch}, next)
 		switch {
 		case saveErr == nil:
 			return true, b.verifyFlippedHeader(ctx, id)
@@ -330,7 +312,8 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 			} else if !valid {
 				return false, errMigrationErased
 			}
-			continue // concurrent legacy append or another flip
+			expected = "" // concurrent legacy append or another flip: re-read
+			continue
 		case errors.Is(saveErr, state.ErrCommitOutcomeUnknown):
 			landed, err := b.reconcileFlip(ctx, id, next.ID)
 			if err != nil {
@@ -339,6 +322,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 			if landed {
 				return true, b.verifyFlippedHeader(ctx, id)
 			}
+			expected = ""
 			continue
 		default:
 			return false, fmt.Errorf("flip header: %w", saveErr)
@@ -347,36 +331,111 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 	return false, fmt.Errorf("flip exceeded %d CAS attempts under concurrent appends: %w", migrationFlipAttempts, state.ErrConditionFailed)
 }
 
-// verifyMigratedHeader checks, before the flip, that re-expanding the new
-// index reproduces the legacy rows exactly and that the legacy integrity
-// checksum still authenticates them, plus counts and bounds.
-func verifyMigratedHeader(id identity.Quadruple, legacy headRecord, rows []indexRow, chunks []indexChunk, hdr indexHeader, authenticate bool) error {
-	expanded := make([]indexRow, 0, len(rows))
+// errLegacyNeedsBackfill reports a legacy head whose metadata projection is
+// not authenticated; it must go through the canonical body backfill first.
+var errLegacyNeedsBackfill = errors.New("durable: legacy head needs metadata backfill")
+
+// legacyRowsSpare is capacity reserved for rows appended during migration.
+const legacyRowsSpare = 4 * indexChunkRows
+
+// loadLegacyRows authenticates raw legacy head bytes and returns its rows,
+// streaming when the shape allows (legacystream.go) and otherwise through the
+// ordinary decoder. With prefix, the head must extend prefix unchanged.
+func (b *bus) loadLegacyRows(ctx context.Context, id identity.Quadruple, raw []byte, prefix []indexRow) ([]indexRow, error) {
+	rows, err := streamLegacyRows(raw, id, prefix, legacyRowsSpare)
+	if err == nil || !errors.Is(err, errLegacyStreamUnsupported) {
+		return rows, err
+	}
+	head, err := decodeHead(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !headMetadataReady(head) {
+		return nil, errLegacyNeedsBackfill
+	}
+	all, err := legacyRows(head)
+	if err != nil {
+		return nil, err
+	}
+	if prefix != nil {
+		if len(all) < len(prefix) {
+			return nil, integrityErrorf("legacy head shrank below the pre-written prefix")
+		}
+		for i := range prefix {
+			if all[i] != prefix[i] {
+				return nil, integrityErrorf("legacy head prefix changed at row %d", i)
+			}
+		}
+	}
+	return all, nil
+}
+
+// backfilledLegacyRows runs the canonical body backfill (which validates
+// every body and checkpoints) and returns the authenticated rows. A missing
+// or mismatching body fails loudly and the head is not migrated.
+func (b *bus) backfilledLegacyRows(ctx context.Context, id identity.Quadruple) ([]indexRow, error) {
+	rec, err := b.store.Load(ctx, id, kindHead)
+	if err != nil {
+		return nil, fmt.Errorf("reload head for backfill: %w", err)
+	}
+	head, err := decodeHead(rec.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	if head, err = b.ensureHeadMetadata(ctx, id, head); err != nil {
+		return nil, fmt.Errorf("authenticate legacy head: %w", err)
+	}
+	return legacyRows(head)
+}
+
+// sealRange seals the full chunks of rows that follow the already sealed
+// chunks, continuing their chain. Sealed chunks reference rows without
+// copying them.
+func sealRange(rows []indexRow, sealed []indexChunk) ([]indexChunk, error) {
+	prev := genesisDigest
+	if len(sealed) > 0 {
+		prev = sealed[len(sealed)-1].Digest
+	}
+	var out []indexChunk
+	for i := len(sealed); i < len(rows)/indexChunkRows; i++ {
+		c, err := sealChunk(uint64(i), prev, rows[i*indexChunkRows:(i+1)*indexChunkRows])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+		prev = c.Digest
+	}
+	return out, nil
+}
+
+// verifyMigratedHeader checks, before the flip, that the new index re-expands
+// to exactly the authenticated legacy rows (chunks then tail, in order) and
+// that counts and bounds match. The rows were authenticated against the
+// legacy integrity checksum when they were decoded.
+func verifyMigratedHeader(rows []indexRow, chunks []indexChunk, hdr indexHeader) error {
+	i := 0
+	check := func(seg []indexRow) error {
+		for _, r := range seg {
+			if i >= len(rows) || r != rows[i] {
+				return integrityErrorf("migrated index row %d differs from the legacy row", i)
+			}
+			i++
+		}
+		return nil
+	}
 	for _, c := range chunks {
-		expanded = append(expanded, c.Rows...)
-	}
-	expanded = append(expanded, hdr.Tail...)
-	if len(expanded) != len(rows) {
-		return integrityErrorf("migrated index re-expands to %d rows, legacy has %d", len(expanded), len(rows))
-	}
-	for i, r := range expanded {
-		if r != rows[i] {
-			return integrityErrorf("migrated index row %d differs from the legacy row", i)
+		if err := check(c.Rows); err != nil {
+			return err
 		}
 	}
-	if authenticate {
-		seqs := make([]uint64, len(expanded))
-		metadata := make([]eventMetadataRecord, len(expanded))
-		for i, r := range expanded {
-			seqs[i] = r.Seq
-			metadata[i] = r.metadataRecord(id)
-		}
-		if metadataIntegrityChecksum(seqs, metadata) != legacy.MetadataIntegrityChecksum {
-			return integrityErrorf("migrated index does not reproduce the legacy integrity checksum")
-		}
+	if err := check(hdr.Tail); err != nil {
+		return err
 	}
-	if hdr.RetainedCount != uint64(len(legacy.Sequences)) {
-		return integrityErrorf("migrated retained_count=%d, legacy has %d", hdr.RetainedCount, len(legacy.Sequences))
+	if i != len(rows) {
+		return integrityErrorf("migrated index re-expands to %d rows, legacy has %d", i, len(rows))
+	}
+	if hdr.RetainedCount != uint64(len(rows)) {
+		return integrityErrorf("migrated retained_count=%d, legacy has %d", hdr.RetainedCount, len(rows))
 	}
 	if len(rows) > 0 && (hdr.FirstSeq != rows[0].Seq || hdr.LastSeq != rows[len(rows)-1].Seq) {
 		return integrityErrorf("migrated bounds disagree with the legacy head")
