@@ -239,14 +239,45 @@ func TestStreamLegacyRows_MatchesFullDecodeAndFallsBack(t *testing.T) {
 	}
 	bad := append([]indexRow(nil), want[:2000]...)
 	bad[1500].RunID = "other"
-	if _, err := streamLegacyRows(rec.Bytes, id, bad, 0); !errors.Is(err, ErrIndexIntegrity) {
-		t.Fatalf("changed prefix = %v, want ErrIndexIntegrity", err)
+	if _, err := streamLegacyRows(rec.Bytes, id, bad, 0); !errors.Is(err, errLegacyStreamUnsupported) {
+		t.Fatalf("changed prefix on the stream = %v, want a decline", err)
 	}
+	b := &bus{store: store, clock: realClock{}, logger: discardTestLogger()}
+	if _, err := b.loadLegacyRows(context.Background(), id, rec.Bytes, bad); !errors.Is(err, ErrIndexIntegrity) {
+		t.Fatalf("changed prefix through the full path = %v, want ErrIndexIntegrity", err)
+	}
+	declines := func(name string, raw []byte) {
+		t.Helper()
+		if _, err := streamLegacyRows(raw, id, nil, 0); !errors.Is(err, errLegacyStreamUnsupported) {
+			t.Fatalf("%s = %v, want the stream to decline (full-path decides)", name, err)
+		}
+	}
+	// Trailing data / concatenated values, which json.Unmarshal rejects.
+	declines("trailing garbage", append(append([]byte(nil), rec.Bytes...), []byte("garbage")...))
+	declines("concatenated heads", append(append([]byte(nil), rec.Bytes...), rec.Bytes...))
+	// Case-variant and duplicate keys, which json.Unmarshal honours.
+	trimmed := rec.Bytes[:len(rec.Bytes)-1]
+	declines("case-variant key", append(append([]byte(nil), trimmed...), []byte(`,"Sequences":[1,2,3,4]}`)...))
+	declines("case-variant ready key", append(append([]byte(nil), trimmed...), []byte(`,"Metadata_Ready":false}`)...))
+	declines("duplicate key", append(append([]byte(nil), trimmed...), []byte(`,"metadata_ready":true}`)...))
+	declines("unknown key", append(append([]byte(nil), trimmed...), []byte(`,"extra":1}`)...))
+	// A partial backfill checkpoint (2 validated rows for 5 sequences, not
+	// ready) and a stale row in a not-ready head must fall back to the body
+	// backfill, not fail hard.
+	partial := headRecord{Sequences: head.Sequences[:5], Metadata: append([]eventMetadataRecord(nil), head.Metadata[:2]...), MetadataValidatedCount: 2}
+	partial.MetadataIntegrityChecksum = metadataIntegrityChecksum(partial.Sequences[:2], partial.Metadata)
+	raw, _ := encodeHead(partial)
+	declines("partial checkpoint", raw)
+	stale := headRecord{Sequences: head.Sequences[:5], Metadata: append([]eventMetadataRecord(nil), head.Metadata[:5]...)}
+	stale.Metadata[3].TenantID = "someone-else"
+	stale.Metadata[1].Sequence = stale.Metadata[2].Sequence
+	raw, _ = encodeHead(stale)
+	declines("stale rows in a not-ready head", raw)
 	// Unauthenticated or reordered heads are declined, never trusted.
 	tampered := head
 	tampered.Metadata = append([]eventMetadataRecord(nil), head.Metadata...)
 	tampered.Metadata[7].Type = events.EventTypeRuntimeError
-	raw, _ := encodeHead(tampered)
+	raw, _ = encodeHead(tampered)
 	if _, err := streamLegacyRows(raw, id, nil, 0); !errors.Is(err, errLegacyStreamUnsupported) {
 		t.Fatalf("checksum mismatch = %v, want fallback", err)
 	}

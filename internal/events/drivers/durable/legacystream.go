@@ -9,10 +9,12 @@ package durable
 // the bytes metadataIntegrityChecksum would marshal), and keeps only the
 // compact indexRow per event with interned type and run-id strings.
 //
-// Anything outside the shape encodeHead produces (field order, missing
-// fields, an empty head) returns errLegacyStreamUnsupported and the caller
-// falls back to the ordinary decode path, so correctness never depends on
-// the fast path.
+// Anything outside the shape encodeHead produces (field order, unknown,
+// case-variant or duplicate keys, trailing data, missing fields, an empty
+// head) and any row that fails a check returns errLegacyStreamUnsupported:
+// the caller falls back to the ordinary decode path, which either backfills an
+// unauthenticated head from bodies or fails loudly, so correctness never
+// depends on the fast path.
 
 import (
 	"bytes"
@@ -21,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -63,6 +66,7 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 		validated        int
 		checksum         string
 	)
+	seen := map[string]bool{}
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
@@ -72,6 +76,14 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 		if !ok {
 			return nil, errLegacyStreamUnsupported
 		}
+		// Only the exact canonical keys encodeHead writes, each at most once.
+		// encoding/json matches keys case-insensitively and lets a later
+		// duplicate win, so anything else could make this stream disagree
+		// with the full decoder: decline and let the full path decide.
+		if seen[key] {
+			return nil, errLegacyStreamUnsupported
+		}
+		seen[key] = true
 		switch key {
 		case "sequences":
 			if sawSeqs || sawMeta {
@@ -84,7 +96,7 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 			for dec.More() {
 				var seq uint64
 				if err := dec.Decode(&seq); err != nil {
-					return nil, fmt.Errorf("legacy head sequences: %w", err)
+					return nil, unsupportedOr(err)
 				}
 				seqs = append(seqs, seq)
 			}
@@ -95,7 +107,7 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 				return nil, errLegacyStreamUnsupported
 			}
 			if prefix != nil && len(seqs) < len(prefix) {
-				return nil, integrityErrorf("legacy head shrank below the pre-written prefix")
+				return nil, declinef("legacy head shrank below the pre-written prefix")
 			}
 			// The checksum input is {"sequences":[...],"metadata":[...]}.
 			_, _ = hasher.Write([]byte(`{"sequences":[`))
@@ -127,11 +139,11 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 			i := 0
 			for dec.More() {
 				if i >= len(seqs) {
-					return nil, integrityErrorf("legacy metadata has more rows than sequences")
+					return nil, declinef("legacy metadata has more rows than sequences")
 				}
 				var m eventMetadataRecord
 				if err := dec.Decode(&m); err != nil {
-					return nil, fmt.Errorf("legacy head metadata row %d: %w", i, err)
+					return nil, unsupportedOr(err)
 				}
 				encoded, err := json.Marshal(m)
 				if err != nil {
@@ -142,24 +154,24 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 				}
 				_, _ = hasher.Write(encoded)
 				if m.Sequence != seqs[i] {
-					return nil, integrityErrorf("legacy metadata row %d is out of sequence order", i)
+					return nil, declinef("legacy metadata row %d is out of sequence order", i)
 				}
 				if m.TenantID != id.TenantID || m.UserID != id.UserID || m.SessionID != id.SessionID {
-					return nil, integrityErrorf("legacy metadata row %d has a foreign identity", i)
+					return nil, declinef("legacy metadata row %d has a foreign identity", i)
 				}
 				r := rowFromMetadataRecord(m)
 				r.Type = internType(types, r.Type)
 				r.RunID = internString(runs, r.RunID)
 				if err := validateIndexRow(r); err != nil {
-					return nil, integrityErrorf("legacy metadata row %d: %v", i, err)
+					return nil, declinef("legacy metadata row %d: %v", i, err)
 				}
 				if i < len(prefix) {
 					if r != prefix[i] {
-						return nil, integrityErrorf("legacy head prefix changed at row %d", i)
+						return nil, declinef("legacy head prefix changed at row %d", i)
 					}
 				} else {
 					if i > 0 && r.Seq <= lastSeq(rows, prefix, i) {
-						return nil, integrityErrorf("legacy head is not strictly increasing at row %d", i)
+						return nil, declinef("legacy head is not strictly increasing at row %d", i)
 					}
 					rows = append(rows, r)
 				}
@@ -169,7 +181,7 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 				return nil, unsupportedOr(err)
 			}
 			if i != len(seqs) {
-				return nil, integrityErrorf("legacy metadata has %d rows for %d sequences", i, len(seqs))
+				return nil, declinef("legacy metadata has %d rows for %d sequences", i, len(seqs))
 			}
 			_, _ = hasher.Write([]byte(`]}`))
 		case "metadata_ready":
@@ -185,11 +197,15 @@ func streamLegacyRows(raw []byte, id identity.Quadruple, prefix []indexRow, spar
 				return nil, unsupportedOr(err)
 			}
 		default:
-			var skip json.RawMessage
-			if err := dec.Decode(&skip); err != nil {
-				return nil, unsupportedOr(err)
-			}
+			return nil, errLegacyStreamUnsupported
 		}
+	}
+	// The document must end exactly here: no trailing data or second value.
+	if err := expectDelim('}'); err != nil {
+		return nil, unsupportedOr(err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errLegacyStreamUnsupported
 	}
 	if !sawSeqs || !sawMeta || !ready || validated != len(seqs) {
 		// Not an authenticated, metadata-ready head: the canonical backfill
@@ -242,4 +258,10 @@ func internString(table map[string]string, s string) string {
 		table[s] = s
 	}
 	return s
+}
+
+// declinef reports a reason the stream declines the head (unsupported), so
+// the caller re-decides on the full decode path.
+func declinef(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errLegacyStreamUnsupported, fmt.Sprintf(format, args...))
 }
