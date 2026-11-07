@@ -165,3 +165,50 @@ func TestCatalogSearch_ConcurrentReconcileConverges(t *testing.T) {
 		}
 	}
 }
+
+type countingView struct {
+	tools.PlannerView
+	calls *int
+	mu    *sync.Mutex
+}
+
+func (v countingView) DiscoveryTools() ([]tools.Tool, bool) {
+	v.mu.Lock()
+	*v.calls++
+	v.mu.Unlock()
+	return v.PlannerView.DiscoveryTools()
+}
+
+// TestRunToolDiscovery_MemoizedPerSeat: one seat (one dispatch decision)
+// scans its view once however many meta-tool calls — including concurrent
+// parallel branches — read it; a new seat scans afresh.
+func TestRunToolDiscovery_MemoizedPerSeat(t *testing.T) {
+	cat := indexedCatalog(t)
+	if err := cat.Register(descriptor("srv_widget", "srv", "widget")); err != nil {
+		t.Fatal(err)
+	}
+	calls, mu := 0, &sync.Mutex{}
+	view := countingView{PlannerView: tools.NewPlannerView(cat, tools.CatalogFilter{}), calls: &calls, mu: mu}
+	ctx := tools.WithRunToolView(context.Background(), view)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got, _, ok := tools.RunToolDiscovery(ctx); !ok || len(got) != 1 {
+				t.Errorf("RunToolDiscovery = %v, %v", got, ok)
+			}
+		}()
+	}
+	wg.Wait()
+	if calls != 1 {
+		t.Fatalf("view scanned %d times within one seat, want 1", calls)
+	}
+	tools.RunToolDiscovery(tools.WithRunToolView(context.Background(), view))
+	if calls != 2 {
+		t.Fatalf("a new seat reused a stale memo (calls=%d)", calls)
+	}
+	if _, _, ok := tools.RunToolDiscovery(tools.WithRunToolView(ctx, nil)); ok {
+		t.Fatal("a nil seat did not mask the outer view")
+	}
+}

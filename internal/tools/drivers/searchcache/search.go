@@ -3,7 +3,6 @@ package searchcache
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,7 +18,14 @@ var ftsTokenRE = regexp.MustCompile(`[A-Za-z0-9]+`)
 // its server's title outranks a passing mention in a description.
 const ftsRankExpr = `bm25(tool_cache_fts, 4.0, 1.0, 1.0, 3.0, 0.5)`
 
-const rowColumns = `c.name, c.description, c.tags, c.args_schema, c.source, c.server_title, c.server_description`
+// keyColumns are all a ranked or browse query reads: the name (the result
+// identity the caller materializes from its own authoritative view) and the
+// tags (the tag filter). Descriptions and schemas are never decoded for the
+// process-wide match set.
+const keyColumns = `c.name, c.tags`
+
+// textColumns add the indexed text the substring fallback matches against.
+const textColumns = `c.name, c.tags, c.description, c.server_title, c.server_description`
 
 func (d *driver) searchFTS5(ctx context.Context, query string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
 	tokens := ftsTokenRE.FindAllString(strings.ToLower(query), -1)
@@ -37,7 +43,7 @@ func (d *driver) searchFTS5(ctx context.Context, query string, limit int, admit 
 // admitted rows. The visibility predicate runs before the limit, so foreign
 // rows never consume result slots; memory stays bounded by limit.
 func (d *driver) rankedFTS(ctx context.Context, matchExpr string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
-	const sel = `SELECT ` + rowColumns + `
+	const sel = `SELECT ` + keyColumns + `
         FROM tool_cache_fts JOIN tool_cache c ON c.rowid = tool_cache_fts.rowid
         WHERE tool_cache_fts MATCH ?
         ORDER BY ` + ftsRankExpr + `, c.name`
@@ -46,30 +52,30 @@ func (d *driver) rankedFTS(ctx context.Context, matchExpr string, limit int, adm
 		return nil, fmt.Errorf("searchcache: fts5 query: %w", err)
 	}
 	defer rows.Close()
-	return collect(rows, limit, nil, admit)
+	return collect(rows, limit, false, nil, admit)
 }
 
 // searchSubstring is the fallback when FTS5 is unavailable or yields no
 // admitted row: a case-insensitive substring match over every indexed field.
 func (d *driver) searchSubstring(ctx context.Context, query string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
 	needle := strings.ToLower(query)
-	rows, err := d.db.QueryContext(ctx, `SELECT `+rowColumns+` FROM tool_cache c ORDER BY c.name`)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+textColumns+` FROM tool_cache c ORDER BY c.name`)
 	if err != nil {
 		return nil, fmt.Errorf("searchcache: substring scan: %w", err)
 	}
 	defer rows.Close()
-	return collect(rows, limit, func(t tools.Tool) bool { return matchesSubstring(t, needle) }, admit)
+	return collect(rows, limit, true, func(t tools.Tool) bool { return matchesSubstring(t, needle) }, admit)
 }
 
 // scan returns admitted rows in name order (an empty query: tag-only or
 // browse).
 func (d *driver) scan(ctx context.Context, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+rowColumns+` FROM tool_cache c ORDER BY c.name`)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+keyColumns+` FROM tool_cache c ORDER BY c.name`)
 	if err != nil {
 		return nil, fmt.Errorf("searchcache: scan: %w", err)
 	}
 	defer rows.Close()
-	return collect(rows, limit, nil, admit)
+	return collect(rows, limit, false, nil, admit)
 }
 
 func matchesSubstring(t tools.Tool, needle string) bool {
@@ -81,29 +87,30 @@ func matchesSubstring(t tools.Tool, needle string) bool {
 	return false
 }
 
-func collect(rows *sql.Rows, limit int, match func(tools.Tool) bool, admit func(tools.Tool) bool) ([]tools.Tool, error) {
+// collect streams rows, keeping the first limit that match and are
+// admitted. Returned Tools carry only Name and Tags: callers materialize
+// everything else from their own authoritative source. withText selects the
+// textColumns layout (used for matching only, then dropped).
+func collect(rows *sql.Rows, limit int, withText bool, match func(tools.Tool) bool, admit func(tools.Tool) bool) ([]tools.Tool, error) {
 	var out []tools.Tool
 	for rows.Next() {
-		var name, desc, tagsJSON, schemaJSON, source, title, serverDesc string
-		if err := rows.Scan(&name, &desc, &tagsJSON, &schemaJSON, &source, &title, &serverDesc); err != nil {
+		var t tools.Tool
+		var tagsJSON string
+		if withText {
+			if err := rows.Scan(&t.Name, &tagsJSON, &t.Description, &t.SourceTitle, &t.SourceDescription); err != nil {
+				return nil, err
+			}
+		} else if err := rows.Scan(&t.Name, &tagsJSON); err != nil {
 			return nil, err
 		}
-		t := tools.Tool{
-			Name:              name,
-			Description:       desc,
-			Tags:              unmarshalStrings(tagsJSON),
-			ArgsSchema:        json.RawMessage(schemaJSON),
-			Source:            tools.ToolSourceID(source),
-			SourceTitle:       title,
-			SourceDescription: serverDesc,
-		}
+		t.Tags = unmarshalStrings(tagsJSON)
 		if match != nil && !match(t) {
 			continue
 		}
 		if !admit(t) {
 			continue
 		}
-		out = append(out, t)
+		out = append(out, tools.Tool{Name: t.Name, Tags: t.Tags})
 		if len(out) >= limit {
 			break
 		}

@@ -144,6 +144,16 @@ func phase111dCtx(t *testing.T, id identity.Identity) context.Context {
 	return ctx
 }
 
+// phase111dRunView seats the run tool view the dispatcher seats for a
+// planner decision (here the plain identity-filtered view), which the
+// skill_* capability envelope derives from.
+func phase111dRunView(ctx context.Context, cat tools.ToolCatalog) context.Context {
+	q, _ := identity.QuadrupleFrom(ctx)
+	return tools.WithRunToolView(ctx, tools.NewPlannerView(cat, tools.CatalogFilter{
+		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
+	}))
+}
+
 func phase111dImporterDeps(t *testing.T) importer.Deps {
 	t.Helper()
 	// The importer demands an artifact store even for attachment-less
@@ -179,7 +189,7 @@ func TestE2E_Phase111d_ImportDiscoverGetInject(t *testing.T) {
 		t.Fatal("skill_search not registered")
 	}
 	rawSearch, _ := json.Marshal(builtin.SkillSearchArgs{Query: "paper summary"})
-	searchRes, err := searchDesc.Invoke(ctxA, rawSearch)
+	searchRes, err := searchDesc.Invoke(phase111dRunView(ctxA, stack.catalog), rawSearch)
 	if err != nil {
 		t.Fatalf("skill_search invoke: %v", err)
 	}
@@ -200,7 +210,7 @@ func TestE2E_Phase111d_ImportDiscoverGetInject(t *testing.T) {
 	// dropped), the redaction/normalisation pipeline included.
 	getDesc, _ := stack.catalog.Resolve("skill_get")
 	rawGet, _ := json.Marshal(builtin.SkillGetArgs{Names: []string{"summarise-paper"}, MaxTokens: 100})
-	getRes, err := getDesc.Invoke(ctxA, rawGet)
+	getRes, err := getDesc.Invoke(phase111dRunView(ctxA, stack.catalog), rawGet)
 	if err != nil {
 		t.Fatalf("skill_get invoke: %v", err)
 	}
@@ -227,9 +237,9 @@ func TestE2E_Phase111d_ImportDiscoverGetInject(t *testing.T) {
 		t.Fatalf("NewDirectory: %v", err)
 	}
 	views, err := dir.View(ctxA, skills.DirectoryCapability{
-		AllowedTools: tools.VisibleNames(stack.catalog, tools.CatalogFilter{
+		AllowedTools: tools.DiscoveryNames(tools.NewPlannerView(stack.catalog, tools.CatalogFilter{
 			TenantID: phase111dIDA.TenantID, UserID: phase111dIDA.UserID, SessionID: phase111dIDA.SessionID,
-		}),
+		})),
 	})
 	if err != nil {
 		t.Fatalf("Directory.View: %v", err)
@@ -250,7 +260,7 @@ func TestE2E_Phase111d_ImportDiscoverGetInject(t *testing.T) {
 
 	// 5. Isolation (§6 rule 10): tenant B sees nothing anywhere.
 	ctxB := phase111dCtx(t, phase111dIDB)
-	resB, err := searchDesc.Invoke(ctxB, rawSearch)
+	resB, err := searchDesc.Invoke(phase111dRunView(ctxB, stack.catalog), rawSearch)
 	if err != nil {
 		t.Fatalf("tenant-B skill_search: %v", err)
 	}
@@ -319,7 +329,7 @@ func TestE2E_Phase111d_ConcurrentImportVsSearch(t *testing.T) {
 				return
 			}
 			raw, _ := json.Marshal(builtin.SkillSearchArgs{Query: "paper"})
-			if _, err := searchDesc.Invoke(ctx, raw); err != nil {
+			if _, err := searchDesc.Invoke(phase111dRunView(ctx, stack.catalog), raw); err != nil {
 				errCh <- fmt.Errorf("search[%d]: %w", i, err)
 				return
 			}

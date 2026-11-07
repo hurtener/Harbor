@@ -1593,14 +1593,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		// job via the `skill_search` meta-tool (107c); a stable
 		// prompt prefix beats a per-turn query-churned block (the
 		// manifest-pattern / KV-cache framing).
-		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{
-			AllowedTools: tools.VisibleNames(d.catalog, tools.CatalogFilter{
-				TenantID:      q.TenantID,
-				UserID:        q.UserID,
-				SessionID:     q.SessionID,
-				GrantedScopes: d.grantedScopes,
-			}),
-		})
+		// No catalog: no run view, so the capability set is empty
+		// (default deny).
+		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{})
 		if sErr != nil {
 			d.logger.Warn("RunLoopDriver: skills Directory.View failed; failing run",
 				slog.String("task_id", string(taskID)),

@@ -159,10 +159,10 @@ func KnownNames() []string {
 //     not an operator configuration choice.
 //
 // `GrantedScopes` is the operator-declared `tools.granted_scopes`
-// list. The skill_* delegations derive the
-// run's capability envelope from `tools.VisibleNames(Catalog, ...)`
-// under these scopes — default-deny: an empty list means tools with
-// AuthScopes are invisible and skills requiring them are filtered.
+// list. The skill_* delegations derive the run's capability envelope
+// from the run tool view seated on the invocation ctx, narrowed by these
+// scopes — default-deny: an empty list means tools with AuthScopes are
+// invisible and skills requiring them are filtered.
 type RegistryContext struct {
 	Catalog tools.ToolCatalog
 	// SkillReader optionally supplies a read-only skill projection for

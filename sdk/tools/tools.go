@@ -42,7 +42,9 @@ type (
 	ToolCatalog = internal.ToolCatalog
 	// CatalogOption customises NewCatalog.
 	CatalogOption = internal.CatalogOption
-	// CatalogFilter scopes catalog reads by the identity triple.
+	// CatalogFilter is the catalog's loading/scope/name predicate. Its
+	// identity fields are not a visibility filter; per-principal scoping
+	// lives in the run's projected view.
 	CatalogFilter = internal.CatalogFilter
 	// ToolDescriptor is a tool's catalog-visible metadata.
 	ToolDescriptor = internal.ToolDescriptor
@@ -66,7 +68,7 @@ type (
 	TransportKind = internal.TransportKind
 	// ValidateMode selects schema validation of args and/or results.
 	ValidateMode = internal.ValidateMode
-	// PlannerView is the identity-filtered, planner-facing catalog view.
+	// PlannerView is the scope/loading-filtered, planner-facing catalog view.
 	PlannerView = internal.PlannerView
 	// ToolSearchRequest is one ToolCatalog.Search query; its Visible
 	// predicate (required — nil admits nothing) is applied before the limit.
@@ -184,8 +186,9 @@ var NewPlannerView = internal.NewPlannerView
 // DefaultPolicy returns the default per-tool execution policy.
 var DefaultPolicy = internal.DefaultPolicy
 
-// VisibleNames lists the tool names visible under a filter.
-var VisibleNames = internal.VisibleNames
+// DiscoveryNames lists a run view's full reachable tool names (both
+// loading modes) — the skills capability input.
+var DiscoveryNames = internal.DiscoveryNames
 
 // WithCatalog returns a child context carrying the catalog.
 var WithCatalog = internal.WithCatalog

@@ -38,6 +38,12 @@ type catalog struct {
 	// serialized reconciles converge the index on the latest catalog state
 	// regardless of the order concurrent mutations finish in.
 	searchMu sync.Mutex
+	// searchDirty holds names whose last index write failed (guarded by
+	// searchMu, bounded by maxSearchDirty). They are retried on the next
+	// reconcile or Search; searchDirtyN mirrors its size for a lock-free
+	// check on the Search path.
+	searchDirty  map[string]struct{}
+	searchDirtyN atomic.Int64
 
 	// bus is the optional canonical event bus. When set, Register wraps
 	// every registered descriptor's Invoke in the ONE universal
@@ -60,7 +66,9 @@ type catalog struct {
 // present, Remove when absent), so no row outlives its tool.
 type ToolSearchCache interface {
 	// Search returns up to req.Limit rows admitted by req.Visible, ordered
-	// by relevance. Visibility is applied before the limit.
+	// by relevance. Visibility is applied before the limit. Returned rows
+	// carry Name and Tags only; callers materialize everything else from
+	// their own authoritative view.
 	Search(ctx context.Context, req ToolSearchRequest) ([]Tool, error)
 	// Sync upserts the given tools.
 	Sync(ctx context.Context, tools []Tool) error
@@ -160,19 +168,51 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	return nil
 }
 
+// maxSearchDirty bounds the retry set of names whose index write failed.
+// Beyond it a failure is only logged: the index is an accelerator, and
+// tool_search merges an in-memory pass over the run's own view whenever the
+// index returns fewer than the requested results.
+const maxSearchDirty = 4096
+
 // reconcileSearch brings the search index in line with the CURRENT catalog
-// state for names: a present name is upserted with its current Tool, an
-// absent name is removed. Runs outside c.mu (index I/O never blocks
-// Resolve/List) and under searchMu, so concurrent reconciles cannot apply an
-// older snapshot after a newer one. Bounded by a short timeout; failures log
-// at warn because discovery degrades while dispatch is unaffected.
+// state for names (plus any earlier failed names): a present name is
+// upserted with its current Tool, an absent name is removed. Runs outside
+// c.mu (index I/O never blocks Resolve/List) and under searchMu, so
+// concurrent reconciles cannot apply an older snapshot after a newer one.
+// Bounded by a short timeout; a failed write marks its names dirty for
+// retry rather than leaving a silent gap.
 func (c *catalog) reconcileSearch(op string, names []string) {
-	sc := c.searchCache
-	if sc == nil || len(names) == 0 {
+	if c.searchCache == nil || (len(names) == 0 && c.searchDirtyN.Load() == 0) {
 		return
 	}
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
+	c.reconcileSearchLocked(op, names)
+}
+
+// retrySearchDirty retries failed index writes without waiting: a Search
+// that finds another reconcile in progress simply proceeds.
+func (c *catalog) retrySearchDirty() {
+	if c.searchCache == nil || c.searchDirtyN.Load() == 0 || !c.searchMu.TryLock() {
+		return
+	}
+	defer c.searchMu.Unlock()
+	c.reconcileSearchLocked("retry", nil)
+}
+
+// reconcileSearchLocked does the work; caller holds searchMu.
+func (c *catalog) reconcileSearchLocked(op string, names []string) {
+	sc := c.searchCache
+	if len(c.searchDirty) > 0 {
+		for name := range c.searchDirty {
+			names = append(names, name)
+		}
+		c.searchDirty = nil
+		c.searchDirtyN.Store(0)
+	}
+	if len(names) == 0 {
+		return
+	}
 	seen := make(map[string]struct{}, len(names))
 	upserts := make([]Tool, 0, len(names))
 	var removals []string
@@ -193,15 +233,45 @@ func (c *catalog) reconcileSearch(op string, names []string) {
 	defer cancel()
 	if len(removals) > 0 {
 		if err := sc.Remove(ctx, removals); err != nil {
-			slog.Warn("tools/catalog: searchCache.Remove failed",
+			slog.Warn("tools/catalog: searchCache.Remove failed; will retry",
 				slog.String("op", op), slog.Int("names", len(removals)), slog.String("err", err.Error()))
+			c.markSearchDirty(removals)
 		}
 	}
 	if len(upserts) > 0 {
 		if err := sc.Sync(ctx, upserts); err != nil {
-			slog.Warn("tools/catalog: searchCache.Sync failed",
+			slog.Warn("tools/catalog: searchCache.Sync failed; will retry",
 				slog.String("op", op), slog.Int("names", len(upserts)), slog.String("err", err.Error()))
+			dirty := make([]string, 0, len(upserts))
+			for _, t := range upserts {
+				dirty = append(dirty, t.Name)
+			}
+			c.markSearchDirty(dirty)
 		}
+	}
+}
+
+// markSearchDirty records names for retry, up to maxSearchDirty. Caller
+// holds searchMu.
+func (c *catalog) markSearchDirty(names []string) {
+	if c.searchDirty == nil {
+		c.searchDirty = make(map[string]struct{}, len(names))
+	}
+	dropped := 0
+	for _, name := range names {
+		if _, ok := c.searchDirty[name]; ok {
+			continue
+		}
+		if len(c.searchDirty) >= maxSearchDirty {
+			dropped++
+			continue
+		}
+		c.searchDirty[name] = struct{}{}
+	}
+	c.searchDirtyN.Store(int64(len(c.searchDirty)))
+	if dropped > 0 {
+		slog.Warn("tools/catalog: search index retry set full; dropped names rely on the in-memory search fallback",
+			slog.Int("dropped", dropped))
 	}
 }
 
@@ -474,6 +544,7 @@ func (c *catalog) Search(ctx context.Context, req ToolSearchRequest) []Tool {
 	if sc == nil || req.Visible == nil {
 		return nil
 	}
+	c.retrySearchDirty()
 	results, err := sc.Search(ctx, req)
 	if err != nil {
 		slog.Warn("tools/catalog: search cache returned an error",

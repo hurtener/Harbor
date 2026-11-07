@@ -101,7 +101,7 @@ func TestSearch_MatchesServerTitleAndDescription(t *testing.T) {
 	}
 	for _, q := range []string{"mailbox", "correspondence", "acme items", "Mailb"} {
 		got, err := sc.Search(ctx, req(q, nil, 10))
-		if err != nil || len(got) != 1 || got[0].Name != "srv-1_list_items" || got[0].SourceTitle != "Acme Mailbox" {
+		if err != nil || len(got) != 1 || got[0].Name != "srv-1_list_items" {
 			t.Fatalf("Search(%q) = %+v, %v; want the Acme Mailbox tool", q, got, err)
 		}
 	}
@@ -135,14 +135,14 @@ func TestSync_BoundsServerMetadata(t *testing.T) {
 	if err := sc.Sync(ctx, []tools.Tool{{Name: "big", SourceTitle: long, SourceDescription: long}}); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	got, err := sc.Search(ctx, req("", nil, 10))
-	if err != nil || len(got) != 1 {
-		t.Fatalf("Search: %v, %v", got, err)
+	var title, desc string
+	if err := sc.(*driver).db.QueryRowContext(ctx, `SELECT server_title, server_description FROM tool_cache WHERE name = 'big'`).Scan(&title, &desc); err != nil {
+		t.Fatalf("read row: %v", err)
 	}
-	if len(got[0].SourceTitle) > maxServerTitleBytes || len(got[0].SourceDescription) > maxServerDescriptionBytes {
-		t.Fatalf("server metadata not bounded: %d/%d bytes", len(got[0].SourceTitle), len(got[0].SourceDescription))
+	if title == "" || len(title) > maxServerTitleBytes || len(desc) > maxServerDescriptionBytes {
+		t.Fatalf("server metadata not bounded: %d/%d bytes", len(title), len(desc))
 	}
-	if !strings.HasPrefix(long, got[0].SourceTitle) {
+	if !strings.HasPrefix(long, title) || !strings.HasPrefix(long, desc) {
 		t.Fatal("truncation split a rune")
 	}
 }
@@ -197,5 +197,31 @@ func TestNew_FileDSN_MigratesV1AndDropsPriorProcessRows(t *testing.T) {
 	defer func() { _ = sc2.Close() }()
 	if got, err := sc2.Search(ctx, req("current", nil, 10)); err != nil || len(got) != 0 {
 		t.Fatalf("rows survived re-open: %v, %v", names(got), err)
+	}
+}
+
+// TestSearch_ResultsCarryOnlyKeys: a search reads and returns only the row
+// identity and tags — never descriptions or argument schemas — for any
+// match, so a broad process-wide match set costs no schema decoding.
+func TestSearch_ResultsCarryOnlyKeys(t *testing.T) {
+	t.Parallel()
+	sc := newCache(t)
+	ctx := context.Background()
+	if err := sc.Sync(ctx, []tools.Tool{{
+		Name: "srv_tool", Description: "widget maker", Tags: []string{"t"},
+		ArgsSchema:  json.RawMessage(`{"type":"object","properties":{"big":{"type":"string"}}}`),
+		SourceTitle: "Widget Server",
+	}}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	for _, q := range []string{"widget", "idget", ""} {
+		got, err := sc.Search(ctx, req(q, nil, 10))
+		if err != nil || len(got) != 1 {
+			t.Fatalf("Search(%q) = %v, %v", q, got, err)
+		}
+		r := got[0]
+		if r.Name != "srv_tool" || len(r.Tags) != 1 || r.Description != "" || len(r.ArgsSchema) != 0 || r.SourceTitle != "" {
+			t.Fatalf("Search(%q) returned more than keys: %+v", q, r)
+		}
 	}
 }

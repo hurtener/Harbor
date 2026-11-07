@@ -353,16 +353,17 @@ type ToolDescriptor struct {
 	Validate func(args json.RawMessage) error
 }
 
-// CatalogFilter is the server-enforced subscription predicate on
-// ToolCatalog.List. Keys on the (tenant, user, session) triple plus
-// GrantedScopes — every component participates in visibility:
+// CatalogFilter is the predicate ToolCatalog.List applies over the
+// process-wide catalog: GrantedScopes, LoadingModes and NameRegex.
 //
-//   - TenantID / UserID / SessionID: typically mandatory at the
-//     dispatch boundary, but List is tolerant of empty fields so
-//     callers can build admin-view filters (an empty triple matches
-//     every tool — see HasFullTriple). Production wiring (later phases
-//     Protocol surface) MUST gate the empty-triple case behind an
-//     elevated scope.
+//   - TenantID / UserID / SessionID are NOT a visibility predicate. The
+//     catalog stores no per-principal ownership, so List ignores them; they
+//     travel with the filter only as the caller's identity for the layers
+//     that DO scope (the run-start projection's owner-scoped view, built
+//     over the registry's source ownership). Never treat a List result as
+//     "what this principal may see" — use the run's projected view
+//     ([RunToolView] at invocation time, [DiscoveryNames] for capability
+//     sets).
 //
 //   - GrantedScopes: a Tool is visible only if every entry in its
 //     AuthScopes is contained in GrantedScopes. Tools with no
@@ -379,13 +380,6 @@ type CatalogFilter struct {
 	GrantedScopes               []string
 	LoadingModes                []LoadingMode
 	NameRegex                   *regexp.Regexp
-}
-
-// HasFullTriple reports whether the filter has all three identity
-// components. The Protocol surface uses this to reject empty-
-// triple non-admin reads.
-func (f CatalogFilter) HasFullTriple() bool {
-	return f.TenantID != "" && f.UserID != "" && f.SessionID != ""
 }
 
 // matches reports whether t passes f's visibility predicate. Used

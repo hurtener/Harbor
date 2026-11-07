@@ -41,10 +41,14 @@ func registerSkillGet(rc RegistryContext) error {
 			if reader == nil {
 				return skilltools.GetResult{}, fmt.Errorf("skill_get: backing SkillStore is nil and no SkillReader was supplied (operator misconfiguration)")
 			}
+			capability, err := runCapability(ctx, rc)
+			if err != nil {
+				return skilltools.GetResult{}, err
+			}
 			return skilltools.GetHandler(ctx, reader, rc.Bus, skilltools.GetArgs{
 				Names:      args.Names,
 				MaxTokens:  args.MaxTokens,
-				Capability: runCapability(ctx, rc),
+				Capability: capability,
 			})
 		},
 		tools.WithDescription("Fetch the full content of one or more named skill playbooks. Results are capability-filtered, redacted, and budget-fit to max_tokens via the tiered ladder (full → drop optional → cap steps to 3)."),

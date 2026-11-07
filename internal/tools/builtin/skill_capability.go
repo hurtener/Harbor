@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
 	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -22,14 +21,14 @@ func skillReader(rc RegistryContext) skills.SkillReader {
 // runCapability computes the capability envelope the skill_* built-in
 // delegations pass to the skills-tools handlers.
 //
-// The envelope is SERVER-computed, never LLM-supplied: the builtin
-// arg shapes deliberately omit the `capability` field so a model
-// cannot widen its own allowed-tool set and surface skills the run
-// is not entitled to. AllowedTools is the run's full reachable tool
-// set — `tools.VisibleNames` over the catalog under the run's
-// identity triple + the operator-declared granted scopes, both
-// loading modes (Always + Deferred, since `tool_search` makes the
-// deferred set reachable).
+// The envelope is SERVER-computed, never LLM-supplied: the builtin arg
+// shapes deliberately omit the `capability` field so a model cannot widen
+// its own allowed-tool set and surface skills the run is not entitled to.
+// AllowedTools is the calling run's full reachable tool set — the discovery
+// set of the run tool view seated on ctx (both loading modes, since
+// `tool_search` makes the deferred set reachable), narrowed by the
+// operator-declared granted scopes. It is never a process-catalog listing:
+// the catalog holds every principal's tools.
 //
 // AllowedNamespaces / AllowedTags stay EMPTY: Harbor has no runtime
 // source of namespace / tag grants (no config surface declares them),
@@ -37,23 +36,39 @@ func skillReader(rc RegistryContext) skills.SkillReader {
 // RequiredTags is non-empty is filtered out. A recorded decision —
 // when a grants surface lands, this is the one place to thread it.
 //
-// A missing identity yields an empty envelope; the downstream handler
-// rejects the call on its own identity gate before the envelope is
-// consulted, so the empty value is never load-bearing.
-func runCapability(ctx context.Context, rc RegistryContext) skilltools.CapabilityContext {
-	q, ok := identity.QuadrupleFrom(ctx)
+// A missing identity yields an empty envelope and no error: the downstream
+// handler rejects the call on its own identity gate (and emits its
+// rejection event) before the envelope is consulted. With identity but no
+// seated run view the call fails closed with ErrRunToolViewRequired.
+func runCapability(ctx context.Context, rc RegistryContext) (skilltools.CapabilityContext, error) {
+	if _, err := requireIdentity(ctx); err != nil {
+		return skilltools.CapabilityContext{}, nil
+	}
+	names, err := runAllowedTools(ctx, rc.GrantedScopes)
+	if err != nil {
+		return skilltools.CapabilityContext{}, err
+	}
+	return skilltools.CapabilityContext{AllowedTools: names}, nil
+}
+
+// runAllowedTools is the sorted reachable tool-name set of the run view
+// seated on ctx, narrowed by grantedScopes. Fails closed without a view.
+func runAllowedTools(ctx context.Context, grantedScopes []string) ([]string, error) {
+	discovered, _, ok := tools.RunToolDiscovery(ctx)
 	if !ok {
-		if id, ok2 := identity.From(ctx); ok2 {
-			q = identity.Quadruple{Identity: id}
+		return nil, ErrRunToolViewRequired
+	}
+	granted := make(map[string]struct{}, len(grantedScopes))
+	for _, s := range grantedScopes {
+		granted[s] = struct{}{}
+	}
+	permitted := make([]tools.Tool, 0, len(discovered))
+	for _, t := range discovered {
+		if scopesCovered(t.AuthScopes, granted) {
+			permitted = append(permitted, t)
 		}
 	}
-	names := tools.VisibleNames(rc.Catalog, tools.CatalogFilter{
-		TenantID:      q.TenantID,
-		UserID:        q.UserID,
-		SessionID:     q.SessionID,
-		GrantedScopes: rc.GrantedScopes,
-	})
-	return skilltools.CapabilityContext{AllowedTools: names}
+	return tools.SortedToolNames(permitted), nil
 }
 
 // requireSkillDeps is the shared registration-time gate for the

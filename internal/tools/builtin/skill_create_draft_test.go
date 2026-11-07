@@ -118,7 +118,7 @@ func TestRegisterSkillCreateDraft_RegistersAndInvokes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := desc.Invoke(ctx, raw)
+	result, err := desc.Invoke(withRunView(ctx, cat), raw)
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRegisterSkillCreateDraft_UnavailableToolWarning(t *testing.T) {
 	ctx, _ := identity.WithRun(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, "run-1")
 
 	raw, _ := json.Marshal(SkillCreateDraftArgs{Intent: "i"})
-	result, err := desc.Invoke(ctx, raw)
+	result, err := desc.Invoke(withRunView(ctx, cat), raw)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,24 +78,6 @@ func TestCatalog_Register_Duplicate_Rejects(t *testing.T) {
 	}
 }
 
-func TestCatalogFilter_HasFullTriple(t *testing.T) {
-	cases := []struct {
-		name string
-		f    tools.CatalogFilter
-		want bool
-	}{
-		{"empty", tools.CatalogFilter{}, false},
-		{"tenant-only", tools.CatalogFilter{TenantID: "t"}, false},
-		{"two-of-three", tools.CatalogFilter{TenantID: "t", UserID: "u"}, false},
-		{"full", tools.CatalogFilter{TenantID: "t", UserID: "u", SessionID: "s"}, true},
-	}
-	for _, c := range cases {
-		if got := c.f.HasFullTriple(); got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 func TestCatalog_List_DeterministicOrder(t *testing.T) {
 	cat := tools.NewCatalog()
 	for _, name := range []string{"zeta", "alpha", "mu"} {

@@ -2,8 +2,10 @@ package builtin
 
 import (
 	"context"
+	"testing"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -37,4 +39,13 @@ func toolGet(ctx context.Context, cat tools.ToolCatalog, args ToolGetArgs) (Tool
 
 func declarativeAction(ctx context.Context, cat tools.ToolCatalog, args DeclarativeActionArgs) (DeclarativeActionOut, error) {
 	return declarativeActionWithScopes(ensureRunView(ctx, cat), cat, args, nil)
+}
+
+func mustCapability(t *testing.T, ctx context.Context, rc RegistryContext) skilltools.CapabilityContext {
+	t.Helper()
+	c, err := runCapability(ctx, rc)
+	if err != nil {
+		t.Fatalf("runCapability: %v", err)
+	}
+	return c
 }

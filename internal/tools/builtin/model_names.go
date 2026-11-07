@@ -56,7 +56,9 @@ func discoveryForRun(ctx context.Context, grantedScopes []string) (runDiscovery,
 	if !ok {
 		return runDiscovery{}, ErrRunToolViewRequired
 	}
-	candidates, _ := tools.DiscoveryToolsOf(view)
+	// Memoized per seat (one dispatch decision), so a decision's meta-tool
+	// calls share one scan of the view.
+	candidates, _, _ := tools.RunToolDiscovery(ctx)
 	names := make([]string, 0, len(candidates))
 	for _, tool := range candidates {
 		names = append(names, tool.Name)

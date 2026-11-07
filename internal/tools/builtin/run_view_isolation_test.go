@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -300,5 +301,95 @@ func TestToolSearch_RunViewIsolation_ConcurrentReuse(t *testing.T) {
 	wg.Wait()
 	if leaks.Load() != 0 {
 		t.Fatalf("%d cross-principal results under concurrency", leaks.Load())
+	}
+}
+
+// TestSkillCapability_DerivesFromRunView is the SECURITY regression for the
+// skill_* capability envelope and the skill_create_draft warning: both use
+// the run's view (deferred tools included), never the process catalog, so a
+// foreign tool can neither widen skill visibility nor be probed for
+// presence through a draft warning.
+func TestSkillCapability_DerivesFromRunView(t *testing.T) {
+	principals := isolationPrincipals()
+	var invoked sync.Map
+	cat := sharedServerCatalog(t, principals, 3, &invoked)
+	p, other := principals[0], principals[1]
+	own := string(p.source) + "_send_message"
+	foreign := string(other.source) + "_send_message"
+	ctx := runCtx(t, cat, p)
+	rc := RegistryContext{Catalog: cat}
+
+	capability, err := runCapability(ctx, rc)
+	if err != nil {
+		t.Fatalf("runCapability: %v", err)
+	}
+	allowed := map[string]bool{}
+	for _, n := range capability.AllowedTools {
+		allowed[n] = true
+	}
+	if !allowed[own] {
+		t.Fatalf("own deferred tool %q missing from capability %v", own, capability.AllowedTools)
+	}
+	for n := range allowed {
+		if strings.HasPrefix(n, "mailsrv") && !strings.HasPrefix(n, string(p.source)+"_") {
+			t.Fatalf("capability admitted another principal's tool %q", n)
+		}
+	}
+
+	result := SkillCreateDraftResult{}
+	result.RequiredTools = []string{own, foreign}
+	if err := appendUnavailableToolWarnings(ctx, &result, rc); err != nil {
+		t.Fatalf("appendUnavailableToolWarnings: %v", err)
+	}
+	var warnedOwn, warnedForeign bool
+	for _, w := range result.Warnings {
+		warnedOwn = warnedOwn || strings.Contains(w, own)
+		warnedForeign = warnedForeign || strings.Contains(w, foreign)
+	}
+	if warnedOwn || !warnedForeign {
+		t.Fatalf("warnings = %v; a foreign tool must read as absent, the own tool as present", result.Warnings)
+	}
+
+	// No seated view (or an explicit nil seat masking an outer one): fail closed.
+	idCtx, err := identity.WithRun(context.Background(), p.id, "run-noview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]context.Context{
+		"absent": idCtx,
+		"masked": tools.WithRunToolView(ctx, nil),
+	} {
+		if _, err := runCapability(c, rc); !errors.Is(err, ErrRunToolViewRequired) {
+			t.Fatalf("%s: runCapability err = %v, want ErrRunToolViewRequired", name, err)
+		}
+		if err := appendUnavailableToolWarnings(c, &SkillCreateDraftResult{}, rc); !errors.Is(err, ErrRunToolViewRequired) {
+			t.Fatalf("%s: draft warnings err = %v, want ErrRunToolViewRequired", name, err)
+		}
+		if _, err := toolSearchWithScopes(c, cat, ToolSearchArgs{Query: "mailbox"}, nil); !errors.Is(err, ErrRunToolViewRequired) {
+			t.Fatalf("%s: tool_search err = %v, want ErrRunToolViewRequired", name, err)
+		}
+	}
+}
+
+// TestToolSearch_LaggingIndexIsToppedUpFromRunView: an index that misses a
+// visible tool (failed or pending write) does not hide it — the in-memory
+// pass over the run's own view fills the page after the ranked hits.
+func TestToolSearch_LaggingIndexIsToppedUpFromRunView(t *testing.T) {
+	ranked := tools.Tool{Name: "mail_send", Description: "mailbox send"}
+	missing := tools.Tool{Name: "mail_read", Description: "mailbox read"}
+	cat := tools.NewCatalog(tools.WithSearchCache(fixedSearchCache{results: []tools.Tool{ranked}}))
+	for _, tl := range []tools.Tool{ranked, missing} {
+		if err := cat.Register(tools.ToolDescriptor{Tool: tl, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{}, nil
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := toolSearch(declarativeTestCtx(t), cat, ToolSearchArgs{Query: "mailbox"})
+	if err != nil {
+		t.Fatalf("tool_search: %v", err)
+	}
+	if out.Count != 2 || out.Tools[0].Name != "mail_send" || out.Tools[1].Name != "mail_read" {
+		t.Fatalf("tool_search = %+v, want ranked hit then the index-missing tool", out.Tools)
 	}
 }

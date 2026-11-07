@@ -3,10 +3,12 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/builtin"
 )
@@ -64,4 +66,22 @@ func TestExecutor_SeatsRunViewForDiscoveryMetaTools(t *testing.T) {
 		t.Fatalf("ExecuteDecision(CallParallel): %v", err)
 	}
 	check(t, raw)
+}
+
+// TestExecutor_NilRunViewMasksInheritedView: a decision dispatched without a
+// view (the trusted completion-hook path) must not inherit a view an outer
+// ctx carried; the discovery meta-tool fails closed instead.
+func TestExecutor_NilRunViewMasksInheritedView(t *testing.T) {
+	cat := tools.NewCatalog()
+	if err := builtin.Register(cat, []string{"tool_search"}); err != nil {
+		t.Fatalf("register tool_search: %v", err)
+	}
+	q := dispatchTestQuad("run-view-nil")
+	outer := dispatchRunContext(cat, q).Catalog
+	ctx := steering.WithTrustedCompletionHook(tools.WithRunToolView(dispatchTestCtx(t, q), outer))
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil)
+	_, _, err := exec.ExecuteDecision(ctx, planner.RunContext{Quadruple: q}, planner.CallTool{Tool: "tool_search", Args: json.RawMessage(`{"query":"x"}`)})
+	if !errors.Is(err, builtin.ErrRunToolViewRequired) {
+		t.Fatalf("err = %v, want ErrRunToolViewRequired (inherited view must be masked)", err)
+	}
 }

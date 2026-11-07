@@ -426,6 +426,13 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	if err != nil {
 		t.Fatalf("identity.WithRun(%s): %v", driverName, err)
 	}
+	// The dispatcher seats the run's sealed view; the skill capability
+	// envelope and the escape hatch resolve only through it (the
+	// operator-granted, identity-filtered view here).
+	runCtx = tools.WithRunToolView(runCtx, tools.NewPlannerView(in.Catalog, tools.CatalogFilter{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+		GrantedScopes: append([]string(nil), in.Cfg.Tools.GrantedScopes...),
+	}))
 	searchDesc, ok := in.Catalog.Resolve("skill_search")
 	if !ok {
 		t.Fatal("skill_search was not registered")
@@ -467,12 +474,6 @@ func phase267RunAgentPackDriver(t *testing.T, driverName string, cfg config.Stat
 	if !ok {
 		t.Fatal("declarative_action was not registered")
 	}
-	// The dispatcher seats the run's sealed view; the escape hatch resolves
-	// only through it (the operator-granted, identity-filtered view here).
-	runCtx = tools.WithRunToolView(runCtx, tools.NewPlannerView(in.Catalog, tools.CatalogFilter{
-		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
-		GrantedScopes: append([]string(nil), in.Cfg.Tools.GrantedScopes...),
-	}))
 	deniedResult, err := declarativeDesc.Invoke(runCtx, json.RawMessage(phase267Marshal(t, builtin.DeclarativeActionArgs{Tool: "tool-not-granted"})))
 	if err != nil {
 		t.Fatalf("declarative_action denied invoke: %v", err)

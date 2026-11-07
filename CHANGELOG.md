@@ -30,6 +30,17 @@ Two versions move independently in Harbor (RFC §5.3):
   view on the invocation context; without one these tools fail closed
   (`ErrRunToolViewRequired`, non-retryable). Deferred tools inside the run's
   view remain discoverable.
+- The `skill_search` / `skill_get` / `skill_list` capability envelope, the
+  `skill_create_draft` missing-tool warnings and the run-once skills
+  directory derive their allowed tools from the run's view (deferred tools
+  included) instead of a process-catalog listing, so another principal's
+  tools neither widen skill visibility nor answer a presence probe. Without
+  a view these calls fail closed (`ErrRunToolViewRequired`).
+- The run-start owner-scoped projection denies an MCP tool whose source
+  owner is unknown (a connection detached after the catalog was read)
+  instead of treating it as shared.
+- A run dispatched without a view now seats an explicit empty view, so it
+  can no longer inherit a view carried by an outer context.
 
 ### Fixed
 
@@ -42,6 +53,23 @@ Two versions move independently in Harbor (RFC §5.3):
   a source is detached, deregistered, republished without a tool, or rolled
   back, and an on-disk index is emptied at open instead of carrying a prior
   process's rows. Index migration 2 rebuilds the schema forward.
+
+- Failed search-index writes are retried (bounded retry set) instead of
+  leaving silent gaps, and `tool_search` tops up a short ranked page from
+  the run's own tools. Index queries read only names and tags, and a
+  dispatch decision scans its run view once for all of its meta-tool calls.
+
+### Changed
+
+- **Breaking (`sdk/tools`):** `ToolCatalog.Search` now takes a
+  `ToolSearchRequest{Query, Tags, Limit, Visible}`; a nil `Visible` admits
+  nothing, and results carry only `Name` and `Tags`. `ToolSearchCache` gains
+  `Remove(ctx, names)`. Custom catalogs and search caches must implement the
+  new shapes.
+- **Breaking (`sdk/tools`):** `VisibleNames` is removed — it listed the
+  process catalog, whose `CatalogFilter` identity fields never filtered by
+  principal. Use `DiscoveryNames(view)` over the run's projected view.
+  `CatalogFilter.HasFullTriple` is removed for the same reason.
 
 ### Added
 

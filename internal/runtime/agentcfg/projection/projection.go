@@ -224,7 +224,15 @@ type userScopedMCPView struct {
 
 func (v userScopedMCPView) allows(tool tools.Tool) bool {
 	owner, ok := v.resolver.OwnerOfSource(tool.Source)
-	if !ok || owner.Scope() == auth.ScopeBootGlobal {
+	if !ok {
+		// Every MCP source is registered with an owner (boot sources as
+		// boot-global). An MCP tool whose owner cannot be found is one whose
+		// connection was detached after this view snapshotted the catalog —
+		// fail closed rather than treating it as shared. Non-MCP sources
+		// (in-process, HTTP manifests, ...) carry no registry ownership.
+		return tool.Transport != tools.TransportMCP
+	}
+	if owner.Scope() == auth.ScopeBootGlobal {
 		return true
 	}
 	if owner.Agent != v.owner.Agent || !owner.AllowsPrincipal(v.owner.Tenant, v.owner.User) {

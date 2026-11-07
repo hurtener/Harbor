@@ -36,7 +36,6 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
-	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/skills/drafter"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -102,7 +101,9 @@ func RegisterSkillCreateDraft(rc RegistryContext, client llm.LLMClient) error {
 			if err != nil {
 				return SkillCreateDraftResult{}, err
 			}
-			appendUnavailableToolWarnings(&result, rc, q)
+			if err := appendUnavailableToolWarnings(ctx, &result, rc); err != nil {
+				return SkillCreateDraftResult{}, err
+			}
 			return result, nil
 		},
 		tools.WithDescription("Draft a personal skill from a bounded authoring intent. Emit `intent` describing the skill you want (and optionally `feedback` to revise an earlier draft). The tool returns a caller-scoped immutable `SKILL.md` draft artifact reference plus its versioned package hash and a bounded review summary. The draft is NOT installed: it is a reviewable artifact you install later through the explicit validate/commit workflow. The draft may warn that declared required tools are metadata only and never grant capability."),
@@ -115,16 +116,18 @@ func RegisterSkillCreateDraft(rc RegistryContext, client llm.LLMClient) error {
 
 // appendUnavailableToolWarnings annotates the result with one bounded
 // warning per declared required tool that is absent from the run's
-// reachable tool set. The draft may warn, but the run tool set never
-// widens: the warning is review metadata, not a grant.
-func appendUnavailableToolWarnings(result *SkillCreateDraftResult, rc RegistryContext, q identity.Quadruple) {
-	visible := make(map[string]struct{})
-	for _, name := range tools.VisibleNames(rc.Catalog, tools.CatalogFilter{
-		TenantID:      q.TenantID,
-		UserID:        q.UserID,
-		SessionID:     q.SessionID,
-		GrantedScopes: rc.GrantedScopes,
-	}) {
+// reachable tool set — the run tool view's discovery set, never the
+// process catalog, so the warning cannot act as a presence oracle for
+// another principal's tool names. The draft may warn, but the run tool set
+// never widens: the warning is review metadata, not a grant. Fails closed
+// without a seated run view.
+func appendUnavailableToolWarnings(ctx context.Context, result *SkillCreateDraftResult, rc RegistryContext) error {
+	names, err := runAllowedTools(ctx, rc.GrantedScopes)
+	if err != nil {
+		return err
+	}
+	visible := make(map[string]struct{}, len(names))
+	for _, name := range names {
 		visible[name] = struct{}{}
 	}
 	for _, tool := range result.RequiredTools {
@@ -133,4 +136,5 @@ func appendUnavailableToolWarnings(result *SkillCreateDraftResult, rc RegistryCo
 				fmt.Sprintf("required tool %q is not in the current run's tool set; the draft records it as metadata only and never grants it", tool))
 		}
 	}
+	return nil
 }

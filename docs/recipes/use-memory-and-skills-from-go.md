@@ -72,17 +72,20 @@ import skilltools "github.com/hurtener/Harbor/sdk/skills/tools"
 res, err := skilltools.SearchHandler(ctx, store, bus, skilltools.SearchArgs{
     Query: "triage ticket",
     Capability: skilltools.CapabilityContext{
-        AllowedTools: tools.VisibleNames(catalog, tools.CatalogFilter{
-            TenantID: "t", UserID: "u", SessionID: "s",
-        }),
+        // runView is the run's projected tool view (owner scoping,
+        // exclusions, allowlist) — e.g. tools.NewPlannerView for a
+        // single-principal embedding.
+        AllowedTools: tools.DiscoveryNames(runView),
     },
 })
 ```
 
 The `Capability` envelope is default-deny: a skill whose
 `required_tools` are not a subset of `AllowedTools` is invisible.
-`tools.VisibleNames` is the canonical producer of that set — the same
-helper the binary's built-ins and run loop use. If you register the
+`tools.DiscoveryNames` over the run's view is the canonical producer of
+that set — the same helper the binary's built-ins and run loop use. Never
+derive it from a raw catalog listing: the catalog holds every principal's
+tools and its identity filter fields do not scope visibility. If you register the
 handlers on your own `ToolCatalog` instead of calling them directly,
 use `skilltools.Register(catalog, store, skilltools.Deps{Bus: bus})`
 (and `sdk/skills/generator`'s `Register` for `skill_propose`).

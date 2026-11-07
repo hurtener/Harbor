@@ -51,9 +51,9 @@ const (
 // The ranked index is process-wide, so it is queried with the run's
 // visibility predicate (applied before the limit); results are then
 // materialized from the run view itself, never from index rows. When the
-// index yields nothing visible (no index, FTS miss, or substring-only
-// match), a bounded in-memory substring pass over the run's own discovery
-// set answers instead.
+// index yields fewer than limit visible results (no index, an FTS miss, a
+// substring-only match, or a lagging index write), a bounded in-memory pass
+// over the run's own discovery set tops the page up after the ranked hits.
 func toolSearchWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolSearchArgs, grantedScopes []string) (ToolSearchOut, error) {
 	disc, err := discoveryForRun(ctx, grantedScopes)
 	if err != nil {
@@ -81,8 +81,8 @@ func toolSearchWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolS
 			names = append(names, hit.Name)
 		}
 	}
-	if len(names) == 0 {
-		names = disc.fallbackMatches(query, args.Tags, args.Limit)
+	if len(names) < args.Limit {
+		names = append(names, disc.fallbackMatches(query, args.Tags, args.Limit+len(names))...)
 	}
 
 	out := ToolSearchOut{Tools: make([]ToolSearchResult, 0, len(names))}

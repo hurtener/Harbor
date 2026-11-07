@@ -37,13 +37,17 @@ func registerSkillList(rc RegistryContext) error {
 			if reader == nil {
 				return skilltools.ListResult{}, fmt.Errorf("skill_list: backing SkillStore is nil and no SkillReader was supplied (operator misconfiguration)")
 			}
+			capability, err := runCapability(ctx, rc)
+			if err != nil {
+				return skilltools.ListResult{}, err
+			}
 			return skilltools.ListHandler(ctx, reader, rc.Bus, skilltools.ListArgs{
 				Scope:      args.Scope,
 				TaskType:   args.TaskType,
 				Tags:       args.Tags,
 				Limit:      args.Limit,
 				Offset:     args.Offset,
-				Capability: runCapability(ctx, rc),
+				Capability: capability,
 			})
 		},
 		tools.WithDescription("List skills in the catalog, paged and filterable by scope / task_type / tags. Capability-filtered + redacted; summary-only (call skill_get for full content)."),
