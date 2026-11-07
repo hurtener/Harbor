@@ -200,7 +200,7 @@ func (a *Adapter) Draft(ctx context.Context, intent, feedback string) (skillpkg.
 
 	system := systemPrompt()
 	user := userPrompt(intent, feedback)
-	resp, err := a.client.Complete(ctx, llm.CompleteRequest{
+	resp, err := a.client.Complete(llm.WithCallRole(ctx, llm.CallRoleSkillDraft), llm.CompleteRequest{
 		Model: a.opts.Model,
 		Messages: []llm.ChatMessage{
 			{Role: llm.RoleSystem, Content: llm.Content{Text: &system}},

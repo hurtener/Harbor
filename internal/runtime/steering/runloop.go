@@ -14,6 +14,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 )
@@ -514,6 +515,7 @@ type RunSpec struct {
 // hook covers terminal outcomes uniformly without a fire at each return site.
 // Accepted hard Stop skips external hook/naming dispatch.
 func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, err error) {
+	ctx = telemetry.EnsureTurnTiming(ctx, rl.logger, time.Now())
 	if spec.Planner == nil {
 		return planner.Finish{}, ErrNoPlanner
 	}
@@ -587,7 +589,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	// runCtx carries the run's identity quadruple so Coordinator.Resume
 	// (called from applyEvent) and Coordinator.Request (called below)
 	// see the run's triple + run on their identity.From(ctx) pathway.
-	runCtx := ctxWithIdentity(ctx, q)
+	runBaseCtx := ctxWithIdentity(ctx, q)
+	runCtx := runBaseCtx
 
 	// Per-run run-completion-hook state — all stack-local (the
 	// concurrent-reuse contract: per-run state on the run goroutine, never on
@@ -728,6 +731,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 
 		// --- APPLY: each drained control event's side effect. ---
 		sc := &stepControl{}
+		var controlTurnStartedAt time.Time
 		for _, ev := range drained {
 			if ev.Type == ControlCancel {
 				sc.cancellationBatch = true
@@ -808,6 +812,17 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				// already recorded it; Run returns the wrapped error.
 				return planner.Finish{}, applyErr
 			}
+			switch ev.Type {
+			case ControlUserMessage, ControlRedirect, ControlInjectContext, ControlResume, ControlApprove:
+				if controlTurnStartedAt.IsZero() || ev.EnqueuedAt.Before(controlTurnStartedAt) {
+					controlTurnStartedAt = ev.EnqueuedAt
+				}
+			}
+		}
+		if !controlTurnStartedAt.IsZero() {
+			// Reuse the stable run context so successive controls do not retain
+			// all prior turn observations in a growing context parent chain.
+			runCtx = telemetry.BeginTurnTiming(runBaseCtx, rl.logger, controlTurnStartedAt)
 		}
 
 		if err := ctx.Err(); err != nil {

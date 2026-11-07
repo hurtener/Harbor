@@ -31,6 +31,9 @@ import (
 type Deps struct {
 	Artifacts artifacts.ArtifactStore
 	Bus       events.EventBus
+	// Logger receives content-free per-attempt completion timing. Nil uses
+	// slog.Default; production assembly supplies the redacting telemetry bridge.
+	Logger *slog.Logger
 	// LiveKey is the shared, atomically-swappable primary-key holder for
 	// Console-driven key rotation. OPTIONAL: when non-nil, the driver
 	// seeds it with the boot-resolved key and reads through it on every

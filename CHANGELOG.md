@@ -17,6 +17,17 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.38.0] — 2026-11-07
+
+### Added
+
+- Content-free structured model-call timing logs separate time to first
+  streamed delta from total provider time, including auxiliary calls and
+  retries. Per-turn preparation timing records the delay before the first
+  planner chat model request and measured discovery, route-resolution and
+  tool-attachment stages. Unknown token counts remain absent; reported zero
+  counts remain explicit.
+
 ## [1.37.0] — 2026-11-07
 
 ### Changed

@@ -321,7 +321,11 @@ func (l *RepairLoop) Run(
 		}
 
 		// Step 0: issue the LLM call.
-		resp, err := client.Complete(ctx, current)
+		callRole := llm.CallRolePlanner
+		if attempts > 0 {
+			callRole = llm.CallRoleRepair
+		}
+		resp, err := client.Complete(llm.WithCallRole(ctx, callRole), current)
 		if err != nil {
 			// LLM-call errors bubble verbatim — retry-with-feedback
 			// is composed INSIDE the client, not here.

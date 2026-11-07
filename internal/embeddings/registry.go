@@ -3,6 +3,7 @@ package embeddings
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -10,13 +11,11 @@ import (
 )
 
 // Deps carries the runtime dependencies an embedding driver
-// consumes. Deliberately empty at this revision: the embedding seam
-// is dependency-light by design — an embeddings-only consumer should
-// not have to wire an artifact store or an event bus the way a chat
-// consumer does. The struct exists so the factory signature
-// (`Open(ctx, cfg, deps)`) stays stable when future revisions add a
-// dependency (e.g. governance metering).
-type Deps struct{}
+// consumes. An embeddings-only consumer needs no artifact store or event bus.
+type Deps struct {
+	// Logger receives content-free provider timing; nil uses slog.Default.
+	Logger *slog.Logger
+}
 
 // ConfigSnapshot is the strict subset of `config.EmbeddingsConfig`
 // the embeddings package consumes. Keeping a snapshot decouples

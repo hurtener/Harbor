@@ -88,6 +88,16 @@ type Driver interface {
 	Close(ctx context.Context) error
 }
 
+// ProviderRequestTiming is implemented by drivers that perform preparation
+// before contacting a model. Such drivers call ObserveProviderRequest exactly
+// once immediately before provider dispatch, before starting stream callbacks.
+// Streaming drivers also call ObserveStreamDelta for actual output chunks;
+// the safety wrapper leaves their callbacks untouched to avoid duplicate work.
+// Other drivers are timed directly at the mandatory safety-wrapper boundary.
+type ProviderRequestTiming interface {
+	OwnsProviderRequestTiming()
+}
+
 // CompleteRequest is the LLM-call payload. Settled in RFC §6.5;
 // shaped by the multimodal sum-type and safety-net
 // invariants).
