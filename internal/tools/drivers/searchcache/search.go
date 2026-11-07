@@ -18,13 +18,18 @@ var ftsTokenRE = regexp.MustCompile(`[A-Za-z0-9]+`)
 // its server's title outranks a passing mention in a description.
 const ftsRankExpr = `bm25(tool_cache_fts, 4.0, 1.0, 1.0, 3.0, 0.5)`
 
-// keyColumns are all a ranked or browse query reads: the name (the result
-// identity the caller materializes from its own authoritative view) and the
-// tags (the tag filter). Descriptions and schemas are never decoded for the
-// process-wide match set.
+// keyColumns are all a ranked (FTS5) or browse query reads: the name (the
+// result identity the caller materializes from its own authoritative view)
+// and the tags (the tag filter). Those paths never decode descriptions,
+// server metadata or schemas.
 const keyColumns = `c.name, c.tags`
 
-// textColumns add the indexed text the substring fallback matches against.
+// textColumns add the indexed text the substring fallback must match
+// against. That fallback scans process-wide rows and reads their
+// description and server metadata BEFORE the visibility predicate runs —
+// in-process only, for matching; a row's text is dropped at once and never
+// returned (results still carry only Name and Tags, admitted rows only).
+// Argument schemas are never read.
 const textColumns = `c.name, c.tags, c.description, c.server_title, c.server_description`
 
 func (d *driver) searchFTS5(ctx context.Context, query string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {

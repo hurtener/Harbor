@@ -561,7 +561,7 @@ func newToolsServiceV114(t *testing.T, st state.StateStore, bus events.EventBus,
 	if err != nil {
 		t.Fatalf("NewAnnotator: %v", err)
 	}
-	proj, err := toolsprotocol.NewCatalogProjector(cat, toolsprotocol.WithAnnotator(annotator))
+	proj, err := scopedTestProjector(cat, toolsprotocol.WithAnnotator(annotator))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}

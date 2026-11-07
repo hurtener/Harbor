@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // flakyIndex fails its first failures writes, then records state.
@@ -116,5 +119,73 @@ func TestCatalogSearch_RetrySetIsBounded(t *testing.T) {
 	cat.searchMu.Unlock()
 	if got := len(cat.searchDirty); got > maxSearchDirty {
 		t.Fatalf("dirty set grew to %d, cap %d", got, maxSearchDirty)
+	}
+}
+
+// stallingIndex fails its first Sync (leaving the name dirty), then stalls
+// every later Sync until its ctx ends.
+type stallingIndex struct {
+	flakyIndex
+	mu2     sync.Mutex
+	stalled bool
+}
+
+func (s *stallingIndex) Sync(ctx context.Context, in []Tool) error {
+	s.mu2.Lock()
+	first := !s.stalled
+	s.stalled = true
+	s.mu2.Unlock()
+	if first {
+		return errors.New("index unavailable")
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestCatalogSearch_RetryIsBoundedByCallerCtx: the dirty-retry a Search
+// performs honours the search's own ctx — a short-deadline search returns
+// at its deadline, not after the reconcile's internal 5 s bound — and the
+// name stays dirty for the next attempt.
+func TestCatalogSearch_RetryIsBoundedByCallerCtx(t *testing.T) {
+	idx := &stallingIndex{flakyIndex: flakyIndex{rows: map[string]bool{}}}
+	cat := NewCatalog(WithSearchCache(idx)).(*catalog)
+	if err := cat.Register(ToolDescriptor{
+		Tool:   Tool{Name: "srv_tool"},
+		Invoke: func(context.Context, json.RawMessage) (ToolResult, error) { return ToolResult{}, nil },
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if cat.searchDirtyN.Load() != 1 {
+		t.Fatalf("precondition: name not dirty (%d)", cat.searchDirtyN.Load())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	cat.Search(ctx, ToolSearchRequest{Query: "x", Limit: 5, Visible: func(string) bool { return true }})
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Search blocked %v past its own 100ms deadline", elapsed)
+	}
+	if cat.searchDirtyN.Load() != 1 {
+		t.Fatalf("a cancelled retry dropped the dirty name (%d)", cat.searchDirtyN.Load())
+	}
+}
+
+// TestCatalogSearch_RetrySetAllocationIsBounded: a huge failed batch must
+// not size the retry map past maxSearchDirty.
+func TestCatalogSearch_RetrySetAllocationIsBounded(t *testing.T) {
+	cat := NewCatalog(WithSearchCache(&flakyIndex{rows: map[string]bool{}})).(*catalog)
+	names := make([]string, 1<<20)
+	for i := range names {
+		names[i] = "n" + strconv.Itoa(i)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	cat.searchMu.Lock()
+	cat.markSearchDirty(names)
+	cat.searchMu.Unlock()
+	runtime.ReadMemStats(&after)
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 8<<20 {
+		t.Fatalf("marking a %d-name batch dirty allocated %d bytes; the retry set is capped at %d names", len(names), grew, maxSearchDirty)
 	}
 }

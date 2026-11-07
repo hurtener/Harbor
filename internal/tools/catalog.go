@@ -187,21 +187,25 @@ func (c *catalog) reconcileSearch(op string, names []string) {
 	}
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
-	c.reconcileSearchLocked(op, names)
+	c.reconcileSearchLocked(context.Background(), op, names)
 }
 
-// retrySearchDirty retries failed index writes without waiting: a Search
-// that finds another reconcile in progress simply proceeds.
-func (c *catalog) retrySearchDirty() {
-	if c.searchCache == nil || c.searchDirtyN.Load() == 0 || !c.searchMu.TryLock() {
+// retrySearchDirty retries failed index writes without waiting for another
+// reconcile (a Search that finds one in progress simply proceeds). The
+// retry is bounded by the caller's ctx, so a cancelled or short-deadline
+// search is never held by index I/O; names a cancelled retry could not
+// write stay dirty.
+func (c *catalog) retrySearchDirty(ctx context.Context) {
+	if c.searchCache == nil || c.searchDirtyN.Load() == 0 || ctx.Err() != nil || !c.searchMu.TryLock() {
 		return
 	}
 	defer c.searchMu.Unlock()
-	c.reconcileSearchLocked("retry", nil)
+	c.reconcileSearchLocked(ctx, "retry", nil)
 }
 
-// reconcileSearchLocked does the work; caller holds searchMu.
-func (c *catalog) reconcileSearchLocked(op string, names []string) {
+// reconcileSearchLocked does the work under parent (additionally bounded by
+// a short timeout); caller holds searchMu.
+func (c *catalog) reconcileSearchLocked(parent context.Context, op string, names []string) {
 	sc := c.searchCache
 	if len(c.searchDirty) > 0 {
 		for name := range c.searchDirty {
@@ -229,7 +233,7 @@ func (c *catalog) reconcileSearchLocked(op string, names []string) {
 		}
 	}
 	c.mu.RUnlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	if len(removals) > 0 {
 		if err := sc.Remove(ctx, removals); err != nil {
@@ -255,7 +259,7 @@ func (c *catalog) reconcileSearchLocked(op string, names []string) {
 // holds searchMu.
 func (c *catalog) markSearchDirty(names []string) {
 	if c.searchDirty == nil {
-		c.searchDirty = make(map[string]struct{}, len(names))
+		c.searchDirty = make(map[string]struct{}, min(len(names), maxSearchDirty))
 	}
 	dropped := 0
 	for _, name := range names {
@@ -544,7 +548,7 @@ func (c *catalog) Search(ctx context.Context, req ToolSearchRequest) []Tool {
 	if sc == nil || req.Visible == nil {
 		return nil
 	}
-	c.retrySearchDirty()
+	c.retrySearchDirty(ctx)
 	results, err := sc.Search(ctx, req)
 	if err != nil {
 		slog.Warn("tools/catalog: search cache returned an error",

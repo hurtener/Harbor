@@ -136,7 +136,7 @@ func newPhase73fDeps(t *testing.T) *phase73fDeps {
 		}
 	}
 
-	projector, err := toolsprotocol.NewCatalogProjector(cat)
+	projector, err := scopedTestProjector(cat)
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}
@@ -391,4 +391,21 @@ type stressErr struct {
 func (e *stressErr) Error() string {
 	return "worker " + string(rune('0'+e.worker%10)) + ": status " +
 		http.StatusText(e.status) + " — " + e.detail
+}
+
+// scopedTestProjector builds a CatalogProjector over cat with the plain
+// identity-filtered view resolver a single-principal fixture needs: the
+// projector refuses to list the unscoped catalog without one.
+func scopedTestProjector(cat tools.ToolCatalog, opts ...toolsprotocol.CatalogProjectorOption) (*toolsprotocol.CatalogProjector, error) {
+	opts = append([]toolsprotocol.CatalogProjectorOption{toolsprotocol.WithCatalogViewResolver(plainTestViewResolver{cat: cat})}, opts...)
+	return toolsprotocol.NewCatalogProjector(cat, opts...)
+}
+
+type plainTestViewResolver struct{ cat tools.ToolCatalog }
+
+func (r plainTestViewResolver) CatalogView(_ context.Context, id identity.Identity, _ string) (tools.PlannerCatalogView, error) {
+	return tools.NewPlannerView(r.cat, tools.CatalogFilter{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	}), nil
 }

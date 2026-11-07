@@ -1696,11 +1696,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		return
 	}
 	if d.catalog != nil && d.skillsDirectory != nil {
-		allowed := make([]string, 0)
-		for _, tool := range catalogView.List() {
-			allowed = append(allowed, tool.Name)
-		}
-		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{AllowedTools: allowed})
+		views, sErr := d.skillsDirectory.View(taskCtx, skillsDirectoryCapability(catalogView))
 		if sErr != nil {
 			d.logger.ErrorContext(taskCtx, "RunLoopDriver: skills Directory.View failed; failing run", slog.String("err", sErr.Error()))
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "runtime_fetch_error", Message: fmt.Sprintf("skills Directory.View: %v", sErr)}); fErr != nil {
@@ -2412,4 +2408,12 @@ func (d *RunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Traject
 		Query: entry.traj.Query,
 		Steps: append([]planner.Step(nil), entry.traj.Steps...),
 	}
+}
+
+// skillsDirectoryCapability is the `<skills_context>` capability for a run:
+// the run view's full discovery set (deferred tools included) — the same
+// input skill_search/get/list derive, so the prompt directory and the skill
+// tools agree on what the run can reach.
+func skillsDirectoryCapability(view tools.PlannerCatalogView) skills.DirectoryCapability {
+	return skills.DirectoryCapability{AllowedTools: tools.DiscoveryNames(view)}
 }

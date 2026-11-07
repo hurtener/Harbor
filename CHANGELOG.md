@@ -54,10 +54,15 @@ Two versions move independently in Harbor (RFC §5.3):
   back, and an on-disk index is emptied at open instead of carrying a prior
   process's rows. Index migration 2 rebuilds the schema forward.
 
-- Failed search-index writes are retried (bounded retry set) instead of
-  leaving silent gaps, and `tool_search` tops up a short ranked page from
-  the run's own tools. Index queries read only names and tags, and a
-  dispatch decision scans its run view once for all of its meta-tool calls.
+- Failed search-index writes are retried (bounded retry set, and bounded by
+  the searching caller's context) instead of leaving silent gaps, and
+  `tool_search` tops up a short ranked page from the run's own tools. Ranked
+  and browse index queries read only names and tags (the substring fallback
+  also reads indexed text for matching; it never returns it), and a dispatch
+  decision scans its run view once for all of its meta-tool calls.
+- `skill_create_draft` rejects a missing run view before any model call or
+  artifact write, and the run's `<skills_context>` directory includes the
+  run's deferred tools, matching the `skill_*` tools.
 
 ### Changed
 
@@ -70,6 +75,12 @@ Two versions move independently in Harbor (RFC §5.3):
   process catalog, whose `CatalogFilter` identity fields never filtered by
   principal. Use `DiscoveryNames(view)` over the run's projected view.
   `CatalogFilter.HasFullTriple` is removed for the same reason.
+- **Breaking (`tools/protocol`):** a `CatalogProjector` without a
+  `CatalogViewResolver` now fails every read with
+  `ErrCatalogViewUnavailable` instead of listing the unscoped process
+  catalog; the runtime mux always wires the resolver (with or without agent
+  config). The unreachable `LoadingResolver` / `WithLoadingResolver` path
+  (effective loading already comes from the resolved view) is removed.
 
 ### Added
 

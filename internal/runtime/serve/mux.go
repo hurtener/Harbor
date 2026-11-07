@@ -519,19 +519,17 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			toolsProjectorOpts = append(toolsProjectorOpts,
 				toolsprotocol.WithLogicalSourceResolver(in.MCPRegistry))
 		}
-		if in.AgentConfig != nil {
-			toolsProjectorOpts = append(toolsProjectorOpts,
-				toolsprotocol.WithCatalogViewResolver(projection.CatalogViewResolver{
-					Registry:       in.AgentConfig,
-					SessionOverlay: in.SessionOverlay,
-					Catalog:        in.Catalog,
-					OwnerResolver:  in.MCPRegistry,
-				}),
-				toolsprotocol.WithLoadingResolver(projection.LoadingResolverAdapter{
-					Registry:      in.AgentConfig,
-					OwnerResolver: in.MCPRegistry,
-				}))
+		// The view resolver is always wired — with or without agent config —
+		// because the projector refuses to list the unscoped process catalog.
+		viewResolver := projection.CatalogViewResolver{
+			Registry:       in.AgentConfig,
+			SessionOverlay: in.SessionOverlay,
+			Catalog:        in.Catalog,
 		}
+		if in.MCPRegistry != nil {
+			viewResolver.OwnerResolver = in.MCPRegistry
+		}
+		toolsProjectorOpts = append(toolsProjectorOpts, toolsprotocol.WithCatalogViewResolver(viewResolver))
 		// Assemble + wire the production per-tool Annotator (the one-line seam;
 		// the weight is the annotator's aggregation, not the wiring). It reads
 		// OAuth status from tools/auth, the approval posture from the

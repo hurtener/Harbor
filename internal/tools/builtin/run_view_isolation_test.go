@@ -338,9 +338,11 @@ func TestSkillCapability_DerivesFromRunView(t *testing.T) {
 
 	result := SkillCreateDraftResult{}
 	result.RequiredTools = []string{own, foreign}
-	if err := appendUnavailableToolWarnings(ctx, &result, rc); err != nil {
-		t.Fatalf("appendUnavailableToolWarnings: %v", err)
+	allowedNames, err := runAllowedTools(ctx, rc.GrantedScopes)
+	if err != nil {
+		t.Fatalf("runAllowedTools: %v", err)
 	}
+	appendUnavailableToolWarnings(&result, allowedNames)
 	var warnedOwn, warnedForeign bool
 	for _, w := range result.Warnings {
 		warnedOwn = warnedOwn || strings.Contains(w, own)
@@ -362,8 +364,8 @@ func TestSkillCapability_DerivesFromRunView(t *testing.T) {
 		if _, err := runCapability(c, rc); !errors.Is(err, ErrRunToolViewRequired) {
 			t.Fatalf("%s: runCapability err = %v, want ErrRunToolViewRequired", name, err)
 		}
-		if err := appendUnavailableToolWarnings(c, &SkillCreateDraftResult{}, rc); !errors.Is(err, ErrRunToolViewRequired) {
-			t.Fatalf("%s: draft warnings err = %v, want ErrRunToolViewRequired", name, err)
+		if _, err := runAllowedTools(c, rc.GrantedScopes); !errors.Is(err, ErrRunToolViewRequired) {
+			t.Fatalf("%s: draft allowed-tools err = %v, want ErrRunToolViewRequired", name, err)
 		}
 		if _, err := toolSearchWithScopes(c, cat, ToolSearchArgs{Query: "mailbox"}, nil); !errors.Is(err, ErrRunToolViewRequired) {
 			t.Fatalf("%s: tool_search err = %v, want ErrRunToolViewRequired", name, err)
