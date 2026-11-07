@@ -1670,8 +1670,9 @@ Opt-in audit-trail retention for the `durable` driver (D-493). Default: `0`
 Restart-required. Ignored by the `inmem` driver.
 
 When set, a bounded background sweeper (every 15 minutes, ±10 % jitter) trims
-rows whose event type starts with `audit.` and whose `occurred_at` is older
-than `now − audit_max_age`:
+rows whose event type starts with `audit.` and is a bus-internal notice (today
+`audit.admin_scope_used` and `audit.redaction_failed`), and whose `occurred_at`
+is older than `now − audit_max_age`:
 
 - whole sealed 256-row index chunks from the start of a session while every
   row in the chunk qualifies (it stops at the first chunk that holds any
@@ -1683,8 +1684,9 @@ than `now − audit_max_age`:
 Each trim commits one header-plus-summary transaction (the cumulative
 per-session `events.durable.retention_summary` record) before any delete, and
 the sweeper verifies the chunk chain up to the cut first. Storage deletes are
-idempotent and throttled: at most 2,000 per pass, paced at 20 per second, so
-a large one-time backlog drains over several passes. Readers report the cut
+idempotent and throttled: at most 2,000 per pass (514 per session), paced at 20
+per second, so a large one-time backlog drains over many passes (about two days
+for one session's 105k-row backlog; the logical trim is immediate). Readers report the cut
 honestly: `Bounds` returns `truncated=true`, `Replay` from a cursor inside the
 trimmed range returns `ErrCursorTooOld`, list pages that reach the cut set
 `truncated`, and projection pages set `RetentionGap`. Projectors (the turns

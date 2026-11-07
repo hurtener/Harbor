@@ -16412,8 +16412,13 @@ header write advances the authority in the same transaction, so skipping it
 cannot lower the floor); boot fails only when no authority exists. Recovery is
 per session: `harbor events rebuild-session-index` (writers stopped, explicit
 `--freeze-ack`) rebuilds the index from the session's immutable entry bodies,
-keeping the audit-retention cut recorded in its summary. Online, in-place chunk
-repair remains a non-goal.
+keeping the audit-retention cut recorded in its summary. It refuses a session
+whose index verifies (unless `--force`) or that is fenced, writes the new chunks
+to fresh slots and flips the header with one conditional write, so a failed
+apply changes nothing. A projection page that skipped a corrupt session is
+never reported as current, so projectors do not checkpoint past it; after a
+rebuild, rebuild projectors that must include that session. Online, in-place
+chunk repair remains a non-goal.
 
 Legacy heads migrate lazily. Publish converts a legacy head of at most 1,024
 rows inside its own transaction; a larger one keeps appending in the legacy
@@ -16455,8 +16460,9 @@ recovery fails. Rollback is a restore of the snapshot taken before the upgrade.
 
 `events.retention.audit_max_age` (default `0` = disabled; otherwise at least
 `24h`; restart-required) bounds how long the durable log keeps audit-only
-history. Only rows whose type starts with `audit.` and that are older than the
-cutoff qualify. A sweeper on the bus's maintenance goroutine (every 15 minutes,
+history. Only rows whose type starts with `audit.`, that are bus-internal
+notices (so no canonical reader ever needs them), and that are older than the
+cutoff qualify; a future non-internal `audit.*` type is never trimmed. A sweeper on the bus's maintenance goroutine (every 15 minutes,
 ±10 % jitter) trims whole sealed chunks from the start of a session while every
 row qualifies, and — when no sealed chunk remains — a fully qualifying tail,
 which removes the one-row audit sessions that fresh-session admin reads create.

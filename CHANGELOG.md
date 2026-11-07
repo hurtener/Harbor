@@ -65,13 +65,19 @@ Two versions move independently in Harbor (RFC §5.3):
   to migrate), let the background migrator finish (look for the
   `durable: index migration pass` log line with `failed=0`), then roll out the
   rest.
-- Audit retention stays off unless `events.retention.audit_max_age` is set. A
-  large existing audit backlog drains over several passes (about 2,000 deleted
-  records per 15 minutes). With retention on, projectors that read from before
+- Audit retention stays off unless `events.retention.audit_max_age` is set. With retention on, projectors that read from before
   a trim (rebuilds, new projectors) latch `RetentionGap` permanently.
 - Migration of a very large legacy session (about 100k events) costs a
   one-time CPU burst of under a second; on a 2-core host other publishes in the
   same process can see a few hundred milliseconds of extra latency meanwhile.
+  The conversion also allocates roughly 100–200 MB of transient memory per
+  20 MB legacy index: check container memory limits (and `GOMEMLIMIT`) on small
+  runtimes before upgrading.
+- With retention on, the logical trim of an audit backlog is immediate, but
+  physical cleanup is throttled: a single session's 105k-row audit backlog
+  (about 105k entry records plus their chunks) takes roughly two days, at most
+  514 deletes per session per 15-minute pass (2,000 per pass overall) so one
+  backlog never starves other sessions.
 
 ## [1.36.0] — 2026-11-06
 
