@@ -512,6 +512,23 @@ type CatalogSourceDeregisterer interface {
 	DeregisterSource(source ToolSourceID) int
 }
 
+// CatalogGenerationReporter is the optional surface a ToolCatalog exposes when
+// it can name its current structural state cheaply. Epoch is a random,
+// process-local identifier minted when the catalog is constructed, so two
+// catalog instances (two processes, or one process restarted) never share a
+// value. Generation is a monotonic counter bumped under the catalog's write
+// lock on every mutation of any source's descriptor set. Together they change
+// whenever List could return a different answer for some filter.
+//
+// A catalog that does not implement this interface simply cannot back a
+// structural projection cache; callers branch on the type assertion.
+type CatalogGenerationReporter interface {
+	// Epoch returns the instance-unique catalog identifier.
+	Epoch() string
+	// Generation returns the current mutation counter.
+	Generation() uint64
+}
+
 // ToolProvider is the seam for external tool sources. later phases
 // drivers (HTTP, MCP, A2A) implement Connect / Discover / Close to
 // pull in remote tools as ToolDescriptors. The in-process registrar

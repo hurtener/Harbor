@@ -1067,7 +1067,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	if mcpDefault == (identity.Identity{}) {
 		mcpDefault = DefaultMCPIdentity
 	}
-	mcpRegistry := mcpdrv.NewRegistry()
+	mcpRegistry := mcpdrv.NewRegistry(mcpdrv.WithRegistryChangeObserver(mcpCatalogChangeHint(stack.Bus, logger)))
 	// Resolve the host's renderable MCP App display modes once; every
 	// attached server advertises the same host capability during its
 	// initialize handshake (the host's rendering ability does not vary per

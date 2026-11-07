@@ -21,7 +21,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 - `runtime.retention` explicitly reads observed events, tasks and sessions
   horizons at runtime scope. It requires verified `admin` authority and emits
-  one `audit.admin_scope_used`; audit failure fails the request closed.
+  one `audit.admin_scope_used`; audit failure fails the request closed (D-490).
+- Configuration-view `tools.list` responses and `tools.describe` manifests
+  carry an opaque input-addressed `revision` (D-491). Sending it back as
+  `if_revision` on page 1 answers `{revision, not_modified: true}` with no rows
+  after only four small StateStore reads; later pages ignore it, and clients
+  compare each page's `revision` with page 1's. The revision covers structural
+  row fields and excludes `oauth_status`, `approval_policy`, `last_used_at` and
+  `display_modes`. Other views reject `if_revision`.
+- `tools.list` rows carry `side_effect` and `loading_mode`, so list consumers no
+  longer need one `tools.describe` per tool.
+- The runtime caches admitted configuration inventories (structure only, keyed
+  by tenant, user, agent, view, session-when-overlaid and revision; 512
+  entries). Admission still runs on every request before any revision read,
+  and annotations are applied per request.
+- `tools.catalog.changed` is a best-effort hint (`agent_id`, `scope`, `reason`;
+  no tool data, no revision) published after agent-config pointer and lifecycle
+  writes, activation-fence transitions, MCP publication or withdrawal, and
+  changed discoveries. Use it only to drop short-lived caches.
 
 ### Changed
 
@@ -31,14 +48,22 @@ Two versions move independently in Harbor (RFC §5.3):
   admin token; `console:fleet` no longer widens retention reads. The trust-mode
   dev TUI therefore shows events retention only. `RuntimeHealth.retention`
   keeps its existing optional wire type; Protocol `0.1.0` is unchanged (D-490).
-
-### Performance
-
 - Tool catalog lists share one identity-scoped approval-policy scan and one
   bounded event-history window per request, and reuse OAuth status reads for
   tools from the same source within that request. Single-tool descriptions
   continue to read only their own annotations; approval read failures reject
-  the list rather than projecting an unverified default.
+  the list rather than projecting an unverified default (D-491).
+- An MCP discovery refresh whose deterministic descriptor generation is
+  unchanged no longer republishes the catalog or App views, so convergence
+  sweeps and no-op run-start reconciles no longer move catalog generations.
+
+### Upgrade notes
+
+- `if_revision` is a new request field; runtimes before this release reject it
+  with `invalid_request` (strict decoding). Upgrade every runtime a client talks
+  to before the client sends it.
+- Callers that relied on elevated `runtime.health` for task/session horizons
+  must switch to `runtime.retention` with an `admin` token.
 
 ## [1.35.0] — 2026-11-06
 

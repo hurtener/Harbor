@@ -93,6 +93,7 @@ func NewSignedOAuthMCPReconciler(registry agentcfg.Registry, store state.StateSt
 	if err != nil {
 		return nil, err
 	}
+	fences = fences.WithChangeObserver(agentcfg.CatalogChangeObserverFor(registry))
 	return &SignedOAuthMCPReconciler{registry: registry, physical: physical, operations: operations, fences: fences, preparer: preparer, detacher: detacher, exactDetacher: exactDetacher, exactFencer: exactFencer, providers: providers, matcher: matcher, gate: make(chan struct{}, 1), continuations: make(map[string]string)}, nil
 }
 

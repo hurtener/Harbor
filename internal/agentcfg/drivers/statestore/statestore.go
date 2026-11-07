@@ -474,12 +474,14 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 			// occasions it is owed.
 			ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
 			r.emitRevised(ectx, agentID, rec.toRevision())
+			r.emitCatalogChanged(ectx, id, agentID, scope, agentcfg.CatalogChangeReasonConfigRevision)
 			ecancel()
 		}
 		return agentcfg.Revision{}, cerr
 	}
 	rev := rec.toRevision()
 	r.emitRevised(ctx, agentID, rev)
+	r.emitCatalogChanged(ctx, id, agentID, scope, agentcfg.CatalogChangeReasonConfigRevision)
 	return rev, nil
 }
 
@@ -650,6 +652,9 @@ func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple
 	if err != nil {
 		return false, fmt.Errorf("%w: conditionally deactivate active pointer: %w", agentcfg.ErrStateUnavailable, err)
 	}
+	if changed {
+		r.emitCatalogChanged(ctx, id, agentID, scope, agentcfg.CatalogChangeReasonConfigRevision)
+	}
 	return changed, nil
 }
 
@@ -803,6 +808,7 @@ func (r *registry) Rollback(ctx context.Context, id identity.Quadruple, agentID,
 	}
 	rev := target.toRevision()
 	r.emitReverted(ctx, id, agentID, revisionID, fromID, now)
+	r.emitCatalogChanged(ctx, id, agentID, scope, agentcfg.CatalogChangeReasonConfigRevision)
 	return rev, nil
 }
 
@@ -858,7 +864,12 @@ func (r *registry) Close(_ context.Context) error {
 // envelope. It never deletes a revision: the prior id/hash are a durable
 // replay/audit anchor and immutable history continues to use its existing
 // record kinds.
-func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID string, req agentcfg.RetirementRequest) (agentcfg.RetirementStatus, error) {
+func (r *registry) Retire(ctx context.Context, id identity.Quadruple, agentID string, req agentcfg.RetirementRequest) (status agentcfg.RetirementStatus, err error) {
+	defer func() {
+		if err == nil {
+			r.emitCatalogChanged(ctx, id, agentID, agentcfg.ConfigScopeAgent, agentcfg.CatalogChangeReasonLifecycle)
+		}
+	}()
 	if err := r.validate(id, agentID); err != nil {
 		return agentcfg.RetirementStatus{}, err
 	}
@@ -2501,3 +2512,32 @@ func (r *registry) emitReverted(ctx context.Context, author identity.Quadruple, 
 			slog.String("error", err.Error()))
 	}
 }
+
+// emitCatalogChanged publishes the best-effort tools.catalog.changed hint for
+// a pointer or lifecycle write this registry just committed.
+func (r *registry) emitCatalogChanged(ctx context.Context, writer identity.Quadruple, agentID string, scope agentcfg.ConfigScope, reason string) {
+	scopeName := agentcfg.CatalogChangeScopeAgent
+	if scope == agentcfg.ConfigScopeUser {
+		scopeName = agentcfg.CatalogChangeScopeUser
+	}
+	r.NotifyCatalogChanged(ctx, writer, writer.TenantID, agentID, scopeName, reason)
+}
+
+// NotifyCatalogChanged implements agentcfg.CatalogChangeNotifier. The hint is
+// admitted asynchronously on a context detached from the caller's
+// cancellation; an unresolvable identity or a refused admission is logged at
+// Debug and never changes the caller's outcome.
+func (r *registry) NotifyCatalogChanged(ctx context.Context, writer identity.Quadruple, tenantID, agentID, scope, reason string) {
+	ev, ok := agentcfg.CatalogChangedEvent(writer, tenantID, agentID, scope, reason, r.clock())
+	if !ok {
+		r.logger.DebugContext(ctx, "agentcfg/statestore: tools.catalog.changed skipped: unresolvable identity",
+			slog.String("reason", reason))
+		return
+	}
+	if err := events.PublishAsync(context.WithoutCancel(ctx), r.bus, ev); err != nil {
+		r.logger.DebugContext(ctx, "agentcfg/statestore: tools.catalog.changed not admitted",
+			slog.String("reason", reason), slog.String("error", err.Error()))
+	}
+}
+
+var _ agentcfg.CatalogChangeNotifier = (*registry)(nil)

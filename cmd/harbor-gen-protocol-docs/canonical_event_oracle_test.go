@@ -156,6 +156,7 @@ tool.policy_exhausted
 tool.provider_credential_fetch_failed
 tool.provider_credential_fetched
 tool.rejected
+tools.catalog.changed
 topology.changed
 trajectory.compressed
 trajectory.compression_failed`

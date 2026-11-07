@@ -397,3 +397,29 @@ func sortDedup(in []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// SlotGenerationReader is the optional Store surface the tool-catalog input
+// stamp uses. It reports the EventID of the session's overlay record for an
+// agent (and whether one exists) with a single point read. It performs no
+// fence or lifecycle check and returns no overlay content: it is a write
+// identity, not a read of the overlay.
+type SlotGenerationReader interface {
+	OverlaySlotGeneration(ctx context.Context, id identity.Quadruple, agentID string) (state.EventID, bool, error)
+}
+
+// OverlaySlotGeneration implements SlotGenerationReader.
+func (s *store) OverlaySlotGeneration(ctx context.Context, id identity.Quadruple, agentID string) (state.EventID, bool, error) {
+	if err := s.validate(id, agentID); err != nil {
+		return "", false, err
+	}
+	rec, err := s.state.Load(ctx, sessionQuad(id), LegacyOverlayKind(agentID))
+	if errors.Is(err, state.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("%w: load overlay generation: %w", ErrStateUnavailable, err)
+	}
+	return rec.ID, true, nil
+}
+
+var _ SlotGenerationReader = (*store)(nil)

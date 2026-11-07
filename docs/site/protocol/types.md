@@ -5079,6 +5079,8 @@ Declared in `internal/protocol/types`.
 | `reliability_tier` | `string` |  |
 | `owner` | `string` |  |
 | `last_used_at` | `time.Time` |  |
+| `side_effect` | `string` | optional (`omitempty`) |
+| `loading_mode` | `string` | optional (`omitempty`) |
 
 ## ToolAggregates
 
@@ -5197,6 +5199,7 @@ Declared in `internal/protocol/types`.
 | `filter` | `types.ToolFilter` — see [`ToolFilter`](./types.md#toolfilter) |  |
 | `page` | `int` | optional (`omitempty`) |
 | `page_size` | `int` | optional (`omitempty`) |
+| `if_revision` | `string` | optional (`omitempty`) |
 
 ## ToolListResponse
 
@@ -5211,6 +5214,8 @@ Declared in `internal/protocol/types`.
 | `total_rows` | `int64` |  |
 | `aggregates` | `types.ToolAggregates` — see [`ToolAggregates`](./types.md#toolaggregates) |  |
 | `aggregates_partial` | `bool` | optional (`omitempty`) |
+| `revision` | `string` | optional (`omitempty`) |
+| `not_modified` | `bool` | optional (`omitempty`) |
 
 ## ToolManifest
 
@@ -5229,6 +5234,7 @@ Declared in `internal/protocol/types`.
 | `timeout_ms` | `int64` |  |
 | `loading_mode` | `string` |  |
 | `display_modes` | `map[string]string` |  |
+| `revision` | `string` | optional (`omitempty`) |
 
 ## ToolMetrics
 

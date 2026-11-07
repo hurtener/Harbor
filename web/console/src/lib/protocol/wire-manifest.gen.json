@@ -11256,6 +11256,16 @@
         {
           "key": "last_used_at",
           "type": "string"
+        },
+        {
+          "key": "side_effect",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "loading_mode",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -11499,6 +11509,11 @@
           "key": "page_size",
           "type": "number",
           "optional": true
+        },
+        {
+          "key": "if_revision",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -11533,6 +11548,16 @@
         },
         {
           "key": "aggregates_partial",
+          "type": "boolean",
+          "optional": true
+        },
+        {
+          "key": "revision",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "not_modified",
           "type": "boolean",
           "optional": true
         }
@@ -11585,6 +11610,11 @@
         {
           "key": "display_modes",
           "type": "object"
+        },
+        {
+          "key": "revision",
+          "type": "string",
+          "optional": true
         }
       ]
     },
@@ -12159,6 +12189,7 @@
     "tool.provider_credential_fetch_failed",
     "tool.provider_credential_fetched",
     "tool.rejected",
+    "tools.catalog.changed",
     "topology.changed",
     "trajectory.compressed",
     "trajectory.compression_failed"

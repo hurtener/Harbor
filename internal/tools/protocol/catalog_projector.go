@@ -36,7 +36,10 @@ import (
 // catalog + annotator references. The catalog is itself safe for concurrent reuse; the
 // projector adds no mutable state. The optional admin backends mutate
 // runtime state, but that mutation lives behind the catalog / annotator
-// implementations, internally synchronised there.
+// implementations, internally synchronised there. The one exception is the
+// bounded configuration-inventory cache (catalog_cache.go), which is
+// internally synchronised and holds structure only — never annotations or an
+// authorization decision.
 type CatalogProjector struct {
 	catalog        tools.ToolCatalog
 	annotator      Annotator
@@ -57,6 +60,11 @@ type CatalogProjector struct {
 	// describe always reports the boot-effective mode (byte-compatible with
 	// the surface before this projection existed).
 	loading LoadingResolver
+	// structural caches configuration inventories (structure only) keyed by
+	// principal and input stamp; see catalog_cache.go. afterStructuralBuild
+	// is a test-only hook run between a miss's build and its re-stamp.
+	structural           *structuralCache
+	afterStructuralBuild func()
 }
 
 // CatalogViewResolver builds the effective, identity-scoped catalog view for
@@ -191,8 +199,9 @@ func NewCatalogProjector(catalog tools.ToolCatalog, opts ...CatalogProjectorOpti
 		return nil, fmt.Errorf("%w: tools.ToolCatalog is nil", ErrMisconfigured)
 	}
 	p := &CatalogProjector{
-		catalog:   catalog,
-		overrides: make(map[string]prototypes.ToolApprovalPolicy),
+		catalog:    catalog,
+		overrides:  make(map[string]prototypes.ToolApprovalPolicy),
+		structural: newStructuralCache(defaultStructuralCacheEntries),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -244,6 +253,15 @@ func scopeOf(t tools.Tool) string {
 	return "tenant"
 }
 
+// loadingModeOf reports the descriptor's prompt-time loading mode, treating
+// the zero value as the default "always".
+func loadingModeOf(t tools.Tool) string {
+	if t.Loading == "" {
+		return string(tools.LoadingAlways)
+	}
+	return string(t.Loading)
+}
+
 // reliabilityTierOf derives the operator-facing reliability label from
 // the tool's side-effect class. Pure / read tools are "standard";
 // write / stateful tools are "guarded"; external tools are "external".
@@ -290,6 +308,8 @@ func (p *CatalogProjector) projectAnnotatedRow(id identity.Identity, t tools.Too
 		Transport:       transportOf(t.Transport),
 		ReliabilityTier: reliabilityTierOf(t),
 		Owner:           owner,
+		SideEffect:      string(t.SideEffects),
+		LoadingMode:     loadingModeOf(t),
 		OAuthStatus:     annotations.OAuthStatus,
 		ApprovalPolicy:  annotations.ApprovalPolicy,
 		LastUsedAt:      annotations.LastUsedAt,
@@ -447,10 +467,7 @@ func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.I
 	for _, ex := range t.Examples {
 		examples = append(examples, ex.Description)
 	}
-	loading := string(t.Loading)
-	if loading == "" {
-		loading = string(tools.LoadingAlways)
-	}
+	loading := loadingModeOf(t)
 	if p.view == nil && p.loading != nil && agentID != "" {
 		eff, err := p.loading.EffectiveLoading(ctx, id, agentID, t, tools.LoadingMode(loading))
 		if err != nil {
@@ -458,8 +475,10 @@ func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.I
 		}
 		loading = string(eff)
 	}
+	row := p.projectRow(ctx, id, t)
+	row.LoadingMode = loading
 	manifest := prototypes.ToolManifest{
-		Tool:          p.projectRow(ctx, id, t),
+		Tool:          row,
 		SideEffect:    string(t.SideEffects),
 		ArgsSchema:    string(t.ArgsSchema),
 		OutSchema:     string(t.OutSchema),
@@ -601,32 +620,27 @@ type ConfigurationCatalogViewResolver interface {
 }
 
 // ListConfigurationTools implements ConfigurationProjector.
+// The inventory is served from the structural cache (catalog_cache.go).
 func (p *CatalogProjector) ListConfigurationTools(ctx context.Context, id identity.Identity, agentID string) ([]prototypes.Tool, error) {
-	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
-	if !ok {
-		return nil, ErrAdminUnsupported
-	}
-	view, err := resolver.ConfigurationCatalogView(ctx, id, agentID)
-	if err != nil {
-		return nil, err
-	}
-	return p.projectRows(ctx, id, view.List())
+	rows, _, err := p.ListConfigurationToolsWithRevision(ctx, id, agentID)
+	return rows, err
 }
 
 // DescribeConfigurationTool implements ConfigurationProjector. Even a known physical
 // ID must occur in the admitted inventory; direct catalog resolution is forbidden.
 func (p *CatalogProjector) DescribeConfigurationTool(ctx context.Context, id identity.Identity, toolID, agentID string) (prototypes.ToolManifest, error) {
-	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
-	if !ok {
-		return prototypes.ToolManifest{}, ErrAdminUnsupported
-	}
-	view, err := resolver.ConfigurationCatalogView(ctx, id, agentID)
+	descriptors, revision, err := p.configurationInventory(ctx, id, agentID)
 	if err != nil {
 		return prototypes.ToolManifest{}, err
 	}
-	for _, t := range view.List() {
+	for _, t := range descriptors {
 		if t.Name == toolID {
-			return p.describeDescriptor(ctx, id, toolID, agentID, t)
+			manifest, err := p.describeDescriptor(ctx, id, toolID, agentID, t)
+			if err != nil {
+				return prototypes.ToolManifest{}, err
+			}
+			manifest.Revision = revision
+			return manifest, nil
 		}
 	}
 	return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)

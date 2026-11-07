@@ -253,6 +253,10 @@ func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListReques
 	if err := validateFilter(req.Filter); err != nil {
 		return prototypes.ToolListResponse{}, err
 	}
+	if req.IfRevision != "" && req.View != prototypes.ToolCatalogViewConfiguration {
+		return prototypes.ToolListResponse{}, fmt.Errorf(
+			"%w: if_revision is only valid with view %q", ErrInvalidRequest, prototypes.ToolCatalogViewConfiguration)
+	}
 
 	// Annotator-wired gate (the projection-completeness gate). With no Annotator wired (V1 production —
 	// the concrete lands in the tools annotator follow-up) the OAuth-status / approval-policy /
@@ -275,12 +279,36 @@ func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListReques
 	}
 
 	var all []prototypes.Tool
+	var revision string
 	if req.View == prototypes.ToolCatalogViewConfiguration {
 		backend, ok := s.projector.(ConfigurationProjector)
 		if !ok {
 			return prototypes.ToolListResponse{}, ErrAdminUnsupported
 		}
-		all, err = backend.ListConfigurationTools(ctx, id, admittedAgentID)
+		if revisioned, ok := backend.(RevisionedConfigurationProjector); ok {
+			// Conditional read: honoured on page 1 only. Admission
+			// (validateCatalogView above, and the transport's effective-agent
+			// admission) has already run, so the revision reads never precede
+			// authorization. Later pages are always full.
+			if req.IfRevision != "" && page == 1 {
+				current, revErr := revisioned.ConfigurationRevision(ctx, id, admittedAgentID)
+				if revErr != nil {
+					return prototypes.ToolListResponse{}, fmt.Errorf("tools/protocol: list: %w", revErr)
+				}
+				if current != "" && current == req.IfRevision {
+					return prototypes.ToolListResponse{
+						Tools:       []prototypes.Tool{},
+						Page:        page,
+						PageSize:    pageSize,
+						Revision:    current,
+						NotModified: true,
+					}, nil
+				}
+			}
+			all, revision, err = revisioned.ListConfigurationToolsWithRevision(ctx, id, admittedAgentID)
+		} else {
+			all, err = backend.ListConfigurationTools(ctx, id, admittedAgentID)
+		}
 	} else {
 		all, err = s.projector.ListTools(ctx, id)
 	}
@@ -341,6 +369,7 @@ func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListReques
 		TotalRows:         totalRows,
 		Aggregates:        aggregates,
 		AggregatesPartial: aggregatesPartial,
+		Revision:          revision,
 	}, nil
 }
 
