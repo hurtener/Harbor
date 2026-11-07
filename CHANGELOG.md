@@ -17,6 +17,33 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Run-start reconciliation of an agent-tier signed OAuth MCP pair now prepares
+  the private connection as the pair's frozen owner instead of the end user
+  whose run triggered the pass, matching the initial registration. Previously
+  the credential exchange during preparation carried the end user as subject,
+  a governing broker refused it, the pair never attached and every run paid
+  for a failed retry. User-tier pairs keep the acting user, and live planner
+  tool calls keep the end user's identity and the existing refusal to
+  bound-operation retry.
+- One failing signed pair no longer aborts reconciliation of the remaining
+  pairs, the user tier, or the provider, connection and discovery-allowance
+  legs. Each per-pair failure is logged separately.
+
+### Changed
+
+- A signed pair whose private preparation fails is retried under a bounded
+  per-pair window (30 s doubling to 15 min, reset by any revision, receipt or
+  phase change; at most 1024 tracked pairs). Suppressed attempts make no
+  credential exchange or durable write and log at debug level. Expiry, fence
+  commits and removals are never suppressed.
+- Signed-capability reconciliation is serialized per owner slot (tenant and
+  agent, plus user for user-tier pairs) instead of runtime-wide, so runs for
+  different tenants or agents no longer queue behind each other. Gate entries
+  are released with their last waiter and scan cursors are capped at 4096.
+- An already-attached published pair skips durable revalidation on run start.
+
 ## [1.38.0] — 2026-11-07
 
 ### Added

@@ -29,11 +29,17 @@ type SignedOAuthMCPReconciler struct {
 	exactFencer   ExactConnectionTeardownFencer
 	providers     SignedCapabilityProviderPreparer
 	matcher       connectionMatcher
-	gate          chan struct{}
-	// continuations is internally synchronized by gate; each tenant and agent
-	// advances one bounded maintenance page independently. Pair lifetime is
-	// tenant+agent scoped even though acting authority remains subject-scoped.
-	continuations map[string]string
+	// gates serializes passes per exact owner slot (see
+	// signedReconcileGateKey), so runs for different tenants, agents or
+	// user-tier owners never queue behind one another.
+	gates *signedReconcileGates
+	// continuations lets each slot cursor advance one bounded maintenance page
+	// independently. Pair lifetime is tenant+agent scoped even though acting
+	// authority remains subject-scoped.
+	continuations *signedReconcileContinuations
+	// attachBackoff is the bounded per-pair retry window for failed private
+	// preparation. Nil (the registration-path literal) disables it.
+	attachBackoff *signedAttachBackoff
 }
 
 type physicalActiveRegistry interface {
@@ -94,26 +100,30 @@ func NewSignedOAuthMCPReconciler(registry agentcfg.Registry, store state.StateSt
 		return nil, err
 	}
 	fences = fences.WithChangeObserver(agentcfg.CatalogChangeObserverFor(registry))
-	return &SignedOAuthMCPReconciler{registry: registry, physical: physical, operations: operations, fences: fences, preparer: preparer, detacher: detacher, exactDetacher: exactDetacher, exactFencer: exactFencer, providers: providers, matcher: matcher, gate: make(chan struct{}, 1), continuations: make(map[string]string)}, nil
+	return &SignedOAuthMCPReconciler{registry: registry, physical: physical, operations: operations, fences: fences, preparer: preparer, detacher: detacher, exactDetacher: exactDetacher, exactFencer: exactFencer, providers: providers, matcher: matcher,
+		gates: newSignedReconcileGates(), continuations: newSignedReconcileContinuations(), attachBackoff: newSignedAttachBackoff()}, nil
 }
 
 // ReconcileSignedOAuthMCPCapability converges a single exact agent slot. A
 // foreign/corrupt/expired receipt is never dispatched: it is returned to the
 // caller, leaving the fence's prior active revision authoritative.
+//
+// Each durable receipt is converged independently: a failure of one pair is
+// collected and joined into the returned error, never a reason to skip the
+// remaining pairs of the same page.
 func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context.Context, q identity.Quadruple, agentID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	select {
-	case r.gate <- struct{}{}:
-		defer func() { <-r.gate }()
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 	if strings.TrimSpace(q.TenantID) == "" || strings.TrimSpace(q.UserID) == "" || strings.TrimSpace(q.SessionID) == "" || strings.TrimSpace(agentID) == "" {
 		return ErrIdentityRequired
 	}
 	scope := signedOAuthMCPConfigScope(ctx)
+	release, err := r.gates.acquire(ctx, signedReconcileGateKey(scope, q, agentID))
+	if err != nil {
+		return err
+	}
+	defer release()
 	// The durable user attachment is keyed by (tenant, user, agent). Session
 	// is only the audit/run subject that originally authorized the pair, so a
 	// new session must continue the same bounded scan rather than start a new
@@ -123,127 +133,142 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		cursorParts = append(cursorParts, q.SessionID)
 	}
 	cursorKey := strings.Join(cursorParts, "\x00")
-	ops, continuation, err := r.operations.ScanTenantPage(ctx, q.TenantID, state.MaxStateScanLimit, r.continuations[cursorKey])
+	ops, continuation, err := r.operations.ScanTenantPage(ctx, q.TenantID, state.MaxStateScanLimit, r.continuations.get(cursorKey))
 	if err != nil {
 		return err
 	}
-	r.continuations[cursorKey] = continuation
+	r.continuations.set(cursorKey, continuation)
+	var errs []error
 	for _, op := range ops {
-		if op.Binding.AgentID != agentID {
-			continue
+		if err := r.reconcileOperation(ctx, q, agentID, scope, op); err != nil {
+			errs = append(errs, fmt.Errorf("signed capability provider %q: %w", op.Binding.ProviderName, err))
 		}
-		// Agent-scope reconciliation owns only the operator/agent-tier
-		// receipts. User-tier receipts are independently reconciled for the
-		// acting subject below; allowing this pass to inspect them would let an
-		// operator view mutate a user's desired pair or physical owner.
-		if scope == agentcfg.ConfigScopeAgent && (op.ReplayKey.UserID != "" || op.ReplayKey.SessionID != "") {
-			continue
+		if ctx.Err() != nil {
+			errs = append(errs, ctx.Err())
+			break
 		}
-		if scope == agentcfg.ConfigScopeUser && op.Binding.UserID != q.UserID {
-			continue
+	}
+	return errors.Join(errs...)
+}
+
+// reconcileOperation converges one durable receipt of the scanned page.
+func (r *SignedOAuthMCPReconciler) reconcileOperation(ctx context.Context, q identity.Quadruple, agentID string, scope agentcfg.ConfigScope, op agentcfg.SignedOAuthMCPOperation) error {
+	if op.Binding.AgentID != agentID {
+		return nil
+	}
+	// Agent-scope reconciliation owns only the operator/agent-tier
+	// receipts. User-tier receipts are independently reconciled for the
+	// acting subject below; allowing this pass to inspect them would let an
+	// operator view mutate a user's desired pair or physical owner.
+	if scope == agentcfg.ConfigScopeAgent && (op.ReplayKey.UserID != "" || op.ReplayKey.SessionID != "") {
+		return nil
+	}
+	if scope == agentcfg.ConfigScopeUser && op.Binding.UserID != q.UserID {
+		return nil
+	}
+	ownerQ, err := signedCapabilityOwnerQuadruple(q.TenantID, op.Binding)
+	if err != nil {
+		return err
+	}
+	// A user-scoped pair is durable under (tenant, user, agent), but the
+	// session is still part of the live run subject. Keep the frozen
+	// operation owner for durable-slot reads and use the current verified
+	// subject for any path that can materialize or tear down a private
+	// provider. Otherwise a later S2 run reconstructs the S1 session from
+	// the receipt and sends S1 in the downstream actor binding.
+	//
+	// An agent-tier pair is owned by its frozen registrar, never by whichever
+	// end user's run happens to trigger reconciliation: subjectQ stays the
+	// owner, and ensureAttached seats that owner as the working identity for
+	// private preparation exactly like the initial registration push.
+	subjectQ := ownerQ
+	if scope == agentcfg.ConfigScopeUser {
+		subjectQ = q
+	}
+	active, hasActive, err := r.physical.PhysicalActive(ctx, ownerQ, agentID, signedOAuthMCPConfigScope(ctx))
+	if err != nil {
+		return fmt.Errorf("load physical active signed capability revision: %w", err)
+	}
+	kind, kindErr := r.operations.Kind(op.ReplayKey)
+	if kindErr != nil {
+		return kindErr
+	}
+	activePair, activePairSet, pairErr := active.Payload.SignedOAuthMCPPairByProvider(op.Binding.ProviderName)
+	if pairErr != nil {
+		return pairErr
+	}
+	if hasActive && signedCapabilityPairMatchesOperation(activePair, q.TenantID, op.Binding, kind) {
+		return r.reconcilePair(ctx, subjectQ, agentID, active, activePair)
+	}
+	switch op.Phase {
+	case agentcfg.SignedOAuthMCPPhaseClaimed:
+		if signedCapabilityOperationExpired(op) {
+			if err := r.expireIncomplete(ctx, subjectQ, agentID, op, agentcfg.Revision{}, false); err != nil {
+				return err
+			}
 		}
-		ownerQ, err := signedCapabilityOwnerQuadruple(q.TenantID, op.Binding)
-		if err != nil {
+	case agentcfg.SignedOAuthMCPPhaseRevisionCommitted:
+		if signedCapabilityOperationExpired(op) {
+			revision, getErr := r.registry.Get(ctx, ownerQ, agentID, op.RevisionID, signedOAuthMCPConfigScope(ctx))
+			if getErr != nil {
+				return getErr
+			}
+			if err := r.expireIncomplete(ctx, subjectQ, agentID, op, revision, true); err != nil {
+				return err
+			}
+		}
+	case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
+		if err := r.resumeExpiryCompensation(ctx, subjectQ, agentID, op); err != nil {
 			return err
 		}
-		// A user-scoped pair is durable under (tenant, user, agent), but the
-		// session is still part of the live run subject. Keep the frozen
-		// operation owner for durable-slot reads and use the current verified
-		// subject for any path that can materialize or tear down a private
-		// provider. Otherwise a later S2 run reconstructs the S1 session from
-		// the receipt and sends S1 in the downstream actor binding.
-		subjectQ := ownerQ
-		if scope == agentcfg.ConfigScopeUser {
-			subjectQ = q
+	case agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted:
+		if err := r.resumePreparationRejection(ctx, subjectQ, agentID, op); err != nil {
+			return err
 		}
-		active, hasActive, err := r.physical.PhysicalActive(ctx, ownerQ, agentID, signedOAuthMCPConfigScope(ctx))
-		if err != nil {
-			return fmt.Errorf("load physical active signed capability revision: %w", err)
-		}
-		kind, kindErr := r.operations.Kind(op.ReplayKey)
-		if kindErr != nil {
-			return kindErr
-		}
-		activePair, activePairSet, pairErr := active.Payload.SignedOAuthMCPPairByProvider(op.Binding.ProviderName)
-		if pairErr != nil {
-			return pairErr
-		}
-		if hasActive && signedCapabilityPairMatchesOperation(activePair, q.TenantID, op.Binding, kind) {
-			if err := r.reconcilePair(ctx, subjectQ, agentID, active, activePair); err != nil {
+	case agentcfg.SignedOAuthMCPPhasePreparationRejected:
+		// Terminal cleanup receipt. A later signed operation may already own
+		// the agent fence, so historical rejection is deliberately inert.
+	case agentcfg.SignedOAuthMCPPhasePublished:
+		// A published historical receipt is never authority to reattach. If
+		// the current physical desired state has no pair, the paired removal
+		// revision landed before its receipt checkpoint; continue teardown.
+		if hasActive && !activePairSet {
+			op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, active.RevisionID)
+			if err != nil {
 				return err
 			}
-			continue
-		}
-		switch op.Phase {
-		case agentcfg.SignedOAuthMCPPhaseClaimed:
-			if signedCapabilityOperationExpired(op) {
-				if err := r.expireIncomplete(ctx, subjectQ, agentID, op, agentcfg.Revision{}, false); err != nil {
-					return err
-				}
-			}
-		case agentcfg.SignedOAuthMCPPhaseRevisionCommitted:
-			if signedCapabilityOperationExpired(op) {
-				revision, getErr := r.registry.Get(ctx, ownerQ, agentID, op.RevisionID, signedOAuthMCPConfigScope(ctx))
-				if getErr != nil {
-					return getErr
-				}
-				if err := r.expireIncomplete(ctx, subjectQ, agentID, op, revision, true); err != nil {
-					return err
-				}
-			}
-		case agentcfg.SignedOAuthMCPPhaseExpiryAdmitted:
-			if err := r.resumeExpiryCompensation(ctx, subjectQ, agentID, op); err != nil {
+			op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
+			if err != nil {
 				return err
-			}
-		case agentcfg.SignedOAuthMCPPhasePreparationRejectionAdmitted:
-			if err := r.resumePreparationRejection(ctx, subjectQ, agentID, op); err != nil {
-				return err
-			}
-		case agentcfg.SignedOAuthMCPPhasePreparationRejected:
-			// Terminal cleanup receipt. A later signed operation may already own
-			// the agent fence, so historical rejection is deliberately inert.
-		case agentcfg.SignedOAuthMCPPhasePublished:
-			// A published historical receipt is never authority to reattach. If
-			// the current physical desired state has no pair, the paired removal
-			// revision landed before its receipt checkpoint; continue teardown.
-			if hasActive && !activePairSet {
-				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, active.RevisionID)
-				if err != nil {
-					return err
-				}
-				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
-				if err != nil {
-					return err
-				}
-				if err := r.resumeRemoval(ctx, subjectQ, agentID, op); err != nil {
-					return err
-				}
-			}
-		case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
-			if hasActive && activePairSet {
-				return fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
-			}
-			if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalAdmitted {
-				op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
-				if err != nil {
-					return err
-				}
 			}
 			if err := r.resumeRemoval(ctx, subjectQ, agentID, op); err != nil {
 				return err
 			}
-		case agentcfg.SignedOAuthMCPPhaseRemoved:
-			// A different runtime may have published before removal won the
-			// shared operation-slot fence. Its process-local handle converges from
-			// the terminal durable receipt on the next reconciliation pass.
-			operationKind, kindErr := r.operations.Kind(op.ReplayKey)
-			if kindErr != nil {
-				return kindErr
-			}
-			fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, operationKind, op.PublisherEpoch)
-			if err := r.detachExact(ctx, subjectQ, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+		}
+	case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, agentcfg.SignedOAuthMCPPhaseCatalogUnpublished, agentcfg.SignedOAuthMCPPhaseTeardownReceipted:
+		if hasActive && activePairSet {
+			return fmt.Errorf("%w: stale removal cannot detach the active pair", agentcfg.ErrSignedCapabilityReplay)
+		}
+		if op.Phase == agentcfg.SignedOAuthMCPPhaseRemovalAdmitted {
+			op, err = r.advanceOperation(ctx, op, agentcfg.SignedOAuthMCPPhaseRemovalRevisionCommitted, active.RevisionID)
+			if err != nil {
 				return err
 			}
+		}
+		if err := r.resumeRemoval(ctx, subjectQ, agentID, op); err != nil {
+			return err
+		}
+	case agentcfg.SignedOAuthMCPPhaseRemoved:
+		// A different runtime may have published before removal won the
+		// shared operation-slot fence. Its process-local handle converges from
+		// the terminal durable receipt on the next reconciliation pass.
+		operationKind, kindErr := r.operations.Kind(op.ReplayKey)
+		if kindErr != nil {
+			return kindErr
+		}
+		fingerprint := signedCapabilityPublisherAttachmentFingerprint(op.Binding.Connection, operationKind, op.PublisherEpoch)
+		if err := r.detachExact(ctx, subjectQ, agentID, op.Binding.Connection.Name, fingerprint); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -304,6 +329,13 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		if signedCapabilityOperationExpired(op) {
 			return r.expireIncomplete(ctx, q, agentID, op, revision, true)
 		}
+		// Expiry above is never suppressed. Only the attach attempt, whose
+		// private preparation previously failed for this exact receipt and
+		// revision, waits out its bounded retry window.
+		slot := signedAttachSlot(ctx, q, agentID, pair)
+		if err := r.attachBackoff.admit(slot, signedAttachFingerprint(pair, revision, op)); err != nil {
+			return err
+		}
 		fence, err := r.validPendingFence(ctx, q.TenantID, agentID, op, revision)
 		if err != nil {
 			return err
@@ -320,6 +352,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		}
 		if err := r.publish(ctx, q, agentID, pair, op, revision); err != nil {
 			if !errors.Is(err, tools.ErrArtifactEgressSchema) {
+				r.recordAttachFailure(ctx, slot, signedAttachFingerprint(pair, revision, op), err)
 				return err
 			}
 			if rejectErr := r.rejectPreparation(ctx, q, agentID, op, revision); rejectErr != nil {
@@ -334,6 +367,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		if latest.Phase != agentcfg.SignedOAuthMCPPhasePublished {
 			return fmt.Errorf("%w: publication did not converge", agentcfg.ErrSignedCapabilityPending)
 		}
+		r.attachBackoff.succeed(slot)
 		_, err = r.fences.Advance(ctx, fence, agentcfg.SignedOAuthMCPFenceCommitted, revision.RevisionID)
 		if errors.Is(err, agentcfg.ErrSignedCapabilityTransition) {
 			return r.commitFence(ctx, q.TenantID, agentID, latest, revision)
@@ -346,11 +380,21 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 	case agentcfg.SignedOAuthMCPPhasePreparationRejected:
 		return nil
 	case agentcfg.SignedOAuthMCPPhasePublished:
+		// The fence commit is durable convergence and is never suppressed.
 		if err := r.commitFence(ctx, q.TenantID, agentID, op, revision); err != nil {
 			return err
 		}
-		_, err := r.ensureAttached(ctx, q, agentID, pair, revision, op)
-		return err
+		slot := signedAttachSlot(ctx, q, agentID, pair)
+		fingerprint := signedAttachFingerprint(pair, revision, op)
+		if err := r.attachBackoff.admit(slot, fingerprint); err != nil {
+			return err
+		}
+		if _, err := r.ensureAttached(ctx, q, agentID, pair, revision, op); err != nil {
+			r.recordAttachFailure(ctx, slot, fingerprint, err)
+			return err
+		}
+		r.attachBackoff.succeed(slot)
+		return nil
 	case agentcfg.SignedOAuthMCPPhaseRemovalAdmitted:
 		// Admission is durable removal intent. Another runtime may still be
 		// performing its desired-state CAS, so a reconciler must never roll it
@@ -485,13 +529,36 @@ func (r *SignedOAuthMCPReconciler) publish(ctx context.Context, q identity.Quadr
 	return err
 }
 
-func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair, revision agentcfg.Revision, op agentcfg.SignedOAuthMCPOperation) (agentcfg.SignedOAuthMCPOperation, error) {
-	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
-		return agentcfg.SignedOAuthMCPOperation{}, err
+// recordAttachFailure opens or extends the bounded retry window only for a
+// failed external preparation. Caller cancellation and local revalidation or
+// CAS races are not evidence that the pair cannot attach.
+func (r *SignedOAuthMCPReconciler) recordAttachFailure(ctx context.Context, slot signedAttachBackoffKey, fingerprint string, err error) {
+	if ctx.Err() != nil {
+		return
 	}
+	var preparation *signedPreparationError
+	if errors.As(err, &preparation) {
+		r.attachBackoff.fail(slot, fingerprint)
+	}
+}
+
+func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair, revision agentcfg.Revision, op agentcfg.SignedOAuthMCPOperation) (agentcfg.SignedOAuthMCPOperation, error) {
 	owner := toolauth.Owner{Tenant: q.TenantID, Agent: agentID}
 	if signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeUser {
 		owner.User = q.UserID
+	}
+	// Steady state: a published receipt whose exact publisher generation is
+	// already live in this process needs no durable revalidation. The matcher
+	// fingerprint binds the durable publisher epoch of the receipt the caller
+	// just loaded, so another runtime's takeover or any pair change misses it
+	// and falls through to the full revalidated path below. Nothing is
+	// published on this path.
+	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished && op.PublisherEpoch != "" &&
+		r.matcher.ConnectionMatches(owner, pair.Connection.Name, signedCapabilityPairAttachmentFingerprint(pair, op.PublisherEpoch)) {
+		return op, nil
+	}
+	if err := r.revalidateAttachmentAuthority(ctx, q, agentID, revision, pair, op); err != nil {
+		return agentcfg.SignedOAuthMCPOperation{}, err
 	}
 	if op.PublisherEpoch != "" && r.matcher.ConnectionMatches(owner, pair.Connection.Name, signedCapabilityPairAttachmentFingerprint(pair, op.PublisherEpoch)) {
 		return op, nil
@@ -509,9 +576,24 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 		Audience: pair.Audience, Scopes: pair.Scopes, Connection: pair.Connection}
 	provider, err := r.providers.PrepareSignedCapabilityProvider(ctx, pair.Broker, signedCapabilityExchangeBinding(binding, pair.Sink, pair.AuthorityOperationKind, op, r.operations), pair.Scopes)
 	if err != nil {
-		return agentcfg.SignedOAuthMCPOperation{}, err
+		return agentcfg.SignedOAuthMCPOperation{}, &signedPreparationError{err: err}
 	}
-	attachCtx := tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(ctx, agentID), agentID)
+	// Private preparation is the owner's connection mint. For an agent-tier
+	// pair, q is the frozen registrar slot (never the end user whose run
+	// triggered this pass), so seat it as the working identity: the exchange
+	// subject then matches the signed actor binding exactly as it did on the
+	// initial registration push. A user-tier pair keeps the acting user, who
+	// is its owner. Live tool calls never take this path and keep their own
+	// run identity.
+	attachCtx := ctx
+	if signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeAgent {
+		ownerCtx, idErr := identity.With(ctx, q.Identity)
+		if idErr != nil {
+			return agentcfg.SignedOAuthMCPOperation{}, errors.Join(idErr, closePreparedSignedCapability(ctx, nil, provider))
+		}
+		attachCtx = ownerCtx
+	}
+	attachCtx = tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(attachCtx, agentID), agentID)
 	prepared, err := r.preparer.PrepareConnection(attachCtx, AttachRequest{Identity: q.Identity, AgentID: agentID, Owner: owner, Name: pair.Connection.Name,
 		Transport: agentcfg.MCPTransportHTTP, URL: pair.Connection.URL,
 		OAuthProvider:         signedCapabilityOAuthProvider(pair.ProviderName, pair.Connection.Injection),
@@ -521,7 +603,7 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 		ArtifactByteEligible: pair.Connection.ArtifactByteEligible, ArtifactParams: cloneArtifactParams(pair.Connection.ArtifactParams),
 		DescriptorFingerprint: fingerprint})
 	if err != nil {
-		return agentcfg.SignedOAuthMCPOperation{}, errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))
+		return agentcfg.SignedOAuthMCPOperation{}, &signedPreparationError{err: errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))}
 	}
 	authorityPrepared, ok := prepared.(AuthorityBoundPreparedConnection)
 	if !ok {

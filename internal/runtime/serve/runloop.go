@@ -1123,18 +1123,19 @@ func flattenJoined(err error) []error {
 func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple) {
 	startedAt := time.Now()
 	defer func() { telemetry.RecordTurnStage(ctx, telemetry.TurnStageMCPReconcile, time.Since(startedAt)) }()
+	// The signed-capability legs converge each durable pair independently and
+	// report every per-pair failure. A failing pair is logged but never skips
+	// the other tier or the provider, connection and discovery-allowance legs
+	// below: those legs own disjoint state (the generic detach keep-set always
+	// retains signed pair connections).
 	if d.signedOAuthMCPReconciler != nil {
 		if err := d.signedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapability(ctx, q, agentID); err != nil {
-			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start signed OAuth MCP reconcile failed",
-				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
-			return
+			d.logSignedReconcileErrors(ctx, "agent", agentID, q, err)
 		}
 		if q.UserID != "" {
 			if userReconciler, ok := d.signedOAuthMCPReconciler.(signedOAuthMCPUserReconciler); ok {
 				if err := userReconciler.ReconcileSignedOAuthMCPCapabilityForScope(ctx, q, agentID, agentcfg.ConfigScopeUser); err != nil {
-					d.logger.ErrorContext(ctx, "RunLoopDriver: run-start user-scoped signed OAuth MCP reconcile failed",
-						slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", err.Error()))
-					return
+					d.logSignedReconcileErrors(ctx, "user", agentID, q, err)
 				}
 			}
 		}
@@ -1225,6 +1226,22 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 			d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile re-applied",
 				slog.String("agent_id", agentID), slog.Int("reapplied", applied))
 		}
+	}
+}
+
+// logSignedReconcileErrors logs each per-pair signed-capability reconcile
+// failure separately. A pair parked by its bounded retry window is not a new
+// failure and logs at Debug, so a persistently failing pair does not write an
+// Error line on every run start.
+func (d *RunLoopDriver) logSignedReconcileErrors(ctx context.Context, tier, agentID string, q identity.Quadruple, err error) {
+	for _, leaf := range flattenJoined(err) {
+		if errors.Is(leaf, agentcfgprotocol.ErrSignedCapabilityAttachSuppressed) {
+			d.logger.DebugContext(ctx, "RunLoopDriver: run-start signed OAuth MCP attach suppressed by its retry window",
+				slog.String("tier", tier), slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("detail", leaf.Error()))
+			continue
+		}
+		d.logger.ErrorContext(ctx, "RunLoopDriver: run-start signed OAuth MCP reconcile failed",
+			slog.String("tier", tier), slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", leaf.Error()))
 	}
 }
 
