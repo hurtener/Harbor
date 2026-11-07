@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.36.0] — 2026-11-06
+
 ### Added
 
 - `runtime.retention` explicitly reads observed events, tasks and sessions

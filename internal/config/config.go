@@ -1483,14 +1483,6 @@ type MCPAddConnectionConfig struct {
 	StdioAllowlist []string `yaml:"stdio_allowlist,omitempty"`
 }
 
-// MCPAppHostConfig declares the MCP App display modes this Harbor host can
-// render. The runtime advertises these in the `io.modelcontextprotocol/ui`
-// client capability during every MCP initialize handshake so a server can
-// tailor the app references it returns to what the host actually renders.
-//
-// `DisplayModes` is the closed set `inline` / `fullscreen` / `pip` (the
-// ext-apps `McpUiDisplayMode` values). Empty or nil resolves to the
-// inline-only baseline. Restart-required.
 // CatalogCacheConfig bounds the structural catalog cache. Every zero field
 // takes its default; negative values are refused at validation.
 type CatalogCacheConfig struct {
@@ -1540,6 +1532,14 @@ func (t ToolsConfig) EffectiveCatalogCache() CatalogCacheConfig {
 	return out
 }
 
+// MCPAppHostConfig declares the MCP App display modes this Harbor host can
+// render. The runtime advertises these in the `io.modelcontextprotocol/ui`
+// client capability during every MCP initialize handshake so a server can
+// tailor the app references it returns to what the host actually renders.
+//
+// `DisplayModes` is the closed set `inline` / `fullscreen` / `pip` (the
+// ext-apps `McpUiDisplayMode` values). Empty or nil resolves to the
+// inline-only baseline. Restart-required.
 type MCPAppHostConfig struct {
 	DisplayModes []string `yaml:"display_modes,omitempty"`
 }
