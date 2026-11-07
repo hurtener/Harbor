@@ -201,7 +201,7 @@ func NewCatalogProjector(catalog tools.ToolCatalog, opts ...CatalogProjectorOpti
 	p := &CatalogProjector{
 		catalog:    catalog,
 		overrides:  make(map[string]prototypes.ToolApprovalPolicy),
-		structural: newStructuralCache(defaultStructuralCacheEntries),
+		structural: newStructuralCache(DefaultStructuralCacheLimits(), time.Now),
 	}
 	for _, opt := range opts {
 		opt(p)

@@ -2308,3 +2308,35 @@ func TestValidateTools_BuiltIn_SkillListAndProposeAllowed(t *testing.T) {
 		t.Fatalf("Validate rejected the 111d built-in names: %v", err)
 	}
 }
+
+// TestValidateTools_CatalogCache covers tools.catalog_cache: absent and zero
+// fields take the small defaults, negatives and an entry cap above the
+// budget are refused.
+func TestValidateTools_CatalogCache(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Tools.CatalogCache = nil
+	eff := cfg.Tools.EffectiveCatalogCache()
+	if eff.Disabled || eff.MaxBytes != 8<<20 || eff.MaxEntryBytes != 2<<20 || eff.MaxEntries != 64 || eff.IdleTTL != 15*time.Minute {
+		t.Fatalf("defaults = %+v", eff)
+	}
+	small := &config.CatalogCacheConfig{MaxBytes: 1 << 20}
+	cfg.Tools.CatalogCache = small
+	if eff := cfg.Tools.EffectiveCatalogCache(); eff.MaxEntryBytes != 1<<20 {
+		t.Fatalf("entry cap not clamped to a smaller budget: %+v", eff)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("small budget rejected: %v", err)
+	}
+	for name, bad := range map[string]config.CatalogCacheConfig{
+		"tools.catalog_cache.max_bytes":       {MaxBytes: -1},
+		"tools.catalog_cache.max_entry_bytes": {MaxBytes: 1 << 20, MaxEntryBytes: 2 << 20},
+		"tools.catalog_cache.max_entries":     {MaxEntries: -1},
+		"tools.catalog_cache.idle_ttl":        {IdleTTL: -time.Second},
+	} {
+		cfg := mustLoadValid(t)
+		cfg.Tools.CatalogCache = &bad
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: err=%v", name, err)
+		}
+	}
+}

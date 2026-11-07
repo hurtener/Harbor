@@ -997,3 +997,106 @@ func TestCatalogRevision_OneEntryPerPrincipal(t *testing.T) {
 		t.Fatalf("entries=%d rows=%d, want 1 entry and 6 rows", f.projector.structural.len(), len(got.Tools))
 	}
 }
+
+// realisticTools builds n tools with large input schemas (the dominant cost
+// of a real MCP inventory) and a couple of examples each.
+func realisticTools(prefix string, n, schemaBytes int) []tools.Tool {
+	schema := json.RawMessage(`{"type":"object","properties":{"q":{"type":"string","description":"` + strings.Repeat("x", schemaBytes) + `"}}}`)
+	out := make([]tools.Tool, n)
+	for i := range out {
+		out[i] = tools.Tool{
+			Name: fmt.Sprintf("%s_%04d", prefix, i), Description: strings.Repeat("d", 200), ArgsSchema: schema, OutSchema: schema[:len(schema)/4],
+			Examples: []tools.ToolExample{{Description: "e", Args: map[string]any{"q": "v"}}, {Description: "f"}},
+		}
+	}
+	return out
+}
+
+// Memory constraint: the structural cache never exceeds its byte budget or
+// entry bound, oversized inventories are never cached, and the estimate
+// counts schema bytes.
+func TestStructuralCache_ByteBudgetHoldsWithRealisticRows(t *testing.T) {
+	limits := StructuralCacheLimits{MaxBytes: 8 << 20, MaxEntryBytes: 2 << 20, MaxEntries: 64, IdleTTL: time.Hour}
+	c := newStructuralCache(limits, time.Now)
+	inventory := realisticTools("srv", 150, 6<<10) // ~150 tools × ~8 KiB of schema
+	size := estimateInventoryBytes(inventory)
+	if size < int64(150*(6<<10)) {
+		t.Fatalf("estimate %d does not account for schema bytes", size)
+	}
+	for principal := range 200 {
+		c.put(structuralKey{tenant: "t", user: fmt.Sprintf("u-%d", principal), agent: "a", view: configurationStampView}, "rev", inventory)
+		if used := c.usedBytes(); used > limits.MaxBytes {
+			t.Fatalf("after %d principals used=%d > budget %d", principal+1, used, limits.MaxBytes)
+		}
+		if c.len() > limits.MaxEntries {
+			t.Fatalf("entries=%d > %d", c.len(), limits.MaxEntries)
+		}
+	}
+	if c.len() == 0 || int64(c.len())*size != c.usedBytes() {
+		t.Fatalf("accounting drifted: entries=%d size=%d used=%d", c.len(), size, c.usedBytes())
+	}
+
+	// An inventory above the per-entry cap is never cached, and it evicts the
+	// principal's superseded entry.
+	huge := realisticTools("huge", 400, 8<<10)
+	key := structuralKey{tenant: "t", user: "u-199", agent: "a", view: configurationStampView}
+	c.put(key, "rev2", huge)
+	if _, hit := c.get(key, "rev2"); hit {
+		t.Fatal("oversized inventory was cached")
+	}
+	if _, hit := c.get(key, "rev"); hit {
+		t.Fatal("superseded entry survived an oversized rebuild")
+	}
+	if used := c.usedBytes(); used > limits.MaxBytes {
+		t.Fatalf("used=%d > budget", used)
+	}
+}
+
+// Idle entries expire; a later read costs one rebuild.
+func TestStructuralCache_IdleExpiry(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	clock := func() time.Time { return now }
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-idle")
+	f.registerBootTools(3)
+	f.projector.structural = newStructuralCache(StructuralCacheLimits{IdleTTL: 15 * time.Minute}, clock)
+	id := f.id("admin", "session")
+	f.mustList(id, nil)
+	now = now.Add(14 * time.Minute)
+	f.mustList(id, nil)
+	if f.resolver.builds.Load() != 1 {
+		t.Fatal("entry expired before its idle TTL")
+	}
+	now = now.Add(16 * time.Minute)
+	f.mustList(id, nil)
+	if f.resolver.builds.Load() != 2 {
+		t.Fatalf("builds=%d, want an idle entry to expire and rebuild once", f.resolver.builds.Load())
+	}
+	if f.projector.structural.len() != 1 {
+		t.Fatalf("entries=%d", f.projector.structural.len())
+	}
+}
+
+// An inventory over the per-entry cap is served correctly but uncached, and
+// a disabled cache still reports revisions and answers conditional reads.
+func TestStructuralCache_OversizedAndDisabled(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-oversized")
+	f.registerBootTools(5)
+	f.projector.structural = newStructuralCache(StructuralCacheLimits{MaxBytes: 1 << 20, MaxEntryBytes: 1 << 10}, time.Now)
+	id := f.id("admin", "session")
+	first := f.mustList(id, nil)
+	second := f.mustList(id, nil)
+	if f.resolver.builds.Load() != 2 || f.projector.structural.len() != 0 || len(second.Tools) != 5 {
+		t.Fatalf("oversized: builds=%d entries=%d rows=%d", f.resolver.builds.Load(), f.projector.structural.len(), len(second.Tools))
+	}
+	if cond := f.mustList(id, func(r *prototypes.ToolListRequest) { r.IfRevision = first.Revision }); !cond.NotModified {
+		t.Fatal("uncached inventory lost its conditional answer")
+	}
+	WithoutStructuralCache()(f.projector)
+	disabled := f.mustList(id, nil)
+	if disabled.Revision == "" || len(disabled.Tools) != 5 {
+		t.Fatalf("disabled cache: revision=%q rows=%d", disabled.Revision, len(disabled.Tools))
+	}
+	if cond := f.mustList(id, func(r *prototypes.ToolListRequest) { r.IfRevision = disabled.Revision }); !cond.NotModified {
+		t.Fatal("a disabled cache must still answer conditional reads")
+	}
+}

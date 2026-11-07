@@ -16316,8 +16316,17 @@ does not cover. The revision covers every structural field and excludes
 `not_modified` speaks only for the structural rows of the identical query (same
 filter, search and page size) and carries no aggregates.
 
-A bounded LRU (512 entries) caches only the admitted structural descriptors,
-keyed by (tenant, user, agent, view, session-if-overlay) with the revision held
+A bounded LRU caches only the admitted structural descriptors. Memory is a
+product constraint, so it is bounded four ways (`tools.catalog_cache`): an
+estimated total byte budget (default 8 MiB, schema bytes dominate), a
+per-inventory cap (default 2 MiB; larger inventories are served uncached), an
+entry count (default 64) and an idle expiry (default 15 minutes). Disabling it
+keeps revisions and conditional reads working. The other new in-memory state is
+fixed-size (atomic catalog and registry generations), proportional to
+registered servers (one known-empty flag each) or to in-flight requests
+(single-flight calls are removed on completion; request-local annotation
+maps), and hint publication uses the bus's bounded asynchronous lane. The
+cache is keyed by (tenant, user, agent, view, session-if-overlay) with the revision held
 in the entry: a principal has at most one entry, replaced by each newer stable
 build. Concurrent misses for one principal and revision share a build that runs
 detached from every caller's cancellation and bounded at 30 seconds; each

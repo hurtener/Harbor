@@ -40,7 +40,10 @@ Two versions move independently in Harbor (RFC §5.3):
   longer need one `tools.describe` per tool.
 - The runtime caches admitted configuration inventories (structure only, one
   entry per tenant, user, agent, view and session-when-overlaid, holding the
-  latest stable revision; 512 entries). Admission still runs on every request before any revision read,
+  latest stable revision). Memory is bounded by `tools.catalog_cache`: 8 MiB
+  total estimated size, 2 MiB per inventory (larger ones are served
+  uncached), 64 entries and a 15-minute idle expiry by default; it can be
+  disabled. Admission still runs on every request before any revision read,
   and annotations are applied per request.
 - `tools.catalog.changed` is a best-effort hint (`agent_id`, `scope`, `reason`;
   no tool data, no revision) published after agent-config pointer and lifecycle

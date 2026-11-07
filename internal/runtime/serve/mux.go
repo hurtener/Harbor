@@ -563,6 +563,13 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			}
 			toolsProjectorOpts = append(toolsProjectorOpts, toolsprotocol.WithAnnotator(annotator))
 		}
+		if cache := cfg.Tools.EffectiveCatalogCache(); cache.Disabled {
+			toolsProjectorOpts = append(toolsProjectorOpts, toolsprotocol.WithoutStructuralCache())
+		} else {
+			toolsProjectorOpts = append(toolsProjectorOpts, toolsprotocol.WithStructuralCacheLimits(toolsprotocol.StructuralCacheLimits{
+				MaxBytes: cache.MaxBytes, MaxEntryBytes: cache.MaxEntryBytes, MaxEntries: cache.MaxEntries, IdleTTL: cache.IdleTTL,
+			}))
+		}
 		toolsProjector, pErr := toolsprotocol.NewCatalogProjector(in.Catalog, toolsProjectorOpts...)
 		if pErr != nil {
 			return nil, wrapErr("tools/protocol projector", pErr)

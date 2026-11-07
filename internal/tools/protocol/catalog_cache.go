@@ -46,8 +46,54 @@ type RevisionedConfigurationProjector interface {
 // stamps and cache keys.
 const configurationStampView = string(prototypes.ToolCatalogViewConfiguration)
 
-// defaultStructuralCacheEntries bounds the configuration-inventory cache.
-const defaultStructuralCacheEntries = 512
+// StructuralCacheLimits bounds the configuration-inventory cache. Memory is
+// a product constraint (runtimes commonly run in small containers), so every
+// dimension has a small, safe default and none is unbounded.
+type StructuralCacheLimits struct {
+	// MaxBytes is the total estimated size of all cached inventories.
+	MaxBytes int64
+	// MaxEntryBytes is the largest single inventory that is cached; a larger
+	// one is served uncached (each request rebuilds it).
+	MaxEntryBytes int64
+	// MaxEntries bounds the number of cached principals.
+	MaxEntries int
+	// IdleTTL evicts an entry not read for this long; a miss costs one build.
+	IdleTTL time.Duration
+}
+
+// Default structural cache limits. Exported so the config layer documents and
+// validates the same values.
+const (
+	DefaultStructuralCacheMaxBytes      int64 = 8 << 20
+	DefaultStructuralCacheMaxEntryBytes int64 = 2 << 20
+	DefaultStructuralCacheMaxEntries          = 64
+	DefaultStructuralCacheIdleTTL             = 15 * time.Minute
+)
+
+// DefaultStructuralCacheLimits returns the safe defaults.
+func DefaultStructuralCacheLimits() StructuralCacheLimits {
+	return StructuralCacheLimits{
+		MaxBytes:      DefaultStructuralCacheMaxBytes,
+		MaxEntryBytes: DefaultStructuralCacheMaxEntryBytes,
+		MaxEntries:    DefaultStructuralCacheMaxEntries,
+		IdleTTL:       DefaultStructuralCacheIdleTTL,
+	}
+}
+
+// WithStructuralCacheLimits sets the configuration-inventory cache bounds.
+// Non-positive fields take their defaults; MaxEntryBytes is clamped to
+// MaxBytes.
+func WithStructuralCacheLimits(limits StructuralCacheLimits) CatalogProjectorOption {
+	return func(p *CatalogProjector) {
+		p.structural = newStructuralCache(limits, time.Now)
+	}
+}
+
+// WithoutStructuralCache disables the configuration-inventory cache: every
+// configuration read builds its inventory and still reports its revision.
+func WithoutStructuralCache() CatalogProjectorOption {
+	return func(p *CatalogProjector) { p.structural = nil }
+}
 
 // structuralBuildTimeout bounds one shared structural build. The build runs
 // on a context detached from every caller's cancellation (so one caller's
@@ -78,29 +124,88 @@ func (k structuralKey) flight(revision string) string {
 // annotations (OAuth, approval, last-used, display modes), which are applied
 // per request, and it never stores an authorization decision: admission runs
 // on every request before any stamp read. Cached slices are shared read-only.
+//
+// It is bounded by entry count, by total estimated bytes, by a per-entry byte
+// cap, and by idle time. Sizes are conservative estimates of the descriptor
+// fields (schemas dominate), not exact heap accounting.
 type structuralCache struct {
-	mu    sync.Mutex
-	max   int
-	order *list.List
-	items map[structuralKey]*list.Element
-	group singleflight.Group
+	mu     sync.Mutex
+	limits StructuralCacheLimits
+	now    func() time.Time
+	bytes  int64
+	order  *list.List
+	items  map[structuralKey]*list.Element
+	group  singleflight.Group
 }
 
 type structuralEntry struct {
 	key      structuralKey
 	revision string
 	tools    []tools.Tool
+	bytes    int64
+	lastUsed time.Time
 }
 
-func newStructuralCache(max int) *structuralCache {
-	return &structuralCache{max: max, order: list.New(), items: make(map[structuralKey]*list.Element)}
+func newStructuralCache(limits StructuralCacheLimits, now func() time.Time) *structuralCache {
+	def := DefaultStructuralCacheLimits()
+	if limits.MaxBytes <= 0 {
+		limits.MaxBytes = def.MaxBytes
+	}
+	if limits.MaxEntryBytes <= 0 {
+		limits.MaxEntryBytes = def.MaxEntryBytes
+	}
+	if limits.MaxEntryBytes > limits.MaxBytes {
+		limits.MaxEntryBytes = limits.MaxBytes
+	}
+	if limits.MaxEntries <= 0 {
+		limits.MaxEntries = def.MaxEntries
+	}
+	if limits.IdleTTL <= 0 {
+		limits.IdleTTL = def.IdleTTL
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &structuralCache{limits: limits, now: now, order: list.New(), items: make(map[structuralKey]*list.Element)}
+}
+
+// estimateInventoryBytes conservatively estimates the memory an inventory
+// pins: every variable-length descriptor field plus a fixed per-tool and
+// per-example overhead for struct headers, maps and small fields.
+func estimateInventoryBytes(inventory []tools.Tool) int64 {
+	const perTool, perExample, perArg = 512, 128, 64
+	total := int64(64)
+	for i := range inventory {
+		t := &inventory[i]
+		n := perTool + len(t.Name) + len(t.Description) + len(t.ArgsSchema) + len(t.OutSchema) +
+			len(t.CostHint) + len(t.SafetyNotes) + len(t.Source)
+		for _, v := range t.Tags {
+			n += len(v) + 16
+		}
+		for _, v := range t.AuthScopes {
+			n += len(v) + 16
+		}
+		for _, v := range t.HandlesMIME {
+			n += len(v) + 16
+		}
+		for _, ex := range t.Examples {
+			n += perExample + len(ex.Description) + perArg*len(ex.Args)
+			for _, v := range ex.Tags {
+				n += len(v) + 16
+			}
+		}
+		total += int64(n)
+	}
+	return total
 }
 
 // get returns the principal's inventory only when it was built under exactly
-// revision.
+// revision and has not been idle past IdleTTL.
 func (c *structuralCache) get(key structuralKey, revision string) ([]tools.Tool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	c.expireLocked(now)
 	el, ok := c.items[key]
 	if !ok {
 		return nil, false
@@ -109,26 +214,49 @@ func (c *structuralCache) get(key structuralKey, revision string) ([]tools.Tool,
 	if entry.revision != revision {
 		return nil, false
 	}
+	entry.lastUsed = now
 	c.order.MoveToFront(el)
 	return entry.tools, true
 }
 
-// put stores (or replaces) the principal's inventory for revision.
-func (c *structuralCache) put(key structuralKey, revision string, list []tools.Tool) {
+// put stores (or replaces) the principal's inventory for revision. An
+// inventory larger than MaxEntryBytes is not cached (and evicts any older
+// entry for the principal, which it supersedes).
+func (c *structuralCache) put(key structuralKey, revision string, inventory []tools.Tool) {
+	size := estimateInventoryBytes(inventory)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
 	if el, ok := c.items[key]; ok {
-		entry := entryOf(el)
-		entry.revision, entry.tools = revision, list
-		c.order.MoveToFront(el)
+		c.removeLocked(el)
+	}
+	if size > c.limits.MaxEntryBytes {
 		return
 	}
-	c.items[key] = c.order.PushFront(&structuralEntry{key: key, revision: revision, tools: list})
-	for c.order.Len() > c.max {
-		oldest := c.order.Back()
-		c.order.Remove(oldest)
-		delete(c.items, entryOf(oldest).key)
+	c.items[key] = c.order.PushFront(&structuralEntry{key: key, revision: revision, tools: inventory, bytes: size, lastUsed: now})
+	c.bytes += size
+	c.expireLocked(now)
+	for c.order.Len() > c.limits.MaxEntries || c.bytes > c.limits.MaxBytes {
+		c.removeLocked(c.order.Back())
 	}
+}
+
+// expireLocked drops entries idle past IdleTTL. The LRU back is the least
+// recently used, so the scan stops at the first fresh entry.
+func (c *structuralCache) expireLocked(now time.Time) {
+	for el := c.order.Back(); el != nil; el = c.order.Back() {
+		if now.Sub(entryOf(el).lastUsed) < c.limits.IdleTTL {
+			return
+		}
+		c.removeLocked(el)
+	}
+}
+
+func (c *structuralCache) removeLocked(el *list.Element) {
+	entry := entryOf(el)
+	c.order.Remove(el)
+	delete(c.items, entry.key)
+	c.bytes -= entry.bytes
 }
 
 // entryOf returns the cache entry an LRU element holds. Only put inserts
@@ -139,6 +267,12 @@ func entryOf(el *list.Element) *structuralEntry {
 		panic("tools/protocol: structural cache element is not a *structuralEntry")
 	}
 	return entry
+}
+
+func (c *structuralCache) usedBytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes
 }
 
 func (c *structuralCache) len() int {
@@ -178,7 +312,7 @@ func (p *CatalogProjector) configurationInventory(ctx context.Context, id identi
 		return view.List(), nil
 	}
 	stamper, ok := p.view.(ConfigurationCatalogStamper)
-	if !ok || p.structural == nil {
+	if !ok {
 		descriptors, err := build(ctx)
 		return descriptors, "", err
 	}
@@ -189,6 +323,15 @@ func (p *CatalogProjector) configurationInventory(ctx context.Context, id identi
 	if !stampable {
 		descriptors, err := build(ctx)
 		return descriptors, "", err
+	}
+	if p.structural == nil {
+		// Cache disabled: still report the pre-build revision so
+		// conditional reads keep working; nothing is stored.
+		descriptors, err := build(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		return descriptors, revision, nil
 	}
 	key := structuralKey{tenant: id.TenantID, user: id.UserID, agent: agentID, view: configurationStampView}
 	if sessionScoped {
@@ -253,7 +396,7 @@ func (p *CatalogProjector) ConfigurationRevision(ctx context.Context, id identit
 		return "", ErrAdminUnsupported
 	}
 	stamper, ok := p.view.(ConfigurationCatalogStamper)
-	if !ok || p.structural == nil {
+	if !ok {
 		return "", nil
 	}
 	revision, _, stampable, err := stamper.CatalogStamp(ctx, id, agentID, configurationStampView)

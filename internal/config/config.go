@@ -1407,6 +1407,12 @@ type ToolsConfig struct {
 	// Restart-required.
 	MCPAppHost *MCPAppHostConfig `yaml:"mcp_app_host,omitempty"`
 
+	// CatalogCache bounds the runtime's in-memory structural cache of
+	// admitted configuration-view tool inventories. Optional; nil
+	// (or zero fields) takes the small defaults sized for memory-constrained
+	// containers. Restart-required.
+	CatalogCache *CatalogCacheConfig `yaml:"catalog_cache,omitempty"`
+
 	// MCPAddConnection gates the admin-driven runtime add of a NEW MCP
 	// server connection over the Protocol
 	// (`agent_config.add_mcp_connection`). Adding a stdio server spawns an
@@ -1485,6 +1491,55 @@ type MCPAddConnectionConfig struct {
 // `DisplayModes` is the closed set `inline` / `fullscreen` / `pip` (the
 // ext-apps `McpUiDisplayMode` values). Empty or nil resolves to the
 // inline-only baseline. Restart-required.
+// CatalogCacheConfig bounds the structural catalog cache. Every zero field
+// takes its default; negative values are refused at validation.
+type CatalogCacheConfig struct {
+	// Disabled turns the cache off: every configuration read builds its
+	// inventory (revisions and conditional reads still work).
+	Disabled bool `yaml:"disabled,omitempty"`
+	// MaxBytes bounds the total estimated size of cached inventories.
+	MaxBytes int64 `yaml:"max_bytes,omitempty"`
+	// MaxEntryBytes is the largest single inventory that is cached; larger
+	// inventories are served uncached. Must not exceed MaxBytes.
+	MaxEntryBytes int64 `yaml:"max_entry_bytes,omitempty"`
+	// MaxEntries bounds the number of cached principals.
+	MaxEntries int `yaml:"max_entries,omitempty"`
+	// IdleTTL evicts an entry not read for this long.
+	IdleTTL time.Duration `yaml:"idle_ttl,omitempty"`
+}
+
+// Structural catalog cache defaults (tools.catalog_cache). They mirror
+// internal/tools/protocol's DefaultStructuralCache* values, which a config
+// test pins equal.
+const (
+	DefaultCatalogCacheMaxBytes      int64 = 8 << 20
+	DefaultCatalogCacheMaxEntryBytes int64 = 2 << 20
+	DefaultCatalogCacheMaxEntries          = 64
+	DefaultCatalogCacheIdleTTL             = 15 * time.Minute
+)
+
+// EffectiveCatalogCache resolves tools.catalog_cache with every zero field
+// replaced by its default.
+func (t ToolsConfig) EffectiveCatalogCache() CatalogCacheConfig {
+	out := CatalogCacheConfig{}
+	if t.CatalogCache != nil {
+		out = *t.CatalogCache
+	}
+	if out.MaxBytes == 0 {
+		out.MaxBytes = DefaultCatalogCacheMaxBytes
+	}
+	if out.MaxEntryBytes == 0 {
+		out.MaxEntryBytes = min(DefaultCatalogCacheMaxEntryBytes, out.MaxBytes)
+	}
+	if out.MaxEntries == 0 {
+		out.MaxEntries = DefaultCatalogCacheMaxEntries
+	}
+	if out.IdleTTL == 0 {
+		out.IdleTTL = DefaultCatalogCacheIdleTTL
+	}
+	return out
+}
+
 type MCPAppHostConfig struct {
 	DisplayModes []string `yaml:"display_modes,omitempty"`
 }
