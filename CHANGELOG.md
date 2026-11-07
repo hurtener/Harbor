@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.37.0] — 2026-11-07
+
 ### Changed
 
 - The durable event driver stores each session's routing index as a small
