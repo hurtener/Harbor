@@ -208,6 +208,17 @@ type Tool struct {
 	// Exact app-only declarations set both AppVisible and AppOnly. Stamped by
 	// the MCP driver at discovery; every other driver leaves it zero-valued.
 	AppVisible bool
+	// SourceTitle is the provider's short human-readable label (for an MCP
+	// server, its initialize `serverInfo.title`, else `serverInfo.name`).
+	// Discovery metadata only: it is indexed for search and echoed in
+	// discovery results so a model can tell which server a tool belongs to.
+	// Never a dispatch, naming, or isolation input. Empty when the provider
+	// supplies none.
+	SourceTitle string
+	// SourceDescription is the provider's bounded descriptive text (for an
+	// MCP server, a truncated prefix of its initialize `instructions`).
+	// Indexed for search only; never a dispatch or isolation input.
+	SourceDescription string
 }
 
 // MatchesMIME reports whether the tool's HandlesMIME declaration
@@ -441,15 +452,30 @@ type ToolCatalog interface {
 	// filter. The slice is owned by the caller; mutations on it do
 	// not affect the catalog.
 	List(filter CatalogFilter) []Tool
-	// Search runs a full-text + tag-filter scan
-	// over the catalog's search index. Returns an empty slice when no
-	// SearchCache is attached (honest "discovery unavailable").
-	Search(ctx context.Context, query string, tags []string, limit int) []Tool
+	// Search runs a relevance-ranked full-text + tag-filter scan over the
+	// catalog's search index, restricted to the names req.Visible admits.
+	// The predicate is applied BEFORE the limit, so up to req.Limit
+	// admitted matches are returned when they exist. A nil Visible admits
+	// nothing (fail closed). Returns an empty slice when no SearchCache is
+	// attached (honest "index unavailable").
+	Search(ctx context.Context, req ToolSearchRequest) []Tool
 	// StageSource atomically replaces one provider's complete descriptor set
 	// and returns a receipt that must be committed or rolled back. Rollback is
 	// conditional: it restores the exact prior set only while the staged set is
 	// still current, so it cannot overwrite a later publication.
 	StageSource(source ToolSourceID, replacements []ToolDescriptor, replaceExisting bool) (CatalogSourceSwap, error)
+}
+
+// ToolSearchRequest is one search-index query. Visible is the caller's
+// authoritative visibility predicate over physical catalog names — for the
+// discovery meta-tools, the calling run's effective tool view. The index is
+// process-wide and holds every principal's tools, so a request without a
+// predicate admits nothing.
+type ToolSearchRequest struct {
+	Query   string
+	Tags    []string
+	Limit   int
+	Visible func(name string) bool
 }
 
 // CatalogSourceSwap is the reversible publication receipt returned by

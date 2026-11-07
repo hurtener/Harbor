@@ -68,6 +68,9 @@ type (
 	ValidateMode = internal.ValidateMode
 	// PlannerView is the identity-filtered, planner-facing catalog view.
 	PlannerView = internal.PlannerView
+	// ToolSearchRequest is one ToolCatalog.Search query; its Visible
+	// predicate (required — nil admits nothing) is applied before the limit.
+	ToolSearchRequest = internal.ToolSearchRequest
 	// ErrorClass classifies a tool failure for the policy shell
 	// (retry-vs-stop decisions). Re-exported here because
 	// harbortest.SimulateFailure takes one, so external test authors

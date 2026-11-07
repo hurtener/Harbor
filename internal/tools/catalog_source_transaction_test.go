@@ -12,9 +12,10 @@ type sourceSyncRecorder struct {
 	names []string
 }
 
-func (*sourceSyncRecorder) Search(context.Context, string, []string, int) ([]Tool, error) {
+func (*sourceSyncRecorder) Search(context.Context, ToolSearchRequest) ([]Tool, error) {
 	return nil, nil
 }
+func (*sourceSyncRecorder) Remove(context.Context, []string) error { return nil }
 func (r *sourceSyncRecorder) Sync(_ context.Context, tools []Tool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

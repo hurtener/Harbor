@@ -12,21 +12,23 @@ import (
 
 type collisionSearchCache struct{}
 
-func (collisionSearchCache) Search(context.Context, string, []string, int) ([]tools.Tool, error) {
+func (collisionSearchCache) Search(context.Context, tools.ToolSearchRequest) ([]tools.Tool, error) {
 	return []tools.Tool{
 		{Name: "clock.now", Description: "declared winner"},
 		{Name: "clock_now", Description: "dropped raw collider"},
 	}, nil
 }
 func (collisionSearchCache) Sync(context.Context, []tools.Tool) error { return nil }
+func (collisionSearchCache) Remove(context.Context, []string) error   { return nil }
 func (collisionSearchCache) Close() error                             { return nil }
 
 type fixedSearchCache struct{ results []tools.Tool }
 
-func (c fixedSearchCache) Search(context.Context, string, []string, int) ([]tools.Tool, error) {
+func (c fixedSearchCache) Search(context.Context, tools.ToolSearchRequest) ([]tools.Tool, error) {
 	return append([]tools.Tool(nil), c.results...), nil
 }
 func (fixedSearchCache) Sync(context.Context, []tools.Tool) error { return nil }
+func (fixedSearchCache) Remove(context.Context, []string) error   { return nil }
 func (fixedSearchCache) Close() error                             { return nil }
 
 func collisionCatalog(t *testing.T, winner, dropped *atomic.Int64) tools.ToolCatalog {
@@ -161,7 +163,7 @@ func TestBuiltins_DeclaredProjectionEnforcesGrantedScopes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register scoped tool: %v", err)
 	}
-	ctx := declarativeTestCtx(t)
+	ctx := withRunView(declarativeTestCtx(t), cat)
 
 	search, err := toolSearchWithScopes(ctx, cat, ToolSearchArgs{Query: "weather"}, nil)
 	if err != nil || search.Count != 0 {
@@ -177,6 +179,7 @@ func TestBuiltins_DeclaredProjectionEnforcesGrantedScopes(t *testing.T) {
 	}
 
 	granted := []string{"weather:read"}
+	ctx = withRunView(ctx, cat, granted...)
 	got, err = toolGetWithScopes(ctx, cat, ToolGetArgs{Name: "weather_read"}, granted)
 	if err != nil || !got.Found {
 		t.Fatalf("authorized tool_get = %+v, %v", got, err)
@@ -208,7 +211,7 @@ func TestRegisteredToolGet_CapturesGrantedScopesImmutably(t *testing.T) {
 	if !ok {
 		t.Fatal("tool_get not registered")
 	}
-	result, err := desc.Invoke(declarativeTestCtx(t), json.RawMessage(`{"name":"weather_read"}`))
+	result, err := desc.Invoke(withRunView(declarativeTestCtx(t), cat, "weather:read"), json.RawMessage(`{"name":"weather_read"}`))
 	if err != nil {
 		t.Fatalf("tool_get Invoke: %v", err)
 	}

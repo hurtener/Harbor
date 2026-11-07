@@ -62,7 +62,7 @@ func TestSearchCache_SyncAndSearch_FTS5(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	got, err := sc.Search(ctx, "youtube", nil, 10)
+	got, err := sc.Search(ctx, req("youtube", nil, 10))
 	if err != nil {
 		t.Fatalf("Search youtube: %v", err)
 	}
@@ -72,14 +72,14 @@ func TestSearchCache_SyncAndSearch_FTS5(t *testing.T) {
 
 	// Tag intersection — "media" matches video + image, "video"+"media"
 	// narrows to the YouTube entry only.
-	media, err := sc.Search(ctx, "", []string{"media"}, 10)
+	media, err := sc.Search(ctx, req("", []string{"media"}, 10))
 	if err != nil {
 		t.Fatalf("Search media tag: %v", err)
 	}
 	if len(media) != 2 {
 		t.Fatalf("Search by tag media returned %d rows: %#v", len(media), media)
 	}
-	video, err := sc.Search(ctx, "", []string{"video", "media"}, 10)
+	video, err := sc.Search(ctx, req("", []string{"video", "media"}, 10))
 	if err != nil {
 		t.Fatalf("Search video+media tags: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSearchCache_RegexFallback(t *testing.T) {
 	// "quarterl" is a substring; FTS5 with the AND-of-tokens expression
 	// `"quarterl"` won't find a token match, so the regex/exact path
 	// takes over.
-	got, err := sc.Search(ctx, "quarterl", nil, 10)
+	got, err := sc.Search(ctx, req("quarterl", nil, 10))
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestSearchCache_ClosedRejects(t *testing.T) {
 	if err := sc.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := sc.Search(context.Background(), "x", nil, 10); err == nil {
+	if _, err := sc.Search(context.Background(), req("x", nil, 10)); err == nil {
 		t.Fatalf("Search on closed store: expected error")
 	}
 	if err := sc.Sync(context.Background(), []tools.Tool{{Name: "x"}}); err == nil {
@@ -197,12 +197,18 @@ func TestSearchCache_ConcurrentReuse(t *testing.T) {
 	for i := range N {
 		go func(i int) {
 			defer wg.Done()
-			if _, err := sc.Search(ctx, "Tool", []string{"concurrent"}, 5); err != nil {
+			if _, err := sc.Search(ctx, req("Tool", []string{"concurrent"}, 5)); err != nil {
 				t.Errorf("goroutine %d: Search err: %v", i, err)
 			}
 		}(i)
 	}
 	wg.Wait()
+}
+
+// req builds an admit-all request for driver-contract tests; visibility
+// tests below pass their own predicate.
+func req(query string, tags []string, limit int) tools.ToolSearchRequest {
+	return tools.ToolSearchRequest{Query: query, Tags: tags, Limit: limit, Visible: func(string) bool { return true }}
 }
 
 func nameFor(i int) string {

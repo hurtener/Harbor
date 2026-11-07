@@ -88,7 +88,9 @@ func searchAliasTrajectory(t *testing.T, cat tools.ToolCatalog, q identity.Quadr
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := search.Invoke(ctx, args)
+	// The identity-wide view: these tests then prove the PLANNER's own
+	// current-view re-check drops anything the run may no longer call.
+	result, err := search.Invoke(tools.WithRunToolView(ctx, discoveryAliasView(cat, q)), args)
 	if err != nil {
 		t.Fatal(err)
 	}

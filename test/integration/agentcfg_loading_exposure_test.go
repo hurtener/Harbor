@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/builtin"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 )
@@ -110,6 +112,9 @@ func newLEHarness(t *testing.T, stdioAllowlist []string) *leHarness {
 	}
 	t.Cleanup(func() { _ = sc.Close() })
 	cat := tools.NewCatalog(tools.WithSearchCache(sc))
+	if err := builtin.Register(cat, []string{"tool_search"}); err != nil {
+		t.Fatalf("register tool_search: %v", err)
+	}
 
 	mcpReg := mcpdrv.NewRegistry()
 	coord := pauseresume.New(pauseresume.WithBus(bus))
@@ -216,12 +221,12 @@ func TestE2E_AgentConfig_LoadingModeExposure(t *testing.T) {
 	} else if tl.Loading != tools.LoadingDeferred {
 		t.Fatalf("Resolve(mcptest_echo).Loading = %q, want deferred", tl.Loading)
 	}
-	searchCtx, err := identity.With(ctx, leID(leTenant))
+	searchCtx, err := identity.WithRun(ctx, leID(leTenant), "run-le")
 	if err != nil {
-		t.Fatalf("identity.With: %v", err)
+		t.Fatalf("identity.WithRun: %v", err)
 	}
-	if !searchFinds(searchCtx, h.catalog, "echo", ownedSource("mcptest", leTenant, leAgent)+"_echo") {
-		t.Fatal("tool_search (raw catalog) must still surface the deferred-overridden tool")
+	if !searchFinds(t, searchCtx, h.catalog, view, "echo", ownedSource("mcptest", leTenant, leAgent)+"_echo") {
+		t.Fatal("tool_search must still surface the deferred-overridden tool within the run's view")
 	}
 
 	// --- Flip back: desired-state REMOVAL restores boot-effective. ---
@@ -307,14 +312,101 @@ func hasEchoTool(v tools.PlannerCatalogView) bool {
 	return false
 }
 
-// searchFinds reports whether name appears in a `tool_search`-style raw
-// catalog search for query — proving loading overrides never gate the
-// meta-tool's discovery surface.
-func searchFinds(ctx context.Context, cat tools.ToolCatalog, query, name string) bool {
-	for _, tl := range cat.Search(ctx, query, nil, 10) {
-		if tl.Name == name {
+// searchFinds reports whether the physical tool name appears in the REAL
+// registered `tool_search` meta-tool's results for query, invoked under the
+// given run view exactly as the dispatcher seats it — proving loading
+// overrides never gate discovery within the run's own view.
+func searchFinds(t *testing.T, ctx context.Context, cat tools.ToolCatalog, view tools.PlannerCatalogView, query, name string) bool {
+	t.Helper()
+	for _, r := range runToolSearch(t, ctx, cat, view, query).Tools {
+		if r.Name == declaredToolName(name) {
 			return true
 		}
 	}
 	return false
+}
+
+func runToolSearch(t *testing.T, ctx context.Context, cat tools.ToolCatalog, view tools.PlannerCatalogView, query string) builtin.ToolSearchOut {
+	t.Helper()
+	desc, ok := cat.Resolve("tool_search")
+	if !ok {
+		t.Fatal("tool_search is not registered")
+	}
+	raw, err := json.Marshal(builtin.ToolSearchArgs{Query: query, Limit: 50})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	res, err := desc.Invoke(tools.WithRunToolView(ctx, view), raw)
+	if err != nil {
+		t.Fatalf("tool_search Invoke: %v", err)
+	}
+	out, ok := res.Value.(builtin.ToolSearchOut)
+	if !ok {
+		t.Fatalf("tool_search result %T", res.Value)
+	}
+	return out
+}
+
+func declaredToolName(physical string) string {
+	name, _ := tools.NewModelToolNameProjectionWithReservedControls([]string{physical}).DeclaredName(physical)
+	return name
+}
+
+// TestE2E_ToolSearch_CrossTenantIsolation attaches the SAME real MCP server
+// for two tenants (identical agent id, identical tool names) into one
+// process catalog + one FTS5 index, then runs the real tool_search under each
+// tenant's real run-start projection. SECURITY: a tenant must never see the
+// other tenant's tool names or descriptions, and must still discover its own.
+func TestE2E_ToolSearch_CrossTenantIsolation(t *testing.T) {
+	binPath := buildMCPTestServer(t)
+	h := newLEHarness(t, []string{binPath})
+	ctx := context.Background()
+	for _, tenant := range []string{leTenant, leOtherTenant} {
+		resp := decode[prototypes.AgentConfigAddMCPConnectionResponse](t, h.call(t, "/v1/agent_config/add_mcp_connection", tenant,
+			prototypes.AgentConfigAddMCPConnectionRequest{
+				AgentID:    leAgent,
+				Connection: prototypes.AgentConfigMCPConnectionDescriptor{Name: "mcptest", Transport: "stdio", Command: []string{binPath}},
+			}, adminScopes()))
+		if resp.State != "online" {
+			t.Fatalf("attach for %s: state=%q reason=%q", tenant, resp.State, resp.Reason)
+		}
+	}
+	for _, tenant := range []string{leTenant, leOtherTenant} {
+		other := leOtherTenant
+		if tenant == leOtherTenant {
+			other = leTenant
+		}
+		own := ownedSource("mcptest", tenant, leAgent)
+		foreign := ownedSource("mcptest", other, leAgent)
+		if _, ok := h.catalog.Resolve(foreign + "_echo"); !ok {
+			t.Fatalf("precondition: %s's echo is not in the shared catalog", other)
+		}
+		view, err := projection.ActivePlannerCatalogView(ctx, h.registry, nil, leAgent, leQuad(tenant), h.catalog, leFilter(tenant), h.mcpReg)
+		if err != nil {
+			t.Fatalf("projection(%s): %v", tenant, err)
+		}
+		searchCtx, err := identity.WithRun(ctx, leID(tenant), "run-"+tenant)
+		if err != nil {
+			t.Fatalf("identity.WithRun: %v", err)
+		}
+		for _, q := range []string{"echo", "mcptest", ""} {
+			out := runToolSearch(t, searchCtx, h.catalog, view, q)
+			foundOwn := false
+			for _, r := range out.Tools {
+				if strings.HasPrefix(r.Name, declaredToolName(foreign)) {
+					t.Fatalf("tenant %s tool_search(%q) disclosed tenant %s's tool %q", tenant, q, other, r.Name)
+				}
+				if r.Name == declaredToolName(own+"_echo") {
+					foundOwn = true
+					// The server's self-declared serverInfo labels the result.
+					if r.Server == "" {
+						t.Fatalf("tenant %s: own echo result carries no server label: %+v", tenant, r)
+					}
+				}
+			}
+			if q != "" && !foundOwn {
+				t.Fatalf("tenant %s tool_search(%q) missed its own echo tool: %+v", tenant, q, out.Tools)
+			}
+		}
+	}
 }

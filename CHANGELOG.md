@@ -17,6 +17,40 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Security
+
+- `tool_search`, `tool_get` and `declarative_action` now answer strictly
+  from the calling run's effective tool view — the same sealed view the
+  planner declares and the dispatcher resolves against (owner scoping,
+  paused/disabled exclusions, run allowlist, effective loading modes). They
+  previously consulted the process-wide catalog, so on a multi-tenant
+  runtime `tool_search`/`tool_get` could return another tenant's, user's or
+  session's tool names and descriptions, and `declarative_action` could
+  dispatch a tool outside the run's view. The dispatch entry point seats the
+  view on the invocation context; without one these tools fail closed
+  (`ErrRunToolViewRequired`, non-retryable). Deferred tools inside the run's
+  view remain discoverable.
+
+### Fixed
+
+- Tool search applies the caller's visibility before the result limit and
+  orders full-text matches by bm25 relevance, so foreign or lower-ranked rows
+  can no longer crowd a run's own tools out of the first page; when the index
+  yields nothing visible, a bounded substring pass over the run's own tools
+  answers instead (also when no index is configured).
+- The tool search index is now a mirror of the catalog: rows are removed when
+  a source is detached, deregistered, republished without a tool, or rolled
+  back, and an on-disk index is emptied at open instead of carrying a prior
+  process's rows. Index migration 2 rebuilds the schema forward.
+
+### Added
+
+- MCP tools carry their server's self-declared display metadata
+  (`serverInfo.title`, else `serverInfo.name`, plus a bounded prefix of the
+  server's instructions), indexed for search so a server-name query matches.
+  `tool_search` and `tool_get` results include a `server` label. Model-visible
+  tool names are unchanged.
+
 ## [1.38.0] — 2026-11-07
 
 ### Added

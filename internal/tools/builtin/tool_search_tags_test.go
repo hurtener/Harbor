@@ -15,10 +15,11 @@ import (
 // without needing a real search index.
 type nilTagsCache struct{}
 
-func (nilTagsCache) Search(_ context.Context, _ string, _ []string, _ int) ([]tools.Tool, error) {
+func (nilTagsCache) Search(_ context.Context, _ tools.ToolSearchRequest) ([]tools.Tool, error) {
 	return []tools.Tool{{Name: "untagged", Description: "a discovered tool with no tags", Tags: nil}}, nil
 }
 func (nilTagsCache) Sync(context.Context, []tools.Tool) error { return nil }
+func (nilTagsCache) Remove(context.Context, []string) error   { return nil }
 func (nilTagsCache) Close() error                             { return nil }
 
 // TestToolSearch_NilTags_SerializesAsEmptyArray is the regression for the
@@ -39,7 +40,7 @@ func TestToolSearch_NilTags_SerializesAsEmptyArray(t *testing.T) {
 	}
 
 	// Precondition: the catalog yields a tool with a nil Tags slice.
-	if res := cat.Search(context.Background(), "anything", nil, 10); len(res) != 1 || res[0].Tags != nil {
+	if res := cat.Search(context.Background(), tools.ToolSearchRequest{Query: "anything", Limit: 10, Visible: func(string) bool { return true }}); len(res) != 1 || res[0].Tags != nil {
 		t.Fatalf("precondition: want one tool with nil Tags, got %+v", res)
 	}
 
