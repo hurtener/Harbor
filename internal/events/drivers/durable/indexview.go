@@ -69,6 +69,17 @@ func (b *bus) noteIntegrity(ctx context.Context, id identity.Quadruple, err erro
 	return err
 }
 
+// skipCorruptSession records that a fleet-wide read (projection page or admin
+// list) skipped a session whose index failed integrity checks. The failure was
+// already counted by noteIntegrity; this adds the skip counter and a warning.
+func (b *bus) skipCorruptSession(ctx context.Context, id identity.Quadruple, reader string) {
+	b.corruptSessionSkips.Add(1)
+	b.logger.WarnContext(ctx, "durable: fleet read skipped a session whose event index fails integrity checks",
+		slog.String("driver", "durable"),
+		slog.String("reader", reader),
+		slog.String("head_identity_hash", headIdentityHash(id)))
+}
+
 // loadIndexView loads and verifies the session's index. Absence is an empty
 // view, not an error.
 func (b *bus) loadIndexView(ctx context.Context, id identity.Quadruple) (indexView, error) {
@@ -117,27 +128,30 @@ func (b *bus) indexViewFromRecord(ctx context.Context, id identity.Quadruple, ra
 
 // missWasTrimmed reloads the header after a mid-read miss and reports whether
 // the missing chunk/entry is now inside the trimmed range.
-func (b *bus) missWasTrimmed(ctx context.Context, miss *indexMissError) (bool, error) {
+// It also returns the reloaded header's trimmed through_seq: every sequence
+// at or below it is gone, every one above it is still retained.
+func (b *bus) missWasTrimmed(ctx context.Context, miss *indexMissError) (bool, uint64, error) {
 	rec, err := b.store.Load(ctx, miss.id, kindHead)
 	if errors.Is(err, state.ErrNotFound) {
 		// Erasure removed the whole session; the caller's post-read fence
 		// check decides what the read returns.
-		return false, nil
+		return false, 0, nil
 	}
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if !isIndexV2(rec.Bytes) {
-		return false, nil
+		return false, 0, nil
 	}
 	hdr, err := decodeHeader(rec.Bytes)
 	if err != nil {
-		return false, b.noteIntegrity(ctx, miss.id, err)
+		return false, 0, b.noteIntegrity(ctx, miss.id, err)
 	}
+	through := hdr.Trimmed.ThroughSeq
 	if miss.entry {
-		return hdr.Trimmed.Count > 0 && miss.seq <= hdr.Trimmed.ThroughSeq, nil
+		return hdr.Trimmed.Count > 0 && miss.seq <= through, through, nil
 	}
-	return miss.chunk < hdr.FirstChunk, nil
+	return miss.chunk < hdr.FirstChunk, through, nil
 }
 
 // classifyMissErr returns nil when err is a chunk/entry miss that a
@@ -145,18 +159,26 @@ func (b *bus) missWasTrimmed(ctx context.Context, miss *indexMissError) (bool, e
 // honestly), and otherwise the loud error: a genuine index gap or any other
 // failure.
 func (b *bus) classifyMissErr(ctx context.Context, err error) error {
+	_, classifyErr := b.classifyMissThrough(ctx, err)
+	return classifyErr
+}
+
+// classifyMissThrough is classifyMissErr that also returns the session's
+// current trimmed through_seq, so a reader can drop exactly the trimmed
+// candidates and keep every retained one.
+func (b *bus) classifyMissThrough(ctx context.Context, err error) (uint64, error) {
 	var miss *indexMissError
 	if !errors.As(err, &miss) {
-		return err
+		return 0, err
 	}
-	trimmed, classifyErr := b.missWasTrimmed(ctx, miss)
+	trimmed, through, classifyErr := b.missWasTrimmed(ctx, miss)
 	if classifyErr != nil {
-		return fmt.Errorf("%w (classify: %w)", err, classifyErr)
+		return 0, fmt.Errorf("%w (classify: %w)", err, classifyErr)
 	}
 	if trimmed {
-		return nil
+		return through, nil
 	}
-	return fmt.Errorf("durable: index gap: %w", err)
+	return 0, fmt.Errorf("durable: index gap: %w", err)
 }
 
 // loadEntryBody loads and decodes one entry body. A missing body is an
@@ -312,17 +334,21 @@ func (b *bus) collectBelow(ctx context.Context, view *indexView, before uint64, 
 
 // collectAbove returns rows with Seq > after, oldest-first. When max > 0 only
 // the max smallest such rows are kept (memory stays bounded while the walk
-// descends to the cursor).
+// descends to the cursor). On a walk error it still returns the rows
+// collected so far with the error: after a chunk miss that a trim explains,
+// those are exactly the retained rows above the cut.
 func (b *bus) collectAbove(ctx context.Context, view *indexView, after uint64, max int, match func(indexRow) bool) ([]indexRow, error) {
 	if view.hdr.RetainedCount == 0 || view.hdr.LastSeq <= after {
 		return nil, nil
 	}
 	it := b.newRowIterator(ctx, view)
 	var desc []indexRow
+	var walkErr error
 	for {
 		r, ok, err := it.next()
 		if err != nil {
-			return nil, err
+			walkErr = err
+			break
 		}
 		if !ok || r.Seq <= after {
 			break
@@ -342,5 +368,5 @@ func (b *bus) collectAbove(ctx context.Context, view *indexView, after uint64, m
 	for i := range desc {
 		out[len(desc)-1-i] = desc[i]
 	}
-	return out, nil
+	return out, walkErr
 }

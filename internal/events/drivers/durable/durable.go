@@ -359,6 +359,7 @@ func (b *bus) recoverNextSeq(ctx context.Context) error {
 				slog.String("driver", "durable"),
 				slog.Uint64("recovered_max_sequence", current.maxSeq),
 				slog.Int("session_count", current.sessionCount),
+				slog.Int("quarantined_sessions", current.quarantined),
 				slog.Int("recovery_attempts", attempt))
 			return nil
 		default:
@@ -430,6 +431,8 @@ type recoveryHeadView struct {
 	minSeqOwner  identity.Quadruple
 	v2OldestNano int64
 	sessionCount int
+	// quarantined counts v2 headers skipped for failing integrity checks.
+	quarantined int
 }
 
 func (b *bus) scanRecoveryHeadView(ctx context.Context) (recoveryHeadView, error) {
@@ -444,6 +447,11 @@ func (b *bus) scanRecoveryHeadView(ctx context.Context) (recoveryHeadView, error
 		return recoveryHeadView{}, err
 	}
 	view := recoveryHeadView{generations: make(map[string]string, len(recs))}
+	// authorityExists decides how a corrupt v2 header is handled. Every v2
+	// header write commits in the same transaction as an authority advance,
+	// so an existing authority is at least any header's last_seq: skipping
+	// a corrupt header cannot lower the sequence floor.
+	authorityChecked, authorityExists := false, false
 	for _, rec := range recs {
 		if err := ctx.Err(); err != nil {
 			return recoveryHeadView{}, err
@@ -455,11 +463,30 @@ func (b *bus) scanRecoveryHeadView(ctx context.Context) (recoveryHeadView, error
 		if isIndexV2(rec.Bytes) {
 			// A v2 header is authenticated by its digest; every bound the
 			// recovery needs is a header field, so no chunk or entry loads.
-			// An integrity failure fails boot loudly, like an undecodable
-			// legacy head: the sequence floor must never be guessed.
 			hdr, err := decodeHeader(rec.Bytes)
 			if err != nil {
-				return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: decode index header (id=%s): %w", rec.ID, b.noteIntegrity(ctx, rec.Identity, err))
+				err = b.noteIntegrity(ctx, rec.Identity, err)
+				if !authorityChecked {
+					_, expectation, authErr := b.loadSequenceAuthority(ctx)
+					if authErr != nil {
+						return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: inspect sequence authority: %w", authErr)
+					}
+					authorityChecked, authorityExists = true, expectation.ExpectedEventID != ""
+				}
+				if !authorityExists {
+					// Without authority the head floor is the only sequence
+					// source, and it must never be guessed.
+					return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: decode index header (id=%s) with no sequence authority to fall back on: %w", rec.ID, err)
+				}
+				// Quarantine: this session's own reads and publishes keep
+				// failing loudly; boot and every other session proceed.
+				b.logger.ErrorContext(ctx, "durable: quarantined a session whose event index header fails integrity checks; boot continues (see `harbor events rebuild-session-index`)",
+					slog.String("driver", "durable"),
+					slog.String("head_identity_hash", headIdentityHash(rec.Identity)),
+					slog.String("error", err.Error()))
+				view.generations[key] = string(rec.Bytes)
+				view.quarantined++
+				continue
 			}
 			if _, duplicate := view.generations[key]; duplicate {
 				return recoveryHeadView{}, fmt.Errorf("durable: recover sequence counter: duplicate head identity (%s,%s,%s)", rec.Identity.TenantID, rec.Identity.UserID, rec.Identity.SessionID)
@@ -714,6 +741,8 @@ type bus struct {
 	// indexIntegrityFailures counts ErrIndexIntegrity observations
 	// (harbor_events_index_integrity_failures_total).
 	indexIntegrityFailures atomic.Int64
+	// corruptSessionSkips counts fleet-read skips of corrupt sessions.
+	corruptSessionSkips atomic.Int64
 	// retentionHeads is the head count of the last retention traversal
 	// (harbor_events_retention_heads).
 	retentionHeads atomic.Int64
@@ -1768,7 +1797,7 @@ func (b *bus) prepareIndexAppend(ctx context.Context, sessionID identity.Quadrup
 			if err != nil {
 				return nil, nil, err
 			}
-			b.nudgeMigrator()
+			b.nudgeMigrator(sessionID)
 			return writes, []state.SlotExpectation{headExpectation}, nil
 		}
 	}
@@ -2349,6 +2378,11 @@ func (b *bus) Bounds(ctx context.Context, f events.Filter) (head, tail uint64, t
 			return 0, 0, false, fmt.Errorf("durable: bounds load head: %w", b.noteIntegrity(ctx, sessionID, err))
 		}
 		if hdr.RetainedCount == 0 {
+			if hdr.Trimmed.Count > 0 {
+				// Everything retained was trimmed by audit retention: an
+				// empty window that is honestly truncated, not "no history".
+				return 0, 0, true, nil
+			}
 			return 0, 0, false, events.ErrNoHistory
 		}
 		return hdr.FirstSeq, hdr.LastSeq, hdr.Trimmed.Count > 0, nil
@@ -2687,10 +2721,23 @@ func (b *bus) gatherListCandidates(ctx context.Context, q events.EventListQuery)
 		}
 		view, err := b.indexViewFromRecord(ctx, src.id, src.raw)
 		if err != nil {
+			if q.Admin && errors.Is(err, ErrIndexIntegrity) {
+				// A fleet read skips a corrupt session (reported truncated)
+				// instead of failing for everyone; the session's own reads
+				// still fail loudly.
+				b.skipCorruptSession(ctx, src.id, "events.list")
+				out = append(out, sessionCandidates{id: src.id, truncated: true})
+				continue
+			}
 			return nil, fmt.Errorf("index head (session %s): %w", headIdentityHash(src.id), err)
 		}
 		rows, exhausted, err := b.collectBelow(ctx, &view, q.Before, q.Limit+1, match(src.id))
 		sc := sessionCandidates{id: src.id, truncated: exhausted && view.hdr.Trimmed.Count > 0}
+		if err != nil && q.Admin && errors.Is(err, ErrIndexIntegrity) {
+			b.skipCorruptSession(ctx, src.id, "events.list")
+			out = append(out, sessionCandidates{id: src.id, truncated: true})
+			continue
+		}
 		if err != nil {
 			// A miss that a concurrent trim explains ends this session's
 			// walk at the new boundary; anything else fails loudly.
@@ -2737,24 +2784,25 @@ func (b *bus) listWindowDurable(ctx context.Context, q events.EventListQuery) (e
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence > cands[j].meta.Sequence })
 
-	// trimmedSessions holds sessions whose bodies a concurrent audit trim
-	// removed during this read: their remaining (older) candidates are gone
-	// too, so they are skipped and the page reports truncated.
-	trimmedSessions := map[identity.Quadruple]struct{}{}
+	// trimmedThrough holds sessions whose bodies a concurrent audit trim
+	// removed during this read, with the new cut: candidates at or below it
+	// are gone and skipped, and the page reports truncated.
+	trimmedThrough := map[identity.Quadruple]uint64{}
 	matches := make([]events.Event, 0, q.Limit+1)
 	for _, c := range cands {
 		if err := ctx.Err(); err != nil {
 			return events.EventListPage{}, err
 		}
-		if _, gone := trimmedSessions[c.id]; gone {
+		if through, gone := trimmedThrough[c.id]; gone && c.meta.Sequence <= through {
 			continue
 		}
 		ev, err := b.loadEntryBody(ctx, c.id, c.meta.Sequence)
 		if err != nil {
-			if classifyErr := b.classifyMissErr(ctx, err); classifyErr != nil {
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if classifyErr != nil {
 				return events.EventListPage{}, fmt.Errorf("durable: events.list: %w", classifyErr)
 			}
-			trimmedSessions[c.id] = struct{}{}
+			trimmedThrough[c.id] = through
 			truncated = true
 			continue
 		}

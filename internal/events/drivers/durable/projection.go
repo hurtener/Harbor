@@ -22,6 +22,7 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -109,6 +110,14 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		}
 		view, err := b.indexViewFromRecord(ctx, rec.Identity, rec.Bytes)
 		if err != nil {
+			if errors.Is(err, ErrIndexIntegrity) {
+				// One corrupt session must not stall every projector. Its
+				// events are reported as possibly missing (RetentionGap);
+				// its own reads and publishes keep failing loudly.
+				b.skipCorruptSession(ctx, rec.Identity, "projection page")
+				retentionGap = true
+				continue
+			}
 			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: index head (id=%s): %w", rec.ID, err)
 		}
 		// A reader whose cursor sits before this session's audit-retention
@@ -121,13 +130,27 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		// at most limit+1 candidates per session.
 		rows, err := b.collectAbove(ctx, &view, after, limit+1, func(r indexRow) bool { return !r.Internal })
 		if err != nil {
-			if classifyErr := b.classifyMissErr(ctx, err); classifyErr != nil {
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if errors.Is(classifyErr, ErrIndexIntegrity) {
+				b.skipCorruptSession(ctx, rec.Identity, "projection page")
+				retentionGap = true
+				continue
+			}
+			if classifyErr != nil {
 				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", classifyErr)
 			}
-			// Trimmed during the read: this session's candidates after the
-			// cursor were (partly) removed. Skip them and report the gap.
+			// A trim deleted a chunk below the rows already collected. Those
+			// rows are every retained row above the cut, so they stay
+			// candidates (dropping them would let a Current page's watermark
+			// skip retained events); only the trimmed range is gone.
 			retentionGap = true
-			continue
+			kept := rows[:0]
+			for _, r := range rows {
+				if r.Seq > through {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
 		}
 		for _, r := range rows {
 			cands = append(cands, candidate{id: rec.Identity, meta: r.metadata(rec.Identity)})
@@ -135,21 +158,29 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence < cands[j].meta.Sequence })
 
-	trimmedSessions := map[identity.Quadruple]struct{}{}
+	// trimmedThrough holds, per session, the trimmed through_seq observed
+	// after a body vanished mid-read: candidates at or below it are gone,
+	// candidates above it are retained and still served.
+	trimmedThrough := map[identity.Quadruple]uint64{}
 	matches := make([]events.Event, 0, limit+1)
 	for _, c := range cands {
 		if err := ctx.Err(); err != nil {
 			return events.ProjectionPage{}, err
 		}
-		if _, gone := trimmedSessions[c.id]; gone {
+		if through, gone := trimmedThrough[c.id]; gone && c.meta.Sequence <= through {
 			continue
 		}
 		ev, err := b.loadEntryBody(ctx, c.id, c.meta.Sequence)
 		if err != nil {
-			if classifyErr := b.classifyMissErr(ctx, err); classifyErr != nil {
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if classifyErr != nil {
 				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", classifyErr)
 			}
-			trimmedSessions[c.id] = struct{}{}
+			if through < c.meta.Sequence {
+				// Defensive: a missing retained body is a genuine gap.
+				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: index gap at seq=%d above trimmed through_seq=%d", c.meta.Sequence, through)
+			}
+			trimmedThrough[c.id] = through
 			retentionGap = true
 			continue
 		}

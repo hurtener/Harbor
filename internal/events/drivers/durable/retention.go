@@ -29,6 +29,9 @@ import (
 // errDeleteBudgetExhausted ends a pass's delete phase.
 var errDeleteBudgetExhausted = errors.New("durable: retention delete budget exhausted for this pass")
 
+// errSessionSliceExhausted ends one session's share of a pass's deletes.
+var errSessionSliceExhausted = errors.New("durable: retention per-session delete slice exhausted")
+
 // retentionSummary is the cumulative per-session record of what audit
 // retention removed. It is written in the same transaction as the header
 // that performs the trim, so the two never disagree.
@@ -68,13 +71,21 @@ type retentionStats struct {
 // deleteBudget bounds and paces storage deletes within one pass.
 type deleteBudget struct {
 	remaining int
+	// sliceLeft bounds one session's deletes so a large backlog cannot use
+	// a whole pass's budget while other sessions wait.
+	sliceLeft int
 	interval  time.Duration
 	last      time.Time
 }
 
+func (d *deleteBudget) beginSession(slice int) { d.sliceLeft = slice }
+
 func (d *deleteBudget) take(ctx context.Context) error {
 	if d.remaining <= 0 {
 		return errDeleteBudgetExhausted
+	}
+	if d.sliceLeft <= 0 {
+		return errSessionSliceExhausted
 	}
 	if d.interval > 0 && !d.last.IsZero() {
 		if wait := d.interval - time.Since(d.last); wait > 0 {
@@ -89,6 +100,7 @@ func (d *deleteBudget) take(ctx context.Context) error {
 	}
 	d.last = time.Now()
 	d.remaining--
+	d.sliceLeft--
 	return nil
 }
 
@@ -148,7 +160,7 @@ func (b *bus) runRetentionPass(ctx context.Context) (retentionStats, error) {
 	horizonBefore := b.loadHorizon()
 	horizonExact := true
 	var oldest int64
-	stopped := false
+	deferred := false
 	for n := 0; n < len(heads); n++ {
 		if err := ctx.Err(); err != nil {
 			return stats, err
@@ -186,38 +198,46 @@ func (b *bus) runRetentionPass(ctx context.Context) (retentionStats, error) {
 				hdr = next
 			}
 		}
-		if hdr.Trimmed.CleanupPending {
+		if hdr.Trimmed.CleanupPending && budget.remaining <= 0 {
+			// Out of deletes: keep traversing so every other session still
+			// gets its (delete-free) trim commit, and resume cleanup here.
+			if !deferred {
+				b.maint.resumeKey = sessionMapKey(rec.Identity)
+				deferred = true
+			}
+			stats.DeletesDeferred = true
+		} else if hdr.Trimmed.CleanupPending {
+			budget.beginSession(b.maint.deleteSlice)
 			if err := b.cleanupSession(ctx, rec.Identity, budget, &stats); err != nil {
-				if errors.Is(err, errDeleteBudgetExhausted) {
-					// Resume at this session next pass: its cleanup is not
-					// finished.
-					b.maint.resumeKey = sessionMapKey(rec.Identity)
+				if errors.Is(err, errDeleteBudgetExhausted) || errors.Is(err, errSessionSliceExhausted) {
+					if errors.Is(err, errDeleteBudgetExhausted) && !deferred {
+						b.maint.resumeKey = sessionMapKey(rec.Identity)
+						deferred = true
+					}
 					stats.DeletesDeferred = true
-					stopped = true
-					break
-				}
-				if ctx.Err() != nil {
+				} else if ctx.Err() != nil {
 					return stats, ctx.Err()
+				} else {
+					b.logger.WarnContext(ctx, "durable: audit retention cleanup deferred for a session",
+						slog.String("driver", "durable"),
+						slog.String("head_identity_hash", headIdentityHash(rec.Identity)),
+						slog.String("error", err.Error()))
 				}
-				b.logger.WarnContext(ctx, "durable: audit retention cleanup deferred for a session",
-					slog.String("driver", "durable"),
-					slog.String("head_identity_hash", headIdentityHash(rec.Identity)),
-					slog.String("error", err.Error()))
 			}
 		}
 		if hdr.RetainedCount > 0 && (oldest == 0 || hdr.OldestOccurredAt < oldest) {
 			oldest = hdr.OldestOccurredAt
 		}
 	}
-	if !stopped {
+	stats.Complete = true
+	if !deferred {
 		b.maint.resumeKey = ""
-		stats.Complete = true
-		if horizonExact {
-			// The horizon can move later once audit rows are trimmed. Only a
-			// complete traversal over v2 headers knows the true minimum.
-			// A publish that floored the horizon meanwhile wins this pass.
-			b.replaceHorizonIf(horizonBefore, horizonSnapshot{nano: oldest, present: oldest != 0})
-		}
+	}
+	if horizonExact {
+		// The horizon can move later once audit rows are trimmed. Only a
+		// complete traversal over v2 headers knows the true minimum. A
+		// publish that floored the horizon meanwhile wins this pass.
+		b.replaceHorizonIf(horizonBefore, horizonSnapshot{nano: oldest, present: oldest != 0})
 	}
 	b.logger.InfoContext(ctx, "durable: audit retention pass",
 		slog.String("driver", "durable"),
@@ -284,6 +304,11 @@ func (b *bus) trimSession(ctx context.Context, rec state.StateRecord, hdr indexH
 		}
 		chunkRec, err := b.store.Load(ctx, id, chunkKind(k))
 		if errors.Is(err, state.ErrNotFound) {
+			// Another sweeper (a peer replica, or a deploy overlap) may have
+			// trimmed and deleted it after this header was read.
+			if current, loadErr := b.store.Load(ctx, id, kindHead); loadErr != nil || current.ID != rec.ID {
+				return false, hdr, errTrimConflict
+			}
 			return false, hdr, integrityErrorf("header references chunk %d but it is missing", k)
 		}
 		if err != nil {
@@ -346,6 +371,9 @@ func (b *bus) trimSession(ctx context.Context, rec state.StateRecord, hdr indexH
 	}
 	next.Trimmed.Count += uint64(len(rows))
 	next.Trimmed.ThroughSeq = rows[len(rows)-1].Seq
+	if !hdr.Trimmed.CleanupPending {
+		next.Trimmed.CleanupFrom = hdr.FirstChunk
+	}
 	next.Trimmed.CleanupPending = true
 	next.RetainedCount -= uint64(len(rows))
 	switch {
@@ -443,12 +471,15 @@ func (s *retentionSummary) add(rows []indexRow, anchor string, maxAge time.Durat
 	s.Passes++
 }
 
-// cleanupSession removes trimmed records still present in storage: chunks
-// below first_chunk (each one's entries first, then the chunk) and the
-// entries of a trimmed tail. Every delete re-checks that the record lies at or
-// below the header's trimmed through_seq: sequences are global and never
-// reused, so a session erased and recreated meanwhile is never touched. When
-// nothing remains, the header's cleanup marker is cleared by CAS.
+// cleanupSession removes trimmed records still present in storage. The
+// header's trimmed.cleanup_from names the lowest chunk index whose records may
+// remain, so cleanup walks the explicit indices [cleanup_from, first_chunk) —
+// each chunk's entries first, then the chunk — plus the entries of a trimmed
+// tail; it never infers exhaustion from a bounded listing. Every delete
+// re-checks that the record lies at or below the header's trimmed
+// through_seq: sequences are global and never reused, so a session erased and
+// recreated meanwhile is never touched. Progress is saved by header CAS; when
+// nothing remains the cleanup marker is cleared.
 func (b *bus) cleanupSession(ctx context.Context, id identity.Quadruple, budget *deleteBudget, stats *retentionStats) error {
 	rec, err := b.store.Load(ctx, id, kindHead)
 	if errors.Is(err, state.ErrNotFound) {
@@ -468,85 +499,80 @@ func (b *bus) cleanupSession(ctx context.Context, id identity.Quadruple, budget 
 		return nil
 	}
 	through := hdr.Trimmed.ThroughSeq
-	listed, err := b.store.ListKindForIdentityBounded(ctx, id, kindChunkPrefix, retentionMaxChunksPerSession+1)
-	if err != nil {
-		return fmt.Errorf("list chunk records: %w", err)
-	}
-	type listedChunk struct {
-		index uint64
-		rec   state.StateRecord
-	}
-	var stale []listedChunk
-	sawRetained := len(listed) <= retentionMaxChunksPerSession
-	for _, r := range listed {
-		index, ok := parseChunkKind(r.Kind)
-		if !ok {
-			continue
+	next := hdr.Trimmed.CleanupFrom
+	var stopErr error
+	blocked := false // a chunk that cannot be verified stays for an operator
+	for ; next < hdr.FirstChunk && stopErr == nil; next++ {
+		chunkRec, err := b.store.Load(ctx, id, chunkKind(next))
+		if errors.Is(err, state.ErrNotFound) {
+			continue // entries are deleted before their chunk record
 		}
-		if index >= hdr.FirstChunk {
-			sawRetained = true
-			continue
-		}
-		stale = append(stale, listedChunk{index: index, rec: r})
-	}
-	sort.Slice(stale, func(i, j int) bool { return stale[i].index < stale[j].index })
-	finished := sawRetained
-	for _, sc := range stale {
-		c, err := decodeChunk(sc.rec.Bytes, sc.index)
 		if err != nil {
-			// A corrupt trimmed chunk cannot prove which entries it covered;
-			// leave it (and the cleanup marker) for an operator.
+			return fmt.Errorf("load trimmed chunk %d: %w", next, err)
+		}
+		c, err := decodeChunk(chunkRec.Bytes, next)
+		if err != nil || c.LastSeq > through {
 			b.logger.WarnContext(ctx, "durable: audit retention cannot verify a trimmed chunk; leaving it in place",
 				slog.String("driver", "durable"),
 				slog.String("head_identity_hash", headIdentityHash(id)),
-				slog.Uint64("chunk", sc.index),
-				slog.String("error", err.Error()))
-			finished = false
-			continue
-		}
-		if c.LastSeq > through {
-			finished = false
-			continue
+				slog.Uint64("chunk", next))
+			blocked = true
+			break
 		}
 		for _, r := range c.Rows {
 			if err := b.deleteTrimmedEntry(ctx, id, r.Seq, budget, stats); err != nil {
-				return err
+				stopErr = err
+				break
 			}
 		}
-		if err := budget.take(ctx); err != nil {
-			return err
+		if stopErr != nil {
+			break
 		}
-		if _, err := b.store.DeleteIf(ctx, state.SlotExpectation{Identity: id, Kind: sc.rec.Kind, ExpectedEventID: sc.rec.ID}); err != nil {
-			return fmt.Errorf("delete trimmed chunk %d: %w", sc.index, err)
+		if err := budget.take(ctx); err != nil {
+			stopErr = err
+			break
+		}
+		if _, err := b.store.DeleteIf(ctx, state.SlotExpectation{Identity: id, Kind: chunkRec.Kind, ExpectedEventID: chunkRec.ID}); err != nil {
+			return fmt.Errorf("delete trimmed chunk %d: %w", next, err)
 		}
 		stats.ChunksDeleted++
 		stats.OrphansCleaned++
 	}
-	for _, seq := range hdr.Trimmed.PendingEntries {
-		if seq > through {
-			continue
-		}
-		if err := b.deleteTrimmedEntry(ctx, id, seq, budget, stats); err != nil {
-			return err
+	pendingDone := false
+	if stopErr == nil && !blocked && next >= hdr.FirstChunk {
+		pendingDone = true
+		for _, seq := range hdr.Trimmed.PendingEntries {
+			if seq > through {
+				continue
+			}
+			if err := b.deleteTrimmedEntry(ctx, id, seq, budget, stats); err != nil {
+				stopErr = err
+				pendingDone = false
+				break
+			}
 		}
 	}
-	if !finished {
-		return nil
+	if next == hdr.Trimmed.CleanupFrom && !pendingDone {
+		return stopErr // no progress to record
 	}
-	cleared := hdr
-	cleared.Trimmed.CleanupPending = false
-	cleared.Trimmed.PendingEntries = nil
-	headerBytes, err := encodeHeader(cleared)
+	progressed := hdr
+	progressed.Trimmed.CleanupFrom = min(next, hdr.FirstChunk)
+	if pendingDone {
+		progressed.Trimmed.CleanupPending = false
+		progressed.Trimmed.PendingEntries = nil
+		progressed.Trimmed.CleanupFrom = 0
+	}
+	headerBytes, err := encodeHeader(progressed)
 	if err != nil {
 		return err
 	}
 	err = b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kindHead, ExpectedEventID: rec.ID}},
 		state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headerBytes})
 	if err != nil && !errors.Is(err, state.ErrConditionFailed) && !errors.Is(err, state.ErrCommitOutcomeUnknown) {
-		return fmt.Errorf("clear cleanup marker: %w", err)
+		return fmt.Errorf("save cleanup progress: %w", err)
 	}
-	// A conflict leaves the marker set; the next pass re-lists (idempotent).
-	return nil
+	// A conflict leaves the old progress; the next pass repeats idempotently.
+	return stopErr
 }
 
 func (b *bus) deleteTrimmedEntry(ctx context.Context, id identity.Quadruple, seq uint64, budget *deleteBudget, stats *retentionStats) error {

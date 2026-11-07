@@ -26,6 +26,62 @@ import (
 // errAlreadyMigrated reports that another writer flipped the session first.
 var errAlreadyMigrated = errors.New("durable: session index already migrated")
 
+// errMigrationErased reports that the session was fenced or erased (its
+// erasure epoch moved) while it was being migrated.
+var errMigrationErased = errors.New("durable: session erased during index migration")
+
+// migrationGuard binds every migration write to the session's erasure state
+// captured before the first write: the fence slot must stay absent and the
+// erasure epoch unchanged, checked atomically inside each write transaction.
+// An erasure (Fence, then DeleteScope) therefore either precedes a write,
+// which then fails, or follows it and removes what it wrote. written records
+// the chunk generations this migration committed, for a best-effort cleanup
+// when the flip finds the session gone.
+type migrationGuard struct {
+	fence   state.SlotExpectation
+	epoch   state.SlotExpectation
+	written map[string]state.EventID
+}
+
+func (b *bus) captureMigrationGuard(ctx context.Context, id identity.Quadruple) (*migrationGuard, error) {
+	fence := state.InternalSlotExpectation(sequenceAuthorityIdentity, durableFenceKind(id.Identity), "")
+	if _, err := b.store.Load(ctx, fence.Identity, fence.Kind); err == nil {
+		return nil, errMigrationErased
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return nil, fmt.Errorf("load session fence: %w", err)
+	}
+	_, epoch, err := b.loadErasureEpoch(ctx, id.Identity)
+	if err != nil {
+		return nil, err
+	}
+	return &migrationGuard{fence: fence, epoch: epoch, written: map[string]state.EventID{}}, nil
+}
+
+// stillValid re-reads the fence and epoch after a conditional write failed.
+func (g *migrationGuard) stillValid(ctx context.Context, b *bus, id identity.Quadruple) (bool, error) {
+	if _, err := b.store.Load(ctx, g.fence.Identity, g.fence.Kind); err == nil {
+		return false, nil
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return false, fmt.Errorf("load session fence: %w", err)
+	}
+	_, epoch, err := b.loadErasureEpoch(ctx, id.Identity)
+	if err != nil {
+		return false, err
+	}
+	return epoch.ExpectedEventID == g.epoch.ExpectedEventID, nil
+}
+
+// removeWritten deletes the chunks this migration committed (exact
+// generations only). Used when the session vanished before the flip.
+func (b *bus) removeWritten(ctx context.Context, id identity.Quadruple, g *migrationGuard) {
+	for kind, eventID := range g.written {
+		if _, err := b.store.DeleteIf(ctx, state.SlotExpectation{Identity: id, Kind: kind, ExpectedEventID: eventID}); err != nil && ctx.Err() == nil {
+			b.logger.WarnContext(ctx, "durable: could not remove a pre-written index chunk of an erased session",
+				slog.String("driver", "durable"), slog.String("head_identity_hash", headIdentityHash(id)), slog.String("error", err.Error()))
+		}
+	}
+}
+
 // migrationStats summarises one migrator pass.
 type migrationStats struct {
 	Candidates int
@@ -67,6 +123,9 @@ func (b *bus) runMigrationPass(ctx context.Context) (migrationStats, error) {
 		}
 		cands = append(cands, candidate{id: rec.Identity, size: len(rec.Bytes), key: sessionMapKey(rec.Identity)})
 	}
+	// Keep only identities and sizes: the scan returned every legacy head's
+	// full bytes, which must not stay referenced for the whole pass.
+	recs = nil
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].size != cands[j].size {
 			return cands[i].size < cands[j].size
@@ -93,6 +152,7 @@ func (b *bus) runMigrationPass(ctx context.Context) (migrationStats, error) {
 			bo.delay = nextMigrationBackoff(bo.delay)
 			bo.next = b.clock.Now().Add(bo.delay)
 			b.maint.backoff[c.key] = bo
+			b.maint.stuck.Store(c.key, struct{}{})
 			b.logger.WarnContext(ctx, "durable: index migration failed; session stays in the legacy format and publishes keep working",
 				slog.String("driver", "durable"),
 				slog.String("head_identity_hash", headIdentityHash(c.id)),
@@ -101,8 +161,16 @@ func (b *bus) runMigrationPass(ctx context.Context) (migrationStats, error) {
 			continue
 		}
 		delete(b.maint.backoff, c.key)
+		b.maint.stuck.Delete(c.key)
 		if flipped {
 			stats.Migrated++
+		}
+		// Pace after a large session so back-to-back migrations do not
+		// monopolize a pool connection and the CPU.
+		if c.size > largeMigrationBytes {
+			if err := sleepCtx(ctx, b.maint.sessionPause); err != nil {
+				return stats, err
+			}
 		}
 	}
 	if stats.Candidates > 0 {
@@ -130,7 +198,20 @@ func nextMigrationBackoff(previous time.Duration) time.Duration {
 // migrateSession converts one legacy head. It reports flipped=false with a
 // nil error when there was nothing to do (absent, already v2, or another
 // writer migrated it first).
-func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (bool, error) {
+func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flipped bool, retErr error) {
+	guard, err := b.captureMigrationGuard(ctx, id)
+	if errors.Is(err, errMigrationErased) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if errors.Is(retErr, errMigrationErased) {
+			b.removeWritten(context.WithoutCancel(ctx), id, guard)
+			flipped, retErr = false, nil
+		}
+	}()
 	rec, err := b.store.Load(ctx, id, kindHead)
 	if errors.Is(err, state.ErrNotFound) {
 		return false, nil
@@ -142,6 +223,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (bool, 
 		return false, nil
 	}
 	head, err := decodeHead(rec.Bytes)
+	rec.Bytes = nil // release the raw head once decoded
 	if err != nil {
 		return false, err
 	}
@@ -160,7 +242,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (bool, 
 	if err != nil {
 		return false, err
 	}
-	if err := b.prewriteChunks(ctx, id, chunks); err != nil {
+	if err := b.prewriteChunks(ctx, id, chunks, guard); err != nil {
 		if errors.Is(err, errAlreadyMigrated) {
 			return false, nil
 		}
@@ -174,7 +256,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (bool, 
 		}
 		current, err := b.store.Load(ctx, id, kindHead)
 		if errors.Is(err, state.ErrNotFound) {
-			return false, nil // erased meanwhile
+			return false, errMigrationErased // erased meanwhile: drop pre-writes
 		}
 		if err != nil {
 			return false, fmt.Errorf("reload head before flip: %w", err)
@@ -214,7 +296,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (bool, 
 			if err != nil {
 				return false, err
 			}
-			if err := b.prewriteChunks(ctx, id, all[len(chunks):]); err != nil {
+			if err := b.prewriteChunks(ctx, id, all[len(chunks):], guard); err != nil {
 				if errors.Is(err, errAlreadyMigrated) {
 					return false, nil
 				}
@@ -238,12 +320,17 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (bool, 
 			return false, err
 		}
 		next := state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headerBytes}
-		saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kindHead, ExpectedEventID: current.ID}}, next)
+		saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kindHead, ExpectedEventID: current.ID}, guard.fence, guard.epoch}, next)
 		switch {
 		case saveErr == nil:
 			return true, b.verifyFlippedHeader(ctx, id)
 		case errors.Is(saveErr, state.ErrConditionFailed):
-			continue // concurrent legacy append, erasure, or another flip
+			if valid, err := guard.stillValid(ctx, b, id); err != nil {
+				return false, err
+			} else if !valid {
+				return false, errMigrationErased
+			}
+			continue // concurrent legacy append or another flip
 		case errors.Is(saveErr, state.ErrCommitOutcomeUnknown):
 			landed, err := b.reconcileFlip(ctx, id, next.ID)
 			if err != nil {
@@ -340,7 +427,7 @@ func (b *bus) reconcileFlip(ctx context.Context, id identity.Quadruple, flipped 
 // already holds byte-identical bytes (an earlier attempt, or another
 // migrator) is reused. A differing slot means the session was migrated by
 // someone else (header already v2) or holds a stale orphan.
-func (b *bus) prewriteChunks(ctx context.Context, id identity.Quadruple, chunks []indexChunk) error {
+func (b *bus) prewriteChunks(ctx context.Context, id identity.Quadruple, chunks []indexChunk, guard *migrationGuard) error {
 	for start := 0; start < len(chunks); start += migrationPrewriteBatch {
 		end := min(start+migrationPrewriteBatch, len(chunks))
 		batch := chunks[start:end]
@@ -356,8 +443,14 @@ func (b *bus) prewriteChunks(ctx context.Context, id identity.Quadruple, chunks 
 			expectations[i] = state.SlotExpectation{Identity: id, Kind: chunkKind(c.Index)}
 			writes[i] = state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: chunkKind(c.Index), Bytes: raw, UpdatedAt: b.clock.Now()}
 		}
-		err := b.store.SaveBatchIf(ctx, expectations, writes)
+		err := b.store.SaveBatchIf(ctx, append(expectations, guard.fence, guard.epoch), writes)
 		if err == nil {
+			for _, w := range writes {
+				guard.written[w.Kind] = w.ID
+			}
+			if err := b.pauseBetweenBatches(ctx); err != nil {
+				return err
+			}
 			continue
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -366,10 +459,22 @@ func (b *bus) prewriteChunks(ctx context.Context, id identity.Quadruple, chunks 
 		if !errors.Is(err, state.ErrConditionFailed) && !errors.Is(err, state.ErrCommitOutcomeUnknown) {
 			return fmt.Errorf("pre-write chunks [%d,%d): %w", batch[0].Index, batch[len(batch)-1].Index+1, err)
 		}
-		// Some slot already exists, or the outcome is unknown: settle each
-		// chunk individually (reuse identical, write absent).
+		// Some slot already exists, the session was erased, another process
+		// finished the migration, or the outcome is unknown: check the guard
+		// and the header, then settle each chunk individually (reuse
+		// identical, write absent).
+		if valid, err := guard.stillValid(ctx, b, id); err != nil {
+			return err
+		} else if !valid {
+			return errMigrationErased
+		}
+		if head, err := b.store.Load(ctx, id, kindHead); err == nil && isIndexV2(head.Bytes) {
+			return errAlreadyMigrated
+		} else if errors.Is(err, state.ErrNotFound) {
+			return errMigrationErased
+		}
 		for i, c := range batch {
-			if err := b.settleChunk(ctx, id, c.Index, encoded[i]); err != nil {
+			if err := b.settleChunk(ctx, id, c.Index, encoded[i], guard); err != nil {
 				return err
 			}
 		}
@@ -377,7 +482,27 @@ func (b *bus) prewriteChunks(ctx context.Context, id identity.Quadruple, chunks 
 	return nil
 }
 
-func (b *bus) settleChunk(ctx context.Context, id identity.Quadruple, index uint64, want []byte) error {
+// pauseBetweenBatches paces migration writes so a large migration shares the
+// connection pool and CPU with live traffic.
+func (b *bus) pauseBetweenBatches(ctx context.Context) error {
+	return sleepCtx(ctx, b.maint.prewritePause)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (b *bus) settleChunk(ctx context.Context, id identity.Quadruple, index uint64, want []byte, guard *migrationGuard) error {
 	kind := chunkKind(index)
 	for attempt := 1; attempt <= 4; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -385,12 +510,18 @@ func (b *bus) settleChunk(ctx context.Context, id identity.Quadruple, index uint
 		}
 		rec, err := b.store.Load(ctx, id, kind)
 		if errors.Is(err, state.ErrNotFound) {
-			saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kind}},
-				state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kind, Bytes: want, UpdatedAt: b.clock.Now()})
+			next := state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kind, Bytes: want, UpdatedAt: b.clock.Now()}
+			saveErr := b.store.SaveIf(ctx, []state.SlotExpectation{{Identity: id, Kind: kind}, guard.fence, guard.epoch}, next)
 			if saveErr == nil {
+				guard.written[kind] = next.ID
 				return nil
 			}
 			if errors.Is(saveErr, state.ErrConditionFailed) || errors.Is(saveErr, state.ErrCommitOutcomeUnknown) {
+				if valid, err := guard.stillValid(ctx, b, id); err != nil {
+					return err
+				} else if !valid {
+					return errMigrationErased
+				}
 				continue // re-read decides
 			}
 			return fmt.Errorf("pre-write chunk %d: %w", index, saveErr)

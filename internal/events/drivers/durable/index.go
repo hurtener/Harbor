@@ -86,9 +86,12 @@ type indexRow struct {
 // or entry records may still be present in storage; PendingEntries lists the
 // entry sequences of a trimmed tail, which no chunk record names.
 type indexTrimmed struct {
-	Count          uint64   `json:"count"`
-	ThroughSeq     uint64   `json:"through_seq"`
-	CleanupPending bool     `json:"cleanup_pending,omitempty"`
+	Count          uint64 `json:"count"`
+	ThroughSeq     uint64 `json:"through_seq"`
+	CleanupPending bool   `json:"cleanup_pending,omitempty"`
+	// CleanupFrom is the lowest chunk index whose records may still be
+	// present; chunks [CleanupFrom, FirstChunk) are what cleanup must visit.
+	CleanupFrom    uint64   `json:"cleanup_from,omitempty"`
 	PendingEntries []uint64 `json:"pending_entries,omitempty"`
 }
 
@@ -461,6 +464,9 @@ func validateHeader(h indexHeader) error {
 	}
 	if want := chunks*indexChunkRows + uint64(len(h.Tail)); h.RetainedCount != want {
 		return integrityErrorf("header retained_count=%d, want %d", h.RetainedCount, want)
+	}
+	if h.Trimmed.CleanupFrom > h.FirstChunk || (!h.Trimmed.CleanupPending && h.Trimmed.CleanupFrom != 0) {
+		return integrityErrorf("header cleanup_from=%d is outside the trimmed chunk range", h.Trimmed.CleanupFrom)
 	}
 	if h.Trimmed.Count == 0 && (h.Trimmed.ThroughSeq != 0 || h.Trimmed.CleanupPending || len(h.Trimmed.PendingEntries) != 0) {
 		return integrityErrorf("header carries trim bookkeeping without a trim")

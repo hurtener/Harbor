@@ -128,7 +128,7 @@ Subcommands fall into three groups:
   Local dev loop      init, dev, console, scaffold, validate, skill
   LLM inspection      llm providers
   Production          serve, token, postgres
-  Persistence repair  events repair-legacy-heads
+  Persistence repair  events repair-legacy-heads, events rebuild-session-index
   Run inspection      inspect-events, inspect-runs, inspect-topology,
                       composition-preview, tui
   Build information   version

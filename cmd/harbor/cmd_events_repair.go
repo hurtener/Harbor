@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events/drivers/durable"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/persistence/sqlmigrate"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/state/drivers/postgres"
@@ -39,7 +41,95 @@ func newEventsCmd() *cobra.Command {
 		Short: "inspect and repair durable event persistence",
 	}
 	cmd.AddCommand(newRepairLegacyHeadsCmd())
+	cmd.AddCommand(newRebuildSessionIndexCmd())
 	return cmd
+}
+
+type rebuildIndexFlags struct {
+	driver    string
+	dsn       string
+	tenant    string
+	user      string
+	session   string
+	apply     bool
+	freezeAck bool
+	timeout   time.Duration
+}
+
+func newRebuildSessionIndexCmd() *cobra.Command {
+	flags := rebuildIndexFlags{driver: "postgres", timeout: 5 * time.Minute}
+	cmd := &cobra.Command{
+		Use:   "rebuild-session-index",
+		Short: "rebuild one session's durable event index from its entry bodies",
+		Long: `Rebuild one session's chunked durable event index (D-492) from its immutable
+entry bodies — the recovery for a session quarantined for failing index
+integrity checks. The default inspects and prints a content-free report.
+--apply requires --freeze-ack after every event writer for the store is
+stopped. The audit-retention cut is taken from the session's retention
+summary; trimmed bodies still present are excluded and removed. Payloads are
+never printed. The command opens the StateStore directly and never boots a
+Runtime or EventBus writer.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runRebuildSessionIndex(cmd, flags)
+		},
+	}
+	cmd.Flags().StringVar(&flags.driver, "driver", flags.driver, "StateStore driver: postgres, sqlite, or inmem")
+	cmd.Flags().StringVar(&flags.dsn, "dsn", "", "StateStore DSN (required for postgres and sqlite; never printed)")
+	cmd.Flags().StringVar(&flags.tenant, "tenant", "", "session tenant id")
+	cmd.Flags().StringVar(&flags.user, "user", "", "session user id")
+	cmd.Flags().StringVar(&flags.session, "session", "", "session id")
+	cmd.Flags().BoolVar(&flags.apply, "apply", false, "write the rebuilt index (default: inspect only)")
+	cmd.Flags().BoolVar(&flags.freezeAck, "freeze-ack", false, "acknowledge that every event writer for the selected store is stopped (required for --apply)")
+	cmd.Flags().DurationVar(&flags.timeout, "timeout", flags.timeout, "maximum operation duration")
+	return cmd
+}
+
+func runRebuildSessionIndex(cmd *cobra.Command, flags rebuildIndexFlags) error {
+	const sub = "events rebuild-session-index"
+	driver := strings.ToLower(strings.TrimSpace(flags.driver))
+	if driver != "postgres" && driver != "sqlite" && driver != "inmem" {
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: fmt.Sprintf("unsupported --driver %q", flags.driver), Code: codeLegacyRepairInvalid})
+	}
+	if driver != "inmem" && strings.TrimSpace(flags.dsn) == "" {
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "--dsn is required for the selected StateStore driver", Code: codeLegacyRepairInvalid})
+	}
+	if flags.tenant == "" || flags.user == "" || flags.session == "" {
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "--tenant, --user and --session are required", Code: codeLegacyRepairInvalid})
+	}
+	if flags.timeout <= 0 {
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "--timeout must be positive", Code: codeLegacyRepairInvalid})
+	}
+	if flags.apply && !flags.freezeAck {
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "--apply requires --freeze-ack after every event writer is stopped", Code: codeLegacyRepairRefused})
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), flags.timeout)
+	defer cancel()
+	store, cleanup, err := openLegacyRepairStore(driver, flags.dsn)
+	if err != nil {
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "open StateStore failed", Code: codeLegacyRepairInternal})
+	}
+	defer cleanup()
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: flags.tenant, UserID: flags.user, SessionID: flags.session}}
+	report, err := durable.RebuildSessionIndex(ctx, store, id, durable.RebuildSessionIndexOptions{Apply: flags.apply, WriterDrained: flags.freezeAck})
+	if err != nil {
+		code := codeLegacyRepairInternal
+		if errors.Is(err, durable.ErrRebuildRefused) {
+			code = codeLegacyRepairRefused
+		}
+		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: err.Error(), Code: code})
+	}
+	if resolveJSONMode(cmd) {
+		buf, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "write report failed", Code: codeLegacyRepairInternal})
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", buf)
+		return nil
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "head=%s current_index=%s entries=%d retained=%d chunks=%d trimmed_count=%d trimmed_through=%d trimmed_bodies=%d stale_chunks_removed=%d applied=%v\n",
+		report.HeadIdentityHash, report.CurrentIndex, report.Entries, report.Retained, report.Chunks, report.TrimmedCount, report.TrimmedThrough, report.TrimmedBodies, report.StaleChunks, report.Applied)
+	return nil
 }
 
 func newRepairLegacyHeadsCmd() *cobra.Command {

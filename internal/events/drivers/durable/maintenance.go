@@ -9,6 +9,8 @@ package durable
 
 import (
 	"context"
+
+	"github.com/hurtener/Harbor/internal/identity"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -29,6 +31,9 @@ const (
 	retentionDeleteBudget = 2000
 	// retentionDeletesPerSecond paces deletes within a pass.
 	retentionDeletesPerSecond = 20
+	// retentionSessionDeleteSlice bounds one session's deletes per pass (two
+	// chunks' worth), so one large backlog cannot starve other sessions.
+	retentionSessionDeleteSlice = 2*indexChunkRows + 2
 	// retentionMaxChunksPerSession bounds chunk loads per session per pass.
 	retentionMaxChunksPerSession = 64
 	// retentionHeadsWarn is the traversal size above which a pass logs the
@@ -44,6 +49,13 @@ const (
 	migrationPrewriteBatch = 16
 	// migrationFlipAttempts bounds header-flip CAS retries per pass.
 	migrationFlipAttempts = 8
+	// migrationPrewritePause / migrationSessionPause pace the migrator
+	// between pre-write batches and after each large session.
+	migrationPrewritePause = 50 * time.Millisecond
+	migrationSessionPause  = time.Second
+	// largeMigrationBytes is the legacy head size after which the migrator
+	// pauses before the next session.
+	largeMigrationBytes = 256 << 10
 )
 
 // maintenance is the bus's background index maintenance state.
@@ -53,8 +65,13 @@ type maintenance struct {
 	migrateInterval   time.Duration
 	retentionInterval time.Duration
 	deleteBudget      int
+	deleteSlice       int
 	deleteInterval    time.Duration
-	disabled          bool
+	// prewritePause / sessionPause pace the migrator between pre-write
+	// batches and between large sessions.
+	prewritePause time.Duration
+	sessionPause  time.Duration
+	disabled      bool
 
 	nudge  chan struct{}
 	cancel context.CancelFunc
@@ -65,6 +82,9 @@ type maintenance struct {
 	passMu    sync.Mutex
 	backoff   map[string]migrationBackoff
 	resumeKey string
+	// stuck mirrors the sessions currently in migration backoff so the
+	// publish path can skip nudging for them without taking passMu.
+	stuck sync.Map
 }
 
 type migrationBackoff struct {
@@ -78,7 +98,10 @@ func (m *maintenance) init(auditMaxAge time.Duration) {
 	m.migrateInterval = migrationInterval
 	m.retentionInterval = retentionInterval
 	m.deleteBudget = retentionDeleteBudget
+	m.deleteSlice = retentionSessionDeleteSlice
 	m.deleteInterval = time.Second / retentionDeletesPerSecond
+	m.prewritePause = migrationPrewritePause
+	m.sessionPause = migrationSessionPause
 	m.nudge = make(chan struct{}, 1)
 	m.backoff = map[string]migrationBackoff{}
 }
@@ -107,7 +130,12 @@ func (b *bus) stopMaintenance() {
 }
 
 // nudgeMigrator asks the background migrator for an early pass. Never blocks.
-func (b *bus) nudgeMigrator() {
+// A session already in migration backoff is not nudged: its next attempt is
+// scheduled, and repeated nudges would only repeat the full head scan.
+func (b *bus) nudgeMigrator(id identity.Quadruple) {
+	if _, stuck := b.maint.stuck.Load(sessionMapKey(id)); stuck {
+		return
+	}
 	select {
 	case b.maint.nudge <- struct{}{}:
 	default:
