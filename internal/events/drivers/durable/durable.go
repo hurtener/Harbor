@@ -618,8 +618,10 @@ func (b *bus) replaceHorizonIf(before, next horizonSnapshot) {
 		return
 	}
 	if !next.present {
+		// Clear only the presence flag: OldestRetainedAt reads present then
+		// nano without the lock, so zeroing nano could pair a stale
+		// present=true with nano=0 and report an epoch horizon.
 		b.oldestRetainedPresent.Store(false)
-		b.oldestRetainedNano.Store(0)
 		return
 	}
 	b.oldestRetainedNano.Store(next.nano)
