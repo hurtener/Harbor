@@ -46,6 +46,7 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 	}
 
 	runFenceSuite(t, open)
+	runBootstrapSuite(t, open)
 
 	t.Run("Routes_SaveLoadPruneErase", func(t *testing.T) {
 		s, ms := open(t)
@@ -451,4 +452,97 @@ func repairRow(turnID string, id identity.Identity) turns.TurnRow {
 	r.Query = turns.Query{Complete: turns.CompletenessUnavailable}
 	r.Agent = turns.Agent{BindingSource: turns.AgentBindingUnknown, Complete: turns.CompletenessUnavailable}
 	return r
+}
+
+// RunRouteRetention pins that routes never outlive their turns: the
+// factory MUST build a store retaining ONE row per session. Appending a
+// second turn evicts the first, and the evicted turn's routes (its own
+// and its children's) go with it.
+func RunRouteRetention(t *testing.T, factory Factory) {
+	t.Helper()
+	t.Run("Routes_EvictedWithTheirTurn", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ms := s.(turns.MaterializerStore)
+		c := context.Background()
+		id := triple("t-ret", "u", "s")
+		for _, tid := range []string{"r-0", "r-1"} {
+			if _, err := s.AppendTurnIf(c, id, freshRow(tid, id)); err != nil {
+				t.Fatalf("append %s: %v", tid, err)
+			}
+			if err := ms.SaveTaskRoute(c, id, turns.TaskRoute{TaskID: tid, RootTaskID: tid}); err != nil {
+				t.Fatalf("route %s: %v", tid, err)
+			}
+			if err := ms.SaveTaskRoute(c, id, turns.TaskRoute{TaskID: tid + "-child", ParentTaskID: tid, RootTaskID: tid}); err != nil {
+				t.Fatalf("child route %s: %v", tid, err)
+			}
+		}
+		if _, err := s.GetTurn(c, id, "r-0"); !errors.Is(err, turns.ErrTurnNotFound) {
+			t.Fatalf("expected r-0 evicted: %v", err)
+		}
+		for _, tid := range []string{"r-0", "r-0-child"} {
+			if r, ok, _ := ms.LoadTaskRoute(c, id, tid); ok {
+				t.Fatalf("route %s outlived its evicted turn: %+v", tid, r)
+			}
+		}
+		if _, ok, _ := ms.LoadTaskRoute(c, id, "r-1-child"); !ok {
+			t.Fatalf("a retained turn's route was dropped")
+		}
+	})
+}
+
+// runBootstrapSuite pins the bootstrap storage primitives.
+func runBootstrapSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns.MaterializerStore)) {
+	t.Run("Bootstrap_ProgressFencedAndUnsealedSessions", func(t *testing.T) {
+		s, ms := open(t)
+		c := context.Background()
+		a, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute)
+		if err != nil || !a.Held {
+			t.Fatalf("acquire: %+v %v", a, err)
+		}
+		fa := turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-a", Generation: a.Generation})
+		if err := ms.SaveMaterializerBootstrap(fa, "holder-a", `{"phase":"replay"}`); err != nil {
+			t.Fatalf("save progress: %v", err)
+		}
+		if got, _ := ms.LoadMaterializerBootstrap(c); got != `{"phase":"replay"}` {
+			t.Fatalf("progress = %q", got)
+		}
+		if err := ms.SaveMaterializerBootstrap(c, "holder-b", "x"); !errors.Is(err, turns.ErrLeaseNotHeld) {
+			t.Fatalf("non-holder progress save: %v", err)
+		}
+		open1, open2, closed := triple("t-b", "u", "s1"), triple("t-b", "u", "s2"), triple("t-b", "u", "s3")
+		for _, id := range []identity.Identity{open1, open2, closed} {
+			if _, err := s.AppendTurnIf(c, id, freshRow("x", id)); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+		}
+		cur, _ := s.GetTurn(c, closed, "x")
+		sealed := cur
+		sealed.Status = turns.StatusCancelled
+		if _, err := s.SealTurnIf(c, closed, "x", cur.Version, sealed); err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+		got, err := ms.ListUnsealedSessions(c, identity.Identity{}, 10)
+		if err != nil || len(got) != 2 || got[0] != open1 || got[1] != open2 {
+			t.Fatalf("unsealed sessions = %+v, %v; want s1, s2", got, err)
+		}
+		if page, _ := ms.ListUnsealedSessions(c, open1, 10); len(page) != 1 || page[0] != open2 {
+			t.Fatalf("keyset page after s1 = %+v", page)
+		}
+		if err := ms.PruneTaskRoutes(turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-a", Generation: a.Generation + 7}), open1, "x"); !errors.Is(err, turns.ErrLeaseNotHeld) {
+			t.Fatalf("prune under a stale fence: %v", err)
+		}
+		if err := ms.SaveTaskRoute(c, open1, turns.TaskRoute{TaskID: "bg", RunID: "bg-run"}); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		if err := ms.PruneTaskRoutes(fa, open1, "bg"); err != nil {
+			t.Fatalf("prune: %v", err)
+		}
+		if _, ok, _ := ms.LoadTaskRoute(c, open1, "bg"); ok {
+			t.Fatalf("pruned route survived")
+		}
+		if err := ms.EnsureMaterializerIndexes(c); err != nil {
+			t.Fatalf("ensure indexes: %v", err)
+		}
+	})
 }

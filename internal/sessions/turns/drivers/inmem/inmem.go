@@ -281,6 +281,7 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 			delete(d.rows, rowKeyOf(id, tid))
 			delete(d.repair, rowKeyOf(id, tid))
 			delete(d.pending, rowKeyOf(id, tid))
+			d.pruneRoutesLocked(id, string(tid))
 		}
 		st.tail = append([]turns.TurnID(nil), st.tail[over:]...)
 		st.truncated = true
@@ -324,11 +325,7 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 	d.rows[k] = cloneRow(next)
 	if sealed {
 		delete(d.pending, k)
-		for rk, r := range d.routes {
-			if rk.tenant == k.tenant && rk.user == k.user && rk.session == k.session && r.RootTaskID == string(turnID) {
-				delete(d.routes, rk)
-			}
-		}
+		d.pruneRoutesLocked(id, string(turnID))
 	}
 	return cloneRow(next), nil
 }

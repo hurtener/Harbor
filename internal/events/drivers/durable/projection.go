@@ -236,6 +236,106 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	return events.ProjectionPage{Events: matches, Next: next, Watermark: wm, Quality: quality, RetentionGap: retentionGap}, nil
 }
 
+// PageSession implements events.ProjectionSource: one session's forward
+// page, read from that session's index alone (cost proportional to the
+// session's rows above the cursor). A fenced session yields an empty
+// Current page; an integrity failure or an unexplained gap fails loud.
+func (b *bus) PageSession(ctx context.Context, id identity.Identity, after uint64, limit int) (events.ProjectionPage, error) {
+	if b.closed.Load() {
+		return events.ProjectionPage{}, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.ProjectionPage{}, err
+	}
+	quad := identity.Quadruple{Identity: id}
+	if limit <= 0 {
+		return events.ProjectionPage{Next: after, Quality: events.ProjectionCurrent}, nil
+	}
+	if b.bestEffort {
+		if b.ringCap == 0 {
+			return events.ProjectionPage{Next: after, Quality: events.ProjectionUnavailable}, nil
+		}
+		b.publishMu.Lock()
+		snapshot := b.ringSnapshotLocked()
+		wm := b.nextSeq
+		evicted := b.evicted
+		b.publishMu.Unlock()
+		return events.ProjectionPageFromSnapshot(snapshot, after, limit, wm, evicted, func(ev events.Event) bool {
+			return ev.Identity.Identity != id || b.isFenced(ev.Identity)
+		}), nil
+	}
+	wm, _, err := b.loadSequenceAuthority(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: load sequence authority: %w", err)
+	}
+	empty := events.ProjectionPage{Next: after, Watermark: wm, Quality: events.ProjectionCurrent}
+	fences, err := b.loadDurableFenceSnapshot(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: %w", err)
+	}
+	if fences.contains(quad) {
+		return empty, nil
+	}
+	rec, err := b.store.Load(ctx, quad, kindHead)
+	if errors.Is(err, state.ErrNotFound) {
+		return empty, nil
+	}
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: load head: %w", err)
+	}
+	view, err := b.indexViewFromRecord(ctx, quad, rec.Bytes)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: index head: %w", err)
+	}
+	retentionGap := view.hdr.Trimmed.Count > 0 && after < view.hdr.Trimmed.ThroughSeq
+	rows, err := b.collectAboveSeek(ctx, &view, after, limit+1, nonInternalRow)
+	if err != nil {
+		rows, err = b.collectAbove(ctx, &view, after, limit+1, nonInternalRow)
+		if err != nil {
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if classifyErr != nil {
+				return events.ProjectionPage{}, fmt.Errorf("durable: session page: %w", classifyErr)
+			}
+			retentionGap = true
+			kept := rows[:0]
+			for _, r := range rows {
+				if r.Seq > through {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
+	}
+	matches := make([]events.Event, 0, len(rows))
+	for _, r := range rows {
+		ev, err := b.loadEntryBody(ctx, quad, r.Seq)
+		if err != nil {
+			if _, classifyErr := b.classifyMissThrough(ctx, err); classifyErr != nil {
+				return events.ProjectionPage{}, fmt.Errorf("durable: session page: %w", classifyErr)
+			}
+			retentionGap = true
+			continue
+		}
+		if err := validateMetadataEvent(r.metadata(quad), ev); err != nil {
+			return events.ProjectionPage{}, fmt.Errorf("durable: session page metadata mismatch seq=%d: %w", r.Seq, err)
+		}
+		if events.IsBusInternalNotice(ev.Type) {
+			continue
+		}
+		matches = append(matches, ev)
+	}
+	quality := events.ProjectionCurrent
+	if len(matches) > limit {
+		quality = events.ProjectionCatchingUp
+		matches = matches[:limit]
+	}
+	next := after
+	if len(matches) > 0 {
+		next = matches[len(matches)-1].Sequence
+	}
+	return events.ProjectionPage{Events: matches, Next: next, Watermark: wm, Quality: quality, RetentionGap: retentionGap}, nil
+}
+
 // Watermark implements events.ProjectionSource. In durable mode it
 // returns the persisted watermark — the highest sequence whose entry
 // and head records completed persistence, rehydrated across restarts

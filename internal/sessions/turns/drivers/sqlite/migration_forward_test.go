@@ -67,12 +67,32 @@ func TestMigrate_Forward_FlagsExistingBrokenRows(t *testing.T) {
 	if err != nil || lease.Cursor != 40000 {
 		t.Fatalf("seeded resume cursor = %+v, %v; want 40000 (max checkpoint minus the lookback)", lease, err)
 	}
+	// The migration only marks the store for the runtime bootstrap; the
+	// lease holder backfills the repair flag in short fenced batches.
+	if progress, err := ms.LoadMaterializerBootstrap(ctx); err != nil || progress != "pending" {
+		t.Fatalf("bootstrap after the upgrade = %q, %v; want pending", progress, err)
+	}
+	if keys, _ := ms.ListIdentityRepairCandidates(ctx, turns.IdentityRepairKey{}, 10); len(keys) != 0 {
+		t.Fatalf("the migration itself flagged rows (it must not touch rows): %+v", keys)
+	}
+	fenced := turns.WithWriteFence(ctx, turns.WriteFence{Holder: "first-boot", Generation: lease.Generation})
+	var after turns.IdentityRepairKey
+	for {
+		next, done, err := ms.BackfillIdentityRepair(fenced, after, 1)
+		if err != nil {
+			t.Fatalf("backfill: %v", err)
+		}
+		after = next
+		if done {
+			break
+		}
+	}
 	keys, err := ms.ListIdentityRepairCandidates(ctx, turns.IdentityRepairKey{}, 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(keys) != 1 || keys[0].TurnID != "broken" {
-		t.Fatalf("candidates after forward migration = %+v; want only the broken row", keys)
+		t.Fatalf("candidates after the runtime backfill = %+v; want only the broken row", keys)
 	}
 	row, changed, err := ms.RepairTurnIdentity(ctx, id, "broken", turns.IdentityFill{QueryPresent: true, Query: "the question"})
 	if err != nil || !changed || row.Query.Text != "the question" || !row.Sealed {

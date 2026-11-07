@@ -24,7 +24,7 @@ func runMigrations(ctx context.Context, db *sql.DB, dsn string, mode sqlmigrate.
 		RequiredColumns: map[string][]string{
 			"turn_rows":         {"tenant_id", "user_id", "session_id", "turn_id", "effective_agent_id", "sequence", "sealed", "version", "last_applied_event_seq", "row_json", "identity_repair", "pending_complete"},
 			"turn_sessions":     {"tenant_id", "user_id", "session_id", "next_seq", "checkpoint", "snapshot", "truncated", "fenced"},
-			"turn_materializer": {"name", "holder", "lease_expires", "cursor", "generation"},
+			"turn_materializer": {"name", "holder", "lease_expires", "cursor", "generation", "bootstrap"},
 			"turn_routes":       {"tenant_id", "user_id", "session_id", "task_id", "parent_task_id", "run_id", "root_task_id", "event_seq"},
 		},
 		// The v1.39-and-earlier contract (schema version 1). Stores that

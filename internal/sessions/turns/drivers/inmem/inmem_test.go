@@ -339,3 +339,13 @@ func TestInMem_MaterializerStoreConformance(t *testing.T) {
 		return s, func() { _ = s.Close(context.Background()) }
 	})
 }
+
+func TestInMem_RouteRetention(t *testing.T) {
+	conformancetest.RunRouteRetention(t, func() (turns.Store, func()) {
+		s, err := inmem.New(inmem.WithRetention(1))
+		if err != nil {
+			t.Fatalf("inmem.New: %v", err)
+		}
+		return s, func() { _ = s.Close(context.Background()) }
+	})
+}

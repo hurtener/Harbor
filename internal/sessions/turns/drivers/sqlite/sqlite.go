@@ -1080,6 +1080,15 @@ const (
               ORDER BY sequence DESC, turn_id DESC
               LIMIT -1 OFFSET ?
           )`
+	evictRoutesSQL = `
+        DELETE FROM turn_routes
+        WHERE tenant = ? AND user = ? AND session = ?
+          AND root_task_id IN (
+              SELECT turn_id FROM turn_rows
+              WHERE tenant = ? AND user = ? AND session = ?
+              ORDER BY sequence DESC, turn_id DESC
+              LIMIT -1 OFFSET ?
+          )`
 	evictAppsSQL = `
         DELETE FROM turn_apps
         WHERE tenant = ? AND user = ? AND session = ?
@@ -1379,6 +1388,12 @@ func (d *driver) enforceRetention(ctx context.Context, tx *sql.Tx, id identity.I
 		id.TenantID, id.UserID, id.SessionID, id.TenantID, id.UserID, id.SessionID, d.retain,
 	); err != nil {
 		return fmt.Errorf("sessions/turns/sqlite: evict app refs: %w", err)
+	}
+	// Routes never outlive the turns they route to.
+	if _, err := tx.ExecContext(ctx, evictRoutesSQL,
+		id.TenantID, id.UserID, id.SessionID, id.TenantID, id.UserID, id.SessionID, d.retain,
+	); err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: evict routes: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, evictRowsSQL,
 		id.TenantID, id.UserID, id.SessionID, id.TenantID, id.UserID, id.SessionID, d.retain,

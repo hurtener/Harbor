@@ -355,3 +355,15 @@ func TestPostgres_MaterializerStoreConformance(t *testing.T) {
 		return s, func() { _ = s.Close(context.Background()) }
 	})
 }
+
+func TestPostgres_RouteRetention(t *testing.T) {
+	dsn := freshSchema(t, requireDSN(t))
+	conformancetest.RunRouteRetention(t, func() (turns.Store, func()) {
+		s, err := postgres.New(postgres.Config{DSN: dsn, Retention: 1})
+		if err != nil {
+			t.Fatalf("postgres.New: %v", err)
+		}
+		truncateTurns(t, dsn)
+		return s, func() { _ = s.Close(context.Background()) }
+	})
+}

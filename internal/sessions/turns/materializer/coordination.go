@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
 )
@@ -189,6 +191,8 @@ func (m *Materializer) resetStateLocked(cursor uint64) {
 	m.spawnMisses = map[spawnKey]*spawnMiss{}
 	m.repairAfter = turns.IdentityRepairKey{}
 	m.repairIdleUntil = time.Time{}
+	m.bootstrapDone = false
+	m.indexesEnsured = false
 }
 
 // releaseLease hands the lease over on Run exit (a graceful shutdown
@@ -313,6 +317,10 @@ type spawnMiss struct {
 // bound and the grace window must be exhausted before the spawn is
 // appended without the record; the bookkeeping itself is bounded.
 func (m *Materializer) deferSpawnLocked(id identity.Identity, taskID string) bool {
+	if m.bootstrapping {
+		// The upgrade bootstrap replays historical spawns only.
+		return false
+	}
 	k := spawnKey{id: id, taskID: taskID}
 	miss := m.spawnMisses[k]
 	if miss == nil {
@@ -730,4 +738,197 @@ func withSpawnDeferral(attempts int, grace time.Duration) Option {
 		m.spawnDeferAttempts = attempts
 		m.spawnDeferGrace = grace
 	}
+}
+
+// ---------------------------------------------------------------------------
+// one-time upgrade bootstrap
+// ---------------------------------------------------------------------------
+
+// Bootstrap batch bounds.
+const (
+	bootstrapRepairBatch  = 500
+	bootstrapSessionBatch = 16
+)
+
+// bootstrapProgress is the materializer-owned, resumable progress of the
+// one-time upgrade bootstrap, persisted (lease fenced) in the store.
+type bootstrapProgress struct {
+	// Phase is "repair" (flag rows written before the repair flag
+	// existed), then "replay" (rebuild pending completions and task routes
+	// of the sessions that still hold unsealed rows).
+	Phase       string                  `json:"phase"`
+	RepairAfter turns.IdentityRepairKey `json:"repair_after"`
+	ReplayAfter identity.Identity       `json:"replay_after"`
+	// Ceiling is the resume cursor the replay stops at: events above it
+	// are applied by the ordinary forward catch-up.
+	Ceiling uint64 `json:"ceiling"`
+}
+
+// runBootstrapLocked runs (or resumes) the one-time upgrade bootstrap a
+// store created by an earlier release needs before fast resume is safe:
+//
+//   - it builds the coordination indexes without blocking the table;
+//   - it backfills the identity repair flag in short batches (instead of
+//     a migration-time table rewrite);
+//   - it replays ONLY the sessions that still hold unsealed rows — their
+//     own history up to the seeded cursor, never the global log — so the
+//     earlier release's still-open turns get their pending-completion
+//     marks and task routes, which that release never persisted.
+//
+// Progress is persisted after every batch and the lease is renewed
+// between batches, so a restart or a takeover resumes where it stopped.
+// The forward catch-up starts only once the bootstrap is done.
+func (m *Materializer) runBootstrapLocked(ctx context.Context) error {
+	if m.coord == nil || m.bootstrapDone {
+		return nil
+	}
+	if !m.indexesEnsured {
+		if err := m.coord.EnsureMaterializerIndexes(ctx); err != nil {
+			// The indexes only speed the flag scans up; a failed build is
+			// retried on the next tenure and never blocks projection.
+			m.log(ctx, slog.LevelWarn, "turns materializer index build failed", slog.Any("error", err))
+		} else {
+			m.indexesEnsured = true
+		}
+	}
+	raw, err := m.coord.LoadMaterializerBootstrap(ctx)
+	if err != nil {
+		return fmt.Errorf("materializer: load bootstrap: %w", err)
+	}
+	if raw == "" {
+		m.bootstrapDone = true
+		return nil
+	}
+	p := bootstrapProgress{Phase: "repair"}
+	if raw != "pending" {
+		if err := json.Unmarshal([]byte(raw), &p); err != nil || (p.Phase != "repair" && p.Phase != "replay") {
+			p = bootstrapProgress{Phase: "repair"} // unreadable progress restarts the (idempotent) bootstrap
+		}
+	}
+	m.log(ctx, slog.LevelInfo, "turns materializer upgrade bootstrap running", slog.String("phase", p.Phase))
+	save := func() error {
+		b, err := json.Marshal(p)
+		if err != nil {
+			return fmt.Errorf("materializer: encode bootstrap progress: %w", err)
+		}
+		if err := m.coord.SaveMaterializerBootstrap(m.fencedCtx(ctx), m.holder, string(b)); err != nil {
+			return fmt.Errorf("materializer: save bootstrap progress: %w", err)
+		}
+		return nil
+	}
+	renew := func() error {
+		held, err := m.ensureLeaseLocked(ctx)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return turns.ErrLeaseNotHeld
+		}
+		return nil
+	}
+	for p.Phase == "repair" {
+		next, done, err := m.coord.BackfillIdentityRepair(m.fencedCtx(ctx), p.RepairAfter, bootstrapRepairBatch)
+		if err != nil {
+			return fmt.Errorf("materializer: backfill repair flags: %w", err)
+		}
+		p.RepairAfter = next
+		if done {
+			p.Phase = "replay"
+			p.Ceiling = m.cursor
+		}
+		if err := save(); err != nil {
+			return err
+		}
+		if err := renew(); err != nil {
+			return err
+		}
+	}
+	sessions := 0
+	for p.Phase == "replay" {
+		ids, err := m.coord.ListUnsealedSessions(ctx, p.ReplayAfter, bootstrapSessionBatch)
+		if err != nil {
+			return fmt.Errorf("materializer: list unsealed sessions: %w", err)
+		}
+		for _, id := range ids {
+			if err := m.replaySessionLocked(ctx, id, p.Ceiling); err != nil {
+				return err
+			}
+			p.ReplayAfter = id
+			sessions++
+		}
+		if len(ids) < bootstrapSessionBatch {
+			p.Phase = ""
+			break
+		}
+		if err := save(); err != nil {
+			return err
+		}
+		if err := renew(); err != nil {
+			return err
+		}
+	}
+	if err := m.coord.SaveMaterializerBootstrap(m.fencedCtx(ctx), m.holder, ""); err != nil {
+		return fmt.Errorf("materializer: finish bootstrap: %w", err)
+	}
+	m.bootstrapDone = true
+	m.log(ctx, slog.LevelInfo, "turns materializer upgrade bootstrap done",
+		slog.Int("sessions_replayed", sessions), slog.Uint64("ceiling", p.Ceiling))
+	return nil
+}
+
+// replaySessionLocked replays one session's own events up to ceiling
+// through the ordinary application path (state-only at or below the
+// session checkpoint, plus the route saves and pending marks the earlier
+// release never persisted). A session whose history cannot be read is
+// logged and skipped: the bootstrap is best effort per session and must
+// not wedge the projection.
+func (m *Materializer) replaySessionLocked(ctx context.Context, id identity.Identity, ceiling uint64) error {
+	m.bootstrapping = true
+	defer func() { m.bootstrapping = false }()
+	var after uint64
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		page, err := m.src.PageSession(ctx, id, after, m.pageLimit)
+		if err != nil {
+			m.log(ctx, slog.LevelWarn, "turns materializer bootstrap: session history unreadable; skipped",
+				slog.String("session_id", id.SessionID), slog.Any("error", err))
+			return nil
+		}
+		for _, ev := range page.Events {
+			if ev.Sequence > ceiling {
+				return nil
+			}
+			if _, _, err := m.applyEvent(m.fencedCtx(ctx), ev); err != nil {
+				if errors.Is(err, turns.ErrLeaseNotHeld) || ctx.Err() != nil {
+					return err
+				}
+				m.log(ctx, slog.LevelWarn, "turns materializer bootstrap: session replay stopped",
+					slog.String("session_id", id.SessionID), slog.Uint64("seq", ev.Sequence), slog.Any("error", err))
+				return nil
+			}
+		}
+		if len(page.Events) == 0 || page.Quality == events.ProjectionCurrent {
+			return nil
+		}
+		after = page.Next
+	}
+}
+
+// pruneOnTerminal drops the persisted routes a finished task no longer
+// needs: a sealed root's routes (and its children's), a finished child's
+// own route, a rootless background task's route. A root whose complete
+// seal is still pending keeps its routes until the seal.
+func (m *Materializer) pruneOnTerminal(ctx context.Context, sess *sessionState, taskID string) error {
+	if m.coord == nil || taskID == "" {
+		return nil
+	}
+	if ts, ok := sess.turns[turns.TurnID(taskID)]; ok && !ts.terminal() {
+		return nil
+	}
+	if err := m.coord.PruneTaskRoutes(ctx, sess.id, taskID); err != nil {
+		return fmt.Errorf("materializer: prune routes %s: %w", taskID, err)
+	}
+	return nil
 }

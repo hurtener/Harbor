@@ -17,6 +17,7 @@ import (
 	"context"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 // Page implements events.ProjectionSource. It returns the bounded
@@ -56,6 +57,32 @@ func (b *bus) Page(ctx context.Context, after uint64, limit int) (events.Project
 	return events.ProjectionPageFromSnapshot(snapshot, after, limit, wm, evicted, func(ev events.Event) bool {
 		_, ok := fenced[fenceKey(ev.Identity.Identity)]
 		return ok
+	}), nil
+}
+
+// PageSession implements events.ProjectionSource: Page filtered to one
+// session's events.
+func (b *bus) PageSession(ctx context.Context, id identity.Identity, after uint64, limit int) (events.ProjectionPage, error) {
+	if b.closed.Load() {
+		return events.ProjectionPage{}, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.ProjectionPage{}, err
+	}
+	if b.ringCap == 0 {
+		return events.ProjectionPage{Next: after, Quality: events.ProjectionUnavailable}, nil
+	}
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	wm := b.nextSeq
+	evicted := b.evicted
+	_, fenced := b.fenced[fenceKey(id)]
+	b.publishMu.Unlock()
+	if fenced {
+		return events.ProjectionPage{Next: after, Watermark: wm, Quality: events.ProjectionCurrent}, nil
+	}
+	return events.ProjectionPageFromSnapshot(snapshot, after, limit, wm, evicted, func(ev events.Event) bool {
+		return ev.Identity.Identity != id
 	}), nil
 }
 

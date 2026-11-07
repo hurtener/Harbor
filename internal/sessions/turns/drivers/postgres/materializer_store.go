@@ -60,6 +60,19 @@ func (d *driver) AcquireMaterializerLease(ctx context.Context, holder string, tt
 	return turns.MaterializerLease{Held: cur == holder, Holder: cur, Generation: fromDBSeq(generation), Cursor: fromDBSeq(cursor)}, nil
 }
 
+// leaseFence returns the generation a fenced lease-row update must match
+// (-1 = unfenced) and refuses a fence naming another holder.
+func leaseFence(ctx context.Context, holder string) (int64, error) {
+	f, ok := turns.WriteFenceFrom(ctx)
+	if !ok {
+		return -1, nil
+	}
+	if f.Holder != holder {
+		return 0, turns.ErrLeaseNotHeld
+	}
+	return dbSeq(f.Generation), nil
+}
+
 // ReleaseMaterializerLease implements turns.MaterializerStore.
 func (d *driver) ReleaseMaterializerLease(ctx context.Context, holder string) error {
 	if err := d.check(ctx); err != nil {
@@ -423,4 +436,215 @@ func (d *driver) loadRoute(ctx context.Context, query string, id identity.Identi
 	}
 	r.EventSeq = fromDBSeq(seq)
 	return r, true, nil
+}
+
+// PruneTaskRoutes implements turns.MaterializerStore.
+func (d *driver) PruneTaskRoutes(ctx context.Context, id identity.Identity, taskID string) error {
+	if err := d.check(ctx); err != nil {
+		return err
+	}
+	if err := d.checkIdentity(id); err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("turns/postgres: prune routes begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // best-effort; the surfaced error is the original one
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+        DELETE FROM turn_routes
+        WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+          AND (task_id = $4 OR root_task_id = $4)`,
+		id.TenantID, id.UserID, id.SessionID, taskID,
+	); err != nil {
+		return fmt.Errorf("turns/postgres: prune routes: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("turns/postgres: prune routes commit: %w", err)
+	}
+	return nil
+}
+
+// LoadMaterializerBootstrap implements turns.MaterializerStore.
+func (d *driver) LoadMaterializerBootstrap(ctx context.Context) (string, error) {
+	if err := d.check(ctx); err != nil {
+		return "", err
+	}
+	var progress string
+	err := d.db.QueryRowContext(ctx, `SELECT bootstrap FROM turn_materializer WHERE name = $1`, materializerName).Scan(&progress)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("turns/postgres: load bootstrap: %w", err)
+	}
+	return progress, nil
+}
+
+// SaveMaterializerBootstrap implements turns.MaterializerStore.
+func (d *driver) SaveMaterializerBootstrap(ctx context.Context, holder, progress string) error {
+	if err := d.check(ctx); err != nil {
+		return err
+	}
+	gen, err := leaseFence(ctx, holder)
+	if err != nil {
+		return err
+	}
+	res, err := d.db.ExecContext(ctx, `
+        UPDATE turn_materializer SET bootstrap = $3
+        WHERE name = $1 AND holder = $2 AND lease_expires > now() AND ($4 < 0 OR generation = $4)`,
+		materializerName, holder, progress, gen,
+	)
+	if err != nil {
+		return fmt.Errorf("turns/postgres: save bootstrap: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("turns/postgres: save bootstrap rowcount: %w", err)
+	} else if n == 0 {
+		return turns.ErrLeaseNotHeld
+	}
+	return nil
+}
+
+// ListUnsealedSessions implements turns.MaterializerStore.
+func (d *driver) ListUnsealedSessions(ctx context.Context, after identity.Identity, limit int) ([]identity.Identity, error) {
+	if err := d.check(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := d.db.QueryContext(ctx, `
+        SELECT DISTINCT tenant_id, user_id, session_id FROM turn_rows
+        WHERE NOT sealed AND (tenant_id, user_id, session_id) > ($1, $2, $3)
+        ORDER BY tenant_id, user_id, session_id
+        LIMIT $4`,
+		after.TenantID, after.UserID, after.SessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("turns/postgres: list unsealed sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []identity.Identity
+	for rows.Next() {
+		var id identity.Identity
+		if err := rows.Scan(&id.TenantID, &id.UserID, &id.SessionID); err != nil {
+			return nil, fmt.Errorf("turns/postgres: scan unsealed session: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("turns/postgres: iterate unsealed sessions: %w", err)
+	}
+	return out, nil
+}
+
+// BackfillIdentityRepair implements turns.MaterializerStore: one short
+// fenced transaction over the next keyset batch; the rows are decoded in
+// Go (never parsed by the database, so no stored content can fail it).
+func (d *driver) BackfillIdentityRepair(ctx context.Context, after turns.IdentityRepairKey, limit int) (turns.IdentityRepairKey, bool, error) {
+	if err := d.check(ctx); err != nil {
+		return after, false, err
+	}
+	if limit <= 0 {
+		return after, false, nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return after, false, fmt.Errorf("turns/postgres: backfill begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // best-effort; the surfaced error is the original one
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return after, false, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+        SELECT tenant_id, user_id, session_id, turn_id, row_json FROM turn_rows
+        WHERE (tenant_id, user_id, session_id, turn_id) > ($1, $2, $3, $4)
+        ORDER BY tenant_id, user_id, session_id, turn_id
+        LIMIT $5`,
+		after.Identity.TenantID, after.Identity.UserID, after.Identity.SessionID, string(after.TurnID), limit,
+	)
+	if err != nil {
+		return after, false, fmt.Errorf("turns/postgres: backfill scan: %w", err)
+	}
+	var flag []turns.IdentityRepairKey
+	last := after
+	n := 0
+	for rows.Next() {
+		var k turns.IdentityRepairKey
+		var turnID, raw string
+		if err := rows.Scan(&k.Identity.TenantID, &k.Identity.UserID, &k.Identity.SessionID, &turnID, &raw); err != nil {
+			_ = rows.Close()
+			return after, false, fmt.Errorf("turns/postgres: backfill scan row: %w", err)
+		}
+		k.TurnID = turns.TurnID(turnID)
+		last = k
+		n++
+		if row, err := decodeRowString(raw); err == nil && turns.NeedsIdentityRepair(row) {
+			flag = append(flag, k)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return after, false, fmt.Errorf("turns/postgres: backfill iterate: %w", err)
+	}
+	_ = rows.Close()
+	for _, k := range flag {
+		if _, err := tx.ExecContext(ctx, `
+            UPDATE turn_rows SET identity_repair = true
+            WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND turn_id = $4 AND NOT identity_repair`,
+			k.Identity.TenantID, k.Identity.UserID, k.Identity.SessionID, string(k.TurnID),
+		); err != nil {
+			return after, false, fmt.Errorf("turns/postgres: backfill flag: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return after, false, fmt.Errorf("turns/postgres: backfill commit: %w", err)
+	}
+	return last, n < limit, nil
+}
+
+// materializerIndexes are the partial indexes over the coordination flags,
+// built at runtime (never inside the schema migration's exclusive lock).
+var materializerIndexes = []struct{ name, ddl string }{
+	{"turn_rows_identity_repair", `CREATE INDEX CONCURRENTLY IF NOT EXISTS turn_rows_identity_repair
+        ON turn_rows (tenant_id, user_id, session_id, turn_id) WHERE identity_repair`},
+	{"turn_rows_pending_complete", `CREATE INDEX CONCURRENTLY IF NOT EXISTS turn_rows_pending_complete
+        ON turn_rows (tenant_id, user_id, session_id, turn_id) WHERE pending_complete`},
+}
+
+// EnsureMaterializerIndexes implements turns.MaterializerStore: CREATE
+// INDEX CONCURRENTLY (no lock that blocks reads or writes), replacing an
+// INVALID leftover of an interrupted build. Each statement runs on its own
+// (outside any transaction), so it also works through transaction poolers.
+func (d *driver) EnsureMaterializerIndexes(ctx context.Context) error {
+	if err := d.check(ctx); err != nil {
+		return err
+	}
+	for _, ix := range materializerIndexes {
+		var valid sql.NullBool
+		err := d.db.QueryRowContext(ctx, `
+            SELECT i.indisvalid FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = $1 AND c.relnamespace = (
+                SELECT relnamespace FROM pg_class WHERE oid = 'turn_rows'::regclass)`,
+			ix.name,
+		).Scan(&valid)
+		switch {
+		case err == nil && valid.Valid && valid.Bool:
+			continue
+		case err == nil:
+			if _, err := d.db.ExecContext(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+ix.name); err != nil {
+				return fmt.Errorf("turns/postgres: drop invalid index %s: %w", ix.name, err)
+			}
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("turns/postgres: inspect index %s: %w", ix.name, err)
+		}
+		if _, err := d.db.ExecContext(ctx, ix.ddl); err != nil {
+			return fmt.Errorf("turns/postgres: build index %s: %w", ix.name, err)
+		}
+	}
+	return nil
 }

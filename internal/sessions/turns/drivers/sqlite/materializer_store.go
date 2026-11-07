@@ -33,6 +33,23 @@ const (
 	releaseLeaseSQL = `
         UPDATE turn_materializer SET holder = '', lease_expires = 0
         WHERE name = ? AND holder = ?`
+	pruneTaskRoutesSQL = `
+        DELETE FROM turn_routes WHERE tenant = ? AND user = ? AND session = ? AND (task_id = ? OR root_task_id = ?)`
+	loadBootstrapSQL = `
+        SELECT bootstrap FROM turn_materializer WHERE name = ?`
+	saveBootstrapSQL = `
+        UPDATE turn_materializer SET bootstrap = ?
+        WHERE name = ? AND holder = ? AND lease_expires > ? AND (? < 0 OR generation = ?)`
+	listUnsealedSQL = `
+        SELECT DISTINCT tenant, user, session FROM turn_rows
+        WHERE sealed = 0 AND (tenant, user, session) > (?, ?, ?)
+        ORDER BY tenant, user, session
+        LIMIT ?`
+	backfillScanSQL = `
+        SELECT tenant, user, session, turn_id, dto FROM turn_rows
+        WHERE (tenant, user, session, turn_id) > (?, ?, ?, ?)
+        ORDER BY tenant, user, session, turn_id
+        LIMIT ?`
 	saveCursorSQL = `
         UPDATE turn_materializer SET cursor = MAX(cursor, ?)
         WHERE name = ? AND holder = ? AND lease_expires > ? AND (? < 0 OR generation = ?)`
@@ -396,4 +413,157 @@ func (d *driver) loadRoute(ctx context.Context, query string, id identity.Identi
 	}
 	r.EventSeq = uint64(seq) //nolint:gosec // G115: non-negative sequences
 	return r, true, nil
+}
+
+// PruneTaskRoutes implements turns.MaterializerStore.
+func (d *driver) PruneTaskRoutes(ctx context.Context, id identity.Identity, taskID string) error {
+	if err := d.guard(ctx); err != nil {
+		return err
+	}
+	if err := identity.Validate(id); err != nil {
+		return turns.ErrIdentityRequired
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: begin prune routes tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // a committed tx makes this a no-op
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, pruneTaskRoutesSQL, id.TenantID, id.UserID, id.SessionID, taskID, taskID); err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: prune routes: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: commit prune routes: %w", err)
+	}
+	return nil
+}
+
+// LoadMaterializerBootstrap implements turns.MaterializerStore.
+func (d *driver) LoadMaterializerBootstrap(ctx context.Context) (string, error) {
+	if err := d.guard(ctx); err != nil {
+		return "", err
+	}
+	var progress string
+	err := d.db.QueryRowContext(ctx, loadBootstrapSQL, materializerName).Scan(&progress)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("sessions/turns/sqlite: load bootstrap: %w", err)
+	}
+	return progress, nil
+}
+
+// SaveMaterializerBootstrap implements turns.MaterializerStore.
+func (d *driver) SaveMaterializerBootstrap(ctx context.Context, holder, progress string) error {
+	if err := d.guard(ctx); err != nil {
+		return err
+	}
+	gen := int64(-1)
+	if f, ok := turns.WriteFenceFrom(ctx); ok {
+		if f.Holder != holder {
+			return turns.ErrLeaseNotHeld
+		}
+		gen = int64(f.Generation) //nolint:gosec // G115: generations are small counters
+	}
+	res, err := d.db.ExecContext(ctx, saveBootstrapSQL, progress, materializerName, holder, d.clock().UnixNano(), gen, gen)
+	if err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: save bootstrap: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: save bootstrap rowcount: %w", err)
+	} else if n == 0 {
+		return turns.ErrLeaseNotHeld
+	}
+	return nil
+}
+
+// ListUnsealedSessions implements turns.MaterializerStore.
+func (d *driver) ListUnsealedSessions(ctx context.Context, after identity.Identity, limit int) ([]identity.Identity, error) {
+	if err := d.guard(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := d.db.QueryContext(ctx, listUnsealedSQL, after.TenantID, after.UserID, after.SessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sessions/turns/sqlite: list unsealed sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []identity.Identity
+	for rows.Next() {
+		var id identity.Identity
+		if err := rows.Scan(&id.TenantID, &id.UserID, &id.SessionID); err != nil {
+			return nil, fmt.Errorf("sessions/turns/sqlite: scan unsealed session: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sessions/turns/sqlite: iterate unsealed sessions: %w", err)
+	}
+	return out, nil
+}
+
+// BackfillIdentityRepair implements turns.MaterializerStore.
+func (d *driver) BackfillIdentityRepair(ctx context.Context, after turns.IdentityRepairKey, limit int) (turns.IdentityRepairKey, bool, error) {
+	if err := d.guard(ctx); err != nil {
+		return after, false, err
+	}
+	if limit <= 0 {
+		return after, false, nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return after, false, fmt.Errorf("sessions/turns/sqlite: begin backfill tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // a committed tx makes this a no-op
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return after, false, err
+	}
+	rows, err := tx.QueryContext(ctx, backfillScanSQL,
+		after.Identity.TenantID, after.Identity.UserID, after.Identity.SessionID, string(after.TurnID), limit)
+	if err != nil {
+		return after, false, fmt.Errorf("sessions/turns/sqlite: backfill scan: %w", err)
+	}
+	var flag []turns.IdentityRepairKey
+	last := after
+	n := 0
+	for rows.Next() {
+		var k turns.IdentityRepairKey
+		var turnID string
+		var dto []byte
+		if err := rows.Scan(&k.Identity.TenantID, &k.Identity.UserID, &k.Identity.SessionID, &turnID, &dto); err != nil {
+			_ = rows.Close()
+			return after, false, fmt.Errorf("sessions/turns/sqlite: backfill scan row: %w", err)
+		}
+		k.TurnID = turns.TurnID(turnID)
+		last = k
+		n++
+		if row, err := unmarshalRowDTO(dto); err == nil && turns.NeedsIdentityRepair(row) {
+			flag = append(flag, k)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return after, false, fmt.Errorf("sessions/turns/sqlite: backfill iterate: %w", err)
+	}
+	_ = rows.Close()
+	for _, k := range flag {
+		if _, err := tx.ExecContext(ctx, flagIdentityRepairSQL, k.Identity.TenantID, k.Identity.UserID, k.Identity.SessionID, string(k.TurnID)); err != nil {
+			return after, false, fmt.Errorf("sessions/turns/sqlite: backfill flag: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return after, false, fmt.Errorf("sessions/turns/sqlite: commit backfill: %w", err)
+	}
+	return last, n < limit, nil
+}
+
+// EnsureMaterializerIndexes implements turns.MaterializerStore. The SQLite
+// indexes are created by the migration (a single-process engine over a
+// small file: no concurrent reader to block).
+func (d *driver) EnsureMaterializerIndexes(ctx context.Context) error {
+	return d.guard(ctx)
 }

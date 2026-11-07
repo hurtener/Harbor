@@ -21,6 +21,7 @@ func WithClock(clock func() time.Time) Option {
 // every in-memory record it is lost on restart (the projection then
 // rebuilds from sequence zero).
 type leaseState struct {
+	bootstrap  string
 	holder     string
 	expires    time.Time
 	cursor     uint64
@@ -270,4 +271,117 @@ func (d *driver) LoadRunRoute(ctx context.Context, id identity.Identity, runID s
 		}
 	}
 	return best, found, nil
+}
+
+// pruneRoutesLocked deletes the routes of taskID and of every task rooted
+// at it. Callers hold d.mu.
+func (d *driver) pruneRoutesLocked(id identity.Identity, taskID string) {
+	sk := sessionKeyOf(id)
+	for rk, r := range d.routes {
+		if rk.tenant == sk.tenant && rk.user == sk.user && rk.session == sk.session && (r.TaskID == taskID || r.RootTaskID == taskID) {
+			delete(d.routes, rk)
+		}
+	}
+}
+
+// PruneTaskRoutes implements turns.MaterializerStore.
+func (d *driver) PruneTaskRoutes(ctx context.Context, id identity.Identity, taskID string) error {
+	if err := d.guard(ctx); err != nil {
+		return err
+	}
+	if err := d.identityErr(id); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.fenceLocked(ctx); err != nil {
+		return err
+	}
+	d.pruneRoutesLocked(id, taskID)
+	return nil
+}
+
+// LoadMaterializerBootstrap implements turns.MaterializerStore. An
+// in-memory store never holds rows from an earlier release.
+func (d *driver) LoadMaterializerBootstrap(ctx context.Context) (string, error) {
+	if err := d.guard(ctx); err != nil {
+		return "", err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.lease.bootstrap, nil
+}
+
+// SaveMaterializerBootstrap implements turns.MaterializerStore.
+func (d *driver) SaveMaterializerBootstrap(ctx context.Context, holder, progress string) error {
+	if err := d.guard(ctx); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lease.holder != holder || !d.clock().Before(d.lease.expires) {
+		return turns.ErrLeaseNotHeld
+	}
+	if f, ok := turns.WriteFenceFrom(ctx); ok && (f.Holder != holder || f.Generation != d.lease.generation) {
+		return turns.ErrLeaseNotHeld
+	}
+	d.lease.bootstrap = progress
+	return nil
+}
+
+// ListUnsealedSessions implements turns.MaterializerStore.
+func (d *driver) ListUnsealedSessions(ctx context.Context, after identity.Identity, limit int) ([]identity.Identity, error) {
+	if err := d.guard(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	d.mu.RLock()
+	seen := map[identity.Identity]bool{}
+	for k, r := range d.rows {
+		if !r.Sealed {
+			seen[identity.Identity{TenantID: k.tenant, UserID: k.user, SessionID: k.session}] = true
+		}
+	}
+	d.mu.RUnlock()
+	// Session keyset order: (tenant, user, session); the empty turn id
+	// makes IdentityRepairKey.Less compare the triples alone.
+	less := func(a, b identity.Identity) bool {
+		return turns.IdentityRepairKey{Identity: a}.Less(turns.IdentityRepairKey{Identity: b})
+	}
+	out := make([]identity.Identity, 0, len(seen))
+	for id := range seen {
+		if less(after, id) {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return less(out[i], out[j]) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// BackfillIdentityRepair implements turns.MaterializerStore.
+func (d *driver) BackfillIdentityRepair(ctx context.Context, after turns.IdentityRepairKey, limit int) (turns.IdentityRepairKey, bool, error) {
+	if err := d.guard(ctx); err != nil {
+		return after, false, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.fenceLocked(ctx); err != nil {
+		return after, false, err
+	}
+	for k, r := range d.rows {
+		if turns.NeedsIdentityRepair(r) {
+			d.repair[k] = true
+		}
+	}
+	return after, true, nil
+}
+
+// EnsureMaterializerIndexes implements turns.MaterializerStore (no-op).
+func (d *driver) EnsureMaterializerIndexes(ctx context.Context) error {
+	return d.guard(ctx)
 }

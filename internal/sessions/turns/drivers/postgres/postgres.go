@@ -166,7 +166,12 @@ func newWithDB(cfg Config, db *sql.DB, ownsDB bool) (turns.Store, error) {
 		}
 		return nil, fmt.Errorf("turns/postgres: ping: %w", err)
 	}
-	if err := runMigrations(pingCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
+	// Migrations get their own, longer budget: a schema step that waits
+	// briefly behind a reader is retried by the runner (bounded lock
+	// timeouts), and a boot must not fail on that wait.
+	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelMigrate()
+	if err := runMigrations(migrateCtx, db, cfg.DSN, cfg.MigrationMode); err != nil {
 		if ownsDB {
 			_ = db.Close()
 		}
@@ -350,15 +355,23 @@ func (d *driver) enforceRetentionTx(ctx context.Context, tx *sql.Tx, id identity
 		return nil
 	}
 	evict := n - d.retention
+	// Evicted rows take their persisted routes with them (a route must
+	// never outlive the turn it routes to).
 	if _, err := tx.ExecContext(ctx, `
-        DELETE FROM turn_rows
+        WITH evicted AS (
+            DELETE FROM turn_rows
+            WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+              AND turn_id IN (
+                  SELECT turn_id FROM turn_rows
+                  WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
+                  ORDER BY sequence ASC, turn_id ASC
+                  LIMIT $4
+              )
+            RETURNING turn_id
+        )
+        DELETE FROM turn_routes
         WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
-          AND turn_id IN (
-              SELECT turn_id FROM turn_rows
-              WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3
-              ORDER BY sequence ASC, turn_id ASC
-              LIMIT $4
-          )`,
+          AND (root_task_id IN (SELECT turn_id FROM evicted) OR task_id IN (SELECT turn_id FROM evicted))`,
 		id.TenantID, id.UserID, id.SessionID, evict,
 	); err != nil {
 		return fmt.Errorf("turns/postgres: retention evict: %w", err)

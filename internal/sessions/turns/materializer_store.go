@@ -107,6 +107,38 @@ type MaterializerStore interface {
 	// LoadRunRoute reads the binding of the task most recently bound to
 	// runID (found=false if none).
 	LoadRunRoute(ctx context.Context, id identity.Identity, runID string) (TaskRoute, bool, error)
+
+	// PruneTaskRoutes deletes the routes of taskID and of every task
+	// whose root is taskID — called when a task reaches a terminal
+	// lifecycle (a sealed root, a finished child, a rootless background
+	// task) so routes never outlive the work they route. Fenced like
+	// every projection write.
+	PruneTaskRoutes(ctx context.Context, id identity.Identity, taskID string) error
+
+	// LoadMaterializerBootstrap returns the opaque, materializer-owned
+	// progress of the one-time upgrade bootstrap ("" = nothing to do).
+	// Migration 0002 seeds it when a store already holds rows.
+	LoadMaterializerBootstrap(ctx context.Context) (string, error)
+
+	// SaveMaterializerBootstrap persists the bootstrap progress (lease
+	// fenced like the cursor).
+	SaveMaterializerBootstrap(ctx context.Context, holder, progress string) error
+
+	// ListUnsealedSessions pages (keyset) the sessions holding at least
+	// one unsealed row — the only sessions an upgrade must reconstruct.
+	ListUnsealedSessions(ctx context.Context, after identity.Identity, limit int) ([]identity.Identity, error)
+
+	// BackfillIdentityRepair flags (one short transaction) the rows of the
+	// next batch of at most limit rows after the keyset position that
+	// need identity repair, returning the batch's last key and whether
+	// the table is exhausted. It replaces a migration-time table rewrite.
+	BackfillIdentityRepair(ctx context.Context, after IdentityRepairKey, limit int) (IdentityRepairKey, bool, error)
+
+	// EnsureMaterializerIndexes builds the coordination indexes over
+	// turn_rows without blocking readers or writers (Postgres: CREATE
+	// INDEX CONCURRENTLY, replacing an invalid leftover). Idempotent and
+	// cheap when they exist.
+	EnsureMaterializerIndexes(ctx context.Context) error
 }
 
 // TaskRoute is one persisted task routing binding.

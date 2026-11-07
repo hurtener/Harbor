@@ -56,10 +56,24 @@ Two versions move independently in Harbor (RFC §5.3):
     per-session checkpoints, so the first boot after upgrading does not
     replay the log either. Catch-up progress is logged at Info at most
     every 15 s.
+  - Upgrading a store an earlier release populated runs a one-time,
+    resumable bootstrap owned by the lease holder before fast resume: it
+    backfills the repair flag in short batches and replays ONLY the
+    sessions that still hold unsealed rows (their own history via the new
+    per-session `ProjectionSource.PageSession`, up to the seeded cursor)
+    to rebuild the pending completions and task routes that release never
+    persisted. Routes are pruned when a task finishes (sealed root,
+    finished child, rootless background task), on replayed terminals, and
+    with retention eviction.
   - Migrations: `sessions.turns` Postgres and SQLite `0002` (new
     `turn_materializer` and `turn_routes` tables,
-    `turn_rows.identity_repair` / `pending_complete` + partial indexes,
-    flag backfill, cursor seed). Forward-only; no config changes. A
+    `turn_rows.identity_repair` / `pending_complete` columns, cursor seed,
+    bootstrap mark). On Postgres the migration is metadata-only (defaulted
+    columns, new tables; no row rewrite, no index build over `turn_rows`)
+    with a short `lock_timeout`; the migration runner retries a
+    lock-timed-out migration so a briefly blocking reader delays a boot
+    instead of failing it, and the flag indexes are built at runtime with
+    `CREATE INDEX CONCURRENTLY`. Forward-only; no config changes. A
     Postgres database created by v1.39 or earlier upgrades in place: the
     migration runner accepts a store's previous contract only at the
     schema version it described and moves the store identity to the new

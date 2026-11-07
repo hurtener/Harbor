@@ -34,6 +34,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // sqliteFilenameRE captures the leading numeric version of a migration
@@ -539,7 +542,9 @@ func RunPostgresNamed(ctx context.Context, db *sql.DB, migrationsFS fs.FS, spec 
 			continue
 		}
 		body := strings.ReplaceAll(m.body, "schema_migrations", legacyMirrorName(spec.Subsystem))
-		if err := applyNamedPostgresContract(ctx, conn, spec.Subsystem, m, checksum, body, contract, errPrefix); err != nil {
+		if err := applyWithLockRetry(ctx, func() error {
+			return applyNamedPostgresContract(ctx, conn, spec.Subsystem, m, checksum, body, contract, errPrefix)
+		}); err != nil {
 			return err
 		}
 	}
@@ -1145,4 +1150,40 @@ func migrationLockName(databaseIdentity, subsystem, requested string) string {
 	// for one database share the same advisory-lock authority.
 	identityHash := migrationChecksum(databaseIdentity)
 	return "harbor-migrations:" + identityHash + ":" + subsystem + ":" + requested
+}
+
+// lockRetryAttempts / lockRetryMaxBackoff bound the retry of a migration
+// whose DDL gave up waiting for a lock (lock_not_available, SQLSTATE
+// 55P03 — a migration sets a short lock_timeout so a reader holding the
+// table never makes every later reader queue behind the waiting DDL).
+const (
+	lockRetryAttempts   = 10
+	lockRetryMaxBackoff = 4 * time.Second
+)
+
+// applyWithLockRetry runs apply, retrying (with bounded backoff, honouring
+// ctx) when it failed only because a lock timeout fired. The migration
+// transaction rolled back, so a retry starts clean.
+func applyWithLockRetry(ctx context.Context, apply func() error) error {
+	backoff := 250 * time.Millisecond
+	var err error
+	for attempt := 0; attempt < lockRetryAttempts; attempt++ {
+		if err = apply(); err == nil || !isLockTimeout(err) {
+			return err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w (after lock timeout: %w)", ctx.Err(), err)
+		case <-timer.C:
+		}
+		backoff = min(2*backoff, lockRetryMaxBackoff)
+	}
+	return err
+}
+
+func isLockTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
 }

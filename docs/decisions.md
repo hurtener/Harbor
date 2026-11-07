@@ -16536,7 +16536,17 @@ at its stored exact totals). A root row older than the routes table is
 adopted only through its own stored run binding — routing never guesses.
 Migration `0002` seeds the cursor from the highest per-session checkpoint
 minus the lookback (the previous materializer applied events in global
-order).
+order) and marks a populated store for a one-time bootstrap. The lease
+holder runs it before the first forward catch-up, resumably (progress
+persisted, lease renewed between batches): it backfills the repair flag in
+short batches and replays only the sessions that still hold unsealed rows —
+their own history through `ProjectionSource.PageSession`, up to the seeded
+cursor — so the earlier release's open turns get the pending marks and
+routes it never wrote. Routes are pruned when their task finishes and with
+retention eviction. On Postgres the migration itself is metadata-only
+(defaulted columns and new tables under a short `lock_timeout`; the runner
+retries a lock-timed-out migration), and the flag indexes are built at
+runtime with `CREATE INDEX CONCURRENTLY`.
 
 The Postgres migration runner gained `PostgresMigrationSpec.PreviousContracts`:
 a store whose identity row carries a superseded contract is accepted only at

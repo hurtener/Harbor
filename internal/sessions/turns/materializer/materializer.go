@@ -310,6 +310,11 @@ type Materializer struct {
 	// restorePending asks the next pass to rebuild the deferred-complete
 	// queue from the durable pending marks (set on every new tenure).
 	restorePending bool
+	// bootstrapDone / indexesEnsured / bootstrapping track the one-time
+	// upgrade bootstrap of this tenure (see runBootstrapLocked).
+	bootstrapDone  bool
+	indexesEnsured bool
+	bootstrapping  bool
 	lastRenew      time.Time
 	lastAttempt    time.Time
 	// resumeFloor is the persisted cursor this instance resumed from:
@@ -516,6 +521,12 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 		res.Standby = true
 		res.Cursor = m.cursor
 		return res, nil
+	}
+	if err := m.runBootstrapLocked(ctx); err != nil {
+		if m.leaseLostLocked(ctx, err) {
+			return standby()
+		}
+		return res, err
 	}
 	if m.restorePending {
 		if err := m.restorePendingLocked(m.fencedCtx(ctx)); err != nil {

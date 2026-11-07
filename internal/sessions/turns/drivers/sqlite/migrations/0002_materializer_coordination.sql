@@ -22,22 +22,27 @@ CREATE TABLE IF NOT EXISTS turn_materializer (
     holder         TEXT    NOT NULL DEFAULT '',
     lease_expires  INTEGER NOT NULL DEFAULT 0,
     cursor         INTEGER NOT NULL DEFAULT 0,
-    generation     INTEGER NOT NULL DEFAULT 0
+    generation     INTEGER NOT NULL DEFAULT 0,
+    bootstrap      TEXT    NOT NULL DEFAULT ''
 );
 
+-- A store that already holds rows is marked for the one-time bootstrap
+-- (repair-flag backfill and the replay of the sessions that still hold
+-- unsealed rows, rebuilding pending completions and task routes).
 -- Seed the resume cursor from the projection that already exists: every
 -- event at or below the highest per-session checkpoint was processed by
 -- the previous materializer (it applied events in global order).
 -- Starting 10,000 events earlier (the default open-turn lookback)
 -- rebuilds turns still open; older open turns adopt their rows.
-INSERT OR IGNORE INTO turn_materializer (name, cursor)
-VALUES ('turns', MAX(COALESCE((SELECT MAX(checkpoint) FROM turn_session_state), 0) - 10000, 0));
+INSERT OR IGNORE INTO turn_materializer (name, cursor, bootstrap)
+VALUES ('turns',
+        MAX(COALESCE((SELECT MAX(checkpoint) FROM turn_session_state), 0) - 10000, 0),
+        CASE WHEN EXISTS (SELECT 1 FROM turn_rows) THEN 'pending' ELSE '' END);
 
 ALTER TABLE turn_rows ADD COLUMN identity_repair INTEGER NOT NULL DEFAULT 0;
 
-UPDATE turn_rows SET identity_repair = 1
-WHERE CAST(dto AS TEXT) LIKE '%"Query":{"Text":"","At":%'
-   OR CAST(dto AS TEXT) LIKE '%"Agent":{"ID":"","Name":"",%';
+-- Rows written before this migration are flagged at runtime by the
+-- materializer lease holder in short batches (no table rewrite here).
 
 CREATE INDEX IF NOT EXISTS turn_rows_identity_repair
     ON turn_rows (tenant, user, session, turn_id)

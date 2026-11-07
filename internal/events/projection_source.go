@@ -41,6 +41,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 // ErrProjectionUnavailable — the bus exposes no ProjectionSource
@@ -146,6 +148,15 @@ type ProjectionSource interface {
 	// cancelled, and wrapped store errors on the durable driver — never
 	// a silent empty page for a real failure.
 	Page(ctx context.Context, after uint64, limit int) (ProjectionPage, error)
+
+	// PageSession is Page restricted to ONE session's canonical events:
+	// at most limit events of that session with Sequence > after, in
+	// Sequence order. Its cost is proportional to the session's rows
+	// above the cursor, not to the log. Projectors use it for bounded,
+	// targeted reconstruction (e.g. rebuilding the state of a few
+	// still-open items after an upgrade) without re-reading the whole
+	// log. A fenced (erased) session yields an empty Current page.
+	PageSession(ctx context.Context, id identity.Identity, after uint64, limit int) (ProjectionPage, error)
 
 	// Watermark returns the highest sequence that has completed
 	// persistence — the source's current high-water mark. A projector

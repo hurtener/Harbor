@@ -323,6 +323,22 @@ func (m *Materializer) applyToSession(ctx context.Context, sess *sessionState, e
 			return true, nil
 		}
 	}
+	applied, err := m.dispatch(ctx, sess, ev, payload)
+	if err != nil {
+		return applied, err
+	}
+	switch ev.Type {
+	case tasks.EventTypeTaskCompleted, tasks.EventTypeTaskFailed, tasks.EventTypeTaskCancelled:
+		// A finished task's persisted routes go once nothing can need them.
+		if err := m.pruneOnTerminal(ctx, sess, fieldString(payload, "TaskID")); err != nil {
+			return false, err
+		}
+	}
+	return applied, nil
+}
+
+// dispatch applies one recognized event to its family handler.
+func (m *Materializer) dispatch(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	switch ev.Type {
 	case tasks.EventTypeTaskSpawned:
 		return m.applyTaskSpawned(ctx, sess, ev, payload)
@@ -648,6 +664,7 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 			return false, err
 		}
 		if current.Sealed {
+			ts.sealed = true
 			return true, nil
 		}
 		if current.TaskID != "" && current.TaskID != taskID {
@@ -710,6 +727,11 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
+		// Already applied in a previous lifetime: a failed / cancelled
+		// seal needs no answer source, so the row is sealed (or was
+		// retired). Mark it so later events skip it and its routes go.
+		ts.sealed = true
+		m.clearPending(sess, ts)
 		return true, nil
 	}
 	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
@@ -787,6 +809,11 @@ func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionStat
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
+		// Already applied in a previous lifetime: a failed / cancelled
+		// seal needs no answer source, so the row is sealed (or was
+		// retired). Mark it so later events skip it and its routes go.
+		ts.sealed = true
+		m.clearPending(sess, ts)
 		return true, nil
 	}
 	bound, err := bindRunID(runIDFromIdentity(ev.Identity), ts.runID, "")

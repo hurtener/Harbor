@@ -49,3 +49,13 @@ func TestMaterializerStoreConformance_Run(t *testing.T) {
 		return s, func() { _ = s.Close(context.Background()) }
 	})
 }
+
+func TestRouteRetention_Run(t *testing.T) {
+	conformancetest.RunRouteRetention(t, func() (turns.Store, func()) {
+		s, err := sqlite.New(sqlite.Config{DSN: filepath.Join(t.TempDir(), "turns.sqlite"), Retention: 1})
+		if err != nil {
+			t.Fatalf("sqlite.New: %v", err)
+		}
+		return s, func() { _ = s.Close(context.Background()) }
+	})
+}
