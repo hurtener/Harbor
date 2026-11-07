@@ -895,15 +895,8 @@ func TestDurable_Recovery_ConditionalCheckpointRaceCatchesUpWithoutSequenceReuse
 	}); err != nil {
 		t.Fatalf("Publish after recovery catch-up: %v", err)
 	}
-	rec, err := inner.Load(context.Background(), metadataIdentity(), kindHead)
-	if err != nil {
-		t.Fatalf("load recovered head: %v", err)
-	}
-	head, err := decodeHead(rec.Bytes)
-	if err != nil {
-		t.Fatalf("decode recovered head: %v", err)
-	}
-	if got := head.Sequences[len(head.Sequences)-1]; got != 3 {
+	seqs := sessionIndexSeqs(t, inner, metadataIdentity())
+	if got := seqs[len(seqs)-1]; got != 3 {
 		t.Fatalf("post-recovery sequence = %d, want 3 (no reuse of concurrent seq=2)", got)
 	}
 }
@@ -931,15 +924,8 @@ func TestDurable_Recovery_PostSnapshotHeadUpdateRequiresStableCatchUp(t *testing
 	}); err != nil {
 		t.Fatalf("Publish after stable catch-up: %v", err)
 	}
-	rec, err := inner.Load(context.Background(), metadataIdentity(), kindHead)
-	if err != nil {
-		t.Fatalf("load recovered head: %v", err)
-	}
-	head, err := decodeHead(rec.Bytes)
-	if err != nil {
-		t.Fatalf("decode recovered head: %v", err)
-	}
-	if got := head.Sequences[len(head.Sequences)-1]; got != 3 {
+	seqs := sessionIndexSeqs(t, inner, metadataIdentity())
+	if got := seqs[len(seqs)-1]; got != 3 {
 		t.Fatalf("post-recovery sequence = %d, want 3 (no reuse of post-snapshot seq=2)", got)
 	}
 }

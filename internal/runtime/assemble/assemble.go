@@ -602,10 +602,17 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	if ac, ok := bus.(events.AsyncAdmissionCounter); ok {
 		asyncAdmissionFailures = ac.AsyncAdmissionFailures
 	}
+	var indexIntegrityFailures, retentionHeads func() int64
+	if ic, ok := bus.(events.IndexMaintenanceCounter); ok {
+		indexIntegrityFailures = ic.IndexIntegrityFailures
+		retentionHeads = ic.RetentionHeads
+	}
 	if err := metricsReg.RegisterRuntimeGauges(telemetry.RuntimeGaugeSource{
-		GovernanceCacheEntries: func() int64 { return int64(governance.CacheLen(govSub)) },
-		EventsDropped:          eventsDropped,
-		AsyncAdmissionFailures: asyncAdmissionFailures,
+		GovernanceCacheEntries:       func() int64 { return int64(governance.CacheLen(govSub)) },
+		EventsDropped:                eventsDropped,
+		AsyncAdmissionFailures:       asyncAdmissionFailures,
+		EventsIndexIntegrityFailures: indexIntegrityFailures,
+		EventsRetentionHeads:         retentionHeads,
 	}); err != nil {
 		return stack, fmt.Errorf("telemetry runtime gauges: %w", err)
 	}

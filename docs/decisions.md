@@ -16375,3 +16375,129 @@ run-start reconcile stability, absent-slot cycles on real drivers, erased-sessio
 refusal on hits and conditional reads, follower cancellation, known-empty
 discovery, annotation-facet refusal, one entry per principal, cross-principal
 isolation, the ABA guard, and 450-tool conditional paging.
+
+---
+
+## D-492 — Chunked durable event index with a chained SHA-256
+
+**Date:** 2026-11-06. **Scope:** Durable event-log storage format (forward-only);
+no wire change.
+
+The durable driver's per-session `events.durable.head` record was one mutable
+document holding every sequence plus routing metadata, rewritten under the
+publish lock on every append. Its cost grew with history: about 20 MB and
+seconds per append on long-lived audit sessions. The head becomes a small v2
+header: the magic `HXIDX2\n` followed by JSON carrying the unsealed tail (at
+most 256 rows), bounds (`retained_count`, `first_seq`, `last_seq`,
+`oldest_occurred_at`), the trimmed range, and two chain anchors. History moves
+into immutable `events.durable.chunk/<index>` records of exactly 256 compact
+rows under the same session key, so `DeleteScope` still erases everything and
+the head scan never loads chunks. A publish reads and writes one small header
+plus one chunk every 256 events, in the same single conditional transaction as
+before; the commit probe and sequence authority are unchanged.
+
+Integrity covers every routing field. A chunk digest is SHA-256 over its
+predecessor's digest and its index, first/last sequence, min/max OccurredAt
+and rows; readers also recompute those fields from the rows. The header's
+`sealed_digest` authenticates the newest chunk, `base_digest` the oldest
+chunk's predecessor, and `header_digest` every header field including the
+tail. Readers walk back from the tail through the chain. Any mismatch is
+`ErrIndexIntegrity`: that session's read or publish fails loudly, the
+`harbor_events_index_integrity_failures_total` gauge moves, other sessions are
+unaffected, and nothing is re-derived on read. Fleet-wide reads (projection
+pages, admin `events.list`) skip such a session, counted and logged, and report
+`RetentionGap` / `truncated` rather than failing for everyone. At boot a corrupt
+v2 header quarantines its session when the sequence authority exists (every
+header write advances the authority in the same transaction, so skipping it
+cannot lower the floor); boot fails only when no authority exists. Recovery is
+per session: `harbor events rebuild-session-index` (writers stopped, explicit
+`--freeze-ack`) rebuilds the index from the session's immutable entry bodies,
+keeping the audit-retention cut recorded in its summary. It refuses a session
+whose index verifies (unless `--force`) or that is fenced, writes the new chunks
+to fresh slots and flips the header with one conditional write, so a failed
+apply changes nothing. A projection page that skipped a corrupt session is
+never reported as current, so projectors do not checkpoint past it; after a
+rebuild, rebuild projectors that must include that session. Online, in-place
+chunk repair remains a non-goal.
+
+Legacy heads migrate lazily. Publish converts a legacy head of at most 1,024
+rows inside its own transaction; a larger one keeps appending in the legacy
+format and nudges an always-on background migrator (two minutes after boot,
+then hourly, smallest heads first). The migrator authenticates the head against
+bodies when needed, pre-writes the deterministic chunks expected-absent in
+batches of 16 outside the publish lock (byte-identical slots are reused, 50 ms
+pause between batches, 1 s after each large session; the legacy JSON is
+streamed and authenticated incrementally, so the conversion holds only compact
+rows, not the decoded document), then flips with one small
+header CAS conditioned on the legacy generation, retried when a concurrent
+legacy append wins. Every pre-write and the flip are also conditioned, in the
+same transaction, on the session fence being absent and the erasure epoch
+unchanged, so an erasure racing a migration leaves nothing behind; a migration
+that finds its session gone removes what it pre-wrote. Sessions in migration
+backoff are not re-nudged by their publishes. A failure leaves the session fully legacy
+and backs off per session (1 h doubling to 24 h); there is no retry on the
+publish path. Readers reload the header when a chunk or body disappears mid-read
+and classify the miss as trimmed (D-493) or a genuine gap. The legacy repair
+command reports v2 heads as `not_legacy_v2` and never mutates them.
+
+Known limitation: readers reach an old position by walking the verified chain
+back from the tail, one chunk load per 256 rows. Steady-state reads near the
+tail are cheap, but a deep `Window`/`events.list` page or a projection rebuild
+from a low cursor on a very large session costs a chunk load per 256 rows
+skipped. A per-chunk directory in the header was rejected because it would
+make the header — and so every append — grow with history again; a later
+release can add direct, self-verified chunk seeks if deep reads matter.
+
+The change is forward-only: binaries below v1.37.0 cannot decode a v2 header
+and refuse migrated sessions.
+**Cross-references:** RFC §6.13; D-074, D-415, D-493.
+
+---
+
+## D-493 — Opt-in audit-trail retention with a cumulative summary
+
+**Date:** 2026-11-06. **Scope:** New `events.retention.audit_max_age` config
+(default off); durable driver only.
+
+`events.retention.audit_max_age` (default `0` = disabled; otherwise at least
+`24h`; restart-required) bounds how long the durable log keeps audit-only
+history. Only rows whose type starts with `audit.`, that are bus-internal
+notices (so no canonical reader ever needs them), and that are older than the
+cutoff qualify; a future non-internal `audit.*` type is never trimmed. A sweeper on the bus's maintenance goroutine (every 15 minutes,
+±10 % jitter) trims whole sealed chunks from the start of a session while every
+row qualifies, and — when no sealed chunk remains — a fully qualifying tail,
+which removes the one-row audit sessions that fresh-session admin reads create.
+A session is never trimmed past a non-audit row, so user history is kept. The
+header keeps `last_seq`, so sequence authority and boot recovery are untouched.
+
+Before trimming, the sweeper verifies the chain from `base_digest` through the
+cut and the derived fields of every chunk it trims; an integrity failure aborts
+that session. It then commits the new header and a cumulative
+`events.durable.retention_summary` record (counts by type, first/last trimmed
+sequence and time, chain anchor, policy, passes) in one conditional
+transaction, before any delete. Deletes are idempotent (exact-generation
+`DeleteIf`), re-check that each record lies inside the trimmed range (sequences
+are never reused, so a re-created session is untouched), and are budgeted at
+2,000 per pass (at most 514 per session, so one large backlog cannot starve the
+rest), paced at 20 per second. The header records the lowest chunk index that
+may still hold records, and cleanup visits those explicit indices; records
+still present after a crash are removed on a later pass, and the cleanup marker
+clears only once that range and any trimmed-tail entries are proven gone. Every
+pass traverses every head in a deterministic order; trim commits continue after
+the delete budget is spent, and cleanup resumes next pass at the first session
+it had to defer. A sweeper that finds a chunk missing because a peer replica
+trimmed it first re-reads the header instead of reporting corruption. The
+`harbor_events_retention_heads` gauge reports the traversal size.
+
+Readers report the cut: `Bounds` returns `truncated=true` (an empty, truncated
+window when everything was trimmed), `Replay` from a cursor inside the trimmed
+range returns `ErrCursorTooOld`, list pages that reach the cut set `truncated`,
+and projection pages set `RetentionGap` for a cursor before it. A trim racing a
+read gives the same outcomes, never a gap error, and never drops a retained
+event from a projection page. Projectors latch `RetentionGap`, so any projector
+that reads from before a cut — a rebuild from 0 or a newly added projector —
+reports its history as possibly incomplete permanently, even though only
+`audit.*` rows were removed; this is the honest signal, not a fault. The
+retention horizon can now move later; it is recomputed from the headers after a
+complete pass. Harbor's default stays off; operators opt in per runtime.
+**Cross-references:** RFC §6.13; D-492.

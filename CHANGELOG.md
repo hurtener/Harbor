@@ -17,6 +17,65 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.37.0] — 2026-11-07
+
+### Changed
+
+- The durable event driver stores each session's routing index as a small
+  magic-prefixed header plus immutable 256-row chunks chained by SHA-256 over
+  every routing field (D-492). A publish rewrites only the header and seals one
+  chunk every 256 events, so append cost no longer grows with history (a
+  session retaining 200k events publishes as fast as one retaining 1k), and
+  the publish lock is no longer held across a whole-history rewrite. Readers
+  verify the chain; a digest, link or derived-field mismatch fails that
+  session's read or publish with `ErrIndexIntegrity` and moves the new
+  `harbor_events_index_integrity_failures_total` gauge. Existing sessions
+  migrate lazily: inline on publish up to 1,024 rows, otherwise through an
+  always-on background migrator (two minutes after boot, then hourly) that
+  pre-writes chunks outside the publish lock and flips with one header CAS.
+  The legacy repair command reports migrated heads as `not_legacy_v2`. A
+  session whose index fails integrity checks is quarantined at boot (when the
+  sequence authority exists) and skipped by projection pages and admin
+  `events.list`; its own reads and publishes still fail. New command
+  `harbor events rebuild-session-index` rebuilds one session's index from its
+  entry bodies with all writers stopped (`--apply --freeze-ack`).
+
+### Added
+
+- Opt-in audit-trail retention: `events.retention.audit_max_age` (default `0`,
+  disabled; otherwise at least `24h`) trims aged `audit.*` rows from the
+  durable log — whole audit-only chunk prefixes, and the audit-only tail of a
+  session with no remaining sealed chunk — never user history (D-493). Each
+  trim verifies the chunk chain, commits the header and a cumulative
+  per-session `events.durable.retention_summary` record before any delete, and
+  deletes at most 2,000 records per 15-minute pass at 20 per second. `Bounds`
+  reports `truncated=true`, `Replay` inside the trimmed range returns
+  `ErrCursorTooOld`, list pages set `truncated`, and projection pages set
+  `RetentionGap`. New gauge `harbor_events_retention_heads`.
+
+### Upgrade notes
+
+- Correction to the v1.36.0 notes: reverting v1.36.0 to v1.35.0 is not a clean
+  revert (v1.35.0 rejects the `tools.catalog.changed` events v1.36.0 persists).
+- Forward-only storage change: each durable-log session migrates to the v2
+  index once, and binaries below this release refuse migrated sessions.
+- Audit retention stays off unless `events.retention.audit_max_age` is set. With retention on, projectors that read from before
+  a trim (rebuilds, new projectors) latch `RetentionGap` permanently.
+- Migration of a very large legacy session (about 100k events) costs a
+  one-time CPU burst of under a second; on a 2-core host other publishes in the
+  same process can see a few hundred milliseconds of extra latency meanwhile.
+  The conversion streams the legacy index, so converting a 20 MB / 105k-row
+  index holds about 20–30 MiB of live heap and peaks at about 55 MiB (SQLite)
+  to 100 MiB (Postgres, mostly the driver's read of the head) of heap including
+  collectable garbage. On small runtimes (around 512 MB) set `GOMEMLIMIT`
+  (for example 400MiB) so the collector reclaims that garbage before the
+  container limit.
+- With retention on, the logical trim of an audit backlog is immediate, but
+  physical cleanup is throttled: a single session's 105k-row audit backlog
+  (about 105k entry records plus their chunks) takes roughly two days, at most
+  514 deletes per session per 15-minute pass (2,000 per pass overall) so one
+  backlog never starves other sessions.
+
 ## [1.36.0] — 2026-11-06
 
 ### Added

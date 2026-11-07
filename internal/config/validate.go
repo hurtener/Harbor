@@ -918,6 +918,10 @@ func (c *Config) validateEvents() error {
 	if c.Events.ReplayBufferSize < 0 {
 		return fieldError("events.replay_buffer_size", "must be >= 0 (zero disables replay)")
 	}
+	if age := c.Events.Retention.AuditMaxAge; age != 0 && age < MinEventsAuditMaxAge {
+		return fieldError("events.retention.audit_max_age",
+			fmt.Sprintf("must be 0 (disabled) or >= %s, got %s", MinEventsAuditMaxAge, age))
+	}
 	// StateDriver / StateDSN are optional and only meaningful for the
 	// `durable` driver. When set they must name a real StateStore
 	// driver and pair a DSN with any non-inmem backend (mirrors

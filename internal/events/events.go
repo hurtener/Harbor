@@ -564,6 +564,15 @@ type AsyncAdmissionCounter interface {
 	AsyncAdmissionFailures() int64
 }
 
+// IndexMaintenanceCounter reports durable event-index maintenance readings:
+// cumulative index integrity failures and the head count of the latest
+// audit-retention traversal. Discovered by type assertion, like
+// AsyncAdmissionCounter; only the durable driver implements it.
+type IndexMaintenanceCounter interface {
+	IndexIntegrityFailures() int64
+	RetentionHeads() int64
+}
+
 // Flusher is an additive EventBus capability for terminal ordering
 // barriers. Flush returns after all earlier accepted publications have either
 // committed or failed, and returns the first failure observed since the prior

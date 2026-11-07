@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 )
@@ -102,6 +103,9 @@ func TestContinuityAdmission_EventLifecycleValidation(t *testing.T) {
 		{"unknown state", func(c *config.Config) { c.Events.StateDriver = "unknown" }, "state_driver"},
 		{"missing sqlite dsn", func(c *config.Config) { c.Events.StateDriver = "sqlite"; c.Events.StateDSN = "" }, "state_dsn"},
 		{"missing postgres dsn", func(c *config.Config) { c.Events.StateDriver = "postgres"; c.Events.StateDSN = "" }, "state_dsn"},
+		{"audit retention 1h", func(c *config.Config) { c.Events.Retention.AuditMaxAge = time.Hour }, "retention.audit_max_age"},
+		{"audit retention 23h", func(c *config.Config) { c.Events.Retention.AuditMaxAge = 23 * time.Hour }, "retention.audit_max_age"},
+		{"negative audit retention", func(c *config.Config) { c.Events.Retention.AuditMaxAge = -time.Hour }, "retention.audit_max_age"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := defaultsForCore()
@@ -120,5 +124,13 @@ func TestContinuityAdmission_EventLifecycleValidation(t *testing.T) {
 	cfg.Events.Driver, cfg.Events.StateDriver, cfg.Events.ReplayBufferSize = "durable", "inmem", 0
 	if err := cfg.ValidateCore(); err != nil {
 		t.Fatalf("explicit disabled replay refused: %v", err)
+	}
+	for _, age := range []time.Duration{0, 24 * time.Hour, 2160 * time.Hour} {
+		cfg := defaultsForCore()
+		cfg.Events.Driver = "durable"
+		cfg.Events.Retention.AuditMaxAge = age
+		if err := cfg.ValidateCore(); err != nil {
+			t.Fatalf("events.retention.audit_max_age=%s refused: %v", age, err)
+		}
 	}
 }

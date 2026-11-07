@@ -11,9 +11,11 @@
 // rehydrated sequence counter ARE the source, so a projector resuming
 // from its own durable checkpoint pages exactly the events it missed.
 //
-// The durable log is gap-free and untrimmed, so RetentionGap is always
-// false; erasure is handled by fence exclusion (a fenced session's
-// head is skipped) — erased sessions are never re-exposed. In
+// The durable log is gap-free unless opt-in audit retention (D-493)
+// trimmed a session's oldest audit-only rows: RetentionGap is true when
+// the reader's cursor sits before such a cut, or a trim removed rows
+// during the read. Erasure is handled by fence exclusion (a fenced
+// session's head is skipped) — erased sessions are never re-exposed. In
 // best-effort mode (no StateStore) the source pages the fallback ring
 // exactly like the in-memory driver, reporting eviction honestly.
 package durable
@@ -89,7 +91,12 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		meta events.EventMetadata
 	}
 	var cands []candidate
+	retentionGap := false
+	skippedCorrupt := false
 	for _, rec := range recs {
+		if err := ctx.Err(); err != nil {
+			return events.ProjectionPage{}, err
+		}
 		// ListKind matches kindHead as a literal PREFIX — guard on the
 		// exact kind so a future sibling kind under the same stem is not
 		// mis-decoded (mirrors recoverNextSeq / listWindowDurable).
@@ -102,45 +109,83 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		if fences.contains(rec.Identity) {
 			continue
 		}
-		hd, err := decodeHead(rec.Bytes)
+		view, err := b.indexViewFromRecord(ctx, rec.Identity, rec.Bytes)
 		if err != nil {
-			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: decode head (id=%s): %w", rec.ID, err)
-		}
-		hd, err = b.ensureHeadMetadata(ctx, rec.Identity, hd)
-		if err != nil {
+			if errors.Is(err, ErrIndexIntegrity) {
+				// One corrupt session must not stall every projector. Its
+				// events are reported as possibly missing (RetentionGap);
+				// its own reads and publishes keep failing loudly.
+				b.skipCorruptSession(ctx, rec.Identity, "projection page")
+				retentionGap = true
+				skippedCorrupt = true
+				continue
+			}
 			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: index head (id=%s): %w", rec.ID, err)
 		}
-		for _, meta := range metadataFromHead(hd) {
-			if meta.Sequence <= after {
+		// A reader whose cursor sits before this session's audit-retention
+		// cut has lost canonical events it never applied.
+		if view.hdr.Trimmed.Count > 0 && after < view.hdr.Trimmed.ThroughSeq {
+			retentionGap = true
+		}
+		// O(1) skip of a session with nothing after the cursor; otherwise
+		// walk back only to the first chunk holding a row after it, keeping
+		// at most limit+1 candidates per session.
+		rows, err := b.collectAbove(ctx, &view, after, limit+1, func(r indexRow) bool { return !r.Internal })
+		if err != nil {
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if errors.Is(classifyErr, ErrIndexIntegrity) {
+				b.skipCorruptSession(ctx, rec.Identity, "projection page")
+				retentionGap = true
+				skippedCorrupt = true
 				continue
 			}
-			if meta.Internal {
-				continue
+			if classifyErr != nil {
+				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", classifyErr)
 			}
-			cands = append(cands, candidate{id: rec.Identity, meta: meta})
+			// A trim deleted a chunk below the rows already collected. Those
+			// rows are every retained row above the cut, so they stay
+			// candidates (dropping them would let a Current page's watermark
+			// skip retained events); only the trimmed range is gone.
+			retentionGap = true
+			kept := rows[:0]
+			for _, r := range rows {
+				if r.Seq > through {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
+		for _, r := range rows {
+			cands = append(cands, candidate{id: rec.Identity, meta: r.metadata(rec.Identity)})
 		}
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence < cands[j].meta.Sequence })
 
+	// trimmedThrough holds, per session, the trimmed through_seq observed
+	// after a body vanished mid-read: candidates at or below it are gone,
+	// candidates above it are retained and still served.
+	trimmedThrough := map[identity.Quadruple]uint64{}
 	matches := make([]events.Event, 0, limit+1)
 	for _, c := range cands {
 		if err := ctx.Err(); err != nil {
 			return events.ProjectionPage{}, err
 		}
-		rec, err := b.store.Load(ctx, c.id, kindEntryPrefix+seqToken(c.meta.Sequence))
-		if err != nil {
-			if errors.Is(err, state.ErrNotFound) {
-				// The head lists a sequence whose entry record is missing —
-				// a torn write or a storage bug. Fail loudly rather than
-				// serving a gap (the durable log's gap-free contract).
-				return events.ProjectionPage{}, fmt.Errorf("durable: projection page gap — index lists seq=%d but entry record is missing: %w",
-					c.meta.Sequence, err)
-			}
-			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: load entry seq=%d: %w", c.meta.Sequence, err)
+		if through, gone := trimmedThrough[c.id]; gone && c.meta.Sequence <= through {
+			continue
 		}
-		ev, err := decodeEvent(rec.Bytes)
+		ev, err := b.loadEntryBody(ctx, c.id, c.meta.Sequence)
 		if err != nil {
-			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: decode entry seq=%d: %w", c.meta.Sequence, err)
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if classifyErr != nil {
+				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", classifyErr)
+			}
+			if through < c.meta.Sequence {
+				// Defensive: a missing retained body is a genuine gap.
+				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: index gap at seq=%d above trimmed through_seq=%d", c.meta.Sequence, through)
+			}
+			trimmedThrough[c.id] = through
+			retentionGap = true
+			continue
 		}
 		if err := validateMetadataEvent(c.meta, ev); err != nil {
 			return events.ProjectionPage{}, fmt.Errorf("durable: projection page metadata mismatch seq=%d: %w", c.meta.Sequence, err)
@@ -172,7 +217,10 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	matches = kept
 
 	quality := events.ProjectionCurrent
-	if hadOverflow {
+	// A skipped corrupt session's events were not examined, so the page
+	// cannot prove it reached the watermark: never report Current, or a
+	// projector would advance its checkpoint past them.
+	if hadOverflow || skippedCorrupt {
 		quality = events.ProjectionCatchingUp
 	}
 	if len(matches) > limit {
@@ -182,7 +230,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	if len(matches) > 0 {
 		next = matches[len(matches)-1].Sequence
 	}
-	return events.ProjectionPage{Events: matches, Next: next, Watermark: wm, Quality: quality}, nil
+	return events.ProjectionPage{Events: matches, Next: next, Watermark: wm, Quality: quality, RetentionGap: retentionGap}, nil
 }
 
 // Watermark implements events.ProjectionSource. In durable mode it
