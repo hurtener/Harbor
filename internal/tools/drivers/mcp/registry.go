@@ -1958,6 +1958,32 @@ func (r *Registry) deregister(ctx context.Context, name string, owner auth.Owner
 	return nil
 }
 
+// WithdrawCatalogIfUnregistered runs withdrawCatalog under the registry write
+// lock only when no registration (live, staged, or closing) holds the
+// physical name. Catalog publication of a registration happens under this
+// same lock, so an orphan cleanup can never delete a concurrently published
+// registration's tools. It reports the withdrawn count and whether it ran.
+func (r *Registry) WithdrawCatalogIfUnregistered(name string, withdrawCatalog func() int) (int, bool) {
+	if withdrawCatalog == nil {
+		return 0, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.servers[name]; ok {
+		return 0, false
+	}
+	if _, ok := r.pending[name]; ok {
+		return 0, false
+	}
+	if _, ok := r.closing[name]; ok {
+		return 0, false
+	}
+	if _, ok := r.genericClosing[name]; ok {
+		return 0, false
+	}
+	return withdrawCatalog(), true
+}
+
 // DeregisterExact withdraws one live registration from dispatch only after
 // atomically proving its owner and complete descriptor fingerprint. The exact
 // provider handle then remains in a private retryable closing state until

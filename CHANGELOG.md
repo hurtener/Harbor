@@ -35,15 +35,23 @@ Two versions move independently in Harbor (RFC §5.3):
   pending (the logical revision hides it in that window). Registrations
   backed by a connection-owned private credential are omitted from the
   generic reconcile view and refused by generic deregistration; the paired
-  catalog withdrawal now runs only after the registry admits the removal.
+  catalog withdrawal now runs only after the registry admits the removal, and
+  orphaned-catalog cleanup checks for any live, staged or closing
+  registration atomically under the registry lock, so it can never strip a
+  concurrently published connection's tools.
+- Closing the runtime MCP connection attacher now refuses new attaches,
+  cancels and joins in-flight preparations and re-attaches, and refuses a
+  late activation, so no connection is published or left undrained after
+  close.
 
 ### Changed
 
 - A signed pair whose private preparation fails is retried under a bounded
   per-pair window (30 s doubling to 5 min, reset by any revision, receipt or
-  phase change and by a successful preparation of another pair of the same
-  owner; user-tier windows are per acting session; at most 1024 tracked
-  pairs). Suppressed attempts make no credential exchange or durable write
+  phase change; a successful preparation of another pair of the same owner
+  through the same broker heals only windows opened by a shared broker
+  outage, never a pair-specific refusal; user-tier windows are per acting
+  session; at most 1024 tracked pairs). Suppressed attempts make no credential exchange or durable write
   and log at debug level. Expiry, fence commits and removals are never
   suppressed.
 - Agent-tier preparation runs in a context carrying only the pair owner's

@@ -350,7 +350,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 		}
 		if err := r.publish(ctx, q, agentID, pair, op, revision); err != nil {
 			if !errors.Is(err, tools.ErrArtifactEgressSchema) {
-				r.recordAttachFailure(ctx, slot, signedAttachFingerprint(pair, revision, op), err)
+				r.recordAttachFailure(ctx, slot, signedAttachFingerprint(pair, revision, op), pair.Broker, err)
 				return err
 			}
 			if rejectErr := r.rejectPreparation(ctx, q, agentID, op, revision); rejectErr != nil {
@@ -388,7 +388,7 @@ func (r *SignedOAuthMCPReconciler) reconcilePair(ctx context.Context, q identity
 			return err
 		}
 		if _, err := r.ensureAttached(ctx, q, agentID, pair, revision, op); err != nil {
-			r.recordAttachFailure(ctx, slot, fingerprint, err)
+			r.recordAttachFailure(ctx, slot, fingerprint, pair.Broker, err)
 			return err
 		}
 		r.attachBackoff.succeed(slot)
@@ -530,13 +530,13 @@ func (r *SignedOAuthMCPReconciler) publish(ctx context.Context, q identity.Quadr
 // recordAttachFailure opens or extends the bounded retry window only for a
 // failed external preparation. Caller cancellation and local revalidation or
 // CAS races are not evidence that the pair cannot attach.
-func (r *SignedOAuthMCPReconciler) recordAttachFailure(ctx context.Context, slot signedAttachBackoffKey, fingerprint string, err error) {
+func (r *SignedOAuthMCPReconciler) recordAttachFailure(ctx context.Context, slot signedAttachBackoffKey, fingerprint, broker string, err error) {
 	if ctx.Err() != nil {
 		return
 	}
 	var preparation *signedPreparationError
 	if errors.As(err, &preparation) {
-		r.attachBackoff.fail(slot, fingerprint)
+		r.attachBackoff.fail(slot, fingerprint, broker, signedSharedExchangeOutage(err))
 	}
 }
 
@@ -608,9 +608,10 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	if err != nil {
 		return agentcfg.SignedOAuthMCPOperation{}, &signedPreparationError{err: errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))}
 	}
-	// The broker and downstream accepted this owner's preparation, so any
-	// open retry window of the same owner is evidence of a healed condition.
-	r.attachBackoff.ownerPrepared(signedAttachSlot(ctx, q, agentID, pair))
+	// The broker exchanged for this owner, so a sibling pair parked only by a
+	// shared outage of the same broker may retry now. Pair-specific refusals
+	// keep their own windows.
+	r.attachBackoff.brokerRecovered(signedAttachSlot(ctx, q, agentID, pair), pair.Broker)
 	authorityPrepared, ok := prepared.(AuthorityBoundPreparedConnection)
 	if !ok {
 		return agentcfg.SignedOAuthMCPOperation{}, errors.Join(

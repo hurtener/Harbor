@@ -3,6 +3,8 @@ package protocol_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // identityRecordingPreparer records the working identity every private
@@ -182,13 +185,8 @@ func TestSignedOAuthMCPReconcile_OwnerIdentityIsolationAndBackoff(t *testing.T) 
 		}
 	}
 
-	// A sibling's successful preparation in the same pass may already have
-	// reset the owner's windows (it proves the broker healthy), depending on
-	// scan order. Once no other preparation succeeds, the window holds: no
-	// preparation, a typed suppression, the attached sibling stays put.
-	if err := reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID); err == nil {
-		t.Fatal("failing pair reported success")
-	}
+	// Inside the window: no preparation, a typed suppression, sibling stays.
+	// The sibling's success does not heal a pair refused on its own.
 	attempts := len(preparer.seen("cap"))
 	err = reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID)
 	if !errors.Is(err, agentcfgprotocol.ErrSignedCapabilityAttachSuppressed) || errors.Is(err, brokerRefused) {
@@ -363,5 +361,105 @@ func TestSignedOAuthMCPReconcile_UserBackoffIsSessionScoped(t *testing.T) {
 	}
 	if pcs := preparer.preparationContexts("user-cap"); !pcs[1].hasVerified || pcs[1].verified != s2 {
 		t.Fatalf("user-tier preparation context = %+v, want the acting session's verified identity", pcs[1])
+	}
+}
+
+// A sibling pair's successful preparation heals only windows opened by a
+// shared exchange outage of the same broker; a pair-specific refusal keeps
+// its own window.
+func TestSignedOAuthMCPReconcile_SiblingSuccessHealsOnlySharedOutage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		healed bool
+	}{
+		{name: "pair refusal", err: fmt.Errorf("%w: %w: status 403", toolauth.ErrExchangeFailed, toolauth.ErrCredentialRejected), healed: false},
+		{name: "downstream refusal", err: errors.New("downstream 401"), healed: false},
+		{name: "shared broker outage", err: fmt.Errorf("%w: broker status 503", toolauth.ErrExchangeFailed), healed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+			reconciler, preparer := registerTwoAgentPairs(t, now)()
+			agentcfgprotocol.SetSignedOAuthMCPReconcilerClockForTest(reconciler, func() time.Time { return now })
+			ctx, q := endUserRunContext(t, identity.Identity{TenantID: "t", UserID: "end-user", SessionID: "end-session"}, "run-heal")
+			preparer.setFail("cap", tc.err)
+			_ = reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID)
+			// Lose the sibling's local handle so the next pass re-prepares it
+			// AFTER the failing pair's window is open.
+			preparer.capabilityPreparer.mu.Lock()
+			for key := range preparer.capabilityPreparer.live {
+				if strings.HasSuffix(key, "/second") {
+					delete(preparer.capabilityPreparer.live, key)
+				}
+			}
+			preparer.capabilityPreparer.mu.Unlock()
+			before := len(preparer.seen("cap"))
+			_ = reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID)
+			if got := len(preparer.seen("second")); got != 2 {
+				t.Fatalf("sibling prepared %d times, want a fresh success in the second pass", got)
+			}
+			err := reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID)
+			// The clock is frozen inside the first window, so only a heal can
+			// let the failing pair prepare again (in either scan order).
+			retried := len(preparer.seen("cap")) > before
+			if retried != tc.healed {
+				t.Fatalf("after sibling success: retried=%t (err=%v), want %t", retried, err, tc.healed)
+			}
+		})
+	}
+}
+
+// staleAfterActiveRegistry makes the physical active pointer unreadable once
+// the registration replay has read the logical Active revision: the durable
+// re-check inside attachment must then fail closed.
+type staleAfterActiveRegistry struct {
+	agentcfg.Registry
+	mu    sync.Mutex
+	armed bool
+	stale bool
+}
+
+func (r *staleAfterActiveRegistry) Active(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	r.mu.Lock()
+	if r.armed {
+		r.stale = true
+	}
+	r.mu.Unlock()
+	return r.Registry.Active(ctx, id, agentID, scope)
+}
+
+func (r *staleAfterActiveRegistry) PhysicalActive(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	r.mu.Lock()
+	stale := r.stale
+	r.mu.Unlock()
+	if stale {
+		return agentcfg.Revision{}, false, errors.New("injected stale physical authority")
+	}
+	physical := r.Registry.(interface {
+		PhysicalActive(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) (agentcfg.Revision, bool, error)
+	})
+	return physical.PhysicalActive(ctx, id, agentID, scope)
+}
+
+// Registration replay of an already-published, locally attached pair keeps
+// the full durable re-check: the reconciler-only steady-state fast path must
+// not let a replay succeed on local liveness alone.
+func TestSignedOAuthMCPRegistrationReplay_KeepsDurableRecheck(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, preparer := signedCapabilityServiceWithRegistry(t, now)
+	req := signedCapabilityRequest(t, key, now, "jti-replay-recheck", "aud-replay")
+	if _, err := svc.RegisterOAuthMCPCapability(context.Background(), req); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	wrapped := &staleAfterActiveRegistry{Registry: reg}
+	replay := signedCapabilityServiceForExisting(t, now, wrapped, st, preparer, key)
+	if _, err := replay.RegisterOAuthMCPCapability(context.Background(), req); err != nil {
+		t.Fatalf("fixture: healthy replay: %v", err)
+	}
+	wrapped.mu.Lock()
+	wrapped.armed = true
+	wrapped.mu.Unlock()
+	if _, err := replay.RegisterOAuthMCPCapability(context.Background(), req); !errors.Is(err, agentcfg.ErrSignedCapabilityPending) {
+		t.Fatalf("replay with stale physical authority = %v, want the durable re-check to fail closed", err)
 	}
 }

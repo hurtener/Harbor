@@ -138,7 +138,12 @@ func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Own
 	// dial, publish) against every other attach of the same physical name;
 	// mu is held only around the backoff table and closer list, never across
 	// the dial, so other names and owners are not stalled by this one.
-	release, err := a.gates.acquire(ctx, mcpdrv.PhysicalServerName(desc.Name, owner))
+	workCtx, workDone, err := a.lifecycle.begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("run-start re-attach of %q: %w", desc.Name, err)
+	}
+	defer workDone()
+	release, err := a.gates.acquire(workCtx, mcpdrv.PhysicalServerName(desc.Name, owner))
 	if err != nil {
 		return false, fmt.Errorf("run-start re-attach of %q: wait for attach gate: %w", desc.Name, err)
 	}
@@ -147,7 +152,7 @@ func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Own
 		defer release()
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		out = a.reattachLocked(ctx, owner, desc, key, fingerprint, gateErr)
+		out = a.reattachLocked(workCtx, owner, desc, key, fingerprint, gateErr)
 	}()
 
 	if out.suppressedNote != "" && a.logger != nil {

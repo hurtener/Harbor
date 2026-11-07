@@ -217,9 +217,12 @@ func detachSource(ctx context.Context, catalog tools.ToolCatalog, registry *mcpd
 		if errors.Is(err, mcpdrv.ErrServerNotFound) {
 			// Not registered for this owner. Withdraw orphaned catalog entries
 			// only when no registration holds the physical name at all, so a
-			// name held by another owner keeps its tools.
-			if _, held := registry.OwnerOf(physical); deregisters && !held {
-				dc.DeregisterSource(tools.ToolSourceID(physical))
+			// name held by another owner (or published concurrently) keeps its
+			// tools. The check and withdrawal are one registry-locked step.
+			if deregisters {
+				registry.WithdrawCatalogIfUnregistered(physical, func() int {
+					return dc.DeregisterSource(tools.ToolSourceID(physical))
+				})
 			}
 			return nil
 		}

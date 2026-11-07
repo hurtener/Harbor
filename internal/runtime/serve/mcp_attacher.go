@@ -194,6 +194,9 @@ type MCPConnectionAttacher struct {
 	// gates serializes attach work per physical connection name (see
 	// attachGates). The zero value is ready to use.
 	gates attachGates
+	// lifecycle tracks in-flight attach work so Close cancels and joins it
+	// before draining closers. The zero value is ready to use.
+	lifecycle attachLifecycle
 
 	// mu guards closers and reattachBackoff only. It is never held across
 	// network preparation, so one owner's stalled dial cannot block another.
@@ -390,16 +393,25 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 	// concurrent adds of one name never race in the catalog / registry. The
 	// gate is per name and cancellable: other names and owners proceed while
 	// this one dials, and a caller whose ctx ends stops waiting.
-	release, err := a.gates.acquire(ctx, mcpdrv.PhysicalServerName(req.Name, owner))
+	workCtx, workDone, err := a.lifecycle.begin(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("mcp connection %q: %w", req.Name, err)
+	}
+	releaseGate, err := a.gates.acquire(workCtx, mcpdrv.PhysicalServerName(req.Name, owner))
+	if err != nil {
+		workDone()
 		return nil, fmt.Errorf("mcp connection %q: wait for attach gate: %w", req.Name, err)
+	}
+	release := func() {
+		releaseGate()
+		workDone()
 	}
 
 	var local []func(context.Context) error
-	prepareCtx := ctx
+	prepareCtx := workCtx
 	var cancel context.CancelFunc
 	if req.ConnectTimeoutMS > 0 {
-		prepareCtx, cancel = context.WithTimeout(ctx, time.Duration(req.ConnectTimeoutMS)*time.Millisecond)
+		prepareCtx, cancel = context.WithTimeout(workCtx, time.Duration(req.ConnectTimeoutMS)*time.Millisecond)
 		defer cancel()
 	}
 	descriptorFingerprint := req.DescriptorFingerprint
@@ -469,6 +481,20 @@ var _ agentcfgprotocol.AuthorityBoundPreparedConnection = (*preparedMCPConnectio
 
 func (p *preparedMCPConnection) unlock() { p.release.Do(p.releaseGate) }
 
+// admitActivation refuses publication once the attacher has closed, closing
+// the private preparation instead. An activation that passes this check is
+// still in flight for Close, which waits for it before draining closers.
+func (p *preparedMCPConnection) admitActivation(ctx context.Context) error {
+	if !p.owner.lifecycle.isClosed() {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	err := errors.Join(ErrAttacherClosed, p.inner.Close(cleanupCtx))
+	p.unlock()
+	return err
+}
+
 // activated records the live connection's closer under the short closer lock.
 func (p *preparedMCPConnection) activated(err error) error {
 	if err == nil {
@@ -481,14 +507,23 @@ func (p *preparedMCPConnection) activated(err error) error {
 }
 
 func (p *preparedMCPConnection) Activate(ctx context.Context) error {
+	if err := p.admitActivation(ctx); err != nil {
+		return err
+	}
 	return p.activated(p.inner.Activate(ctx))
 }
 
 func (p *preparedMCPConnection) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
+	if err := p.admitActivation(ctx); err != nil {
+		return err
+	}
 	return p.activated(p.inner.ActivateIf(ctx, prove))
 }
 
 func (p *preparedMCPConnection) ActivateUnder(ctx context.Context, admit func(context.Context, func() error) error) error {
+	if err := p.admitActivation(ctx); err != nil {
+		return err
+	}
 	return p.activated(p.inner.ActivateUnder(ctx, admit))
 }
 
@@ -624,6 +659,9 @@ func (a *MCPConnectionAttacher) BeginExactConnectionTeardownForOwner(owner toola
 // into the boot closer chain so a runtime-added subprocess does not outlive
 // the stack.
 func (a *MCPConnectionAttacher) Close(ctx context.Context) error {
+	// Refuse new attaches, cancel in-flight ones and join them first, so no
+	// preparation can publish (and append a closer) after the drain below.
+	joinErr := a.lifecycle.shutdown(ctx)
 	a.mu.Lock()
 	closers := a.closers
 	a.closers = nil
@@ -633,6 +671,9 @@ func (a *MCPConnectionAttacher) Close(ctx context.Context) error {
 		if err := closers[i](ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	if joinErr != nil {
+		return errors.Join(joinErr, firstErr)
 	}
 	return firstErr
 }

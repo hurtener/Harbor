@@ -2,6 +2,8 @@ package serve
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -67,4 +69,89 @@ func (g *attachGates) len() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.gates)
+}
+
+// ErrAttacherClosed — the attacher was closed; no new preparation may start
+// and an in-flight one may not publish.
+var ErrAttacherClosed = errors.New("serve: mcp attacher is closed")
+
+// attachLifecycle tracks in-flight attach work so Close can cancel and join
+// it before draining closers: a preparation that races Close can never
+// publish a live connection (or append a closer) after the drain. The zero
+// value is ready to use.
+type attachLifecycle struct {
+	mu          sync.Mutex
+	closed      bool
+	inflight    int
+	idle        chan struct{}
+	closeCtx    context.Context
+	closeCancel context.CancelFunc
+}
+
+func (l *attachLifecycle) closeContextLocked() context.Context {
+	if l.closeCtx == nil {
+		l.closeCtx, l.closeCancel = context.WithCancel(context.Background())
+	}
+	return l.closeCtx
+}
+
+// begin admits one unit of attach work. The returned context is cancelled
+// when the caller's ctx ends or the attacher closes; done ends the unit and
+// must be called exactly once (it is idempotent).
+func (l *attachLifecycle) begin(ctx context.Context) (context.Context, func(), error) {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil, nil, ErrAttacherClosed
+	}
+	l.inflight++
+	closeCtx := l.closeContextLocked()
+	l.mu.Unlock()
+	workCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(closeCtx, cancel)
+	var once sync.Once
+	return workCtx, func() {
+		once.Do(func() {
+			stop()
+			cancel()
+			l.mu.Lock()
+			l.inflight--
+			if l.closed && l.inflight == 0 && l.idle != nil {
+				close(l.idle)
+				l.idle = nil
+			}
+			l.mu.Unlock()
+		})
+	}, nil
+}
+
+func (l *attachLifecycle) isClosed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closed
+}
+
+// shutdown refuses new work, cancels in-flight work and waits for it to end.
+func (l *attachLifecycle) shutdown(ctx context.Context) error {
+	l.mu.Lock()
+	l.closed = true
+	l.closeContextLocked()
+	l.closeCancel()
+	var idle chan struct{}
+	if l.inflight > 0 {
+		if l.idle == nil {
+			l.idle = make(chan struct{})
+		}
+		idle = l.idle
+	}
+	l.mu.Unlock()
+	if idle == nil {
+		return nil
+	}
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("serve: mcp attacher close: wait for in-flight attaches: %w", ctx.Err())
+	}
 }

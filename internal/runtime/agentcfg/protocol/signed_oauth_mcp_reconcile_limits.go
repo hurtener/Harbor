@@ -12,6 +12,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // ErrSignedCapabilityAttachSuppressed reports that one pair's run-start
@@ -58,9 +59,15 @@ type signedAttachBackoffKey struct {
 
 type signedAttachBackoffState struct {
 	fingerprint string
-	failures    int
-	suppressed  int
-	nextAttempt time.Time
+	// broker and sharedOutage classify the failure: only a failure of the
+	// shared credential exchange itself (unreachable broker or a server-side
+	// error, not a refusal of this pair) may be healed by another pair's
+	// success through the same broker.
+	broker       string
+	sharedOutage bool
+	failures     int
+	suppressed   int
+	nextAttempt  time.Time
 }
 
 // signedAttachBackoff is a bounded, process-local negative cache keyed by one
@@ -112,7 +119,7 @@ func (b *signedAttachBackoff) admit(key signedAttachBackoffKey, fingerprint stri
 	return fmt.Errorf("%w: failures=%d suppressed_attempts=%d", ErrSignedCapabilityAttachSuppressed, st.failures, st.suppressed)
 }
 
-func (b *signedAttachBackoff) fail(key signedAttachBackoffKey, fingerprint string) {
+func (b *signedAttachBackoff) fail(key signedAttachBackoffKey, fingerprint, broker string, sharedOutage bool) {
 	if b == nil {
 		return
 	}
@@ -129,6 +136,7 @@ func (b *signedAttachBackoff) fail(key signedAttachBackoffKey, fingerprint strin
 	}
 	st.failures++
 	st.suppressed = 0
+	st.broker, st.sharedOutage = broker, sharedOutage
 	st.nextAttempt = now.Add(signedAttachBackoffDelay(st.failures))
 }
 
@@ -141,19 +149,29 @@ func (b *signedAttachBackoff) succeed(key signedAttachBackoffKey) {
 	b.mu.Unlock()
 }
 
-// ownerPrepared clears every retry window of the same owner slot after a
-// successful private preparation for any of its pairs.
-func (b *signedAttachBackoff) ownerPrepared(slot signedAttachBackoffKey) {
+// brokerRecovered is called after a successful private preparation through
+// broker. It clears only the same owner's windows that were opened by a
+// shared exchange outage of that same broker; a pair refused on its own
+// (credential rejection, downstream or discovery failure) keeps its window.
+func (b *signedAttachBackoff) brokerRecovered(slot signedAttachBackoffKey, broker string) {
 	if b == nil {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for key := range b.entries {
-		if key.scope == slot.scope && key.tenant == slot.tenant && key.agent == slot.agent && key.user == slot.user && key.session == slot.session {
+	for key, st := range b.entries {
+		if st.sharedOutage && st.broker == broker && key.provider != slot.provider &&
+			key.scope == slot.scope && key.tenant == slot.tenant && key.agent == slot.agent && key.user == slot.user && key.session == slot.session {
 			delete(b.entries, key)
 		}
 	}
+}
+
+// signedSharedExchangeOutage reports a failure of the shared credential
+// exchange itself: the exchange failed without the broker refusing this
+// pair's credential (network error, timeout, server-side status).
+func signedSharedExchangeOutage(err error) bool {
+	return errors.Is(err, toolauth.ErrExchangeFailed) && !errors.Is(err, toolauth.ErrCredentialRejected)
 }
 
 // evictLocked drops every expired entry, or failing that the entry whose retry

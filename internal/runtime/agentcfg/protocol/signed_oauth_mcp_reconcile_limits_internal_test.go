@@ -8,6 +8,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 func TestSignedAttachBackoff_BoundedAndFingerprintScoped(t *testing.T) {
@@ -15,13 +16,13 @@ func TestSignedAttachBackoff_BoundedAndFingerprintScoped(t *testing.T) {
 	b := newSignedAttachBackoff()
 	b.now = func() time.Time { return now }
 	for i := range signedAttachBackoffEntries * 3 {
-		b.fail(signedAttachBackoffKey{scope: agentcfg.ConfigScopeAgent, tenant: "t", agent: fmt.Sprint(i), provider: "p"}, "fp")
+		b.fail(signedAttachBackoffKey{scope: agentcfg.ConfigScopeAgent, tenant: "t", agent: fmt.Sprint(i), provider: "p"}, "fp", "broker", false)
 		if b.len() > signedAttachBackoffEntries {
 			t.Fatalf("entries = %d, exceeds bound %d", b.len(), signedAttachBackoffEntries)
 		}
 	}
 	key := signedAttachBackoffKey{scope: agentcfg.ConfigScopeAgent, tenant: "t", agent: "fresh", provider: "p"}
-	b.fail(key, "fp-1")
+	b.fail(key, "fp-1", "broker", false)
 	if err := b.admit(key, "fp-1"); !errors.Is(err, ErrSignedCapabilityAttachSuppressed) {
 		t.Fatalf("same fingerprint admit = %v, want suppression", err)
 	}
@@ -29,8 +30,12 @@ func TestSignedAttachBackoff_BoundedAndFingerprintScoped(t *testing.T) {
 	if err := b.admit(key, "fp-2"); err != nil {
 		t.Fatalf("changed fingerprint admit = %v, want immediate retry", err)
 	}
-	if got := signedAttachBackoffDelay(1000); got != signedAttachBackoffMax {
-		t.Fatalf("delay cap = %v", got)
+	// The literal operator-facing cap, not the constant compared to itself.
+	if got := signedAttachBackoffDelay(1000); got != 5*time.Minute {
+		t.Fatalf("delay cap = %v, want 5m", got)
+	}
+	if got := signedAttachBackoffDelay(1); got != 30*time.Second {
+		t.Fatalf("first delay = %v, want 30s", got)
 	}
 }
 
@@ -49,22 +54,41 @@ func TestSignedReconcileContinuations_Bounded(t *testing.T) {
 	}
 }
 
-func TestSignedAttachBackoff_OwnerSuccessResetsSiblingWindows(t *testing.T) {
+func TestSignedAttachBackoff_BrokerRecoveryResetsOnlySharedOutages(t *testing.T) {
 	b := newSignedAttachBackoff()
-	owner := signedAttachBackoffKey{scope: agentcfg.ConfigScopeAgent, tenant: "t", agent: "a", provider: "p1"}
-	sibling := owner
-	sibling.provider = "p2"
-	other := owner
-	other.agent = "b"
-	for _, key := range []signedAttachBackoffKey{owner, other} {
-		b.fail(key, "fp")
+	refused := signedAttachBackoffKey{scope: agentcfg.ConfigScopeAgent, tenant: "t", agent: "a", provider: "refused"}
+	outage := refused
+	outage.provider = "outage"
+	otherBroker := refused
+	otherBroker.provider = "other-broker"
+	otherOwner := outage
+	otherOwner.agent = "b"
+	succeeded := refused
+	succeeded.provider = "healthy"
+	b.fail(refused, "fp", "broker", false)
+	b.fail(outage, "fp", "broker", true)
+	b.fail(otherBroker, "fp", "broker-2", true)
+	b.fail(otherOwner, "fp", "broker", true)
+	b.brokerRecovered(succeeded, "broker")
+	if err := b.admit(outage, "fp"); err != nil {
+		t.Fatalf("same-broker outage window survived broker recovery: %v", err)
 	}
-	b.ownerPrepared(sibling)
-	if err := b.admit(owner, "fp"); err != nil {
-		t.Fatalf("same-owner window survived a successful sibling preparation: %v", err)
+	for name, key := range map[string]signedAttachBackoffKey{"pair-specific refusal": refused, "other broker": otherBroker, "other owner": otherOwner} {
+		if err := b.admit(key, "fp"); !errors.Is(err, ErrSignedCapabilityAttachSuppressed) {
+			t.Fatalf("%s window was reset by another pair's success: %v", name, err)
+		}
 	}
-	if err := b.admit(other, "fp"); !errors.Is(err, ErrSignedCapabilityAttachSuppressed) {
-		t.Fatalf("another owner's window was reset: %v", err)
+}
+
+func TestSignedSharedExchangeOutage_Classification(t *testing.T) {
+	if !signedSharedExchangeOutage(fmt.Errorf("connect: %w", fmt.Errorf("%w: broker status 503", toolauth.ErrExchangeFailed))) {
+		t.Fatal("broker server-side failure not classified as shared outage")
+	}
+	if signedSharedExchangeOutage(fmt.Errorf("%w: %w: status 403", toolauth.ErrExchangeFailed, toolauth.ErrCredentialRejected)) {
+		t.Fatal("pair refusal classified as shared outage")
+	}
+	if signedSharedExchangeOutage(errors.New("downstream 401")) {
+		t.Fatal("downstream failure classified as shared outage")
 	}
 }
 

@@ -118,7 +118,9 @@ func newSignedOwnerFixture(t *testing.T) *signedOwnerFixture {
 	})
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpServer }, nil)
 	tlsMCP := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasPrefix(req.URL.Path, "/stall/") {
+		// Only requests (POST) stall; a session-termination DELETE answers, so
+		// a cancelled preparation can tear its transport down.
+		if strings.HasPrefix(req.URL.Path, "/stall/") && req.Method == http.MethodPost {
 			f.stallMu.Lock()
 			stall := f.stall
 			f.stallMu.Unlock()
@@ -547,4 +549,99 @@ func TestSignedOAuthMCPReconcile_StalledOwnerDoesNotBlockOtherOwner(t *testing.T
 func decodeOwnerExchangeField(encoded string, out any) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	return err == nil && json.Unmarshal(raw, out) == nil
+}
+
+// TestMCPConnectionAttacher_CloseJoinsInFlightPreparation: Close must cancel
+// and join an in-flight preparation before draining closers, and a prepared
+// connection activated after Close must be refused rather than published.
+func TestMCPConnectionAttacher_CloseJoinsInFlightPreparation(t *testing.T) {
+	f := newSignedOwnerFixture(t)
+	owner := toolauth.Owner{Tenant: f.owner.TenantID, Agent: "agent"}
+	request := func(name, path string) agentcfgprotocol.AttachRequest {
+		return agentcfgprotocol.AttachRequest{Identity: f.owner, AgentID: owner.Agent, Owner: owner, Name: name,
+			Transport: agentcfg.MCPTransportHTTP, URL: f.mcpURL + path,
+			Headers: map[string]string{"Authorization": "Bearer " + signedOwnerBearer}}
+	}
+	ownerCtx, err := identity.With(context.Background(), f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("in-flight preparation", func(t *testing.T) {
+		rt := f.openRuntime(nil)
+		release := f.armStall()
+		defer close(release)
+		prepDone := make(chan error, 1)
+		go func() {
+			prepared, err := rt.attacher.PrepareConnection(ownerCtx, request("stalled", "/stall/mcp"))
+			if err == nil {
+				err = prepared.Activate(ownerCtx)
+			}
+			prepDone <- err
+		}()
+		select {
+		case <-f.stalled:
+		case <-time.After(20 * time.Second):
+			t.Fatal("preparation never reached the downstream")
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := rt.attacher.Close(closeCtx); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		select {
+		case err := <-prepDone:
+			if err == nil {
+				t.Fatal("preparation raced Close and published")
+			}
+		default:
+			t.Fatal("Close returned before the in-flight preparation completed")
+		}
+		rt.attacher.mu.Lock()
+		undrained := len(rt.attacher.closers)
+		rt.attacher.mu.Unlock()
+		if undrained != 0 {
+			t.Fatalf("undrained closers = %d", undrained)
+		}
+		if _, err := rt.attacher.PrepareConnection(ownerCtx, request("late", "/mcp")); !errors.Is(err, ErrAttacherClosed) {
+			t.Fatalf("preparation after Close = %v, want ErrAttacherClosed", err)
+		}
+	})
+
+	t.Run("activation after close", func(t *testing.T) {
+		rt := f.openRuntime(nil)
+		prepared, err := rt.attacher.PrepareConnection(ownerCtx, request("prepared", "/mcp"))
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		closed := make(chan error, 1)
+		go func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			closed <- rt.attacher.Close(closeCtx)
+		}()
+		deadline := time.Now().Add(20 * time.Second)
+		for !rt.attacher.lifecycle.isClosed() {
+			if time.Now().After(deadline) {
+				t.Fatal("Close never began")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if err := prepared.Activate(ownerCtx); !errors.Is(err, ErrAttacherClosed) {
+			t.Fatalf("activation after Close = %v, want ErrAttacherClosed", err)
+		}
+		if err := <-closed; err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		name := mcpdrv.PhysicalServerName("prepared", owner)
+		if _, ok := rt.catalog.Resolve(name + "_echo"); ok {
+			t.Fatal("connection published after Close")
+		}
+		rt.attacher.mu.Lock()
+		undrained := len(rt.attacher.closers)
+		rt.attacher.mu.Unlock()
+		if undrained != 0 {
+			t.Fatalf("undrained closers = %d", undrained)
+		}
+	})
 }
